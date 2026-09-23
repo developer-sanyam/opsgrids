@@ -401,6 +401,13 @@ class CustomDomainClaim(Base, TenantBase):
     #: generous tolerance, on purpose: a resolver's bad day must not take a merchant's shop off
     #: the air (ADR-0012 §6). Reset to zero the moment every probe is `ok` again.
     consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: The calendar day (server clock, UTC) `consecutive_failures` was last bumped on. Null
+    #: whenever the counter is zero. **What makes "seven consecutive daily failures" actually
+    #: daily**: `POST .../domain/check` runs the same probes the sweep does, on demand, so
+    #: without this a merchant mashing "Check now" could count seven failures in as many
+    #: minutes. `app/domain.py`'s `advance_verified_or_later` only advances the counter when
+    #: `today` differs from this column.
+    last_failure_counted_on: Mapped[dt.date | None] = mapped_column(Date)
     #: pending | ok | failing, each independently — see the class docstring.
     ownership_state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     routing_state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")

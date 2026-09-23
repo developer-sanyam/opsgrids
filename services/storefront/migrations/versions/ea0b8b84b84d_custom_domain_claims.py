@@ -9,7 +9,11 @@ state machine `app/domain.py` and `app/cron.py` implement. ADR-0011's own column
 predicted this widening: "the hosting slice that adds DNS verification is then a validation
 change and a new endpoint, not a migration against a table with live tenant rows." There are
 still zero live rows behind a custom domain — nothing in this platform has ever served one — so
-it is exactly that: a check-constraint edit and nothing else.
+as far as this codebase's own history is concerned it is exactly that: a check-constraint edit
+and nothing else. This migration does not *rely* on that being true, though —
+`_backfill_claims_for_pre_existing_domains` below gives any `storefronts` row that already
+carries a `custom_domain` (ADR-0011's older, evidence-free path) a real claim rather than
+leaving it a row the sweep can never pick up.
 
 **Why a second table rather than more columns on `storefronts`** (ADR-0012 §9): `storefronts` is
 the row every anonymous request reads and the row the 300-second Redis cache is built from, and a
@@ -42,7 +46,10 @@ Create Date: 2026-09-22 09:00:00.000000
 
 from __future__ import annotations
 
+import secrets
+import uuid
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 
 import sqlalchemy as sa
 from alembic import op
@@ -83,6 +90,7 @@ def upgrade() -> None:
         sa.Column('last_checked_at', sa.DateTime(timezone=True), nullable=True),
         sa.Column('next_check_at', sa.DateTime(timezone=True), nullable=False),
         sa.Column('consecutive_failures', sa.Integer(), nullable=False),
+        sa.Column('last_failure_counted_on', sa.Date(), nullable=True),
         sa.Column('ownership_state', sa.String(length=16), nullable=False),
         sa.Column('routing_state', sa.String(length=16), nullable=False),
         sa.Column('certificate_state', sa.String(length=16), nullable=False),
@@ -133,6 +141,61 @@ def upgrade() -> None:
             USING      (organization_id = {SCHEMA}.current_org())
             WITH CHECK (organization_id = {SCHEMA}.current_org())
         """
+    )
+
+    _backfill_claims_for_pre_existing_domains(op.get_bind())
+
+
+def _backfill_claims_for_pre_existing_domains(connection: sa.engine.Connection) -> None:
+    """A defensive backfill, not a data fix this environment currently needs.
+
+    ADR-0011 shipped `storefronts.custom_domain` before this table existed, and this migration's
+    own history records "there are zero live rows behind a custom domain — nothing in this
+    platform has ever served one" as true *as this was written*. A migration that only behaves
+    correctly while that stays true is a landmine for whichever hotfix, manual seed or restored
+    backup makes it stop being true: a `storefronts` row with `custom_domain` set and no matching
+    claim is exactly the shape `app/cron.py`'s sweep already documents skipping forever
+    (`TestTheStorePutSeam`) — silent, permanent squatting on a name nobody can ever verify or
+    release, because `PUT /storefront/store/domain` is now the only writer that can accept the
+    value in the first place, and this row is not new (see finding 2b's fix to `StorePut`).
+    **Every such row gets a real claim instead**: `unverified`, a freshly minted token — the
+    checks have not run yet on this specific claim, so `pending` and not `verified` is the honest
+    starting `ownership_state` even for a row ADR-0011 believed proved control at the time it was
+    set — and a 14-day expiry from *now*, exactly what claiming it through the dedicated route
+    would have produced. The very next sweep tick picks these up instead of ignoring them.
+    """
+    rows = connection.execute(
+        sa.text(
+            f"SELECT id, organization_id FROM {SCHEMA}.storefronts WHERE custom_domain IS NOT NULL"
+        )
+    ).fetchall()
+    if not rows:
+        return
+
+    now = datetime.now(UTC)
+    connection.execute(
+        sa.text(
+            f"""
+            INSERT INTO {SCHEMA}.{TABLE}
+                (id, organization_id, storefront_id, verification_token, token_issued_at,
+                 claim_expires_at, next_check_at, consecutive_failures,
+                 ownership_state, routing_state, certificate_state, created_at, updated_at)
+            VALUES
+                (:id, :organization_id, :storefront_id, :verification_token, :now,
+                 :claim_expires_at, :now, 0, 'pending', 'pending', 'pending', :now, :now)
+            """
+        ),
+        [
+            {
+                "id": str(uuid.uuid4()),
+                "organization_id": str(organization_id),
+                "storefront_id": str(storefront_id),
+                "verification_token": secrets.token_hex(16),
+                "now": now,
+                "claim_expires_at": now + timedelta(days=14),
+            }
+            for storefront_id, organization_id in rows
+        ],
     )
 
 

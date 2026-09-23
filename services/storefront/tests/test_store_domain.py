@@ -19,6 +19,7 @@ Four things worth more than the rest:
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from dataclasses import dataclass
 
@@ -27,7 +28,7 @@ from sqlalchemy import select
 
 from app.models import AuditLog, CustomDomainClaim
 from app.probes import ProbeResult, ProbeSet
-from tests.helpers import all_perms, seed_store, store_payload
+from tests.helpers import all_perms, seed_custom_domain_claim, seed_store, store_payload
 
 pytestmark = pytest.mark.integration
 
@@ -156,13 +157,13 @@ class TestClaimingADomain:
         assert {r["value"] for r in dns["fallback"]} == {"198.51.100.7"}
         assert dns["also_served"] == ["www.merchant.example"]
 
-    async def test_reclaiming_mints_a_fresh_token_and_replaces_the_row(
+    async def test_reclaiming_a_different_domain_mints_a_fresh_token_and_replaces_the_row(
         self, client, as_principal, session, org_id: uuid.UUID, slug: str
     ) -> None:
         with as_principal(all_perms(org_id)):
             await client.put(STORE, json=store_payload(slug))
             first = await client.put(DOMAIN, json={"custom_domain": "merchant.example"})
-            second = await client.put(DOMAIN, json={"custom_domain": "merchant.example"})
+            second = await client.put(DOMAIN, json={"custom_domain": "shop.example.com"})
 
         assert first.json()["verification"]["value"] != second.json()["verification"]["value"]
         rows = (
@@ -175,6 +176,37 @@ class TestClaimingADomain:
             .all()
         )
         assert len(rows) == 1  # replaced, not accumulated
+
+    async def test_reclaiming_the_same_domain_is_a_no_op_and_does_not_reset_the_clock(
+        self, client, as_principal, admin_session, org_id: uuid.UUID, slug: str
+    ) -> None:
+        """ADR-0012 review finding 2a: without this, re-PUTting a domain nobody has verified
+        once a fortnight would push `claim_expires_at` out indefinitely — endless squatting on a
+        name `uq_storefronts_custom_domain` makes exclusive platform-wide."""
+        with as_principal(all_perms(org_id)):
+            await client.put(STORE, json=store_payload(slug))
+            first = await client.put(DOMAIN, json={"custom_domain": "merchant.example"})
+
+        # Simulate the claim being nearly at its 14-day expiry.
+        await admin_session.rollback()
+        claim = (
+            await admin_session.execute(
+                select(CustomDomainClaim).where(CustomDomainClaim.organization_id == org_id)
+            )
+        ).scalar_one()
+        almost_expired = claim.claim_expires_at - dt.timedelta(hours=1)
+        claim.claim_expires_at = almost_expired
+        await admin_session.commit()
+
+        with as_principal(all_perms(org_id)):
+            second = await client.put(DOMAIN, json={"custom_domain": "merchant.example"})
+
+        assert second.status_code == 200
+        assert second.json()["verification"]["value"] == first.json()["verification"]["value"]
+        returned_expiry = dt.datetime.fromisoformat(
+            second.json()["verification"]["claim_expires_at"].replace("Z", "+00:00")
+        )
+        assert abs((returned_expiry - almost_expired).total_seconds()) < 1
 
     async def test_put_without_a_store_is_a_404(
         self, client, as_principal, org_id: uuid.UUID
@@ -362,6 +394,41 @@ class TestCheckNow:
 
         actions = await _audit_actions(session, org_id)
         assert actions.count("storefront.domain.checked") == 1
+
+    async def test_a_suspended_claim_recovers_to_verified_once_ownership_and_routing_pass(
+        self, client, as_principal, admin_session, org_id: uuid.UUID, slug: str, monkeypatch
+    ) -> None:
+        """ADR-0012 review finding 5: `suspended` blocks `ask`, so a claim suspended purely by
+        the failure count can never again pass its certificate probe on its own — nothing
+        issues it a certificate to present. Ownership and routing both checking out has to move
+        it back to `verified` instead of leaving it stuck forever."""
+        store = await seed_store(
+            admin_session,
+            org_id,
+            slug,
+            custom_domain="merchant.example",
+            custom_domain_status="suspended",
+        )
+        await seed_custom_domain_claim(
+            admin_session,
+            org_id,
+            store.id,
+            ownership_state="ok",
+            routing_state="ok",
+            certificate_state="failing",
+            consecutive_failures=9,
+            verified_at=dt.datetime.now(dt.UTC),
+        )
+        monkeypatch.setattr(
+            "app.services.default_probe_set",
+            lambda: _probes(certificate=ProbeResult(ok=False, code="handshake_failed", detail="x")),
+        )
+
+        with as_principal(all_perms(org_id)):
+            response = await client.post(CHECK)
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "verified"
 
 
 class TestTheTwoScreensAgree:

@@ -2622,22 +2622,6 @@
             "title": "Currency",
             "type": "string"
           },
-          "custom_domain": {
-            "anyOf": [
-              {
-                "description": "The domain the merchant intends to use, stored lower-cased with no scheme, path or port. Setting it here always lands the store on `unverified` \u2014 the same value a fresh `PUT /storefront/store/domain` leaves it at. **That dedicated route is what mints a verification token and runs the checks**; a domain set through this identity form has no token until it is claimed there too. `null` or an empty string releases the claim (and any verification progress with it). A domain another organization has already claimed is a 409 `custom_domain_taken`.",
-                "examples": [
-                  "shop.example.com"
-                ],
-                "maxLength": 255,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Custom Domain"
-          },
           "logo_text": {
             "anyOf": [
               {
@@ -4927,7 +4911,7 @@
         ]
       },
       "put": {
-        "description": "`storefront.store.settings.write`, floored at ORG.\n\n**This route cannot publish a store.** `status` is not on the payload: a save that could put\na store in front of the internet as a side effect of editing a tagline is the failure a\ndropdown produces by default, so publishing is `POST /storefront/store/publish` and nothing\nelse (ADR-0011 \u00a74). A store created here is always `draft`.\n\n**The slug is immutable** once the store exists (ADR-0011 \u00a77): send the stored value back\nunchanged, or get a 409 `slug_immutable`. It is required rather than omittable because a\nfull-replacement payload that silently ignores a field is worse than one that refuses it.\n\n**Setting `custom_domain` records an intention and changes nothing about reachability.**\nNothing in this platform serves a custom domain \u2014 no ingress, no TLS termination, no\nhost-based routing \u2014 and nothing here verifies that the merchant owns the name. The response\nsays so: `custom_domain_status` is `unverified` and there is no path off it yet.",
+        "description": "`storefront.store.settings.write`, floored at ORG.\n\n**This route cannot publish a store.** `status` is not on the payload: a save that could put\na store in front of the internet as a side effect of editing a tagline is the failure a\ndropdown produces by default, so publishing is `POST /storefront/store/publish` and nothing\nelse (ADR-0011 \u00a74). A store created here is always `draft`.\n\n**The slug is immutable** once the store exists (ADR-0011 \u00a77): send the stored value back\nunchanged, or get a 409 `slug_immutable`. It is required rather than omittable because a\nfull-replacement payload that silently ignores a field is worse than one that refuses it.\n\n**`custom_domain` is not a field on this payload.** ADR-0011 shipped it here first, and a\nmerchant could set it with no verification token and no `custom_domain_claims` row behind\nit \u2014 a claim the domain sweep could never pick up, and one that skipped the `www`-partner\ncollision check `PUT /storefront/store/domain` runs (ADR-0012 review finding 2b). A request\nthat still sends it is refused with a 422 naming `PUT /storefront/store/domain` instead.",
         "operationId": "put_store_api_v1_storefront_store_put",
         "requestBody": {
           "content": {
@@ -4951,10 +4935,10 @@
             "description": "Successful Response"
           },
           "409": {
-            "description": "A named conflict. `errors[0].code` is one of `slug_immutable` (the store address cannot be changed), `slug_taken`, `custom_domain_taken` (another organization has claimed it \u2014 nothing about that organization is disclosed) or `storefront_exists`."
+            "description": "A named conflict. `errors[0].code` is one of `slug_immutable` (the store address cannot be changed), `slug_taken` or `storefront_exists`."
           },
           "422": {
-            "description": "A rule refused it. `errors[0].code` is one of `name_required`, `name_too_long`, `name_invalid`, `tagline_too_long`, `tagline_invalid`, `logo_text_too_long`, `logo_text_invalid`, `custom_domain_invalid`, `custom_domain_too_long`, `custom_domain_reserved` or `timezone_invalid`."
+            "description": "A rule refused it. `errors[0].code` is one of `name_required`, `name_too_long`, `name_invalid`, `tagline_too_long`, `tagline_invalid`, `logo_text_too_long`, `logo_text_invalid`, `timezone_invalid`, or a `value_error` naming `custom_domain` \u2014 that field no longer lives on this payload (ADR-0012 review finding 2b); use `PUT /storefront/store/domain`."
           }
         },
         "summary": "Create or update the store's identity and brand",
@@ -4965,7 +4949,7 @@
     },
     "/api/v1/storefront/store/domain": {
       "delete": {
-        "description": "`storefront.store.settings.write`, floored at ORG. **Idempotent**: deleting when there\nis no claim is also a 204 (ADR-0012 \u00a77, \u00a711). From the next request the host 410s; the\ncertificate stays in Caddy's storage until it expires.",
+        "description": "`storefront.store.settings.write`, floored at ORG. **Idempotent**: deleting when there\nis no claim is also a 204 (ADR-0012 \u00a77, \u00a711).\n\n**From the next request the host 404s, not 410** \u2014 a correction to this docstring's own\nformer claim (ADR-0012 review finding 9). `POST /public/store-context`, the JSON bootstrap\ncall this host actually answers through, returns 404 `not-found` for \"no published store at\nthis address\" exactly as it does for a host nobody ever claimed (\u00a711's own wire format\nalready specifies 404 here). A `410 Gone` on a raw, unmatched browser request to the host\nitself is \u00a77's design for the **edge** \u2014 a static page Caddy serves with no JSON involved \u2014\nand `infrastructure/edge/caddy/Caddyfile` does not implement that catch-all yet; nothing in\nthis service ever returns a 410. The certificate stays in Caddy's storage until it expires\neither way.",
         "operationId": "delete_domain_api_v1_storefront_store_domain_delete",
         "responses": {
           "204": {
@@ -5039,7 +5023,7 @@
     },
     "/api/v1/storefront/store/domain/check": {
       "post": {
-        "description": "`storefront.store.settings.write`, floored at ORG.\n\nRate-limited to one call per organization every\n`domain_check_rate_limit_window_seconds` (30 by default) \u2014 the merchant has just pasted a\nrecord and wants an answer now (ADR-0012 \u00a76). Runs synchronously, against the live network,\nso it is not fast; it is not meant to be polled.",
+        "description": "`storefront.store.settings.write`, floored at ORG.\n\nRate-limited to one call per organization every\n`domain_check_rate_limit_window_seconds` (30 by default) \u2014 the merchant has just pasted a\nrecord and wants an answer now (ADR-0012 \u00a76). Runs synchronously, against the live network,\nso it is not fast; it is not meant to be polled.\n\nTakes a row lock on the claim before probing (ADR-0012 review finding 6), so this cannot\nrace the sweep or a second call into overwriting each other's result \u2014 see\n`services.run_domain_check`.",
         "operationId": "check_domain_api_v1_storefront_store_domain_check_post",
         "responses": {
           "200": {
@@ -5054,6 +5038,9 @@
           },
           "404": {
             "description": "This organization has no storefront, or no domain is claimed."
+          },
+          "409": {
+            "description": "`errors[0].code` is `domain_check_in_progress` \u2014 a probe pass for this domain (the daily sweep, or another tab's \"Check now\") is already running. Retry in a few seconds."
           },
           "429": {
             "description": "Checks are limited to one every `domain_check_rate_limit_window_seconds` (30 by default) per organization."

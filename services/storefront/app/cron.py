@@ -58,9 +58,14 @@ from app import domain, services
 from app.config import assert_directory_role_configured, settings
 from app.models import AuditLog, CustomDomainClaim, Storefront
 from app.probes import ProbeSet, default_probe_set
-from app.selectors import discover_organizations_with_custom_domain, get_domain_claim_for_org
+from app.selectors import (
+    discover_organizations_with_custom_domain,
+    get_domain_claim_for_org,
+    get_domain_claim_for_org_for_update,
+)
 from app.services import _forget_host  # the same invalidation every route uses
 from platform_core.audit import record_audit
+from platform_core.cache import close_redis, init_redis
 from platform_core.db import (
     assert_app_role,
     get_directory_sessionmaker,
@@ -95,6 +100,16 @@ class SweepReport:
     @property
     def acted(self) -> int:
         return self.checked + self.transitioned + self.released
+
+
+@dataclass(frozen=True, slots=True)
+class _DueOrganization:
+    """One organization `_due_organizations` found due, and the timestamp it is sorted by —
+    oldest `next_check_at` first, so `tick`'s batch cap serves whoever has waited longest
+    (ADR-0012 review finding 3)."""
+
+    organization_id: uuid.UUID
+    due_at: datetime
 
 
 class DomainSweep:
@@ -146,21 +161,94 @@ class DomainSweep:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=self._poll_interval)
 
     async def tick(self, now: datetime | None = None) -> SweepReport:
-        """One pass: discover organizations with a claimed domain, then advance each under its
-        own tenant binding. `now` exists for tests; production always reads the wall clock.
+        """One pass: discover organizations with a claimed domain, work out which of *all* of
+        them are actually due, and advance the most overdue `batch_size` of those. `now` exists
+        for tests; production always reads the wall clock.
 
-        Capped at `batch_size` organizations per tick (ADR-0012 §6: "processes at most 20 due
-        domains per tick, so a slow resolver cannot make the tick unbounded"). At ≤50 merchants
-        platform-wide this is headroom, not a real ceiling.
+        **The cap applies to due work, not to discovery** (ADR-0012 review finding 3). The old
+        shape capped `org_ids[:batch_size]` — a slice of an *unordered* `DISTINCT
+        organization_id` — before checking which of them had anything due at all. With more
+        organizations claiming a domain than `batch_size`, whichever ones happened to sort first
+        in that scan would be the only ones ever served; every organization after the cut is
+        silently never checked, forever, no matter how overdue. `_due_organizations` below reads
+        every discovered organization's own claim (cheap: one indexed row each, no probe, no
+        write) and sorts what is actually due by `next_check_at`, oldest first, so the batch cap
+        now bounds *how many claims get probed this tick*, taken in the order that keeps
+        everyone rotating through rather than starving whoever discovery happened to list last.
         """
         at = now or datetime.now(UTC)
         async with self._discovery_factory() as session:
             org_ids = await discover_organizations_with_custom_domain(session)
 
         report = SweepReport(considered=len(org_ids))
-        for organization_id in org_ids[: self._batch_size]:
-            await self._advance_one(organization_id, at, report)
+        due = await self._due_organizations(org_ids, at, report)
+        batch = due[: self._batch_size]
+        # Due, but the cap was reached first — counted as skipped (not failed) so next tick's
+        # oldest-first ordering is what serves them, exactly as ADR-0012 §6 intends for a slow
+        # resolver's worth of overflow rather than a permanent exclusion.
+        report.skipped += len(due) - len(batch)
+        for candidate in batch:
+            await self._advance_one(candidate.organization_id, at, report)
         return report
+
+    async def _due_organizations(
+        self, org_ids: list[uuid.UUID], now: datetime, report: SweepReport
+    ) -> list[_DueOrganization]:
+        """A read-only pass over every discovered organization's own claim, oldest-`next_check_at`
+        first. See `tick`'s docstring for why the ordering — not just the existence of a cap —
+        is the fix. An organization whose row disappeared, has no claim yet, or is not due is
+        counted `skipped` here, exactly where the old single-pass version counted it; an
+        unexpected error reading one organization's claim is caught and counted `failed` rather
+        than aborting every other organization's chance to be served this tick (the same
+        "a check that cannot run never takes a domain off the air" reasoning `_advance_one`
+        states for the probe pass itself).
+        """
+        due: list[_DueOrganization] = []
+        for organization_id in org_ids:
+            try:
+                async with self._work_scope(organization_id) as session:
+                    store = (
+                        await session.execute(
+                            select(Storefront).where(
+                                Storefront.organization_id == organization_id,
+                                Storefront.deleted_at.is_(None),
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if store is None or store.custom_domain is None:
+                        report.skipped += 1
+                        continue
+
+                    claim = await get_domain_claim_for_org(session, organization_id)
+                    if claim is None:
+                        # `storefronts.custom_domain` was set through the older `StorePut` path,
+                        # which never creates an evidence row (finding 2b of this review closes
+                        # that seam for new writes; a pre-existing row is backfilled by the
+                        # migration). Nothing to probe and no token to check against.
+                        report.skipped += 1
+                        continue
+
+                    expired = (
+                        store.custom_domain_status == "unverified"
+                        and domain.is_claim_expired(claim.claim_expires_at, now=now)
+                    )
+                    if not expired and claim.next_check_at > now:
+                        report.skipped += 1
+                        continue
+
+                    due.append(
+                        _DueOrganization(
+                            organization_id=organization_id, due_at=claim.next_check_at
+                        )
+                    )
+            except Exception:
+                log.exception(
+                    "storefront.domain.sweep.due_check_failed",
+                    organization_id=str(organization_id),
+                )
+                report.failed += 1
+        due.sort(key=lambda candidate: candidate.due_at)
+        return due
 
     async def _advance_one(
         self, organization_id: uuid.UUID, now: datetime, report: SweepReport
@@ -183,6 +271,16 @@ class DomainSweep:
         now: datetime,
         report: SweepReport,
     ) -> None:
+        """Advance the one claim `_due_organizations` already found due for this organization.
+
+        **Actually locks the claim row** (`SELECT ... FOR UPDATE SKIP LOCKED`, ADR-0012 review
+        finding 6) rather than merely being named as though it does: without it, this tick's
+        probe pass and a concurrent "Check now" (`services.run_domain_check`, which takes the
+        same lock) could run against the same row at once and have whichever finishes last
+        silently overwrite the other's result. `SKIP LOCKED` because a row already locked by a
+        "Check now" in progress is this tick's cue to leave it alone until the next one, not to
+        queue behind it — a sweep tick should stay short and move on to the next organization.
+        """
         store = (
             await session.execute(
                 select(Storefront).where(
@@ -192,17 +290,17 @@ class DomainSweep:
             )
         ).scalar_one_or_none()
         if store is None or store.custom_domain is None:
-            # Discovered a moment ago, released since — the good outcome of the gap between
-            # discovery and here, the same shape every sweep in this platform tolerates.
+            # Discovered (and found due) a moment ago, released since — the good outcome of the
+            # gap between the due-check pass and here, the same shape every sweep in this
+            # platform tolerates.
             report.skipped += 1
             return
 
-        claim = await get_domain_claim_for_org(session, organization_id)
+        claim = await get_domain_claim_for_org_for_update(session, organization_id)
         if claim is None:
-            # `storefronts.custom_domain` was set through the older `StorePut` path, which
-            # creates no evidence row (ADR-0012's known seam; see `services.py`). There is
-            # nothing to probe and no token to check against — the merchant has to reach
-            # `PUT /storefront/store/domain` once before the sweep has any work for this row.
+            # Either the claim is gone (the good race above), or a concurrent "Check now" holds
+            # it right now. Either way there is nothing this tick can safely do; the next one
+            # will see it again if it is still due.
             report.skipped += 1
             return
 
@@ -213,6 +311,9 @@ class DomainSweep:
             return
 
         if claim.next_check_at > now:
+            # The due-check pass and this lock are two different transactions; a claim that
+            # became not-due in between (an interleaved "Check now" already advanced it) is left
+            # alone rather than double-probed.
             report.skipped += 1
             return
 
@@ -243,7 +344,7 @@ class DomainSweep:
                 "last_error_code": claim.last_error_code,
             },
         )
-        await _forget_host(store.custom_domain)
+        _forget_host(session, store.custom_domain)
         report.transitioned += 1
 
     async def _release_expired(
@@ -275,7 +376,7 @@ class DomainSweep:
             after={"custom_domain": None},
             reason="claim_expired",
         )
-        await _forget_host(before_domain)
+        _forget_host(session, before_domain)
         log.info(
             "storefront.domain.expired_claim_released",
             organization_id=str(store.organization_id),
@@ -295,6 +396,22 @@ async def main() -> None:
     # assertion the consumers and every other sweep make applies here too.
     await assert_app_role(engine, environment=cfg.environment)
     init_directory_engine(cfg)
+    # **This was missing, and it is the same silent-nothing failure shape as the directory role
+    # and `bin/cron` pointing at the relay** (ADR-0012 review finding 1). Every state transition
+    # this process writes invalidates the host cache through `services._forget_host`, which is
+    # `cache_delete` against *this process's own* Redis client — a client that only exists once
+    # something calls `init_redis`. Without it, `get_redis()` raises inside the `after_commit`
+    # callback `_schedule_cache_forget` registers, `cache_delete` never runs, nothing errors
+    # (there is no caller left to see an exception from a fire-and-forget task at that point —
+    # `cache_delete` itself also swallows a Redis failure it *does* reach), and a suspended or
+    # released custom domain keeps resolving — and `tls-authorize` keeps saying yes for a
+    # released one — for up to `store_host_cache_seconds` after every single transition, forever,
+    # because nothing ever re-populates the client that would let the next transition's
+    # invalidation actually reach Redis either. A fixture that calls `init_redis` itself (as the
+    # HTTP `client` fixture and the old `sweep` fixture in `tests/test_cron.py` both do) cannot
+    # catch this regression, because it hides exactly the thing being tested; see
+    # `tests/test_cron.py::TestMainInitialisesRedis` for the test that exercises `main()` itself.
+    init_redis(cfg.redis_url)
 
     sweep = DomainSweep(
         discovery_factory=get_directory_sessionmaker(),
@@ -311,7 +428,10 @@ async def main() -> None:
             # rather than being cancelled mid-write.
             loop.add_signal_handler(sig, sweep.stop)
 
-    await sweep.run()
+    try:
+        await sweep.run()
+    finally:
+        await close_redis()
 
 
 if __name__ == "__main__":

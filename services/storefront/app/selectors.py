@@ -526,6 +526,47 @@ async def get_domain_claim_for_org(
     return (await session.execute(stmt)).scalars().one_or_none()
 
 
+async def get_domain_claim_for_update(
+    session: AsyncSession, ctx: ScopeContext
+) -> CustomDomainClaim | None:
+    """`get_domain_claim`, but `SELECT ... FOR UPDATE SKIP LOCKED` (ADR-0012 review finding 6):
+    "Check now" takes this instead of the plain read, so a concurrent probe pass already holding
+    this row — the daily sweep, or a second tab — makes this return `None` rather than block.
+    A caller reading `None` here after already having confirmed the claim exists cannot tell
+    "gone" from "locked by someone else" apart on this call alone; `services.run_domain_check`
+    is the one caller and it already knows which, from context."""
+    stmt = (
+        select(CustomDomainClaim)
+        .where(
+            CustomDomainClaim.organization_id == ctx.organization_id,
+            CustomDomainClaim.deleted_at.is_(None),
+        )
+        .with_for_update(skip_locked=True)
+    )
+    return (
+        (await session.execute(ctx.apply(stmt, owner_col=CustomDomainClaim.id)))
+        .scalars()
+        .one_or_none()
+    )
+
+
+async def get_domain_claim_for_org_for_update(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> CustomDomainClaim | None:
+    """`get_domain_claim_for_org`, but `SELECT ... FOR UPDATE SKIP LOCKED` — the sweep's half of
+    review finding 6. `None` here means either no claim (already ruled out by the caller) or a
+    concurrent "Check now" holding the row; either way there is nothing for this tick to do."""
+    stmt = (
+        select(CustomDomainClaim)
+        .where(
+            CustomDomainClaim.organization_id == organization_id,
+            CustomDomainClaim.deleted_at.is_(None),
+        )
+        .with_for_update(skip_locked=True)
+    )
+    return (await session.execute(stmt)).scalars().one_or_none()
+
+
 def _zones(ctx: ScopeContext) -> Select[tuple[DeliveryZone]]:
     stmt = select(DeliveryZone).where(
         DeliveryZone.organization_id == ctx.organization_id,

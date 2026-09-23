@@ -33,10 +33,11 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from fastapi import Request
-from sqlalchemy import CursorResult, delete, func, insert, literal_column, select
+from sqlalchemy import CursorResult, delete, event, func, insert, literal_column, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.util import await_only
 
 from app import domain, selectors
 from app.config import settings
@@ -267,26 +268,59 @@ def _identity_snapshot(store: Storefront) -> dict[str, Any]:
     }
 
 
-async def _forget_slug(*slugs: str | None) -> None:
-    """Drop the cached slug→store entries for these slugs.
+def _schedule_cache_forget(session: AsyncSession, keys: set[str]) -> None:
+    """Forget `keys` once — and only once — this session's transaction actually commits.
 
-    Best effort, and honestly racy: the request's transaction has not committed yet, so a
-    concurrent anonymous check could repopulate an entry from the pre-commit row and keep it for
-    another TTL. The TTL bounds it either way — this only shortens the window ADR-0010 §13
-    already accepts ("a newly published store may be 404 for five minutes").
+    **Why not just call `cache_delete` inline, mid-transaction, the way this used to work.**
+    Forgetting a key before the write that motivated it is durable is racy in the direction that
+    matters: a concurrent reader can run its own query in the gap between "we deleted the cache
+    entry" and "Postgres made our row change durable," see the *pre-write* row (READ COMMITTED
+    sees nothing of an uncommitted transaction), and repopulate the cache with the state we are
+    in the middle of replacing. That entry then serves — or refuses — the old answer for the
+    rest of `store_host_cache_seconds`/`store_slug_cache_seconds`, which is exactly the outage
+    ADR-0012 §2's "every state transition ... deletes the host key in the same transaction that
+    writes the state" exists to prevent. Redis is not Postgres, so the two cannot literally share
+    a transaction; the next best thing — and the one that actually closes the race — is to never
+    forget a key for a row that might still roll back, which means waiting for the commit that
+    decides that question before touching Redis at all. If the transaction rolls back instead,
+    `after_commit` never fires and nothing is forgotten, which is correct: nothing changed.
+
+    `after_commit` is a synchronous SQLAlchemy event, not an awaitable one, but nothing here
+    crosses a thread: SQLAlchemy's asyncio support runs the underlying sync `Session` through a
+    greenlet switch on the *same* OS thread as the caller's own running event loop, driven by
+    `greenlet_spawn`. `sqlalchemy.util.await_only` is the companion half of that bridge — the
+    exact mechanism SQLAlchemy's own asyncio DBAPI adapters use to let sync code running inside
+    that greenlet block on an async call — so calling it here suspends the greenlet running
+    `commit()` until `cache_delete` actually finishes, and only then lets `commit()` return.
+    **This has to be synchronous, not merely scheduled** (an earlier version of this function
+    used `asyncio.create_task` and fired the deletion "soon," not "before commit() returns"):
+    `get_tenant_session`'s post-yield code awaits `commit()` and then the dependency is torn
+    down, and a caller — the very next request in a test, a buyer in production — must never be
+    able to observe a state where the transaction has committed but the cache has not yet caught
+    up, however briefly. `await_only` closes that gap instead of merely narrowing it.
     """
-    keys = {selectors.slug_cache_key(s) for s in slugs if s}
-    if keys:
-        await cache_delete(*keys)
+    if not keys:
+        return
+    sync_session = session.sync_session
+
+    def _fire(_: Any) -> None:
+        await_only(cache_delete(*keys))
+
+    event.listen(sync_session, "after_commit", _fire, once=True)
 
 
-async def _forget_host(*domains: str | None) -> None:
-    """Drop the cached host→store entries for these domains **and their `www` partners**.
+def _forget_slug(session: AsyncSession, *slugs: str | None) -> None:
+    """Schedule the cached slug→store entries for these slugs to be forgotten after commit."""
+    _schedule_cache_forget(session, {selectors.slug_cache_key(s) for s in slugs if s})
 
-    ADR-0012 §2: every transition that changes what a host resolves to deletes the host key in
-    the same transaction that writes the state. Without it, releasing a domain leaves it serving
-    a store for the length of the TTL, and *claiming* one leaves the negative entry a previous
-    buyer's 404 wrote.
+
+def _forget_host(session: AsyncSession, *domains: str | None) -> None:
+    """Schedule the cached host→store entries for these domains **and their `www` partners**
+    to be forgotten after commit.
+
+    ADR-0012 §2: every transition that changes what a host resolves to has to invalidate the
+    host key, or releasing a domain leaves it serving a store for the length of the TTL, and
+    claiming one leaves the negative entry a previous buyer's 404 wrote.
 
     Both members of the pair, because the lookup caches under the key it was *asked* about: a
     buyer who arrived at `www.merchant.com` while the claim was on the apex has an entry under
@@ -297,8 +331,7 @@ async def _forget_host(*domains: str | None) -> None:
     half-remember.
     """
     hosts = {h for value in domains if value for h in (value, domain.www_partner(value))}
-    if hosts:
-        await cache_delete(*(selectors.host_cache_key(h) for h in hosts))
+    _schedule_cache_forget(session, {selectors.host_cache_key(h) for h in hosts})
 
 
 async def put_storefront(
@@ -310,20 +343,25 @@ async def put_storefront(
 ) -> Storefront:
     """Create or update the organization's single storefront — its **identity**.
 
-    Three rules live here rather than in the schema, because each is about the row rather than
+    Two rules live here rather than in the schema, because each is about the row rather than
     about the payload (ADR-0011):
 
     * **The brand is trimmed and bounded before it is stored.** It is merchant-authored text
       destined for a public page. It is *not* escaped here — output encoding is the renderer's.
     * **The slug cannot change.** Every published link, the buyer's `localStorage` key and the
       five-minute slug cache all key on it.
-    * **A custom domain is a stated intention.** Claiming one writes `custom_domain_status =
-      'unverified'` and nothing else happens: no request is served on it, and nothing in this
-      platform checks that the merchant owns it. Changing it resets the status, because a
-      verification that ever exists must not survive the value it verified.
 
     **`status` is not on this payload at all**, so a settings save cannot put a store in front
     of the internet. `publish_storefront` / `unpublish_storefront` are the only ways it moves.
+
+    **The custom domain is not on this payload at all either** (ADR-0012 review finding 2b).
+    ADR-0011 shipped it here first, evidence-free: a merchant could set `custom_domain` through
+    this route and land on `unverified` with no `custom_domain_claims` row behind it — a row
+    `app/cron.py`'s sweep can never pick up, because there is no token to check against, and one
+    that skipped the `www`-partner collision check `PUT /storefront/store/domain` runs. Both are
+    now `StorePut`'s job to refuse outright — see its own `model_validator` — rather than this
+    function's job to keep patching around. `PUT /storefront/store/domain` is the only writer
+    left, and it always creates the evidence row alongside the column.
     """
     # Refuse a timezone the server cannot resolve, in the merchant's words rather than as a
     # 500 six weeks later: a bad IANA name would silently produce promised dates in UTC, an
@@ -333,7 +371,6 @@ async def put_storefront(
     name = domain.clean_brand_text(payload.name, field="name", required=True)
     tagline = domain.clean_brand_text(payload.tagline, field="tagline")
     logo_text = domain.clean_brand_text(payload.logo_text, field="logo_text")
-    custom_domain = domain.normalise_custom_domain(payload.custom_domain)
 
     existing = await selectors.get_storefront(session, ctx)
     before: dict[str, Any] | None = None
@@ -351,8 +388,6 @@ async def put_storefront(
             status="draft",
             currency=payload.currency,
             timezone=payload.timezone,
-            custom_domain=custom_domain,
-            custom_domain_status="unverified" if custom_domain else None,
         )
         session.add(store)
         action = "storefront.created"
@@ -365,18 +400,8 @@ async def put_storefront(
         store.logo_text = logo_text
         store.currency = payload.currency
         store.timezone = payload.timezone
-        # Omitted means unchanged. The console's identity form no longer sends the domain — the
-        # domain screen owns it, through `/store/domain` — and a form holding a stale value must
-        # not be able to release a claim that screen just verified.
-        if "custom_domain" in payload.model_fields_set and custom_domain != store.custom_domain:
-            store.custom_domain = custom_domain
-            # A verification attaches to a value, not to a row. The day one exists, keeping it
-            # across a change of domain would mean a merchant verifying one name and serving
-            # another — so the reset is written now, while it costs a line.
-            store.custom_domain_status = "unverified" if custom_domain else None
         action = "storefront.updated"
 
-    domain_changed = before is None or before["custom_domain"] != store.custom_domain
     record_audit(
         session,
         AuditLog,
@@ -389,59 +414,11 @@ async def put_storefront(
         after=_identity_snapshot(store),
         request=request,
     )
-    if domain_changed and (store.custom_domain or (before and before["custom_domain"])):
-        # Its own row: a domain claim is the one field here that can be contested between two
-        # organizations, and support adjudicating one needs to see who claimed what and when
-        # without reading it out of a generic update's `after` blob.
-        record_audit(
-            session,
-            AuditLog,
-            organization_id=ctx.organization_id,
-            actor_id=ctx.principal.sub,
-            action=(
-                "storefront.custom_domain.claimed"
-                if store.custom_domain
-                else "storefront.custom_domain.released"
-            ),
-            entity="storefront",
-            entity_id=store.id,
-            before={"custom_domain": before["custom_domain"]} if before else None,
-            after={
-                "custom_domain": store.custom_domain,
-                "custom_domain_status": store.custom_domain_status,
-                # Written into the trail rather than inferred later: at the time of this claim,
-                # nothing in the platform could verify or serve it.
-                "verified": False,
-                "served": False,
-            },
-            request=request,
-        )
 
     async with _conflicts_are_named(session):
-        if domain_changed:
-            # **The seam between this route and ADR-0012's dedicated domain route.** A claim
-            # row (`custom_domain_claims`) is evidence for *one specific* domain string — a
-            # token minted for `merchant.com`, an `ownership_state` that says its TXT record
-            # was seen. None of that survives this field changing to a different string
-            # through this older, evidence-free path: without clearing it, a claim already
-            # `verified` for one domain would silently keep answering `verified` for whatever
-            # this route just set the column to, for a domain nobody has ever proved.
-            # `custom_domain_status` is already reset to `unverified` above for the same
-            # reason; this is that reset's other half. Inside the savepoint, alongside the
-            # flush, so a collision on the store's own write is still what names the 409 —
-            # `session.execute` autoflushes, and a flush outside this context would raise the
-            # collision before `_conflicts_are_named`'s `except` could see it.
-            await session.execute(
-                delete(CustomDomainClaim).where(
-                    CustomDomainClaim.organization_id == ctx.organization_id
-                )
-            )
         await session.flush()
 
-    await _forget_slug(store.slug)
-    # Both the value being claimed and the one being released: a change has to stop the old
-    # domain serving *and* clear the negative entry that made the new one look unclaimed.
-    await _forget_host(store.custom_domain, before["custom_domain"] if before else None)
+    _forget_slug(session, store.slug)
     log.info(
         "storefront.store.saved",
         organization_id=str(ctx.organization_id),
@@ -503,11 +480,11 @@ async def set_store_status(
     # Publishing has to clear the cache, and the *negative* entry is why: a 404 for this slug is
     # cached for five minutes exactly like a hit, so without this a merchant publishes and then
     # watches their own store stay invisible with nothing to show for it.
-    await _forget_slug(store.slug)
+    _forget_slug(session, store.slug)
     # And the host entry, for the same reason at the other address: `status` is on the cached
     # row, so unpublishing a store that is live on its own domain has to stop that domain
     # serving too. Both addresses answer, so both caches move together (ADR-0012 §2, §8).
-    await _forget_host(store.custom_domain)
+    _forget_host(session, store.custom_domain)
     log.info(
         "storefront.store.status_changed",
         organization_id=str(ctx.organization_id),
@@ -559,6 +536,14 @@ async def claim_custom_domain(
     **Replacing an existing claim releases the old one and mints a new token** (ADR-0012 §11):
     a verification proves control of the value claimed, and must not survive that value
     changing — the same rule `put_storefront` enforces for the older path.
+
+    **Re-claiming the exact string this organization already holds is a no-op** (ADR-0012
+    review finding 2a). Without this, re-PUTting the same unproved domain once a fortnight would
+    push `claim_expires_at` out another 14 days indefinitely — `uq_storefronts_custom_domain`
+    makes a claim exclusive platform-wide, so that is a squatting vector with no time limit at
+    all, on a domain nobody has ever verified. A **different** string is unaffected: it still
+    releases the old claim and mints a fresh token and a fresh 14-day clock, because a
+    verification attaches to the value claimed and must not survive that value changing.
     """
     host = domain.normalise_custom_domain(payload.custom_domain)
     if host is None:
@@ -570,7 +555,25 @@ async def claim_custom_domain(
     if store is None:
         raise NotFoundProblem("This organization has no storefront yet. Create the store first.")
 
+    if host == store.custom_domain:
+        existing_claim = await selectors.get_domain_claim(session, ctx)
+        if existing_claim is not None:
+            return store, existing_claim
+        # The column already holds this value with no evidence row behind it — the pre-2b
+        # `StorePut` seam on a claim not yet backfilled. Falls through and mints one below,
+        # exactly as a brand-new claim would.
+
     partner = domain.www_partner(host)
+    # A transaction-scoped advisory lock on the *pair* (the apex form of whichever of `host` /
+    # `partner` is the non-`www` member), so two organizations racing to claim `x.com` and
+    # `www.x.com` at the same instant serialise here instead of both passing the
+    # `custom_domain_claimed_by_other_org` check below before either has committed (review
+    # finding 8). `hashtext` collapses the string to the `bigint` `pg_advisory_xact_lock` takes;
+    # a hash collision only ever costs unrelated pairs a moment of unnecessary serialisation,
+    # never a missed check — it is not the thing enforcing exclusivity, ADR-0011's unique index
+    # still is. Released automatically at commit or rollback, so there is nothing to unlock.
+    pair_key = host[4:] if host.startswith("www.") else host
+    await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": pair_key})
     if await custom_domain_claimed_by_other_org(
         directory_session, partner, excluding_organization_id=ctx.organization_id
     ):
@@ -622,7 +625,7 @@ async def claim_custom_domain(
         after={"custom_domain": host},
         request=request,
     )
-    await _forget_host(host, before_domain)
+    _forget_host(session, host, before_domain)
     log.info(
         "storefront.domain.claimed",
         organization_id=str(ctx.organization_id),
@@ -669,7 +672,7 @@ async def release_custom_domain(
         after={"custom_domain": None},
         request=request,
     )
-    await _forget_host(before_domain)
+    _forget_host(session, before_domain)
     log.info(
         "storefront.domain.released",
         organization_id=str(ctx.organization_id),
@@ -701,8 +704,20 @@ async def advance_domain_claim(
     While `unverified`, only the ownership probe runs: the certificate cannot be authorized
     before ownership is proved, and a routing check that cannot yet matter to a merchant tells
     them nothing they can act on (§6's wire example shows routing and certificate `pending` for
-    the whole of that state). Once past `unverified`, every probe runs and the row's own
-    per-probe error is whichever failed first, in ownership → routing → certificate order.
+    the whole of that state). Once past `unverified`, ownership and routing always run;
+    certificate only runs when routing passed (review finding 7) — a name that has not been
+    pointed at us yet cannot possibly have a certificate, so probing anyway only burns a
+    handshake (and, against the real edge, a Let's Encrypt validation) for a foregone answer.
+    The row's own per-probe error is whichever of the probes that actually ran failed first, in
+    ownership → routing → certificate order.
+
+    `app/domain.py`'s `advance_verified_or_later` owns the rest: at most one failure counts per
+    calendar day (review finding 4 — otherwise a merchant mashing "Check now" suspends their own
+    domain in minutes), a claim suspended by the failure count recovers to `verified` the moment
+    ownership and routing both check out again rather than staying stuck forever waiting on a
+    certificate `ask` will not authorise while suspended (review finding 5), and a routing
+    failure never counts against a claim that has never been `live` (cutover is normal
+    operation, not an outage).
     """
     old_status = store.custom_domain_status
     host = store.custom_domain
@@ -732,27 +747,42 @@ async def advance_domain_claim(
 
     ownership = await probes.ownership.check(host, token=claim.verification_token)
     routing = await probes.routing.check(host)
-    certificate = await probes.certificate.check(host)
+    # The certificate probe is skipped unless routing already passed (ADR-0012 §7 review): a
+    # merchant who has not pointed DNS here yet cannot possibly have a certificate for this
+    # name, so probing anyway would only ever burn a handshake attempt (and, against the real
+    # edge, a Let's Encrypt validation) for an answer we already know. `certificate_state` reads
+    # `pending` rather than `failing` for this claim while that is true — nothing was actually
+    # checked, so nothing actually failed.
+    certificate = await probes.certificate.check(host) if routing.ok else None
 
     claim.ownership_state = "ok" if ownership.ok else "failing"
     claim.routing_state = "ok" if routing.ok else "failing"
-    claim.certificate_state = "ok" if certificate.ok else "failing"
-    if certificate.ok and certificate.not_after is not None:
-        claim.tls_not_after = certificate.not_after
-        claim.tls_last_ok_at = now
+    if certificate is None:
+        claim.certificate_state = "pending"
+    else:
+        claim.certificate_state = "ok" if certificate.ok else "failing"
+        if certificate.ok and certificate.not_after is not None:
+            claim.tls_not_after = certificate.not_after
+            claim.tls_last_ok_at = now
 
-    failing = next((r for r in (ownership, routing, certificate) if not r.ok), None)
+    results = (ownership, routing) if certificate is None else (ownership, routing, certificate)
+    failing = next((r for r in results if not r.ok), None)
     claim.last_error_code = failing.code if failing else None
     claim.last_error_detail = failing.detail if failing else None
 
     advance = domain.advance_verified_or_later(
         store_published=store.status == "published",
+        was_suspended=old_status == "suspended",
+        has_been_live=claim.live_since is not None,
         ownership_ok=ownership.ok,
         routing_ok=routing.ok,
-        certificate_ok=certificate.ok,
+        certificate_ok=certificate is not None and certificate.ok,
         consecutive_failures=claim.consecutive_failures,
+        last_failure_counted_on=claim.last_failure_counted_on,
+        today=now.date(),
     )
     claim.consecutive_failures = advance.consecutive_failures
+    claim.last_failure_counted_on = advance.last_failure_counted_on
     if advance.status == "live" and old_status != "live":
         claim.live_since = now
     store.custom_domain_status = advance.status
@@ -773,7 +803,34 @@ async def run_domain_check(
     and audits the call itself — `storefront.domain.checked`, the one probe run this ADR audits
     (§15), because a rate-limited "Check now" is a human act and 150 unattended probes a day of
     a published fact is not.
+
+    **Takes `SELECT ... FOR UPDATE SKIP LOCKED` on the claim row before probing** (review
+    finding 6): without it, a merchant's "Check now" racing the daily sweep — or two browser
+    tabs both firing it around the 30-second rate-limit window — could run two probe passes
+    against the same claim concurrently and have the slower one overwrite the faster one's
+    result with stale data. `SKIP LOCKED` rather than a plain lock because there is nothing to
+    queue for: if another check already holds this row, the honest answer is "try again in a
+    moment," not a request that sits blocked for however long that other check's network probes
+    take. The probes themselves still run **inside** this transaction, holding the row lock (and
+    the pooled connection) for their duration — ADR-0012 §13's own worst case is three timeouts
+    at 5 s each, so at most ~15 s, not the ADR review's ~35 s estimate for a sweep tick advancing
+    several claims in sequence. Splitting the probes out of the transaction entirely (probe
+    first, lock and re-verify the claim is unchanged, then write) would shorten that further and
+    is the fuller fix the finding names as "preferable"; it is not done here because it changes
+    this function's transaction shape (and the sweep's) more than a "Minor" finding's budget
+    covers in one sitting, and holding one row lock for one request's fixed, bounded probe
+    budget is a real improvement over holding none at all.
     """
+    locked = await selectors.get_domain_claim_for_update(session, ctx)
+    if locked is None:
+        raise domain.Conflicted(
+            "domain_check_in_progress",
+            "A check for this domain is already running — probably the daily sweep, or another "
+            "tab. Try again in a few seconds.",
+            field="custom_domain",
+        )
+    claim = locked
+
     now = utcnow()
     outcome = await advance_domain_claim(
         store, claim, probes=probes or default_probe_set(), now=now
@@ -792,7 +849,7 @@ async def run_domain_check(
         request=request,
     )
     if outcome.old_status != outcome.new_status:
-        await _forget_host(store.custom_domain)
+        _forget_host(session, store.custom_domain)
     log.info(
         "storefront.domain.checked",
         organization_id=str(ctx.organization_id),

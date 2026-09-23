@@ -64,6 +64,11 @@ PROBE_TIMEOUT_SECONDS = 5.0
 #: never depends on the database to protect it from an oversized or hostile answer.
 _DETAIL_LIMIT = 500
 
+#: A certificate within this window of expiring is not "ok" (ADR-0012 §6's `expiring_soon`).
+#: Renewal happens at roughly two-thirds of a 90-day certificate's life, so seven days of slack
+#: here is a genuine early warning rather than noise this close to the deadline (ADR-0012 §5).
+MIN_CERTIFICATE_VALIDITY = dt.timedelta(days=7)
+
 
 @dataclass(frozen=True, slots=True)
 class ProbeResult:
@@ -297,8 +302,56 @@ class TlsCertificateProbe:
             )
 
         cert = x509.load_der_x509_certificate(der, default_backend())
+
+        if not _certificate_covers(cert, host):
+            # `ctx.check_hostname = False` above means the handshake itself never asked this
+            # question — Caddy may simply be holding a *different* name's certificate on this
+            # connection, which reads as "fine" unless something checks the SAN itself.
+            return ProbeResult(
+                ok=False,
+                code="san_mismatch",
+                detail=f"The certificate presented does not cover {host}.",
+            )
+
         not_after = cert.not_valid_after_utc
+        if not_after <= dt.datetime.now(dt.UTC) + MIN_CERTIFICATE_VALIDITY:
+            return ProbeResult(
+                ok=False,
+                code="expiring_soon",
+                detail=(
+                    f"The certificate for {host} expires {not_after.isoformat()}, in less than "
+                    f"{MIN_CERTIFICATE_VALIDITY.days} days."
+                ),
+                not_after=not_after,
+            )
         return ProbeResult(ok=True, detail=f"Issued by {_issuer_name(cert)}", not_after=not_after)
+
+
+def _certificate_covers(cert: x509.Certificate, host: str) -> bool:
+    """Whether `cert`'s SAN names `host`, exactly or via a single-label wildcard.
+
+    The handshake itself proves nothing about *which* name was answered for — `ctx.
+    check_hostname = False` is deliberate (the class docstring explains why) — so without this,
+    any certificate Caddy happens to be holding, for any host at all, would read as "the
+    certificate for `host` is fine." A DNS name is matched case-insensitively, and a wildcard
+    covers exactly one label the way every publicly trusted CA issues one — `*.example.com`
+    matches `shop.example.com` but not `example.com` or `a.shop.example.com`.
+    """
+    try:
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+    except x509.ExtensionNotFound:
+        return False
+    host = host.lower()
+    for name in san.value.get_values_for_type(x509.DNSName):
+        pattern = name.lower()
+        if pattern == host:
+            return True
+        if pattern.startswith("*."):
+            suffix = pattern[1:]  # ".example.com"
+            remainder = host[: -len(suffix)] if host.endswith(suffix) else ""
+            if remainder and "." not in remainder:
+                return True
+    return False
 
 
 def _issuer_name(cert: x509.Certificate) -> str:

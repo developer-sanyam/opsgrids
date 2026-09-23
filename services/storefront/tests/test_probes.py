@@ -219,56 +219,82 @@ class TestDnsRoutingProbe:
         assert "edge.opsgrids.com" in (result.detail or "")
 
 
+async def _start_tls_server(*, dns_names: list[str], not_after: dt.datetime):
+    """A real local TLS server presenting a self-signed certificate with the given SAN and
+    expiry — shared by every certificate-probe test below, which each want a different
+    certificate shape (right host, wrong host, expiring soon) against the same handshake code.
+    """
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "storefront-probe-test")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(dt.datetime.now(dt.UTC) - dt.timedelta(days=1))
+        .not_valid_after(not_after)
+        .add_extension(
+            x509.SubjectAlternativeName([x509.DNSName(name) for name in dns_names]), critical=False
+        )
+        .sign(key, hashes.SHA256())
+    )
+
+    with (
+        tempfile.NamedTemporaryFile(suffix=".pem") as certfile,
+        tempfile.NamedTemporaryFile(suffix=".pem") as keyfile,
+    ):
+        certfile.write(cert.public_bytes(serialization.Encoding.PEM))
+        certfile.flush()
+        keyfile.write(
+            key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.TraditionalOpenSSL,
+                serialization.NoEncryption(),
+            )
+        )
+        keyfile.flush()
+
+        server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_ctx.load_cert_chain(certfile.name, keyfile.name)
+
+        async def _handle(reader, writer):  # type: ignore[no-untyped-def]
+            writer.close()
+
+        server = await asyncio.start_server(_handle, host="127.0.0.1", port=0, ssl=server_ctx)
+        port = server.sockets[0].getsockname()[1]
+        async with server:
+            yield port, not_after
+
+
 class TestTlsCertificateProbe:
     """The one probe a fake resolver cannot stand in for: a real local TLS server, a
     self-signed certificate, and an assertion the probe reads its `not_after` correctly."""
 
     @pytest_asyncio.fixture
     async def tls_server(self):
-        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        not_after = dt.datetime.now(dt.UTC) + dt.timedelta(days=90)
-        subject = issuer = x509.Name(
-            [x509.NameAttribute(NameOID.COMMON_NAME, "storefront-probe-test")]
-        )
-        cert = (
-            x509.CertificateBuilder()
-            .subject_name(subject)
-            .issuer_name(issuer)
-            .public_key(key.public_key())
-            .serial_number(x509.random_serial_number())
-            .not_valid_before(dt.datetime.now(dt.UTC) - dt.timedelta(days=1))
-            .not_valid_after(not_after)
-            .add_extension(
-                x509.SubjectAlternativeName([x509.DNSName("merchant.example")]), critical=False
-            )
-            .sign(key, hashes.SHA256())
-        )
-
-        with (
-            tempfile.NamedTemporaryFile(suffix=".pem") as certfile,
-            tempfile.NamedTemporaryFile(suffix=".pem") as keyfile,
+        async for pair in _start_tls_server(
+            dns_names=["merchant.example"],
+            not_after=dt.datetime.now(dt.UTC) + dt.timedelta(days=90),
         ):
-            certfile.write(cert.public_bytes(serialization.Encoding.PEM))
-            certfile.flush()
-            keyfile.write(
-                key.private_bytes(
-                    serialization.Encoding.PEM,
-                    serialization.PrivateFormat.TraditionalOpenSSL,
-                    serialization.NoEncryption(),
-                )
-            )
-            keyfile.flush()
+            yield pair
 
-            server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            server_ctx.load_cert_chain(certfile.name, keyfile.name)
+    @pytest_asyncio.fixture
+    async def tls_server_wrong_host(self):
+        """SAN names a different host than the one being probed — `check_hostname=False` means
+        the handshake alone would call this fine (ADR-0012 §7)."""
+        async for pair in _start_tls_server(
+            dns_names=["someone-elses-store.example"],
+            not_after=dt.datetime.now(dt.UTC) + dt.timedelta(days=90),
+        ):
+            yield pair
 
-            async def _handle(reader, writer):  # type: ignore[no-untyped-def]
-                writer.close()
-
-            server = await asyncio.start_server(_handle, host="127.0.0.1", port=0, ssl=server_ctx)
-            port = server.sockets[0].getsockname()[1]
-            async with server:
-                yield port, not_after
+    @pytest_asyncio.fixture
+    async def tls_server_expiring_soon(self):
+        async for pair in _start_tls_server(
+            dns_names=["merchant.example"], not_after=dt.datetime.now(dt.UTC) + dt.timedelta(days=3)
+        ):
+            yield pair
 
     async def test_a_successful_handshake_reports_ok_and_the_expiry(self, tls_server) -> None:
         port, not_after = tls_server
@@ -287,3 +313,32 @@ class TestTlsCertificateProbe:
 
         assert result.ok is False
         assert result.code == "handshake_failed"
+
+    async def test_a_certificate_for_a_different_host_is_a_san_mismatch(
+        self, tls_server_wrong_host
+    ) -> None:
+        """`ctx.check_hostname = False` is deliberate — this probe dials Caddy, not the
+        merchant's browser — but that means nothing verifies the SAN unless this does. Without
+        it, whatever certificate Caddy happens to be holding for *any* name reads as "the
+        certificate for this domain is fine" (ADR-0012 §7)."""
+        port, _ = tls_server_wrong_host
+        probe = probes.TlsCertificateProbe(probe_host="127.0.0.1", probe_port=port, timeout=2.0)
+
+        result = await probe.check("merchant.example")
+
+        assert result.ok is False
+        assert result.code == "san_mismatch"
+
+    async def test_a_certificate_expiring_within_seven_days_is_expiring_soon(
+        self, tls_server_expiring_soon
+    ) -> None:
+        port, not_after = tls_server_expiring_soon
+        probe = probes.TlsCertificateProbe(probe_host="127.0.0.1", probe_port=port, timeout=2.0)
+
+        result = await probe.check("merchant.example")
+
+        assert result.ok is False
+        assert result.code == "expiring_soon"
+        # Still reported, even though the check failed — a merchant needs the date to act on it.
+        assert result.not_after is not None
+        assert abs((result.not_after - not_after).total_seconds()) < 2

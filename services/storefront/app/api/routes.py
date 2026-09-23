@@ -151,16 +151,16 @@ _STORE_WRITE_ERRORS: dict[int | str, dict[str, Any]] = {
     409: {
         "description": (
             "A named conflict. `errors[0].code` is one of `slug_immutable` (the store address "
-            "cannot be changed), `slug_taken`, `custom_domain_taken` (another organization has "
-            "claimed it — nothing about that organization is disclosed) or `storefront_exists`."
+            "cannot be changed), `slug_taken` or `storefront_exists`."
         )
     },
     422: {
         "description": (
             "A rule refused it. `errors[0].code` is one of `name_required`, `name_too_long`, "
             "`name_invalid`, `tagline_too_long`, `tagline_invalid`, `logo_text_too_long`, "
-            "`logo_text_invalid`, `custom_domain_invalid`, `custom_domain_too_long`, "
-            "`custom_domain_reserved` or `timezone_invalid`."
+            "`logo_text_invalid`, `timezone_invalid`, or a `value_error` naming "
+            "`custom_domain` — that field no longer lives on this payload (ADR-0012 review "
+            "finding 2b); use `PUT /storefront/store/domain`."
         )
     },
 }
@@ -208,10 +208,11 @@ async def put_store(
     unchanged, or get a 409 `slug_immutable`. It is required rather than omittable because a
     full-replacement payload that silently ignores a field is worse than one that refuses it.
 
-    **Setting `custom_domain` records an intention and changes nothing about reachability.**
-    Nothing in this platform serves a custom domain — no ingress, no TLS termination, no
-    host-based routing — and nothing here verifies that the merchant owns the name. The response
-    says so: `custom_domain_status` is `unverified` and there is no path off it yet.
+    **`custom_domain` is not a field on this payload.** ADR-0011 shipped it here first, and a
+    merchant could set it with no verification token and no `custom_domain_claims` row behind
+    it — a claim the domain sweep could never pick up, and one that skipped the `www`-partner
+    collision check `PUT /storefront/store/domain` runs (ADR-0012 review finding 2b). A request
+    that still sends it is refused with a 422 naming `PUT /storefront/store/domain` instead.
     """
     store = await services.put_storefront(session, ctx, payload, request=request)
     # `updated_at` carries a SQL `onupdate`, so the ORM expires it after an UPDATE and reading it
@@ -526,8 +527,18 @@ async def put_domain(
 )
 async def delete_domain(session: SessionDep, ctx: StoreWrite, request: Request) -> Response:
     """`storefront.store.settings.write`, floored at ORG. **Idempotent**: deleting when there
-    is no claim is also a 204 (ADR-0012 §7, §11). From the next request the host 410s; the
-    certificate stays in Caddy's storage until it expires."""
+    is no claim is also a 204 (ADR-0012 §7, §11).
+
+    **From the next request the host 404s, not 410** — a correction to this docstring's own
+    former claim (ADR-0012 review finding 9). `POST /public/store-context`, the JSON bootstrap
+    call this host actually answers through, returns 404 `not-found` for "no published store at
+    this address" exactly as it does for a host nobody ever claimed (§11's own wire format
+    already specifies 404 here). A `410 Gone` on a raw, unmatched browser request to the host
+    itself is §7's design for the **edge** — a static page Caddy serves with no JSON involved —
+    and `infrastructure/edge/caddy/Caddyfile` does not implement that catch-all yet; nothing in
+    this service ever returns a 410. The certificate stays in Caddy's storage until it expires
+    either way.
+    """
     store = await selectors.get_storefront(session, ctx)
     if store is None:
         raise NotFoundProblem("This organization has no storefront yet.")
@@ -542,6 +553,13 @@ async def delete_domain(session: SessionDep, ctx: StoreWrite, request: Request) 
     dependencies=[Entitled],
     responses={
         404: {"description": "This organization has no storefront, or no domain is claimed."},
+        409: {
+            "description": (
+                "`errors[0].code` is `domain_check_in_progress` — a probe pass for this domain "
+                '(the daily sweep, or another tab\'s "Check now") is already running. Retry in '
+                "a few seconds."
+            )
+        },
         429: {
             "description": (
                 "Checks are limited to one every `domain_check_rate_limit_window_seconds` "
@@ -557,6 +575,10 @@ async def check_domain(session: SessionDep, ctx: StoreWrite, request: Request) -
     `domain_check_rate_limit_window_seconds` (30 by default) — the merchant has just pasted a
     record and wants an answer now (ADR-0012 §6). Runs synchronously, against the live network,
     so it is not fast; it is not meant to be polled.
+
+    Takes a row lock on the claim before probing (ADR-0012 review finding 6), so this cannot
+    race the sweep or a second call into overwriting each other's result — see
+    `services.run_domain_check`.
     """
     cfg = settings()
     await enforce_rate_limit(

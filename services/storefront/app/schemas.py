@@ -21,7 +21,7 @@ import datetime as dt
 import uuid
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, EmailStr, Field, model_validator
 
 from app import domain
 
@@ -431,26 +431,26 @@ class StorePut(BaseModel):
     #: IANA. Validated against the system's timezone database, because a bad one would produce a
     #: promised date that is wrong by hours and looks perfectly well-formed.
     timezone: Annotated[str, Field(min_length=1, max_length=64)] = "Asia/Kolkata"
-    custom_domain: (
-        Annotated[
-            str,
-            Field(
-                max_length=CUSTOM_DOMAIN_LENGTH,
-                description=(
-                    "The domain the merchant intends to use, stored lower-cased with no "
-                    "scheme, path or port. Setting it here always lands the store on "
-                    "`unverified` — the same value a fresh `PUT /storefront/store/domain` "
-                    "leaves it at. **That dedicated route is what mints a verification token "
-                    "and runs the checks**; a domain set through this identity form has no "
-                    "token until it is claimed there too. `null` or an empty string releases "
-                    "the claim (and any verification progress with it). A domain another "
-                    "organization has already claimed is a 409 `custom_domain_taken`."
-                ),
-                examples=["shop.example.com"],
-            ),
-        ]
-        | None
-    ) = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _custom_domain_moved(cls, data: Any) -> Any:
+        """`custom_domain` used to live on this payload (ADR-0011). ADR-0012 gave the domain its
+        own evidence-bearing route — `PUT /storefront/store/domain`, which mints a verification
+        token and creates the `custom_domain_claims` row the sweep needs — and the console
+        stopped sending the field here (`frontend/product-storefront/src/settings/storeForm.ts`).
+        A client that still does gets a refusal that names where the field went, rather than
+        `extra="forbid"`'s generic "extra fields not permitted" (ADR-0012 review finding 2b):
+        the older path let a merchant land on `custom_domain_status = 'unverified'` with no
+        claim row behind it — a claim the sweep could never pick up, and one that skipped the
+        `www`-partner collision check the dedicated route runs.
+        """
+        if isinstance(data, dict) and "custom_domain" in data:
+            raise ValueError(
+                "custom_domain can no longer be set through PUT /storefront/store — connect or "
+                "change it with PUT /storefront/store/domain instead."
+            )
+        return data
 
 
 # --------------------------------------------------------------------- the custom domain (ADR-0012)

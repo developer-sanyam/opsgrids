@@ -20,11 +20,13 @@ from dataclasses import dataclass
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app import cron as cron_module
 from app import services
 from app.config import settings
 from app.cron import DomainSweep
-from app.models import AuditLog, CustomDomainClaim, Storefront
+from app.models import SCHEMA, AuditLog, CustomDomainClaim, Storefront
 from app.probes import ProbeResult, ProbeSet
 from app.selectors import host_cache_key
 from platform_core.cache import cache_get, cache_set, close_redis, init_redis
@@ -337,3 +339,166 @@ class TestOneOrganizationsFailureDoesNotStopTheRest:
             await admin_session.execute(select(Storefront).where(Storefront.id == broken_store_id))
         ).scalar_one()
         assert broken.custom_domain_status == "unverified"
+
+
+class TestTheBatchCapAppliesToDueWorkNotToDiscoveryOrder:
+    """ADR-0012 review finding 3. The old shape capped `org_ids[:batch_size]` off an
+    *unordered* `DISTINCT organization_id` before checking which claims were even due — with
+    more organizations claiming a domain than `batch_size`, whichever ones happened to sort
+    first in that scan would be the only ones ever probed, forever, no matter how overdue every
+    other one became."""
+
+    async def test_the_longest_overdue_claim_is_served_first_and_the_other_follows_next_tick(
+        self,
+        engines: None,
+        session,
+        admin_session,
+        org_id: uuid.UUID,
+        other_org: uuid.UUID,
+        slug: str,
+    ) -> None:
+        init_redis(settings().redis_url)
+        try:
+            now = dt.datetime.now(dt.UTC)
+            older_store = await seed_store(
+                admin_session, org_id, slug, custom_domain="older.example"
+            )
+            older_store_id = older_store.id
+            await seed_custom_domain_claim(
+                admin_session, org_id, older_store.id, next_check_at=now - dt.timedelta(hours=2)
+            )
+            newer_slug = f"t{uuid.uuid4().hex[:16]}"
+            newer_store = await seed_store(
+                admin_session, other_org, newer_slug, custom_domain="newer.example"
+            )
+            newer_store_id = newer_store.id
+            await seed_custom_domain_claim(
+                admin_session,
+                other_org,
+                newer_store.id,
+                next_check_at=now - dt.timedelta(minutes=1),
+            )
+
+            one_at_a_time = DomainSweep(
+                discovery_factory=get_directory_sessionmaker(),
+                work_scope=lambda organization_id: session_scope(organization_id=organization_id),
+                probes=_probes(),
+                batch_size=1,
+            )
+
+            first_tick = await one_at_a_time.tick()
+
+            assert first_tick.considered == 2
+            assert first_tick.transitioned == 1
+            # The newer claim was due too, but the cap was reached first — skipped, not
+            # ignored, and not counted as a failure.
+            assert first_tick.skipped == 1
+            assert first_tick.failed == 0
+
+            await admin_session.rollback()
+            admin_session.expire_all()
+            older = (
+                await admin_session.execute(
+                    select(Storefront).where(Storefront.id == older_store_id)
+                )
+            ).scalar_one()
+            newer = (
+                await admin_session.execute(
+                    select(Storefront).where(Storefront.id == newer_store_id)
+                )
+            ).scalar_one()
+            assert older.custom_domain_status == "verified"
+            assert newer.custom_domain_status == "unverified"  # not starved forever — see below
+
+            second_tick = await one_at_a_time.tick()
+
+            assert second_tick.transitioned == 1
+            admin_session.expire_all()
+            newer_after = (
+                await admin_session.execute(
+                    select(Storefront).where(Storefront.id == newer_store_id)
+                )
+            ).scalar_one()
+            assert newer_after.custom_domain_status == "verified"
+        finally:
+            await close_redis()
+
+
+class TestTheSweepRowLocksSkipAClaimAlreadyBeingChecked:
+    async def test_a_claim_locked_on_another_connection_is_skipped_not_blocked(
+        self, admin_session, sweep: DomainSweep, org_id: uuid.UUID, slug: str
+    ) -> None:
+        """ADR-0012 review finding 6: `SELECT ... FOR UPDATE SKIP LOCKED` means a claim already
+        locked by a concurrent probe pass — a merchant's own "Check now", in production — makes
+        this tick skip it immediately rather than block for however long that other check's
+        network probes take. Held on a genuinely separate connection, the same shape a second
+        request actually holds it under; `admin_session`'s own connection would not do, because
+        Postgres locks belong to the transaction, not to the ORM object."""
+        store = await seed_store(admin_session, org_id, slug, custom_domain="merchant.example")
+        claim = await seed_custom_domain_claim(admin_session, org_id, store.id)
+
+        cfg = settings()
+        locker_engine = create_async_engine(
+            cfg.admin_dsn,
+            connect_args={"server_settings": {"search_path": f"{SCHEMA},public"}},
+        )
+        locker_maker = async_sessionmaker(locker_engine, expire_on_commit=False)
+        try:
+            async with locker_maker() as locker:
+                await locker.execute(
+                    select(CustomDomainClaim)
+                    .where(CustomDomainClaim.id == claim.id)
+                    .with_for_update()
+                )
+
+                report = await sweep.tick()
+
+                assert report.considered == 1
+                assert report.skipped == 1
+                assert report.transitioned == 0
+                assert report.failed == 0
+        finally:
+            await locker_engine.dispose()
+
+        # Released once the locker disconnects — the next tick picks the claim up normally.
+        report = await sweep.tick()
+        assert report.transitioned == 1
+
+
+class TestMainInitialisesRedis:
+    """ADR-0012 review finding 1. `_forget_host`'s `cache_delete` is a silent no-op warning
+    without `init_redis` having run first (`platform_core.cache.get_redis` raises;
+    `cache_delete` catches it and logs a warning) — the same silent-nothing failure shape
+    ADR-0010 §4 names for the directory role. The `sweep` fixture above calls `init_redis`
+    itself, which is exactly why it cannot catch a regression here: it hides the thing being
+    tested. This test drives `app.cron.main()` itself, with `DomainSweep` stubbed out so the
+    process does not loop forever, and proves the real Redis client is reachable while the
+    sweep body runs and is closed again once `main()` returns.
+    """
+
+    async def test_main_initialises_and_closes_redis_around_the_sweep(
+        self, engines: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from platform_core.cache import get_redis
+
+        redis_was_reachable_during_the_sweep = False
+
+        class _FakeSweep:
+            def __init__(self, **kwargs: object) -> None:
+                pass
+
+            async def run(self) -> None:
+                nonlocal redis_was_reachable_during_the_sweep
+                get_redis()  # raises RuntimeError if `init_redis` was never called
+                redis_was_reachable_during_the_sweep = True
+
+            def stop(self) -> None:  # pragma: no cover - not exercised, run() returns at once
+                pass
+
+        monkeypatch.setattr(cron_module, "DomainSweep", _FakeSweep)
+
+        await cron_module.main()
+
+        assert redis_was_reachable_during_the_sweep is True
+        with pytest.raises(RuntimeError):
+            get_redis()  # closed again once main() returned

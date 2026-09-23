@@ -553,19 +553,25 @@ def promote_from_unverified(*, ownership_ok: bool) -> str:
 class ClaimAdvance:
     """What one probe pass decided for a claim already past `unverified`. `status` is the new
     `custom_domain_status`; `consecutive_failures` is the new counter, reset to zero on every
-    full recovery."""
+    full recovery; `last_failure_counted_on` is the calendar day (server-clock, UTC) the counter
+    was last bumped on — `None` whenever the counter is zero."""
 
     status: str
     consecutive_failures: int
+    last_failure_counted_on: dt.date | None
 
 
 def advance_verified_or_later(
     *,
     store_published: bool,
+    was_suspended: bool,
+    has_been_live: bool,
     ownership_ok: bool,
     routing_ok: bool,
     certificate_ok: bool,
     consecutive_failures: int,
+    last_failure_counted_on: dt.date | None,
+    today: dt.date,
 ) -> ClaimAdvance:
     """The state machine for `verified` / `live` / `failing` / `suspended` (ADR-0012 §6, §7).
 
@@ -574,6 +580,30 @@ def advance_verified_or_later(
     answer to a lapsed entitlement — a merchant who switched their own shop off must not wait
     seven days for the domain to follow it.
 
+    **A failure counts at most once per calendar day.** ADR-0012 §6 says "seven consecutive
+    *daily* failures"; the sweep only calls this once a day, but `POST .../domain/check` does
+    not — a merchant leaning on "Check now" could otherwise suspend their own domain in a few
+    minutes. `today` and `last_failure_counted_on` (both the caller's clock, not this
+    function's — it has none) are what makes the count key on *days seen failing* rather than
+    *calls made*: a second failing call on the same day the counter already moved for is
+    `failing` again, unchanged, not `failing`-plus-one.
+
+    **Recovering from `suspended` needs its own path, because the ordinary one cannot reach
+    it.** `suspended` blocks `ask` (ADR-0012 §5), so a suspended domain can never again pass its
+    certificate probe — nothing issues it one — and "all three probes ok" is unreachable from
+    here forever. The moment ownership and routing both check out again, the claim is moved
+    back to `verified` instead: `ask` starts saying yes again, and the *ordinary* verified ->
+    live path (the branch above) takes it the rest of the way once a certificate exists. The
+    counter resets, the same as any other full recovery.
+
+    **A routing failure never counts against a claim that has not yet gone live.** Cutover —
+    the gap between "we proved ownership" and "the merchant actually pointed DNS here" — is
+    normal operation, sometimes for a long time (ADR-0012 §4), not an outage. Suspending a
+    domain nobody has moved traffic to yet would be punishing a merchant for not being ready.
+    It stays `failing` (or `verified`, before the first failure) without loading the counter,
+    for as long as ownership itself keeps checking out; a merchant who stops proving ownership
+    is a different, real problem and is not exempted.
+
     **Every other cause of failure gets the seven-day tolerance.** All three probes have to
     succeed for the domain to be `live`; any one failing is `failing` until either it recovers
     or the count reaches `SUSPEND_AFTER_CONSECUTIVE_FAILURES`. Recovery resets the counter to
@@ -581,15 +611,35 @@ def advance_verified_or_later(
     failure away from suspension the next time something hiccups.
     """
     if not store_published:
-        return ClaimAdvance(status="suspended", consecutive_failures=consecutive_failures)
+        return ClaimAdvance(
+            status="suspended",
+            consecutive_failures=consecutive_failures,
+            last_failure_counted_on=last_failure_counted_on,
+        )
 
     if ownership_ok and routing_ok and certificate_ok:
-        return ClaimAdvance(status="live", consecutive_failures=0)
+        return ClaimAdvance(status="live", consecutive_failures=0, last_failure_counted_on=None)
 
-    failures = consecutive_failures + 1
+    if was_suspended and ownership_ok and routing_ok:
+        return ClaimAdvance(status="verified", consecutive_failures=0, last_failure_counted_on=None)
+
+    if not has_been_live and ownership_ok and not routing_ok:
+        return ClaimAdvance(
+            status="failing",
+            consecutive_failures=consecutive_failures,
+            last_failure_counted_on=last_failure_counted_on,
+        )
+
+    failures = (
+        consecutive_failures if last_failure_counted_on == today else consecutive_failures + 1
+    )
     if failures >= SUSPEND_AFTER_CONSECUTIVE_FAILURES:
-        return ClaimAdvance(status="suspended", consecutive_failures=failures)
-    return ClaimAdvance(status="failing", consecutive_failures=failures)
+        return ClaimAdvance(
+            status="suspended", consecutive_failures=failures, last_failure_counted_on=today
+        )
+    return ClaimAdvance(
+        status="failing", consecutive_failures=failures, last_failure_counted_on=today
+    )
 
 
 #: `storefront.domain.*` per ADR-0012 §15, keyed by the status just **entered**. Fired only on
