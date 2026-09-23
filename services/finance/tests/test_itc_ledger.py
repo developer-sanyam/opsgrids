@@ -19,7 +19,7 @@ import pytest
 from sqlalchemy import delete, select, text, update
 
 from app import selectors, services
-from app.models import ItcLedgerEntry, OutboxEvent
+from app.models import GstReturn, ImsDocument, ItcLedgerEntry, OutboxEvent
 from app.schemas import (
     CustomerCreate,
     FileReturnIn,
@@ -30,7 +30,7 @@ from app.schemas import (
     InvoiceLineCreate,
     PurchaseDocumentCreate,
 )
-from platform_core.errors import BusinessRuleProblem, ConflictProblem
+from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
 from tests.helpers import admin_ctx, service_token_headers
 
 pytestmark = pytest.mark.integration
@@ -601,3 +601,532 @@ class TestFilingAGstr3bReturn:
             rows = await _ledger_rows(session, org_id)
         utilisation_rows = [r for r in rows if r.kind == "utilisation"]
         assert len(utilisation_rows) == len({r.tax_head for r in utilisation_rows})
+
+    async def test_a_late_reject_between_generate_and_file_refuses_filing(
+        self, client, session, org_id
+    ) -> None:
+        """Repro A from review: accept, generate August's 3B, reject, then file — filing used to
+        post a utilisation for credit that reversal had already taken back, driving the IGST
+        balance to -81,000. Filing is now refused instead, with the balance untouched."""
+        ret, document = await self._generated(client, session, org_id)
+        ret_id, document_id = ret.id, document.id
+        res = await client.post(f"{QUEUE}/{document_id}/decisions", json={"action": "reject"})
+        assert res.status_code == 201
+
+        ctx = admin_ctx(org_id)
+        with pytest.raises(ConflictProblem, match="regenerate"):
+            async with session.begin():
+                await services.file_return(
+                    session, ctx, ret_id, FileReturnIn(arn="AA0708000000005")
+                )
+
+        async with session.begin():
+            rows = await _ledger_rows(session, org_id)
+            balance = await selectors.itc_document_net_accrued(session, org_id, document_id)
+        assert [r.kind for r in rows if r.kind == "utilisation"] == []
+        assert balance.total_minor == 0
+
+    async def test_regenerating_after_a_late_reject_files_cleanly(
+        self, client, session, org_id
+    ) -> None:
+        """The remedy the previous test's refusal points at: regenerate, then file — the fresh
+        snapshot reflects the reject, so there is nothing left to utilise."""
+        _, document = await self._generated(client, session, org_id)
+        document_id = document.id
+        await client.post(f"{QUEUE}/{document_id}/decisions", json={"action": "reject"})
+
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            regenerated = await services.generate_return(
+                session, ctx, GenerateReturnIn(period=PERIOD, return_type="gstr3b")
+            )
+            filed = await services.file_return(
+                session, ctx, regenerated.id, FileReturnIn(arn="AA0708000000006")
+            )
+        filed_registration_id = filed.gst_registration_id
+
+        async with session.begin():
+            rows = await _ledger_rows(session, org_id)
+            balance = await selectors.itc_balance(session, org_id, filed_registration_id, PERIOD)
+        # Nothing was accepted by the time this was filed, so there is nothing to utilise.
+        assert [r for r in rows if r.kind == "utilisation"] == []
+        assert balance.total_balance_minor == 0
+
+
+class TestSequentialFilingOrder:
+    """Repro B from review: generating September while August sits generated-but-unfiled let both
+    periods utilise the same brought-forward credit. Both generate and file now refuse to move
+    past an earlier period that has not been filed."""
+
+    async def _generated_august(self, client, session, org_id):
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _register(session, ctx)
+            await _seed_purchase_book(session, ctx)
+            await _book_with_output_liability(session, ctx)
+        await _sync(client, org_id)
+        async with session.begin():
+            documents = await _by_ref(session, org_id)
+        document = documents[f"{PERIOD}/0001"]
+        await client.post(f"{QUEUE}/{document.id}/decisions", json={"action": "accept"})
+        async with session.begin():
+            ret = await services.generate_return(
+                session, ctx, GenerateReturnIn(period=PERIOD, return_type="gstr3b")
+            )
+        return ret
+
+    async def test_generating_september_before_filing_august_is_refused(
+        self, client, session, org_id
+    ) -> None:
+        await self._generated_august(client, session, org_id)
+        ctx = admin_ctx(org_id)
+        with pytest.raises(BusinessRuleProblem, match=PERIOD):
+            async with session.begin():
+                await services.generate_return(
+                    session, ctx, GenerateReturnIn(period="2026-09", return_type="gstr3b")
+                )
+
+    async def test_filing_september_before_filing_august_is_refused(
+        self, client, session, org_id
+    ) -> None:
+        """Forces the state the generate-time guard would normally prevent (a September row
+        already generated) directly at the database, so the *file*-time guard is what is on
+        trial here, as defence in depth rather than the only line of defence."""
+        august = await self._generated_august(client, session, org_id)
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            september = GstReturn(
+                organization_id=org_id,
+                created_by=str(ctx.principal.sub),
+                gst_registration_id=august.gst_registration_id,
+                gstin=august.gstin,
+                state_code=august.state_code,
+                period="2026-09",
+                return_type="gstr3b",
+                status="generated",
+                sections=august.sections,
+                total_taxable_minor=0,
+                total_cgst_minor=0,
+                total_sgst_minor=0,
+                total_igst_minor=0,
+            )
+            session.add(september)
+            await session.flush()
+            september_id = september.id
+
+        with pytest.raises(BusinessRuleProblem, match=PERIOD):
+            async with session.begin():
+                await services.file_return(
+                    session, ctx, september_id, FileReturnIn(arn="AA0709000000001")
+                )
+
+    async def test_filing_in_order_succeeds(self, client, session, org_id) -> None:
+        ret = await self._generated_august(client, session, org_id)
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            filed = await services.file_return(
+                session, ctx, ret.id, FileReturnIn(arn="AA0708000000007")
+            )
+        assert filed.status == "filed"
+        async with session.begin():
+            second = await services.generate_return(
+                session, ctx, GenerateReturnIn(period="2026-09", return_type="gstr3b")
+            )
+        assert second.period == "2026-09"
+
+
+class TestExpenseCategoryChangeOnAnAlreadyAcceptedDocument:
+    """An operator may reconsider *why* a document was accepted without ever un-accepting it —
+    and the ledger has to follow the new category exactly, in both directions."""
+
+    @pytest.fixture
+    async def accepted(self, client, session, org_id):
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _register(session, ctx)
+            await _seed_purchase_book(session, ctx)
+        await _sync(client, org_id)
+        async with session.begin():
+            documents = await _by_ref(session, org_id)
+        document = documents[f"{PERIOD}/0001"]
+        await client.post(f"{QUEUE}/{document.id}/decisions", json={"action": "accept"})
+        return document
+
+    async def test_re_classifying_as_blocked_reverses_the_credit(
+        self, accepted, client, session, org_id
+    ) -> None:
+        res = await client.post(
+            f"{QUEUE}/{accepted.id}/decisions",
+            json={"action": "accept", "expense_category": "motor_vehicle"},
+        )
+        assert res.status_code == 201
+
+        async with session.begin():
+            rows = await _ledger_rows(session, org_id)
+            balance = await selectors.itc_document_net_accrued(session, org_id, accepted.id)
+        assert sorted(r.kind for r in rows) == ["accrual", "reversal"]
+        assert balance.total_minor == 0
+
+    async def test_re_classifying_back_to_general_re_accrues(
+        self, accepted, client, session, org_id
+    ) -> None:
+        await client.post(
+            f"{QUEUE}/{accepted.id}/decisions",
+            json={"action": "accept", "expense_category": "motor_vehicle"},
+        )
+        res = await client.post(
+            f"{QUEUE}/{accepted.id}/decisions",
+            json={"action": "accept", "expense_category": "general"},
+        )
+        assert res.status_code == 201
+
+        async with session.begin():
+            rows = await _ledger_rows(session, org_id)
+            balance = await selectors.itc_document_net_accrued(session, org_id, accepted.id)
+        assert sorted(r.kind for r in rows) == ["accrual", "accrual", "reversal"]
+        assert balance.igst_minor == accepted.igst_minor
+
+    async def test_re_accepting_under_the_same_category_posts_nothing(
+        self, accepted, client, session, org_id
+    ) -> None:
+        res = await client.post(
+            f"{QUEUE}/{accepted.id}/decisions",
+            json={"action": "accept", "expense_category": "general"},
+        )
+        assert res.status_code == 201
+        async with session.begin():
+            rows = await _ledger_rows(session, org_id)
+        assert len(rows) == 1
+        assert rows[0].kind == "accrual"
+
+
+class TestClaimPeriodRedirection:
+    async def test_a_decision_after_the_periods_return_is_filed_lands_in_the_next_open_period(
+        self, client, session, org_id
+    ) -> None:
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _register(session, ctx)
+            await _seed_purchase_book(session, ctx)
+            await _book_with_output_liability(session, ctx)
+        await _sync(client, org_id)
+        async with session.begin():
+            documents = await _by_ref(session, org_id)
+        document = documents[f"{PERIOD}/0001"]
+        await client.post(f"{QUEUE}/{document.id}/decisions", json={"action": "accept"})
+        async with session.begin():
+            ret = await services.generate_return(
+                session, ctx, GenerateReturnIn(period=PERIOD, return_type="gstr3b")
+            )
+            await services.file_return(session, ctx, ret.id, FileReturnIn(arn="AA0708000000008"))
+
+        # August is now filed. Rejecting the document is a decision *about* August's document,
+        # but August's return has already gone out — the reversal must land in September instead.
+        res = await client.post(f"{QUEUE}/{document.id}/decisions", json={"action": "reject"})
+        assert res.status_code == 201
+
+        async with session.begin():
+            rows = await _ledger_rows(session, org_id)
+        reversal = next(r for r in rows if r.kind == "reversal")
+        assert reversal.source_period == PERIOD
+        assert reversal.period == "2026-09"
+
+
+class TestCreditNoteReducesCredit:
+    async def test_accepting_a_supplier_credit_note_posts_a_negative_entry(
+        self, session, org_id
+    ) -> None:
+        """A credit note reduces what a supplier billed, so accepting one must move the ledger
+        down, never up. Posted as a `reversal` — `amount_minor`'s sign is what the kind answers
+        for, not whether anything preceded it: the CHECK constraint at the database requires a
+        negative amount be a `reversal` or a `utilisation`, never an `accrual`."""
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _register(session, ctx)
+            document = ImsDocument(
+                organization_id=org_id,
+                created_by=str(ctx.principal.sub),
+                source_ref=f"{PERIOD}/credit-note-0001",
+                supplier_gstin=MERIDIAN,
+                supplier_name="Meridian",
+                document_number="MT-CN-1",
+                document_type="credit_note",
+                document_date=date(2026, 8, 15),
+                period=PERIOD,
+                taxable_minor=50_000,
+                igst_minor=9_000,
+                total_minor=59_000,
+            )
+            session.add(document)
+            await session.flush()
+            document_id = document.id
+
+        async with session.begin():
+            await services.record_ims_decision(
+                session, ctx, document_id, ImsDecisionCreate(action="accept")
+            )
+
+        async with session.begin():
+            rows = await _ledger_rows(session, org_id)
+            balance = await selectors.itc_document_net_accrued(session, org_id, document_id)
+        assert len(rows) == 1
+        assert rows[0].kind == "reversal"
+        assert rows[0].amount_minor == -9_000
+        assert balance.igst_minor == -9_000
+
+
+class TestNonPrimaryRegistrationIsRefusedForGstr3b:
+    async def test_generating_for_a_non_primary_registration_is_refused(
+        self, session, org_id
+    ) -> None:
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _register(session, ctx, gstin=SELLER)
+            secondary = await services.set_gst_registration(
+                session,
+                ctx,
+                GstRegistrationUpsert(
+                    gstin="24AABCM1234F1Z3",
+                    legal_name="OpsGrids Industries — Gujarat Branch",
+                    is_primary=False,
+                ),
+            )
+        ctx = admin_ctx(org_id)
+        with pytest.raises(BusinessRuleProblem, match="primary"):
+            async with session.begin():
+                await services.generate_return(
+                    session,
+                    ctx,
+                    GenerateReturnIn(
+                        period=PERIOD, return_type="gstr3b", gst_registration_id=secondary.id
+                    ),
+                )
+
+
+class TestItcLedgerCheckConstraintsAtTheDatabase:
+    async def _registration_id(self, session, org_id) -> uuid.UUID:
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            registration = await _register(session, ctx)
+        return registration.id
+
+    async def _base_kwargs(self, session, org_id) -> dict[str, Any]:
+        return {
+            "organization_id": org_id,
+            "gst_registration_id": await self._registration_id(session, org_id),
+            "period": PERIOD,
+            "source_period": PERIOD,
+            "tax_head": "igst",
+            "kind": "accrual",
+            "amount_minor": 100,
+            "source_type": "ims_decision",
+            "source_id": uuid.uuid4(),
+            "source_ref": f"ims_decision:{uuid.uuid4()}:igst",
+            "posted_by": "test",
+        }
+
+    async def test_an_unknown_tax_head_is_refused(self, session, org_id) -> None:
+        kwargs = await self._base_kwargs(session, org_id)
+        kwargs["tax_head"] = "vat"
+        with pytest.raises(Exception, match="ck_itc_ledger_entries_tax_head"):
+            async with session.begin():
+                session.add(ItcLedgerEntry(**kwargs))
+                await session.flush()
+
+    async def test_an_unknown_kind_is_refused(self, session, org_id) -> None:
+        kwargs = await self._base_kwargs(session, org_id)
+        kwargs["kind"] = "adjustment"
+        # An unknown `kind` necessarily also fails to satisfy either branch of the sign
+        # constraint, so either name is a correct refusal — which one Postgres reports first is
+        # not this test's business.
+        with pytest.raises(Exception, match=r"ck_itc_ledger_entries_(kind|amount_sign)"):
+            async with session.begin():
+                session.add(ItcLedgerEntry(**kwargs))
+                await session.flush()
+
+    async def test_an_unknown_source_type_is_refused(self, session, org_id) -> None:
+        kwargs = await self._base_kwargs(session, org_id)
+        kwargs["source_type"] = "manual"
+        with pytest.raises(Exception, match="ck_itc_ledger_entries_source_type"):
+            async with session.begin():
+                session.add(ItcLedgerEntry(**kwargs))
+                await session.flush()
+
+    async def test_a_positive_reversal_is_refused(self, session, org_id) -> None:
+        kwargs = await self._base_kwargs(session, org_id)
+        kwargs["kind"] = "reversal"
+        kwargs["amount_minor"] = 100  # must be negative
+        with pytest.raises(Exception, match="ck_itc_ledger_entries_amount_sign"):
+            async with session.begin():
+                session.add(ItcLedgerEntry(**kwargs))
+                await session.flush()
+
+    async def test_a_negative_accrual_is_refused(self, session, org_id) -> None:
+        kwargs = await self._base_kwargs(session, org_id)
+        kwargs["amount_minor"] = -100  # accrual must be positive
+        with pytest.raises(Exception, match="ck_itc_ledger_entries_amount_sign"):
+            async with session.begin():
+                session.add(ItcLedgerEntry(**kwargs))
+                await session.flush()
+
+
+class TestOutwardReverseChargeIsExcludedFromLiability:
+    async def test_a_reverse_charge_invoice_does_not_add_to_table_6_1_liability(
+        self, session, org_id
+    ) -> None:
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _register(session, ctx)
+            customer = await services.create_customer(session, ctx, _customer_payload())
+            await services.create_invoice(
+                session,
+                ctx,
+                InvoiceCreate(
+                    number="INV-RCM-1",
+                    customer_id=customer.id,
+                    issued_date=date(2026, 8, 12),
+                    due_date=date(2026, 9, 11),
+                    tax_rate_pct=18,
+                    reverse_charge=True,
+                    lines=[
+                        InvoiceLineCreate(
+                            description="Legal services under reverse charge",
+                            quantity=1,
+                            unit_price_minor=10_00_000,
+                            hsn_sac="998211",
+                        )
+                    ],
+                ),
+            )
+            ret = await services.generate_return(
+                session, ctx, GenerateReturnIn(period=PERIOD, return_type="gstr3b")
+            )
+            detail = await selectors.return_detail(session, org_id, ret)
+
+        sections = detail.sections
+        assert sections is not None
+        # The taxable *value* is bucketed away from 3.1(a) regardless of tax; the tax heads
+        # themselves are already zero at the invoice level (`create_invoice` charges nothing on a
+        # reverse-charge supply — the recipient self-assesses it), so the exclusion here is a
+        # safety net for the value bucketing rather than a redirection of a real tax figure.
+        assert sections.outward.taxable_supplies.total_minor == 0
+        assert sections.payment.liability.total_minor == 0
+        assert sections.outward.outward_reverse_charge_taxable_minor == 10_00_000
+        assert sections.outward.outward_reverse_charge.total_minor == 0
+        # Still reported in the header's taxable total, matching what GSTR-1 would declare for the
+        # period — only the tax collected (zero, here) ever differs from a normal supply.
+        assert ret.total_taxable_minor == 10_00_000
+        assert ret.total_cgst_minor == 0
+        assert ret.total_sgst_minor == 0
+
+
+class TestReconciliationWithARicherBook:
+    """A real cross-check rather than a tautology: a book with a credit note, an export and
+    aggregated B2C-small supplies, none of which land in the same Table 3.1 row, still reconciles
+    to the paisa against GSTR-1's totals for the same period."""
+
+    async def test_credit_notes_exports_and_b2c_small_all_reconcile(self, session, org_id) -> None:
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _register(session, ctx)
+            registered = await services.create_customer(
+                session, ctx, _customer_payload(name="Registered Buyer")
+            )
+            retail = await services.create_customer(
+                session,
+                ctx,
+                _customer_payload(name="Counter Sale", gstin=None, city="Pune"),
+            )
+            invoice = await services.create_invoice(
+                session, ctx, _invoice_payload(registered.id, "INV-RICH-1", 5_00_000)
+            )
+            await services.create_invoice(
+                session,
+                ctx,
+                InvoiceCreate(
+                    number="CN-RICH-1",
+                    customer_id=registered.id,
+                    issued_date=date(2026, 8, 20),
+                    due_date=date(2026, 9, 19),
+                    document_type="credit_note",
+                    corrects_invoice_id=invoice.id,
+                    tax_rate_pct=18,
+                    lines=[
+                        InvoiceLineCreate(
+                            description="Return", quantity=-1, unit_price_minor=1_00_000
+                        )
+                    ],
+                ),
+            )
+            await services.create_invoice(
+                session,
+                ctx,
+                InvoiceCreate(
+                    number="EXP-RICH-1",
+                    customer_id=retail.id,
+                    issued_date=date(2026, 8, 22),
+                    due_date=date(2026, 9, 21),
+                    supply_type="export",
+                    tax_rate_pct=0,
+                    lines=[
+                        InvoiceLineCreate(
+                            description="Exported goods", quantity=1, unit_price_minor=2_00_000
+                        )
+                    ],
+                ),
+            )
+            await services.create_invoice(
+                session,
+                ctx,
+                InvoiceCreate(
+                    number="B2C-RICH-1",
+                    customer_id=retail.id,
+                    issued_date=date(2026, 8, 23),
+                    due_date=date(2026, 9, 22),
+                    tax_rate_pct=18,
+                    lines=[
+                        InvoiceLineCreate(
+                            description="Counter sale", quantity=1, unit_price_minor=10_000
+                        )
+                    ],
+                ),
+            )
+            gstr1 = await services.generate_return(
+                session, ctx, GenerateReturnIn(period=PERIOD, return_type="gstr1")
+            )
+            gstr3b = await services.generate_return(
+                session, ctx, GenerateReturnIn(period=PERIOD, return_type="gstr3b")
+            )
+        assert gstr3b.total_taxable_minor == gstr1.total_taxable_minor
+        assert gstr3b.total_cgst_minor == gstr1.total_cgst_minor
+        assert gstr3b.total_sgst_minor == gstr1.total_sgst_minor
+        assert gstr3b.total_igst_minor == gstr1.total_igst_minor
+        # Not all zero, and not all the same section — a real cross-foot, not a tautology.
+        assert gstr1.total_taxable_minor == 5_00_000 - 1_00_000 + 2_00_000 + 10_000
+
+
+class TestItcBalanceCrossTenant404:
+    async def test_another_organizations_registration_id_is_not_found(
+        self, client, session, admin_session, org_id
+    ) -> None:
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _register(session, ctx)
+
+        other_org = uuid.uuid4()
+        async with admin_session.begin():
+            other_registration = await services.set_gst_registration(
+                admin_session,
+                admin_ctx(other_org),
+                GstRegistrationUpsert(gstin=MERIDIAN, legal_name="Another Organization"),
+            )
+
+        res = await client.get(
+            f"{LEDGER}/balance",
+            params={"period": PERIOD, "gst_registration_id": str(other_registration.id)},
+        )
+        assert res.status_code == 404
+
+        with pytest.raises(NotFoundProblem):
+            async with session.begin():
+                await services.registration_for(session, ctx, other_registration.id)

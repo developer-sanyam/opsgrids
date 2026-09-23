@@ -15,6 +15,14 @@ so `amount_minor` is signed: positive on an accrual, negative on a reversal or a
 means a retried post collides with the row it would otherwise duplicate, the same shape
 `ims_documents.source_ref` gives the sync it dedupes.
 
+**`period` and `source_period` are deliberately two columns.** `period` is the return period a
+posting is *attributed to* — the one `selectors.itc_period_movement` filters on — and
+`source_period` is the period the underlying document or return actually belongs to, kept apart
+purely for audit once a late decision pushes a posting past its own period into the next open one.
+
+Four CHECK constraints hold the vocabulary and the sign convention `amount_minor`'s docstring
+states at the database, rather than trusting every future caller to remember either.
+
 Revision ID: 488f37e6c827
 Revises: b391f0c47549
 Create Date: 2026-09-23 09:05:00.000000
@@ -43,6 +51,7 @@ def upgrade() -> None:
         sa.Column("organization_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("gst_registration_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("period", sa.String(length=7), nullable=False),
+        sa.Column("source_period", sa.String(length=7), nullable=False),
         sa.Column("tax_head", sa.String(length=10), nullable=False),
         sa.Column("kind", sa.String(length=20), nullable=False),
         sa.Column("amount_minor", sa.BigInteger(), nullable=False),
@@ -81,6 +90,23 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name="pk_itc_ledger_entries"),
         sa.UniqueConstraint(
             "organization_id", "kind", "source_ref", name="uq_itc_ledger_entries_org_kind_source"
+        ),
+        sa.CheckConstraint(
+            "tax_head IN ('igst', 'cgst', 'sgst', 'cess')",
+            name=op.f("ck_itc_ledger_entries_tax_head"),
+        ),
+        sa.CheckConstraint(
+            "kind IN ('accrual', 'reversal', 'utilisation')",
+            name=op.f("ck_itc_ledger_entries_kind"),
+        ),
+        sa.CheckConstraint(
+            "source_type IN ('ims_decision', 'gst_return')",
+            name=op.f("ck_itc_ledger_entries_source_type"),
+        ),
+        sa.CheckConstraint(
+            "(kind = 'accrual' AND amount_minor > 0) OR "
+            "(kind IN ('reversal', 'utilisation') AND amount_minor < 0)",
+            name=op.f("ck_itc_ledger_entries_amount_sign"),
         ),
         schema=SCHEMA,
     )

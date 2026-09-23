@@ -21,6 +21,7 @@ import type {
   ImsDecision,
   ImsDocument,
   ImsDocumentDetail,
+  ImsExpenseCategory,
   ImsReason,
   Invoice,
   InvoiceLine,
@@ -812,6 +813,7 @@ const IMS_BASE: ImsDocument[] = IMS_SEEDS.map((seed) => {
           note: seed.decision.note,
           suggested_action: seed.action,
           suggestion_reason: seed.reason,
+          expense_category: "general",
           decided_by: seed.decision.by,
           decided_at: seed.decision.at,
         }
@@ -874,6 +876,7 @@ export function recordFixtureDecision(
   documentId: string,
   action: ImsAction,
   note: string | null,
+  expenseCategory: ImsExpenseCategory,
   decidedBy: string,
 ): ImsDecision {
   const document = IMS_BASE.find((d) => d.id === documentId);
@@ -884,6 +887,7 @@ export function recordFixtureDecision(
     note,
     suggested_action: suggestion?.suggested_action ?? null,
     suggestion_reason: suggestion?.reason ?? null,
+    expense_category: expenseCategory,
     decided_by: decidedBy,
     decided_at: new Date().toISOString(),
   };
@@ -1012,11 +1016,36 @@ const GSTR3B_SECTIONS: Gstr3bSections = {
     nil_rated_taxable_minor: 0,
     reverse_charge_inward_taxable_minor: 0,
     non_gst_taxable_minor: 0,
+    outward_reverse_charge: ZERO_HEADS,
+    outward_reverse_charge_taxable_minor: 0,
   },
   itc: {
-    available: { igst_minor: paise(90_000), cgst_minor: 0, sgst_minor: 0, cess_minor: 0, total_minor: paise(90_000) },
-    blocked: { igst_minor: 0, cgst_minor: paise(4_000), sgst_minor: paise(4_000), cess_minor: 0, total_minor: paise(8_000) },
-    reversed_: ZERO_HEADS,
+    // 4A(5) gross: the IGST actually accrued, plus the CGST+SGST that would have but for being
+    // blocked under s. 17(5) (a motor-vehicle purchase).
+    available: {
+      igst_minor: paise(90_000),
+      cgst_minor: paise(4_000),
+      sgst_minor: paise(4_000),
+      cess_minor: 0,
+      total_minor: paise(98_000),
+    },
+    reversed_section_17_5: {
+      igst_minor: 0,
+      cgst_minor: paise(4_000),
+      sgst_minor: paise(4_000),
+      cess_minor: 0,
+      total_minor: paise(8_000),
+    },
+    reversed_other: ZERO_HEADS,
+    reclaimed: ZERO_HEADS,
+    ineligible_other: ZERO_HEADS,
+    total_reversed: {
+      igst_minor: 0,
+      cgst_minor: paise(4_000),
+      sgst_minor: paise(4_000),
+      cess_minor: 0,
+      total_minor: paise(8_000),
+    },
     net_eligible: { igst_minor: paise(90_000), cgst_minor: 0, sgst_minor: 0, cess_minor: 0, total_minor: paise(90_000) },
   },
   itc_brought_forward: {
@@ -1041,6 +1070,7 @@ const GSTR3B_SECTIONS: Gstr3bSections = {
     ],
     credit_remaining: { igst_minor: paise(6_000), cgst_minor: 0, sgst_minor: 0, cess_minor: 0, total_minor: paise(6_000) },
     cash_payable: ZERO_HEADS,
+    excess_liability: ZERO_HEADS,
   },
 };
 

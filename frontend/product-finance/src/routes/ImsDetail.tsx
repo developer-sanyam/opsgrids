@@ -3,7 +3,13 @@ import type { FormEvent, ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { decideImsDocument, getImsDocument } from "@/api/client";
-import type { ImsAction, ImsDecision, ImsDocument, ImsDocumentDetail } from "@/api/types";
+import type {
+  ImsAction,
+  ImsDecision,
+  ImsDocument,
+  ImsDocumentDetail,
+  ImsExpenseCategory,
+} from "@/api/types";
 import {
   actionConsequence,
   actionLabel,
@@ -23,6 +29,7 @@ import {
   ImsStatusPill,
   SampleDataChip,
   SectionHeader,
+  Select,
   Skeleton,
   SuggestedAction,
   Tag,
@@ -31,6 +38,21 @@ import { ArrowLeftIcon, CheckCircleIcon, cn } from "@opsgrids/ui";
 import type { Minor } from "@/lib/money";
 
 const DECISIONS: ImsAction[] = ["accept", "reject", "pending_action"];
+
+/**
+ * What an accepted document was for, and what each blocks under GST s. 17(5). `general` is the
+ * only category that ever accrues credit; every other one is offered so the person accepting a
+ * document can say why it does not, rather than the platform silently guessing "eligible" for
+ * everything since nothing here carries an HSN or a description to guess from.
+ */
+const EXPENSE_CATEGORIES: { value: ImsExpenseCategory; label: string; blocked: boolean }[] = [
+  { value: "general", label: "General business purchase", blocked: false },
+  { value: "motor_vehicle", label: "Motor vehicle (s. 17(5)(a))", blocked: true },
+  { value: "food_beverage", label: "Food, beverage or insurance (s. 17(5)(b)(i))", blocked: true },
+  { value: "membership_club_fitness", label: "Club or fitness membership (s. 17(5)(b)(ii))", blocked: true },
+  { value: "works_contract_immovable", label: "Works contract / construction (s. 17(5)(c)/(d))", blocked: true },
+  { value: "personal_consumption", label: "Personal consumption (s. 17(5)(g))", blocked: true },
+];
 
 /** One side of the comparison, flattened so the two can be lined up field for field. */
 interface EvidenceSide {
@@ -169,10 +191,19 @@ function DecisionRow({ decision }: { decision: ImsDecision }) {
             {followed ? " — followed." : " — overruled."}
           </span>
         ) : null}
+        <span className="text-xs text-muted">
+          {expenseCategoryLabel(decision.expense_category)}
+        </span>
         {decision.note ? <p className="max-w-prose pt-1 text-sm text-ink-soft">{decision.note}</p> : null}
       </div>
     </li>
   );
+}
+
+function expenseCategoryLabel(category: ImsExpenseCategory): string {
+  const found = EXPENSE_CATEGORIES.find((c) => c.value === category);
+  if (found === undefined) return category;
+  return found.blocked ? `${found.label} — no ITC claimed` : `${found.label} — ITC eligible`;
 }
 
 /**
@@ -193,6 +224,7 @@ function DecideForm({
   const { user } = useAuth();
   const suggested = document.suggestion?.suggested_action ?? null;
   const [action, setAction] = useState<ImsAction>(suggested ?? "pending_action");
+  const [expenseCategory, setExpenseCategory] = useState<ImsExpenseCategory>("general");
   const [note, setNote] = useState("");
   const [state, setState] = useState<"idle" | "saving">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -205,6 +237,7 @@ function DecideForm({
       decideImsDocument(document.id, {
         action,
         note: note.trim() === "" ? null : note.trim(),
+        expenseCategory,
         decidedBy: user?.full_name ?? "You",
       })
         .then((decision) => {
@@ -219,7 +252,7 @@ function DecideForm({
           );
         });
     },
-    [action, note, document.id, onDecided, user],
+    [action, note, expenseCategory, document.id, onDecided, user],
   );
 
   return (
@@ -254,6 +287,18 @@ function DecideForm({
           </label>
         ))}
       </fieldset>
+
+      <Select
+        label="What was this for?"
+        value={expenseCategory}
+        onChange={(event) => setExpenseCategory(event.target.value as ImsExpenseCategory)}
+        options={EXPENSE_CATEGORIES.map(({ value, label }) => ({ value, label }))}
+        helper={
+          EXPENSE_CATEGORIES.find((c) => c.value === expenseCategory)?.blocked
+            ? "Blocked under s. 17(5) — accepting this document claims no input tax credit."
+            : "Eligible — accepting this document claims the input tax credit on it."
+        }
+      />
 
       <div className="flex flex-col gap-1.5">
         <label htmlFor="ims-note" className="text-xs font-semibold uppercase tracking-wide text-faint">

@@ -77,6 +77,7 @@ from app.schemas import (
     GenerateEwayIn,
     GenerateReturnIn,
     Gstr1Sections,
+    Gstr3bPaymentOut,
     Gstr3bSections,
     GstRegistrationUpsert,
     ImsDecisionCreate,
@@ -85,6 +86,7 @@ from app.schemas import (
     PurchaseDocumentCreate,
     ReturnDiffOut,
     SectionDeltaOut,
+    TaxHeadAmountsOut,
 )
 from platform_core.audit import record_audit
 from platform_core.auth import Principal, Scope, ScopeContext
@@ -2196,6 +2198,7 @@ async def _post_itc_entries(
     *,
     gst_registration_id: uuid.UUID,
     period: str,
+    source_period: str,
     kind: str,
     amounts: domain.TaxHeadAmounts,
     source_type: str,
@@ -2205,7 +2208,11 @@ async def _post_itc_entries(
 ) -> list[ItcLedgerEntry]:
     """Post one row per non-zero tax head. Skips a head that is exactly zero rather than posting
     an empty row — a document taxed only under IGST has nothing to say about CGST or SGST, and a
-    zero-amount row would be noise on every list and report that reads this table."""
+    zero-amount row would be noise on every list and report that reads this table.
+
+    `period` is the period this posting is *attributed to* — the claim period, possibly later than
+    `source_period` when the source event arrives after its own period's `gstr3b` is filed.
+    """
     entries: list[ItcLedgerEntry] = []
     for head in domain.ITC_TAX_HEAD_ORDER:
         amount = amounts.for_head(head)
@@ -2216,6 +2223,7 @@ async def _post_itc_entries(
             created_by=str(ctx.principal.sub),
             gst_registration_id=gst_registration_id,
             period=period,
+            source_period=source_period,
             tax_head=head,
             kind=kind,
             amount_minor=amount,
@@ -2231,6 +2239,30 @@ async def _post_itc_entries(
     if entries:
         await session.flush()
     return entries
+
+
+async def _claim_period_for(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, source_period: str
+) -> str:
+    """The period a posting actually lands in: `source_period` itself, advanced past any period
+    whose `gstr3b` this registration has already filed.
+
+    A decision taken after a period's return has gone out cannot amend that return's Table 4 — it
+    lands in the next open period instead, the same "amendment in a later period" shape a credit
+    note against a filed invoice already has. Capped at five years so a data problem raises rather
+    than loops forever.
+    """
+    period = source_period
+    for _ in range(60):
+        if not await selectors.gstr3b_filed_for_period(
+            session, org_id, gst_registration_id, period
+        ):
+            return period
+        period = domain.next_period(period)
+    raise BusinessRuleProblem(
+        f"No open GSTR-3B period was found for a posting against {source_period} within five "
+        "years — check this registration's filing history"
+    )
 
 
 def _publish_itc_posting(
@@ -2300,11 +2332,14 @@ async def record_ims_decision(
     every list page. A test asserts the projection agrees with the history, which is what keeps
     the shortcut honest.
 
-    **The ITC ledger moves in the same transaction, when the document's accepted-ness changes.**
-    The first move into `accepted` accrues eligible credit — nothing at all when
-    `payload.expense_category` is one Section 17(5) blocks; any move *out of* `accepted` reverses
-    whatever is still outstanding for this document, read off the ledger itself rather than
-    recomputed from a category, so a reversal can never take back more than was actually accrued.
+    **The ITC ledger moves in the same transaction, whenever the document's net standing should
+    change.** That covers three cases with one formula: a plain accept (nothing outstanding yet,
+    something now should be), a plain un-accept (something outstanding, nothing now should be),
+    and a later decision that re-classifies an *already*-accepted document under a different
+    `expense_category` (something outstanding, a different something now should be — see
+    `domain.split_positive_negative`). The document is locked `FOR UPDATE` above before any of
+    this runs, so two decisions racing the same document serialise on the row rather than each
+    reading the same `before_status` and each posting a transition of their own.
     """
     at = at or _now()
     if payload.action not in domain.IMS_ACTIONS:
@@ -2314,7 +2349,9 @@ async def record_ims_decision(
         categories = ", ".join(sorted(domain.ITC_EXPENSE_CATEGORIES))
         raise BusinessRuleProblem(f"An expense category must be one of: {categories}")
 
-    document = await selectors.get_ims_document(session, ctx.organization_id, ims_document_id)
+    document = await selectors.get_ims_document(
+        session, ctx.organization_id, ims_document_id, for_update=True
+    )
     if document is None:
         raise NotFoundProblem("That supplier document is not part of this organization")
 
@@ -2343,56 +2380,74 @@ async def record_ims_decision(
     document.updated_by = str(ctx.principal.sub)
     await session.flush()
 
-    posting_kind = domain.itc_posting_kind_for_transition(
-        from_status=before_status, to_status=document.status
-    )
-    if posting_kind is not None:
+    was_accepted = before_status == "accepted"
+    now_accepted = document.status == "accepted"
+    if was_accepted or now_accepted:
         registration = await registration_for(session, ctx, None)
+        outstanding = (
+            await selectors.itc_document_net_accrued(session, ctx.organization_id, document.id)
+            if was_accepted
+            else domain.ZERO_ITC
+        )
+        # A credit note reduces what a supplier billed, so it reduces the credit this organization
+        # may claim rather than adding to it — accepting one should move the ledger down.
+        sign = -1 if document.document_type == "credit_note" else 1
         document_amounts = domain.TaxHeadAmounts(
-            igst_minor=document.igst_minor,
-            cgst_minor=document.cgst_minor,
-            sgst_minor=document.sgst_minor,
+            igst_minor=sign * document.igst_minor,
+            cgst_minor=sign * document.cgst_minor,
+            sgst_minor=sign * document.sgst_minor,
         )
-        if posting_kind == "accrual":
-            amounts = domain.itc_eligible_amounts(
-                document_amounts, category=payload.expense_category
-            )
-            description = f"IMS document {document.document_number} accepted"
-        else:
-            outstanding = await selectors.itc_document_net_accrued(
-                session, ctx.organization_id, document.id
-            )
-            amounts = domain.TaxHeadAmounts(
-                igst_minor=-outstanding.igst_minor,
-                cgst_minor=-outstanding.cgst_minor,
-                sgst_minor=-outstanding.sgst_minor,
-                cess_minor=-outstanding.cess_minor,
-            )
-            description = f"IMS document {document.document_number} moved to {document.status}"
-        entries = await _post_itc_entries(
-            session,
-            ctx,
-            gst_registration_id=registration.id,
-            period=document.period,
-            kind=posting_kind,
-            amounts=amounts,
-            source_type="ims_decision",
-            source_id=decision.id,
-            description=description,
-            at=at,
+        target = (
+            domain.itc_eligible_amounts(document_amounts, category=payload.expense_category)
+            if now_accepted
+            else domain.ZERO_ITC
         )
-        _publish_itc_posting(
-            session,
-            ctx,
-            event_type=EVT_ITC_ACCRUED if posting_kind == "accrual" else EVT_ITC_REVERSED,
-            aggregate_type="ims_document",
-            aggregate_id=document.id,
-            gst_registration_id=registration.id,
-            gstin=registration.gstin,
-            period=document.period,
-            entries=entries,
-            at=at,
-        )
+        delta = target - outstanding
+        accrual_part, reversal_part = domain.split_positive_negative(delta)
+
+        if accrual_part.total_minor or reversal_part.total_minor:
+            claim_period = await _claim_period_for(
+                session, ctx.organization_id, registration.id, document.period
+            )
+            if was_accepted and now_accepted:
+                description = (
+                    f"IMS document {document.document_number} re-classified as "
+                    f"{payload.expense_category}"
+                )
+            elif now_accepted:
+                description = f"IMS document {document.document_number} accepted"
+            else:
+                description = f"IMS document {document.document_number} moved to {document.status}"
+
+            for kind, amounts, event_type in (
+                ("accrual", accrual_part, EVT_ITC_ACCRUED),
+                ("reversal", reversal_part, EVT_ITC_REVERSED),
+            ):
+                entries = await _post_itc_entries(
+                    session,
+                    ctx,
+                    gst_registration_id=registration.id,
+                    period=claim_period,
+                    source_period=document.period,
+                    kind=kind,
+                    amounts=amounts,
+                    source_type="ims_decision",
+                    source_id=decision.id,
+                    description=description,
+                    at=at,
+                )
+                _publish_itc_posting(
+                    session,
+                    ctx,
+                    event_type=event_type,
+                    aggregate_type="ims_document",
+                    aggregate_id=document.id,
+                    gst_registration_id=registration.id,
+                    gstin=registration.gstin,
+                    period=claim_period,
+                    entries=entries,
+                    at=at,
+                )
 
     record_audit(
         session,
@@ -2480,20 +2535,53 @@ async def generate_return(
     except ValueError as exc:
         raise BusinessRuleProblem(str(exc)) from exc
 
-    registration = await registration_for(session, ctx, payload.gst_registration_id)
-    if payload.return_type == "gstr3b":
+    is_gstr3b = payload.return_type == "gstr3b"
+    # The registration row is locked for the length of the whole assembly when generating a
+    # gstr3b, so a concurrent generate or file for the *same* registration serialises on it
+    # rather than each reading the ITC ledger's position before the other has committed what it
+    # decided to do with it.
+    registration = await registration_for(
+        session, ctx, payload.gst_registration_id, for_update=is_gstr3b
+    )
+    if is_gstr3b:
+        if not registration.is_primary:
+            raise BusinessRuleProblem(
+                "GSTR-3B can only be generated for this organization's primary registration "
+                "today — every ITC ledger posting is attributed to it, since the IMS sync this "
+                "platform drives carries no registration of its own to attribute a posting to"
+            )
+        pending = await selectors.gstr3b_pending_periods_before(
+            session, ctx.organization_id, registration.id, payload.period
+        )
+        if pending:
+            raise BusinessRuleProblem(
+                f"{pending[0]}'s GSTR-3B has been generated but not filed; file it before "
+                f"generating {payload.period}'s — filing out of order can utilise the same "
+                "brought-forward credit against two periods"
+            )
         gstr3b = await assemble_gstr3b_for(
             session, ctx, registration=registration, period=payload.period
         )
         sections: Gstr1Sections | Gstr3bSections = selectors.to_gstr3b_sections(gstr3b)
-        outward_tax = gstr3b.outward.output_tax
+        # The header totals declare the *whole* of Table 3.1 — (a) + (b) + the reverse-charge
+        # figure — matching what GSTR-1 declares for the same period, since that is what a list
+        # page and `gstr3b_reconciles_with_gstr1` both compare against. `payment.liability`
+        # deliberately differs: it excludes the reverse-charge figure, because that tax is the
+        # recipient's to pay, not this organization's.
+        declared = (
+            gstr3b.outward.taxable_supplies
+            + gstr3b.outward.zero_rated
+            + gstr3b.outward.outward_reverse_charge
+        )
         totals = domain.ReturnTotals(
             taxable_minor=(
-                gstr3b.outward.outward_taxable_minor + gstr3b.outward.zero_rated_taxable_minor
+                gstr3b.outward.outward_taxable_minor
+                + gstr3b.outward.zero_rated_taxable_minor
+                + gstr3b.outward.outward_reverse_charge_taxable_minor
             ),
-            cgst_minor=outward_tax.cgst_minor,
-            sgst_minor=outward_tax.sgst_minor,
-            igst_minor=outward_tax.igst_minor,
+            cgst_minor=declared.cgst_minor,
+            sgst_minor=declared.sgst_minor,
+            igst_minor=declared.igst_minor,
             document_count=gstr3b.document_count,
             line_count=0,
         )
@@ -2621,10 +2709,23 @@ async def file_return(
     transition is appended to the trail with the totals as they stood, so the evidence row is
     self-contained — reading it never depends on the header still saying the same thing.
 
-    **Filing a `gstr3b` also posts its utilisation to the ITC ledger**, in this same transaction.
-    The amounts are read off the frozen snapshot's Table 6.1, exactly what was generated and is
-    now being filed — never recomputed against the book as it stands today, which could have moved
-    since generation and would then file one credit consumption while posting another.
+    **Filing a `gstr3b` also posts its utilisation to the ITC ledger**, in this same transaction,
+    behind three guards, in this order:
+
+    1. The registration is locked `FOR UPDATE` before anything else, so a concurrent generate or
+       file for the same registration serialises on it rather than each acting on a stale read of
+       the ledger.
+    2. Every earlier period's `gstr3b` for this registration must already be filed — the same
+       check `generate_return` runs, repeated here because a period can be generated in order and
+       still raced to be *filed* out of order.
+    3. The ITC side of the frozen snapshot is recomputed against the ledger **as it now stands**
+       and compared to what was generated. If a decision landed on the ledger between generation
+       and filing — the exact shape of "accept, generate, reject, file" leaving a negative
+       balance — the two disagree and filing is refused: regenerate first, so what gets filed is
+       what the ledger currently says, not what it said a moment that has since passed.
+
+    Table 3.1's own figures are not recomputed here; only the ITC ledger position is, since that
+    is the part a decision taken between generation and filing can move.
     """
     at = at or _now()
     ret = await selectors.get_return(session, ctx.organization_id, return_id)
@@ -2632,6 +2733,24 @@ async def file_return(
         raise NotFoundProblem("That return is not part of this organization")
     if not payload.arn.strip():
         raise BusinessRuleProblem("Filing a return requires the portal's acknowledgement number")
+
+    is_gstr3b = ret.return_type == "gstr3b"
+    if is_gstr3b:
+        # Locked before the transition check below is even read, so a concurrent file of this
+        # exact return also serialises here rather than racing past `may_transition_return`.
+        registration = await registration_for(
+            session, ctx, ret.gst_registration_id, for_update=True
+        )
+        pending = await selectors.gstr3b_pending_periods_before(
+            session, ctx.organization_id, registration.id, ret.period
+        )
+        if pending:
+            raise BusinessRuleProblem(
+                f"{pending[0]}'s GSTR-3B has been generated but not filed; file it before "
+                f"filing {ret.period}'s — filing out of order can utilise the same "
+                "brought-forward credit against two periods"
+            )
+
     if not domain.may_transition_return(ret.status, "filed"):
         if ret.status == "filed":
             raise ConflictProblem(
@@ -2642,6 +2761,27 @@ async def file_return(
             "what was reported"
         )
 
+    if is_gstr3b and ret.sections:
+        stored = Gstr3bSections.model_validate(ret.sections)
+        recomputed = await _recompute_gstr3b_payment(
+            session, ctx.organization_id, registration.id, ret.period, stored
+        )
+        if not _gstr3b_payment_matches(stored.payment, recomputed):
+            raise ConflictProblem(
+                f"The ITC ledger has moved since {ret.period}'s GSTR-3B was generated — "
+                "regenerate it so what is filed matches the ledger as it now stands"
+            )
+        balance = await selectors.itc_balance(
+            session, ctx.organization_id, registration.id, ret.period
+        )
+        consumed = {line.head: -line.amount_minor for line in stored.payment.utilisation}
+        for head_balance in balance.heads:
+            if head_balance.balance_minor - consumed.get(head_balance.tax_head, 0) < 0:
+                raise BusinessRuleProblem(
+                    f"Filing {ret.period}'s GSTR-3B would take the {head_balance.tax_head.upper()} "
+                    "ITC balance negative — regenerate the return before filing it"
+                )
+
     from_status = ret.status
     ret.status = "filed"
     ret.filed_at = at
@@ -2649,9 +2789,10 @@ async def file_return(
     ret.updated_by = str(ctx.principal.sub)
     await session.flush()
 
-    if ret.return_type == "gstr3b" and ret.sections:
-        consumed: dict[str, int] = {}
-        for line in Gstr3bSections.model_validate(ret.sections).payment.utilisation:
+    if is_gstr3b and ret.sections:
+        stored = Gstr3bSections.model_validate(ret.sections)
+        consumed = {}
+        for line in stored.payment.utilisation:
             consumed[line.head] = consumed.get(line.head, 0) + line.amount_minor
         utilisation_amounts = domain.TaxHeadAmounts(
             igst_minor=-consumed.get("igst", 0),
@@ -2664,6 +2805,7 @@ async def file_return(
             ctx,
             gst_registration_id=ret.gst_registration_id,
             period=ret.period,
+            source_period=ret.period,
             kind="utilisation",
             amounts=utilisation_amounts,
             source_type="gst_return",
@@ -2785,6 +2927,68 @@ async def assemble_gstr3b_for(
             "period — this should never happen, since both are assembled from the same book"
         )
     return gstr3b
+
+
+def _tax_head_out_equals(out: TaxHeadAmountsOut, dc: domain.TaxHeadAmounts) -> bool:
+    return (
+        out.igst_minor == dc.igst_minor
+        and out.cgst_minor == dc.cgst_minor
+        and out.sgst_minor == dc.sgst_minor
+        and out.cess_minor == dc.cess_minor
+    )
+
+
+async def _recompute_gstr3b_payment(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    gst_registration_id: uuid.UUID,
+    period: str,
+    stored: Gstr3bSections,
+) -> domain.UtilisationResult:
+    """What Table 6.1 would compute **right now** against the ledger, holding Table 3.1's
+    liability fixed at whatever the frozen snapshot already declared it to be.
+
+    Used only by `file_return`'s pre-flight check. Table 3.1 is not recomputed at file time — an
+    invoice recorded between generation and filing is the same "regenerate to see it" story
+    `diff_return` already tells for GSTR-1 — but the ITC ledger position genuinely can have moved:
+    a late decision landing between generation and filing. That is exactly what this re-derives,
+    so filing against a stale ITC position is refused rather than posting a utilisation the ledger
+    no longer actually holds.
+    """
+    brought_forward = await selectors.itc_brought_forward(
+        session, org_id, gst_registration_id, period
+    )
+    accrued, reversed_ = await selectors.itc_period_movement(
+        session, org_id, gst_registration_id, period
+    )
+    blocked = await selectors.itc_blocked_amounts_for_period(session, org_id, period)
+    itc = domain.Gstr3bItc(
+        available=accrued + blocked,
+        reversed_section_17_5=blocked,
+        reversed_other=reversed_,
+        reclaimed=domain.ZERO_ITC,
+        ineligible_other=domain.ZERO_ITC,
+    )
+    liability = domain.TaxHeadAmounts(
+        igst_minor=stored.payment.liability.igst_minor,
+        cgst_minor=stored.payment.liability.cgst_minor,
+        sgst_minor=stored.payment.liability.sgst_minor,
+        cess_minor=stored.payment.liability.cess_minor,
+    )
+    return domain.utilise_itc(brought_forward + itc.net_eligible, liability)
+
+
+def _gstr3b_payment_matches(stored: Gstr3bPaymentOut, recomputed: domain.UtilisationResult) -> bool:
+    """Whether a freshly recomputed utilisation agrees with what was frozen at generation — line
+    for line, not merely in total: two different allocations can foot to the same cash figure
+    while consuming a different head of credit to get there."""
+    stored_lines = {(line.head, line.against, line.amount_minor) for line in stored.utilisation}
+    recomputed_lines = {(line.head, line.against, line.amount_minor) for line in recomputed.lines}
+    return (
+        stored_lines == recomputed_lines
+        and _tax_head_out_equals(stored.cash_payable, recomputed.cash_payable)
+        and _tax_head_out_equals(stored.credit_remaining, recomputed.credit_remaining)
+    )
 
 
 async def diff_return(
@@ -2943,17 +3147,29 @@ def _append_transition(
 
 
 async def registration_for(
-    session: AsyncSession, ctx: ScopeContext, registration_id: uuid.UUID | None
+    session: AsyncSession,
+    ctx: ScopeContext,
+    registration_id: uuid.UUID | None,
+    *,
+    for_update: bool = False,
 ) -> GstRegistration:
     """The registration a call names, or the organization's primary — used wherever a return, a
-    ledger posting or a balance needs one and none was given explicitly."""
+    ledger posting or a balance needs one and none was given explicitly.
+
+    `for_update=True` row-locks it — `generate_return` and `file_return` take this for a `gstr3b`,
+    so two calls racing the same registration serialise rather than each acting on the same stale
+    read of the ITC ledger's position."""
     if registration_id is not None:
-        registrations = await selectors.all_gst_registrations(session, ctx.organization_id)
+        registrations = await selectors.all_gst_registrations(
+            session, ctx.organization_id, for_update=for_update
+        )
         found = next((r for r in registrations if r.id == registration_id), None)
         if found is None:
             raise NotFoundProblem("That GST registration is not part of this organization")
         return found
-    primary = await selectors.get_gst_registration(session, ctx.organization_id)
+    primary = await selectors.get_gst_registration(
+        session, ctx.organization_id, for_update=for_update
+    )
     if primary is None:
         raise BusinessRuleProblem(
             "This organization has no GST registration configured, so it has nothing to file "

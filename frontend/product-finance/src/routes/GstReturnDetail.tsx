@@ -100,6 +100,12 @@ function Gstr3bSectionsCard({ sections }: { sections: Gstr3bSections }) {
           <tbody>
             <TaxHeadRow label="(a) Taxable supplies" amounts={sections.outward.taxable_supplies} />
             <TaxHeadRow label="(b) Zero-rated supplies" amounts={sections.outward.zero_rated} />
+            {sections.outward.outward_reverse_charge_taxable_minor !== 0 ? (
+              <TaxHeadRow
+                label="Outward reverse-charge (recipient's liability, not this return's)"
+                amounts={sections.outward.outward_reverse_charge}
+              />
+            ) : null}
           </tbody>
         </table>
         <p className="mt-2 text-xs text-muted">
@@ -121,10 +127,12 @@ function Gstr3bSectionsCard({ sections }: { sections: Gstr3bSections }) {
             </tr>
           </thead>
           <tbody>
-            <TaxHeadRow label="4A(5) All other ITC" amounts={sections.itc.available} />
-            <TaxHeadRow label="4B(1) Reversed" amounts={sections.itc.reversed_} />
-            <TaxHeadRow label="4C Net eligible ITC" amounts={sections.itc.net_eligible} />
-            <TaxHeadRow label="4D(1) Ineligible — s. 17(5), informational" amounts={sections.itc.blocked} />
+            <TaxHeadRow label="4A(5) All other ITC (gross)" amounts={sections.itc.available} />
+            <TaxHeadRow label="4B(1) Reversed — Rule 42/43 & s. 17(5)" amounts={sections.itc.reversed_section_17_5} />
+            <TaxHeadRow label="4B(2) Reversed — others" amounts={sections.itc.reversed_other} />
+            <TaxHeadRow label="4C Net ITC available" amounts={sections.itc.net_eligible} />
+            <TaxHeadRow label="4D(1) ITC reclaimed (informational)" amounts={sections.itc.reclaimed} />
+            <TaxHeadRow label="4D(2) Ineligible — s. 16(4) / PoS (informational)" amounts={sections.itc.ineligible_other} />
           </tbody>
         </table>
       </div>
@@ -146,6 +154,12 @@ function Gstr3bSectionsCard({ sections }: { sections: Gstr3bSections }) {
             <TaxHeadRow label="ITC brought forward" amounts={sections.itc_brought_forward} />
             <TaxHeadRow label="Credit carried forward" amounts={sections.payment.credit_remaining} />
             <TaxHeadRow label="Payable in cash" amounts={sections.payment.cash_payable} />
+            {sections.payment.excess_liability.total_minor !== 0 ? (
+              <TaxHeadRow
+                label="Excess reported (credit notes exceeded supplies — informational)"
+                amounts={sections.payment.excess_liability}
+              />
+            ) : null}
           </tbody>
         </table>
         {sections.payment.utilisation.length > 0 ? (

@@ -873,7 +873,10 @@ class TaxHeadAmountsOut(BaseModel):
 
 class Gstr3bOutwardOut(BaseModel):
     """Table 3.1. Only (a) and (b) are ever non-zero — see `domain.Gstr3bOutward` for why (c),
-    (d) and (e) are always zero given what this platform records today."""
+    (d) and (e) are always zero given what this platform records today. `outward_reverse_charge`
+    is not a numbered row of the form; it is the taxable value of an outward reverse-charge supply
+    this organization raised, kept visible and excluded from (a) because the recipient, not this
+    organization, owes the tax on it."""
 
     taxable_supplies: TaxHeadAmountsOut  # 3.1(a)
     outward_taxable_minor: int
@@ -882,14 +885,25 @@ class Gstr3bOutwardOut(BaseModel):
     nil_rated_taxable_minor: int  # 3.1(c) — always 0
     reverse_charge_inward_taxable_minor: int  # 3.1(d) — always 0
     non_gst_taxable_minor: int  # 3.1(e) — always 0
+    outward_reverse_charge: TaxHeadAmountsOut  # not part of (a); the recipient's liability
+    outward_reverse_charge_taxable_minor: int
 
 
 class Gstr3bItcOut(BaseModel):
-    """Table 4. Only 4A(5) and 4D(1) are populated — see `domain.Gstr3bItc`."""
+    """Table 4, in the shape Notification 14/2022-CT gave it — see `domain.Gstr3bItc`.
 
-    available: TaxHeadAmountsOut  # 4A(5)
-    blocked: TaxHeadAmountsOut  # 4D(1) — informational only, never in the balance or 4C
-    reversed_: TaxHeadAmountsOut  # 4B(1)
+    4A(5) is **gross**, including credit blocked under s. 17(5); 4B splits the reversal the return
+    itself asks for; 4C is the net the ledger actually carries forward; 4D is informational and
+    always zero — neither a Rule 37 re-claim nor a s. 16(4)/place-of-supply ineligibility is
+    modelled.
+    """
+
+    available: TaxHeadAmountsOut  # 4A(5), gross
+    reversed_section_17_5: TaxHeadAmountsOut  # 4B(1)
+    reversed_other: TaxHeadAmountsOut  # 4B(2)
+    reclaimed: TaxHeadAmountsOut  # 4D(1) — always zero
+    ineligible_other: TaxHeadAmountsOut  # 4D(2) — always zero
+    total_reversed: TaxHeadAmountsOut  # 4B(1) + 4B(2)
     net_eligible: TaxHeadAmountsOut  # 4C = 4A - 4B
 
 
@@ -909,6 +923,9 @@ class Gstr3bPaymentOut(BaseModel):
     utilisation: list[UtilisationLineOut]
     credit_remaining: TaxHeadAmountsOut
     cash_payable: TaxHeadAmountsOut
+    #: The magnitude of any negative liability handed in — a heavy-credit-note period. Informational
+    #: only: never netted into `cash_payable` and never spendable as credit.
+    excess_liability: TaxHeadAmountsOut
 
 
 class Gstr3bSections(BaseModel):
@@ -1000,7 +1017,11 @@ class ItcLedgerEntryOut(BaseModel):
 
     id: uuid.UUID
     gst_registration_id: uuid.UUID
+    #: The period this posting is attributed to for GSTR-3B purposes — may be later than
+    #: `source_period` when the source event arrived after that period's own return was filed.
     period: str
+    #: The period the source event itself belongs to, kept apart from `period` purely for audit.
+    source_period: str
     tax_head: str
     kind: str
     #: Signed: positive on an accrual, negative on a reversal or a utilisation.

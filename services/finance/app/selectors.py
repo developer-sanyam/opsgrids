@@ -571,23 +571,36 @@ def to_filing_out(filing: EInvoiceFiling) -> EInvoiceFilingOut:
 # --------------------------------------------------------------------- GST registration
 
 
-async def get_gst_registration(session: AsyncSession, org_id: uuid.UUID) -> GstRegistration | None:
+async def get_gst_registration(
+    session: AsyncSession, org_id: uuid.UUID, *, for_update: bool = False
+) -> GstRegistration | None:
     """This organization's primary GST registration — the seller side of every tax decision.
 
     None means the org has not configured one, which is a real state and not an error: an invoice
     can still be raised, it simply cannot be filed, and the filing attempt says so.
+
+    `for_update=True` row-locks it — `generate_return`/`file_return` take this before assembling
+    or filing a `gstr3b`, so two calls racing the same registration serialise on the row instead
+    of both reading the same ITC ledger position and both posting a utilisation against it.
     """
     stmt = select(GstRegistration).where(
         GstRegistration.organization_id == org_id,
         GstRegistration.is_primary.is_(True),
         GstRegistration.deleted_at.is_(None),
     )
+    if for_update:
+        stmt = stmt.with_for_update()
     return (await session.execute(stmt)).scalars().first()
 
 
-async def all_gst_registrations(session: AsyncSession, org_id: uuid.UUID) -> list[GstRegistration]:
+async def all_gst_registrations(
+    session: AsyncSession, org_id: uuid.UUID, *, for_update: bool = False
+) -> list[GstRegistration]:
     """Every live registration for the org. A company registers per state, so there may be
-    several; exactly one is primary."""
+    several; exactly one is primary.
+
+    `for_update=True` row-locks every one returned, in the same deterministic order this already
+    sorts by, for the same reason `get_gst_registration`'s lock exists."""
     stmt = (
         select(GstRegistration)
         .where(
@@ -596,6 +609,8 @@ async def all_gst_registrations(session: AsyncSession, org_id: uuid.UUID) -> lis
         )
         .order_by(GstRegistration.is_primary.desc(), GstRegistration.state_code)
     )
+    if for_update:
+        stmt = stmt.with_for_update()
     return list((await session.execute(stmt)).scalars().all())
 
 
@@ -795,15 +810,22 @@ def ims_documents_stmt(
 
 
 async def get_ims_document(
-    session: AsyncSession, org_id: uuid.UUID, document_id: uuid.UUID
+    session: AsyncSession, org_id: uuid.UUID, document_id: uuid.UUID, *, for_update: bool = False
 ) -> ImsDocument | None:
     """Org-scoped fetch by id. None on a tenant mismatch or a soft-deleted row — confirming an id
-    exists in *some* organization is itself a disclosure."""
+    exists in *some* organization is itself a disclosure.
+
+    `for_update=True` row-locks it — `record_ims_decision` takes this before reading `status`, so
+    two decisions racing the same document serialise on the row instead of each reading the same
+    `before_status`, each computing an accrual (or a reversal) of their own, and the ledger ending
+    up with the transition posted twice."""
     stmt = select(ImsDocument).where(
         ImsDocument.id == document_id,
         ImsDocument.organization_id == org_id,
         ImsDocument.deleted_at.is_(None),
     )
+    if for_update:
+        stmt = stmt.with_for_update()
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
@@ -1325,6 +1347,54 @@ async def find_return(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def gstr3b_filed_for_period(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, period: str
+) -> bool:
+    """Whether this registration's `gstr3b` for `period` has been filed.
+
+    `services._claim_period_for` walks this forward one period at a time to find the next period
+    a late posting may still land in — a decision taken after a period's return has gone out
+    cannot amend that return's Table 4.
+    """
+    stmt = select(GstReturn.id).where(
+        GstReturn.organization_id == org_id,
+        GstReturn.gst_registration_id == gst_registration_id,
+        GstReturn.return_type == "gstr3b",
+        GstReturn.period == period,
+        GstReturn.status == "filed",
+        GstReturn.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
+async def gstr3b_pending_periods_before(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, period: str
+) -> list[str]:
+    """Every `gstr3b` period for this registration, earlier than `period`, that has been
+    generated but not yet filed — the periods that must be filed before `period` may be generated
+    or filed itself.
+
+    A period this platform was simply never asked to generate is not "pending": an organization
+    that onboarded mid-year has no earlier rows at all, and that is not this platform's problem to
+    refuse. Only a period that *exists* and is not `filed` blocks the one after it — the exact
+    shape of the double-utilisation defect this check exists to close: generating September while
+    August sat generated-but-unfiled let both periods utilise the same brought-forward credit.
+    """
+    stmt = (
+        select(GstReturn.period)
+        .where(
+            GstReturn.organization_id == org_id,
+            GstReturn.gst_registration_id == gst_registration_id,
+            GstReturn.return_type == "gstr3b",
+            GstReturn.period < period,
+            GstReturn.status != "filed",
+            GstReturn.deleted_at.is_(None),
+        )
+        .order_by(GstReturn.period)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
 async def return_transitions(
     session: AsyncSession, org_id: uuid.UUID, return_id: uuid.UUID
 ) -> list[GstReturnTransition]:
@@ -1743,11 +1813,16 @@ def to_gstr3b_sections(ret: domain.Gstr3bReturn) -> Gstr3bSections:
             nil_rated_taxable_minor=ret.outward.nil_rated_taxable_minor,
             reverse_charge_inward_taxable_minor=ret.outward.reverse_charge_inward_taxable_minor,
             non_gst_taxable_minor=ret.outward.non_gst_taxable_minor,
+            outward_reverse_charge=to_tax_head_amounts_out(ret.outward.outward_reverse_charge),
+            outward_reverse_charge_taxable_minor=ret.outward.outward_reverse_charge_taxable_minor,
         ),
         itc=Gstr3bItcOut(
             available=to_tax_head_amounts_out(ret.itc.available),
-            blocked=to_tax_head_amounts_out(ret.itc.blocked),
-            reversed_=to_tax_head_amounts_out(ret.itc.reversed_),
+            reversed_section_17_5=to_tax_head_amounts_out(ret.itc.reversed_section_17_5),
+            reversed_other=to_tax_head_amounts_out(ret.itc.reversed_other),
+            reclaimed=to_tax_head_amounts_out(ret.itc.reclaimed),
+            ineligible_other=to_tax_head_amounts_out(ret.itc.ineligible_other),
+            total_reversed=to_tax_head_amounts_out(ret.itc.total_reversed),
             net_eligible=to_tax_head_amounts_out(ret.itc.net_eligible),
         ),
         itc_brought_forward=to_tax_head_amounts_out(ret.itc_brought_forward),
@@ -1761,6 +1836,7 @@ def to_gstr3b_sections(ret: domain.Gstr3bReturn) -> Gstr3bSections:
             ],
             credit_remaining=to_tax_head_amounts_out(ret.payment.utilisation.credit_remaining),
             cash_payable=to_tax_head_amounts_out(ret.payment.cash_payable),
+            excess_liability=to_tax_head_amounts_out(ret.payment.utilisation.excess_liability),
         ),
     )
 

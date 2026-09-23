@@ -267,6 +267,21 @@ export type ImsReason =
 /** A supplier may file an invoice, a credit note or a debit note against a recipient. */
 export type ImsDocumentType = "invoice" | "credit_note" | "debit_note";
 
+/**
+ * What an accepted document was for. Decides whether the ITC ledger accrues credit on it at all:
+ * every category but `general` is blocked under GST s. 17(5), and accepting one of those still
+ * records the decision but claims no input tax credit. Asked for on every decision, not only
+ * `accept`, so a `reject` or `pending_action` still records what the person understood the
+ * document to be.
+ */
+export type ImsExpenseCategory =
+  | "general"
+  | "motor_vehicle"
+  | "food_beverage"
+  | "membership_club_fitness"
+  | "works_contract_immovable"
+  | "personal_consumption";
+
 /** What the platform proposes for one inbound document, and why. Never applied on its own. */
 export interface ImsSuggestion {
   id: string;
@@ -293,6 +308,7 @@ export interface ImsDecision {
   note: string | null;
   suggested_action: ImsAction | null;
   suggestion_reason: ImsReason | null;
+  expense_category: ImsExpenseCategory;
   /** The subject id of whoever decided. */
   decided_by: string;
   decided_at: string;
@@ -635,15 +651,27 @@ export interface Gstr3bOutward {
   nil_rated_taxable_minor: Minor;
   reverse_charge_inward_taxable_minor: Minor;
   non_gst_taxable_minor: Minor;
+  /** Not a numbered row of the form: the taxable value of an outward reverse-charge supply this
+   * organization raised. Excluded from (a) and from `Gstr3bPayment.liability` because the
+   * recipient, not this organization, owes the tax on it. */
+  outward_reverse_charge: TaxHeadAmounts;
+  outward_reverse_charge_taxable_minor: Minor;
 }
 
-/** Table 4. Only "all other ITC" (4A(5)) and the informational blocked-credit line (4D(1)) are
- * populated — imports, RCM inward supplies and ISD credit are not distinguishable in this book. */
+/**
+ * Table 4, in the shape Notification 14/2022-CT gave it. 4A(5) is **gross** — including credit
+ * blocked under s. 17(5) — 4B splits the reversal into the two rows the return itself asks for,
+ * 4C is the net the ledger actually carries forward, and 4D is informational and always zero:
+ * neither a Rule 37 re-claim nor a s. 16(4)/place-of-supply ineligibility is modelled.
+ */
 export interface Gstr3bItc {
-  available: TaxHeadAmounts;
-  blocked: TaxHeadAmounts;
-  reversed_: TaxHeadAmounts;
-  net_eligible: TaxHeadAmounts;
+  available: TaxHeadAmounts; // 4A(5), gross
+  reversed_section_17_5: TaxHeadAmounts; // 4B(1)
+  reversed_other: TaxHeadAmounts; // 4B(2)
+  reclaimed: TaxHeadAmounts; // 4D(1) — always zero
+  ineligible_other: TaxHeadAmounts; // 4D(2) — always zero
+  total_reversed: TaxHeadAmounts; // 4B(1) + 4B(2)
+  net_eligible: TaxHeadAmounts; // 4C = 4A - 4B
 }
 
 /** One application of credit against liability in the statutory order — IGST first against IGST,
@@ -661,6 +689,9 @@ export interface Gstr3bPayment {
   utilisation: UtilisationLine[];
   credit_remaining: TaxHeadAmounts;
   cash_payable: TaxHeadAmounts;
+  /** The magnitude of any negative liability handed in — a heavy-credit-note period. Informational
+   * only: never netted into `cash_payable` and never spendable as credit. */
+  excess_liability: TaxHeadAmounts;
 }
 
 /** Every table of one GSTR-3B, and the shape the snapshot is stored in. */

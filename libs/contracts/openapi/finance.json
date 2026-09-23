@@ -1419,32 +1419,44 @@
         "type": "object"
       },
       "Gstr3bItcOut": {
-        "description": "Table 4. Only 4A(5) and 4D(1) are populated \u2014 see `domain.Gstr3bItc`.",
+        "description": "Table 4, in the shape Notification 14/2022-CT gave it \u2014 see `domain.Gstr3bItc`.\n\n4A(5) is **gross**, including credit blocked under s. 17(5); 4B splits the reversal the return\nitself asks for; 4C is the net the ledger actually carries forward; 4D is informational and\nalways zero \u2014 neither a Rule 37 re-claim nor a s. 16(4)/place-of-supply ineligibility is\nmodelled.",
         "properties": {
           "available": {
             "$ref": "#/components/schemas/TaxHeadAmountsOut"
           },
-          "blocked": {
+          "ineligible_other": {
             "$ref": "#/components/schemas/TaxHeadAmountsOut"
           },
           "net_eligible": {
             "$ref": "#/components/schemas/TaxHeadAmountsOut"
           },
-          "reversed_": {
+          "reclaimed": {
+            "$ref": "#/components/schemas/TaxHeadAmountsOut"
+          },
+          "reversed_other": {
+            "$ref": "#/components/schemas/TaxHeadAmountsOut"
+          },
+          "reversed_section_17_5": {
+            "$ref": "#/components/schemas/TaxHeadAmountsOut"
+          },
+          "total_reversed": {
             "$ref": "#/components/schemas/TaxHeadAmountsOut"
           }
         },
         "required": [
           "available",
-          "blocked",
-          "reversed_",
+          "reversed_section_17_5",
+          "reversed_other",
+          "reclaimed",
+          "ineligible_other",
+          "total_reversed",
           "net_eligible"
         ],
         "title": "Gstr3bItcOut",
         "type": "object"
       },
       "Gstr3bOutwardOut": {
-        "description": "Table 3.1. Only (a) and (b) are ever non-zero \u2014 see `domain.Gstr3bOutward` for why (c),\n(d) and (e) are always zero given what this platform records today.",
+        "description": "Table 3.1. Only (a) and (b) are ever non-zero \u2014 see `domain.Gstr3bOutward` for why (c),\n(d) and (e) are always zero given what this platform records today. `outward_reverse_charge`\nis not a numbered row of the form; it is the taxable value of an outward reverse-charge supply\nthis organization raised, kept visible and excluded from (a) because the recipient, not this\norganization, owes the tax on it.",
         "properties": {
           "nil_rated_taxable_minor": {
             "title": "Nil Rated Taxable Minor",
@@ -1452,6 +1464,13 @@
           },
           "non_gst_taxable_minor": {
             "title": "Non Gst Taxable Minor",
+            "type": "integer"
+          },
+          "outward_reverse_charge": {
+            "$ref": "#/components/schemas/TaxHeadAmountsOut"
+          },
+          "outward_reverse_charge_taxable_minor": {
+            "title": "Outward Reverse Charge Taxable Minor",
             "type": "integer"
           },
           "outward_taxable_minor": {
@@ -1480,7 +1499,9 @@
           "zero_rated_taxable_minor",
           "nil_rated_taxable_minor",
           "reverse_charge_inward_taxable_minor",
-          "non_gst_taxable_minor"
+          "non_gst_taxable_minor",
+          "outward_reverse_charge",
+          "outward_reverse_charge_taxable_minor"
         ],
         "title": "Gstr3bOutwardOut",
         "type": "object"
@@ -1492,6 +1513,9 @@
             "$ref": "#/components/schemas/TaxHeadAmountsOut"
           },
           "credit_remaining": {
+            "$ref": "#/components/schemas/TaxHeadAmountsOut"
+          },
+          "excess_liability": {
             "$ref": "#/components/schemas/TaxHeadAmountsOut"
           },
           "liability": {
@@ -1509,7 +1533,8 @@
           "liability",
           "utilisation",
           "credit_remaining",
-          "cash_payable"
+          "cash_payable",
+          "excess_liability"
         ],
         "title": "Gstr3bPaymentOut",
         "type": "object"
@@ -2546,6 +2571,10 @@
             "title": "Source Id",
             "type": "string"
           },
+          "source_period": {
+            "title": "Source Period",
+            "type": "string"
+          },
           "source_type": {
             "title": "Source Type",
             "type": "string"
@@ -2559,6 +2588,7 @@
           "id",
           "gst_registration_id",
           "period",
+          "source_period",
           "tax_head",
           "kind",
           "amount_minor",

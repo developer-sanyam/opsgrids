@@ -47,6 +47,7 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -706,15 +707,30 @@ class ItcLedgerEntry(Base, TenantBase):
     a prepaid credit pack's draws. `amount_minor` is signed so that sum needs no case split:
     positive on an `accrual`, negative on a `reversal` or a `utilisation`.
 
-    * **accrual** — eligible credit from an IMS document this organization accepted, posted by
+    * **accrual** — credit from an IMS document this organization accepted, posted by
       `services.record_ims_decision` in the same transaction as the decision that accepted it.
-    * **reversal** — an accepted document's credit withdrawn, posted when a later decision moves
-      the same document away from `accepted`. Computed as the mirror of what is still outstanding
-      for that document, not recomputed from the category on the new decision, so a reversal can
-      never withdraw more credit than was actually accrued.
+      Always positive — see the sign convention below.
+    * **reversal** — credit withdrawn: an accepted document's status later moving away from
+      `accepted`, or a supplier credit note accepted against credit already claimed (or, if it is
+      the *first* thing accepted against that document, a negative entry with nothing preceding it
+      to reverse — still a `reversal` by amount, since `amount_minor`'s sign is what the kind
+      answers for, not the narrative). (From July 2022's Table 4 shape, a blocked s. 17(5) category
+      is read informationally at GSTR-3B assembly time rather than posted here at all.) What
+      `services.record_ims_decision` actually posts is **the delta** between what should now be
+      outstanding for a document and what already is — covering a plain accept, a plain un-accept,
+      *and* a later decision that re-classifies an already-accepted document under a different
+      `expense_category`, with one formula rather than three. It can therefore never withdraw more
+      than was actually accrued: the delta is computed against the ledger's own current standing,
+      not recomputed independently.
     * **utilisation** — credit consumed against output liability, posted by `services.file_return`
       in the same transaction as filing a `gstr3b`, one row per (head, counter-head) the statutory
       utilisation order actually applied — see `domain.utilise_itc`.
+
+    The document's own decision is locked `FOR UPDATE` before any of this runs (see
+    `selectors.get_ims_document`), and the registration row is locked before a `gstr3b` is
+    generated or filed (see `services.registration_for`) — both because two of these three kinds
+    read "what is already posted" before deciding what to post next, and two callers racing that
+    read-then-write must serialise on the row rather than both acting on the same stale answer.
 
     `source_ref` is the idempotency key: a unique index on `(organization_id, kind, source_ref)`
     means the row a retried write would produce collides rather than doubles the ledger — the same
@@ -728,17 +744,26 @@ class ItcLedgerEntry(Base, TenantBase):
         ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    #: The return period this posting belongs to, `YYYY-MM`. For an accrual or a reversal, the
-    #: IMS document's own `period` — the period it was reported in, not the (possibly later) date
-    #: it was decided. For a utilisation, the period of the `gstr3b` that consumed the credit.
+    #: The return period this posting is **attributed to** for GSTR-3B purposes, `YYYY-MM` — the
+    #: *claim* period, which `services._claim_period_for` may advance past `source_period` when a
+    #: decision arrives after its own period's `gstr3b` has already been filed (the same
+    #: "amendment in a later period" shape a credit note against a filed invoice already has).
+    #: `selectors.itc_period_movement`/`itc_brought_forward` filter on this column, because it is
+    #: what decides which return sees the posting.
     period: Mapped[str] = mapped_column(String(7), nullable=False)
+    #: The period the *source event itself* belongs to — the IMS document's own reported period
+    #: for an accrual or a reversal, or the return's own period for a utilisation. Kept apart from
+    #: `period` purely for audit: "what period was this really about" must stay answerable even
+    #: after a late decision has pushed the posting into a later one.
+    source_period: Mapped[str] = mapped_column(String(7), nullable=False)
     #: igst | cgst | sgst | cess — `domain.ITC_TAX_HEADS`. `cess` is accepted so the schema does
     #: not need to change shape the day a cess-bearing document exists; nothing posts one today.
     tax_head: Mapped[str] = mapped_column(String(10), nullable=False)
     #: accrual | reversal | utilisation — `domain.ITC_POSTING_KINDS`.
     kind: Mapped[str] = mapped_column(String(20), nullable=False)
     #: Signed: positive on an accrual, negative on a reversal or a utilisation, so the balance is
-    #: a plain `SUM` with no case split.
+    #: a plain `SUM` with no case split. `ck_itc_ledger_entries_amount_sign` holds the database to
+    #: that convention rather than trusting every future caller to remember it.
     amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
     #: ims_decision | gst_return — `domain.ITC_SOURCE_TYPES`. What produced this row.
     source_type: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -769,6 +794,29 @@ class ItcLedgerEntry(Base, TenantBase):
             "period",
         ),
         Index("ix_itc_ledger_entries_org_kind", "organization_id", "kind"),
+        # Belt and braces beside `domain.ITC_TAX_HEADS`/`ITC_POSTING_KINDS`/`ITC_SOURCE_TYPES`: an
+        # application-layer typo in a literal string must not be able to write a row a report then
+        # silently drops on the floor by never matching any filter.
+        # `name=` is the short suffix, not the full constraint name — the metadata's own naming
+        # convention (`libs/platform-core/src/platform_core/models.py`) already prepends
+        # `ck_<table>_`, so passing the full name here would double it.
+        CheckConstraint("tax_head IN ('igst', 'cgst', 'sgst', 'cess')", name="tax_head"),
+        CheckConstraint("kind IN ('accrual', 'reversal', 'utilisation')", name="kind"),
+        CheckConstraint(
+            "source_type IN ('ims_decision', 'gst_return')",
+            name="source_type",
+        ),
+        # The sign convention `amount_minor`'s own docstring states, held at the database: an
+        # accrual only ever adds, a reversal or a utilisation only ever takes away — including a
+        # credit note's first-ever negative entry against a document nothing was accrued for yet,
+        # which is a `reversal` by amount even though nothing preceded it to reverse. Zero is
+        # deliberately excluded from every branch — `services._post_itc_entries` never posts a
+        # zero-amount row, so a zero here would already be a bug the constraint should catch too.
+        CheckConstraint(
+            "(kind = 'accrual' AND amount_minor > 0) OR "
+            "(kind IN ('reversal', 'utilisation') AND amount_minor < 0)",
+            name="amount_sign",
+        ),
     )
 
 
