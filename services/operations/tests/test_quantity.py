@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from app.inventory.quantity import (
+    MAX_ABS_MILLI,
     QTY_SCALE,
     UNIT_NAMES,
     UNITS,
@@ -203,13 +204,18 @@ class TestConvertByRatio:
     def test_a_non_integer_ratio_is_exact_via_the_fraction(self) -> None:
         # 1 roll = 82.5 m of an item stocked in metres: numerator=825, denominator=10.
         one_roll = parse_qty("1")
-        assert format_qty(convert_by_ratio(one_roll, 825, 10)) == "82.5"
+        assert format_qty(convert_by_ratio(one_roll, 825, 10, discrete=False)) == "82.5"
 
     def test_an_inexact_result_is_refused_without_a_rounding_mode(self) -> None:
         # 1 pcs is 1/12 of a box — 83.33 thousandths of a box, not a whole milli-box.
         with pytest.raises(QuantityError, match="rounding mode"):
-            convert_by_ratio(parse_qty("1"), 12, 1, invert=True)
-        assert convert_by_ratio(parse_qty("1"), 12, 1, invert=True, rounding=Rounding.DOWN) == 83
+            convert_by_ratio(parse_qty("1"), 12, 1, invert=True, discrete=False)
+        assert (
+            convert_by_ratio(
+                parse_qty("1"), 12, 1, invert=True, discrete=False, rounding=Rounding.DOWN
+            )
+            == 83
+        )
 
     def test_the_destination_discreteness_is_the_callers_to_name(self) -> None:
         # 6 pcs / 12-per-box divides exactly (500 milli-box = 0.5 box) but a box is discrete —
@@ -220,7 +226,15 @@ class TestConvertByRatio:
     @pytest.mark.parametrize(("numerator", "denominator"), [(0, 1), (1, 0), (-1, 1), (1, -1)])
     def test_a_non_positive_ratio_is_refused(self, numerator: int, denominator: int) -> None:
         with pytest.raises(QuantityError, match="positive numerator and denominator"):
-            convert_by_ratio(parse_qty("1"), numerator, denominator)
+            convert_by_ratio(parse_qty("1"), numerator, denominator, discrete=False)
+
+    def test_a_result_beyond_max_abs_milli_is_refused(self) -> None:
+        # A container ratio has no fixed size, so an absurd one (1 box = 10**14 pcs) can push a
+        # perfectly ordinary input past what a BIGINT sum should ever have to hold.
+        with pytest.raises(QuantityError, match="too large"):
+            convert_by_ratio(parse_qty("2"), 10**14, 1, discrete=True)
+        # One under the limit still converts.
+        assert convert_by_ratio(MAX_ABS_MILLI, 1, 1, discrete=False) == MAX_ABS_MILLI
 
 
 class TestUnitNames:

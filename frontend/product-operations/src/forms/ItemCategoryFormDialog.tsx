@@ -18,10 +18,19 @@ interface ItemCategoryFormDialogProps {
   onSaved: (category: ItemCategoryOut) => void;
 }
 
+/**
+ * True if `candidateId` sits under `ancestorId` somewhere in the tree. `seen` bounds the walk to
+ * at most one pass over the whole set: if the data already contains a cycle (it should not, but
+ * a bug elsewhere, or data restored from before this check existed, could still produce one),
+ * revisiting a node is the signal to stop and treat it as a match rather than loop forever.
+ */
 function isDescendant(all: ItemCategoryOut[], ancestorId: string, candidateId: string): boolean {
+  const seen = new Set<string>();
   let current = all.find((c) => c.id === candidateId);
   while (current?.parent_id) {
     if (current.parent_id === ancestorId) return true;
+    if (seen.has(current.id)) return true; // already a cycle; do not walk it forever
+    seen.add(current.id);
     current = all.find((c) => c.id === current?.parent_id);
   }
   return false;

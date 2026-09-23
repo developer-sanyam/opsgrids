@@ -19,9 +19,21 @@ import type { Column } from "@/ui";
 import { FolderIcon, PlusIcon, useToast } from "@opsgrids/ui";
 import { ItemCategoryFormDialog } from "@/forms/ItemCategoryFormDialog";
 
+interface Row {
+  category: ItemCategoryOut;
+  depth: number;
+  /** True for a category the top-down walk from the roots never reached — the server refuses
+   *  the write that would create this (H2's advisory lock), so it should never happen from here
+   *  on, but a row restored from a backup taken before that fix existed could still carry one.
+   *  Shown, flagged, and fixable — never silently dropped from the list. */
+  needsRepair: boolean;
+}
+
 /** Depth of each category in the tree, and a display-ordered flat list (parents before their
- *  children) — client-side, since the directory is always small enough to hold in one page. */
-function orderedWithDepth(categories: ItemCategoryOut[]): { category: ItemCategoryOut; depth: number }[] {
+ *  children) — client-side, since the directory is always small enough to hold in one page.
+ *  Anything the walk from the roots cannot reach (a cycle, or a `parent_id` naming a category
+ *  that no longer exists) is appended at the end rather than dropped. */
+function orderedWithDepth(categories: ItemCategoryOut[]): Row[] {
   const byParent = new Map<string | null, ItemCategoryOut[]>();
   for (const c of categories) {
     const key = c.parent_id;
@@ -32,15 +44,24 @@ function orderedWithDepth(categories: ItemCategoryOut[]): { category: ItemCatego
   for (const siblings of byParent.values()) {
     siblings.sort((a, b) => a.name.localeCompare(b.name));
   }
-  const out: { category: ItemCategoryOut; depth: number }[] = [];
-  const visit = (parentId: string | null, depth: number, seen: Set<string>) => {
+  const out: Row[] = [];
+  const reached = new Set<string>();
+  const visit = (parentId: string | null, depth: number, ancestors: Set<string>) => {
     for (const category of byParent.get(parentId) ?? []) {
-      if (seen.has(category.id)) continue; // defensive: never loop on a data anomaly
-      out.push({ category, depth });
-      visit(category.id, depth + 1, new Set(seen).add(category.id));
+      if (ancestors.has(category.id)) continue; // a cycle: stop, do not loop forever
+      reached.add(category.id);
+      out.push({ category, depth, needsRepair: false });
+      visit(category.id, depth + 1, new Set(ancestors).add(category.id));
     }
   };
   visit(null, 0, new Set());
+
+  const unreached = categories
+    .filter((c) => !reached.has(c.id))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  for (const category of unreached) {
+    out.push({ category, depth: 0, needsRepair: true });
+  }
   return out;
 }
 
@@ -70,14 +91,22 @@ export function ItemCategoriesPage() {
     },
   });
 
-  const columns: Column<{ category: ItemCategoryOut; depth: number }>[] = [
+  const columns: Column<Row>[] = [
     {
       key: "name",
       header: "Name",
-      render: ({ category, depth }) => (
+      render: ({ category, depth, needsRepair }) => (
         <div style={{ paddingLeft: depth * 20 }} className="flex items-center gap-2">
           {depth > 0 ? <span aria-hidden className="text-muted">└</span> : null}
           <span className="font-semibold text-ink">{category.name}</span>
+          {needsRepair ? (
+            <span
+              role="status"
+              className="rounded-full bg-danger-soft px-2 py-0.5 text-xs font-semibold text-danger"
+            >
+              Broken parent chain — edit to fix
+            </span>
+          ) : null}
         </div>
       ),
     },

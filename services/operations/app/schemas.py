@@ -50,6 +50,19 @@ def _validate_email_or_empty(value: str) -> str:
     return value
 
 
+def _reject_explicit_null(instance: BaseModel, fields: tuple[str, ...]) -> None:
+    """A PATCH field typed `X | None` is optional two different ways: omitted (leave alone) or
+    explicitly `null` (the caller's own JSON says so). For a domain field the database column
+    never allows NULL — a name, a flag, a code — only the first meaning is valid; the second is
+    a malformed request (422), not a value to carry through to an `IntegrityError` (or, worse, a
+    silent `setattr(..., None)` if the column happened to tolerate it). Fields that are
+    genuinely nullable in the domain (`parent_id`, `item_category_id`, `secondary_uom_id` — "no
+    category" is a real state) are simply not passed here."""
+    for field in fields:
+        if field in instance.model_fields_set and getattr(instance, field) is None:
+            raise ValueError(f"{field} cannot be set to null")
+
+
 # ------------------------------------------------------------------ vocabularies (match the SPA)
 
 Category = Literal["raw_materials", "packaging", "components", "mro", "logistics", "services"]
@@ -72,6 +85,9 @@ StockStatus = Literal[
 #: An exact quantity on the wire: a decimal string with at most three decimals (ADR-0014 §2).
 #: Never a JSON number — a float cannot carry 0.1 exactly, and stock must be exact.
 Qty = Annotated[str, Field(pattern=r"^-?\d+(\.\d{1,3})?$", examples=["82.5"])]
+#: India's Harmonized System Nomenclature code — 4, 6 or 8 digits (the granularity a GST filer
+#: chooses), or empty (not every item carries one). Never partial-length digit strings.
+_HSN_PATTERN = r"^(\d{4}(\d{2}(\d{2})?)?)?$"
 StockMovementReason = Literal["damaged", "lost", "found", "consumed", "returned", "other"]
 
 
@@ -321,6 +337,11 @@ class ItemCategoryPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     parent_id: str | None = None
 
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> Self:
+        _reject_explicit_null(self, ("name",))
+        return self
+
 
 # ------------------------------------------------------------------ inventory
 
@@ -383,7 +404,7 @@ class InventoryItemIn(BaseModel):
     item_category_id: str | None = None
     #: Must name an existing UOM in the org, when given — an alternate reporting/purchase unit.
     secondary_uom_id: str | None = None
-    hsn_code: str = Field(default="", max_length=20)
+    hsn_code: str = Field(default="", pattern=_HSN_PATTERN)
     track_lot: bool = False
     track_roll: bool = False
     track_expiry: bool = False
@@ -407,12 +428,35 @@ class InventoryItemPatch(BaseModel):
     unit_value_minor: int | None = Field(default=None, ge=0)
     item_category_id: str | None = None
     secondary_uom_id: str | None = None
-    hsn_code: str | None = Field(default=None, max_length=20)
+    hsn_code: str | None = Field(default=None, pattern=_HSN_PATTERN)
     track_lot: bool | None = None
     track_roll: bool | None = None
     track_expiry: bool | None = None
     track_quality: bool | None = None
     is_active: bool | None = None
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> Self:
+        # `item_category_id` and `secondary_uom_id` are deliberately excluded — `null` on either
+        # is a real, meaningful state ("no category" / "no secondary unit"), not a malformed one.
+        _reject_explicit_null(
+            self,
+            (
+                "name",
+                "category",
+                "warehouse",
+                "uom",
+                "reorder_point",
+                "unit_value_minor",
+                "hsn_code",
+                "track_lot",
+                "track_roll",
+                "track_expiry",
+                "track_quality",
+                "is_active",
+            ),
+        )
+        return self
 
 
 ItemAttributeType = Literal["text", "number", "boolean", "date"]
@@ -488,6 +532,11 @@ class ItemVariantPatch(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
     is_active: bool | None = None
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> Self:
+        _reject_explicit_null(self, ("name", "is_active"))
+        return self
 
 
 class StockAdjustmentIn(BaseModel):

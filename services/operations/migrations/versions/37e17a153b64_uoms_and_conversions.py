@@ -21,12 +21,13 @@ always carried:
    referential integrity, the same relationship `warehouse` (string) and `home_location_id` (FK)
    already have on this table).
 
-Alias folding (`"meter"` → `m`, `"kgs"` → `kg`, …) is **not** applied here — that table lives in
-`app.inventory.quantity._ALIASES`, and this migration deliberately does not import application
-code. A free-text unit that only an alias would have matched becomes its own custom `uoms` row
-instead of being merged into the canonical one; nothing is lost, it is just not merged as well as
-the live write path (`app.inventory.services.resolve_or_create_uom`, which does have the alias
-table) merges it for every item created from here on.
+Alias folding (`"meter"` → `m`, `"kgs"` → `kg`, …) **is** applied here, via `SEED_ALIASES` — an
+inlined copy of `app.inventory.quantity._ALIASES` at the time this migration was written, for the
+same reason `SEED_UNITS` is a copy rather than an import. Without it, an item stocked in `"meter"`
+would backfill to its own custom unit instead of the seeded `m`, while a new item created after
+this migration through `app.inventory.services.resolve_or_create_uom` (which folds the same
+aliases) would land on `m` — two rows meaning the same thing. Folding here keeps backfill and the
+live write path agreeing on every spelling either one recognises.
 
 Backward compatible: additive tables, and `inventory_items.uom_id` is nullable (an item with a
 blank `uom` — the create API's own default before Phase 1 required one — gets no `uom_id` either,
@@ -81,6 +82,45 @@ SEED_UNITS: tuple[tuple[str, str, str, bool], ...] = (
     ("set", "Set", "set", True),
     ("roll", "Roll", "roll", True),
 )
+
+#: Inlined copy of `app.inventory.quantity._ALIASES` at the time this migration was written — see
+#: the module docstring for why this is a copy rather than an import.
+SEED_ALIASES: tuple[tuple[str, str], ...] = (
+    ("pc", "pcs"),
+    ("piece", "pcs"),
+    ("pieces", "pcs"),
+    ("nos", "pcs"),
+    ("ea", "pcs"),
+    ("each", "pcs"),
+    ("units", "pcs"),
+    ("meter", "m"),
+    ("meters", "m"),
+    ("metre", "m"),
+    ("metres", "m"),
+    ("mtr", "m"),
+    ("kgs", "kg"),
+    ("gm", "g"),
+    ("gms", "g"),
+    ("grams", "g"),
+    ("litre", "l"),
+    ("liter", "l"),
+    ("ltr", "l"),
+    ("boxes", "box"),
+    ("cartons", "carton"),
+    ("bundles", "bundle"),
+    ("sets", "set"),
+    ("rolls", "roll"),
+)
+
+
+def _fold_uom_sql(column: str) -> str:
+    """SQL for folding a raw `uom` string the same way `app.inventory.quantity.unit()` does:
+    trim, lower-case, then the alias table — anything left over is its own canonical spelling.
+    Used everywhere this migration matches or groups free-text units, so backfill agrees with
+    what `resolve_or_create_uom` would resolve the same string to."""
+    cases = " ".join(f"WHEN '{alias}' THEN '{code}'" for alias, code in SEED_ALIASES)
+    return f"(CASE lower(trim({column})) {cases} ELSE lower(trim({column})) END)"
+
 
 #: Every tenant table this service owns that could name an organization no other table does.
 ORG_SOURCE_TABLES = (
@@ -138,10 +178,16 @@ def upgrade() -> None:
         sa.Column("id", sa.UUID(), nullable=False),
         sa.Column("organization_id", sa.UUID(), nullable=False),
         sa.Column(
-            "created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
         ),
         sa.Column(
-            "updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
         ),
         sa.Column("created_by", sa.String(length=64), nullable=True),
         sa.Column("updated_by", sa.String(length=64), nullable=True),
@@ -197,15 +243,16 @@ def upgrade() -> None:
         sa.Column("numerator", sa.BigInteger(), nullable=False),
         sa.Column("denominator", sa.BigInteger(), nullable=False),
         sa.Column(
-            "created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
         ),
         sa.Column("created_by", sa.String(length=64), nullable=True),
         sa.Column("id", sa.UUID(), nullable=False),
         sa.Column("organization_id", sa.UUID(), nullable=False),
         sa.CheckConstraint("numerator > 0", name=op.f("ck_uom_conversions_numerator_positive")),
-        sa.CheckConstraint(
-            "denominator > 0", name=op.f("ck_uom_conversions_denominator_positive")
-        ),
+        sa.CheckConstraint("denominator > 0", name=op.f("ck_uom_conversions_denominator_positive")),
         sa.ForeignKeyConstraint(
             ["inventory_item_id"],
             [f"{SCHEMA}.inventory_items.id"],
@@ -237,9 +284,7 @@ def upgrade() -> None:
     _rls("uom_conversions")
 
     # --- inventory_items.uom_id --------------------------------------------------------------
-    op.add_column(
-        "inventory_items", sa.Column("uom_id", sa.UUID(), nullable=True), schema=SCHEMA
-    )
+    op.add_column("inventory_items", sa.Column("uom_id", sa.UUID(), nullable=True), schema=SCHEMA)
     op.create_foreign_key(
         op.f("fk_inventory_items_uom_id_uoms"),
         "inventory_items",
@@ -251,31 +296,38 @@ def upgrade() -> None:
         ondelete="RESTRICT",
     )
     op.create_index(
-        "ix_inventory_items_org_uom", "inventory_items", ["organization_id", "uom_id"], schema=SCHEMA
+        "ix_inventory_items_org_uom",
+        "inventory_items",
+        ["organization_id", "uom_id"],
+        schema=SCHEMA,
     )
 
-    # A custom row per organization for every distinct (case-folded) free-text unit that matches
-    # none of the seed codes — one per lower-cased spelling, so "MT" and "mt" on two different
-    # items collapse into the same new unit rather than each minting its own. `DISTINCT ON` picks
-    # one original casing deterministically (ordered) to use as the display `name`; the item's own
-    # `uom` string is never rewritten, so nothing about what it displays changes.
+    # A custom row per organization for every distinct alias-and-case-folded free-text unit that
+    # matches none of the seed codes — one per folded spelling, so "MT"/"mt" and "meter"/"metre"
+    # (an alias of the seeded `m`, so it never reaches here) each collapse the way the live write
+    # path would collapse them. `DISTINCT ON` picks one original casing deterministically (ordered)
+    # to use as the display `name`; the item's own `uom` string is never rewritten, so nothing
+    # about what it displays changes.
+    folded_uom = _fold_uom_sql("uom")
+    folded_i_uom = _fold_uom_sql("i.uom")
     op.execute(
         f"""
         INSERT INTO {SCHEMA}.uoms
             (id, organization_id, code, name, dimension, is_discrete, is_system,
              created_at, updated_at, created_by)
-        SELECT gen_random_uuid(), free.organization_id, lower(free.uom), free.uom, 'other',
+        SELECT gen_random_uuid(), free.organization_id, free.folded, free.uom, 'other',
                false, false, now(), now(), '{MIGRATION_ACTOR}'
           FROM (
-                SELECT DISTINCT ON (organization_id, lower(uom)) organization_id, uom
+                SELECT DISTINCT ON (organization_id, {folded_uom}) organization_id, uom,
+                       {folded_uom} AS folded
                   FROM {SCHEMA}.inventory_items
-                 WHERE uom <> ''
-                 ORDER BY organization_id, lower(uom), uom
+                 WHERE trim(uom) <> ''
+                 ORDER BY organization_id, {folded_uom}, uom
                ) AS free
          WHERE NOT EXISTS (
                 SELECT 1 FROM {SCHEMA}.uoms u
                  WHERE u.organization_id = free.organization_id
-                   AND lower(u.code) = lower(free.uom)
+                   AND lower(u.code) = free.folded
                    AND u.deleted_at IS NULL
                )
         """
@@ -286,15 +338,15 @@ def upgrade() -> None:
            SET uom_id = u.id
           FROM {SCHEMA}.uoms u
          WHERE u.organization_id = i.organization_id
-           AND lower(u.code) = lower(i.uom)
+           AND lower(u.code) = {folded_i_uom}
            AND u.deleted_at IS NULL
-           AND i.uom <> ''
+           AND trim(i.uom) <> ''
         """
     )
     # Every non-blank uom must now have a home — the free-text insert above is exhaustive, so a
     # miss here is a bug in this migration, not a data problem to work around.
     _refuse_if(
-        f"SELECT id FROM {SCHEMA}.inventory_items WHERE uom <> '' AND uom_id IS NULL",
+        f"SELECT id FROM {SCHEMA}.inventory_items WHERE trim(uom) <> '' AND uom_id IS NULL",
         "an item's free-text uom did not resolve to any uoms row after backfill",
     )
 
@@ -305,9 +357,7 @@ def downgrade() -> None:
         "item-specific unit conversions exist; the pre-Phase-1 shape has nowhere to keep them",
     )
 
-    op.drop_constraint(
-        "fk_inventory_items_uom_id_uoms", "inventory_items", schema=SCHEMA
-    )
+    op.drop_constraint("fk_inventory_items_uom_id_uoms", "inventory_items", schema=SCHEMA)
     op.drop_index("ix_inventory_items_org_uom", table_name="inventory_items", schema=SCHEMA)
     op.drop_column("inventory_items", "uom_id", schema=SCHEMA)
 

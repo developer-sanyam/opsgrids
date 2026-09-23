@@ -547,7 +547,7 @@ class ItemAttribute(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
 
     **Typed values only.** `value_type` says which of `value_text` / `value_number` /
     `value_boolean` / `value_date` is the real one; the others are NULL, enforced by
-    `exactly_one_value`. There is no untyped `value` column to mass-assign into — a caller must
+    `value_matches_type`. There is no untyped `value` column to mass-assign into — a caller must
     say what kind of fact this is, and the write path (`app.inventory.services.set_item_attribute`)
     rejects a payload that does not name a `value_type` from `ATTRIBUTE_TYPES` before it ever
     reaches this table. `value_number` is an integer (GSM, mm) — attributes are not stock, but
@@ -579,12 +579,20 @@ class ItemAttribute(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
 
     __table_args__ = (
         CheckConstraint(f"value_type IN ({_ATTRIBUTE_TYPE_SQL})", name="value_type_known"),
+        # Ties `value_type` to *its own* column, not merely "exactly one of the four is set" —
+        # each `(value_type = 'x') = (value_x IS NOT NULL)` equality forces both halves true
+        # together (the named column is set when its type is named) and both false together (a
+        # column stays NULL when its type is not the one named), so all four in one row
+        # simultaneously pin down exactly the matching column, never a mismatched one
+        # (`value_type='number'` with `value_text` set would violate this even though the old
+        # `exactly_one_value` phrasing — count of non-null columns == 1 — could not tell that
+        # case from a correctly typed row). M1, found by direct-insert review.
         CheckConstraint(
-            "(CASE WHEN value_text IS NOT NULL THEN 1 ELSE 0 END) + "
-            "(CASE WHEN value_number IS NOT NULL THEN 1 ELSE 0 END) + "
-            "(CASE WHEN value_boolean IS NOT NULL THEN 1 ELSE 0 END) + "
-            "(CASE WHEN value_date IS NOT NULL THEN 1 ELSE 0 END) = 1",
-            name="exactly_one_value",
+            "(value_type = 'text') = (value_text IS NOT NULL) AND "
+            "(value_type = 'number') = (value_number IS NOT NULL) AND "
+            "(value_type = 'boolean') = (value_boolean IS NOT NULL) AND "
+            "(value_type = 'date') = (value_date IS NOT NULL)",
+            name="value_matches_type",
         ),
         Index(
             "uq_item_attributes_org_item_key",
@@ -832,13 +840,6 @@ class InventoryReservation(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     created_by: Mapped[str | None] = mapped_column(String(64))
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     closed_by: Mapped[str | None] = mapped_column(String(64))
-    #: The most recent `release()` call's idempotency key/hash (ADR-0014 §11 / Phase 1
-    #: prerequisite). Not a unique index: the row's own `FOR UPDATE` lock (`ledger.release`'s
-    #: lock order) already serialises every writer of this reservation, so a plain compare under
-    #: that lock is enough to make a retried release a replay rather than a second release —
-    #: global uniqueness across reservations is not the property being protected here.
-    release_idempotency_key: Mapped[str | None] = mapped_column(String(128))
-    release_request_hash: Mapped[str | None] = mapped_column(String(64))
 
     __table_args__ = (
         CheckConstraint("quantity_milli > 0", name="quantity_positive"),
@@ -860,6 +861,45 @@ class InventoryReservation(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
             "organization_id",
             "balance_id",
             postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+
+class InventoryReservationRelease(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One append-only row per `ledger.release` call that actually released something — the
+    idempotency record for that call, and the release history a reservation otherwise has no
+    record of (ADR-0014 §11).
+
+    `UNIQUE (organization_id, reservation_id, idempotency_key)` is what makes a retried release a
+    replay: `ledger.release` looks a key up here under the reservation's own row lock before
+    applying anything, so a concurrent duplicate either finds nothing (and proceeds, serialised by
+    that same lock) or finds this row and replays instead. A single mutable column on the
+    reservation row can only remember the *most recent* key; a reservation released more than
+    once, with a different key each time, needs one row per release, not one column overwritten.
+    """
+
+    __tablename__ = "inventory_reservation_releases"
+
+    reservation_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_reservations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    released_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    released_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("released_milli > 0", name="released_milli_positive"),
+        Index(
+            "uq_inventory_reservation_releases_org_reservation_key",
+            "organization_id",
+            "reservation_id",
+            "idempotency_key",
+            unique=True,
         ),
     )
 

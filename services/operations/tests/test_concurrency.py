@@ -14,14 +14,14 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.inventory import ledger
 from app.inventory.ledger import InsufficientStock, MoveLine
 from app.inventory.reconcile import reconcile_organization
-from app.models import SCHEMA
+from app.models import SCHEMA, InventoryReservation
 from platform_core.db import TENANT_GUC
 from tests.inventory_fixtures import TODAY, Textile, balance, build_textile, ledger_total, q
 
@@ -101,6 +101,26 @@ def reserve(t: Textile, milli: int) -> Work:
     async def work(s: AsyncSession) -> None:
         await ledger.reserve(
             s, t.ctx, item_id=t.fabric, location_id=t.weaving, quantity_milli=milli
+        )
+
+    return work
+
+
+def release(t: Textile, reservation_id: uuid.UUID, milli: int | None = None) -> Work:
+    async def work(s: AsyncSession) -> None:
+        await ledger.release(s, t.ctx, reservation_id, quantity_milli=milli)
+
+    return work
+
+
+def count_to(t: Textile, milli: int) -> Work:
+    async def work(s: AsyncSession) -> None:
+        await ledger.post_move(
+            s,
+            t.ctx,
+            kind="count",
+            lines=[MoveLine(t.fabric, t.weaving, counted_milli=milli)],
+            occurred_on=TODAY,
         )
 
     return work
@@ -232,4 +252,75 @@ class TestNoDeadlocks:
         assert results == ["ok"] * 40  # a DeadlockDetectedError would show up here by name
         assert await balance(session, t.org_id, t.fabric, t.weaving) == (q("500"), 0)
         assert await balance(session, t.org_id, t.fabric, t.finishing) == (q("500"), 0)
+        await assert_reconciled(session, t)
+
+
+class TestScenarioE_ReleaseRacingConsumptionOfTheSameReservation:
+    """B1: `drawn` must subtract `released_milli`, not just `consumed_milli` — otherwise a
+    release and an issue against the same reservation, run concurrently, can together draw more
+    than the reservation ever promised and trip the `consumed + released <= quantity` CHECK as a
+    raw `IntegrityError` instead of either succeeding cleanly or refusing with numbers. The two
+    lock the same balance and the same reservation row in the same order every other path in this
+    module uses, so they serialise rather than deadlock — this proves the serialised order always
+    lands on a consistent, reconciled state, not just the sequential case `test_ledger.py` covers.
+    """
+
+    async def test_release_and_a_reservation_backed_issue_together_never_overdraw_it(
+        self, session, maker, t
+    ) -> None:
+        await stock(session, t, q("100"))
+        async with session.begin():
+            made = await ledger.reserve(
+                session, t.ctx, item_id=t.fabric, location_id=t.weaving, quantity_milli=q("100")
+            )
+        rid = made.reservation.id
+
+        results = await race(
+            maker,
+            t.org_id,
+            [release(t, rid, q("60")), issue(t, q("40"), reservation_id=rid)],
+        )
+        # Never an IntegrityError, whichever order the lock queue picked.
+        assert results == ["ok", "ok"]
+        assert await balance(session, t.org_id, t.fabric, t.weaving) == (q("60"), 0)
+        async with session.begin():
+            # `made.reservation` is already in this session's identity map from the reserve()
+            # call above, at its pre-race values — the race ran on separate connections, so a
+            # plain `get()` would return that stale copy rather than what they committed.
+            res = (
+                await session.execute(
+                    select(InventoryReservation)
+                    .where(InventoryReservation.id == rid)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one()
+            assert (res.status, res.consumed_milli, res.released_milli) == (
+                "consumed",
+                q("40"),
+                q("60"),
+            )
+        await assert_reconciled(session, t)
+
+    async def test_release_racing_a_count_settles_on_one_consistent_outcome(
+        self, session, maker, t
+    ) -> None:
+        """The two valid interleavings give different, but each internally consistent, answers:
+        release-then-count sees the freed capacity and succeeds; count-then-release sees the full
+        reservation still standing and is refused. Either is correct; an `IntegrityError` or a
+        silently over-committed balance is not."""
+        await stock(session, t, q("100"))
+        async with session.begin():
+            made = await ledger.reserve(
+                session, t.ctx, item_id=t.fabric, location_id=t.weaving, quantity_milli=q("100")
+            )
+        rid = made.reservation.id
+
+        results = await race(maker, t.org_id, [release(t, rid, q("60")), count_to(t, q("45"))])
+        assert results[0] == "ok"  # the release itself always succeeds
+        assert results[1] in ("ok", "refused")
+        on_hand, reserved = await balance(session, t.org_id, t.fabric, t.weaving)
+        if results[1] == "ok":
+            assert (on_hand, reserved) == (q("45"), q("40"))
+        else:
+            assert (on_hand, reserved) == (q("100"), q("40"))
         await assert_reconciled(session, t)

@@ -192,6 +192,34 @@ async def balances_for_item(
     return [tuple(row) for row in (await session.execute(stmt)).all()]
 
 
+async def has_stock_history(session: AsyncSession, org_id: uuid.UUID, item_id: uuid.UUID) -> bool:
+    """Whether this item has ever had a balance bucket or a ledger row (M5) — not just whether it
+    currently holds non-zero stock. Every quantity on either table was recorded in the item's
+    `uom` at the time; changing the unit after even one such row exists would silently reinterpret
+    history in a different scale, so the write path refuses the change rather than the read path
+    having to guess which unit an old row meant."""
+    balance_exists = (
+        await session.execute(
+            select(InventoryBalance.id)
+            .where(
+                InventoryBalance.organization_id == org_id,
+                InventoryBalance.inventory_item_id == item_id,
+            )
+            .limit(1)
+        )
+    ).first()
+    if balance_exists is not None:
+        return True
+    ledger_exists = (
+        await session.execute(
+            select(LedgerEntry.id)
+            .where(LedgerEntry.organization_id == org_id, LedgerEntry.inventory_item_id == item_id)
+            .limit(1)
+        )
+    ).first()
+    return ledger_exists is not None
+
+
 async def stock_outside_home(session: AsyncSession, item: InventoryItem) -> int:
     """Milli-units of this item held anywhere but its home AVAILABLE bucket — what the
     single-location compatibility API cannot see, and so must not overwrite."""

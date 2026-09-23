@@ -5,12 +5,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
+from sqlalchemy import event, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.config import settings
+from app.inventory import selectors as inv_selectors
 from app.inventory import services as inv_services
+from app.models import SCHEMA, ItemAttribute, ItemCategory
+from app.schemas import ItemCategoryPatch
 from platform_core.auth import Scope
+from platform_core.db import TENANT_GUC
+from platform_core.errors import ValidationProblem
 from tests.helpers import as_principal, ctx_for, principal_for
 from tests.inventory_fixtures import build_textile
 
@@ -122,6 +132,36 @@ class TestItemCategories:
             )
         assert resp.status_code == 403
 
+    async def test_reading_needs_item_read(self, client, org_id) -> None:
+        with as_principal(principal_for(org_id, [WRITE])):
+            created = (
+                await client.post(
+                    "/api/v1/operations/inventory/categories", json={"code": "RO", "name": "RO"}
+                )
+            ).json()
+        with as_principal(principal_for(org_id, [])):
+            listed = await client.get("/api/v1/operations/inventory/categories")
+            one = await client.get(f"/api/v1/operations/inventory/categories/{created['id']}")
+        assert listed.status_code == 403
+        assert one.status_code == 403
+
+    async def test_patching_and_deleting_need_item_write(self, client, org_id) -> None:
+        with as_principal(principal_for(org_id, [WRITE])):
+            created = (
+                await client.post(
+                    "/api/v1/operations/inventory/categories", json={"code": "PD", "name": "PD"}
+                )
+            ).json()
+        with as_principal(principal_for(org_id, [READ])):
+            patched = await client.patch(
+                f"/api/v1/operations/inventory/categories/{created['id']}", json={"name": "New"}
+            )
+            deleted = await client.delete(
+                f"/api/v1/operations/inventory/categories/{created['id']}"
+            )
+        assert patched.status_code == 403
+        assert deleted.status_code == 403
+
     async def test_another_organizations_category_is_not_found(
         self, client, admin_session, org_id
     ) -> None:
@@ -134,6 +174,23 @@ class TestItemCategories:
         with as_principal(principal_for(org_id, [READ])):
             resp = await client.get(f"/api/v1/operations/inventory/categories/{other.id}")
         assert resp.status_code == 404
+
+    async def test_another_organizations_category_cannot_be_patched_or_deleted(
+        self, client, admin_session, org_id
+    ) -> None:
+        other_org = uuid.uuid4()
+        ctx = ctx_for(other_org, "operations.inventory.item.write", Scope.ORG)
+        async with admin_session.begin():
+            other = await inv_services.create_item_category(
+                admin_session, ctx, code="THEIRS2", name="Theirs2"
+            )
+        with as_principal(principal_for(org_id, [WRITE])):
+            patched = await client.patch(
+                f"/api/v1/operations/inventory/categories/{other.id}", json={"name": "Hijacked"}
+            )
+            deleted = await client.delete(f"/api/v1/operations/inventory/categories/{other.id}")
+        assert patched.status_code == 404
+        assert deleted.status_code == 404
 
 
 class TestItemAttributes:
@@ -219,6 +276,43 @@ class TestItemAttributes:
             )
         assert resp.status_code == 403
 
+    async def test_deleting_needs_item_write(self, client, org_id, data) -> None:
+        item_id = data["low_stock_item"].id
+        with as_principal(principal_for(org_id, [WRITE, READ])):
+            await client.put(
+                f"/api/v1/operations/inventory/{item_id}/attributes/gsm",
+                json={"value_type": "number", "value_number": 1},
+            )
+        with as_principal(principal_for(org_id, [READ])):
+            resp = await client.delete(f"/api/v1/operations/inventory/{item_id}/attributes/gsm")
+        assert resp.status_code == 403
+
+    async def test_reading_needs_item_read(self, client, org_id, data) -> None:
+        item_id = data["low_stock_item"].id
+        with as_principal(principal_for(org_id, [])):
+            resp = await client.get(f"/api/v1/operations/inventory/{item_id}/attributes")
+        assert resp.status_code == 403
+
+    async def test_the_database_itself_refuses_a_mismatched_value_and_type(
+        self, session, org_id, data
+    ) -> None:
+        """The API's own validation (`test_a_mismatched_value_field_is_rejected`) is not the only
+        line of defence (M1) — `value_matches_type` on the table itself refuses the same shape
+        even for a write that reaches the database directly."""
+        item_id = data["low_stock_item"].id
+        with pytest.raises(IntegrityError, match="value_matches_type"):
+            async with session.begin():
+                session.add(
+                    ItemAttribute(
+                        organization_id=org_id,
+                        inventory_item_id=item_id,
+                        key="bad",
+                        value_type="number",
+                        value_text="not a number",
+                    )
+                )
+                await session.flush()
+
     async def test_another_organizations_item_is_not_found(
         self, client, admin_session, org_id
     ) -> None:
@@ -227,6 +321,16 @@ class TestItemAttributes:
             resp = await client.put(
                 f"/api/v1/operations/inventory/{other.fabric}/attributes/gsm",
                 json={"value_type": "number", "value_number": 1},
+            )
+        assert resp.status_code == 404
+
+    async def test_another_organizations_item_attribute_cannot_be_deleted(
+        self, client, admin_session, org_id
+    ) -> None:
+        other = await build_textile(admin_session, uuid.uuid4())
+        with as_principal(principal_for(org_id, [WRITE])):
+            resp = await client.delete(
+                f"/api/v1/operations/inventory/{other.fabric}/attributes/gsm"
             )
         assert resp.status_code == 404
 
@@ -270,6 +374,20 @@ class TestItemVariants:
             )
         assert clash.status_code == 409
 
+    async def test_a_variant_sku_cannot_collide_with_an_items_own_sku(
+        self, client, org_id, data
+    ) -> None:
+        """A variant SKU shares one namespace with item SKUs (LOW) — nothing else distinguishes
+        a receipt or move line's SKU as naming the item vs. one of its variants."""
+        item_id = data["low_stock_item"].id
+        other_item_sku = data["healthy_item"].sku
+        with as_principal(principal_for(org_id, [WRITE])):
+            resp = await client.post(
+                f"/api/v1/operations/inventory/{item_id}/variants",
+                json={"sku": other_item_sku, "name": "Collides with another item"},
+            )
+        assert resp.status_code == 409
+
     async def test_writing_needs_item_write(self, client, org_id, data) -> None:
         item_id = data["low_stock_item"].id
         with as_principal(principal_for(org_id, [READ])):
@@ -278,6 +396,32 @@ class TestItemVariants:
                 json={"sku": "X", "name": "X"},
             )
         assert resp.status_code == 403
+
+    async def test_reading_needs_item_read(self, client, org_id, data) -> None:
+        item_id = data["low_stock_item"].id
+        with as_principal(principal_for(org_id, [])):
+            resp = await client.get(f"/api/v1/operations/inventory/{item_id}/variants")
+        assert resp.status_code == 403
+
+    async def test_patching_and_deleting_need_item_write(self, client, org_id, data) -> None:
+        item_id = data["low_stock_item"].id
+        with as_principal(principal_for(org_id, [WRITE])):
+            created = (
+                await client.post(
+                    f"/api/v1/operations/inventory/{item_id}/variants",
+                    json={"sku": "RM-ALU-7075-PD", "name": "For permission test"},
+                )
+            ).json()
+        with as_principal(principal_for(org_id, [READ])):
+            patched = await client.patch(
+                f"/api/v1/operations/inventory/{item_id}/variants/{created['id']}",
+                json={"name": "New"},
+            )
+            deleted = await client.delete(
+                f"/api/v1/operations/inventory/{item_id}/variants/{created['id']}"
+            )
+        assert patched.status_code == 403
+        assert deleted.status_code == 403
 
     async def test_a_variant_from_another_item_is_not_found(self, client, org_id, data) -> None:
         item_id = data["low_stock_item"].id
@@ -293,6 +437,28 @@ class TestItemVariants:
                 json={"name": "Hijacked"},
             )
         assert resp.status_code == 404
+
+    async def test_another_organizations_variant_cannot_be_patched_or_deleted(
+        self, client, admin_session, org_id
+    ) -> None:
+        other = await build_textile(admin_session, uuid.uuid4())
+        other_ctx = ctx_for(other.org_id, "operations.inventory.item.write", Scope.ORG)
+        async with admin_session.begin():
+            item = await inv_selectors.get_inventory_item(admin_session, other.org_id, other.fabric)
+            assert item is not None
+            variant = await inv_services.create_item_variant(
+                admin_session, other_ctx, item, sku="THEIRS-VAR", name="Theirs"
+            )
+        with as_principal(principal_for(org_id, [WRITE])):
+            patched = await client.patch(
+                f"/api/v1/operations/inventory/{other.fabric}/variants/{variant.id}",
+                json={"name": "Hijacked"},
+            )
+            deleted = await client.delete(
+                f"/api/v1/operations/inventory/{other.fabric}/variants/{variant.id}"
+            )
+        assert patched.status_code == 404
+        assert deleted.status_code == 404
 
 
 class TestItemMasterFieldsOnTheItemCard:
@@ -324,6 +490,53 @@ class TestItemMasterFieldsOnTheItemCard:
         assert body["item_category_id"] == category["id"]
         assert (body["hsn_code"], body["track_lot"], body["track_roll"]) == ("5208", True, True)
         assert (body["track_expiry"], body["track_quality"]) == (False, False)
+
+    @pytest.mark.parametrize("hsn_code", ["", "5208", "520810", "52081010"])
+    async def test_a_well_formed_hsn_code_is_accepted(
+        self, client, org_id, data, hsn_code: str
+    ) -> None:
+        with as_principal(principal_for(org_id, [WRITE])):
+            resp = await client.post(
+                "/api/v1/operations/inventory",
+                json={
+                    "sku": f"RM-HSN-OK-{hsn_code or 'BLANK'}",
+                    "name": "Cotton fabric",
+                    "category": "raw_materials",
+                    "warehouse": "Pune Plant",
+                    "uom": "m",
+                    "hsn_code": hsn_code,
+                },
+            )
+        assert resp.status_code == 201
+        assert resp.json()["hsn_code"] == hsn_code
+
+    @pytest.mark.parametrize("hsn_code", ["520", "52081", "5208101", "520810101", "ABCD", "52 08"])
+    async def test_a_malformed_hsn_code_is_a_validation_error(
+        self, client, org_id, data, hsn_code: str
+    ) -> None:
+        with as_principal(principal_for(org_id, [WRITE])):
+            resp = await client.post(
+                "/api/v1/operations/inventory",
+                json={
+                    "sku": "RM-HSN-BAD",
+                    "name": "Cotton fabric",
+                    "category": "raw_materials",
+                    "warehouse": "Pune Plant",
+                    "uom": "m",
+                    "hsn_code": hsn_code,
+                },
+            )
+        assert resp.status_code == 422
+
+    async def test_patching_to_a_malformed_hsn_code_is_a_validation_error(
+        self, client, org_id, data
+    ) -> None:
+        item_id = data["low_stock_item"].id
+        with as_principal(principal_for(org_id, [WRITE])):
+            resp = await client.patch(
+                f"/api/v1/operations/inventory/{item_id}", json={"hsn_code": "12"}
+            )
+        assert resp.status_code == 422
 
     async def test_an_unknown_category_id_is_a_validation_error(self, client, org_id, data) -> None:
         with as_principal(principal_for(org_id, [WRITE])):
@@ -363,3 +576,82 @@ class TestItemMasterFieldsOnTheItemCard:
                 f"/api/v1/operations/inventory?item_category_id={category['id']}"
             )
         assert [i["sku"] for i in listed.json()["items"]] == ["RM-TEX-003"]
+
+
+class TestCategoryTreeConcurrency:
+    """H2: two concurrent re-parents, each checking a snapshot that looks cycle-free in
+    isolation, can still land on a cycle once both commit — `A.parent = B` and `B.parent = A`,
+    raced, each read the *other's* pre-race `parent_id IS NULL` and neither one's own check ever
+    sees what the other is about to do. `_lock_category_tree`'s `pg_advisory_xact_lock` must
+    serialise them: whichever gets the lock first commits, and the second one's check then runs
+    against the real, updated tree and is refused.
+    """
+
+    @pytest.fixture
+    async def maker(self):  # type: ignore[no-untyped-def]
+        engine = create_async_engine(
+            settings().app_dsn,
+            connect_args={"server_settings": {"search_path": f"{SCHEMA},public"}},
+            pool_size=10,
+            max_overflow=0,
+        )
+        yield async_sessionmaker(engine, expire_on_commit=False)
+        await engine.dispose()
+
+    async def _connection(self, maker, org_id: uuid.UUID) -> AsyncSession:  # type: ignore[no-untyped-def]
+        s = maker()
+
+        @event.listens_for(s.sync_session, "after_begin")
+        def _bind(_s, _t, connection) -> None:  # type: ignore[no-untyped-def]
+            connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
+
+        return s
+
+    async def test_two_concurrent_reparents_never_create_a_cycle(
+        self, session, maker, org_id
+    ) -> None:
+        ctx = ctx_for(org_id, "operations.inventory.item.write", Scope.ORG)
+        async with session.begin():
+            a = await inv_services.create_item_category(session, ctx, code="A", name="A")
+            b = await inv_services.create_item_category(session, ctx, code="B", name="B")
+
+        async def reparent(category_id: uuid.UUID, new_parent_id: uuid.UUID) -> str:
+            s = await self._connection(maker, org_id)
+            try:
+                async with s.begin():
+                    inner_ctx = ctx_for(org_id, "operations.inventory.item.write", Scope.ORG)
+                    category = await inv_selectors.get_item_category(s, org_id, category_id)
+                    assert category is not None
+                    await inv_services.update_item_category(
+                        s,
+                        inner_ctx,
+                        category,
+                        ItemCategoryPatch(parent_id=str(new_parent_id)),
+                    )
+            except ValidationProblem:
+                return "refused"
+            finally:
+                await s.close()
+            return "ok"
+
+        results = await asyncio.gather(
+            reparent(a.id, b.id), reparent(b.id, a.id), return_exceptions=False
+        )
+        # Never both "ok" — that would be a 2-cycle. Exactly one direction wins the lock.
+        assert sorted(results) == ["ok", "refused"]
+
+        async with session.begin():
+            # `a`/`b` are already in this session's identity map from the creates above, at
+            # their pre-race values — the race ran on separate connections, so a plain selector
+            # read would return that stale copy rather than what was actually committed.
+            rows = (
+                await session.execute(
+                    select(ItemCategory)
+                    .where(ItemCategory.id.in_([a.id, b.id]))
+                    .execution_options(populate_existing=True)
+                )
+            ).scalars()
+            parents = {row.id: row.parent_id for row in rows}
+        # Exactly one of the two now has a parent, and it is not a cycle.
+        non_null = [p for p in parents.values() if p is not None]
+        assert len(non_null) == 1

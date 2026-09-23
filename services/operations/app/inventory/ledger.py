@@ -47,6 +47,7 @@ from app.models import (
     InventoryItem,
     InventoryMove,
     InventoryReservation,
+    InventoryReservationRelease,
     LedgerEntry,
     Location,
     OutboxEvent,
@@ -485,7 +486,12 @@ async def post_move(
                 raise ConflictProblem("That reservation is not on this stock")
             if reservation.status != "active":
                 raise ConflictProblem(f"That reservation is {reservation.status}")
-            drawn = min(-delta, reservation.quantity_milli - reservation.consumed_milli)
+            drawn = min(
+                -delta,
+                reservation.quantity_milli
+                - reservation.consumed_milli
+                - reservation.released_milli,
+            )
 
         new_on_hand = on_hand + delta
         new_reserved = reserved - drawn
@@ -515,7 +521,13 @@ async def post_move(
         balance.updated_at = now
         if reservation is not None and drawn:
             reservation.consumed_milli += drawn
-            if reservation.consumed_milli == reservation.quantity_milli:
+            if (
+                reservation.consumed_milli + reservation.released_milli
+                == reservation.quantity_milli
+            ):
+                # Fully spoken for — by consumption, by release, or a mix of both. `consumed >
+                # 0` here (this branch only runs when `drawn` was non-zero) so "consumed" is
+                # always the right terminal status even if a release closed the remainder.
                 reservation.status = "consumed"
                 reservation.closed_at = now
                 reservation.closed_by = str(ctx.principal.sub)
@@ -773,10 +785,10 @@ async def release(
 
     Releasing an already-released reservation is a no-op (a retry is safe); releasing a fully
     consumed one, or more than is still open, is a 409. `idempotency_key` makes a retried release
-    a replay rather than a second one: the key and a hash of what was asked for are kept on the
-    reservation itself (not a global index — the row's own lock already serialises every writer
-    of it), so the same key with the same quantity replays and the same key with a different one
-    is refused.
+    a replay rather than a second one: each key that actually released something is recorded in
+    `inventory_reservation_releases`, looked up under the reservation's own row lock (so a
+    concurrent duplicate blocks on that lock rather than racing the lookup) — the same key with
+    the same quantity replays, the same key with a different one is refused.
     """
     org_id = ctx.organization_id
     found = (
@@ -805,10 +817,22 @@ async def release(
     assert reservation is not None
 
     request_hash = _request_hash({"quantity_milli": quantity_milli}) if idempotency_key else None
-    if idempotency_key is not None and reservation.release_idempotency_key == idempotency_key:
-        if reservation.release_request_hash != request_hash:
-            raise ConflictProblem("That idempotency key was already used for a different release")
-        return reservation  # replay: already applied, nothing to redo
+    if idempotency_key is not None:
+        existing_release = (
+            await session.execute(
+                select(InventoryReservationRelease).where(
+                    InventoryReservationRelease.organization_id == org_id,
+                    InventoryReservationRelease.reservation_id == reservation_id,
+                    InventoryReservationRelease.idempotency_key == idempotency_key,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_release is not None:
+            if existing_release.request_hash != request_hash:
+                raise ConflictProblem(
+                    "That idempotency key was already used for a different release"
+                )
+            return reservation  # replay: already applied, nothing to redo
 
     if reservation.status == "released":
         return reservation
@@ -837,8 +861,15 @@ async def release(
         reservation.closed_at = now
         reservation.closed_by = str(ctx.principal.sub)
     if idempotency_key is not None:
-        reservation.release_idempotency_key = idempotency_key
-        reservation.release_request_hash = request_hash
+        session.add(
+            InventoryReservationRelease(
+                organization_id=org_id,
+                reservation_id=reservation_id,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash or "",
+                released_milli=released_now,
+            )
+        )
     await session.flush()
 
     detail = {

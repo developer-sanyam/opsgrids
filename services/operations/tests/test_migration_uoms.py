@@ -93,13 +93,24 @@ async def seed_old_shape(conn, org: uuid.UUID) -> dict[str, uuid.UUID]:  # type:
         {"wh": wh, "org": org},
     )
     ids = {
-        name: uuid.uuid4() for name in ("kilo", "pieces_upper", "tonnes", "tonnes_lower", "blank")
+        name: uuid.uuid4()
+        for name in (
+            "kilo",
+            "pieces_upper",
+            "tonnes",
+            "tonnes_lower",
+            "meter_alias",
+            "spaced",
+            "blank",
+        )
     }
     items = [
         (ids["kilo"], "RM-KILO", "kg"),  # matches a seed code exactly
         (ids["pieces_upper"], "RM-PCS", "PCS"),  # matches a seed code case-insensitively
         (ids["tonnes"], "RM-MT-1", "MT"),  # the registry does not know "MT"
         (ids["tonnes_lower"], "RM-MT-2", "mt"),  # same unknown unit, different case
+        (ids["meter_alias"], "RM-MTR", "Meter"),  # an alias, not the code itself
+        (ids["spaced"], "RM-SPACED", " kg "),  # same seed code, stray whitespace
         (ids["blank"], "RM-BLANK", ""),  # no unit at all
     ]
     for item_id, sku, uom in items:
@@ -152,6 +163,8 @@ async def test_every_item_resolves_a_uom_and_nothing_is_lost(admin) -> None:
             "RM-PCS": ("pcs", True),
             "RM-MT-1": ("mt", False),
             "RM-MT-2": ("mt", False),
+            "RM-MTR": ("m", True),  # "Meter" is an alias of the seeded "m", not its own row
+            "RM-SPACED": ("kg", True),  # " kg " folds to the same seeded row as "kg"
             "RM-BLANK": (None, None),
         }
         # The two unknown-unit spellings collapsed onto the *same* custom row.
@@ -188,6 +201,8 @@ async def test_every_item_resolves_a_uom_and_nothing_is_lost(admin) -> None:
             "RM-PCS": "PCS",
             "RM-MT-1": "MT",
             "RM-MT-2": "mt",
+            "RM-MTR": "Meter",
+            "RM-SPACED": " kg ",
             "RM-BLANK": "",
         }
 

@@ -16,7 +16,7 @@ import uuid
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, cast, func, select, update
+from sqlalchemy import BigInteger, cast, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
@@ -158,18 +158,33 @@ async def resolve_or_create_uom(
     existing = await inv_selectors.get_uom_by_code(session, org_id, canonical)
     if existing is not None:
         return existing
-    uom = Uom(
-        organization_id=org_id,
-        created_by=actor,
-        code=canonical,
-        name=quantity.UNIT_NAMES[canonical] if known else stripped,
-        dimension=known.dimension if known else "other",
-        is_discrete=known.discrete if known else False,
-        is_system=known is not None,
-    )
-    session.add(uom)
-    await session.flush()
-    return uom
+    # Two requests naming the same brand-new unit for the first time race on the unique
+    # (organization_id, code) index; `ON CONFLICT DO NOTHING` + a reselect makes the loser return
+    # the winner's row instead of raising an `IntegrityError` the caller never asked to handle.
+    inserted = (
+        await session.execute(
+            pg_insert(Uom)
+            .values(
+                organization_id=org_id,
+                created_by=actor,
+                code=canonical,
+                name=quantity.UNIT_NAMES[canonical] if known else stripped,
+                dimension=known.dimension if known else "other",
+                is_discrete=known.discrete if known else False,
+                is_system=known is not None,
+            )
+            .on_conflict_do_nothing(
+                index_elements=["organization_id", "code"], index_where=Uom.deleted_at.is_(None)
+            )
+            .returning(Uom)
+        )
+    ).scalar_one_or_none()
+    if inserted is not None:
+        return inserted
+    winner = await inv_selectors.get_uom_by_code(session, org_id, canonical)
+    if winner is None:  # pragma: no cover - the conflict target guarantees a row exists
+        raise ConflictProblem(f"{canonical!r} could not be resolved to a unit of measure")
+    return winner
 
 
 # ------------------------------------------------------------------ warehouses
@@ -383,6 +398,20 @@ async def delete_warehouse(
 # ------------------------------------------------------------------ item categories
 
 
+async def _lock_category_tree(session: AsyncSession, org_id: uuid.UUID) -> None:
+    """Serialise every writer of this organization's category tree for the rest of the
+    transaction (H2). There is no single row that names "the tree", so `SELECT … FOR UPDATE` has
+    nothing to lock: two concurrent re-parents, or a re-parent racing a create-with-a-parent or a
+    delete, can each read a cycle-free snapshot and still land on a cycle or a dangling reference
+    once both commit. `pg_advisory_xact_lock` is released automatically at commit or rollback, so
+    a bug here cannot leak a lock across requests the way a session-level advisory lock could.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"item_categories:{org_id}"},
+    )
+
+
 async def _would_cycle(
     session: AsyncSession, org_id: uuid.UUID, category_id: uuid.UUID, new_parent_id: uuid.UUID
 ) -> bool:
@@ -426,6 +455,7 @@ async def create_item_category(
     parent_id: str | None = None,
     request: Request | None = None,
 ) -> ItemCategory:
+    await _lock_category_tree(session, ctx.organization_id)
     if await inv_selectors.get_item_category_by_code(session, ctx.organization_id, code):
         raise _duplicate("code", f"A category coded {code!r} already exists")
     resolved_parent = await _resolve_category_parent(session, ctx.organization_id, parent_id)
@@ -474,6 +504,8 @@ async def update_item_category(
 ) -> ItemCategory:
     changes = payload.model_dump(exclude_unset=True)
     if "parent_id" in changes:
+        # Only a re-parent needs the tree-wide lock — a plain rename cannot create a cycle.
+        await _lock_category_tree(session, ctx.organization_id)
         changes["parent_id"] = await _resolve_category_parent(
             session, ctx.organization_id, changes["parent_id"], own_id=category.id
         )
@@ -523,6 +555,7 @@ async def delete_item_category(
     """Soft-delete a category. Refused (409) while it still has sub-categories or classifies any
     live item — move or clear them first."""
     org_id = ctx.organization_id
+    await _lock_category_tree(session, org_id)
     children = await inv_selectors.count_item_category_children(session, org_id, category.id)
     items = await inv_selectors.count_items_in_category(session, org_id, category.id)
     if children or items:
@@ -572,6 +605,10 @@ async def _resolve_item_category(
         category_id = uuid.UUID(value)
     except ValueError as exc:
         raise ValidationProblem("item_category_id must be a UUID") from exc
+    # Same lock `delete_item_category` takes (H2): without it, an item can be assigned to a
+    # category between that delete's "any items still classified here?" check and its commit,
+    # leaving the item pointing at a category that is (or is about to be) gone.
+    await _lock_category_tree(session, org_id)
     if await inv_selectors.get_item_category(session, org_id, category_id) is None:
         raise ValidationProblem("item_category_id does not match an existing category")
     return category_id
@@ -737,13 +774,19 @@ async def update_inventory_item(
         new_home = await _home_for(session, ctx.organization_id, changes["warehouse"])
     elif "warehouse" in changes:
         await _home_for(session, ctx.organization_id, changes["warehouse"])
-    new_uom = (
-        await resolve_or_create_uom(
+    new_uom = None
+    if "uom" in changes and changes["uom"] != item.uom:
+        # The unit is the scale every existing milli-quantity for this item was recorded in
+        # (M5) — changing it once any balance or ledger row exists would silently reinterpret
+        # that history in a different unit, not just "how much is on hand right now".
+        if await inv_selectors.has_stock_history(session, ctx.organization_id, item.id):
+            raise ConflictProblem(
+                f"{item.sku} already has stock history in {item.uom!r}; its unit of measure "
+                "cannot change once any stock has moved"
+            )
+        new_uom = await resolve_or_create_uom(
             session, ctx.organization_id, changes["uom"], str(ctx.principal.sub)
         )
-        if "uom" in changes
-        else None
-    )
     # Resolved ahead of the generic loop so a bad id is refused before anything is written.
     if "item_category_id" in changes:
         changes["item_category_id"] = await _resolve_item_category(
@@ -1044,6 +1087,10 @@ async def create_item_variant(
     org_id = ctx.organization_id
     if await inv_selectors.get_item_variant_by_sku(session, org_id, sku):
         raise ConflictProblem(f"A variant with SKU {sku!r} already exists")
+    # A variant's SKU shares one namespace with the item SKU it decorates — nothing else in this
+    # org distinguishes a receipt/move line's SKU as "the item" vs. "one of its variants" (LOW).
+    if await inv_selectors.get_inventory_by_sku(session, org_id, sku):
+        raise ConflictProblem(f"An inventory item with SKU {sku!r} already exists")
 
     variant = ItemVariant(
         organization_id=org_id,

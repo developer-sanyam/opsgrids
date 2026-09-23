@@ -214,12 +214,14 @@ def upgrade() -> None:
         sa.Column("id", sa.UUID(), nullable=False),
         sa.Column("organization_id", sa.UUID(), nullable=False),
         sa.CheckConstraint(ATTRIBUTE_TYPE_CHECK, name=op.f("ck_item_attributes_value_type_known")),
+        # Ties `value_type` to its own column — see `app.models.ItemAttribute` for why this
+        # replaced a plain "exactly one of the four is non-null" count.
         sa.CheckConstraint(
-            "(CASE WHEN value_text IS NOT NULL THEN 1 ELSE 0 END) + "
-            "(CASE WHEN value_number IS NOT NULL THEN 1 ELSE 0 END) + "
-            "(CASE WHEN value_boolean IS NOT NULL THEN 1 ELSE 0 END) + "
-            "(CASE WHEN value_date IS NOT NULL THEN 1 ELSE 0 END) = 1",
-            name=op.f("ck_item_attributes_exactly_one_value"),
+            "(value_type = 'text') = (value_text IS NOT NULL) AND "
+            "(value_type = 'number') = (value_number IS NOT NULL) AND "
+            "(value_type = 'boolean') = (value_boolean IS NOT NULL) AND "
+            "(value_type = 'date') = (value_date IS NOT NULL)",
+            name=op.f("ck_item_attributes_value_matches_type"),
         ),
         sa.ForeignKeyConstraint(
             ["inventory_item_id"],

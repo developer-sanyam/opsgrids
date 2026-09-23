@@ -243,7 +243,7 @@ def convert_by_ratio(
     denominator: int,
     *,
     invert: bool = False,
-    discrete: bool = False,
+    discrete: bool,
     rounding: Rounding | None = None,
 ) -> int:
     """Convert milli-units through an item-specific rational ratio (a Phase 1 `uom_conversions`
@@ -252,14 +252,18 @@ def convert_by_ratio(
     `invert=False` converts milli-units of the *container* unit (the box) into milli-units of the
     item's stock unit (the pcs); `invert=True` goes the other way. `discrete` names whether the
     *destination* of this call is counted in whole units — the caller knows which side that is,
-    unlike `convert`, which reads it off the fixed registry.
+    unlike `convert`, which reads it off the fixed registry. It has no default: guessing wrong
+    silently lets a fractional box or carton through, so every caller must say which it means.
     """
     if numerator <= 0 or denominator <= 0:
         raise QuantityError("A unit conversion ratio is a positive numerator and denominator")
     factor = Fraction(denominator, numerator) if invert else Fraction(numerator, denominator)
-    return _apply_factor(
+    result = _apply_factor(
         milli, factor, dst_discrete=discrete, dst_label="that unit", rounding=rounding
     )
+    if abs(result) > MAX_ABS_MILLI:
+        raise QuantityError("That quantity is too large")
+    return result
 
 
 def value_minor(milli: int, unit_cost_minor: int) -> int:

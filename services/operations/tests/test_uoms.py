@@ -161,15 +161,29 @@ class TestItemUsesTheDirectory:
     async def test_updating_an_items_uom_re_resolves_it(
         self, client, session, org_id, data
     ) -> None:
-        item_id = data["low_stock_item"].id
+        """Re-resolution on a `uom` change is only reachable before any stock has moved (M5
+        refuses it once history exists — covered in `test_ledger.py`'s
+        `TestItemLevelCompatibility`), so this exercises a freshly created, still-empty item."""
         with as_principal(principal_for(org_id, [WRITE])):
+            item_id = (
+                await client.post(
+                    "/api/v1/operations/inventory",
+                    json={
+                        "sku": "RM-UOM-RESOLVE",
+                        "name": "Blank widget",
+                        "category": "raw_materials",
+                        "warehouse": "Pune Plant",
+                        "uom": "kg",
+                    },
+                )
+            ).json()["id"]
             resp = await client.patch(
                 f"/api/v1/operations/inventory/{item_id}", json={"uom": "Tonnes"}
             )
         assert resp.status_code == 200
         assert resp.json()["uom"] == "Tonnes"
         async with session.begin():
-            item = await inv_selectors.get_inventory_item(session, org_id, item_id)
+            item = await inv_selectors.get_inventory_item(session, org_id, uuid.UUID(item_id))
             assert item.uom_id is not None
             uom = await inv_selectors.get_uom(session, org_id, item.uom_id)
         assert uom is not None and uom.code == "tonnes"
