@@ -38,7 +38,7 @@ today; that is a documented Phase 1 prerequisite, not a Phase 0 bug.
 | 2 | **Document service and MinIO on the edge** | **Done — PR #39, awaiting merge** | Fixes Storefront's console image upload in production. Adds ~448 MiB under the `storefront` profile. |
 | 3 | **Scheduler service, first consumer: finance `not_before`** | In progress | `services/scheduler` is a scaffold. e-Invoice and e-Way retries carry their own delay and are redelivered at once instead. Per-service cron containers move onto it later. |
 | 4 | **Review follow-ups (UI)** | **Done — PR #41, awaiting merge** | `FormDialog` inside another dialog's form also submits the outer form (React events bubble through portals); Combobox's lookup error is not announced to screen readers, and "Try again" drops keyboard focus to `<body>`. |
-| 5 | **Review follow-ups (deploy tooling)** | In progress | No automated test pins `remote.sh`'s full-rebuild rule; the dev bootstrap still pulls `minio/minio`, which Docker Hub no longer serves (the edge uses `quay.io/minio/minio`). |
+| 5 | **Review follow-ups (deploy tooling)** | **Done — PR #42, awaiting merge** | No automated test pins `remote.sh`'s full-rebuild rule; the dev bootstrap still pulls `minio/minio`, which Docker Hub no longer serves (the edge uses `quay.io/minio/minio`). |
 | 6 | **GSTR-3B and the input-tax-credit ledger** | Not started | The next compliance slice that needs no credentials, using the stub-client pattern. Larger than 1 to 5. |
 | 7 | **HRMS: leave, payroll, recruit** | Not started | employee and attendance are live. |
 | 8 | **Engage follow-ups** | Not started | Event contracts for `engage.campaign.*` (repo-wide: `libs/contracts` holds no event schemas yet); erasure of a contact's sealed copies in `campaign_recipients.email_enc`; `GET /engage/unsubscribe/{token}` unsubscribes on a mail scanner's prefetch — it should show a confirm page and leave the one-click `POST` to do the work. |
@@ -63,7 +63,8 @@ today; that is a documented Phase 1 prerequisite, not a Phase 0 bug.
   No-route campaigns pause with a reason and resume; addresses are masked in logs.
 
 Awaiting merge: #37 (HRMS delegation tests had a hard-coded date that expired on 2026-09-23),
-#38, #39 and #41 (items 1, 2 and 4).
+#38, #39, #41 and #42 (items 1, 2, 4 and 5). #42 also fixes a secret-scan false positive that
+would fail the supply-chain job on `main` as soon as CI runs again.
 
 **Delivered before that** (#2 to #25):
 - notification service and event-bus wiring (#2)
