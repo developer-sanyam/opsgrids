@@ -142,6 +142,12 @@ jobs:
         # a time.
         run: make typecheck-libs typecheck-services typecheck-tools
 
+      - name: Deploy-tooling tests
+        # remote.sh's rebuild rule and ci-plan.sh's path logic, each against a throwaway
+        # git repo the test builds itself. No database, no `make infra` — fits here, not
+        # in the tests job below.
+        run: make test-infra
+
       - name: Shard arithmetic
         # Asserts the shards below partition the service list exactly. The failure this
         # prevents is silent: a miscount does not break a build, it drops a service's tests
