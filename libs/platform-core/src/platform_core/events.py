@@ -17,6 +17,7 @@ import json
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Final
 
 import aio_pika
@@ -186,6 +187,46 @@ def build_envelope(row: Any, *, producer: str) -> dict[str, Any]:
         "schema_uri": f"opsgrids://contracts/{row.event_type}/v{row.event_version}",
         "payload": row.payload,
     }
+
+
+def event_schema_path(event_type: str, version: int, *, contracts_root: Path) -> Path:
+    """Where `build_envelope`'s `schema_uri` for `(event_type, version)` resolves on disk.
+
+    `opsgrids://contracts/{event_type}/v{version}` names a schema, not a file, so this is the
+    one place that URI is turned into a path — every publisher's schema lives at
+    `libs/contracts/events/<event_type>/v<version>.schema.json`, and this function is what a
+    test asks instead of building that string itself and drifting from `build_envelope`.
+    """
+    return contracts_root / "events" / event_type / f"v{version}.schema.json"
+
+
+def validate_event_schema(
+    event_type: str, version: int, payload: dict[str, Any], *, contracts_root: Path
+) -> None:
+    """Raise if `payload` does not match the committed JSON Schema for this event.
+
+    Dev/test-time only: nothing on the publish path (`publish_event`, the relay) calls this —
+    `jsonschema` is a dev dependency, not a runtime one, imported here rather than at module
+    level so importing `platform_core.events` in a service that never validates a contract never
+    requires it to be installed. The intended caller is a service's own test suite, building a
+    real event through the real function that publishes it and checking the payload that
+    produced against the schema committed for it (`libs/contracts/events/...`), the same way
+    `tools/export_openapi.py --check` catches an OpenAPI document that fell behind its code.
+
+    Raises `FileNotFoundError` for an event type or version with no committed schema — a
+    publisher that shipped ahead of its contract — and `jsonschema.ValidationError` for a
+    payload that does not match one that exists.
+    """
+    from jsonschema import Draft202012Validator, FormatChecker
+
+    path = event_schema_path(event_type, version, contracts_root=contracts_root)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"No committed schema for {event_type} v{version} at {path} — add one under "
+            "libs/contracts/events/."
+        )
+    schema = json.loads(path.read_text(encoding="utf-8"))
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(payload)
 
 
 class OutboxRelay:

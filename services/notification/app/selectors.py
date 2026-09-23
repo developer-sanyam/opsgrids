@@ -523,6 +523,7 @@ async def sendable_contacts(
     limit: int = 1000,
     after_id: uuid.UUID | None = None,
     list_id: uuid.UUID | None = None,
+    lock: bool = False,
 ) -> list[Contact]:
     """Contacts a campaign may send to: the organization's contacts minus every suppressed
     address, whatever the reason.
@@ -531,6 +532,15 @@ async def sendable_contacts(
     before the contact existed and for one written after — a re-imported address that once
     unsubscribed stays unreachable. Keyset-paged by id (`after_id`) so a sender can walk a large
     audience without an OFFSET that shifts under concurrent writes.
+
+    `lock=True` is `expand_campaign`'s: `SELECT ... FOR KEY SHARE` on every contact in the
+    page, held until expansion's transaction commits. Postgres's `DELETE` takes a row lock that
+    conflicts with `FOR KEY SHARE`, so a concurrent `delete_contact` on one of these rows blocks
+    until this transaction ends — the read and the copy `expand_campaign` writes into
+    `campaign_recipients` cannot straddle a deletion whose own `erase_contact_campaign_copies`
+    ran and committed before the copy existed to erase. `FOR KEY SHARE` rather than a stronger
+    mode because it is the one lock that never conflicts with another `expand_campaign` page
+    reading the same contact for a different campaign, or with an ordinary read.
     """
     suppressed = exists().where(
         Suppression.organization_id == Contact.organization_id,
@@ -555,6 +565,8 @@ async def sendable_contacts(
     if after_id is not None:
         stmt = stmt.where(Contact.id > after_id)
     stmt = stmt.order_by(Contact.id.asc()).limit(limit)
+    if lock:
+        stmt = stmt.with_for_update(key_share=True)
     return list((await session.execute(stmt)).scalars())
 
 
@@ -774,6 +786,52 @@ async def recipients_by_id(
     )
     rows = (await session.execute(stmt)).scalars()
     return {r.id: r for r in rows}
+
+
+async def get_recipient_for_unsubscribe(
+    session: AsyncSession, org_id: uuid.UUID, recipient_id: uuid.UUID
+) -> CampaignRecipient | None:
+    """One `campaign_recipients` row, by id — what a v2 unsubscribe link resolves against.
+    No campaign id: the token names the recipient row directly, not the campaign it belongs to.
+    Erased rows are invisible here — the caller (`services.unsubscribe_recipient`) treats that
+    the same as the id naming nothing at all, since there is no address left to suppress."""
+    stmt = select(CampaignRecipient).where(
+        CampaignRecipient.id == recipient_id,
+        CampaignRecipient.organization_id == org_id,
+        CampaignRecipient.erased_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def erased_recipient_ids(
+    session: AsyncSession, org_id: uuid.UUID, recipient_ids: list[uuid.UUID]
+) -> set[uuid.UUID]:
+    """Which of `recipient_ids` have since been erased — the campaign driver's last check,
+    immediately before a transport is asked to send any of them (`services.
+    drop_erased_from_batch`), closing most of the window between a batch's claim and its send.
+    """
+    if not recipient_ids:
+        return set()
+    stmt = select(CampaignRecipient.id).where(
+        CampaignRecipient.organization_id == org_id,
+        CampaignRecipient.id.in_(recipient_ids),
+        CampaignRecipient.erased_at.is_not(None),
+    )
+    return set((await session.execute(stmt)).scalars())
+
+
+async def masked_recipient_email(
+    session: AsyncSession, org_id: uuid.UUID, recipient_id: uuid.UUID
+) -> str | None:
+    """The masked address for one campaign recipient row, for a v2 unsubscribe link's
+    confirmation page — read directly off the row, never a decrypt, since the page has not
+    acted on anything yet."""
+    stmt = select(CampaignRecipient.email_masked).where(
+        CampaignRecipient.id == recipient_id,
+        CampaignRecipient.organization_id == org_id,
+        CampaignRecipient.erased_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
 
 
 async def due_campaigns(

@@ -40,12 +40,13 @@ cfg = settings()
 #: would then be carrying a product concern it has no use for. A two-line change in the gateway
 #: *service* is the right blast radius.
 #:
-#: **Exact match, and that is a constraint on the whole future buyer API rather than a quirk of
-#: this route.** `build_gateway` tests `full_path in policy.public_paths`, and `full_path` is
-#: `f"/api/{path}"` from the `{path:path}` catch-all — so it excludes the query string, a public
-#: *prefix* is not configurable, and a public path with a path parameter is not expressible at
-#: all. Every anonymous storefront endpoint must therefore carry its variables in the query
-#: string or the request body; the store slug travels in the body here for exactly that reason.
+#: **Exact match, and that is a constraint on the whole storefront buyer API rather than a
+#: quirk of this route.** `build_gateway` tests `full_path in policy.public_paths` (`full_path`
+#: is the normalised `f"/api/{path}"` from the `{path:path}` catch-all, excluding the query
+#: string), so a path with a variable segment is not expressible here — a route that needs one,
+#: like the per-recipient Engage unsubscribe link below, uses `public_path_prefixes` instead.
+#: Every anonymous storefront endpoint carries its variables in the query string or the request
+#: body instead; the store slug travels in the body here for exactly that reason.
 #:
 #: Being on this list means: no token required, limited by client IP rather than by caller, and
 #: **no entitlement check** — the public branch of the proxy returns before that gate. It does
@@ -78,6 +79,20 @@ STOREFRONT_PUBLIC_PATHS = frozenset(
 #: `password/forgot`, which is already public above.
 ACCOUNT_PUBLIC_PATHS = frozenset({"/api/v1/account/signup"})
 
+#: The one Engage surface with no principal: the recipient of a campaign clicking the
+#: unsubscribe link in it. That link is `.../unsubscribe/{token}` — a path variable, which is
+#: exactly what `public_paths`'s exact match cannot express — so it is a *prefix* instead,
+#: checked against the normalised path (`GatewayPolicy.public_path_prefixes`'s own docstring),
+#: never the raw one: a request dressed up as `.../unsubscribe/x/../../senders` is judged by
+#: where it actually routes, not by what it merely starts with as text.
+#:
+#: The token is the whole of its authority — notification-service verifies the HMAC over it
+#: and refuses anything that does not check out — so this prefix carries exactly the same
+#: "reachable, but authorized by its own signed credential rather than a bearer token" shape
+#: the storefront's public paths above already establish, just for a route the exact-match list
+#: cannot name. Anonymous, IP-rate-limited, no identity header, same as every other entry here.
+ENGAGE_PUBLIC_PATH_PREFIXES = frozenset({"/api/v1/engage/unsubscribe/"})
+
 # Resolved relative to the service directory so `make run` and the container image agree.
 _routes_path = Path(cfg.routes_file)
 if not _routes_path.is_absolute():
@@ -88,6 +103,7 @@ routes = RouteTable.from_file(_routes_path)
 policy = GatewayPolicy(
     audience=cfg.audience,
     public_paths=DEFAULT_PUBLIC_PATHS | STOREFRONT_PUBLIC_PATHS | ACCOUNT_PUBLIC_PATHS,
+    public_path_prefixes=ENGAGE_PUBLIC_PATH_PREFIXES,
     rate_limit=cfg.rate_limit_per_minute,
     anonymous_rate_limit=cfg.anonymous_rate_limit_per_minute,
     upstream_timeout=cfg.upstream_timeout_seconds,

@@ -10,6 +10,8 @@ about "sent" is an assertion about what the transport was handed.
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import contextlib
 import uuid
 from collections.abc import AsyncIterator, Iterator
@@ -19,13 +21,14 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import func, select, update
 
-from app import consumers, models, services
+from app import consumers, models, selectors, services
 from app.config import settings
 from app.main import app
 from app.transports import Outgoing, Receipt, RecordingTransport, Transport, TransportRefused
 from app.transports import send_batch as transport_send_batch
 from platform_core.auth import Principal, Scope, get_principal
 from platform_core.db import dispose_engine, init_engine
+from platform_core.pii import open_sealed
 from tests.helpers import ctx_for, envelope_for, principal_for
 
 pytestmark = pytest.mark.integration
@@ -39,6 +42,7 @@ L_WRITE = "engage.audience.list.write"
 K_READ = "engage.campaign.campaign.read"
 K_WRITE = "engage.campaign.campaign.write"
 K_SEND = "engage.campaign.campaign.send"
+C_READ = "engage.audience.contact.read"
 C_WRITE = "engage.audience.contact.write"
 S_WRITE = "engage.audience.suppression.write"
 ALL = [f"{p}:ORG" for p in (L_READ, L_WRITE, K_READ, K_WRITE, K_SEND, C_WRITE, S_WRITE)]
@@ -394,7 +398,9 @@ async def test_the_driver_sends_the_whole_audience_with_unsubscribe_header_and_f
     session, org_id, worker_engine
 ):
     sender_id = await _seed_identity(session, org_id)
-    await _contacts(session, org_id, "a@example.com", "b@example.com", "gone@example.com")
+    emails = ["a@example.com", "b@example.com", "gone@example.com"]
+    contacts = await _contacts(session, org_id, *emails)
+    email_by_contact_id = dict(zip((c.id for c in contacts), emails, strict=True))
     async with session.begin():
         await services.add_suppression(
             session, ctx_for(org_id, S_WRITE, Scope.ORG), email="gone@example.com"
@@ -409,13 +415,35 @@ async def test_the_driver_sends_the_whole_audience_with_unsubscribe_header_and_f
     assert await _drain(session, org_id, campaign_id, transport=wire) == "stopped"
 
     assert sorted(m.to_address for m in wire.sent) == ["a@example.com", "b@example.com"]
+    async with session.begin():
+        rows = (
+            (
+                await session.execute(
+                    select(models.CampaignRecipient).where(
+                        models.CampaignRecipient.campaign_id == campaign_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    recipient_id_by_email = {email_by_contact_id[r.contact_id]: r.id for r in rows}
     for message in wire.sent:
-        link = services.unsubscribe_url(org_id, message.to_address)
+        link = services.unsubscribe_url_for_recipient(
+            org_id, recipient_id_by_email[message.to_address]
+        )
         assert message.headers is not None
         assert message.headers["List-Unsubscribe"] == f"<{link}>"
         assert message.headers["List-Unsubscribe-Post"] == "List-Unsubscribe=One-Click"
         assert link in message.body
         assert message.html is not None and link in message.html
+        # Opaque: the recipient's address must not be recoverable from the link itself — a
+        # mail client, a proxy, and every access log between here and the recipient's inbox
+        # all get to see this exact string.
+        assert message.to_address not in link
+        assert (
+            base64.urlsafe_b64encode(message.to_address.encode()).rstrip(b"=") not in link.encode()
+        )
 
     reloaded = await _reload(session, campaign_id)
     assert reloaded.status == "sent"
@@ -446,6 +474,359 @@ async def test_an_address_suppressed_after_expansion_is_skipped(session, org_id,
 async def services_unsubscribe(session, org_id, email) -> None:
     async with session.begin():
         await services.unsubscribe(session, organization_id=org_id, email=email)
+
+
+async def test_a_contact_deleted_after_expansion_is_skipped_not_crashed(
+    session, org_id, worker_engine
+):
+    """The driver must never try to decrypt an erased recipient's address, and the campaign's
+    own record of the send must survive the contact it names."""
+    sender_id = await _seed_identity(session, org_id)
+    keep, gone = await _contacts(session, org_id, "a@example.com", "gone@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    await _send(session, org_id, campaign_id)
+    async with session.begin():
+        await services.expand_campaign(
+            session, organization_id=org_id, campaign_id=campaign_id, batch_size=10
+        )
+    async with session.begin():
+        erased = await services.erase_contact_campaign_copies(
+            session, organization_id=org_id, contact_id=gone.id
+        )
+    assert erased == 1
+
+    wire = RecordingTransport()
+    assert await _drain(session, org_id, campaign_id, transport=wire) == "done"
+    assert [m.to_address for m in wire.sent] == ["a@example.com"]
+    statuses = await _recipients(session, campaign_id)
+    assert sorted(statuses.values()) == ["failed", "sent"]
+
+    async with session.begin():
+        row = (
+            await session.execute(
+                select(models.CampaignRecipient).where(
+                    models.CampaignRecipient.campaign_id == campaign_id,
+                    models.CampaignRecipient.contact_id == gone.id,
+                )
+            )
+        ).scalar_one()
+    assert row.status == "failed"
+    assert row.erased_at is not None
+    assert row.email_masked == "(erased)"
+    assert row.error == "This recipient's address was erased"
+    # Erasing again (a second deletion attempt, a redelivered erasure event) is a no-op.
+    async with session.begin():
+        assert (
+            await services.erase_contact_campaign_copies(
+                session, organization_id=org_id, contact_id=gone.id
+            )
+            == 0
+        )
+    assert keep.id != gone.id
+
+
+async def test_deleting_a_contact_erases_their_sealed_address_from_campaign_history(
+    session, org_id
+):
+    sender_id = await _seed_identity(session, org_id)
+    [contact] = await _contacts(session, org_id, "leaving@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    async with session.begin():
+        session.add(
+            models.CampaignRecipient(
+                organization_id=org_id,
+                campaign_id=campaign_id,
+                contact_id=contact.id,
+                email_enc=contact.email_enc,
+                email_masked=contact.email_masked,
+                email_index=contact.email_index,
+                status="sent",
+            )
+        )
+
+    async with session.begin():
+        await services.delete_contact(
+            session, ctx_for(org_id, C_WRITE, Scope.ORG), contact_id=contact.id
+        )
+
+    async with session.begin():
+        assert await session.get(models.Contact, contact.id) is None
+        row = (
+            await session.execute(
+                select(models.CampaignRecipient).where(
+                    models.CampaignRecipient.contact_id == contact.id
+                )
+            )
+        ).scalar_one()
+    # The delivery record survives the contact; the real address inside it does not — `email_enc`
+    # opens to a placeholder now, never back to "leaving@example.com".
+    assert row.status == "sent"
+    assert row.erased_at is not None
+    assert row.email_masked == "(erased)"
+    assert row.email_index == ""
+    assert open_sealed(row.email_enc, settings=services.settings()) == services._ERASED_PLACEHOLDER
+
+
+async def test_erasing_a_contact_fails_a_still_queued_recipient_row_on_the_spot(session, org_id):
+    """Closes the wider half of the claim-then-erase race: a row erasure catches before the
+    driver ever claims it must not be left `queued` for an ordinary claim to still pick up,
+    decrypt, and send before anything re-checks `erased_at`."""
+    sender_id = await _seed_identity(session, org_id)
+    [contact] = await _contacts(session, org_id, "queued@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    await _send(session, org_id, campaign_id)
+    async with session.begin():
+        await services.expand_campaign(
+            session, organization_id=org_id, campaign_id=campaign_id, batch_size=10
+        )
+
+    async with session.begin():
+        erased = await services.erase_contact_campaign_copies(
+            session, organization_id=org_id, contact_id=contact.id
+        )
+    assert erased == 1
+
+    async with session.begin():
+        row = (
+            await session.execute(
+                select(models.CampaignRecipient).where(
+                    models.CampaignRecipient.contact_id == contact.id
+                )
+            )
+        ).scalar_one()
+    assert row.status == "failed"
+    assert row.error == services._ERASED_ERROR
+    assert row.erased_at is not None
+
+
+async def test_erasing_a_contact_in_one_org_leaves_another_orgs_identical_address_untouched(
+    admin_session,
+):
+    org_a, org_b = uuid.uuid4(), uuid.uuid4()
+    sender_a = await _seed_identity(admin_session, org_a)
+    sender_b = await _seed_identity(admin_session, org_b)
+    [contact_a] = await _contacts(admin_session, org_a, "shared@example.com")
+    [contact_b] = await _contacts(admin_session, org_b, "shared@example.com")
+    campaign_a = await _campaign(admin_session, org_a, sender_a)
+    campaign_b = await _campaign(admin_session, org_b, sender_b)
+    async with admin_session.begin():
+        for org, campaign_id, contact in (
+            (org_a, campaign_a, contact_a),
+            (org_b, campaign_b, contact_b),
+        ):
+            admin_session.add(
+                models.CampaignRecipient(
+                    organization_id=org,
+                    campaign_id=campaign_id,
+                    contact_id=contact.id,
+                    email_enc=contact.email_enc,
+                    email_masked=contact.email_masked,
+                    email_index=contact.email_index,
+                    status="queued",
+                )
+            )
+
+    async with admin_session.begin():
+        erased = await services.erase_contact_campaign_copies(
+            admin_session, organization_id=org_a, contact_id=contact_a.id
+        )
+    assert erased == 1
+
+    async with admin_session.begin():
+        row_a = (
+            await admin_session.execute(
+                select(models.CampaignRecipient).where(
+                    models.CampaignRecipient.campaign_id == campaign_a
+                )
+            )
+        ).scalar_one()
+        row_b = (
+            await admin_session.execute(
+                select(models.CampaignRecipient).where(
+                    models.CampaignRecipient.campaign_id == campaign_b
+                )
+            )
+        ).scalar_one()
+    assert row_a.erased_at is not None
+    assert row_b.erased_at is None
+    assert row_b.email_masked != "(erased)"
+    assert open_sealed(row_b.email_enc, settings=services.settings()) == "shared@example.com"
+
+
+async def _delete_via(session, org_id, contact_id) -> None:
+    write = ctx_for(org_id, C_WRITE, Scope.ORG)
+    async with session.begin():
+        await services.delete_contact(session, write, contact_id=contact_id)
+
+
+async def test_expansions_key_share_lock_blocks_a_concurrent_contact_delete(
+    session, admin_session, org_id
+):
+    """The mechanism that closes the expansion-vs-erasure race: a contact a page of expansion
+    is reading cannot be deleted (and so erased) out from under it mid-transaction. Without the
+    `FOR KEY SHARE` in `sendable_contacts`, a delete committing between this read and
+    `expand_campaign`'s insert would erase nothing — the recipient row `expand_campaign` writes
+    afterwards would not exist yet for `erase_contact_campaign_copies` to find."""
+    write = ctx_for(org_id, C_WRITE, Scope.ORG)
+    async with session.begin():
+        contact = await services.create_contact(session, write, email="racer@example.com")
+    contact_id = contact.id
+
+    read_ctx = ctx_for(org_id, C_READ, Scope.ORG)
+    blocked = False
+    async with session.begin():
+        locked = await selectors.sendable_contacts(session, read_ctx, lock=True)
+        assert [c.id for c in locked] == [contact_id]
+
+        deleter = asyncio.create_task(_delete_via(admin_session, org_id, contact_id))
+        try:
+            await asyncio.wait_for(asyncio.shield(deleter), timeout=0.3)
+        except TimeoutError:
+            blocked = True
+    # Exiting `async with` above committed, releasing the FOR KEY SHARE lock.
+    assert blocked, "the delete completed before expansion's lock was released"
+    await deleter
+
+    async with admin_session.begin():
+        assert await admin_session.get(models.Contact, contact_id) is None
+
+
+async def test_drop_erased_from_batch_catches_an_erasure_landing_after_claim(
+    session, org_id, worker_engine
+):
+    """The narrower half of the claim-then-erase race: a contact erased in the window between
+    `claim_campaign_batch` committing and the transport call must not be mailed just because it
+    was not yet erased when it was claimed."""
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "keep@example.com", "erased-midflight@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    await _send(session, org_id, campaign_id)
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
+
+    async with session.begin():
+        outcome, batch = await services.claim_campaign_batch(
+            session,
+            organization_id=org_id,
+            campaign_id=campaign_id,
+            batch_size=10,
+            lease_seconds=300,
+        )
+    assert outcome == "claimed"
+    assert batch is not None
+    assert len(batch.messages) == 2
+
+    # A contact deletion landing exactly in the window this claim has already committed past.
+    erased_message = batch.messages[0]
+    async with session.begin():
+        await session.execute(
+            update(models.CampaignRecipient)
+            .where(models.CampaignRecipient.id == erased_message.recipient_id)
+            .values(erased_at=datetime.now(UTC))
+        )
+
+    async with session.begin():
+        filtered = await services.drop_erased_from_batch(
+            session, organization_id=org_id, batch=batch
+        )
+
+    assert [m.recipient_id for m in filtered.messages] == [batch.messages[1].recipient_id]
+    assert (
+        erased_message.recipient_id,
+        "failed",
+        services._ERASED_ERROR,
+    ) in filtered.resolved
+    # Untouched when nothing in the batch has been erased — no query, same object back.
+    async with session.begin():
+        unchanged = await services.drop_erased_from_batch(
+            session, organization_id=org_id, batch=filtered
+        )
+    assert unchanged is filtered
+
+
+# --------------------------------------------------------------------- v2 unsubscribe links
+
+UNSUBSCRIBE = "/api/v1/engage/unsubscribe"
+
+
+async def _one_recipient(session, campaign_id) -> models.CampaignRecipient:
+    async with session.begin():
+        return (
+            await session.execute(
+                select(models.CampaignRecipient).where(
+                    models.CampaignRecipient.campaign_id == campaign_id
+                )
+            )
+        ).scalar_one()
+
+
+async def test_v2_unsubscribe_link_confirms_and_unsubscribes_over_http(
+    client, session, org_id, worker_engine
+):
+    """The real shape a campaign send actually mails: a v2, recipient-id-keyed link, driven
+    through the HTTP router exactly as a recipient's browser would."""
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "reader@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    await _send(session, org_id, campaign_id)
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
+    recipient = await _one_recipient(session, campaign_id)
+
+    token = services.unsubscribe_token_for_recipient(org_id, recipient.id)
+    assert "reader" not in token
+
+    page = await client.get(f"{UNSUBSCRIBE}/{token}")
+    assert page.status_code == 200, page.text
+    assert recipient.email_masked in page.text
+    assert "reader@example.com" not in page.text.lower()
+
+    done = await client.post(f"{UNSUBSCRIBE}/{token}", headers={"Accept": "text/html"})
+    assert done.status_code == 200, done.text
+    assert recipient.email_masked in done.text
+
+    async with session.begin():
+        rows = list((await session.execute(select(models.Suppression))).scalars())
+    assert len(rows) == 1
+    assert rows[0].email_index == recipient.email_index
+    assert rows[0].organization_id == org_id
+
+    # Idempotent, same as a v1 link.
+    again = await client.post(f"{UNSUBSCRIBE}/{token}")
+    assert again.status_code == 200
+    assert again.json() == {"unsubscribed": True}
+    assert await _count_suppressions(session) == 1
+
+
+async def test_v2_unsubscribe_for_an_erased_recipient_is_refused_without_side_effects(
+    client, session, org_id, worker_engine
+):
+    """A link mailed before a contact was deleted must not still work afterwards — but it must
+    also not crash, and it must not silently suppress the placeholder address instead."""
+    sender_id = await _seed_identity(session, org_id)
+    [contact] = await _contacts(session, org_id, "leaving@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    await _send(session, org_id, campaign_id)
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
+    recipient = await _one_recipient(session, campaign_id)
+    token = services.unsubscribe_token_for_recipient(org_id, recipient.id)
+
+    async with session.begin():
+        await services.delete_contact(
+            session, ctx_for(org_id, C_WRITE, Scope.ORG), contact_id=contact.id
+        )
+
+    get_response = await client.get(f"{UNSUBSCRIBE}/{token}")
+    assert get_response.status_code == 200  # a generic page, not naming an address
+    post_response = await client.post(f"{UNSUBSCRIBE}/{token}")
+    assert post_response.status_code == 404
+
+    assert await _count_suppressions(session) == 0
+
+
+async def _count_suppressions(session) -> int:
+    async with session.begin():
+        return (
+            await session.execute(select(func.count()).select_from(models.Suppression))
+        ).scalar_one()
 
 
 async def test_cancel_stops_the_remaining_recipients(client, session, org_id, worker_engine):
