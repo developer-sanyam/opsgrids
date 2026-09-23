@@ -136,4 +136,48 @@ describe("FormDialog", () => {
     expect(screen.getByText("A widget with that name already exists.")).toBeTruthy();
     expect(screen.getByText("Reference: 7f3c1a2e")).toBeTruthy();
   });
+
+  it("does not let a nested dialog's submit reach the outer form", async () => {
+    // React bubbles synthetic events through the component tree rather than the DOM tree, so a
+    // `FormDialog` opened from inside another `<form>` — the owner picker's "add a team member"
+    // from inside a create-company form is the real case — would otherwise also fire the outer
+    // form's own submit handler purely because it is a React-tree ancestor, even though the
+    // dialog itself is portalled to `document.body` and never a DOM descendant of it.
+    const user = userEvent.setup();
+    const outerSubmit = vi.fn();
+    const innerSubmit = vi.fn();
+
+    function NestedHarness() {
+      const [open, setOpen] = useState(false);
+      const inputRef = useRef<HTMLInputElement>(null);
+      return (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            outerSubmit();
+          }}
+        >
+          <Button onClick={() => setOpen(true)}>New widget</Button>
+          <FormDialog
+            open={open}
+            onClose={() => setOpen(false)}
+            onSubmit={innerSubmit}
+            title="New widget"
+            submitLabel="Create widget"
+            initialFocusRef={inputRef}
+          >
+            <WidgetFields inputRef={inputRef} />
+          </FormDialog>
+        </form>
+      );
+    }
+
+    render(<NestedHarness />);
+    await user.click(screen.getByRole("button", { name: "New widget" }));
+    await user.type(screen.getByLabelText("Name"), "Bracket");
+    await user.click(screen.getByRole("button", { name: "Create widget" }));
+
+    expect(innerSubmit).toHaveBeenCalledTimes(1);
+    expect(outerSubmit).not.toHaveBeenCalled();
+  });
 });
