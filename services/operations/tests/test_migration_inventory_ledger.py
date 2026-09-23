@@ -25,7 +25,7 @@ from app.models import SCHEMA
 pytestmark = pytest.mark.integration
 
 SERVICE_DIR = Path(__file__).resolve().parent.parent
-BEFORE = "a1c7fe093d42"
+BEFORE = "a1c7fe093d42"  # alembic revision id  # pragma: allowlist secret
 TABLES = (
     "inventory_discrepancies",
     "inventory_reservations",
