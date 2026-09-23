@@ -7,6 +7,7 @@ each of its five rules stops the specific thing it exists to stop.
 from __future__ import annotations
 
 import io
+import uuid
 
 import pytest
 from PIL import Image
@@ -174,3 +175,17 @@ class TestKeysAndPaths:
         path = domain.public_path(org, asset)
         assert path == f"/a/{org}/{asset}"
         assert path.removeprefix("/a") == f"/{domain.storage_key(org, asset)}"
+
+    def test_parse_storage_key_is_the_inverse_of_storage_key(self) -> None:
+        org = uuid.uuid4()
+        asset = uuid.uuid4()
+        parsed = domain.parse_storage_key(domain.storage_key(org, asset))
+        assert parsed == (org, asset)
+
+    def test_parse_storage_key_refuses_a_key_this_service_never_wrote(self) -> None:
+        """The orphan sweep lists a shared bucket; an object with a key shape this service
+        never produced must be left alone rather than guessed at (`app/cron.py`)."""
+        assert domain.parse_storage_key("not-a-uuid/also-not-one") is None
+        assert domain.parse_storage_key(str(uuid.uuid4())) is None
+        assert domain.parse_storage_key(f"{uuid.uuid4()}/{uuid.uuid4()}/extra") is None
+        assert domain.parse_storage_key("") is None

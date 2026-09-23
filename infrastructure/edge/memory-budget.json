@@ -129,6 +129,7 @@
     "storefront": { "kind": "api", "profile": "storefront" },
     "storefront-cron": { "kind": "background", "profile": "storefront" },
     "document": { "kind": "api", "profile": "storefront" },
+    "document-cron": { "kind": "background", "profile": "storefront" },
 
     "operations": { "kind": "api", "profile": "inventory" },
     "operations-cron": { "kind": "background", "profile": "inventory" },

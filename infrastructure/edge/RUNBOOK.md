@@ -371,6 +371,83 @@ If step 2 returns 502, `minio` did not start — check `COMPOSE_PROFILES` and
 `make edge-status`). If step 1 returns 403 for an organization that existed before this deploy,
 the permission reconcile (step 5 above) has not run yet.
 
+#### The purge sweep (ADR-0009 §8, and its 2026-09-23 addendum's §9)
+
+`document-cron` is a second container behind the same `storefront` profile as `document` and
+`minio` — see the comment on it in `compose.prod.yml`. It is the only place ADR-0009 §8's
+30-day retention window and §9's orphan-object pass actually run; nothing about the API
+container does either.
+
+**What it does, one tick at a time (default every five minutes, idle-backing-off to thirty):**
+
+1. **Row purge.** Finds every asset, across every organization, whose `deleted_at` is more
+   than `ASSET_PURGE_RETENTION_DAYS` (default 30) in the past and whose `purged_at` is still
+   null; for each, deletes the object from the bucket and then sets `purged_at`. A storage
+   failure leaves the row untouched for the next tick — it never marks a row purged while the
+   object might still be there.
+2. **Orphan sweep**, only when `DOCUMENT_ORPHAN_SWEEP_ENABLED=true`: lists the whole bucket
+   with the second, list-capable credential (`DOCUMENT_S3_ORPHAN_ACCESS_KEY`/`_SECRET_KEY`,
+   held only by this container), and for every object at least 24 hours old with **no**
+   `assets` row at all — live, soft-deleted or purged — either logs what it would delete
+   (`DOCUMENT_ORPHAN_SWEEP_DRY_RUN=true`, the default even once enabled) or actually removes
+   it. A referenced object, whatever state its row is in, is never a candidate.
+
+**How to check it — logs, not a dashboard:**
+
+```bash
+make edge-logs SERVICE=document-cron
+```
+
+- `document.sweep.started` once, at boot, naming the retention window and whether the orphan
+  pass is on.
+- `document.sweep.pass` only when a tick actually did something — `purged`, `skipped`,
+  `failed`, and the four `orphan_*` counters. A quiet box between deploys is a box with no
+  soft-deleted assets past their window, not a stopped sweep; `docker compose ps` showing
+  `document-cron` running is the "is it alive at all" signal, the same as every other
+  background container here.
+- `document.sweep.purge_failed` names the organization and asset id a single purge raised on
+  — the rest of that tick, and every later tick, still runs; it is not a stuck sweep.
+- `document.sweep.tick_failed` means discovery itself failed (a DB restart, a deadlock) —
+  logged with a full traceback and backed off; it recovers on its own once the fault clears.
+- `document.sweep.orphan_would_delete` / `orphan_deleted` name the organization id, asset id
+  and key for every candidate — read a few passes of the dry-run ones before ever setting
+  `DOCUMENT_ORPHAN_SWEEP_DRY_RUN=false`.
+
+**Run it once by hand** (useful right after a deploy, or to confirm the retention window
+actually cleared a backlog, without waiting for the next poll):
+
+```bash
+ssh deploy@<ip>
+cd /srv/opsgrids/repo/infrastructure/edge
+docker compose -f compose.prod.yml --env-file .env run --rm document-cron python -c "
+import asyncio
+from app.cron import main
+asyncio.run(main())
+"
+```
+
+That runs `main()` — the same one-tick-then-loop entrypoint `bin/cron` execs — inside a
+throwaway container sharing the deployed image and `.env`; press Ctrl-C after the first
+`document.sweep.pass` (or `document.sweep.started` with nothing to do) rather than leaving it
+running as a second, redundant sweeper. `--rm` means it leaves nothing behind either way.
+
+**Turning the orphan pass on for the first time:**
+
+1. Generate `DOCUMENT_S3_ORPHAN_ACCESS_KEY`/`_SECRET_KEY` into `.env` (see `.env.example`) —
+   the next deploy's `minio-init` creates the scoped user and its `ListBucket`+`DeleteObject`
+   policy idempotently, same as the write-only pair already there.
+2. Set `DOCUMENT_ORPHAN_SWEEP_ENABLED=true`, leave `DOCUMENT_ORPHAN_SWEEP_DRY_RUN=true`, and
+   redeploy. Watch `document.sweep.orphan_would_delete` for a day or two.
+3. Only once those candidates look right — every one of them genuinely has no row — set
+   `DOCUMENT_ORPHAN_SWEEP_DRY_RUN=false` and redeploy. From here it actually calls
+   `DeleteObject` on what it lists.
+
+**Known gap this section does not close**: `infrastructure/edge/memory-budget.json` does not
+exist on this base — a sibling slice (`slice/memory-budget`) adds it. When that slice merges,
+`document-cron` needs a `"document-cron": { "kind": "background", "profile": "storefront" }`
+entry alongside `document`'s own, or `tests/infra/test_compose_memory_budget.py` fails by
+name for a container this compose file defines with no budget entry.
+
 ---
 
 ## Deploying
@@ -793,11 +870,12 @@ Named here so nobody discovers them during an incident:
   API is reachable at `https://<EDGE_HOST>/api/…`; the merchant console is ADR-0001's and is
   served elsewhere.
 - **Resolved: `document` and `minio` are on this box, behind the `storefront` profile** (see
-  "Document and MinIO" above). What is still missing: ADR-0009 §8's purge sweep
-  (`app/cron.py`) was designed and never built, the same gap `storefront-cron` has for custom
-  domains, so a soft-deleted asset's object is never actually removed from the bucket after its
-  30-day window. Harmless today — quota accounting is the thing that drifts, not correctness —
-  and it is the shared scheduler backlog item's job to fix, not a per-service cron.
+  "Document and MinIO" above), **and resolved: ADR-0009 §8's purge sweep is built and
+  deployed** as `document-cron` (see "The purge sweep" above) — a soft-deleted asset's object
+  is actually removed from the bucket 30 days after removal, and quota accounting no longer
+  drifts from reality forever. What is still off by default: §9's orphan-object pass
+  (`DOCUMENT_ORPHAN_SWEEP_ENABLED`) — built, and safe to turn on, but left disabled until an
+  operator has watched a run or two of its dry-run report, per the same section.
 - **No log shipping.** Logs live in Docker's json-file driver on this disk and are lost when a
   container is pruned.
 - **No staging environment.** `caddy validate` and the local `make gate` are the only things

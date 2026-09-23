@@ -446,6 +446,14 @@ services:
       # bucket's own policy out from under `minio-init`.
       DOCUMENT_S3_ACCESS_KEY: ${DOCUMENT_S3_ACCESS_KEY}
       DOCUMENT_S3_SECRET_KEY: ${DOCUMENT_S3_SECRET_KEY}
+      # The second scoped credential, held only by `document-cron` (ADR-0009 §9 addendum):
+      # `s3:ListBucket` plus `s3:DeleteObject`, so the orphan sweep can list the bucket and
+      # remove what it finds. The API's own `document` container never receives this
+      # credential and never calls `ListBucket` (`app/storage.py`'s `ObjectStore` vs.
+      # `OrphanScanner`) — a compromised or merely buggy API process still cannot enumerate
+      # the bucket, which is the whole of ADR-0009 §3's tenancy argument.
+      DOCUMENT_S3_ORPHAN_ACCESS_KEY: ${DOCUMENT_S3_ORPHAN_ACCESS_KEY}
+      DOCUMENT_S3_ORPHAN_SECRET_KEY: ${DOCUMENT_S3_ORPHAN_SECRET_KEY}
     entrypoint: ['/bin/sh', '-c']
     command:
       - |
@@ -502,6 +510,40 @@ services:
           *"already in effect"*) echo "document-write already attached to the scoped user" ;;
           *)
             echo "$$attach_out" >&2
+            exit 1
+            ;;
+          esac
+        }
+
+        # The orphan sweep's own user (ADR-0009 §9 addendum): `s3:ListBucket` on the bucket
+        # itself plus `s3:DeleteObject` on its objects — the one capability the write-path
+        # user above deliberately does not hold. `document-cron` is the only process this
+        # credential is ever handed to (`compose.prod.yml`'s `document-cron`, below); the API
+        # container reads only `DOCUMENT_S3_ACCESS_KEY`/`_SECRET_KEY`.
+        mc admin user add og "$$DOCUMENT_S3_ORPHAN_ACCESS_KEY" "$$DOCUMENT_S3_ORPHAN_SECRET_KEY"
+        cat > /tmp/document-orphan-sweep.json <<JSON
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": ["s3:ListBucket"],
+              "Resource": ["arn:aws:s3:::$$S3_PUBLIC_BUCKET"]
+            },
+            {
+              "Effect": "Allow",
+              "Action": ["s3:DeleteObject"],
+              "Resource": ["arn:aws:s3:::$$S3_PUBLIC_BUCKET/*"]
+            }
+          ]
+        }
+        JSON
+        mc admin policy create og document-orphan-sweep /tmp/document-orphan-sweep.json
+        orphan_attach_out=$$(mc admin policy attach og document-orphan-sweep --user "$$DOCUMENT_S3_ORPHAN_ACCESS_KEY" 2>&1) && echo "$$orphan_attach_out" || {
+          case "$$orphan_attach_out" in
+          *"already in effect"*) echo "document-orphan-sweep already attached to the scoped user" ;;
+          *)
+            echo "$$orphan_attach_out" >&2
             exit 1
             ;;
           esac
@@ -835,10 +877,8 @@ services:
   # `edge-relay` below). An idle worker holding an open broker channel for nothing is 30 MB this
   # box does not have to give away.
   #
-  # `bin/cron` is the untouched scaffold default (`python -m app.relay`) — ADR-0009 §8's purge
-  # sweep was designed and never built, so there is nothing for a document-cron container to
-  # run. Soft-deleted assets accumulate past their 30-day window until it lands (backlog #3
-  # covers the shared scheduler this and every other per-service cron is meant to retire onto).
+  # `bin/cron` runs the purge sweep (ADR-0009 §8, and its 2026-09-23 addendum's §9 orphan
+  # pass) — see `document-cron`, below, for that container. This block is the API only.
   document:
     <<: *service-common
     profiles: ['storefront']
@@ -883,6 +923,49 @@ services:
         condition: service_healthy
     networks:
       - back
+
+  # The purge sweep (ADR-0009 §8, and its 2026-09-23 addendum's §9 orphan pass). Its own
+  # process for the same reason every other sweep here is: a poll loop must not share a pool
+  # with request traffic, and `docker compose ps` should answer "is anything purging assets"
+  # without reading code. Same profile as `document` — a box that runs the asset store always
+  # needs its own housekeeping, and a box that does not sell Storefront never needs a cron
+  # container that would find nothing to purge.
+  #
+  # Two credentials, deliberately not one: `S3_ACCESS_KEY`/`_SECRET_KEY` are the same
+  # write-only pair the `document` API holds, for the row-purge pass's own `DeleteObject`
+  # call; `S3_ORPHAN_ACCESS_KEY`/`_SECRET_KEY` are the second, list-capable pair `minio-init`
+  # creates above, held **only** by this container. `document`'s own API process never
+  # receives the orphan credential and never calls `ListBucket` — ADR-0009 §3's tenancy
+  # argument depends on nothing on the request path being able to enumerate the bucket.
+  document-cron:
+    <<: *background
+    profiles: ['storefront']
+    image: opsgrids-edge/document
+    command: ['./bin/cron']
+    environment:
+      <<: *service-env
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_FORCE_PATH_STYLE: 'true'
+      S3_PUBLIC_BUCKET: ${S3_PUBLIC_BUCKET:-opsgrids-public}
+      S3_ACCESS_KEY: ${DOCUMENT_S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${DOCUMENT_S3_SECRET_KEY}
+      S3_ORPHAN_ACCESS_KEY: ${DOCUMENT_S3_ORPHAN_ACCESS_KEY:-}
+      S3_ORPHAN_SECRET_KEY: ${DOCUMENT_S3_ORPHAN_SECRET_KEY:-}
+      ASSET_PURGE_RETENTION_DAYS: ${ASSET_PURGE_RETENTION_DAYS:-30}
+      # Off, and reporting-only even once on — see `app/config.py`'s own docstring for why an
+      # automated, bucket-wide delete earns that much caution before an operator trusts it
+      # with a real `DeleteObject`. Both flip independently, from `.env`, with no image change.
+      ORPHAN_SWEEP_ENABLED: ${DOCUMENT_ORPHAN_SWEEP_ENABLED:-false}
+      ORPHAN_SWEEP_DRY_RUN: ${DOCUMENT_ORPHAN_SWEEP_DRY_RUN:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
 
   # ---------------------------------------------------------------- products behind profiles
   # One profile per sellable product (ADR-0013 §5). COMPOSE_PROFILES in the box's .env turns a
