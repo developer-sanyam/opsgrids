@@ -13,59 +13,29 @@ rather than a horizontal layer. Nothing is "done" until its tests pass.
 ## Inventory & manufacturing (Operations)
 
 Phased plan: [inventory/plan.md](inventory/plan.md), decisions in
-[ADR-0014](adr/0014-inventory-and-manufacturing.md). **Phase 0 merged** (#35, `3a29af5`: ledger,
-milli-unit quantities, posting kernel, reconciler — [inventory/ledger.md](inventory/ledger.md)),
-with the review fixes: the ledger's cost carries its own currency, quantities are bounded, and an
-idempotent retry no longer conflicts across midnight. **Next: Phase 1** — item master, UOMs, lots,
-rolls, locations — waits for the owner's go-ahead. A count below the reserved quantity is refused
-today; that is a documented Phase 1 prerequisite, not a Phase 0 bug.
+[ADR-0014](adr/0014-inventory-and-manufacturing.md). **Phase 0 done** (ledger, milli-unit
+quantities, posting kernel, reconciler — [inventory/ledger.md](inventory/ledger.md)).
+**Next: Phase 1** — item master, UOMs, lots, rolls, locations (scope and exit criteria in the plan).
 
-## Now — as of 2026-09-23 (`main` @ `73176a1`)
+## Now — as of 2026-09-22 (`main` @ `a60baa1`)
 
-> **`main` is ahead of production.** GitHub Actions has refused to start any job since
-> 2026-09-22 (account billing / spending limit), so neither CI nor the Deploy workflow runs.
-> Production is still at `47143a0` (#29). #31–#36 were merged on code review, with the review
-> findings fixed first, and ship together on the first deploy after billing is restored. That
-> deploy needs, in the box `.env`: `ENGAGE_UNSUBSCRIBE_SECRET` and `ENGAGE_PUBLIC_API_BASE`
-> (https, not localhost — preflight now refuses without them), plus `MINIO_ROOT_USER` and
-> `MINIO_ROOT_PASSWORD` once #39 is in. After it: a permission reconcile (Engage audience and
-> campaigns, `operations.inventory.stock.reconcile`), and a republish of the `buyer` and
-> `storefront` bundles.
+This section is the current order. The sections below it keep their history and have been
+corrected where they had gone stale; nothing had edited this file since #1.
 
-| # | Slice | Status | Notes |
+**All ten products and Engage are live and sold** on the single edge VM (ADR-0012, ADR-0013),
+deployed only by GitHub Actions from green `main`.
+
+| # | Slice | Status | Why this order |
 |---|---|---|---|
-| 1 | **Storefront custom domains** — claims, the three probes, the sweep (`app/cron.py`), the console panel | **Done — PR #38, awaiting merge** | 584 backend and 986 storefront tests pass; migration round-trips. |
-| 2 | **Document service and MinIO on the edge** | **Done — PR #39, awaiting merge** | Fixes Storefront's console image upload in production. Adds ~448 MiB under the `storefront` profile. |
-| 3 | **Scheduler service, first consumer: finance `not_before`** | In progress | `services/scheduler` is a scaffold. e-Invoice and e-Way retries carry their own delay and are redelivered at once instead. Per-service cron containers move onto it later. |
-| 4 | **Review follow-ups (UI)** | **Done — PR #41** | `FormDialog` inside another dialog's form also submits the outer form (React events bubble through portals); Combobox's lookup error is not announced to screen readers, and "Try again" drops keyboard focus to `<body>`. |
-| 5 | **Review follow-ups (deploy tooling)** | In progress | No automated test pins `remote.sh`'s full-rebuild rule; the dev bootstrap still pulls `minio/minio`, which Docker Hub no longer serves (the edge uses `quay.io/minio/minio`). |
-| 6 | **GSTR-3B and the input-tax-credit ledger** | Not started | The next compliance slice that needs no credentials, using the stub-client pattern. Larger than 1 to 5. |
-| 7 | **HRMS: leave, payroll, recruit** | Not started | employee and attendance are live. |
-| 8 | **Engage follow-ups** | Not started | Event contracts for `engage.campaign.*` (repo-wide: `libs/contracts` holds no event schemas yet); erasure of a contact's sealed copies in `campaign_recipients.email_enc`; `GET /engage/unsubscribe/{token}` unsubscribes on a mail scanner's prefetch — it should show a confirm page and leave the one-click `POST` to do the work. |
-| 9 | **WhatsApp inbound messages** | Started, not committed | An inbound-message parser and the 24-hour customer-service window were drafted on 2026-09-19 in the `wa-inbound` worktree (`services/notification/app/webhooks.py`) and never committed. Nothing stores or shows inbound messages yet. |
-| 10 | **Document purge sweep** (ADR-0009 §8) | Not started | Soft-deleted assets are never purged after their 30-day window. Natural second consumer of the scheduler (3). |
-| 11 | **Off-box backup** | Code done, not enabled | `backup.sh` uploads to S3 once `BACKUP_S3_*` is set in the box `.env`. The owner must provide the bucket. |
-| — | **Inventory Phase 1** | Waiting for go-ahead | See above. |
+| 1 | **Storefront custom-domain sweep** (`services/storefront/app/cron.py`) | In progress | `compose.prod.yml` already defines `storefront-cron` running `bin/cron`, and the module it runs does not exist. A merchant's custom domain can never become verified. ADR-0012 specifies the behaviour. |
+| 2 | **Document service and MinIO on the edge** | Not started | The code exists, but neither is in `compose.prod.yml`, so Storefront's console image upload (`/documents/assets`) fails in a product people are paying for. Needs two new `.env` secrets on the box. |
+| 3 | **Scheduler service, first consumer: finance `not_before`** | Not started | `services/scheduler` is a scaffold. e-Invoice and e-Way retries carry their own delay and are redelivered at once instead. Per-service cron containers move onto it later. |
+| 4 | **GSTR-3B and the input-tax-credit ledger** | Not started | The next compliance slice that needs no credentials, using the stub-client pattern. Larger than 1 to 3. |
+| 5 | **Off-box backup** | Code done, not enabled | `backup.sh` uploads to S3 once `BACKUP_S3_*` is set in the box `.env`. The owner must provide the bucket. |
+| 6 | **HRMS: leave, payroll, recruit** | Not started | employee and attendance are live. |
 | — | **IRP / GSP / e-Way / IMS / Razorpay live wires** | Blocked | Each needs credentials from the owner; the state machines are done. |
 
-**Delivered on 2026-09-23** (merged, not yet deployed):
-- this backlog's "Now" order (#28)
-- deploy: a contracts-only change no longer rebuilds every image (#32)
-- Combobox retry test made deterministic (#33)
-- dialogs render through a portal, so a transformed ancestor can no longer trap them; CRM's
-  empty owner directory offers the signed-in owner a one-click claim (#36)
-- Engage audience screens — contacts, suppressions, CSV import — with write controls gated by
-  permission and a fix for an edit that erased a contact's name (#31)
-- Inventory Phase 0 (#35, above)
-- Engage contact lists and campaigns (#34): the shared event consumer only expands the audience;
-  a separate `notification-cron` driver claims, sends outside any transaction, and records, so a
-  campaign can neither block other products' notifications nor strand itself in `sending`.
-  No-route campaigns pause with a reason and resume; addresses are masked in logs.
-
-Awaiting merge: #37 (HRMS delegation tests had a hard-coded date that expired on 2026-09-23),
-#38 and #39 (items 1 and 2).
-
-**Delivered before that** (#2 to #25):
+**Delivered since this file was last edited** (#2 to #25):
 - notification service and event-bus wiring (#2)
 - WhatsApp (#4, #5, #9 to #13):
   - template sends
