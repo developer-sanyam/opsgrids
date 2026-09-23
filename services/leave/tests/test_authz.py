@@ -128,6 +128,90 @@ class TestLeaveTypeAuthz:
         assert response.status_code == 201
 
 
+class TestLeaveSettingsAuthz:
+    async def test_a_reader_may_view_settings(self, client, org_id) -> None:
+        principal = principal_for(org_id, uuid.uuid4(), ["hrms.time.leave_type.read:ORG"])
+        with as_principal(principal):
+            response = await client.get("/api/v1/leave/settings")
+        assert response.status_code == 200
+
+    async def test_a_reader_cannot_change_the_timezone(self, client, org_id) -> None:
+        principal = principal_for(org_id, uuid.uuid4(), ["hrms.time.leave_type.read:ORG"])
+        with as_principal(principal):
+            response = await client.put("/api/v1/leave/settings", json={"timezone": "Asia/Kolkata"})
+        assert response.status_code == 403
+
+    async def test_missing_the_permission_entirely_is_forbidden_on_both_verbs(
+        self, client, org_id
+    ) -> None:
+        principal = principal_for(org_id, uuid.uuid4(), [])
+        with as_principal(principal):
+            get_response = await client.get("/api/v1/leave/settings")
+            put_response = await client.put(
+                "/api/v1/leave/settings", json={"timezone": "Asia/Kolkata"}
+            )
+        assert get_response.status_code == 403
+        assert put_response.status_code == 403
+
+    async def test_an_org_writer_may_change_the_timezone(self, client, org_id) -> None:
+        principal = principal_for(org_id, uuid.uuid4(), ["hrms.time.leave_type.write:ORG"])
+        with as_principal(principal):
+            response = await client.put("/api/v1/leave/settings", json={"timezone": "Asia/Kolkata"})
+        assert response.status_code == 200
+        assert response.json()["timezone"] == "Asia/Kolkata"
+
+
+class TestLeaveTypeMutationAuthz:
+    async def test_a_reader_cannot_patch_a_type(
+        self, client, org_id, session: AsyncSession
+    ) -> None:
+        leave_type_id = await _leave_type(session, org_id)
+        principal = principal_for(org_id, uuid.uuid4(), ["hrms.time.leave_type.read:ORG"])
+        with as_principal(principal):
+            response = await client.patch(
+                f"/api/v1/leave/types/{leave_type_id}", json={"name": "Renamed"}
+            )
+        assert response.status_code == 403
+
+    async def test_a_reader_cannot_delete_a_type(
+        self, client, org_id, session: AsyncSession
+    ) -> None:
+        leave_type_id = await _leave_type(session, org_id)
+        principal = principal_for(org_id, uuid.uuid4(), ["hrms.time.leave_type.read:ORG"])
+        with as_principal(principal):
+            response = await client.delete(f"/api/v1/leave/types/{leave_type_id}")
+        assert response.status_code == 403
+
+    async def test_an_org_writer_may_patch_a_type(
+        self, client, org_id, session: AsyncSession
+    ) -> None:
+        leave_type_id = await _leave_type(session, org_id)
+        principal = principal_for(org_id, uuid.uuid4(), ["hrms.time.leave_type.write:ORG"])
+        with as_principal(principal):
+            response = await client.patch(
+                f"/api/v1/leave/types/{leave_type_id}", json={"name": "Renamed"}
+            )
+        assert response.status_code == 200
+        assert response.json()["name"] == "Renamed"
+
+    async def test_an_org_writer_may_delete_a_type(
+        self, client, org_id, session: AsyncSession
+    ) -> None:
+        leave_type_id = await _leave_type(session, org_id)
+        principal = principal_for(org_id, uuid.uuid4(), ["hrms.time.leave_type.write:ORG"])
+        with as_principal(principal):
+            response = await client.delete(f"/api/v1/leave/types/{leave_type_id}")
+        assert response.status_code == 204
+
+    async def test_patching_an_unknown_type_is_not_found_not_a_500(self, client, org_id) -> None:
+        principal = principal_for(org_id, uuid.uuid4(), ["hrms.time.leave_type.write:ORG"])
+        with as_principal(principal):
+            response = await client.patch(
+                f"/api/v1/leave/types/{uuid.uuid4()}", json={"name": "Renamed"}
+            )
+        assert response.status_code == 404
+
+
 class TestLeaveBalanceAuthz:
     async def test_an_own_reader_cannot_grant_a_balance(
         self, client, org_id, session: AsyncSession
@@ -342,6 +426,39 @@ class TestLeaveRequestAuthz:
             response = await client.post(f"/api/v1/leave/requests/{req_id}/force-cancel", json={})
         assert response.status_code == 200
         assert response.json()["status"] == "cancelled"
+
+    async def test_an_own_scoped_caller_lists_only_their_own_requests(
+        self, client, org_id, session: AsyncSession
+    ) -> None:
+        leave_type_id = await _leave_type(session, org_id)
+        me = uuid.uuid4()
+        someone_else = uuid.uuid4()
+        my_request = await _pending_request(session, org_id, me, leave_type_id)
+        await _pending_request(session, org_id, someone_else, leave_type_id)
+
+        principal = principal_for(org_id, me, ["hrms.time.leave_request.read:OWN"])
+        with as_principal(principal):
+            response = await client.get("/api/v1/leave/requests")
+        assert response.status_code == 200
+        body = response.json()
+        ids = {item["id"] for item in body["items"]}
+        assert ids == {str(my_request)}
+
+    async def test_an_org_scoped_caller_lists_every_employees_requests(
+        self, client, org_id, session: AsyncSession
+    ) -> None:
+        leave_type_id = await _leave_type(session, org_id)
+        owner_a = uuid.uuid4()
+        owner_b = uuid.uuid4()
+        req_a = await _pending_request(session, org_id, owner_a, leave_type_id)
+        req_b = await _pending_request(session, org_id, owner_b, leave_type_id)
+
+        principal = principal_for(org_id, uuid.uuid4(), ["hrms.time.leave_request.read:ORG"])
+        with as_principal(principal):
+            response = await client.get("/api/v1/leave/requests")
+        assert response.status_code == 200
+        ids = {item["id"] for item in response.json()["items"]}
+        assert {str(req_a), str(req_b)} <= ids
 
     async def test_a_caller_with_no_subject_ref_cannot_apply(self, client, org_id) -> None:
         """Authenticated, entitled, permission-holding — but not an employee of this

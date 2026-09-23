@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
+import { Can, useCan } from "@opsgrids/client";
 import {
   Announcer,
   Button,
@@ -61,6 +62,7 @@ function BalanceCards({ balances }: { balances: LeaveBalanceOut[] }) {
 function MyLeaveScreen() {
   const announce = useAnnounce();
   const myEmployeeId = getMyEmployeeId();
+  const canWriteOwn = useCan("hrms.time.leave_request.write", "OWN");
 
   const [balances, setBalances] = useState<LeaveBalanceOut[]>([]);
   const [requests, setRequests] = useState<LeaveRequestOut[]>([]);
@@ -134,7 +136,7 @@ function MyLeaveScreen() {
               label: "Cancel",
               tone: "danger",
               onSelect: () => setCancelling(r),
-              hidden: r.status !== "pending" && r.status !== "approved",
+              hidden: !canWriteOwn || (r.status !== "pending" && r.status !== "approved"),
             },
           ]}
         />
@@ -162,9 +164,11 @@ function MyLeaveScreen() {
         eyebrow="Leave"
         title="Your leave"
         actions={
-          <Button variant="dark" onClick={() => setApplying(true)}>
-            Apply for leave
-          </Button>
+          <Can permission="hrms.time.leave_request.write" scope="OWN">
+            <Button variant="dark" onClick={() => setApplying(true)}>
+              Apply for leave
+            </Button>
+          </Can>
         }
       />
 
@@ -201,9 +205,11 @@ function MyLeaveScreen() {
                   title="You haven't applied for leave yet"
                   description="Apply for leave to see it listed here, along with its approval status."
                   action={
-                    <Button variant="dark" onClick={() => setApplying(true)}>
-                      Apply for leave
-                    </Button>
+                    <Can permission="hrms.time.leave_request.write" scope="OWN">
+                      <Button variant="dark" onClick={() => setApplying(true)}>
+                        Apply for leave
+                      </Button>
+                    </Can>
                   }
                 />
               }

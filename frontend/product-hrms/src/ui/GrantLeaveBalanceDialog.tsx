@@ -32,6 +32,11 @@ export function GrantLeaveBalanceDialog({
   const [entryType, setEntryType] = useState<GrantableLeaveEntryType>("grant");
   const [halfDays, setHalfDays] = useState("");
   const [note, setNote] = useState("");
+  // Generated once, when the dialog opens — not per submit attempt — so a retried request (a
+  // client timeout, a double-click on "Grant") reaches the server with the *same* key and is
+  // recognised as the same grant rather than posting a second credit. A key minted fresh on
+  // every submit would defeat the server's own idempotency check entirely.
+  const [idempotencyKey] = useState(() => crypto.randomUUID());
 
   const save = useMutation(
     () =>
@@ -41,6 +46,7 @@ export function GrantLeaveBalanceDialog({
         entry_type: entryType,
         half_days: Number(halfDays),
         note: note.trim() || null,
+        idempotency_key: idempotencyKey,
       }),
     { onSuccess: (saved) => { onClose(); onSaved(saved); } },
   );

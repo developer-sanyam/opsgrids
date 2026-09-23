@@ -19,7 +19,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, func
+from sqlalchemy import CursorResult, func, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -275,7 +275,16 @@ async def update_leave_type(
     for field, value in changes.items():
         setattr(leave_type, field, value)
     leave_type.updated_by = str(ctx.principal.sub)
+    # Flush, then refresh: the flush's `UPDATE` expires `updated_at` (its `onupdate=func.now()`
+    # is server-computed, so the ORM does not know its new value without asking) — the exact
+    # "flush expires a server-computed column that a narrower refresh would leave expired"
+    # `employee.services.update_employee`'s own comment describes. Left expired, `as_dict()`'s
+    # plain `getattr` loop below triggers an implicit lazy load outside of any `await`, which an
+    # async session cannot service and raises `MissingGreenlet` — not a validation error, a 500,
+    # and only on the update path, since `create_leave_type`'s INSERT gets its defaults back for
+    # free via `eager_defaults`'s automatic `RETURNING`.
     await session.flush()
+    await session.refresh(leave_type)
 
     record_audit(
         session,
@@ -381,9 +390,16 @@ async def grant_leave_balance(
         idempotency_key=payload.idempotency_key,
         note=payload.note,
     )
-    session.add(entry)
     try:
-        await session.flush()
+        # A SAVEPOINT, not a bare `session.add` + `flush()`: once a statement inside a
+        # transaction raises, Postgres marks the *whole* transaction aborted until a ROLLBACK
+        # (or a ROLLBACK TO SAVEPOINT) runs — every later statement on it fails with "current
+        # transaction is aborted", including the very SELECT below that is supposed to recover
+        # from this. `begin_nested()` is that ROLLBACK TO SAVEPOINT: the failed INSERT undoes
+        # cleanly and the outer transaction (and the request's own tenant binding) stays usable.
+        async with session.begin_nested():
+            session.add(entry)
+            await session.flush()
     except IntegrityError as exc:
         if _integrity_error_constraint(exc) != "uq_leave_ledger_entries_org_idempotency_key":
             raise
@@ -431,6 +447,30 @@ async def grant_leave_balance(
         actor=_actor(ctx),
     )
     return entry
+
+
+async def _lock_balance(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    leave_type_id: uuid.UUID,
+) -> None:
+    """Serialises every balance-affecting read-then-write for one `(employee, leave type)`.
+
+    There is no balance *row* to `SELECT ... FOR UPDATE` — a balance is a derived `SUM`, never a
+    stored value (CLAUDE.md's append-only rule) — so this takes a transaction-scoped advisory
+    lock instead, the exact shape `employee-service`'s own reporting-line cycle check uses for
+    the identical class of problem (ADR-0006 §2: "the check takes an advisory lock first"):
+    without it, two requests for the same employee and type approved at the same instant can each
+    read a balance that individually looks sufficient and both post a consumption, overdrawing
+    it — a read-then-write race no row lock on either *request* (they are two different rows)
+    would ever catch. Held until the caller's transaction ends, which is what makes the second
+    caller's own balance read happen only after the first one's consumption has committed.
+    """
+    key = f"leave.balance:{organization_id}:{employee_id}:{leave_type_id}"
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": key}
+    )
 
 
 async def _post_ledger_entry(
@@ -507,6 +547,12 @@ async def apply_for_leave(
         )
 
     if leave_type.is_paid:
+        # A friendly pre-check only — applying posts nothing to the ledger, so two concurrent
+        # applications can both legitimately see a sufficient balance and both become `pending`.
+        # No lock is needed here for that reason: the authoritative check, where a lock actually
+        # matters, is `apply_leave_decision`'s, at the moment a consumption is posted (see
+        # `_lock_balance`). A request that was never going to be approvable simply fails there
+        # instead, cleanly, as `failed` rather than `approved`.
         balance = await selectors.balance_half_days(
             session, ctx.organization_id, employee_id, leave_type.id
         )
@@ -663,7 +709,12 @@ async def apply_leave_decision(
     decided_by_name: str | None = None,
 ) -> LeaveRequest:
     """Apply `core.approval.request.decided` to a still-`pending` leave request (ADR-0006 §12).
-    Called only from `app/consumers.py`.
+    Called only from `app/consumers.py`, which has already validated `outcome` is `"approved"`
+    or `"rejected"` — anything else is refused there, before this function is ever reached, the
+    same "explicit, exhaustive mapping" discipline `approval.services.decide_request` states for
+    its own `_DECISION_OUTCOMES`. A third value reaching here anyway is a caller bug, not a
+    message this function tries to interpret — it raises rather than silently treating "anything
+    that is not 'rejected'" as an approval.
 
     * **`rejected`** moves the request to `rejected` and posts nothing to the ledger.
     * **`approved`** re-checks the balance for a paid type before posting the consumption — the
@@ -672,7 +723,9 @@ async def apply_leave_decision(
       redeliver once and then dead-letter a fact that is not a processing error. It records
       `failed` instead, with a reason, mirroring
       `attendance.services.apply_regularization_decision`'s identical "the transition that was
-      legal at request time may no longer be" handling.
+      legal at request time may no longer be" handling. A leave type retired (soft-deleted)
+      after the request was raised gets the same `failed` treatment, for the same reason — never
+      silently approved with no balance check just because the type record is gone.
 
     Either branch publishes `hrms.time.leave.applied` from this same transaction.
 
@@ -683,10 +736,20 @@ async def apply_leave_decision(
     intermediate state of this object either fully `pending` or fully decided, never caught
     mid-flush by its own CHECK constraint.
     """
+    if outcome not in ("approved", "rejected"):
+        raise ValueError(f"apply_leave_decision: unrecognised outcome {outcome!r}")
+
     leave_type = None
     balance = None
-    if outcome != "rejected":
+    type_retired = False
+    if outcome == "approved":
+        # Locked before either read below: two requests for the same employee and type decided
+        # at the same instant must not both see a balance that looks sufficient — see
+        # `_lock_balance`'s own docstring for why a row lock on `req` alone cannot catch this
+        # (the two requests are different rows).
+        await _lock_balance(session, req.organization_id, req.employee_id, req.leave_type_id)
         leave_type = await selectors.get_leave_type(session, req.organization_id, req.leave_type_id)
+        type_retired = leave_type is None
         if leave_type is not None and leave_type.is_paid:
             balance = await selectors.balance_half_days(
                 session, req.organization_id, req.employee_id, req.leave_type_id
@@ -721,11 +784,15 @@ async def apply_leave_decision(
         and balance is not None
         and balance < req.total_half_days
     )
-    if balance_now_insufficient:
+    if type_retired or balance_now_insufficient:
         req.status = "failed"
         req.failure_reason = (
-            f"Balance has since dropped to {balance} half-day(s); "
-            f"{req.total_half_days} were requested."
+            "The leave type was retired after this request was raised."
+            if type_retired
+            else (
+                f"Balance has since dropped to {balance} half-day(s); "
+                f"{req.total_half_days} were requested."
+            )
         )[:500]
         record_audit(
             session,

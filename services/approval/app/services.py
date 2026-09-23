@@ -909,6 +909,69 @@ async def _apply_outcome(
     return request
 
 
+async def withdraw_request(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    request_type: str,
+    source_ref: uuid.UUID,
+) -> ApprovalRequest | None:
+    """Close a still-pending request's open step because the product withdrew the thing being
+    asked about — leave's own cancellation of a request nobody has decided yet
+    (`hrms.time.leave.cancelled`), so that approving or rejecting it is no longer offered to
+    anyone (HRMS leave slice 1).
+
+    **Deliberately does not touch `approval_requests.status`.** An undecided withdrawal has no
+    decider, and `ck_approval_requests_decided_iff_not_pending` requires a non-pending status to
+    carry one — which `ck_approval_requests_decider_not_requester` then forbids from ever being
+    the requester themselves. There is no legal non-pending status this function could write
+    for a self-withdrawal without a schema change this slice does not make. Closing the one open
+    step instead — with the same `'rejected'` outcome a real rejection already uses — achieves
+    the actual requirement without one: every eligibility route (ADR-0006 §6 (a)/(b)/(c)) requires
+    an `open`/`delegated`/`escalated` *step* naming the caller, so a request whose only step is
+    closed has nothing left for anyone to decide, and `decide_request` itself finds no open step
+    to act on. `uq_approval_steps_open_per_request` is "at most one open step", never "at least
+    one", so a pending request with zero open steps is a legal, quiet, terminal state — not a
+    violated invariant. The authoritative fact of *why* nothing will ever decide it lives on the
+    product's own row (`leave.leave_requests.status = 'cancelled'`), not here.
+
+    Locks the request the same way `decide_request` does (`get_request_by_source_for_update`,
+    "lock order is always request, then steps") so a withdrawal racing an in-flight decision can
+    never leave the step half-closed: whichever transaction gets the lock first wins, and the
+    second sees the already-changed state under its own lock and no-ops.
+
+    Returns `None`/the request unchanged for the same no-op reasons every other consumer in this
+    codebase uses: no request to withdraw yet (`.cancelled` outran `.requested`), already decided,
+    or already withdrawn (no open step left) — none of these are errors.
+    """
+    request = await selectors.get_request_by_source_for_update(
+        session, organization_id, request_type, source_ref
+    )
+    if request is None or request.status != "pending":
+        return request
+
+    step = await selectors.get_open_step(session, organization_id, request.id)
+    if step is None:
+        return request
+
+    now = await db_now(session)
+    step.outcome = "rejected"
+    step.closed_at = now
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=None,
+        acting_as="approval.consumer",
+        action="approval.request.withdrawn",
+        entity="approval_request",
+        entity_id=request.id,
+        after={"step_id": step.id, "level": step.level},
+    )
+    return request
+
+
 # --------------------------------------------------------------------- delegation (slice 3, §5)
 
 

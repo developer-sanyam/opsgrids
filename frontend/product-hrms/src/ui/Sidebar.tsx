@@ -18,14 +18,16 @@ import type { NavEntry, NavGroup } from "@opsgrids/ui";
 import { useInboxCount } from "@/lib/useInboxCount";
 import { LogoMark } from "./LogoMark";
 
-const MAIN_MENU: NavGroup = {
-  title: "Main Menu",
-  items: [
-    { to: "/", label: "Dashboard", icon: HomeIcon, end: true },
-    { to: "/attendance", label: "Attendance", icon: CalendarCheckIcon },
-    { to: "/leave", label: "Leave", icon: CalendarIcon },
-  ],
-};
+function mainMenu(canSeeLeave: boolean): NavGroup {
+  return {
+    title: "Main Menu",
+    items: [
+      { to: "/", label: "Dashboard", icon: HomeIcon, end: true },
+      { to: "/attendance", label: "Attendance", icon: CalendarCheckIcon },
+      ...(canSeeLeave ? ([{ to: "/leave", label: "Leave", icon: CalendarIcon }] as NavEntry[]) : []),
+    ],
+  };
+}
 
 /**
  * This product's navigation. The shell — account switcher, ⌘K search, active pill, workspace card
@@ -54,6 +56,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   // route itself stays reachable by URL either way (§4.G's read-only "No permission" rendering).
   const canConfigureApprovals = usePermission("core.approval.policy.write", "ORG");
   const canReadShifts = usePermission("hrms.time.shift.read", "OWN");
+  const canSeeLeave = usePermission("hrms.time.leave_request.read", "OWN");
   const approvals: NavGroup = {
     title: "Approvals",
     items: [
@@ -85,7 +88,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     items: [{ to: "/team", label: "Team Members", icon: UserPlusIcon }],
   };
 
-  const groups: NavGroup[] = [MAIN_MENU, approvals, records, workspace];
+  const groups: NavGroup[] = [mainMenu(canSeeLeave), approvals, records, workspace];
 
   return (
     <SidebarShell

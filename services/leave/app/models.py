@@ -343,6 +343,14 @@ class LeaveLedgerEntry(Base, TenantBase):
     `idempotency_key` makes a client-retried grant safe: the same key posted twice is the same
     row, not two (`uq_leave_ledger_entries_org_idempotency_key`, partial on the key being
     present — a `null` key never collides with another `null` key).
+
+    **At most one `consumption` and one `reversal` per leave request, enforced at the database.**
+    `services.apply_leave_decision` and `services.cancel_leave_request` both take a row lock on
+    the `LeaveRequest` before posting (`selectors.get_leave_request_for_update` /
+    `get_leave_request_by_source`), which is what actually prevents a concurrent double-cancel or
+    a decision racing a cancellation — see those functions' own docstrings. These two partial
+    unique indexes are the backstop for that lock ever being bypassed or forgotten: a second
+    consumption or reversal for the same request is a `23505`, not a silently doubled balance.
     """
 
     __tablename__ = "leave_ledger_entries"
@@ -388,6 +396,20 @@ class LeaveLedgerEntry(Base, TenantBase):
             "ix_leave_ledger_entries_org_request",
             "organization_id",
             "leave_request_id",
+        ),
+        Index(
+            "uq_leave_ledger_entries_one_consumption_per_request",
+            "organization_id",
+            "leave_request_id",
+            unique=True,
+            postgresql_where=text("entry_type = 'consumption'"),
+        ),
+        Index(
+            "uq_leave_ledger_entries_one_reversal_per_request",
+            "organization_id",
+            "leave_request_id",
+            unique=True,
+            postgresql_where=text("entry_type = 'reversal'"),
         ),
     )
 

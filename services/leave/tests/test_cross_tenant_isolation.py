@@ -11,12 +11,15 @@ import uuid
 from datetime import date
 
 import pytest
-from sqlalchemy import event, text
+from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
+from app.main import app
 from app.models import SCHEMA, LeaveRequest, LeaveType
+from platform_core.auth import get_principal
 from platform_core.db import TENANT_GUC
+from tests.helpers import principal_for
 
 pytestmark = pytest.mark.integration
 
@@ -202,3 +205,82 @@ class TestOneTenantCannotSeeAnother:
             f"an unbound session saw {count} row(s). With no tenant set the policy must match "
             "nothing — otherwise forgetting the chokepoint exposes every tenant."
         )
+
+
+class TestCrossTenantOverHttp:
+    """A principal claiming org B, over the real request path, cannot reach org A's rows — even
+    when it names one directly by id. The same shape `attendance/tests/test_cross_tenant_isolation
+    .py::TestCrossTenantOverHttp` uses: the HTTP client's session stays bound to org A (this
+    module's `org_id` fixture, via the `client` fixture), but the principal supplied to each
+    request claims a different organization — exactly what a forged or misrouted token looks
+    like. Every id-taking route must answer 404, never 200 and never a 500, whether the mismatch
+    is caught by `ctx.organization_id` filtering in the selector or by RLS itself.
+    """
+
+    def _as_other_org(self, subject: uuid.UUID | None, perms: list[str]) -> uuid.UUID:
+        other_org = uuid.uuid4()
+        principal = principal_for(other_org, subject, perms)
+        app.dependency_overrides[get_principal] = lambda: principal
+        return other_org
+
+    async def test_every_id_taking_route_refuses_another_orgs_row(
+        self, client, org_id, admin_session
+    ) -> None:
+        other_org, other_request = await _seed_other_org(admin_session)
+        # A leave type that belongs to `org_id` (this fixture's own tenant) so the "grant" case
+        # below is testing the *request's* leave_type_id, not accidentally 404ing on a type that
+        # was never reachable at all.
+        async with admin_session.begin():
+            other_type = (
+                await admin_session.execute(
+                    select(LeaveType.id).where(LeaveType.organization_id == other_org)
+                )
+            ).scalar_one()
+
+        subject = uuid.uuid4()
+        try:
+            self._as_other_org(
+                subject,
+                [
+                    "hrms.time.leave_request.read:ORG",
+                    "hrms.time.leave_request.write:ORG",
+                    "hrms.time.leave_request.manage:ORG",
+                    "hrms.time.leave_type.read:ORG",
+                    "hrms.time.leave_type.write:ORG",
+                    "hrms.time.leave_balance.write:ORG",
+                ],
+            )
+
+            detail = await client.get(f"/api/v1/leave/requests/{other_request}")
+            cancel = await client.post(f"/api/v1/leave/requests/{other_request}/cancel", json={})
+            force_cancel = await client.post(
+                f"/api/v1/leave/requests/{other_request}/force-cancel", json={}
+            )
+            patch_type = await client.patch(
+                f"/api/v1/leave/types/{other_type}", json={"name": "Hijacked"}
+            )
+            delete_type = await client.delete(f"/api/v1/leave/types/{other_type}")
+            grant = await client.post(
+                "/api/v1/leave/balances/grant",
+                json={
+                    "employee_id": str(uuid.uuid4()),
+                    "leave_type_id": str(other_type),
+                    "half_days": 5,
+                },
+            )
+            listed = await client.get("/api/v1/leave/requests")
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+
+        assert detail.status_code == 404, detail.text
+        assert cancel.status_code == 404, cancel.text
+        assert force_cancel.status_code == 404, force_cancel.text
+        assert patch_type.status_code == 404, patch_type.text
+        assert delete_type.status_code == 404, delete_type.text
+        assert grant.status_code == 404, grant.text
+        # The list is scoped to the claimed org (which owns nothing in the actually-bound
+        # session), so it comes back empty rather than leaking org A's row.
+        assert listed.status_code == 200
+        assert listed.json()["items"] == []
+        assert str(other_request) not in listed.text
+        assert str(org_id) not in listed.text

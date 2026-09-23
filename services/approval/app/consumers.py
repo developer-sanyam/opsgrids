@@ -41,11 +41,13 @@ from typing import Any
 from app.config import settings
 from app.models import ProcessedEvent
 from app.services import (
+    REQUEST_TYPE_LEAVE,
     apply_leave_outcome,
     apply_regularization_outcome,
     open_leave_request,
     open_regularization_request,
     upsert_hierarchy_node,
+    withdraw_request,
 )
 from platform_core.db import assert_app_role, init_engine, session_scope
 from platform_core.events import EventConsumer, already_processed, mark_processed
@@ -290,11 +292,37 @@ async def on_regularization_applied(envelope: dict[str, Any]) -> None:
 
 #: Contract strings from leave-service (`services/leave/app/services.py`), named here rather than
 #: imported (CLAUDE.md). Same shape as regularisation's pair above: `.requested` opens a
-#: `hrms.time.leave` request, `.applied` is leave's return leg once a decision lands.
+#: `hrms.time.leave` request, `.applied` is leave's return leg once a decision lands, `.cancelled`
+#: withdraws a still-pending one.
 EVT_LEAVE_REQUESTED = "hrms.time.leave.requested"
 EVT_LEAVE_APPLIED = "hrms.time.leave.applied"
+EVT_LEAVE_CANCELLED = "hrms.time.leave.cancelled"
 
-LEAVE_EVENTS = (EVT_LEAVE_REQUESTED, EVT_LEAVE_APPLIED)
+LEAVE_EVENTS = (EVT_LEAVE_REQUESTED, EVT_LEAVE_APPLIED, EVT_LEAVE_CANCELLED)
+
+
+def _tenant_from_envelope(envelope: dict[str, Any]) -> uuid.UUID | None:
+    """The organization this event is scoped to — refusing a payload whose own
+    `organization_id` disagrees with the envelope's own. `session_scope` binds the tenant GUC
+    from whichever value a handler passes it; without this check a producer bug (or a forged
+    event) that disagreed with itself would process one tenant's row under another tenant's
+    isolation, which row-level security cannot catch from inside — it trusts the GUC it is given.
+    Logged and dropped, never raised, the same "malformed input is not retried into a dead
+    letter" discipline this module already uses for a malformed `occurred_at`.
+    """
+    payload = envelope.get("payload") or {}
+    envelope_org = envelope.get("organization_id")
+    payload_org = payload.get("organization_id")
+    if envelope_org is None or payload_org is None or str(envelope_org) != str(payload_org):
+        log.error(
+            "event.tenant_mismatch",
+            event_id=envelope.get("event_id"),
+            event_type=envelope.get("event_type"),
+            envelope_organization_id=envelope_org,
+            payload_organization_id=payload_org,
+        )
+        return None
+    return uuid.UUID(str(payload_org))
 
 
 @consumer.on(EVT_LEAVE_REQUESTED)
@@ -309,7 +337,13 @@ async def on_leave_requested(envelope: dict[str, Any]) -> None:
     """
     event_id = uuid.UUID(envelope["event_id"])
     payload = envelope["payload"]
-    organization_id = uuid.UUID(payload["organization_id"])
+    # A tenant mismatch is refused before `processed_events` is touched: there is no organization
+    # this handler trusts enough to bind `session_scope` to, and `processed_events` is itself
+    # un-policied, so writing to it here would need an org id anyway. Redelivery is harmless —
+    # the same mismatch refuses again, every time — which is the safe direction to be wrong in.
+    organization_id = _tenant_from_envelope(envelope)
+    if organization_id is None:
+        return
 
     opened = False
     async with session_scope(organization_id=organization_id) as session:
@@ -349,7 +383,9 @@ async def on_leave_applied(envelope: dict[str, Any]) -> None:
     (-> source_ref), approval_request_id, request_type, outcome, failure_reason?`."""
     event_id = uuid.UUID(envelope["event_id"])
     payload = envelope["payload"]
-    organization_id = uuid.UUID(payload["organization_id"])
+    organization_id = _tenant_from_envelope(envelope)
+    if organization_id is None:
+        return
 
     applied = False
     async with session_scope(organization_id=organization_id) as session:
@@ -372,6 +408,46 @@ async def on_leave_applied(envelope: dict[str, Any]) -> None:
         event_id=str(event_id),
         organization_id=str(organization_id),
         applied=applied,
+    )
+
+
+@consumer.on(EVT_LEAVE_CANCELLED)
+async def on_leave_cancelled(envelope: dict[str, Any]) -> None:
+    """Withdraws a still-`pending` `hrms.time.leave` request (`withdraw_request`) — leave's own
+    cancellation of a request nobody has decided yet. Payload: `organization_id,
+    leave_request_id (-> source_ref), employee_id, was_status`.
+
+    A cancellation of an *already-decided* request (leave's `was_status == "approved"`) needs no
+    action here: approval already recorded that decision, and there is nothing left to withdraw
+    — `withdraw_request` itself is a no-op once the request has no open step, so this handler
+    does not need to branch on `was_status` to get that right.
+    """
+    event_id = uuid.UUID(envelope["event_id"])
+    payload = envelope["payload"]
+    organization_id = _tenant_from_envelope(envelope)
+    if organization_id is None:
+        return
+
+    withdrawn = False
+    async with session_scope(organization_id=organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("leave.cancelled.duplicate", event_id=str(event_id))
+            return
+
+        request = await withdraw_request(
+            session,
+            organization_id=organization_id,
+            request_type=REQUEST_TYPE_LEAVE,
+            source_ref=uuid.UUID(str(payload["leave_request_id"])),
+        )
+        withdrawn = request is not None
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+
+    log.info(
+        "leave.cancelled.processed",
+        event_id=str(event_id),
+        organization_id=str(organization_id),
+        withdrawn=withdrawn,
     )
 
 

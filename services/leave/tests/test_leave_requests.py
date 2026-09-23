@@ -9,7 +9,8 @@ import datetime as dt
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
@@ -674,3 +675,59 @@ class TestGrantLeaveBalance:
         assert first.id == second.id
         balance = await selectors.balance_half_days(session, org_id, employee_id, leave_type_id)
         assert balance == 24  # posted once, not twice
+
+
+# --------------------------------------------------------------------- append-only at the DB
+
+
+class TestLedgerIsAppendOnlyAtTheDatabase:
+    """The net under append-only (CLAUDE.md): even a raw UPDATE or DELETE, bypassing every
+    service-level check, is refused — the app role (`opsgrids_leave`) simply does not hold the
+    privilege on `leave_ledger_entries` (`migrations/versions/e5b7c9d1a2f4...`). The same shape
+    `metering/tests/test_ingest.py::test_update_on_usage_events_is_denied_to_the_app_role` uses
+    for the identical guarantee on `usage_events`."""
+
+    async def test_update_on_the_ledger_is_denied_to_the_app_role(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        leave_type_id = await _make_leave_type(session, org_id)
+        ctx = ctx_for(org_id, uuid.uuid4(), "hrms.time.leave_balance.write", Scope.ORG)
+        async with session.begin():
+            await services.grant_leave_balance(
+                session,
+                ctx,
+                LeaveBalanceGrantIn(
+                    employee_id=uuid.uuid4(), leave_type_id=leave_type_id, half_days=10
+                ),
+            )
+
+        with pytest.raises(ProgrammingError, match="permission denied"):
+            async with session.begin():
+                await session.execute(
+                    text(
+                        "UPDATE leave.leave_ledger_entries SET delta_half_days = 999 "
+                        "WHERE organization_id = :org"
+                    ),
+                    {"org": org_id},
+                )
+
+    async def test_delete_on_the_ledger_is_denied_to_the_app_role(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        leave_type_id = await _make_leave_type(session, org_id)
+        ctx = ctx_for(org_id, uuid.uuid4(), "hrms.time.leave_balance.write", Scope.ORG)
+        async with session.begin():
+            await services.grant_leave_balance(
+                session,
+                ctx,
+                LeaveBalanceGrantIn(
+                    employee_id=uuid.uuid4(), leave_type_id=leave_type_id, half_days=10
+                ),
+            )
+
+        with pytest.raises(ProgrammingError, match="permission denied"):
+            async with session.begin():
+                await session.execute(
+                    text("DELETE FROM leave.leave_ledger_entries WHERE organization_id = :org"),
+                    {"org": org_id},
+                )

@@ -8,8 +8,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { PermissionProvider } from "@opsgrids/client";
+
 import type { LeaveBalanceOut, LeaveRequestOut, LeaveTypeOut, Paged } from "@/api/types";
 import { LeavePage } from "./Leave";
+
+/** The self-service grant this screen's Apply/Cancel controls gate on (`useCan`/`<Can>` fail
+ * closed with no `PermissionProvider` in the tree, the same "hides UI, is not enforcement"
+ * discipline `ApprovalSettings.test.tsx` renders under in this same product). */
+function renderWithWriteAccess() {
+  return render(
+    <PermissionProvider grants={["hrms.time.leave_request.write:OWN"]}>
+      <LeavePage />
+    </PermissionProvider>,
+  );
+}
 
 const listLeaveBalances = vi.fn();
 const listLeaveRequests = vi.fn();
@@ -107,7 +120,7 @@ describe("LeavePage", () => {
       reason: "Doctor visit",
     });
 
-    render(<LeavePage />);
+    renderWithWriteAccess();
     await waitFor(() => expect(screen.getByText("Family function")).toBeDefined());
 
     await user.click(screen.getByRole("button", { name: "Apply for leave" }));
@@ -135,7 +148,7 @@ describe("LeavePage", () => {
       cancelled_at: "2026-09-05T00:00:00Z",
     });
 
-    render(<LeavePage />);
+    renderWithWriteAccess();
     await waitFor(() => expect(screen.getByText("Family function")).toBeDefined());
 
     // A single visible row action renders inline (no overflow menu) — its accessible name is

@@ -10,10 +10,23 @@ what was sent.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+#: A generous but finite horizon on either side of "today" — the sanity bound every date field
+#: on a leave request is checked against, not a business rule about how far ahead leave may be
+#: booked. Without it, a client (or a fuzzer) can name a `date` near `date.max`, and
+#: `domain.count_half_days`'s day-by-day loop then either runs for millions of iterations or
+#: raises a bare `OverflowError` on the final `current += timedelta(days=1)` step past
+#: `date.max` — a 500, not a validation error, for input that was never a legitimate request.
+MAX_LEAVE_DATE_HORIZON_DAYS = 3650
+#: The longest a single leave request may span. Also a sanity bound, not a business rule: a
+#: multi-year single request is never a legitimate ask, and without a cap the same
+#: near-`date.max` risk applies to `end_date - start_date` even when both dates are individually
+#: reasonable.
+MAX_LEAVE_SPAN_DAYS = 366
 
 LeaveRequestStatus = Literal["pending", "approved", "rejected", "cancelled", "failed"]
 #: What a caller may post through the balance-grant endpoint. `consumption` and `reversal` are
@@ -73,6 +86,23 @@ class LeaveTypePatch(BaseModel):
     monthly_accrual_half_days: int | None = Field(default=None, ge=0)
     carry_forward_cap_half_days: int | None = Field(default=None, ge=0)
     active: bool | None = None
+
+    @field_validator("name", "is_paid", "active", mode="before")
+    @classmethod
+    def _not_null_fields_may_be_omitted_but_not_nulled(cls, value: object, info: object) -> object:
+        """`name`, `is_paid` and `active` back `NOT NULL` columns (`app/models.py`'s
+        `LeaveType`); the schema's `| None` on each is "omit this key to leave it alone"
+        (`services.update_leave_type`'s `model_dump(exclude_unset=True)`), never "send it as
+        `null`". A field validator only runs for a key the client actually sent — an absent key
+        never reaches this function at all — so this rejects exactly the one shape that would
+        otherwise reach the database as a `NOT NULL` violation: an explicit `null`. Refused here,
+        at the boundary, as a field-level 422, rather than surfacing as a database
+        `IntegrityError` translated into an unhelpful generic 409.
+        """
+        field_name = getattr(info, "field_name", "field")
+        if value is None:
+            raise ValueError(f"{field_name} may be omitted, but must not be null")
+        return value
 
 
 class LeaveTypeOut(BaseModel):
@@ -147,6 +177,26 @@ class LeaveRequestIn(BaseModel):
     half_day_start: bool = False
     half_day_end: bool = False
     reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def _dates_are_within_a_sane_horizon(self) -> LeaveRequestIn:
+        """A boundary check, not a business rule — `domain.count_half_days` still owns "end
+        before start" and "no working days in range" (`services.apply_for_leave` calls it, and
+        it raises a `BusinessRuleProblem`, not a 422, for those). This exists only to stop a
+        `date` near `date.max` from ever reaching that loop at all — see the module constants'
+        own docstrings for the crash it prevents."""
+        today = datetime.now(UTC).date()
+        horizon = timedelta(days=MAX_LEAVE_DATE_HORIZON_DAYS)
+        for field_name, value in (("start_date", self.start_date), ("end_date", self.end_date)):
+            if value < today - horizon or value > today + horizon:
+                raise ValueError(
+                    f"{field_name} must be within {MAX_LEAVE_DATE_HORIZON_DAYS} days of today"
+                )
+        if (self.end_date - self.start_date).days > MAX_LEAVE_SPAN_DAYS:
+            raise ValueError(
+                f"a single leave request cannot span more than {MAX_LEAVE_SPAN_DAYS} days"
+            )
+        return self
 
 
 class LeaveCancelIn(BaseModel):

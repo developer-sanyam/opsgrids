@@ -359,7 +359,11 @@ async def cancel_leave_request(
     ctx: LeaveRequestWrite,
     request: Request,
 ) -> LeaveRequestOut:
-    req = await selectors.get_leave_request(session, ctx.organization_id, request_id)
+    # Locked before anything else — the same "lock, then decide" order
+    # `approval.services.decide_request` uses, so a cancel racing the decision consumer (or a
+    # second concurrent cancel) serialises here rather than double-posting a reversal. See
+    # `selectors.get_leave_request_for_update`'s own docstring.
+    req = await selectors.get_leave_request_for_update(session, ctx.organization_id, request_id)
     if req is None:
         raise NotFoundProblem("That leave request is not part of this organization")
     _assert_requesting_own_record(ctx, req)
@@ -384,7 +388,7 @@ async def force_cancel_leave_request(
     directly, audited in its own domain, without going through approval. `ctx` here is already
     guarded at `minimum=Scope.ORG`, so no object-level identity check is needed: an ORG-scoped
     caller may touch any employee's request by construction (`ScopeContext.assert_can_touch`)."""
-    req = await selectors.get_leave_request(session, ctx.organization_id, request_id)
+    req = await selectors.get_leave_request_for_update(session, ctx.organization_id, request_id)
     if req is None:
         raise NotFoundProblem("That leave request is not part of this organization")
     updated = await services.cancel_leave_request(session, ctx, req, payload, request=request)

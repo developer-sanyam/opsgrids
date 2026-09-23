@@ -372,3 +372,72 @@ class TestEmployeeDirectory:
         req = await selectors.get_leave_request(session, org_id, req_id)
         assert req is not None
         assert req.reporting_manager_id == manager_id
+
+
+class TestTenantMismatchIsRefused:
+    """`_tenant_from_envelope` refuses to bind `session_scope` to either organization when the
+    envelope and the payload disagree — a producer bug or a forged event must never process one
+    tenant's row under another tenant's isolation. Logged and dropped, never marked processed,
+    so a corrected redelivery with matching ids still applies."""
+
+    async def test_a_directory_event_with_a_mismatched_payload_org_is_dropped(
+        self, session, org_id
+    ) -> None:
+        employee_id = uuid.uuid4()
+        envelope = employee_hierarchy_envelope(
+            organization_id=org_id, employee_id=employee_id, hierarchy_version=1
+        )
+        envelope["payload"]["organization_id"] = str(uuid.uuid4())  # disagrees with the envelope
+
+        await on_employee_onboarded(envelope)  # must not raise
+
+        session.expire_all()
+        entry = await selectors.get_directory_entry(session, org_id, employee_id)
+        assert entry is None
+
+    async def test_an_approval_opened_event_with_a_mismatched_payload_org_is_dropped(
+        self, session, org_id
+    ) -> None:
+        leave_type_id = await _leave_type_id(session, org_id)
+        req_id = await _pending_request(session, org_id, uuid.uuid4(), leave_type_id)
+        envelope = approval_opened_envelope(organization_id=org_id, source_ref=req_id)
+        envelope["payload"]["organization_id"] = str(uuid.uuid4())
+
+        await on_approval_request_opened(envelope)  # must not raise
+
+        session.expire_all()
+        req = await selectors.get_leave_request(session, org_id, req_id)
+        assert req is not None
+        assert req.approval_opened_at is None
+
+    async def test_an_approval_decided_event_with_a_mismatched_payload_org_is_dropped(
+        self, session, org_id
+    ) -> None:
+        leave_type_id = await _leave_type_id(session, org_id)
+        req_id = await _pending_request(session, org_id, uuid.uuid4(), leave_type_id)
+        envelope = approval_decided_envelope(
+            organization_id=org_id, source_ref=req_id, outcome="approved"
+        )
+        envelope["payload"]["organization_id"] = str(uuid.uuid4())
+
+        await on_approval_request_decided(envelope)  # must not raise
+
+        session.expire_all()
+        req = await selectors.get_leave_request(session, org_id, req_id)
+        assert req is not None
+        assert req.status == "pending"  # never decided — the mismatched event never touched it
+
+    async def test_a_mismatched_event_is_never_marked_processed(self, session, org_id) -> None:
+        """So a corrected, matching redelivery of the same event id still applies — the mismatch
+        refusal must not poison the idempotency ledger for a legitimate later attempt."""
+        employee_id = uuid.uuid4()
+        event_id = uuid.uuid4()
+        envelope = employee_hierarchy_envelope(
+            event_id=event_id, organization_id=org_id, employee_id=employee_id, hierarchy_version=1
+        )
+        envelope["payload"]["organization_id"] = str(uuid.uuid4())
+        await on_employee_onboarded(envelope)
+
+        async with session.begin():
+            processed = await already_processed(session, ProcessedEvent, event_id)
+        assert processed is False

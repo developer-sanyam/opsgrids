@@ -382,11 +382,13 @@ What happens, in order, and what each step protects:
    and the site keeps serving.**
 5. **caddy validate** — the Caddyfile is loaded by the pinned Caddy binary. A Caddyfile that
    fails to load is a total outage and there is no staging environment to catch it.
-6. **migrate** — `alembic upgrade head` for auth, account, product and storefront, **before**
-   the new containers serve. For the length of the deploy the old code runs against the new
-   schema, so **every migration must be backward compatible with the version currently
-   running**: add a nullable column, backfill, and only drop the old one in a later deploy.
-   `make migration-roundtrip` locally is what proves the `downgrade()` actually reverts.
+6. **migrate** — first **reconcile-roles**: create any `opsgrids_<service>` role this box does
+   not have yet (idempotent — see "New service on an existing box" below), then
+   `alembic upgrade head` for every service this box's profiles run, **before** the new
+   containers serve. For the length of the deploy the old code runs against the new schema, so
+   **every migration must be backward compatible with the version currently running**: add a
+   nullable column, backfill, and only drop the old one in a later deploy. `make
+   migration-roundtrip` locally is what proves the `downgrade()` actually reverts.
 7. **up** — containers are recreated. Brief downtime. Not zero.
 8. **health** — every container running and healthy within 120 s, or the deploy reports a
    failure and leaves the decision to you.
@@ -415,6 +417,37 @@ add a required reviewer there if a human should approve each deploy.
 
 What the pipeline does **not** do: edit the box's `.env`, change a product's catalogue `status`,
 or touch DNS. Those are the deployment's own data and stay a person's decision.
+
+### New service on an existing box
+
+`tools/dev-bootstrap/init-db.sql` (mounted as `postgres-init/20-init.sql`) creates every
+`opsgrids_<service>` role — but only on a **fresh** Postgres data volume, because the docker
+entrypoint runs `/docker-entrypoint-initdb.d/*` exactly once, the first time a volume
+initialises. A service added after that first boot has no role at all: its migration's own
+`CREATE POLICY ... TO opsgrids_<service>` or `REVOKE ... FROM opsgrids_<service>` fails outright,
+and `set -euo pipefail` aborts the whole deploy on it — this is exactly how the `leave` service's
+first deploy broke, on a box that had been running since before `leave` existed.
+
+`remote.sh migrate` now runs **reconcile-roles** first, every deploy: for every service in
+`SERVICES_WITH_SCHEMA`, idempotently create the role if it is missing, set its password to this
+box's `OPSGRIDS_DB_PASSWORD` (never the bootstrap's dev placeholder), and grant it `CONNECT` and
+the schema `USAGE` the bootstrap grants at first boot — the same three statements
+`tools/dev-bootstrap/init-db.sql` runs for that role, built once in
+`infrastructure/edge/lib/role-reconcile.sh` so there is one definition of what a per-service role
+needs, not a copy that can drift from the one a fresh volume gets. Safe to run on every deploy,
+not only the one that adds a service — once every role exists it is a handful of `SELECT`s and
+no-op `GRANT`s.
+
+Run it by hand if you ever need to (a role deleted by mistake, standing up a service against an
+existing box out of band):
+
+```bash
+./remote.sh reconcile-roles
+```
+
+The dev counterpart is `make reconcile-roles`, for the same problem on a local `make infra`
+volume that predates a service — it reads the same `SERVICES_WITH_SCHEMA` list out of
+`remote.sh` and reuses the identical SQL, against the dev password.
 
 ### Roll back a bad deploy
 

@@ -177,12 +177,40 @@ async def get_leave_request(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_leave_request_for_update(
+    session: AsyncSession, org_id: uuid.UUID, request_id: uuid.UUID
+) -> LeaveRequest | None:
+    """`SELECT ... FOR UPDATE` — the lock that makes cancellation and the approval-decision
+    consumer mutually exclusive on the same request (the same "lock order is always request,
+    then steps" shape `approval.services.decide_request` uses for the identical class of race).
+    Without it, two concurrent cancels of one approved request can each read `status ==
+    'approved'` before either writes, and both post a reversal; a cancel racing the decision
+    consumer can similarly interleave so the request ends `cancelled` with a consumption and no
+    reversal. The caller re-checks `status` under this lock rather than trusting an earlier read
+    — see `services.cancel_leave_request`'s and `app.consumers.on_approval_request_decided`'s own
+    docstrings. `uq_leave_ledger_entries_one_consumption_per_request` /
+    `..._one_reversal_per_request` are the database backstop if this lock is ever bypassed.
+    """
+    stmt = (
+        select(LeaveRequest)
+        .where(
+            LeaveRequest.id == request_id,
+            LeaveRequest.organization_id == org_id,
+            LeaveRequest.deleted_at.is_(None),
+        )
+        .with_for_update()
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def get_leave_request_by_source(
     session: AsyncSession, org_id: uuid.UUID, request_id: uuid.UUID
 ) -> LeaveRequest | None:
-    """The consumer's lookup by `source_ref` (ADR-0006 §12) — same shape as `get_leave_request`,
-    named for the call site that reads it."""
-    return await get_leave_request(session, org_id, request_id)
+    """The consumer's lookup by `source_ref` (ADR-0006 §12), locked — the decision consumer
+    mutates the row's status and posts a ledger entry, so it takes the same
+    `get_leave_request_for_update` lock a route-driven cancellation does (see that function's
+    docstring for the race this closes)."""
+    return await get_leave_request_for_update(session, org_id, request_id)
 
 
 async def has_overlapping_request(

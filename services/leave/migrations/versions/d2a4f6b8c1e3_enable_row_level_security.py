@@ -14,7 +14,7 @@ does the same per message.
 would silently defeat consumer idempotency (ADR-0002 §5).
 
 Revision ID: d2a4f6b8c1e3
-Revises: 23db55e96a68
+Revises: cca6e177f68a
 Create Date: 2026-09-23 18:40:00.000000
 """
 
@@ -25,7 +25,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = 'd2a4f6b8c1e3'  # pragma: allowlist secret
-down_revision: str | None = '23db55e96a68'  # pragma: allowlist secret
+down_revision: str | None = 'cca6e177f68a'  # pragma: allowlist secret
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

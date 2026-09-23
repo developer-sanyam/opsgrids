@@ -75,6 +75,10 @@ migrate: ## Apply migrations for every service
 	# `tools/dev-bootstrap/init-db.sql` before any of this runs.
 	$(call fan_out,alembic.ini,strict,uv run alembic upgrade head)
 
+.PHONY: reconcile-roles
+reconcile-roles: ## Create any opsgrids_<service> role missing on this dev database (idempotent)
+	tools/reconcile-roles.sh
+
 .PHONY: makemigration
 makemigration: ## Autogenerate: make makemigration SERVICE=account M="add memberships"
 	@test -n "$(SERVICE)" || (echo "SERVICE= is required" && exit 1)

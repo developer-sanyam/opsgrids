@@ -61,6 +61,32 @@ def _uuid_or_none(value: Any) -> uuid.UUID | None:
     return uuid.UUID(str(value)) if value else None
 
 
+def _tenant_from_envelope(envelope: dict[str, Any]) -> uuid.UUID | None:
+    """The organization this event is scoped to — refusing a payload whose own
+    `organization_id` disagrees with the envelope's own. `session_scope` binds the tenant GUC
+    from whichever value a handler passes it; without this check a producer bug (or a forged
+    event) that disagreed with itself would process one tenant's row under another tenant's
+    isolation, which row-level security cannot catch from inside — it trusts the GUC it is given.
+    Logged and dropped, never raised, never marked processed: there is no organization this
+    handler trusts enough to bind `session_scope` to (and `processed_events` is itself
+    un-policied, so writing to it needs an org id too). Redelivery is harmless — the same
+    mismatch refuses again, every time.
+    """
+    payload = envelope.get("payload") or {}
+    envelope_org = envelope.get("organization_id")
+    payload_org = payload.get("organization_id")
+    if envelope_org is None or payload_org is None or str(envelope_org) != str(payload_org):
+        log.error(
+            "event.tenant_mismatch",
+            event_id=envelope.get("event_id"),
+            event_type=envelope.get("event_type"),
+            envelope_organization_id=envelope_org,
+            payload_organization_id=payload_org,
+        )
+        return None
+    return uuid.UUID(str(payload_org))
+
+
 def _directory_state(payload: dict[str, Any]) -> DirectoryState | None:
     """Parse the full-state hierarchy fields out of an employee event, or `None` to skip it —
     the same "absent version means an un-upgraded pod, ignore rather than treat as version 0"
@@ -87,8 +113,10 @@ def _directory_state(payload: dict[str, Any]) -> DirectoryState | None:
 async def _apply_directory_event(envelope: dict[str, Any]) -> None:
     event_id = uuid.UUID(envelope["event_id"])
     payload = envelope["payload"]
-    organization_id = uuid.UUID(payload["organization_id"])
     event_type = envelope["event_type"]
+    organization_id = _tenant_from_envelope(envelope)
+    if organization_id is None:
+        return
 
     applied = False
     async with session_scope(organization_id=organization_id) as session:
@@ -181,7 +209,9 @@ async def on_approval_request_opened(envelope: dict[str, Any]) -> None:
         return
 
     event_id = uuid.UUID(envelope["event_id"])
-    organization_id = uuid.UUID(payload["organization_id"])
+    organization_id = _tenant_from_envelope(envelope)
+    if organization_id is None:
+        return
     source_ref = uuid.UUID(payload["source_ref"])
     approval_request_id = uuid.UUID(payload["request_id"])
     raw_approver = payload.get("approver_employee_id")
@@ -240,7 +270,9 @@ async def on_approval_request_decided(envelope: dict[str, Any]) -> None:
         return
 
     event_id = uuid.UUID(envelope["event_id"])
-    organization_id = uuid.UUID(payload["organization_id"])
+    organization_id = _tenant_from_envelope(envelope)
+    if organization_id is None:
+        return
     source_ref = uuid.UUID(payload["source_ref"])
     approval_request_id = uuid.UUID(payload["request_id"])
     outcome = payload["outcome"]
@@ -255,6 +287,23 @@ async def on_approval_request_decided(envelope: dict[str, Any]) -> None:
             return
 
         from app import selectors, services
+
+        # An explicit, exhaustive check — never "anything that is not 'rejected' is an
+        # approval" — the same discipline `approval.services.decide_request`'s own
+        # `_DECISION_OUTCOMES` mapping states. An outcome outside this pair cannot come from
+        # approval's real `decide_request` (its own `DecisionIn.outcome` is
+        # `Literal["approve", "reject"]`, published as `"approved"`/`"rejected"`), so seeing one
+        # here means a malformed or forged event — logged and dropped, never applied as either.
+        if outcome not in ("approved", "rejected"):
+            log.error(
+                "leave.decided.unknown_outcome",
+                event_id=str(event_id),
+                organization_id=str(organization_id),
+                source_ref=str(source_ref),
+                outcome=str(outcome)[:50],
+            )
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+            return
 
         req = await selectors.get_leave_request_by_source(session, organization_id, source_ref)
         if req is None:
