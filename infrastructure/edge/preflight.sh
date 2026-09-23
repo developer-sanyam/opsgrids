@@ -100,6 +100,15 @@ if [ -z "$missing" ]; then ok "every key in .env.example is set"; else
 if [ -z "$placeholder" ]; then ok "no placeholder values"; else
 	bad "still carrying a placeholder value:$placeholder"; fi
 
+# The same strength rules the services enforce at startup (see the library's header), checked
+# here so a weak or reused secret stops the deploy before anything changes.
+# shellcheck disable=SC1091  # sourced, not executed — see the file's own header
+. ./lib/secret-strength.sh
+secret_problems=$(secret_strength_problems)
+if [ -z "$secret_problems" ]; then ok "secrets are long enough and distinct"; else
+	while IFS= read -r problem; do bad "$problem"; done <<<"$secret_problems"
+fi
+
 # EDGE_RESERVED_IP is allowed empty (a box with no floating IP yet), but if it is set it must be
 # a real address: an address in one of RFC 5737's three documentation ranges (192.0.2.0/24,
 # 198.51.100.0/24, 203.0.113.0/24 — the ADR's own worked examples use 198.51.100.7) reaches

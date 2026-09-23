@@ -65,3 +65,50 @@ role_reconcile_sql() {
 		SQL
 	done
 }
+
+# directory_roles_from_config REPO_ROOT — every BYPASSRLS directory-reader role name a
+# service declares in its own `app/config.py` (`db_directory_role: str | None = "..."`),
+# discovered rather than hand-listed here a second time — the same reason
+# `tools/reconcile-roles.sh` reads `SERVICES_WITH_SCHEMA` out of `remote.sh` instead of
+# copying it: a role list kept in two places is a role list that eventually drifts. Printed
+# deduplicated and sorted, one per line, because more than one service intentionally shares a
+# reader (`opsgrids_directory` is account's own config and the name every other service's
+# `db_directory_role` for the *identity* lookup would also read, were one ever added).
+directory_roles_from_config() {
+	local root="${1:?directory_roles_from_config: repo root is required}"
+	grep -hoE 'db_directory_role: str \| None = "[a-z0-9_]+"' "$root"/services/*/app/config.py 2>/dev/null |
+		grep -oE '"[a-z0-9_]+"' | tr -d '"' | sort -u
+}
+
+# directory_role_reconcile_sql ROLE [ROLE...] — the BYPASSRLS counterpart of
+# `role_reconcile_sql`, for the same gap: `tools/dev-bootstrap/init-db.sql` creates every
+# `opsgrids_*_directory` reader, but only on a database's first boot. A directory role added
+# after that (billing's `opsgrids_billing_directory`, added alongside the staff credit-ledger
+# route — MAJOR 7 of the security review that found it missing here) otherwise has no role at
+# all on a box that already existed, and the service's own `migrations/env.py` GRANT to it
+# fails outright. `NOINHERIT BYPASSRLS` matches exactly what `init-db.sql` grants each one at
+# bootstrap: CONNECT and schema USAGE only — the per-table SELECT is the owning service's own
+# `migrations/env.py`, unchanged by this.
+directory_role_reconcile_sql() {
+	local role
+	for role in "$@"; do
+		case "$role" in
+		*[!a-z0-9_]* | "")
+			echo "directory_role_reconcile_sql: refusing role name '$role'" >&2
+			return 1
+			;;
+		esac
+		cat <<-SQL
+			DO \$do\$
+			BEGIN
+			  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$role') THEN
+			    CREATE ROLE $role LOGIN NOINHERIT BYPASSRLS;
+			  END IF;
+			END
+			\$do\$;
+			ALTER ROLE $role PASSWORD :'pw';
+			GRANT CONNECT ON DATABASE opsgrids TO $role;
+			GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO $role;
+		SQL
+	done
+}

@@ -41,6 +41,46 @@ async def all_org_states(session: AsyncSession) -> Sequence[OrgCommercialState]:
     )
 
 
+async def get_org_state(session: AsyncSession, organization_id: Any) -> OrgCommercialState | None:
+    """One organization's commercial snapshot — the console half of the org detail composite
+    (`GET /admin/organizations/{id}`); the identity half comes from account-service's own
+    staff-only route, never from this schema."""
+    return (
+        await session.execute(
+            select(OrgCommercialState).where(OrgCommercialState.organization_id == organization_id)
+        )
+    ).scalar_one_or_none()
+
+
+#: An organization's lifecycle bucket, for the platform-overview counts. Derived from the same
+#: `subscription_states` the org list already renders rather than a stored column, so there is
+#: nothing to keep in sync: `locked` wins (a suspension de-entitles regardless of what is
+#: trialling underneath), then any `active` product, then any `trial`, then — no live product but
+#: history exists — `churned`, and finally `none` for an organization the fold has never touched.
+LIFECYCLE_BUCKETS = ("suspended", "active", "trial", "churned", "none")
+
+
+def _lifecycle_of(state: OrgCommercialState) -> str:
+    if state.locked:
+        return "suspended"
+    statuses = {entry.get("state") for entry in state.subscription_states.values()}
+    if "active" in statuses:
+        return "active"
+    if "trial" in statuses:
+        return "trial"
+    if statuses:
+        return "churned"
+    return "none"
+
+
+async def lifecycle_counts(session: AsyncSession) -> dict[str, int]:
+    """Organization counts by lifecycle bucket, for the platform metrics overview."""
+    counts = dict.fromkeys(LIFECYCLE_BUCKETS, 0)
+    for state in await all_org_states(session):
+        counts[_lifecycle_of(state)] += 1
+    return counts
+
+
 async def all_usage(session: AsyncSession) -> Sequence[UsageSummary]:
     """Every organization's usage rollups."""
     return (

@@ -18,6 +18,12 @@ class Settings(ServiceSettings):
     #: The outbox relay's role: BYPASSRLS, SELECT+UPDATE on `outbox` only. Kept from the
     #: scaffold — billing emits `commerce.invoice.*` and `commerce.credit.*`.
     db_outbox_role: str | None = "opsgrids_outbox"
+    #: BYPASSRLS but SELECT-only, on `credit_ledger` alone. The staff credit-ledger route
+    #: (`GET /admin/credit-ledger`) reads across every organization at once — there is no single
+    #: tenant to bind — so it cannot run on the application role, which reads nothing without a
+    #: tenant GUC. Its own role rather than the admin one keeps a bug in that read path from
+    #: writing anything (ADR-0002 §2, mirrors console's `opsgrids_console_directory`).
+    db_directory_role: str | None = "opsgrids_billing_directory"
 
 
 def settings() -> Settings:

@@ -56,6 +56,7 @@ from app.models import (
     RefreshToken,
     Session,
     StaffAccount,
+    StaffEnrollmentCode,
 )
 from platform_core import pii
 from platform_core.audit import record_audit
@@ -65,6 +66,7 @@ from platform_core.errors import (
     BusinessRuleProblem,
     ForbiddenProblem,
     NotFoundProblem,
+    ProblemError,
     UnauthorizedProblem,
     UpstreamUnavailableProblem,
 )
@@ -283,7 +285,7 @@ async def issue_for(
         entitlements=granted,
         roles=membership.roles,
         locations=membership.locations,
-        amr=list(auth_session.amr),
+        amr=_dedupe_amr(auth_session.amr),
         permission_version=membership.permission_version,
         subject_ref=membership.employee_id,
         ttl_seconds=cfg.access_token_ttl_seconds,
@@ -737,6 +739,28 @@ async def _live_session(
     return row
 
 
+async def _consume_pre_auth_session(
+    session: AsyncSession, session_id: uuid.UUID, user_id: uuid.UUID
+) -> Session:
+    """`_live_session`, plus the check that makes a second-factor pre-auth token single-use.
+
+    A pre-auth token is a signed JWT: nothing about presenting it a second time within its TTL
+    makes it invalid on its own (there is no server-side revocation of the token itself), so
+    without this a captured or merely-replayed "mfa" or operator-enrolment token stays usable
+    for its whole window even after it already produced a completed sign-in. Once a session has
+    recorded `mfa_verified_at`, its second factor has already been proven and spent — a further
+    presentation of a pre-auth token naming that session is a replay, not a redo, and is refused
+    the same way an expired one is. Used everywhere a pre-auth token's *second-factor* step is
+    consumed (tenant `verify_mfa`, every operator MFA function); **not** used for the
+    organization-selection step, whose token is deliberately minted fresh, after
+    `mfa_verified_at`, for the next leg of the same sign-in.
+    """
+    row = await _live_session(session, session_id, user_id)
+    if row.mfa_verified_at is not None:
+        raise UnauthorizedProblem("Please start signing in again.")
+    return row
+
+
 def _federated_organization_pin(auth_session: Session) -> uuid.UUID | None:
     """The one organization a federated session may ever act for, or `None` for a password
     session, which may move between every organization the person belongs to.
@@ -993,6 +1017,13 @@ async def mfa_required(session: AsyncSession, credential: Credential, user_id: u
     return (await session.execute(stmt)).first() is not None
 
 
+def _factor_aad(user_id: uuid.UUID) -> bytes:
+    """MINOR 8 of the 2026-09-24 review: bind a sealed TOTP secret to the account it belongs
+    to, so a copied ciphertext (a bad migration, a restored backup pointed at the wrong row)
+    cannot be opened under a different user's identity even with the right key."""
+    return f"mfa_factor:{user_id}".encode()
+
+
 async def _require_primary_session(session: AsyncSession, session_id: str | None) -> None:
     """Refuse an MFA-management call whose access token was minted from a federated session.
 
@@ -1021,20 +1052,170 @@ async def _require_primary_session(session: AsyncSession, session_id: str | None
 
 
 async def begin_mfa_enrolment(
-    session: AsyncSession, user_id: uuid.UUID, *, account_email: str, session_id: str | None = None
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    account_email: str,
+    cfg: Settings,
+    session_id: str | None = None,
 ) -> tuple[MfaFactor, str, str]:
-    """Create an unconfirmed factor and hand back the secret and its QR URI."""
+    """Create an unconfirmed factor and hand back the secret and its QR URI.
+
+    The secret is sealed with the platform PII envelope before it is ever staged — the same
+    `platform_core.pii.seal` this schema already uses for `org_idp_configs.client_secret_enc`.
+    A TOTP secret is a durable credential, not a session artefact: whoever reads it can produce
+    a valid code forever, so it gets exactly the treatment a password hash or an OIDC client
+    secret gets, not the plain bytes an earlier version of this function stored.
+
+    `session_id` is the caller's own session, for the federated-session check
+    (`_require_primary_session`); `None` skips it — operator enrolment has no federated
+    sessions and passes none.
+    """
     await _require_primary_session(session, session_id)
     secret = security.generate_totp_secret()
     factor = MfaFactor(user_id=user_id, type="totp", label="Authenticator app")
-    # Envelope encryption belongs here; the dev path stores the secret directly and the
-    # column is bytes so the shape does not change when the KMS lands.
-    factor.secret_enc = secret.encode()
+    factor.secret_enc, _mask = pii.seal(
+        secret, kind="generic", settings=cfg, aad=_factor_aad(user_id)
+    )
     session.add(factor)
     # Flushed, not committed: the caller returns the factor's id, and the transaction
     # belongs to the route that opened it.
     await session.flush()
     return factor, secret, security.totp_uri(secret, account=account_email)
+
+
+#: A pre-sealing factor row: the raw base32 secret stored as-is, before `platform_core.pii`
+#: wrapped every TOTP secret in an envelope. Recognised by shape, not guessed at random — a
+#: `pii.seal` envelope leads with a version byte outside this charset, so it never matches.
+_LEGACY_TOTP_SECRET_RE = re.compile(rb"[A-Z2-7]{16,32}")
+
+
+def _legacy_totp_secret(raw: bytes) -> str | None:
+    # `fullmatch`, not `match(...$)`: Python's `$` also matches before a trailing newline,
+    # Postgres's does not, and the deploy's SQL count and this check must agree on every row.
+    if not _LEGACY_TOTP_SECRET_RE.fullmatch(raw):
+        return None
+    return raw.decode("ascii")
+
+
+def _is_refused_plaintext(factor: MfaFactor, cfg: Settings) -> bool:
+    """True when `_open_factor_secret` returned `None` for this factor *because* it is a raw
+    plaintext row and `cfg.mfa_accept_legacy_plaintext` is off. Exact, not a heuristic: a real
+    `pii.seal` envelope leads with a version byte outside the base32 charset, so it can never
+    match `_LEGACY_TOTP_SECRET_RE`."""
+    return (
+        not cfg.mfa_accept_legacy_plaintext
+        and factor.secret_enc is not None
+        and _legacy_totp_secret(factor.secret_enc) is not None
+    )
+
+
+async def _open_factor_secret(
+    session: AsyncSession,
+    factor: MfaFactor,
+    *,
+    cfg: Settings,
+    request: Request | None = None,
+) -> str | None:
+    """The TOTP secret behind a sealed factor, or `None` for a factor with none or one this
+    call cannot (or, by policy, will not) make sense of.
+
+    MAJOR 3 of the 2026-09-24 security review, tightened in the third round: a tolerant read
+    with three tiers, each resealed in place with the per-row AAD (MINOR 8) and audited as
+    `auth.mfa_factor_resealed`, so the next read takes the fast path:
+
+    1. **Sealed with the row's AAD** — the normal case; returned as is.
+    2. **Sealed with no AAD** (m5) — an envelope written before the AAD was introduced. It is
+       authentic (GCM verified it under a key we hold), so it is accepted unconditionally and
+       resealed with the AAD.
+    3. **Raw base32 plaintext** (m4) — a row from before PII sealing existed. Unlike the other
+       two, nothing authenticates it: anyone able to write `mfa_factors.secret_enc` could pick a
+       factor's secret. So it is honoured only while `cfg.mfa_accept_legacy_plaintext` is set —
+       a box turns that on deliberately (the deploy's one-off reseal does), until
+       `bin/reseal-mfa-factors` reports `remaining=0`. Otherwise it is refused and logged — and,
+       for a confirmed factor, `_accept_second_factor` answers `MfaResealPendingProblem` instead
+       of counting a failure, because the miss may not have been the member's.
+
+    `pii.PiiError` is caught here, not propagated: one unopenable or malformed factor must skip
+    *that* factor, never crash the sign-in outright and never skip the recovery-code fallback
+    the caller still tries afterwards.
+    """
+    if factor.secret_enc is None:
+        return None
+    aad = _factor_aad(factor.user_id)
+    try:
+        return pii.open_sealed(factor.secret_enc, settings=cfg, aad=aad)
+    except pii.PiiError:
+        pass
+
+    secret: str | None = None
+    try:
+        secret = pii.open_sealed(factor.secret_enc, settings=cfg)
+    except pii.PiiError:
+        if cfg.mfa_accept_legacy_plaintext:
+            secret = _legacy_totp_secret(factor.secret_enc)
+        elif _legacy_totp_secret(factor.secret_enc) is not None:
+            log.error("auth.mfa_factor_plaintext_refused", factor_id=str(factor.id))
+            return None
+    if secret is None:
+        log.error("auth.mfa_factor_unreadable", factor_id=str(factor.id))
+        return None
+
+    factor.secret_enc, _mask = pii.seal(secret, kind="generic", settings=cfg, aad=aad)
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=PLATFORM_ORG,
+        actor_id=factor.user_id,
+        action="auth.mfa_factor_resealed",
+        entity="mfa_factor",
+        entity_id=factor.id,
+        request=request,
+    )
+    return secret
+
+
+@dataclass(frozen=True, slots=True)
+class ResealResult:
+    """What one `reseal_legacy_mfa_factors` pass did. `remaining` is the number of factors that
+    are *still* raw plaintext afterwards — what a deploy has to see reach zero before the new
+    containers serve — and is not the same as "rows that were not touched": a row that was
+    already sealed is neither resealed nor remaining."""
+
+    resealed: int
+    remaining: int
+
+
+async def reseal_legacy_mfa_factors(session: AsyncSession, *, cfg: Settings) -> ResealResult:
+    """The one-off deploy step behind `bin/reseal-mfa-factors` (MAJOR 3): force every factor
+    with a stored secret through `_open_factor_secret`'s tolerant read, so a row this
+    deployment holds from before PII sealing (or sealed before the per-row AAD) is resealed now
+    rather than waiting for its account's next sign-in. Idempotent — an already-sealed row just
+    opens and is left alone — and safe to run against a database with none.
+
+    Reports what it *left* as well as what it did (R1(b) of the final review): with
+    `mfa_accept_legacy_plaintext` off, plaintext rows are refused, so a run without the flag
+    used to print "resealed 0" and look like success while every legacy factor was still
+    unreadable. `remaining` is the plaintext rows still there after the pass.
+    """
+    ids = (
+        (await session.execute(select(MfaFactor.id).where(MfaFactor.secret_enc.isnot(None))))
+        .scalars()
+        .all()
+    )
+    resealed = 0
+    remaining = 0
+    for factor_id in ids:
+        factor = await session.get(MfaFactor, factor_id)
+        if factor is None or factor.secret_enc is None:
+            continue
+        before = factor.secret_enc
+        await _open_factor_secret(session, factor, cfg=cfg)
+        if factor.secret_enc != before:
+            resealed += 1
+        if factor.secret_enc is not None and _legacy_totp_secret(factor.secret_enc) is not None:
+            remaining += 1
+    return ResealResult(resealed=resealed, remaining=remaining)
 
 
 async def confirm_mfa_enrolment(
@@ -1043,6 +1224,7 @@ async def confirm_mfa_enrolment(
     factor_id: uuid.UUID,
     user_id: uuid.UUID,
     code: str,
+    cfg: Settings,
     session_id: str | None = None,
 ) -> list[str]:
     """Prove the factor works, turn it on, and issue recovery codes.
@@ -1052,16 +1234,53 @@ async def confirm_mfa_enrolment(
     """
     await _require_primary_session(session, session_id)
     factor = await session.get(MfaFactor, factor_id)
-    if factor is None or factor.user_id != user_id or factor.secret_enc is None:
+    secret = await _open_factor_secret(session, factor, cfg=cfg) if factor is not None else None
+    if factor is None or factor.user_id != user_id or secret is None:
         raise NotFoundProblem("No such enrolment")
+    if factor.confirmed_at is not None:
+        # Re-confirming an already-confirmed factor is not a redo of a prior success; it is
+        # either a replay or a race, and either way there is nothing left for this call to
+        # legitimately do — the factor already works and recovery codes already exist for it.
+        raise UnauthorizedProblem("This factor is already confirmed.")
 
-    step = security.verify_totp(factor.secret_enc.decode(), code)
+    step = security.verify_totp(secret, code, last_used_step=factor.last_used_step)
     if step is None:
         raise UnauthorizedProblem("That code is not valid. Check your device's clock.")
 
     factor.confirmed_at = datetime.now(UTC)
     factor.last_used_step = step
     factor.last_used_at = datetime.now(UTC)
+
+    # A confirmed legacy-plaintext factor this deployment refuses can only ever get in the way
+    # now that a working one exists: it makes a six-digit miss look like "we could not check",
+    # and it is a factor nobody can use. Dropped, and audited, at the source rather than left to
+    # be worked around in `_accept_second_factor`. Only while acceptance is off — with the
+    # legacy flag on it still works, and the reseal will seal it.
+    stale = (
+        (
+            await session.execute(
+                select(MfaFactor).where(
+                    MfaFactor.user_id == user_id,
+                    MfaFactor.id != factor.id,
+                    MfaFactor.confirmed_at.isnot(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for old in stale:
+        if _is_refused_plaintext(old, cfg):
+            record_audit(
+                session,
+                AuditLog,
+                organization_id=PLATFORM_ORG,
+                actor_id=user_id,
+                action="auth.mfa_factor_legacy_dropped",
+                entity="mfa_factor",
+                entity_id=old.id,
+            )
+            await session.delete(old)
 
     credential = await get_or_create_credential(session, user_id)
     credential.mfa_enforced = True
@@ -1099,16 +1318,55 @@ async def verify_mfa(
     audience: str = "app",
     entitlements: Entitlements,
 ) -> LoginOutcome:
-    """Second step of sign-in: check the factor, then continue where login left off."""
+    """Second step of sign-in: check the factor, then continue where login left off.
+
+    BLOCKER 1 of the 2026-09-24 security review, "also": this had no failure counter at all —
+    an unlimited number of TOTP or recovery-code guesses against a pre-auth session that had
+    already survived the password step. `Credential.mfa_failed_attempts`/`mfa_locked_until`
+    (the same fields the operator path uses, added for both in one migration) close that; a
+    lockout here also revokes the session and its refresh tokens, matching what
+    `_register_operator_mfa_failure` does on the operator side.
+    """
     claims = _decode_pre_auth(pair, cfg, pre_auth_token, expect_reason="mfa")
     user_id = uuid.UUID(str(claims["sub"]))
-    auth_session = await _live_session(session, uuid.UUID(str(claims["sid"])), user_id)
+    auth_session = await _consume_pre_auth_session(session, uuid.UUID(str(claims["sid"])), user_id)
 
-    if not await _accept_second_factor(session, user_id, code):
+    # `with_for_update`: serialises concurrent guesses against the same credential row so the
+    # failure counter and the lockout it trips cannot lose an update to a race (MAJOR 4).
+    credential = await session.get(Credential, user_id, with_for_update=True)
+    if credential is None:
+        credential = await get_or_create_credential(session, user_id)
+
+    now = datetime.now(UTC)
+    if credential.mfa_locked_until and credential.mfa_locked_until > now:
+        raise ForbiddenProblem(
+            "This account is temporarily locked after several failed authentication "
+            "attempts. Try again shortly."
+        )
+
+    if await _accept_second_factor(session, user_id, code, cfg=cfg) is None:
+        credential.mfa_failed_attempts += 1
+        if credential.mfa_failed_attempts >= cfg.max_failed_attempts:
+            credential.mfa_locked_until = now + timedelta(minutes=cfg.lockout_minutes)
+            # m7: restart the count with the lock, so expiry is a real unlock (see the
+            # operator-side `_register_operator_mfa_failure`). For a tenant member the lock
+            # expiring after `lockout_minutes` *is* the unlock — there is deliberately no
+            # org-admin "clear this member's MFA lock" endpoint: it would need a new
+            # permission and a cross-service membership check to guard a fifteen-minute wait.
+            credential.mfa_failed_attempts = 0
+            auth_session.revoked_at = now
+            auth_session.revoked_reason = "mfa_failed_attempts"
+            await _revoke_session_refresh_tokens(session, auth_session.id)
+            log.warning("auth.account_locked", user_id=str(user_id), reason="mfa_failed_attempts")
+        await session.commit()
         raise UnauthorizedProblem("That code is not valid")
 
-    auth_session.amr = [*auth_session.amr, "otp"]
-    auth_session.mfa_verified_at = datetime.now(UTC)
+    credential.mfa_failed_attempts = 0
+    credential.mfa_locked_until = None
+
+    if not await _claim_mfa_verified(session, auth_session):
+        raise UnauthorizedProblem("Please start signing in again.")
+    auth_session.amr = _dedupe_amr([*auth_session.amr, "otp"])
 
     user = await directory.get(user_id)
     if user is None:
@@ -1143,29 +1401,77 @@ async def verify_mfa(
     return LoginOutcome(status="complete", issued=issued)
 
 
-async def _accept_second_factor(session: AsyncSession, user_id: uuid.UUID, code: str) -> bool:
-    """A TOTP code, or a single-use recovery code."""
+class MfaResealPendingProblem(ProblemError):
+    """A factor this deployment refuses to read yet — a legacy-plaintext TOTP row awaiting
+    `bin/reseal-mfa-factors` — stopped a code that may well have been correct.
+
+    503-class on purpose: it is *our* state that is wrong, not the caller's code, and it must
+    not be counted against them (R1 of the final review — without this, every tenant member with
+    a pre-sealing factor was locked out on the first deploy, five correct codes and a fifteen
+    minute lock). A recovery code still signs them in."""
+
+    status_code = 503
+    problem_type = "mfa-reseal-pending"
+    title = "Multi-factor re-seal pending"
+
+
+async def _accept_second_factor(
+    session: AsyncSession, user_id: uuid.UUID, code: str, *, cfg: Settings
+) -> str | None:
+    """A TOTP code, or a single-use recovery code. Returns which kind matched, or `None`.
+
+    The discriminator — `"totp"` vs `"recovery"` — is not cosmetic: a recovery-code sign-in is
+    its own audited action (MINOR 11), because presenting the break-glass code is a materially
+    different event from an ordinary authenticator check and an operator reading the audit trail
+    needs to be able to tell them apart without decoding anything.
+
+    **Raises `MfaResealPendingProblem`, and does not return `None`, only when a six-digit code
+    missed *and there was no factor it could have been checked against***: every confirmed factor
+    was a legacy-plaintext row this deployment refuses (`mfa_accept_legacy_plaintext` off). The
+    caller counts a `None` as a failed attempt and eventually locks the account; here the code
+    may have been right and *we* could not check it, so it must count for nothing.
+
+    The moment any confirmed factor *is* readable — a member who re-enrolled a sealed factor
+    while an old plaintext one lingered — a miss is a real miss against a real factor and
+    returns `None` like any other, so it counts. (Raising whenever *any* factor was refused made
+    every six-digit guess free on such an account: sixty wrong guesses, counter 0, no lock, then
+    the right code signed in.) Anything that is not six digits cannot have been a code for a
+    factor at all — it was a recovery-code guess — and also returns `None` and counts.
+    """
+    plaintext_refused = False
+    readable = False
     stmt = select(MfaFactor).where(MfaFactor.user_id == user_id, MfaFactor.confirmed_at.isnot(None))
     for factor in (await session.execute(stmt)).scalars().all():
-        if factor.secret_enc is None:
+        secret = await _open_factor_secret(session, factor, cfg=cfg)
+        if secret is None:
+            plaintext_refused = plaintext_refused or _is_refused_plaintext(factor, cfg)
             continue
-        step = security.verify_totp(
-            factor.secret_enc.decode(), code, last_used_step=factor.last_used_step
-        )
+        readable = True
+        step = security.verify_totp(secret, code, last_used_step=factor.last_used_step)
         if step is not None:
             # Remember the step so the same code cannot be replayed inside its window.
             factor.last_used_step = step
             factor.last_used_at = datetime.now(UTC)
-            return True
+            return "totp"
 
-    recovery_stmt = select(MfaRecoveryCode).where(
-        MfaRecoveryCode.user_id == user_id, MfaRecoveryCode.used_at.is_(None)
-    )
-    for recovery in (await session.execute(recovery_stmt)).scalars().all():
-        if security.verify_recovery_code(recovery.code_hash, code):
-            recovery.used_at = datetime.now(UTC)
-            return True
-    return False
+    looks_like_totp = security.looks_like_totp_code(code)
+    if not looks_like_totp:
+        # A six-digit input cannot be a recovery code (`xxxx-xxxx-xxxx`), so a TOTP-shaped miss
+        # skips the recovery loop — up to ten Argon2 verifies saved per guess.
+        recovery_stmt = select(MfaRecoveryCode).where(
+            MfaRecoveryCode.user_id == user_id, MfaRecoveryCode.used_at.is_(None)
+        )
+        for recovery in (await session.execute(recovery_stmt)).scalars().all():
+            if security.verify_recovery_code(recovery.code_hash, code):
+                recovery.used_at = datetime.now(UTC)
+                return "recovery"
+
+    if plaintext_refused and not readable and looks_like_totp:
+        log.error("auth.mfa_reseal_pending", user_id=str(user_id))
+        raise MfaResealPendingProblem(
+            "Multi-factor re-seal pending — use a recovery code to sign in."
+        )
+    return None
 
 
 # --------------------------------------------------------------------- operator staff
@@ -1176,8 +1482,30 @@ async def _accept_second_factor(session: AsyncSession, user_id: uuid.UUID, code:
 # `staff_accounts` table, belong to no organization, and are minted a token on the
 # `operator` audience carrying `stf=true`. The two never cross — a tenant email is not in
 # `staff_accounts`, and a staff account is not in the directory.
+#
+# **MFA is mandatory for staff, not opt-in.** A tenant's `Credential.mfa_enforced` is a flag
+# somebody turns on; there is no equivalent flag here — every staff account requires a second
+# factor, unconditionally, because the account that can suspend a subscription or read across
+# every tenant does not get a grace period (ADR-0003 addendum, 2026-09-23). `operator_login`
+# therefore never returns a usable token from a password alone: it returns an
+# `OperatorLoginOutcome` naming whichever of the two next steps applies — `mfa_required` for a
+# staff account with an already-confirmed factor, `mfa_enrollment_required` for one with none.
+# The enrolment and verification factor tables (`MfaFactor`, `MfaRecoveryCode`) are the exact
+# ones the tenant path uses — a factor row is keyed by `user_id` alone and carries nothing
+# tenant-specific — so `begin_mfa_enrolment` is reused verbatim; only *confirming* an
+# operator's enrolment differs, because it must not create a `Credential` row (operators have
+# none) and it completes the sign-in immediately rather than asking the caller to present the
+# code again.
 
 EVT_OPERATOR_SIGNED_IN = "core.operator.signed_in"
+EVT_OPERATOR_MFA_ENROLLED = "core.operator.mfa_enrolled"
+
+#: Pre-auth token reasons unique to the operator path. Deliberately not the tenant `"mfa"` /
+#: `"org_selection"` strings: `_decode_pre_auth`'s `expect_reason` check is what stops a token
+#: minted for one flow being spent on the other, and a shared reason string would rely on the
+#: `sub` namespace never colliding instead of the token itself refusing to cross.
+OPERATOR_MFA_REASON = "operator_mfa"
+OPERATOR_MFA_ENROLLMENT_REASON = "operator_mfa_enrollment"
 
 #: The audience the operator gateway accepts. A product/app token names its product here and
 #: is rejected at that gateway's signature-and-audience check before any route is consulted.
@@ -1189,6 +1517,22 @@ OPERATOR_AUDIENCE = "operator"
 #: service already stamps on platform-scoped audit and outbox rows. It is not a tenant: the
 #: console's cross-tenant reads run on the directory bypass role, never on this claim.
 PLATFORM_ORG = uuid.UUID(int=0)
+
+
+@dataclass(frozen=True, slots=True)
+class OperatorLoginOutcome:
+    """What happened, and what the client must do next.
+
+    `status` is one of `mfa_required`, `mfa_enrollment_required`, `complete`. The first two
+    carry a pre-auth token and nothing usable; `operator_login` itself never produces
+    `complete` — see the module note above — but `operator_verify_mfa` and
+    `confirm_operator_mfa_enrolment` do, and share this shape so the route's response model
+    is one union rather than three near-identical ones.
+    """
+
+    status: str
+    issued: OperatorIssued | None = None
+    pre_auth_token: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1207,14 +1551,29 @@ async def _verify_staff(
 ) -> StaffAccount:
     """Check an operator's email and password, or raise the same generic error.
 
-    Mirrors `_verify_credentials`: one message for every failure so the operator login is
-    not an account-enumeration oracle, lockout checked before the password, and the failed
-    attempt committed before raising so rate limiting outlives the request it limits.
+    MINOR 11 of the 2026-09-24 security review: **one** message and **one** status for every
+    failure — unknown email, wrong password, locked, disabled — so none of them is an
+    enumeration oracle. Distinct messages ("temporarily locked", "has been disabled") used to
+    tell an anonymous caller which of those was true; now every path raises the identical
+    `INVALID` 401. Two things follow from that:
+
+    * The real password check runs even for a locked or disabled account, so the response
+      time does not itself reveal "this account exists and is in a special state" by skipping
+      the Argon2 comparison the way an early return would.
+    * `is_active` is checked **after** the password, not before — a disabled account still
+      proves its own password wrong or right at the same cost as an active one, and only then
+      is refused, rather than short-circuiting on a cheaper check first.
+
+    Row-locked (`with_for_update`) for the duration of this transaction (MAJOR 4): two
+    concurrent login attempts against the same account serialise here, so the failed-attempt
+    counter and the lockout it trips cannot lose an update to a race.
     """
     invalid = UnauthorizedProblem(INVALID)
 
     staff = (
-        await session.execute(select(StaffAccount).where(StaffAccount.email == email))
+        await session.execute(
+            select(StaffAccount).where(StaffAccount.email == email).with_for_update()
+        )
     ).scalar_one_or_none()
     if staff is None:
         # Burn a hash so a missing operator is not detectable by response time.
@@ -1222,20 +1581,26 @@ async def _verify_staff(
         raise invalid
 
     now = datetime.now(UTC)
-    if staff.locked_until and staff.locked_until > now:
-        raise ForbiddenProblem(
-            "This operator account is temporarily locked after several failed attempts. "
-            "Try again shortly."
-        )
-    if not staff.is_active:
-        raise ForbiddenProblem("This operator account has been disabled")
+    locked = bool(staff.locked_until and staff.locked_until > now)
 
-    if not security.verify_password(staff.password_hash, password):
+    password_ok = security.verify_password(staff.password_hash, password)
+
+    if locked:
+        # Already locked: nothing to count, and no distinct answer to give — the same
+        # generic invalid as a wrong password, whatever `password_ok` came out to.
+        raise invalid
+
+    if not password_ok:
         staff.failed_attempts += 1
         if staff.failed_attempts >= cfg.max_failed_attempts:
             staff.locked_until = now + timedelta(minutes=cfg.lockout_minutes)
-            log.warning("auth.operator_locked", staff_id=str(staff.id))
+            log.warning("auth.operator_locked", staff_id=str(staff.id), reason="password")
         await session.commit()
+        raise invalid
+
+    # Password correct. Only now does a disabled account get refused — after paying the
+    # same Argon2 cost every other path pays, not before it.
+    if not staff.is_active:
         raise invalid
 
     if security.needs_rehash(staff.password_hash):
@@ -1276,7 +1641,7 @@ def _issue_operator(
         entitlements=[],
         roles=roles,
         locations=[],
-        amr=list(auth_session.amr),
+        amr=_dedupe_amr(auth_session.amr),
         permission_version=0,
         subject_ref=None,
         ttl_seconds=cfg.access_token_ttl_seconds,
@@ -1312,6 +1677,335 @@ def _issue_operator(
     )
 
 
+async def _operator_has_confirmed_factor(session: AsyncSession, staff_id: uuid.UUID) -> bool:
+    """True once this staff account has proven it can generate a code from a factor.
+
+    No `mfa_enforced` flag to consult — see the module note: MFA is unconditional for every
+    staff account, so the only question is whether enrolment has finished yet. This is also
+    the guard against re-enrolment: once true, neither `operator_begin_mfa_enrolment` nor
+    `confirm_operator_mfa_enrolment` will proceed, regardless of what pre-auth token or
+    enrolment code is presented — enrolling a *second*, uninvited factor once a real one
+    exists is exactly the attack this closes (the security review's R1/R2).
+    """
+    stmt = select(MfaFactor).where(
+        MfaFactor.user_id == staff_id, MfaFactor.confirmed_at.isnot(None)
+    )
+    return (await session.execute(stmt)).first() is not None
+
+
+#: How many never-confirmed factor rows one staff account may accumulate before the oldest are
+#: pruned. Enrolment can legitimately be started more than once — a lost phone, a login racing
+#: an older one that never finished — and each attempt creates a fresh unconfirmed row that
+#: nothing ever cleaned up before this; a cap bounds that growth without discarding an attempt
+#: that is still plausibly in flight (MINOR 12 of the security review).
+MAX_UNCONFIRMED_FACTORS_PER_STAFF = 3
+
+
+async def _prune_unconfirmed_factors(session: AsyncSession, staff_id: uuid.UUID) -> None:
+    """Delete the oldest unconfirmed factors once the account is at the cap, making room for
+    the one `operator_begin_mfa_enrolment` is about to create."""
+    stale_ids = (
+        (
+            await session.execute(
+                select(MfaFactor.id)
+                .where(MfaFactor.user_id == staff_id, MfaFactor.confirmed_at.is_(None))
+                .order_by(MfaFactor.created_at.desc())
+                .offset(MAX_UNCONFIRMED_FACTORS_PER_STAFF - 1)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if stale_ids:
+        await session.execute(delete(MfaFactor).where(MfaFactor.id.in_(stale_ids)))
+
+
+#: How long an out-of-band enrolment code stays redeemable. Short on purpose: it exists to
+#: prove the person enrolling is who they say within a narrow window right after it is handed
+#: to them, not to be a second long-lived credential sitting around.
+ENROLLMENT_CODE_TTL_MINUTES = 30
+
+EVT_OPERATOR_ENROLLMENT_CODE_ISSUED = "core.operator.enrollment_code_issued"
+
+
+async def issue_staff_enrollment_code(
+    session: AsyncSession,
+    *,
+    staff_id: uuid.UUID,
+    actor_id: uuid.UUID | None,
+    request: Request | None = None,
+) -> str:
+    """Issue (or replace) the one redeemable enrolment code for a staff account — the
+    out-of-band channel `operator_begin_mfa_enrolment` requires before a password is enough
+    to reach enrolment at all.
+
+    `actor_id` is `None` only from `bootstrap.py`'s dev/deploy seeding, which has no operator
+    caller to attribute the issuance to; every other call is an `owner` acting through the
+    audited route, and is recorded as such. One row per staff account (`StaffEnrollmentCode`
+    is keyed by `staff_id`): issuing a new code invalidates whatever the previous one was,
+    rather than letting two live at once.
+
+    Returns the raw code — shown once, exactly like a recovery code, and never retrievable
+    again; only its hash is stored.
+    """
+    staff = await session.get(StaffAccount, staff_id)
+    if staff is None:
+        raise NotFoundProblem("No such staff account")
+
+    code = security.generate_recovery_codes(count=1)[0]
+    now = datetime.now(UTC)
+    row = await session.get(StaffEnrollmentCode, staff_id)
+    if row is None:
+        row = StaffEnrollmentCode(staff_id=staff_id)
+        session.add(row)
+    row.code_hash = security.hash_recovery_code(code)
+    row.expires_at = now + timedelta(minutes=ENROLLMENT_CODE_TTL_MINUTES)
+    row.used_at = None
+    row.issued_by = actor_id
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=PLATFORM_ORG,
+        actor_id=actor_id,
+        action="auth.operator_enrollment_code_issued",
+        entity="staff_account",
+        entity_id=staff_id,
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=PLATFORM_ORG,
+        event_type=EVT_OPERATOR_ENROLLMENT_CODE_ISSUED,
+        aggregate_type="staff_account",
+        aggregate_id=staff_id,
+        payload={"staff_id": str(staff_id)},
+    )
+    await session.flush()
+    return code
+
+
+EVT_OPERATOR_MFA_RESET = "core.operator.mfa_reset"
+
+
+async def reset_staff_mfa(
+    session: AsyncSession,
+    *,
+    target_staff_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    request: Request | None = None,
+) -> None:
+    """The lost-device path (MINOR 5 of the 2026-09-24 security review): an owner wipes a
+    colleague's MFA outright when they can no longer produce a code or a recovery code —
+    deletes every factor and recovery code, revokes every live session and refresh token, and
+    audits the act. Only after this has run is `issue_staff_enrollment_code` meaningful again
+    for this account: with a confirmed factor still in place, enrolment would simply refuse
+    (`_operator_has_confirmed_factor`), exactly as it should for an account that is not
+    actually locked out.
+
+    Refuses to reset the caller's own MFA — the one case this route exists for is a *colleague*
+    who cannot get in, not a way to bypass one's own second factor. An owner who has locked
+    themself out is a `bin/reset-staff-mfa` (local/test/ci only) or an incident, not a self-service
+    button in the product.
+    """
+    if target_staff_id == actor_id:
+        raise BusinessRuleProblem("You cannot reset your own MFA. Ask another owner.")
+
+    staff = await session.get(StaffAccount, target_staff_id, with_for_update=True)
+    if staff is None:
+        raise NotFoundProblem("No such staff account")
+
+    await session.execute(delete(MfaRecoveryCode).where(MfaRecoveryCode.user_id == target_staff_id))
+    await session.execute(delete(MfaFactor).where(MfaFactor.user_id == target_staff_id))
+    # m7: a colleague locked out of MFA *because* they lost their device is the whole reason
+    # this route exists — leaving the lock (or a near-threshold counter) behind would make the
+    # reset unusable until it expired on its own.
+    staff.mfa_failed_attempts = 0
+    staff.mfa_locked_until = None
+
+    live_session_ids = (
+        (
+            await session.execute(
+                select(Session.id).where(
+                    Session.user_id == target_staff_id, Session.revoked_at.is_(None)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for session_id in live_session_ids:
+        await _revoke_session_refresh_tokens(session, session_id)
+    if live_session_ids:
+        await session.execute(
+            update(Session)
+            .where(Session.id.in_(live_session_ids))
+            .values(revoked_at=datetime.now(UTC), revoked_reason="operator_mfa_reset")
+        )
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=PLATFORM_ORG,
+        actor_id=actor_id,
+        action="auth.operator_mfa_reset",
+        entity="staff_account",
+        entity_id=target_staff_id,
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=PLATFORM_ORG,
+        event_type=EVT_OPERATOR_MFA_RESET,
+        aggregate_type="staff_account",
+        aggregate_id=target_staff_id,
+        payload={"staff_id": str(target_staff_id), "reset_by": str(actor_id)},
+    )
+    await session.commit()
+
+
+#: One message for every enrolment-code failure — missing, expired, already spent, or simply
+#: wrong. Distinguishing them would tell a caller which half of their guess was right.
+_ENROLLMENT_CODE_INVALID = UnauthorizedProblem("That enrolment code is not valid or has expired.")
+
+
+async def _redeem_enrollment_code(
+    session: AsyncSession,
+    staff_id: uuid.UUID,
+    code: str,
+    *,
+    staff: StaffAccount,
+    auth_session: Session,
+    cfg: Settings,
+) -> None:
+    """Consume the staff account's enrolment code, or refuse.
+
+    MAJOR 4 of the 2026-09-24 review: claims the row atomically —
+    `UPDATE ... WHERE staff_id = :id AND used_at IS NULL AND expires_at > now() RETURNING
+    code_hash` — before comparing the hash, not after. That is a real single-attempt trade:
+    two concurrent redemptions of the same code cannot both succeed (the second finds no row
+    to claim, whatever it typed), but it also means a *typo* burns the code exactly the way a
+    correct-then-wrong-on-replay guess would, rather than leaving it usable for a retry. That
+    matches how the enrolment code is documented (`issue_staff_enrollment_code`) — a single-use
+    proof, not a short password to be attempted a few times.
+
+    MINOR 6: a wrong guess counts toward the same MFA lockout a wrong TOTP or recovery code
+    does. This is a raw grind on the account's second-factor gate exactly like the others, and
+    letting it run uncounted would make it the softest of the three ways to attack this step.
+    """
+    claimed_hash = (
+        await session.execute(
+            update(StaffEnrollmentCode)
+            .where(
+                StaffEnrollmentCode.staff_id == staff_id,
+                StaffEnrollmentCode.used_at.is_(None),
+                StaffEnrollmentCode.expires_at > datetime.now(UTC),
+            )
+            .values(used_at=datetime.now(UTC))
+            .returning(StaffEnrollmentCode.code_hash)
+        )
+    ).scalar_one_or_none()
+
+    if claimed_hash is None or not security.verify_recovery_code(claimed_hash, code):
+        await _register_operator_mfa_failure(
+            session, staff=staff, auth_session=auth_session, cfg=cfg
+        )
+        await session.commit()
+        raise _ENROLLMENT_CODE_INVALID
+
+
+def _staff_locked(staff: StaffAccount) -> bool:
+    """MFA-side lockout only — separate from the password lockout `_verify_staff` guards
+    (BLOCKER 1 of the 2026-09-24 review). A staff account can be blocked from the *second*
+    factor step without a correct password ever having tripped or cleared this."""
+    return bool(staff.mfa_locked_until and staff.mfa_locked_until > datetime.now(UTC))
+
+
+async def _claim_mfa_verified(session: AsyncSession, auth_session: Session) -> bool:
+    """Atomically mark a session's second factor as proven, or discover someone already did.
+
+    MAJOR 4 of the 2026-09-24 review: the code is still checked correct *first* — that stays a
+    plain read, so a typo can be retried — but turning "correct" into "this session is now
+    verified" is a single `UPDATE ... WHERE mfa_verified_at IS NULL RETURNING id`, not a Python
+    assignment on a row that might have been claimed by a concurrent, equally-correct submission
+    of the same code a moment earlier. `synchronize_session=False`: this writes straight to the
+    row and the in-memory object is updated by hand below, rather than asking the ORM to guess
+    whether its evaluator can reproduce an `IS NULL` predicate. Returns `False` on a lost race,
+    so the caller can refuse the second winner rather than mint it a second, redundant token
+    pair.
+    """
+    now = datetime.now(UTC)
+    claimed = (
+        await session.execute(
+            update(Session)
+            .where(Session.id == auth_session.id, Session.mfa_verified_at.is_(None))
+            .values(mfa_verified_at=now)
+            .execution_options(synchronize_session=False)
+            .returning(Session.id)
+        )
+    ).scalar_one_or_none()
+    if claimed is None:
+        return False
+    auth_session.mfa_verified_at = now
+    return True
+
+
+async def _revoke_session_refresh_tokens(session: AsyncSession, session_id: uuid.UUID) -> None:
+    """Every live refresh token issued against one session. Used alongside revoking the
+    session itself, so a lockout actually ends what the attacker is holding rather than just
+    marking the session and leaving a still-rotatable token in their hands."""
+    await session.execute(
+        update(RefreshToken)
+        .where(RefreshToken.session_id == session_id, RefreshToken.revoked_at.is_(None))
+        .values(revoked_at=datetime.now(UTC))
+    )
+
+
+async def _register_operator_mfa_failure(
+    session: AsyncSession, *, staff: StaffAccount, auth_session: Session, cfg: Settings
+) -> None:
+    """Count a wrong MFA or enrolment code against the account.
+
+    BLOCKER 1 of the 2026-09-24 review: this used to share `failed_attempts`/`locked_until`
+    with `_verify_staff`'s password check, and a correct password there reset both to zero —
+    so a password right, code wrong, repeated, never crossed the threshold: the next correct
+    password wiped the count every time. `mfa_failed_attempts`/`mfa_locked_until` are a
+    separate pair that only this function and `_clear_operator_failures` touch; a password
+    success no longer clears an MFA lock, and an MFA success no longer clears a password one.
+
+    Crossing the threshold additionally revokes the session that produced the failures and
+    every refresh token issued against it, so the account is not merely closed to new attempts
+    while a session an attacker already opened stays alive.
+    """
+    staff.mfa_failed_attempts += 1
+    if staff.mfa_failed_attempts >= cfg.max_failed_attempts:
+        staff.mfa_locked_until = datetime.now(UTC) + timedelta(minutes=cfg.lockout_minutes)
+        # m7: the count restarts from zero when the lock trips. Left at the threshold, the
+        # first wrong code after the lock expired would push it straight back over and re-lock
+        # the account for one typo — the lock's expiry would be a formality, not an unlock.
+        staff.mfa_failed_attempts = 0
+        auth_session.revoked_at = datetime.now(UTC)
+        auth_session.revoked_reason = "operator_mfa_failed_attempts"
+        await _revoke_session_refresh_tokens(session, auth_session.id)
+        log.warning("auth.operator_locked", staff_id=str(staff.id), reason="mfa_failed_attempts")
+
+
+def _clear_operator_failures(staff: StaffAccount) -> None:
+    """Only a successful MFA check calls this — never `_verify_staff` on a correct password.
+    See `_register_operator_mfa_failure` for why the two counters must stay independent."""
+    staff.mfa_failed_attempts = 0
+    staff.mfa_locked_until = None
+
+
+def _dedupe_amr(amr: list[str]) -> list[str]:
+    """`amr` in first-seen order, without duplicates. `_issue_operator` mints from a session's
+    accumulated `amr`, and a step-up appends rather than replaces; this is what keeps a token's
+    claim honest (`["pwd", "otp"]`, never `["pwd", "otp", "otp"]`) if a step is ever retried."""
+    return list(dict.fromkeys(amr))
+
+
 async def operator_login(
     session: AsyncSession,
     *,
@@ -1320,12 +2014,14 @@ async def operator_login(
     email: str,
     password: str,
     request: Request | None = None,
-) -> OperatorIssued:
-    """Authenticate a staff account and mint an operator-audience token.
+) -> OperatorLoginOutcome:
+    """Authenticate a staff account. Never returns a usable token by itself.
 
-    There is no organization step and no MFA step: an operator belongs to nothing to pick
-    between, so a correct credential completes in one call. The session and refresh chain
-    reuse the same tables and rotation-family theft detection the tenant path uses.
+    There is no organization step — an operator belongs to nothing to pick between — but
+    there is always a second-factor step: a correct password only ever earns a pre-auth
+    token naming which one applies next, `mfa_required` or `mfa_enrollment_required`. The
+    session and refresh chain reuse the same tables and rotation-family theft detection the
+    tenant path uses; the lockout on repeated failures is `_verify_staff`'s and is untouched.
     """
     staff = await _verify_staff(session, cfg, email, password)
 
@@ -1337,9 +2033,268 @@ async def operator_login(
         AuditLog,
         organization_id=PLATFORM_ORG,
         actor_id=staff.id,
-        action="auth.operator_signed_in",
+        action="auth.operator_password_verified",
         entity="staff_account",
         entity_id=staff.id,
+        request=request,
+    )
+
+    if await _operator_has_confirmed_factor(session, staff.id):
+        reason, status_ = OPERATOR_MFA_REASON, "mfa_required"
+    else:
+        reason, status_ = OPERATOR_MFA_ENROLLMENT_REASON, "mfa_enrollment_required"
+    token = tk.mint_pre_auth(
+        pair, issuer=cfg.jwt_issuer, user_id=staff.id, session_id=auth_session.id, reason=reason
+    )
+    # The session row has to survive this response — the next request presents the
+    # pre-auth token against it, exactly as the tenant MFA step does.
+    await session.commit()
+    return OperatorLoginOutcome(status=status_, pre_auth_token=token.token)
+
+
+async def operator_begin_mfa_enrolment(
+    session: AsyncSession,
+    *,
+    cfg: Settings,
+    pair: KeyPair,
+    pre_auth_token: str,
+    enrollment_code: str,
+    request: Request | None = None,
+) -> tuple[MfaFactor, str, str]:
+    """Start enrolling an operator's first factor.
+
+    A correct password is not enough to reach this: `enrollment_code` must also redeem a
+    code issued out-of-band (`issue_staff_enrollment_code`), and the account must not already
+    have a confirmed factor. Both checks exist for the same reason — a password alone proves
+    nothing about who is typing it, and the account that can suspend a subscription or read
+    across every tenant does not get to be enrolled by whoever guesses or reuses a password
+    first (the security review's R1/R2, and the ADR-0003 addendum's operator bootstrap).
+
+    Bare session, self-committing: there is no principal yet, only a pre-auth token, the
+    same shape every other pre-organization/pre-token flow in this module uses.
+    """
+    claims = _decode_pre_auth(
+        pair, cfg, pre_auth_token, expect_reason=OPERATOR_MFA_ENROLLMENT_REASON
+    )
+    staff_id = uuid.UUID(str(claims["sub"]))
+    auth_session = await _consume_pre_auth_session(session, uuid.UUID(str(claims["sid"])), staff_id)
+
+    # `with_for_update`: MAJOR 4 of the 2026-09-24 review. Two enrolment attempts against the
+    # same account — a stale token and a fresh one, or a plain double-submit — serialise here
+    # instead of both reading "no confirmed factor yet" and both proceeding.
+    staff = await session.get(StaffAccount, staff_id, with_for_update=True)
+    if staff is None or not staff.is_active:
+        raise UnauthorizedProblem("That session is no longer valid.")
+    if _staff_locked(staff):
+        raise ForbiddenProblem(
+            "This operator account is temporarily locked after several failed attempts. "
+            "Try again shortly."
+        )
+    if await _operator_has_confirmed_factor(session, staff_id):
+        raise UnauthorizedProblem("MFA is already enrolled for this account. Sign in normally.")
+
+    await _redeem_enrollment_code(
+        session, staff_id, enrollment_code, staff=staff, auth_session=auth_session, cfg=cfg
+    )
+    await _prune_unconfirmed_factors(session, staff_id)
+
+    factor, secret, otpauth_uri = await begin_mfa_enrolment(
+        session, staff_id, account_email=staff.email, cfg=cfg
+    )
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=PLATFORM_ORG,
+        actor_id=staff_id,
+        action="auth.operator_mfa_enrol_started",
+        entity="staff_account",
+        entity_id=staff_id,
+        request=request,
+    )
+    await session.commit()
+    return factor, secret, otpauth_uri
+
+
+async def confirm_operator_mfa_enrolment(
+    session: AsyncSession,
+    *,
+    cfg: Settings,
+    pair: KeyPair,
+    pre_auth_token: str,
+    factor_id: uuid.UUID,
+    code: str,
+    request: Request | None = None,
+) -> tuple[OperatorIssued, list[str]]:
+    """Prove the enrolled factor works, and complete the sign-in that started it.
+
+    Deliberately does **not** call `confirm_mfa_enrolment`: that helper creates/updates a
+    `Credential` row, and operators have none — folding one in here is exactly how a staff
+    identity starts leaking into the tenant credential table. This mints tokens immediately
+    rather than asking the caller to present the code a second time through
+    `operator_verify_mfa`: a freshly-proven TOTP code already *is* the second factor for
+    this sign-in, so re-asking would only doubt a check that just passed.
+    """
+    claims = _decode_pre_auth(
+        pair, cfg, pre_auth_token, expect_reason=OPERATOR_MFA_ENROLLMENT_REASON
+    )
+    staff_id = uuid.UUID(str(claims["sub"]))
+    auth_session = await _consume_pre_auth_session(session, uuid.UUID(str(claims["sid"])), staff_id)
+
+    staff = await session.get(StaffAccount, staff_id, with_for_update=True)
+    if staff is None or not staff.is_active:
+        raise UnauthorizedProblem("That session is no longer valid.")
+    if _staff_locked(staff):
+        raise ForbiddenProblem(
+            "This operator account is temporarily locked after several failed attempts. "
+            "Try again shortly."
+        )
+    # Re-checked here, not only at `operator_begin_mfa_enrolment`: two enrolment attempts
+    # (an attacker's stale token and the real owner's fresh one) can both pass `begin` before
+    # either confirms. Whichever `confirm` call lands first wins the account; the other must
+    # not be allowed to also confirm a *second* factor and silently take it over afterwards.
+    if await _operator_has_confirmed_factor(session, staff_id):
+        raise UnauthorizedProblem("MFA is already enrolled for this account. Sign in normally.")
+
+    factor = await session.get(MfaFactor, factor_id)
+    secret = await _open_factor_secret(session, factor, cfg=cfg) if factor is not None else None
+    if factor is None or factor.user_id != staff_id or secret is None:
+        raise NotFoundProblem("No such enrolment")
+    if factor.confirmed_at is not None:
+        raise UnauthorizedProblem("This factor is already confirmed.")
+
+    step = security.verify_totp(secret, code, last_used_step=factor.last_used_step)
+    if step is None:
+        await _register_operator_mfa_failure(
+            session, staff=staff, auth_session=auth_session, cfg=cfg
+        )
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=PLATFORM_ORG,
+            actor_id=staff_id,
+            action="auth.operator_mfa_enrol_failed",
+            entity="staff_account",
+            entity_id=staff_id,
+            request=request,
+        )
+        await session.commit()
+        raise UnauthorizedProblem("That code is not valid. Check your device's clock.")
+
+    factor.confirmed_at = datetime.now(UTC)
+    factor.last_used_step = step
+    factor.last_used_at = datetime.now(UTC)
+    _clear_operator_failures(staff)
+
+    # The factor being confirmed here is the account's *first* — `_operator_has_confirmed_factor`
+    # above refused otherwise — so there are no prior recovery codes to leave live by mistake.
+    # Generated fresh regardless of what (unconfirmed, unused) rows might exist.
+    await session.execute(delete(MfaRecoveryCode).where(MfaRecoveryCode.user_id == staff_id))
+    codes = security.generate_recovery_codes()
+    for code_value in codes:
+        session.add(
+            MfaRecoveryCode(user_id=staff_id, code_hash=security.hash_recovery_code(code_value))
+        )
+
+    if not await _claim_mfa_verified(session, auth_session):
+        # Lost a race against another confirmation of the same session — refuse rather than
+        # mint a second token pair for a step that has already completed once.
+        raise UnauthorizedProblem("Please start signing in again.")
+    auth_session.amr = _dedupe_amr([*auth_session.amr, "otp"])
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=PLATFORM_ORG,
+        actor_id=staff_id,
+        action="auth.operator_mfa_enrolled",
+        entity="staff_account",
+        entity_id=staff_id,
+        request=request,
+    )
+    issued = _issue_operator(session, pair=pair, cfg=cfg, auth_session=auth_session, staff=staff)
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=PLATFORM_ORG,
+        event_type=EVT_OPERATOR_MFA_ENROLLED,
+        aggregate_type="staff_account",
+        aggregate_id=staff_id,
+        payload={"staff_id": str(staff_id)},
+    )
+    await session.commit()
+    return issued, codes
+
+
+async def operator_verify_mfa(
+    session: AsyncSession,
+    *,
+    cfg: Settings,
+    pair: KeyPair,
+    pre_auth_token: str,
+    code: str,
+    request: Request | None = None,
+) -> OperatorIssued:
+    """Second step of an operator sign-in, for a staff account that already has a confirmed
+    factor. Mirrors the tenant `verify_mfa`, minus the organization-selection branch an
+    operator never has.
+
+    The lockout check runs **before** `_accept_second_factor` — which, for a recovery code,
+    means before any Argon2 hash comparison — so a locked account cannot be used to keep
+    spending CPU on guesses (MAJOR 4, the review's R3) merely by presenting enough wrong
+    codes to matter before the lock trips; once it trips, every further call fails at this
+    check alone.
+    """
+    claims = _decode_pre_auth(pair, cfg, pre_auth_token, expect_reason=OPERATOR_MFA_REASON)
+    staff_id = uuid.UUID(str(claims["sub"]))
+    auth_session = await _consume_pre_auth_session(session, uuid.UUID(str(claims["sid"])), staff_id)
+
+    staff = await session.get(StaffAccount, staff_id, with_for_update=True)
+    if staff is None or not staff.is_active:
+        raise UnauthorizedProblem("That session is no longer valid.")
+    if _staff_locked(staff):
+        raise ForbiddenProblem(
+            "This operator account is temporarily locked after several failed attempts. "
+            "Try again shortly."
+        )
+
+    factor_kind = await _accept_second_factor(session, staff_id, code, cfg=cfg)
+    if factor_kind is None:
+        await _register_operator_mfa_failure(
+            session, staff=staff, auth_session=auth_session, cfg=cfg
+        )
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=PLATFORM_ORG,
+            actor_id=staff_id,
+            action="auth.operator_mfa_failed",
+            entity="staff_account",
+            entity_id=staff_id,
+            request=request,
+        )
+        await session.commit()
+        raise UnauthorizedProblem("That code is not valid")
+
+    _clear_operator_failures(staff)
+    if not await _claim_mfa_verified(session, auth_session):
+        raise UnauthorizedProblem("Please start signing in again.")
+    auth_session.amr = _dedupe_amr([*auth_session.amr, "otp"])
+
+    # A recovery-code sign-in is its own audited action (MINOR 11): a break-glass code being
+    # spent is a materially different event from an ordinary authenticator check, and an
+    # operator reading the trail should not have to guess which one happened.
+    action = (
+        "auth.operator_mfa_verified"
+        if factor_kind == "totp"
+        else "auth.operator_mfa_recovery_code_used"
+    )
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=PLATFORM_ORG,
+        actor_id=staff_id,
+        action=action,
+        entity="staff_account",
+        entity_id=staff_id,
         request=request,
     )
     issued = _issue_operator(session, pair=pair, cfg=cfg, auth_session=auth_session, staff=staff)
@@ -1349,8 +2304,8 @@ async def operator_login(
         organization_id=PLATFORM_ORG,
         event_type=EVT_OPERATOR_SIGNED_IN,
         aggregate_type="staff_account",
-        aggregate_id=staff.id,
-        payload={"staff_id": str(staff.id), "session_id": str(auth_session.id)},
+        aggregate_id=staff_id,
+        payload={"staff_id": str(staff_id), "session_id": str(auth_session.id)},
     )
     await session.commit()
     return issued
@@ -1365,6 +2320,13 @@ async def operator_rotate_refresh(
     *tenant* refresh token presented here resolves to no `staff_accounts` row and is
     refused — and a staff token presented to the tenant `rotate_refresh` resolves to no
     directory user and is refused there. Neither crosses into the other.
+
+    Refuses outright when the session has no `mfa_verified_at` (MAJOR 5): every operator
+    session that ever completes sign-in now records one, so a session without it was either
+    minted before MFA became mandatory or reached this function by some path that never
+    should have. Either way, refreshing it would keep an `amr=["pwd"]` session alive
+    indefinitely through rotation — the one channel `require_operator`'s own `amr` check
+    cannot see, because it only inspects the token in front of it, not the session behind it.
     """
     try:
         claims = tk.decode_local(pair, raw_token, issuer=cfg.jwt_issuer, expected_type=tk.REFRESH)
@@ -1391,6 +2353,8 @@ async def operator_rotate_refresh(
         raise UnauthorizedProblem("That session has expired. Please sign in again.")
 
     auth_session = await _live_session(session, stored.session_id, stored.user_id)
+    if auth_session.mfa_verified_at is None:
+        raise UnauthorizedProblem("That session has expired. Please sign in again.")
     staff = await session.get(StaffAccount, stored.user_id)
     if staff is None or not staff.is_active:
         raise UnauthorizedProblem("That session is no longer valid.")
