@@ -237,12 +237,32 @@ MISSING
 	case "$app" in
 	buyer | storefront)
 		asset_base=$(ssh_box "sed -n 's/^PUBLIC_ASSET_BASE_URL=//p' '$repo/infrastructure/edge/.env' | head -1")
+		# A value read over ssh from a file that started life on a human's laptop can carry a
+		# trailing `\r` (a `.env` ever touched on Windows, or a paste through a CRLF-preserving
+		# terminal) or a pair of quotes a human added out of habit. Left in, either lands
+		# verbatim inside Vite's baked-in `VITE_ASSET_BASE_URL` — a broken image URL with
+		# nothing that errors anywhere, the exact quiet-failure shape this whole check exists to
+		# catch for the *empty* case and must not reintroduce for the *malformed* one.
+		asset_base=$(printf '%s' "$asset_base" | tr -d '\r')
+		asset_base=${asset_base#\"}
+		asset_base=${asset_base%\"}
+		asset_base=${asset_base#\'}
+		asset_base=${asset_base%\'}
 		if [ -z "$asset_base" ]; then
 			echo "refusing to publish: PUBLIC_ASSET_BASE_URL is empty in the box's .env." >&2
 			echo "  Every uploaded image would 404 on the live store. Set it (infrastructure/edge/.env.example)" >&2
 			echo "  and deploy before publishing $app." >&2
 			exit 1
 		fi
+		case "$asset_base" in
+		https://*) ;;
+		*)
+			echo "refusing to publish: PUBLIC_ASSET_BASE_URL on the box is not an https:// URL." >&2
+			echo "  Check infrastructure/edge/.env on the box for a stray quote, a CRLF line" >&2
+			echo "  ending, or a plain http:// value, then deploy before publishing $app." >&2
+			exit 1
+			;;
+		esac
 		export VITE_ASSET_BASE_URL="$asset_base"
 		echo "building $app with node $node_major (VITE_ASSET_BASE_URL=$asset_base)"
 		;;
