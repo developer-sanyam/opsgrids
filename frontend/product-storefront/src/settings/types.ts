@@ -21,9 +21,9 @@ export interface StoreOut {
   /** IANA. */
   timezone: string;
   custom_domain: string | null;
-  /** `unverified` whenever `custom_domain` is set, `null` when it is not. Nothing can move it off
-   *  `unverified` today — see `docs/adr/0011-store-identity-brand-domain-and-publishing.md` §7. */
-  custom_domain_status: "unverified" | "verified" | null;
+  /** Where the claim has got (ADR-0012). `null` when no domain is claimed. Read-only here — the
+   *  domain screen (`settings/domain.ts`) owns every change. */
+  custom_domain_status: "unverified" | "verified" | "live" | "failing" | "suspended" | null;
   created_at: string;
   updated_at: string;
 }
@@ -39,5 +39,7 @@ export interface StorePut {
   logo_text: string | null;
   currency: string;
   timezone: string;
-  custom_domain: string | null;
+  /** Omitted means unchanged. The settings form never sends it: the domain screen owns the claim
+   *  (`PUT /storefront/store/domain`), and a stale value here would release it. */
+  custom_domain?: string | null;
 }

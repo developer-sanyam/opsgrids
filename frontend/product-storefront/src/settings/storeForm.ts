@@ -12,7 +12,6 @@ export interface StoreFormValues {
   logoText: string;
   currency: string;
   timezone: string;
-  customDomain: string;
 }
 
 export const EMPTY_STORE_FORM: StoreFormValues = {
@@ -22,7 +21,6 @@ export const EMPTY_STORE_FORM: StoreFormValues = {
   logoText: "",
   currency: "INR",
   timezone: "Asia/Kolkata",
-  customDomain: "",
 };
 
 export function fromStore(store: StoreOut): StoreFormValues {
@@ -33,7 +31,6 @@ export function fromStore(store: StoreOut): StoreFormValues {
     logoText: store.logo_text ?? "",
     currency: store.currency,
     timezone: store.timezone,
-    customDomain: store.custom_domain ?? "",
   };
 }
 
@@ -55,16 +52,14 @@ export function validateStoreForm(values: StoreFormValues): StoreFormErrors {
   if (values.logoText.length > 12) errors.logoText = "12 characters or fewer.";
   if (!CURRENCY_PATTERN.test(values.currency)) errors.currency = "A 3-letter ISO code, like INR.";
   if (values.timezone.trim() === "") errors.timezone = "Pick a timezone.";
-  if (values.customDomain.length > 255) errors.customDomain = "255 characters or fewer.";
   return errors;
 }
 
-/** Blank clears a nullable field — the server's own rule for `tagline`, `logo_text` and
- *  `custom_domain` (`StorePut`'s field descriptions). */
+/** Blank clears a nullable field — the server's own rule for `tagline` and `logo_text`
+ *  (`StorePut`'s field descriptions). The domain is never sent; see `StorePut.custom_domain`. */
 export function toStorePut(values: StoreFormValues): StorePut {
   const tagline = values.tagline.trim();
   const logoText = values.logoText.trim();
-  const customDomain = values.customDomain.trim().toLowerCase();
   return {
     slug: values.slug.trim(),
     name: values.name.trim(),
@@ -72,6 +67,5 @@ export function toStorePut(values: StoreFormValues): StorePut {
     logo_text: logoText === "" ? null : logoText,
     currency: values.currency.trim().toUpperCase(),
     timezone: values.timezone.trim(),
-    custom_domain: customDomain === "" ? null : customDomain,
   };
 }

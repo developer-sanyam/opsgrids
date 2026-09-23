@@ -49,8 +49,15 @@ export async function putStoreIdentity(input: StorePut): Promise<StoreOut> {
       status: fixtureStore?.status ?? "draft",
       currency: input.currency,
       timezone: input.timezone,
-      custom_domain: input.custom_domain,
-      custom_domain_status: input.custom_domain === null ? null : "unverified",
+      ...(input.custom_domain === undefined
+        ? {
+            custom_domain: fixtureStore?.custom_domain ?? null,
+            custom_domain_status: fixtureStore?.custom_domain_status ?? null,
+          }
+        : {
+            custom_domain: input.custom_domain,
+            custom_domain_status: input.custom_domain === null ? null : ("unverified" as const),
+          }),
       created_at: fixtureStore?.created_at ?? now,
       updated_at: now,
     };
