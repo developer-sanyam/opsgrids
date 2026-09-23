@@ -41,6 +41,7 @@ from app.ims.base import ImsClient, ImsSupplierDocument, ImsUnavailable
 from app.irp.base import (
     IrpAck,
     IrpClient,
+    IrpDuplicate,
     IrpInvoicePayload,
     IrpLine,
     IrpRejected,
@@ -1287,22 +1288,84 @@ class _Attempt:
     error: str | None = None
 
 
-async def _attempt_registration(
+@dataclass(frozen=True, slots=True)
+class _RegisterCallOutcome:
+    """What `call_irp_register` decided, entirely from the portal's answer — no session, no
+    database. `record_registration_result` is the only thing that turns this into a row."""
+
+    kind: str  # "filed" | "rejected" | "unavailable"
+    ack: IrpAck | None = None
+    error_code: str | None = None
+    error: str | None = None
+
+
+def call_irp_register(client: IrpClient, irp_payload: IrpInvoicePayload) -> _RegisterCallOutcome:
+    """The second of three acts filing a document takes, and the only one that touches the
+    portal. Called with **no session and no transaction open** (D3): `stage_registration_attempt`
+    has already committed everything the call needs to be answered from, and
+    `record_registration_result` opens a fresh transaction only after this returns — so a slow or
+    hanging portal holds nothing from this service's connection pool.
+
+    `IrpDuplicate` is folded into `"filed"` rather than kept as its own outcome: it is the
+    portal's honest answer to a registration this platform already made — the resumed half of a
+    call whose first attempt crashed before recording it, or a genuine race with a manual re-file
+    — and the ack it carries is exactly as good as one from a fresh registration.
+    """
+    try:
+        ack = client.register(irp_payload)
+    except IrpDuplicate as duplicate:
+        return _RegisterCallOutcome(kind="filed", ack=duplicate.ack)
+    except IrpRejected as rejected:
+        return _RegisterCallOutcome(
+            kind="rejected", error_code=rejected.code, error=rejected.message
+        )
+    except IrpUnavailable as outage:
+        return _RegisterCallOutcome(kind="unavailable", error=str(outage))
+    return _RegisterCallOutcome(kind="filed", ack=ack)
+
+
+async def stage_registration_attempt(
     session: AsyncSession,
     ctx: ScopeContext,
-    client: IrpClient,
     invoice: Invoice,
     registration: GstRegistration,
+    *,
+    at: datetime,
+) -> IrpInvoicePayload:
+    """The first of three acts: assemble the document the portal will see, and write **nothing**.
+
+    Deliberately not a claim row (contrast payment's `stage_charge`, which does write one):
+    registering a document is itself idempotent — the IRN is a pure function of the document,
+    `IrpDuplicate` is how a real portal says so — so there is nothing a claim row would need to
+    protect a retry from. A process that dies before `record_registration_result` runs leaves no
+    row behind at all, and a resumed attempt (the retry queue, or `app/cron.py`'s filing-reclaim
+    sweep) simply calls the portal again from scratch. See `app/domain.py`'s `FILING_STATUSES`.
+    """
+    customer = await selectors.get_customer(session, ctx.organization_id, invoice.customer_id)
+    return build_irp_payload(
+        invoice,
+        registration,
+        buyer_legal_name=customer.name if customer else "",
+        at=at,
+    )
+
+
+async def record_registration_result(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    invoice: Invoice,
+    outcome: _RegisterCallOutcome,
     *,
     at: datetime,
     request: Request | None,
     retryable_outage: bool = True,
 ) -> _Attempt:
-    """Send one document to the portal and append exactly one row describing what happened.
+    """The third act: append exactly one row describing what the portal said, and audit it.
 
-    There is no path through here that calls the portal and records nothing — that is the failure
-    mode the ledger exists to prevent, because an attempt nobody recorded is an attempt nobody can
-    prove was made.
+    There is no path through here that leaves the call unrecorded — that is the failure mode the
+    ledger exists to prevent, because an attempt nobody recorded is an attempt nobody can prove
+    was made. Never called with the claim's own transaction still open; see the callers in
+    `app/consumers.py` and `app/api/internal.py`.
 
     `retryable_outage` is what the caller knows and this function does not: whether another try is
     coming. When it is, an outage is a `pending` attempt awaiting that retry; when the budget is
@@ -1310,25 +1373,15 @@ async def _attempt_registration(
     stopped trying" is a different fact from "we are still trying" and an operator has to be able
     to tell them apart at a glance.
     """
-    customer = await selectors.get_customer(session, ctx.organization_id, invoice.customer_id)
-    irp_payload = build_irp_payload(
-        invoice,
-        registration,
-        buyer_legal_name=customer.name if customer else "",
-        at=at,
-    )
-
-    try:
-        ack = client.register(irp_payload)
-    except IrpRejected as rejected:
+    if outcome.kind == "rejected":
         filing = _append_filing(
             session,
             ctx,
             invoice,
             status="failed",
             at=at,
-            error_code=rejected.code,
-            error=rejected.message,
+            error_code=outcome.error_code,
+            error=outcome.error,
         )
         await session.flush()
         _audit_filing(
@@ -1337,10 +1390,11 @@ async def _attempt_registration(
         return _Attempt(
             filing=filing,
             outcome="rejected",
-            error_code=rejected.code,
-            error=rejected.message,
+            error_code=outcome.error_code,
+            error=outcome.error,
         )
-    except IrpUnavailable as outage:
+
+    if outcome.kind == "unavailable":
         # The opposite of a rejection: the document is fine, the portal is not.
         exhausted = not retryable_outage
         filing = _append_filing(
@@ -1352,9 +1406,9 @@ async def _attempt_registration(
             error_code=(domain.ERR_RETRY_EXHAUSTED if exhausted else domain.ERR_PORTAL_UNAVAILABLE),
             error=(
                 f"gave up after {domain.MAX_FILING_ATTEMPTS} attempts; the portal was last "
-                f"unreachable with: {outage}"
+                f"unreachable with: {outcome.error}"
                 if exhausted
-                else str(outage)
+                else outcome.error
             ),
         )
         await session.flush()
@@ -1373,6 +1427,9 @@ async def _attempt_registration(
             error=filing.error,
         )
 
+    if outcome.kind != "filed" or outcome.ack is None:  # pragma: no cover - exhaustiveness
+        raise BusinessRuleProblem(f"unknown IRP call outcome {outcome.kind!r}")
+    ack = outcome.ack
     filing = _append_filing(
         session,
         ctx,
@@ -1457,26 +1514,33 @@ def _publish_filing_failed(
     )
 
 
-async def file_invoice(
+@dataclass(frozen=True, slots=True)
+class ManualFilingClaim:
+    """What `claim_manual_filing` commits before the portal is asked: the invoice this attempt is
+    against and the payload built from it. `call_irp_register` and `record_manual_filing` are the
+    second and third acts; see `stage_registration_attempt` for why the claim itself writes
+    nothing."""
+
+    invoice: Invoice
+    irp_payload: IrpInvoicePayload
+    #: The clock reading this claim was made against — resolved once, reused by
+    #: `record_manual_filing` so the payload and the appended row agree on when the attempt
+    #: happened, the same reasoning `AutofileClaim.at` documents.
+    at: datetime
+
+
+async def claim_manual_filing(
     session: AsyncSession,
     ctx: ScopeContext,
-    client: IrpClient,
     payload: FileInvoiceIn,
     *,
-    request: Request | None = None,
     at: datetime | None = None,
-) -> EInvoiceFiling:
-    """Register one document with the portal and append what came back — the *asked-for* filing.
-
-    The manual path: an operator or an operator's tool naming one document. Its refusals are
-    errors, because a caller who asked for something impossible deserves to be told rather than
-    handed a row: no registration configured, a document that is not reportable, one already
-    registered. Everything from the call onward becomes a row, success or failure alike.
-
-    The automatic path (`autofile_invoice`) answers the same situations with outcomes instead of
-    exceptions, because nobody is waiting on the other end of a queue — but both go through
-    `live_registration` and `_attempt_registration`, so what "already filed" means and what gets
-    written can never diverge between them.
+) -> ManualFilingClaim:
+    """The first of three acts the manual filing route takes. Every refusal that does not need
+    the portal at all — an unknown invoice, a document that is not reportable, no registration
+    configured, one already registered — is raised here, exactly as `file_invoice` has always
+    raised them; a caller who asked for something impossible deserves to be told, not handed a
+    row.
     """
     at = at or _now()
     invoice = await selectors.get_invoice(session, ctx.organization_id, payload.invoice_id)
@@ -1504,12 +1568,35 @@ async def file_invoice(
             "credit note, or cancel the IRN within 24 hours"
         )
 
-    attempt = await _attempt_registration(
-        session, ctx, client, invoice, registration, at=at, request=request
+    irp_payload = await stage_registration_attempt(session, ctx, invoice, registration, at=at)
+    return ManualFilingClaim(invoice=invoice, irp_payload=irp_payload, at=at)
+
+
+async def record_manual_filing(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    client_name: str,
+    invoice_id: uuid.UUID,
+    outcome: _RegisterCallOutcome,
+    *,
+    at: datetime,
+    request: Request | None = None,
+) -> EInvoiceFiling:
+    """The third act of a manual filing: append the row the portal's answer decided, publish, and
+    return it. Re-reads the invoice rather than trusting the claim's instance — the same
+    discipline every "claim, call, record" split in this platform applies, because nothing handed
+    across a network call in between can be assumed still current.
+    """
+    invoice = await selectors.get_invoice(session, ctx.organization_id, invoice_id)
+    if invoice is None:  # pragma: no cover - defensive; existed moments ago in the claim
+        raise NotFoundProblem("That invoice is not part of this organization")
+
+    attempt = await record_registration_result(
+        session, ctx, invoice, outcome, at=at, request=request, retryable_outage=True
     )
 
     if attempt.outcome == "filed" and attempt.ack is not None:
-        _publish_filed(session, ctx, invoice, attempt.filing, attempt.ack, portal=client.name)
+        _publish_filed(session, ctx, invoice, attempt.filing, attempt.ack, portal=client_name)
     else:
         _publish_filing_failed(
             session,
@@ -1521,6 +1608,35 @@ async def file_invoice(
             retryable=attempt.outcome == "unavailable",
         )
     return attempt.filing
+
+
+async def file_invoice(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    client: IrpClient,
+    payload: FileInvoiceIn,
+    *,
+    request: Request | None = None,
+    at: datetime | None = None,
+) -> EInvoiceFiling:
+    """All three acts run back to back, inside whatever transaction the caller already holds.
+
+    Kept for the unit tests that exercise the manual filing rules against a hand-built session
+    and do not care about the transaction boundary. The real caller —
+    `POST /internal/v1/einvoice/filings` — calls `claim_manual_filing`, `call_irp_register` with
+    **no session and no transaction open**, and `record_manual_filing`; see `app/api/internal.py`.
+
+    The automatic path (`autofile_invoice`) answers the same situations with outcomes instead of
+    exceptions, because nobody is waiting on the other end of a queue — but both go through
+    `live_registration` and `record_registration_result`, so what "already filed" means and what
+    gets written can never diverge between them.
+    """
+    at = at or _now()
+    claim = await claim_manual_filing(session, ctx, payload, at=at)
+    outcome = call_irp_register(client, claim.irp_payload)
+    return await record_manual_filing(
+        session, ctx, client.name, claim.invoice.id, outcome, at=at, request=request
+    )
 
 
 # --------------------------------------------------------------------- auto-filing
@@ -1558,17 +1674,40 @@ FILING_OUTCOMES: frozenset[str] = frozenset(
 )
 
 
-async def autofile_invoice(
+@dataclass(frozen=True, slots=True)
+class AutofileClaim:
+    """What `claim_autofile_attempt` decided.
+
+    `outcome` is set when nothing needs to call the portal at all — the guard's own answer is
+    already final (an unknown invoice, a document no longer reportable, one already registered,
+    no registration configured) and, where it matters, already published. `invoice`/`irp_payload`
+    are set instead when the call is still to come; `retryable` is what `record_autofile_result`
+    needs to know but the call itself does not.
+    """
+
+    #: The clock reading this claim was made against — resolved once, here, and reused by
+    #: `record_autofile_result` so the payload's `generated_at`, the appended row's
+    #: `attempted_at` and any scheduled retry's `not_before` are all the same instant rather than
+    #: three separate reads of a clock that may have moved between them (the consumer's own
+    #: `datetime.now(UTC)` in particular is a *different* clock, read only for the early-arrival
+    #: guard — see `app/consumers.py`). First, and without a default, only so the fields after it
+    #: may have one — every construction site names it explicitly regardless.
+    at: datetime
+    outcome: FilingOutcome | None = None
+    invoice: Invoice | None = None
+    irp_payload: IrpInvoicePayload | None = None
+    retryable: bool = True
+
+
+async def claim_autofile_attempt(
     session: AsyncSession,
     ctx: ScopeContext,
-    client: IrpClient,
-    *,
     invoice_id: uuid.UUID,
-    attempt: int = 1,
+    *,
+    attempt: int,
     at: datetime | None = None,
-    request: Request | None = None,
-) -> FilingOutcome:
-    """File one document because the queue said so, and decide what happens next.
+) -> AutofileClaim:
+    """The first of three acts the automatic path takes.
 
     The order of the guards is the design. **`live_registration` is consulted before the client
     is touched**, so a redelivered request, a manual filing that beat the consumer to it, and a
@@ -1576,20 +1715,13 @@ async def autofile_invoice(
     is never asked to register a document it has already registered, because the portal's answer
     to that is an error and an error is not how a well-behaved integration discovers a fact it
     already had.
-
-    After the call there are exactly three futures. A registration is done. A rejection is
-    **terminal**: the portal read the document and refused it, and the same bytes will be refused
-    again, so the row is `failed`, the event says `retryable: false`, and a person has to change
-    the document. An outage is retried, bounded by `domain.MAX_FILING_ATTEMPTS`; when that budget
-    is spent the outage becomes terminal too, and it says so in its own error code rather than
-    disappearing into a queue that never drains.
     """
     at = at or _now()
     invoice = await selectors.get_invoice(session, ctx.organization_id, invoice_id)
     if invoice is None:
         # A request for a document that is no longer there is not an error worth dead-lettering:
         # the outbox row outlived its subject, and the only correct action is to stop.
-        return FilingOutcome("unknown_invoice")
+        return AutofileClaim(at=at, outcome=FilingOutcome("unknown_invoice"))
 
     # Asked again here, not only at finalize: the request may have been queued minutes ago, and a
     # document that is no longer reportable — or never was — must not be filed because a stale
@@ -1599,12 +1731,12 @@ async def autofile_invoice(
         document_type=invoice.document_type,
         status=invoice.status,
     ):
-        return FilingOutcome("not_required")
+        return AutofileClaim(at=at, outcome=FilingOutcome("not_required"))
 
     filings = await selectors.filings_for_invoice(session, ctx.organization_id, invoice.id)
     live = live_registration(filings)
     if live is not None:
-        return FilingOutcome("already_filed", filing=live)
+        return AutofileClaim(at=at, outcome=FilingOutcome("already_filed", filing=live))
 
     registration = await selectors.get_gst_registration(session, ctx.organization_id)
     if registration is None:
@@ -1626,18 +1758,44 @@ async def autofile_invoice(
             retryable=False,
             attempt=attempt,
         )
-        return FilingOutcome("no_registration", attempt=attempt)
+        return AutofileClaim(at=at, outcome=FilingOutcome("no_registration", attempt=attempt))
 
     retryable = domain.may_retry_filing(attempt)
-    result = await _attempt_registration(
-        session,
-        ctx,
-        client,
-        invoice,
-        registration,
-        at=at,
-        request=request,
-        retryable_outage=retryable,
+    irp_payload = await stage_registration_attempt(session, ctx, invoice, registration, at=at)
+    return AutofileClaim(invoice=invoice, irp_payload=irp_payload, retryable=retryable, at=at)
+
+
+async def record_autofile_result(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    invoice_id: uuid.UUID,
+    outcome: _RegisterCallOutcome,
+    *,
+    attempt: int,
+    retryable: bool,
+    at: datetime,
+    client_name: str,
+    request: Request | None = None,
+) -> FilingOutcome:
+    """The third act of an automatic attempt: turn the portal's answer into a row, a published
+    event where one is owed, and — on a retryable outage — the next attempt's schedule.
+
+    After the call there are exactly three futures. A registration is done. A rejection is
+    **terminal**: the portal read the document and refused it, and the same bytes will be refused
+    again, so the row is `failed`, the event says `retryable: false`, and a person has to change
+    the document. An outage is retried, bounded by `domain.MAX_FILING_ATTEMPTS`; when that budget
+    is spent the outage becomes terminal too, and it says so in its own error code rather than
+    disappearing into a queue that never drains.
+
+    Re-reads the invoice rather than trusting the claim's instance, the same discipline
+    `record_manual_filing` applies for the same reason.
+    """
+    invoice = await selectors.get_invoice(session, ctx.organization_id, invoice_id)
+    if invoice is None:  # pragma: no cover - defensive; existed moments ago in the claim
+        return FilingOutcome("unknown_invoice")
+
+    result = await record_registration_result(
+        session, ctx, invoice, outcome, at=at, request=request, retryable_outage=retryable
     )
 
     if result.outcome == "filed" and result.ack is not None:
@@ -1647,7 +1805,7 @@ async def autofile_invoice(
             invoice,
             result.filing,
             result.ack,
-            portal=client.name,
+            portal=client_name,
             attempt=attempt,
             trigger="auto",
         )
@@ -1697,6 +1855,45 @@ async def autofile_invoice(
         terminal=True,
     )
     return FilingOutcome("exhausted", filing=result.filing, attempt=attempt)
+
+
+async def autofile_invoice(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    client: IrpClient,
+    *,
+    invoice_id: uuid.UUID,
+    attempt: int = 1,
+    at: datetime | None = None,
+    request: Request | None = None,
+) -> FilingOutcome:
+    """All three acts run back to back, inside whatever transaction the caller already holds.
+
+    Kept for the unit tests that drive the retry/backoff state machine against a hand-built
+    session and do not care about the transaction boundary. The real caller —
+    `app/consumers.py:file_requested_invoice` — calls `claim_autofile_attempt`,
+    `call_irp_register` with **no session and no transaction open**, and `record_autofile_result`
+    as three separate acts, each in its own `session_scope`.
+    """
+    at = at or _now()
+    claim = await claim_autofile_attempt(session, ctx, invoice_id, attempt=attempt, at=at)
+    if claim.outcome is not None:
+        return claim.outcome
+    if claim.invoice is None or claim.irp_payload is None:  # pragma: no cover - exhaustiveness
+        raise BusinessRuleProblem("a claim that did not resolve to an outcome named no invoice")
+
+    call_outcome = call_irp_register(client, claim.irp_payload)
+    return await record_autofile_result(
+        session,
+        ctx,
+        claim.invoice.id,
+        call_outcome,
+        attempt=attempt,
+        retryable=claim.retryable,
+        at=at,
+        client_name=client.name,
+        request=request,
+    )
 
 
 # --------------------------------------------------------------------- withdrawing a filing

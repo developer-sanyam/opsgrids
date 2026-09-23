@@ -1,3 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec python -m app.relay
+# The filing-reclaim sweep (D3): resumes a reportable invoice the automatic filing pipeline lost
+# track of entirely — the `filing_requested` event never arrived, or a process died between
+# calling the IRP and recording what it said. The scaffold pointed this at the outbox relay
+# because no service work had a schedule yet; this one does, and it is a distinct process from
+# both the API and the consumer — a poll loop must not share a pool with request traffic.
+exec python -m app.cron

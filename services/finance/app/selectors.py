@@ -497,6 +497,49 @@ async def filings_for_invoice(
     return list((await session.execute(stmt)).scalars().all())
 
 
+async def due_filing_reclaims(
+    session: AsyncSession, *, older_than: datetime, limit: int = 100
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """Every reportable, unfiled invoice with no filing row at all, as `(organization_id,
+    invoice_id)` — the automatic filing pipeline having lost track of it entirely.
+
+    **The one cross-tenant read in this service, and the only one it needs.** It exists to
+    discover *which* organizations have such an invoice, so there is no tenant to bind while
+    asking — exactly the outbox relay's, subscription's dunning sweep's, and payment's
+    stuck-charge sweep's shape. Run on the BYPASSRLS outbox role (`get_outbox_sessionmaker`); as
+    the NOBYPASSRLS app role it would return nothing, log nothing, and a document whose
+    `filing_requested` event never arrived — or whose one attempt crashed between calling the
+    portal and recording what it said, leaving no row behind at all (`app/domain.py`'s
+    `FILING_STATUSES` docstring explains why there is nothing *to* record) — would sit unfiled
+    past its reporting window, silently.
+
+    Deliberately **not** every invoice with a non-terminal newest filing row: a `pending` row
+    already has its own scheduled retry (`services.request_filing`, ADR-0015), and re-kicking it
+    here too would race that schedule. This targets only the narrower, harder failure — an
+    invoice the pipeline has no record of trying at all — which is exactly what `stage_
+    registration_attempt` writing nothing before the call (D3) can leave behind.
+
+    `older_than` is the poisoned-step guard: an invoice finalized moments ago is very likely still
+    waiting on its own first attempt, not lost, so the sweep leaves it alone until it has had time
+    to fail on its own.
+    """
+    reportable_document_types = tuple(domain.IRP_DOCUMENT_TYPES)
+    stmt = (
+        select(Invoice.organization_id, Invoice.id)
+        .where(
+            Invoice.supply_type.in_(domain.EINVOICE_SUPPLY_TYPES),
+            Invoice.document_type.in_(reportable_document_types),
+            Invoice.status.not_in(domain.UNREPORTED_STATUSES),
+            Invoice.deleted_at.is_(None),
+            Invoice.created_at <= older_than,
+            ~select(EInvoiceFiling.id).where(EInvoiceFiling.invoice_id == Invoice.id).exists(),
+        )
+        .order_by(Invoice.created_at)
+        .limit(limit)
+    )
+    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+
+
 async def latest_filings(
     session: AsyncSession, org_id: uuid.UUID, invoice_ids: list[uuid.UUID]
 ) -> tuple[dict[uuid.UUID, EInvoiceFiling], dict[uuid.UUID, int]]:

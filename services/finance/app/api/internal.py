@@ -95,11 +95,32 @@ async def file_invoice(
     — not to treat a recorded fact as a transport failure. The 4xx responses are reserved for the
     cases where nothing was attempted at all: an unknown invoice, a document that needs no IRN, an
     organization with no registration, one already registered.
+
+    Three acts, at most two transactions, and the portal call spans neither (D3): **claim**
+    (`services.claim_manual_filing`, which raises every refusal above before anything is
+    written), **call** (`services.call_irp_register`, no session), **record**
+    (`services.record_manual_filing`). A process that dies between the call and the record
+    leaves no filing row behind at all — see `services.stage_registration_attempt` — and
+    `app/cron.py`'s filing-reclaim sweep is what notices and resumes such an invoice.
     """
+    ctx = _service_ctx(payload.organization_id)
     async with session.begin():
         await _bind(session, payload.organization_id, request)
-        ctx = _service_ctx(payload.organization_id)
-        filing = await services.file_invoice(session, ctx, client, payload, request=request)
+        claim = await services.claim_manual_filing(session, ctx, payload)
+
+    call_outcome = services.call_irp_register(client, claim.irp_payload)
+
+    async with session.begin():
+        await _bind(session, payload.organization_id, request)
+        filing = await services.record_manual_filing(
+            session,
+            ctx,
+            client.name,
+            claim.invoice.id,
+            call_outcome,
+            at=claim.at,
+            request=request,
+        )
         result = selectors.to_filing_out(filing)
     log.info(
         "finance.einvoice.attempt",
