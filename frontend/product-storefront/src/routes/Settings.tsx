@@ -15,6 +15,7 @@ import {
 } from "@opsgrids/ui";
 
 import { getStoreIdentity, publishStore, putStoreIdentity, unpublishStore } from "@/settings/api";
+import { DomainCard } from "@/settings/DomainCard";
 import {
   EMPTY_STORE_FORM,
   fromStore,
@@ -314,27 +315,6 @@ export function SettingsPage() {
                 />
               </div>
 
-              <TextField
-                label="Custom domain"
-                value={current.customDomain}
-                onChange={(event) => set("customDomain", event.target.value)}
-                placeholder="shop.example.com"
-                optional
-                disabled={saving || !canWrite}
-                {...(errors.customDomain !== undefined ? { error: errors.customDomain } : {})}
-              />
-              {store?.custom_domain_status !== null && store?.custom_domain_status !== undefined ? (
-                <div className="-mt-3 flex items-center gap-2">
-                  <Tag tone="neutral">
-                    {store.custom_domain_status === "verified" ? "Verified" : "Unverified"}
-                  </Tag>
-                  <span className="text-xs text-muted">
-                    Setting a domain records your intention only — nothing on this platform yet
-                    serves traffic on it or verifies you own it.
-                  </span>
-                </div>
-              ) : null}
-
               {canWrite ? (
                 <div>
                   <Button type="submit" disabled={saving}>
@@ -344,6 +324,8 @@ export function SettingsPage() {
               ) : null}
             </form>
           </Card>
+
+          {store !== null ? <DomainCard canWrite={canWrite} /> : null}
         </>
       ) : null}
 

@@ -33,6 +33,7 @@ import datetime as dt
 import io
 import json
 import re
+import secrets
 from dataclasses import dataclass
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -452,6 +453,216 @@ def canonical_host(
     if custom_domain and custom_domain_status == CANONICAL_DOMAIN_STATUS:
         return custom_domain
     return platform_host_for(slug, suffix=suffix)
+
+
+# --------------------------------------------------------------------- the domain claim state
+
+
+#: `secrets.token_hex(16)` — 32 hex characters, 128 bits, minted per claim (ADR-0012 §3). A
+#: re-claim of the same domain string mints a **new** token, because a verification attaches to
+#: the act of claiming, not to the domain — carrying an old token across a re-claim would let a
+#: proof survive the claim it proved.
+def mint_verification_token() -> str:
+    return secrets.token_hex(16)
+
+
+#: `_opsgrids-challenge.<host>` — the label, not the value. A constant rather than an inline
+#: f-string wherever it is needed, so the probe and the wire format cannot drift onto two
+#: spellings of the same record name.
+VERIFICATION_TXT_LABEL = "_opsgrids-challenge"
+#: The value's fixed prefix; the token is appended by the caller.
+VERIFICATION_TXT_PREFIX = "opsgrids-domain-verification="
+
+
+def verification_txt_name(host: str) -> str:
+    """`merchant.com` → `_opsgrids-challenge.merchant.com` (ADR-0012 §3)."""
+    return f"{VERIFICATION_TXT_LABEL}.{host}"
+
+
+def verification_txt_value(token: str) -> str:
+    """`<token>` → `opsgrids-domain-verification=<token>` — what the merchant is told to
+    publish, and what the ownership probe looks for among a name's TXT answers."""
+    return f"{VERIFICATION_TXT_PREFIX}{token}"
+
+
+#: An unverified claim expires 14 days after its token was minted, and expiry releases the name
+#: rather than becoming a sixth `custom_domain_status` (ADR-0012 §3). Fourteen days, not
+#: twenty-four hours, because a merchant's DNS is very often in the hands of a web agency who
+#: answers next week.
+CLAIM_EXPIRY = dt.timedelta(days=14)
+
+#: Once past `unverified`, every probe runs once a day. Fast enough that renewal trouble is
+#: caught roughly a month before a 90-day certificate would actually expire (ADR-0012 §5); slow
+#: enough that fifty merchants' worth of checks is nothing (ADR-0012 §12).
+VERIFIED_CHECK_INTERVAL = dt.timedelta(days=1)
+
+#: §6's backoff while a claim has never been proved, read as cumulative stage boundaries: the
+#: ADR states each stage's own *duration* ("every 5 minutes for an hour"), and the boundary
+#: below is the sum of every stage before it, so the schedule only ever relaxes and reaches its
+#: hourly floor comfortably inside the claim's first day — long before the 14-day expiry.
+#: `(elapsed upper bound, interval at that stage)`.
+_UNVERIFIED_BACKOFF: tuple[tuple[dt.timedelta, dt.timedelta], ...] = (
+    (dt.timedelta(minutes=15), dt.timedelta(seconds=60)),
+    (dt.timedelta(hours=1, minutes=15), dt.timedelta(minutes=5)),
+    (dt.timedelta(hours=25, minutes=15), dt.timedelta(minutes=30)),
+)
+#: The floor the backoff reaches and stays at until the claim expires.
+_UNVERIFIED_HOURLY = dt.timedelta(hours=1)
+
+
+def unverified_check_interval(elapsed_since_claim: dt.timedelta) -> dt.timedelta:
+    """How long until the next ownership check, for a claim that has never been proved.
+
+    `elapsed_since_claim` is `now - token_issued_at`. Monotonically non-decreasing by
+    construction — a later stage's interval is never shorter than an earlier one's — which is
+    what makes "the schedule only ever relaxes" a property a test can hold this function to
+    rather than a sentence in a docstring.
+    """
+    for bound, interval in _UNVERIFIED_BACKOFF:
+        if elapsed_since_claim < bound:
+            return interval
+    return _UNVERIFIED_HOURLY
+
+
+def claim_expires_at(token_issued_at: dt.datetime) -> dt.datetime:
+    """`token_issued_at + CLAIM_EXPIRY` — the value stored on the claim row at mint time."""
+    return token_issued_at + CLAIM_EXPIRY
+
+
+def is_claim_expired(expires_at: dt.datetime, *, now: dt.datetime) -> bool:
+    """Only meaningful for a claim still `unverified` — once verified, `claim_expires_at`
+    stops being read (ADR-0012 §9: it applies "while `unverified`")."""
+    return now >= expires_at
+
+
+#: Seven consecutive **daily** failures end a live domain (ADR-0012 §6) — generous on purpose:
+#: a DNS provider's bad day must not take a merchant's shop off the air.
+SUSPEND_AFTER_CONSECUTIVE_FAILURES = 7
+
+
+def promote_from_unverified(*, ownership_ok: bool) -> str:
+    """`unverified` moves to `verified` the instant the ownership probe succeeds, and nothing
+    else moves it (ADR-0012 §6). Routing and the certificate are not even probed yet while
+    `unverified` — the certificate cannot be authorized before ownership is proved, and a
+    routing check that cannot yet matter tells a merchant nothing they can act on.
+    """
+    return "verified" if ownership_ok else "unverified"
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimAdvance:
+    """What one probe pass decided for a claim already past `unverified`. `status` is the new
+    `custom_domain_status`; `consecutive_failures` is the new counter, reset to zero on every
+    full recovery; `last_failure_counted_on` is the calendar day (server-clock, UTC) the counter
+    was last bumped on — `None` whenever the counter is zero."""
+
+    status: str
+    consecutive_failures: int
+    last_failure_counted_on: dt.date | None
+
+
+def advance_verified_or_later(
+    *,
+    store_published: bool,
+    was_suspended: bool,
+    has_been_live: bool,
+    ownership_ok: bool,
+    routing_ok: bool,
+    certificate_ok: bool,
+    consecutive_failures: int,
+    last_failure_counted_on: dt.date | None,
+    today: dt.date,
+) -> ClaimAdvance:
+    """The state machine for `verified` / `live` / `failing` / `suspended` (ADR-0012 §6, §7).
+
+    **An unpublished store suspends immediately, independent of the failure count.**
+    ADR-0011's `unpublish` is the manual kill switch §7 names and the one already-working
+    answer to a lapsed entitlement — a merchant who switched their own shop off must not wait
+    seven days for the domain to follow it.
+
+    **A failure counts at most once per calendar day.** ADR-0012 §6 says "seven consecutive
+    *daily* failures"; the sweep only calls this once a day, but `POST .../domain/check` does
+    not — a merchant leaning on "Check now" could otherwise suspend their own domain in a few
+    minutes. `today` and `last_failure_counted_on` (both the caller's clock, not this
+    function's — it has none) are what makes the count key on *days seen failing* rather than
+    *calls made*: a second failing call on the same day the counter already moved for is
+    `failing` again, unchanged, not `failing`-plus-one.
+
+    **Recovering from `suspended` needs its own path, because the ordinary one cannot reach
+    it.** `suspended` blocks `ask` (ADR-0012 §5), so a suspended domain can never again pass its
+    certificate probe — nothing issues it one — and "all three probes ok" is unreachable from
+    here forever. The moment ownership and routing both check out again, the claim is moved
+    back to `verified` instead: `ask` starts saying yes again, and the *ordinary* verified ->
+    live path (the branch above) takes it the rest of the way once a certificate exists. The
+    counter resets, the same as any other full recovery.
+
+    **A routing failure never counts against a claim that has not yet gone live.** Cutover —
+    the gap between "we proved ownership" and "the merchant actually pointed DNS here" — is
+    normal operation, sometimes for a long time (ADR-0012 §4), not an outage. Suspending a
+    domain nobody has moved traffic to yet would be punishing a merchant for not being ready.
+    It stays `failing` (or `verified`, before the first failure) without loading the counter,
+    for as long as ownership itself keeps checking out; a merchant who stops proving ownership
+    is a different, real problem and is not exempted.
+
+    **Every other cause of failure gets the seven-day tolerance.** All three probes have to
+    succeed for the domain to be `live`; any one failing is `failing` until either it recovers
+    or the count reaches `SUSPEND_AFTER_CONSECUTIVE_FAILURES`. Recovery resets the counter to
+    zero — a domain that has been failing for six days and then answers cleanly is not one
+    failure away from suspension the next time something hiccups.
+    """
+    if not store_published:
+        return ClaimAdvance(
+            status="suspended",
+            consecutive_failures=consecutive_failures,
+            last_failure_counted_on=last_failure_counted_on,
+        )
+
+    if ownership_ok and routing_ok and certificate_ok:
+        return ClaimAdvance(status="live", consecutive_failures=0, last_failure_counted_on=None)
+
+    if was_suspended and ownership_ok and routing_ok:
+        return ClaimAdvance(status="verified", consecutive_failures=0, last_failure_counted_on=None)
+
+    if not has_been_live and ownership_ok and not routing_ok:
+        return ClaimAdvance(
+            status="failing",
+            consecutive_failures=consecutive_failures,
+            last_failure_counted_on=last_failure_counted_on,
+        )
+
+    failures = (
+        consecutive_failures if last_failure_counted_on == today else consecutive_failures + 1
+    )
+    if failures >= SUSPEND_AFTER_CONSECUTIVE_FAILURES:
+        return ClaimAdvance(
+            status="suspended", consecutive_failures=failures, last_failure_counted_on=today
+        )
+    return ClaimAdvance(
+        status="failing", consecutive_failures=failures, last_failure_counted_on=today
+    )
+
+
+#: `storefront.domain.*` per ADR-0012 §15, keyed by the status just **entered**. Fired only on
+#: an actual change — see `audit_action_for_transition` — because a domain that stays `live`
+#: for a hundred sweeps must not write a hundred audit rows for a published fact.
+_TRANSITION_AUDIT_ACTIONS: dict[str, str] = {
+    "verified": "storefront.domain.verified",
+    "live": "storefront.domain.activated",
+    "failing": "storefront.domain.failing",
+    "suspended": "storefront.domain.suspended",
+}
+
+
+def audit_action_for_transition(old_status: str, new_status: str) -> str | None:
+    """The audit action for one state change, or `None` when nothing actually moved.
+
+    `unverified` has no entry above: the claim itself is audited as `storefront.domain.claimed`
+    at the moment it is written (`services.claim_custom_domain`), not as a status transition —
+    there is no state before `unverified` to have transitioned *from*.
+    """
+    if old_status == new_status:
+        return None
+    return _TRANSITION_AUDIT_ACTIONS.get(new_status)
 
 
 def assert_slug_is_unchanged(current: str, submitted: str) -> None:

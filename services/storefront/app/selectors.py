@@ -44,6 +44,7 @@ from app import domain
 from app.config import settings
 from app.models import (
     Category,
+    CustomDomainClaim,
     DeliveryZone,
     Enquiry,
     Product,
@@ -346,6 +347,32 @@ async def resolve_public_store_by_host(
     return store
 
 
+async def discover_organizations_with_custom_domain(session: AsyncSession) -> list[uuid.UUID]:
+    """The sweep's discovery read (ADR-0012 §6): **organizations**, not domains, on the same
+    BYPASSRLS SELECT-only reader and the same one table as every other bypass read in this
+    module.
+
+    ────────────────────────────────────────────────────────────────────────────────────────
+    **This is `opsgrids_storefront_directory`'s third query and its surface does not widen.**
+    The role already holds SELECT on the whole of `storefront.storefronts` — that grant was
+    made once, in `migrations/env.py`, for `resolve_public_store` — so a second and third
+    `SELECT` against the same table costs no new grant on any bypass role, which is exactly
+    what ADR-0012 §6 promises. Discovering *organizations* rather than *domains* is what keeps
+    this narrow: the claims table itself is never read here, and a claim's evidence is only
+    ever read tenant-bound, one row at a time, by `get_domain_claim_for_org`.
+    ────────────────────────────────────────────────────────────────────────────────────────
+
+    Unordered and unbounded — at ADR-0012 §12's planning numbers this is ≤50 rows, and bounding
+    the *tick* (not this query) is what `domain_sweep_batch_size` is for.
+    """
+    stmt = (
+        select(Storefront.organization_id)
+        .where(Storefront.custom_domain.isnot(None), Storefront.deleted_at.is_(None))
+        .distinct()
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
 # --------------------------------------------------------------------- the answer
 
 
@@ -470,6 +497,74 @@ async def get_storefront(session: AsyncSession, ctx: ScopeContext) -> Storefront
         Storefront.deleted_at.is_(None),
     )
     return (await session.execute(ctx.apply(stmt, owner_col=Storefront.id))).scalars().one_or_none()
+
+
+async def get_domain_claim(session: AsyncSession, ctx: ScopeContext) -> CustomDomainClaim | None:
+    """The organization's one claim row, or None before a claim through the dedicated domain
+    route exists — including when `storefronts.custom_domain` is set through the older
+    `StorePut` path, which does not create one (ADR-0012's known seam; see `services.py`)."""
+    stmt = select(CustomDomainClaim).where(
+        CustomDomainClaim.organization_id == ctx.organization_id,
+        CustomDomainClaim.deleted_at.is_(None),
+    )
+    return (
+        (await session.execute(ctx.apply(stmt, owner_col=CustomDomainClaim.id)))
+        .scalars()
+        .one_or_none()
+    )
+
+
+async def get_domain_claim_for_org(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> CustomDomainClaim | None:
+    """The sweep's read: tenant-bound already by `session_scope`, so no `ScopeContext` to build
+    — the same shape `get_theme_document_for_org` uses for the anonymous path."""
+    stmt = select(CustomDomainClaim).where(
+        CustomDomainClaim.organization_id == organization_id,
+        CustomDomainClaim.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalars().one_or_none()
+
+
+async def get_domain_claim_for_update(
+    session: AsyncSession, ctx: ScopeContext
+) -> CustomDomainClaim | None:
+    """`get_domain_claim`, but `SELECT ... FOR UPDATE SKIP LOCKED` (ADR-0012 review finding 6):
+    "Check now" takes this instead of the plain read, so a concurrent probe pass already holding
+    this row — the daily sweep, or a second tab — makes this return `None` rather than block.
+    A caller reading `None` here after already having confirmed the claim exists cannot tell
+    "gone" from "locked by someone else" apart on this call alone; `services.run_domain_check`
+    is the one caller and it already knows which, from context."""
+    stmt = (
+        select(CustomDomainClaim)
+        .where(
+            CustomDomainClaim.organization_id == ctx.organization_id,
+            CustomDomainClaim.deleted_at.is_(None),
+        )
+        .with_for_update(skip_locked=True)
+    )
+    return (
+        (await session.execute(ctx.apply(stmt, owner_col=CustomDomainClaim.id)))
+        .scalars()
+        .one_or_none()
+    )
+
+
+async def get_domain_claim_for_org_for_update(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> CustomDomainClaim | None:
+    """`get_domain_claim_for_org`, but `SELECT ... FOR UPDATE SKIP LOCKED` — the sweep's half of
+    review finding 6. `None` here means either no claim (already ruled out by the caller) or a
+    concurrent "Check now" holding the row; either way there is nothing for this tick to do."""
+    stmt = (
+        select(CustomDomainClaim)
+        .where(
+            CustomDomainClaim.organization_id == organization_id,
+            CustomDomainClaim.deleted_at.is_(None),
+        )
+        .with_for_update(skip_locked=True)
+    )
+    return (await session.execute(stmt)).scalars().one_or_none()
 
 
 def _zones(ctx: ScopeContext) -> Select[tuple[DeliveryZone]]:

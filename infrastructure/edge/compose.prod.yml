@@ -493,37 +493,46 @@ services:
       # The platform's own hostnames the ask endpoint may say yes to. A store answers for
       # itself; these names are nobody's store and would otherwise never get a certificate.
       TLS_PLATFORM_HOSTS: ${TLS_PLATFORM_HOSTS}
+      # What `GET /store/domain`'s `dns` block tells a merchant to publish (ADR-0012 §4, §11):
+      # the ALIAS target and the literal A-record fallback, from the box's own `.env`. `EDGE_HOST`
+      # is always there (`remote.sh` refuses to deploy without it); `EDGE_RESERVED_IP` may not be,
+      # so it defaults to empty and the routing probe then accepts whatever `EDGE_HOST` resolves to.
+      EDGE_HOST: ${EDGE_HOST}
+      EDGE_RESERVED_IP: ${EDGE_RESERVED_IP:-}
     networks:
       # `front` as well as `back`: Caddy calls this container directly for the on-demand TLS
       # ask endpoint, deliberately bypassing the gateway (ADR-0012 §5).
       - front
       - back
 
-  # The sweep (ADR-0012 §6). Its own process, because a poll loop must not share a pool with
-  # request traffic — and its own container so `docker compose ps` answers "is anything
-  # checking the domains" without reading code.
+  # The sweep (ADR-0012 §6): the three probes, the state machine, and the release of claims that
+  # expired. Its own process, because a poll loop must not share a pool with request traffic —
+  # and its own container so `docker compose ps` answers "is anything checking the domains"
+  # without reading code.
   #
-  # `bin/cron` runs `python -m app.cron`. If that module is not in the image the container
-  # exits non-zero and keeps exiting, which is the intended failure: the alternative — the
-  # scaffold's `python -m app.relay` — is a process that looks healthy while no domain is ever
-  # checked and nothing errors.
+  # `bin/cron` runs `python -m app.cron` and refuses to start at all (exit 78) if that module is
+  # missing from the image — the scaffold's `python -m app.relay` would otherwise be a process
+  # that looks healthy while no domain is ever checked and nothing errors, and that failure mode
+  # is exactly why the check exists rather than trusting this comment.
   #
-  # **Not started by default.** `app/cron.py` does not exist yet — the sweep in ADR-0012 §6
-  # (the three probes, the verified/live/failing state machine, the release of claims that
-  # expired) was designed and never built, which `bin/cron` correctly reports by exiting 78 in
-  # a loop. A crash loop in `docker compose ps` was the right signal for one deploy and the
-  # wrong thing to leave running for a month. The profile keeps the service definition, so the
-  # day the sweep lands it is `docker compose --profile sweep up -d` and nothing else changes.
-  # Until then a merchant's custom domain cannot become `verified`; `<slug>.stores.opsgrids.com`
-  # works because it needs no sweep.
+  # Same profile as `storefront` rather than its own `sweep` profile: a box that sells the
+  # storefront product always needs the sweep running, and a box that does not sell it never
+  # needs a cron container that would find nothing to check.
   storefront-cron:
     <<: *service-common
-    profiles: ['sweep']
+    profiles: ['storefront']
     image: opsgrids-edge/storefront
     command: ['./bin/cron']
     environment:
       <<: *service-env
       STORE_SLUG_CACHE_SECONDS: ${STORE_SLUG_CACHE_SECONDS:-300}
+      EDGE_HOST: ${EDGE_HOST}
+      EDGE_RESERVED_IP: ${EDGE_RESERVED_IP:-}
+      # Where the certificate probe dials, SNI set to the domain under test — Caddy on the
+      # `front` network, never out through the internet (ADR-0012 §6). The compose service name
+      # doubles as its own DNS name on the network, so this needs no value from `.env`.
+      TLS_PROBE_HOST: caddy
+      TLS_PROBE_PORT: '443'
     # No healthcheck: the image's is an HTTP probe against a port this process does not open.
     healthcheck:
       disable: true

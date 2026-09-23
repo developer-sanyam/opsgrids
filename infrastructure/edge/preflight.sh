@@ -45,6 +45,10 @@ optional_empty="PII_DECRYPT_KEYS SENTRY_DSN BACKUP_S3_ENDPOINT BACKUP_S3_ACCESS_
 # below. WhatsApp is optional until a Meta app exists. COMPOSE_PROFILES empty means core only.
 optional_empty="$optional_empty SMTP_HOST SMTP_USERNAME SMTP_PASSWORD RAZORPAY_KEY_ID RAZORPAY_KEY_SECRET"
 optional_empty="$optional_empty WHATSAPP_APP_SECRET WHATSAPP_VERIFY_TOKEN WHATSAPP_PHONE_NUMBER_ID WHATSAPP_ACCESS_TOKEN COMPOSE_PROFILES"
+# A box with no floating IP yet (or a provider that does not offer one) has nothing to put here;
+# storefront's own settings default it to empty and print "the platform address" instead of a
+# literal until it is filled in. Checked separately, below, for a documentation-range value.
+optional_empty="$optional_empty EDGE_RESERVED_IP"
 
 # shellcheck disable=SC1091  # .env is data, generated on the box from .env.example
 set -a
@@ -69,9 +73,7 @@ for key in $required; do
 		esac
 	fi
 	case "$value" in
-	replace-me* | CHANGE_ME* | dev-only-* | ci-only-* | *example.com* | 198.51.100.7)
-		# 198.51.100.7 is the RFC 5737 documentation address used in the ADR and in
-		# .env.example. Left in place, the merchant UI prints an address that reaches nobody.
+	replace-me* | CHANGE_ME* | dev-only-* | ci-only-* | *example.com*)
 		# `ops@example.com` is the committed ACME placeholder; a real deploy needs an inbox a
 		# human reads, because in slice 1 Let's Encrypt's expiry email is the only notification
 		# that exists.
@@ -84,6 +86,21 @@ done
 	bad "missing or empty in .env:$missing"
 [ -z "$placeholder" ] && ok "no placeholder values" ||
 	bad "still carrying a placeholder value:$placeholder"
+
+# EDGE_RESERVED_IP is allowed empty (a box with no floating IP yet), but if it is set it must be
+# a real address: an address in one of RFC 5737's three documentation ranges (192.0.2.0/24,
+# 198.51.100.0/24, 203.0.113.0/24 — the ADR's own worked examples use 198.51.100.7) reaches
+# nobody, and a merchant who copies it into their apex A record gets a shop that never resolves.
+# A warning, not a hard failure: a box can be legitimately mid-setup with a value someone typed
+# by hand and has not finished checking yet.
+case "${EDGE_RESERVED_IP:-}" in
+"") ;;
+192.0.2.* | 198.51.100.* | 203.0.113.*)
+	echo "  warn  EDGE_RESERVED_IP ($EDGE_RESERVED_IP) is an RFC 5737 documentation address —" >&2
+	echo "        it reaches nobody. Set the box's real reserved IP, or leave it empty." >&2
+	;;
+*) ok "EDGE_RESERVED_IP is not a documentation-range address" ;;
+esac
 
 if [ -z "${BACKUP_S3_ACCESS_KEY_ID:-}" ] && [ -z "${BACKUP_S3_SECRET_ACCESS_KEY:-}" ]; then
 	echo "  warn  BACKUP_S3_ACCESS_KEY_ID/SECRET are empty: NO OFF-BOX BACKUP. The nightly dump" >&2
