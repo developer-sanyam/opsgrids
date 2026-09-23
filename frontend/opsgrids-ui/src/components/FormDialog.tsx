@@ -77,6 +77,12 @@ export function FormDialog({
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    // React bubbles synthetic events through the component tree, not the DOM tree — a dialog
+    // portalled to `document.body` is still, as far as React is concerned, nested inside
+    // whatever form opened it. Without this, submitting a dialog opened from inside another
+    // dialog's form also fires the outer form's `onSubmit`, which then validates fields the
+    // user never touched.
+    event.stopPropagation();
     if (pending) return;
     onSubmit();
   }

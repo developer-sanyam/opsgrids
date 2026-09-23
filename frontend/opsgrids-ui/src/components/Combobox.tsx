@@ -211,6 +211,16 @@ export function Combobox({
     }
   }
 
+  /**
+   * Retrying moves the phase away from `"error"`, which unmounts this button — and with it,
+   * whatever DOM node keyboard focus was resting on. Without putting focus back on the input
+   * explicitly, activating "Try again" from the keyboard drops focus to `<body>`.
+   */
+  function retry() {
+    setAttempt((n) => n + 1);
+    inputRef.current?.focus();
+  }
+
   const listOpen = open && !disabled;
 
   return (
@@ -317,7 +327,7 @@ export function Combobox({
                     <button
                       type="button"
                       onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => setAttempt((n) => n + 1)}
+                      onClick={retry}
                       className="rounded-full text-sm font-semibold text-accent-ink hover:text-accent"
                     >
                       {text.retry}
@@ -341,9 +351,18 @@ export function Combobox({
             ) : null}
           </div>
 
-          {/* The picker's own polite region: how many matched, said once per result set. */}
+          {/*
+            The picker's own polite region: how many matched, said once per result set, or that
+            the lookup failed and a retry is on offer — a screen-reader user driving this by
+            keyboard never sees the error row appear, so silence here would mean never being
+            told the search failed at all.
+          */}
           <span id={statusId} aria-live="polite" className="sr-only">
-            {phase === "ready" ? text.results(options.length) : ""}
+            {phase === "ready"
+              ? text.results(options.length)
+              : phase === "error"
+                ? `${text.error} ${text.retry}.`
+                : ""}
           </span>
         </div>
       )}
