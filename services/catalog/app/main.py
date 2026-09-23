@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+from fastapi import FastAPI
+
 from app.api.admin import router as admin_router
 from app.api.internal import router as internal_router
 from app.api.routes import router
 from app.config import settings
 from app.models import OutboxEvent
+from app.registry import HttpProductRegistry
 from platform_core.app import create_app
+
+
+async def _start(application: FastAPI) -> None:
+    cfg = settings()
+    application.state.product_registry = HttpProductRegistry(cfg.product_service_url, cfg)
+
+
+async def _stop(application: FastAPI) -> None:
+    registry = getattr(application.state, "product_registry", None)
+    if isinstance(registry, HttpProductRegistry):
+        await registry.aclose()
+
 
 app = create_app(
     settings(),
@@ -19,6 +34,8 @@ app = create_app(
     ),
     routers=[router, admin_router],
     outbox_model=OutboxEvent,
+    on_startup=_start,
+    on_shutdown=_stop,
 )
 
 # Root-mounted and excluded from the public schema: subscription resolves a plan version through

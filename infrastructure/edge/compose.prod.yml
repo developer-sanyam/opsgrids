@@ -707,7 +707,7 @@ services:
     command: ['python', '-m', 'platform_core.edge_relay']
     environment:
       <<: *service-env
-      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,customer,deal,lead,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm}
+      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,leave,customer,deal,lead,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm}
     depends_on:
       product:
         condition: service_started
@@ -1057,6 +1057,24 @@ services:
     <<: *background
     profiles: ['hrms']
     image: opsgrids-edge/attendance
+    command: ['./bin/worker']
+    environment: *service-env
+
+  leave:
+    <<: *service-common
+    profiles: ['hrms']
+    image: opsgrids-edge/leave
+    build:
+      context: ../..
+      dockerfile: services/leave/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  leave-worker:
+    <<: *background
+    profiles: ['hrms']
+    image: opsgrids-edge/leave
     command: ['./bin/worker']
     environment: *service-env
 

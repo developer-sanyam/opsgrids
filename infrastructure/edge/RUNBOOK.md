@@ -469,14 +469,72 @@ What happens, in order, and what each step protects:
    and the site keeps serving.**
 5. **caddy validate** — the Caddyfile is loaded by the pinned Caddy binary. A Caddyfile that
    fails to load is a total outage and there is no staging environment to catch it.
-6. **migrate** — `alembic upgrade head` for auth, account, product and storefront, **before**
-   the new containers serve. For the length of the deploy the old code runs against the new
-   schema, so **every migration must be backward compatible with the version currently
-   running**: add a nullable column, backfill, and only drop the old one in a later deploy.
-   `make migration-roundtrip` locally is what proves the `downgrade()` actually reverts.
+6. **migrate** — first **reconcile-roles**: create any `opsgrids_<service>` role this box does
+   not have yet (idempotent — see "New service on an existing box" below), then
+   `alembic upgrade head` for every service this box's profiles run, **before** the new
+   containers serve. For the length of the deploy the old code runs against the new schema, so
+   **every migration must be backward compatible with the version currently running**: add a
+   nullable column, backfill, and only drop the old one in a later deploy. `make
+   migration-roundtrip` locally is what proves the `downgrade()` actually reverts.
 7. **up** — containers are recreated. Brief downtime. Not zero.
 8. **health** — every container running and healthy within 120 s, or the deploy reports a
    failure and leaves the decision to you.
+
+### Bundle entitlement: order, and the one-off backfill
+
+The change that made a `suite` subscription entitle its members (ADR-0004 §5 addendum,
+docs/commerce-packaging.md) touches four services, and two of them migrate. Everything is
+additive — a nullable column and a new table — so the old code runs safely against the new
+schema, but the **order the services come up in** decides whether a bundle sold during the
+rollout gets its members or silently does not:
+
+1. **catalog** — validates a bundle's members against product-service when one is authored.
+   Migration `c5f1e8a2b7d4` retires the seeded `suite/full` plan, whose `projects` member is
+   still `soon`. Until product is up, authoring a *bundle* answers 503; every other plan authors
+   as before.
+2. **product** — migration `b3d5f7a9c1e2`: `products.is_bundle`, the `suite` registry row
+   (`status = soon`), `activation_sources` under a forced tenant policy, and one source row per
+   existing activation (so nothing changes state on deploy). Must be migrated and its consumer
+   running **before** subscription emits `entitled_products`.
+3. **subscription** — migration `a9c4e2b7d1f0`: the nullable `entitled_products` snapshot. Every
+   `commerce.subscription.*` event from here carries the member list.
+4. **account** — no migration; its consumer installs each member's manifest. An event the *old*
+   account consumer handles installs nothing for a bundle (there is no `suite` manifest) and is
+   marked processed — so on a split rollout, bring account's consumer up before the first bundle
+   is sold. A single `make deploy` recreates all four together, which is fine.
+
+Then, once all four are up, snapshot the rows that predate the column — once, reviewed, like any
+other backfill:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm -T subscription \
+  python -m app.backfill --dry-run     # prints {"considered": …, "bundles": …}; writes nothing
+docker compose -f compose.prod.yml --env-file .env run --rm -T subscription \
+  python -m app.backfill
+```
+
+For a non-bundle it only writes `[product_key]`. For each bundle it emits
+`commerce.subscription.entitlements_resynced`, which product projects (and retires the dead
+`suite` activation the old fold left behind) and account installs from. Re-running is a no-op.
+`unresolved > 0` means a pinned version no longer resolves in catalog — that row stays NULL and
+reads as its own product; look at it by hand. If an account consumer on old code ate a bundle
+event, `tools/wire_product.py <org> <member>` installs the missing member's roles.
+
+**Deploy check — every deploy, not just this one.** Re-judge every sellable bundle against the
+registry as it now is (a member rolled back to `soon`, a product folded into the platform):
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm -T catalog python -m app.bundle_audit
+```
+
+Exit 1 means an **offered** bundle names a member the registry cannot vouch for: retire that plan
+or launch the member before selling it. A retired plan's problems are printed as warnings and do
+not fail the check. Changing a product's `status` on the box is exactly the edit that can make
+this fail, so run it after that too.
+
+Bundles are sold only through subscription's operator routes (`POST /internal/v1/subscriptions`,
+`…/{id}/change-plan`, service token); the customer route answers 403. A trial's length is the
+plan version's `trial_days` feature (14 when absent), never the customer's.
 
 ### Deploying from the pipeline
 
@@ -502,6 +560,37 @@ add a required reviewer there if a human should approve each deploy.
 
 What the pipeline does **not** do: edit the box's `.env`, change a product's catalogue `status`,
 or touch DNS. Those are the deployment's own data and stay a person's decision.
+
+### New service on an existing box
+
+`tools/dev-bootstrap/init-db.sql` (mounted as `postgres-init/20-init.sql`) creates every
+`opsgrids_<service>` role — but only on a **fresh** Postgres data volume, because the docker
+entrypoint runs `/docker-entrypoint-initdb.d/*` exactly once, the first time a volume
+initialises. A service added after that first boot has no role at all: its migration's own
+`CREATE POLICY ... TO opsgrids_<service>` or `REVOKE ... FROM opsgrids_<service>` fails outright,
+and `set -euo pipefail` aborts the whole deploy on it — this is exactly how the `leave` service's
+first deploy broke, on a box that had been running since before `leave` existed.
+
+`remote.sh migrate` now runs **reconcile-roles** first, every deploy: for every service in
+`SERVICES_WITH_SCHEMA`, idempotently create the role if it is missing, set its password to this
+box's `OPSGRIDS_DB_PASSWORD` (never the bootstrap's dev placeholder), and grant it `CONNECT` and
+the schema `USAGE` the bootstrap grants at first boot — the same three statements
+`tools/dev-bootstrap/init-db.sql` runs for that role, built once in
+`infrastructure/edge/lib/role-reconcile.sh` so there is one definition of what a per-service role
+needs, not a copy that can drift from the one a fresh volume gets. Safe to run on every deploy,
+not only the one that adds a service — once every role exists it is a handful of `SELECT`s and
+no-op `GRANT`s.
+
+Run it by hand if you ever need to (a role deleted by mistake, standing up a service against an
+existing box out of band):
+
+```bash
+./remote.sh reconcile-roles
+```
+
+The dev counterpart is `make reconcile-roles`, for the same problem on a local `make infra`
+volume that predates a service — it reads the same `SERVICES_WITH_SCHEMA` list out of
+`remote.sh` and reuses the identical SQL, against the dev password.
 
 ### Roll back a bad deploy
 
@@ -854,6 +943,12 @@ Named here so nobody discovers them during an incident:
   procedure**: activate the product, then run `tools/wire_product.py <org> <product>` against
   the box (it calls the same installer the consumer would). Do this for every org, every
   product, every time — and treat `product.outbox` depth as the signal that you forgot.
+
+  Before any of that, the product has to be sellable at all: `docker compose exec product
+  python -m app.launch <product_key> available` (P6) flips `products.status`, refuses a key the
+  catalogue does not know, and writes an audit row. That replaced a hand-run `UPDATE
+  product.products SET status = 'available' WHERE key = ...` — the command an operator used to
+  be told to type directly against the database, with no refusal and no audit trail.
 
   Every other outbox also fills silently. `approval`, `subscription` and `storefront` have no
   entrypoint that starts their relay at all (their `bin/cron` correctly runs a sweep, and

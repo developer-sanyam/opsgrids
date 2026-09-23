@@ -30,7 +30,7 @@ CREATE EXTENSION IF NOT EXISTS citext;       -- email is case-insensitive and gl
 --                     UPDATE on each service's `outbox` and nothing else.
 --
 -- Each service also gets its own NOBYPASSRLS login role — opsgrids_account, opsgrids_auth,
--- opsgrids_product, opsgrids_employee, opsgrids_attendance, opsgrids_catalog, and one per
+-- opsgrids_product, opsgrids_employee, opsgrids_attendance, opsgrids_leave, opsgrids_catalog, and one per
 -- product/platform service (opsgrids_project, opsgrids_customer, opsgrids_lead, opsgrids_document, …)
 -- — so one service's connection cannot read another's schema. `opsgrids_catalog` owns the
 -- commerce definitional layer: its plan/price tables are global and un-policied, but its
@@ -97,6 +97,7 @@ DECLARE
 BEGIN
   FOREACH r IN ARRAY ARRAY[
     'opsgrids_account', 'opsgrids_auth', 'opsgrids_product', 'opsgrids_employee', 'opsgrids_attendance',
+    'opsgrids_leave',
     -- PulseBoard
     'opsgrids_project', 'opsgrids_timesheet', 'opsgrids_standup', 'opsgrids_quotation',
     -- CRM
@@ -125,6 +126,7 @@ $$;
 -- nothing to do with the service's own tables. Reference data, no tenant rows.
 GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology
   TO opsgrids_admin, opsgrids_account, opsgrids_auth, opsgrids_product, opsgrids_employee, opsgrids_attendance,
+     opsgrids_leave,
      opsgrids_project, opsgrids_timesheet, opsgrids_standup, opsgrids_quotation,
      opsgrids_customer, opsgrids_deal, opsgrids_lead, opsgrids_marketing, opsgrids_support,
      opsgrids_document, opsgrids_notification, opsgrids_scheduler,

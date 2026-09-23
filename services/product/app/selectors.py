@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Activation, Product
+from app.models import Activation, ActivationSource, Product
 
 
 def products_stmt(*, include_unavailable: bool = True) -> Select[Any]:
@@ -79,3 +79,72 @@ async def entitlements_for(session: AsyncSession, org_id: uuid.UUID) -> list[str
         .all()
     )
     return sorted(live | platform)
+
+
+# ------------------------------------------------------------------ activation sources
+
+
+async def get_source(
+    session: AsyncSession, org_id: uuid.UUID, product_key: str, source_product_key: str
+) -> ActivationSource | None:
+    """One source of one activation — `source_product_key == product_key` is its own."""
+    stmt = select(ActivationSource).where(
+        ActivationSource.organization_id == org_id,
+        ActivationSource.product_key == product_key,
+        ActivationSource.source_product_key == source_product_key,
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def sources_for(
+    session: AsyncSession, org_id: uuid.UUID, product_key: str
+) -> list[ActivationSource]:
+    """Every source of one activation — what `_recompute` ORs together."""
+    stmt = (
+        select(ActivationSource)
+        .where(
+            ActivationSource.organization_id == org_id,
+            ActivationSource.product_key == product_key,
+        )
+        .order_by(ActivationSource.source_product_key)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def sources_from(
+    session: AsyncSession, org_id: uuid.UUID, source_product_key: str, *, fresh: bool = False
+) -> list[ActivationSource]:
+    """Every activation one subscription feeds, tombstones included — the projection's diff and
+    its per-source ordering watermark both read this. `fresh` overwrites rows this session has
+    already loaded, for the read taken after the locks, which must see what committed while it
+    waited."""
+    stmt = (
+        select(ActivationSource)
+        .where(
+            ActivationSource.organization_id == org_id,
+            ActivationSource.source_product_key == source_product_key,
+        )
+        .order_by(ActivationSource.product_key)
+    )
+    if fresh:
+        stmt = stmt.execution_options(populate_existing=True)
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def live_sources_by_product(session: AsyncSession, org_id: uuid.UUID) -> dict[str, list[str]]:
+    """For each activated product, the keys of the sources currently entitling it.
+
+    What lets a client say "included in your Suite" rather than offering to sell a product the
+    customer already has through a bundle. One query for the whole organization, filtered on it
+    explicitly — RLS is the net, not the licence to skip the filter.
+    """
+    stmt = (
+        select(ActivationSource)
+        .where(ActivationSource.organization_id == org_id)
+        .order_by(ActivationSource.product_key, ActivationSource.source_product_key)
+    )
+    live: dict[str, list[str]] = {}
+    for source in (await session.execute(stmt)).scalars().all():
+        if source.is_live:
+            live.setdefault(source.product_key, []).append(source.source_product_key)
+    return live

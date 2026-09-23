@@ -142,6 +142,8 @@
     },
     "employee": { "kind": "api", "profile": "hrms" },
     "attendance": { "kind": "api", "profile": "hrms" },
+    "leave": { "kind": "api", "profile": "hrms" },
+    "leave-worker": { "kind": "background", "profile": "hrms" },
     "attendance-worker": { "kind": "background", "profile": "hrms" },
 
     "customer": { "kind": "api", "profile": "crm" },

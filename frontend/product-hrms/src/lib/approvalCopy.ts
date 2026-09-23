@@ -9,13 +9,38 @@ import type { TagTone } from "@opsgrids/ui";
 
 import type {
   ApplicationState,
-  AttendanceStatus,
+  ApprovalSummary,
   InboxReason,
-  RegularizationSummary,
   RequestDetailOut,
   RequestStatus,
 } from "@/api/types";
 import { attendanceStatusLabel } from "@/lib/format";
+
+/** `hrms.time.leave`'s own summary is the only one carrying `total_half_days` — the field this
+ *  module discriminates on, since the wire payload carries no `kind` tag of its own. */
+export function isLeaveSummary(
+  summary: ApprovalSummary,
+): summary is Extract<ApprovalSummary, { total_half_days: number }> {
+  return "total_half_days" in summary;
+}
+
+/** `21 Sep – 22 Sep · 4 half-day(s)` — the leave counterpart to the regularisation line below.
+ *  No leave-type name: the inbox and "my requests" rows carry only `leave_type_id`, and resolving
+ *  it to a code would mean an extra join this shared surface does not otherwise need. */
+function leaveSummaryLine(summary: Extract<ApprovalSummary, { total_half_days: number }>): string {
+  const fmt = (iso: string) =>
+    new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-US", {
+      day: "numeric",
+      month: "short",
+      timeZone: "UTC",
+    });
+  const range =
+    summary.start_date === summary.end_date
+      ? fmt(summary.start_date)
+      : `${fmt(summary.start_date)} – ${fmt(summary.end_date)}`;
+  const unit = summary.total_half_days === 1 ? "half-day" : "half-days";
+  return `${range} · ${summary.total_half_days} ${unit}`;
+}
 
 /** §2.3 — the six `inbox_reason` values, mapped to a chip. The server's value is the gate; this
  *  never re-derives a reason, only renders the one it was given. */
@@ -56,11 +81,15 @@ export function inboxReasonChip(
   }
 }
 
-/** §4.A / §4.D — `12 Sep · Absent → Regularised`. */
-export function summaryLine(summary: RegularizationSummary): string {
+/** §4.A / §4.D — `12 Sep · Absent → Regularised` for a regularisation request, or the leave
+ *  counterpart above for a leave request. Discriminates on the summary's own shape (see
+ *  `isLeaveSummary`), never on the sibling `request_type` string — a caller with only the
+ *  summary in hand (a table cell) still renders correctly. */
+export function summaryLine(summary: ApprovalSummary): string {
+  if (isLeaveSummary(summary)) return leaveSummaryLine(summary);
   const date = new Date(`${summary.date}T00:00:00Z`);
   const day = date.toLocaleDateString("en-US", { day: "numeric", month: "short", timeZone: "UTC" });
-  return `${day} · ${attendanceStatusLabel(summary.from as AttendanceStatus)} → ${attendanceStatusLabel(summary.to as AttendanceStatus)}`;
+  return `${day} · ${attendanceStatusLabel(summary.from)} → ${attendanceStatusLabel(summary.to)}`;
 }
 
 type StatusCopy = { label: string; tone: "neutral" | "positive" | "negative" | "warning" };
@@ -309,14 +338,17 @@ export function isOverdue(dueAt: string | null, now: Date = new Date()): boolean
 }
 
 /** §4.G — the plain, user-facing name of each known `request_type` (§1.1: "the word 'request
- *  type' is shown once, on the settings screen, as the plain name"). Today there is exactly one
- *  (`services.KNOWN_REQUEST_TYPES`); an unrecognised type falls back to itself rather than
- *  hiding the card, so a future request type still renders a settings card before this map is
- *  updated for it. */
+ *  type' is shown once, on the settings screen, as the plain name"). An unrecognised type falls
+ *  back to itself rather than hiding the card, so a future request type still renders a settings
+ *  card before this map is updated for it. */
 const REQUEST_TYPE_LABELS: Record<string, { title: string; subtitle: string }> = {
   "hrms.time.regularization": {
     title: "Attendance correction",
     subtitle: "Raised when an employee asks to fix their own attendance.",
+  },
+  "hrms.time.leave": {
+    title: "Leave request",
+    subtitle: "Raised when an employee applies for leave.",
   },
 };
 

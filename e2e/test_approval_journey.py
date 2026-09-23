@@ -439,7 +439,7 @@ class TestWave0ExitJourney:
     # ------------------------------------------------------- 5-7. the people, and their ids
 
     def test_05_five_colleagues_join_by_invitation(
-        self, gateway: httpx.Client, wave0: dict[str, Any], seed_password: Any
+        self, gateway: httpx.Client, wave0: dict[str, Any], seed_passwords: Any
     ) -> None:
         """Each accepts with **no Authorization header**, the way a stranger with an email must.
 
@@ -447,6 +447,11 @@ class TestWave0ExitJourney:
         `core.approval.*` grants) and `EMPLOYEE` (which, after step 4, carries the OWN-scoped
         attendance grants). Nobody in this cast is an administrator of anything: the journey has
         to work for ordinary employees, or ADR-0006 §6's eligibility rules are doing nothing.
+
+        Passwords are set for the whole cast in one batch, after every invitation is accepted
+        (`seed_passwords`), rather than one at a time inside this loop: nothing about one
+        person's real reset-link round trip depends on another's, and waiting out five of them
+        back to back only stacks their latencies for no reason.
         """
         tenant = wave0["tenant"]
         owner = signed_in(gateway, wave0, "owner")
@@ -476,7 +481,6 @@ class TestWave0ExitJourney:
             member = accepted.json()
             assert {"MEMBER", "EMPLOYEE"} <= set(member["roles"]), member["roles"]
 
-            seed_password(member["user_id"], MEMBER_PASSWORD)
             cast[key] = {
                 "email": email,
                 "name": spec["name"],
@@ -484,6 +488,7 @@ class TestWave0ExitJourney:
                 "membership_id": member["id"],
             }
 
+        seed_passwords([(person["email"], MEMBER_PASSWORD) for person in cast.values()])
         wave0["cast"] = cast
 
     def test_06_hr_onboards_them_into_a_three_deep_reporting_line(

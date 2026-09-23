@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { fileReturn, generateReturn, getReturn, getReturnDiff } from "@/api/client";
-import type { GstReturn } from "@/api/types";
+import type { Gstr3bSections, GstReturn, TaxHeadAmounts } from "@/api/types";
 import { formatDateTime } from "@/lib/format";
 import { formatMoney } from "@/lib/money";
 import { Can, problemMessage, useAsync, useMutation } from "@opsgrids/client";
@@ -48,6 +48,131 @@ function TotalsGrid({ ret }: { ret: GstReturn }) {
         <dd className="money text-sm font-semibold text-ink">{formatMoney(ret.total_igst_minor)}</dd>
       </div>
     </dl>
+  );
+}
+
+const TAX_HEAD_LABELS: Record<keyof Omit<TaxHeadAmounts, "total_minor">, string> = {
+  igst_minor: "IGST",
+  cgst_minor: "CGST",
+  sgst_minor: "SGST",
+  cess_minor: "Cess",
+};
+
+function TaxHeadRow({ label, amounts }: { label: string; amounts: TaxHeadAmounts }) {
+  return (
+    <tr className="border-t border-line">
+      <th scope="row" className="py-2 pr-4 text-left font-medium text-ink-soft">
+        {label}
+      </th>
+      {(Object.keys(TAX_HEAD_LABELS) as (keyof typeof TAX_HEAD_LABELS)[]).map((head) => (
+        <td key={head} className="money tnum py-2 pr-4 text-right text-ink">
+          {formatMoney(amounts[head])}
+        </td>
+      ))}
+      <td className="money tnum py-2 text-right font-semibold text-ink">
+        {formatMoney(amounts.total_minor)}
+      </td>
+    </tr>
+  );
+}
+
+function Gstr3bSectionsCard({ sections }: { sections: Gstr3bSections }) {
+  const headHeaders = Object.values(TAX_HEAD_LABELS);
+  return (
+    <Card className="flex flex-col gap-6 p-6 lg:p-8">
+      <SectionHeader
+        title="GSTR-3B summary"
+        subtitle="Table 3.1 outward supplies, Table 4 eligible ITC and Table 6.1 payment of tax — read-only, exactly as generated"
+      />
+
+      <div className="overflow-x-auto">
+        <h3 className="mb-2 text-sm font-semibold text-ink">3.1 Outward supplies</h3>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-xs font-semibold uppercase tracking-wide text-faint">
+              <th scope="col" className="py-2 pr-4 text-left">Table</th>
+              {headHeaders.map((label) => (
+                <th key={label} scope="col" className="py-2 pr-4 text-right">{label}</th>
+              ))}
+              <th scope="col" className="py-2 text-right">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            <TaxHeadRow label="(a) Taxable supplies" amounts={sections.outward.taxable_supplies} />
+            <TaxHeadRow label="(b) Zero-rated supplies" amounts={sections.outward.zero_rated} />
+            {sections.outward.outward_reverse_charge_taxable_minor !== 0 ? (
+              <TaxHeadRow
+                label="Outward reverse-charge (recipient's liability, not this return's)"
+                amounts={sections.outward.outward_reverse_charge}
+              />
+            ) : null}
+          </tbody>
+        </table>
+        <p className="mt-2 text-xs text-muted">
+          (c) nil-rated/exempt, (d) reverse-charge inward and (e) non-GST outward are not modelled
+          in this book and always report zero.
+        </p>
+      </div>
+
+      <div className="overflow-x-auto">
+        <h3 className="mb-2 text-sm font-semibold text-ink">4 Eligible ITC</h3>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-xs font-semibold uppercase tracking-wide text-faint">
+              <th scope="col" className="py-2 pr-4 text-left">Table</th>
+              {headHeaders.map((label) => (
+                <th key={label} scope="col" className="py-2 pr-4 text-right">{label}</th>
+              ))}
+              <th scope="col" className="py-2 text-right">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            <TaxHeadRow label="4A(5) All other ITC (gross)" amounts={sections.itc.available} />
+            <TaxHeadRow label="4B(1) Reversed — Rule 42/43 & s. 17(5)" amounts={sections.itc.reversed_section_17_5} />
+            <TaxHeadRow label="4B(2) Reversed — others" amounts={sections.itc.reversed_other} />
+            <TaxHeadRow label="4C Net ITC available" amounts={sections.itc.net_eligible} />
+            <TaxHeadRow label="4D(1) ITC reclaimed (informational)" amounts={sections.itc.reclaimed} />
+            <TaxHeadRow label="4D(2) Ineligible — s. 16(4) / PoS (informational)" amounts={sections.itc.ineligible_other} />
+          </tbody>
+        </table>
+      </div>
+
+      <div className="overflow-x-auto">
+        <h3 className="mb-2 text-sm font-semibold text-ink">6.1 Payment of tax</h3>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-xs font-semibold uppercase tracking-wide text-faint">
+              <th scope="col" className="py-2 pr-4 text-left">Table</th>
+              {headHeaders.map((label) => (
+                <th key={label} scope="col" className="py-2 pr-4 text-right">{label}</th>
+              ))}
+              <th scope="col" className="py-2 text-right">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            <TaxHeadRow label="Liability" amounts={sections.payment.liability} />
+            <TaxHeadRow label="ITC brought forward" amounts={sections.itc_brought_forward} />
+            <TaxHeadRow label="Credit carried forward" amounts={sections.payment.credit_remaining} />
+            <TaxHeadRow label="Payable in cash" amounts={sections.payment.cash_payable} />
+            {sections.payment.excess_liability.total_minor !== 0 ? (
+              <TaxHeadRow
+                label="Excess reported (credit notes exceeded supplies — informational)"
+                amounts={sections.payment.excess_liability}
+              />
+            ) : null}
+          </tbody>
+        </table>
+        {sections.payment.utilisation.length > 0 ? (
+          <p className="mt-3 text-xs text-muted">
+            Utilised: {sections.payment.utilisation
+              .map((line) => `${line.head.toUpperCase()} → ${line.against.toUpperCase()} ${formatMoney(line.amount_minor)}`)
+              .join(", ")}
+            . Statutory order: IGST credit against IGST, then CGST, then SGST; CGST and SGST
+            credit never cross.
+          </p>
+        ) : null}
+      </div>
+    </Card>
   );
 }
 
@@ -117,8 +242,11 @@ export function GstReturnDetailPage() {
   );
 
   const regenerate = useMutation(
-    (input: { period: string; return_type: "gstr1" | "gstr7"; gst_registration_id: string }) =>
-      generateReturn(input),
+    (input: {
+      period: string;
+      return_type: "gstr1" | "gstr3b" | "gstr7";
+      gst_registration_id: string;
+    }) => generateReturn(input),
     { onSuccess: () => detail.reload() },
   );
 
@@ -166,7 +294,7 @@ export function GstReturnDetailPage() {
                       onClick={() =>
                         void regenerate.mutate({
                           period: detail.data.ret.period,
-                          return_type: detail.data.ret.return_type as "gstr1" | "gstr7",
+                          return_type: detail.data.ret.return_type as "gstr1" | "gstr3b" | "gstr7",
                           gst_registration_id: detail.data.ret.gst_registration_id,
                         })
                       }
@@ -190,32 +318,47 @@ export function GstReturnDetailPage() {
             <TotalsGrid ret={detail.data.ret} />
           </Card>
 
-          <Card className="flex flex-col gap-4 p-6 lg:p-8">
-            <SectionHeader
-              title="What has changed since generation"
-              subtitle="A credit note raised later doesn't rewrite this period — it makes a difference, for a later amendment"
-              action={
-                <Button variant="outline" size="sm" onClick={() => setShowDiff((v) => !v)}>
-                  {showDiff ? "Hide diff" : "Show diff"}
-                </Button>
-              }
-            />
-            {showDiff && diff.status === "loading" ? <Skeleton className="h-24 w-full rounded-tile" /> : null}
-            {showDiff && diff.status === "error" ? (
-              <ErrorState message={problemMessage(diff.error)} onRetry={diff.reload} />
-            ) : null}
-            {showDiff && diff.status === "success" && diff.data ? (
-              diff.data.changed ? (
-                <InlineAlert tone="warning" title="The book has moved since this return was generated">
-                  Current taxable value is {formatMoney(diff.data.current.taxable_minor)} against a
-                  generated {formatMoney(diff.data.snapshot.taxable_minor)} — a difference of{" "}
-                  {formatMoney(diff.data.delta.taxable_minor)}.
-                </InlineAlert>
-              ) : (
-                <InlineAlert tone="success" title="Nothing has changed since this return was generated" />
-              )
-            ) : null}
-          </Card>
+          {detail.data.ret.return_type === "gstr3b" && detail.data.sections ? (
+            <Gstr3bSectionsCard sections={detail.data.sections as Gstr3bSections} />
+          ) : null}
+
+          {detail.data.ret.return_type !== "gstr3b" ? (
+            <Card className="flex flex-col gap-4 p-6 lg:p-8">
+              <SectionHeader
+                title="What has changed since generation"
+                subtitle="A credit note raised later doesn't rewrite this period — it makes a difference, for a later amendment"
+                action={
+                  <Button variant="outline" size="sm" onClick={() => setShowDiff((v) => !v)}>
+                    {showDiff ? "Hide diff" : "Show diff"}
+                  </Button>
+                }
+              />
+              {showDiff && diff.status === "loading" ? <Skeleton className="h-24 w-full rounded-tile" /> : null}
+              {showDiff && diff.status === "error" ? (
+                <ErrorState message={problemMessage(diff.error)} onRetry={diff.reload} />
+              ) : null}
+              {showDiff && diff.status === "success" && diff.data ? (
+                diff.data.changed ? (
+                  <InlineAlert tone="warning" title="The book has moved since this return was generated">
+                    Current taxable value is {formatMoney(diff.data.current.taxable_minor)} against a
+                    generated {formatMoney(diff.data.snapshot.taxable_minor)} — a difference of{" "}
+                    {formatMoney(diff.data.delta.taxable_minor)}.
+                  </InlineAlert>
+                ) : (
+                  <InlineAlert tone="success" title="Nothing has changed since this return was generated" />
+                )
+              ) : null}
+            </Card>
+          ) : (
+            <InlineAlert
+              tone="info"
+              title="GSTR-3B is always assembled fresh"
+              className="lg:mx-2"
+            >
+              There is no diff for this return type — regenerate it to see the book and the ITC
+              ledger as they stand now.
+            </InlineAlert>
+          )}
 
           <Card className="flex flex-col gap-4 p-6 lg:p-8">
             <SectionHeader title="Status trail" subtitle="Append-only — every transition, oldest first" />

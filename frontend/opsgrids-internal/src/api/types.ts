@@ -82,6 +82,11 @@ export interface Subscription {
   next_renewal_at: string | null;
   cancel_at: string | null;
   created_at: string;
+  /**
+   * The products this subscription switches on, snapshotted from the pinned version: the
+   * product itself, or a bundle's members. Absent from a read model that predates it.
+   */
+  entitled_products?: string[];
 }
 
 /** One usage meter's roll-up for the current period. */
@@ -184,6 +189,8 @@ export interface PlanVersion {
   restricted_to_org_name: string | null;
   prices: Price[];
   subscriber_count: number;
+  /** A bundle's members, from its `bundled_products` feature. Absent for a single product. */
+  bundled_products?: string[];
 }
 
 /* ------------------------------ audit ------------------------------- */
