@@ -825,8 +825,10 @@ def suggest_action(
 # assert the equality directly rather than approximately.
 
 #: The returns this service models. `gstr1` is outward supplies; `gstr7` is the deductor's
-#: TDS return, which this slice reports the *figures* for without filing (see the README).
-GST_RETURN_TYPES: frozenset[str] = frozenset({"gstr1", "gstr7"})
+#: TDS return, which this slice reports the *figures* for without filing (see the README);
+#: `gstr3b` is the summary return that nets outward liability against the ITC ledger — see
+#: `assemble_gstr3b`, further down this module, beside the ledger it reads.
+GST_RETURN_TYPES: frozenset[str] = frozenset({"gstr1", "gstr7", "gstr3b"})
 
 #: A return's lifecycle. `draft` is a period nobody has assembled yet; `generated` carries a
 #: snapshot of what would be reported; `filed` says the snapshot went to the portal. Forward
@@ -1410,6 +1412,434 @@ def totals_delta(before: ReturnTotals, after: ReturnTotals) -> ReturnTotals:
 def may_transition_return(current: str, wanted: str) -> bool:
     """Whether a return may move from `current` to `wanted`. Forward only; `filed` is terminal."""
     return wanted in RETURN_TRANSITIONS.get(current, frozenset())
+
+
+# --------------------------------------------------------------------- the input-tax-credit ledger
+# GSTR-3B's other half, and a ledger in its own right. Three kinds of row, all append-only —
+#
+#   accrual      — eligible input tax credit from an IMS document this organization *accepted*.
+#   reversal     — an accepted document's credit withdrawn, because the decision changed.
+#   utilisation  — credit consumed against output liability when a GSTR-3B is filed.
+#
+# and the balance is never a column: it is `SUM(amount_minor)` per (registration, head, period),
+# carried forward the way every append-only ledger on this platform is read — the same shape as
+# the credit-pack draws commerce settled on. `amount_minor` is signed: positive on an accrual,
+# negative on a reversal or a utilisation, so the sum is the balance without a case split.
+#
+# **Section 17(5) blocked credit — what is handled and what is not.** The inbound document model
+# (`ims_documents`) carries no HSN, no description and no line items — only a supplier, a document
+# and four money columns — so there is nothing in the data to *derive* a blocked-credit category
+# from. What this slice does instead is let the person accepting a document say what it was for,
+# at the moment they accept it (`ImsDecisionCreate.expense_category`), and refuse to accrue credit
+# on the categories the statute blocks:
+#
+#   motor_vehicle              s. 17(5)(a)/(aa)  — motor vehicles for transport of persons (seating
+#                              ≤ 13) and vessels/aircraft, outside the further-supply/training/
+#                              transport-of-goods carve-outs this slice does not distinguish.
+#   food_beverage              s. 17(5)(b)(i)     — food, beverages, outdoor catering, and the
+#                              health/life insurance this slice folds into the same bucket rather
+#                              than adding a fifth category for.
+#   membership_club_fitness    s. 17(5)(b)(ii)    — membership of a club, health or fitness centre.
+#   works_contract_immovable   s. 17(5)(c)/(d)    — works contract services and goods/services for
+#                              construction of immovable property on one's own account, other than
+#                              plant and machinery.
+#   personal_consumption       s. 17(5)(g)        — goods or services for personal consumption.
+#
+# Deliberately **not** modelled: s. 17(5)(h) (goods lost, stolen, destroyed, written off, or given
+# as gifts or free samples) and s. 17(5)(i) (tax paid under composition) — both are facts about
+# what happened to goods *after* receipt, which nothing on `purchase_documents` or `ims_documents`
+# tracks, and inventing a column to hold a fact this platform never observes would be worse than
+# leaving the gap visible. A document in either situation is accepted as `general` today, which
+# overstates eligible credit until that tracking exists — called out again in the docstring of
+# `is_itc_eligible` so it is not a fact somebody has to already know to find.
+ITC_TAX_HEADS: frozenset[str] = frozenset({"igst", "cgst", "sgst", "cess"})
+
+#: The same four heads, ordered — for a posting loop or a report column order, where a set's
+#: undefined iteration order would make two runs list a document's postings differently.
+ITC_TAX_HEAD_ORDER: tuple[str, ...] = ("igst", "cgst", "sgst", "cess")
+
+#: The categories `ImsDecisionCreate.expense_category` accepts. `general` is the default and the
+#: only one this slice can actually observe most purchases as, since nothing upstream classifies
+#: an inbound document any further.
+ITC_EXPENSE_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "general",
+        "motor_vehicle",
+        "food_beverage",
+        "membership_club_fitness",
+        "works_contract_immovable",
+        "personal_consumption",
+    }
+)
+
+#: The categories s. 17(5) blocks outright. See the module note above for the statutory mapping
+#: and for what is deliberately absent from this set.
+BLOCKED_ITC_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "motor_vehicle",
+        "food_beverage",
+        "membership_club_fitness",
+        "works_contract_immovable",
+        "personal_consumption",
+    }
+)
+
+#: What a ledger row records itself as having come from — `itc_ledger_entries.source_type`.
+ITC_SOURCE_TYPES: frozenset[str] = frozenset({"ims_decision", "gst_return"})
+
+#: A posted row's kind — `itc_ledger_entries.kind`.
+ITC_POSTING_KINDS: frozenset[str] = frozenset({"accrual", "reversal", "utilisation"})
+
+
+def is_itc_eligible(category: str) -> bool:
+    """Whether a purchase in this category may accrue input tax credit at all.
+
+    `cess` is not a real observed head today — see `TaxHeadAmounts` — but the categories above
+    block a purchase's *whole* claim regardless of head, which is the statute's own shape: s.
+    17(5) does not partially block a document, it blocks the claim on it entirely.
+    """
+    return category not in BLOCKED_ITC_CATEGORIES
+
+
+def itc_posting_kind_for_transition(*, from_status: str, to_status: str) -> str | None:
+    """What the ITC ledger does, if anything, when an IMS document's status moves.
+
+    Only two of the twelve possible `IMS_STATUSES` transitions post anything: the first move
+    *into* `accepted` accrues credit, and any move *out of* `accepted` reverses it. Moving between
+    two non-accepted statuses (`pending` → `pending_action`, say) claims nothing and withdraws
+    nothing, so it posts nothing — the ledger only ever reacts to a document's accepted-ness
+    changing, never to the shade of "not accepted" it was or becomes.
+    """
+    if to_status == "accepted" and from_status != "accepted":
+        return "accrual"
+    if from_status == "accepted" and to_status != "accepted":
+        return "reversal"
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class TaxHeadAmounts:
+    """An amount broken across the four heads GST is payable under.
+
+    `cess_minor` is carried for forward compatibility and is always zero on every path this
+    slice produces: no table anywhere in this service — not `invoices`, not `purchase_documents`,
+    not `ims_documents` — has a cess column, because `split_gst` itself only ever computes
+    CGST/SGST/IGST. Adding cess for real is a change to that split and to every table it feeds,
+    which is a wider change than an ITC ledger; the field exists here so the ledger's schema does
+    not need to change shape on the day that lands.
+    """
+
+    igst_minor: int = 0
+    cgst_minor: int = 0
+    sgst_minor: int = 0
+    cess_minor: int = 0
+
+    @property
+    def total_minor(self) -> int:
+        return self.igst_minor + self.cgst_minor + self.sgst_minor + self.cess_minor
+
+    def __add__(self, other: TaxHeadAmounts) -> TaxHeadAmounts:
+        return TaxHeadAmounts(
+            igst_minor=self.igst_minor + other.igst_minor,
+            cgst_minor=self.cgst_minor + other.cgst_minor,
+            sgst_minor=self.sgst_minor + other.sgst_minor,
+            cess_minor=self.cess_minor + other.cess_minor,
+        )
+
+    def __sub__(self, other: TaxHeadAmounts) -> TaxHeadAmounts:
+        return TaxHeadAmounts(
+            igst_minor=self.igst_minor - other.igst_minor,
+            cgst_minor=self.cgst_minor - other.cgst_minor,
+            sgst_minor=self.sgst_minor - other.sgst_minor,
+            cess_minor=self.cess_minor - other.cess_minor,
+        )
+
+    def for_head(self, head: str) -> int:
+        return getattr(self, f"{head}_minor")  # type: ignore[no-any-return]
+
+
+ZERO_ITC = TaxHeadAmounts()
+
+
+def itc_eligible_amounts(document: TaxHeadAmounts, *, category: str) -> TaxHeadAmounts:
+    """The credit a document's own tax split would accrue, or nothing at all when blocked.
+
+    Not a partial reduction — `is_itc_eligible` is a whole-document gate, so a blocked category
+    is `ZERO_ITC` across every head rather than a head-by-head means test the statute does not
+    describe.
+    """
+    return document if is_itc_eligible(category) else ZERO_ITC
+
+
+@dataclass(frozen=True, slots=True)
+class UtilisationLine:
+    """One application of credit against liability — one credit head, against one liability head,
+    for one amount. `head == against` is the ordinary case; the three cross-heads the statute
+    permits (`igst`→`cgst`, `igst`→`sgst`, `cgst`→`igst`, `sgst`→`igst`) are the exceptional one,
+    and `cgst`↔`sgst` never appears at all."""
+
+    head: str
+    against: str
+    amount_minor: int
+
+
+@dataclass(frozen=True, slots=True)
+class UtilisationResult:
+    """What filing a GSTR-3B does to the credit ledger and the liability: every application made,
+    what is left of the credit afterwards (carried forward), and what liability nothing covered
+    (payable in cash)."""
+
+    lines: tuple[UtilisationLine, ...]
+    credit_remaining: TaxHeadAmounts
+    cash_payable: TaxHeadAmounts
+
+
+def _apply(credit: int, liability: int) -> tuple[int, int, int]:
+    """Use as much of `credit` against `liability` as either allows. Returns
+    `(amount_applied, credit_left, liability_left)` — all non-negative given non-negative inputs,
+    since `min` of two non-negative numbers is itself non-negative and never exceeds either."""
+    applied = min(credit, liability)
+    return applied, credit - applied, liability - applied
+
+
+def utilise_itc(available: TaxHeadAmounts, liability: TaxHeadAmounts) -> UtilisationResult:
+    """The statutory utilisation order (CGST Rule 88A), as pure integer arithmetic.
+
+    Three rules, applied in this order because the first is a precondition of the other two:
+
+    1. **IGST credit is exhausted first**, against IGST liability, then CGST, then SGST — Rule
+       88A requires it be *fully* used before CGST or SGST credit touches anything.
+    2. **CGST credit** then goes against CGST liability, and only the remainder against IGST.
+       It never touches SGST liability — CGST and SGST are separate governments' money and the
+       statute keeps them apart even when both are owed to the same taxpayer.
+    3. **SGST credit** mirrors it: SGST liability first, the remainder against IGST, never CGST.
+
+    Cess stands alone throughout: cess credit offsets only cess liability, because no other head's
+    credit may touch it and it may not touch any other head.
+
+    Every step is `min(credit, liability)`, so the result is non-negative by construction, no step
+    ever manufactures negative credit or negative liability, and `credit_remaining + applied` and
+    `cash_payable + applied` each foot back to the inputs — asserted as invariants over generated
+    inputs in `tests/test_itc.py`, not merely on the worked examples.
+    """
+    lines: list[UtilisationLine] = []
+
+    def use(credit: int, liability: int, head: str, against: str) -> tuple[int, int]:
+        applied, credit_left, liability_left = _apply(credit, liability)
+        if applied:
+            lines.append(UtilisationLine(head=head, against=against, amount_minor=applied))
+        return credit_left, liability_left
+
+    igst_credit, igst_liab = available.igst_minor, liability.igst_minor
+    cgst_credit, cgst_liab = available.cgst_minor, liability.cgst_minor
+    sgst_credit, sgst_liab = available.sgst_minor, liability.sgst_minor
+    cess_credit, cess_liab = available.cess_minor, liability.cess_minor
+
+    # 1. IGST credit: IGST liability, then CGST, then SGST — fully, before CGST/SGST credit moves.
+    igst_credit, igst_liab = use(igst_credit, igst_liab, "igst", "igst")
+    igst_credit, cgst_liab = use(igst_credit, cgst_liab, "igst", "cgst")
+    igst_credit, sgst_liab = use(igst_credit, sgst_liab, "igst", "sgst")
+
+    # 2. CGST credit: CGST liability first, remainder against IGST. Never SGST.
+    cgst_credit, cgst_liab = use(cgst_credit, cgst_liab, "cgst", "cgst")
+    cgst_credit, igst_liab = use(cgst_credit, igst_liab, "cgst", "igst")
+
+    # 3. SGST credit: SGST liability first, remainder against IGST. Never CGST.
+    sgst_credit, sgst_liab = use(sgst_credit, sgst_liab, "sgst", "sgst")
+    sgst_credit, igst_liab = use(sgst_credit, igst_liab, "sgst", "igst")
+
+    # Cess: only ever against cess.
+    cess_credit, cess_liab = use(cess_credit, cess_liab, "cess", "cess")
+
+    return UtilisationResult(
+        lines=tuple(lines),
+        credit_remaining=TaxHeadAmounts(
+            igst_minor=igst_credit,
+            cgst_minor=cgst_credit,
+            sgst_minor=sgst_credit,
+            cess_minor=cess_credit,
+        ),
+        cash_payable=TaxHeadAmounts(
+            igst_minor=igst_liab, cgst_minor=cgst_liab, sgst_minor=sgst_liab, cess_minor=cess_liab
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class Gstr3bOutward:
+    """Table 3.1 — outward supplies and inward supplies liable to reverse charge.
+
+    Only (a) and (b) are ever non-zero on this platform today, and the docstring on each field
+    says why: (c), (d) and (e) all ask for a fact no table here records.
+    """
+
+    #: 3.1(a) — taxable supplies other than zero-rated: every reportable `b2b`/`b2c` document.
+    taxable_supplies: TaxHeadAmounts
+    outward_taxable_minor: int
+    #: 3.1(b) — zero-rated supplies: `export` and `sez`, inter-state by statute regardless of the
+    #: rate actually charged.
+    zero_rated: TaxHeadAmounts
+    zero_rated_taxable_minor: int
+    #: 3.1(c) — nil-rated and exempt supplies. Always zero: no document here carries a flag
+    #: distinguishing an exempt supply from a taxable one billed at a 0% band: both look like "no
+    #: tax", and only one of them is what this section asks for.
+    nil_rated_taxable_minor: int
+    #: 3.1(d) — inward supplies liable to reverse charge. Always zero: `purchase_documents` and
+    #: `ims_documents` carry no reverse-charge flag; `invoices.reverse_charge` records the
+    #: *outward* side of a reverse-charge supply this organization raised, which is a different
+    #: fact from what this organization owes as the recipient of somebody else's.
+    reverse_charge_inward_taxable_minor: int
+    #: 3.1(e) — non-GST outward supplies (alcohol, petroleum, …). Always zero: `supply_type`
+    #: carries no such classification, and inventing one without a real non-GST product line to
+    #: test it against would be guessing.
+    non_gst_taxable_minor: int
+
+    @property
+    def output_tax(self) -> TaxHeadAmounts:
+        """The liability Table 6.1 is computed against — (a) and (b) summed, since (c)/(d)/(e)
+        never carry tax by construction."""
+        return self.taxable_supplies + self.zero_rated
+
+
+@dataclass(frozen=True, slots=True)
+class Gstr3bItc:
+    """Table 4 — eligible input tax credit, read off the ITC ledger for the period.
+
+    Only 4A(5) ("All other ITC") and 4D(1) ("ITC reversed — as per section 17(5)", read here as
+    the credit that was **never accrued** because it was blocked) are populated. 4A(1)-(4) — import
+    of goods, import of services, inward supplies liable to RCM, and credit from an Input Service
+    Distributor — each ask for a fact `ims_documents` does not carry: nothing distinguishes an
+    import or an RCM inward supply or an ISD credit from an ordinary domestic purchase today.
+    4B(2) ("ITC reversed — others", Rule 37 non-payment within 180 days and the like) is likewise
+    unmodelled — see the module note above the ledger for what that would need.
+    """
+
+    available: TaxHeadAmounts  # 4A(5)
+    blocked: TaxHeadAmounts  # 4D(1) — informational: never part of the balance or 4C.
+    reversed_: TaxHeadAmounts  # 4B(1) — reversals posted to the ledger this period.
+
+    @property
+    def net_eligible(self) -> TaxHeadAmounts:  # 4C = 4A - 4B
+        return self.available - self.reversed_
+
+
+@dataclass(frozen=True, slots=True)
+class Gstr3bPayment:
+    """Table 6.1 — payment of tax: the liability, what credit covered it and how, and what is
+    left for cash. Late fee and interest are out of scope — see the module note."""
+
+    liability: TaxHeadAmounts
+    utilisation: UtilisationResult
+
+    @property
+    def cash_payable(self) -> TaxHeadAmounts:
+        return self.utilisation.cash_payable
+
+
+@dataclass(frozen=True, slots=True)
+class Gstr3bReturn:
+    """One period's GSTR-3B, assembled. Pure data — the snapshot a `gst_returns` row stores."""
+
+    period: str
+    gstin: str
+    outward: Gstr3bOutward
+    #: The count of reportable documents Table 3.1 was summed from — denormalised the same way
+    #: `Gstr1Return.totals.document_count` is, so a list page need not re-open the snapshot.
+    document_count: int
+    itc: Gstr3bItc
+    #: The ITC ledger balance brought into the period, before this period's accrual and reversal —
+    #: what Table 6.1 has *on top of* 4C to utilise.
+    itc_brought_forward: TaxHeadAmounts
+    payment: Gstr3bPayment
+
+
+def assemble_gstr3b(
+    documents: Sequence[ReturnDocument],
+    *,
+    period: str,
+    gstin: str,
+    itc_brought_forward: TaxHeadAmounts,
+    itc_accrued: TaxHeadAmounts,
+    itc_reversed: TaxHeadAmounts,
+    itc_blocked: TaxHeadAmounts,
+) -> Gstr3bReturn:
+    """Assemble one period's GSTR-3B. Pure, like `assemble_gstr1`, and deliberately built from the
+    *same* raw document list rather than from an already-assembled `Gstr1Return` — two independent
+    paths over one book, so a test comparing this return's Table 3.1 against GSTR-1's totals for
+    the same period is a real cross-foot rather than a tautology built from itself.
+
+    `documents` is every finalized document the organization issued in the period, exactly what
+    `assemble_gstr1` is handed — the two returns are always generated over the same book. The three
+    `itc_*` arguments are the ledger's own figures for the period, computed by `selectors` from the
+    ITC ledger table; nothing here writes to it or decides what belongs in it.
+    """
+    parse_period(period)
+    reported = [d for d in documents if is_reportable_in_return(d.document_type, d.status)]
+
+    taxable_split = ZERO_TAX
+    taxable_minor = 0
+    zero_rated_split = ZERO_TAX
+    zero_rated_minor = 0
+    for document in reported:
+        if document.supply_type in INTERSTATE_SUPPLY_TYPES:
+            zero_rated_split = zero_rated_split + document.split
+            zero_rated_minor += document.taxable_minor
+        else:
+            taxable_split = taxable_split + document.split
+            taxable_minor += document.taxable_minor
+
+    outward = Gstr3bOutward(
+        taxable_supplies=TaxHeadAmounts(
+            igst_minor=taxable_split.igst_minor,
+            cgst_minor=taxable_split.cgst_minor,
+            sgst_minor=taxable_split.sgst_minor,
+        ),
+        outward_taxable_minor=taxable_minor,
+        zero_rated=TaxHeadAmounts(
+            igst_minor=zero_rated_split.igst_minor,
+            cgst_minor=zero_rated_split.cgst_minor,
+            sgst_minor=zero_rated_split.sgst_minor,
+        ),
+        zero_rated_taxable_minor=zero_rated_minor,
+        nil_rated_taxable_minor=0,
+        reverse_charge_inward_taxable_minor=0,
+        non_gst_taxable_minor=0,
+    )
+
+    itc = Gstr3bItc(available=itc_accrued, blocked=itc_blocked, reversed_=itc_reversed)
+
+    liability = outward.output_tax
+    available_for_utilisation = itc_brought_forward + itc.net_eligible
+    utilisation = utilise_itc(available_for_utilisation, liability)
+
+    return Gstr3bReturn(
+        period=period,
+        gstin=gstin,
+        outward=outward,
+        document_count=len(reported),
+        itc=itc,
+        itc_brought_forward=itc_brought_forward,
+        payment=Gstr3bPayment(liability=liability, utilisation=utilisation),
+    )
+
+
+def gstr3b_reconciles_with_gstr1(gstr3b: Gstr3bReturn, gstr1_totals: ReturnTotals) -> bool:
+    """Table 3.1's outward figures must equal GSTR-1's totals for the same period, to the paisa.
+
+    Both returns are assembled from the same documents, so this should always hold — Table 3.1(c),
+    (d) and (e) are always zero given what this platform records, so 3.1(a)+3.1(b) is the *whole*
+    of this platform's outward declaration and must equal GSTR-1's one-line total exactly. Checked
+    at generation time as a defensive assertion, not only in a test: two returns silently
+    disagreeing about one book is exactly the mismatch this pairing exists to prevent.
+    """
+    outward = gstr3b.outward.taxable_supplies + gstr3b.outward.zero_rated
+    outward_taxable = gstr3b.outward.outward_taxable_minor + gstr3b.outward.zero_rated_taxable_minor
+    return (
+        outward_taxable == gstr1_totals.taxable_minor
+        and outward.cgst_minor == gstr1_totals.cgst_minor
+        and outward.sgst_minor == gstr1_totals.sgst_minor
+        and outward.igst_minor == gstr1_totals.igst_minor
+    )
 
 
 # --------------------------------------------------------------------- e-Way bills

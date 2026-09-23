@@ -1119,7 +1119,7 @@
         "type": "object"
       },
       "GstReturnDetail": {
-        "description": "The return with its sections and its whole status trail.\n\n`sections` is null on a `draft` \u2014 a period nobody has assembled has nothing to declare, and\nan empty return and an unassembled one are different answers.",
+        "description": "The return with its sections and its whole status trail.\n\n`sections` is null on a `draft` \u2014 a period nobody has assembled has nothing to declare, and\nan empty return and an unassembled one are different answers. Which concrete shape it is \u2014\n`Gstr1Sections` or `Gstr3bSections` \u2014 follows `ret.return_type`; `selectors.return_detail`\npicks the validator, since the two tables share nothing a discriminator could read.",
         "properties": {
           "ret": {
             "$ref": "#/components/schemas/GstReturnOut"
@@ -1130,9 +1130,13 @@
                 "$ref": "#/components/schemas/Gstr1Sections"
               },
               {
+                "$ref": "#/components/schemas/Gstr3bSections"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Sections"
           },
           "transitions": {
             "items": {
@@ -1414,6 +1418,127 @@
         "title": "Gstr1Sections",
         "type": "object"
       },
+      "Gstr3bItcOut": {
+        "description": "Table 4. Only 4A(5) and 4D(1) are populated \u2014 see `domain.Gstr3bItc`.",
+        "properties": {
+          "available": {
+            "$ref": "#/components/schemas/TaxHeadAmountsOut"
+          },
+          "blocked": {
+            "$ref": "#/components/schemas/TaxHeadAmountsOut"
+          },
+          "net_eligible": {
+            "$ref": "#/components/schemas/TaxHeadAmountsOut"
+          },
+          "reversed_": {
+            "$ref": "#/components/schemas/TaxHeadAmountsOut"
+          }
+        },
+        "required": [
+          "available",
+          "blocked",
+          "reversed_",
+          "net_eligible"
+        ],
+        "title": "Gstr3bItcOut",
+        "type": "object"
+      },
+      "Gstr3bOutwardOut": {
+        "description": "Table 3.1. Only (a) and (b) are ever non-zero \u2014 see `domain.Gstr3bOutward` for why (c),\n(d) and (e) are always zero given what this platform records today.",
+        "properties": {
+          "nil_rated_taxable_minor": {
+            "title": "Nil Rated Taxable Minor",
+            "type": "integer"
+          },
+          "non_gst_taxable_minor": {
+            "title": "Non Gst Taxable Minor",
+            "type": "integer"
+          },
+          "outward_taxable_minor": {
+            "title": "Outward Taxable Minor",
+            "type": "integer"
+          },
+          "reverse_charge_inward_taxable_minor": {
+            "title": "Reverse Charge Inward Taxable Minor",
+            "type": "integer"
+          },
+          "taxable_supplies": {
+            "$ref": "#/components/schemas/TaxHeadAmountsOut"
+          },
+          "zero_rated": {
+            "$ref": "#/components/schemas/TaxHeadAmountsOut"
+          },
+          "zero_rated_taxable_minor": {
+            "title": "Zero Rated Taxable Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "taxable_supplies",
+          "outward_taxable_minor",
+          "zero_rated",
+          "zero_rated_taxable_minor",
+          "nil_rated_taxable_minor",
+          "reverse_charge_inward_taxable_minor",
+          "non_gst_taxable_minor"
+        ],
+        "title": "Gstr3bOutwardOut",
+        "type": "object"
+      },
+      "Gstr3bPaymentOut": {
+        "description": "Table 6.1 \u2014 the liability, how credit covered it, and what is left for cash. Late fee and\ninterest are out of scope for this slice; see the README.",
+        "properties": {
+          "cash_payable": {
+            "$ref": "#/components/schemas/TaxHeadAmountsOut"
+          },
+          "credit_remaining": {
+            "$ref": "#/components/schemas/TaxHeadAmountsOut"
+          },
+          "liability": {
+            "$ref": "#/components/schemas/TaxHeadAmountsOut"
+          },
+          "utilisation": {
+            "items": {
+              "$ref": "#/components/schemas/UtilisationLineOut"
+            },
+            "title": "Utilisation",
+            "type": "array"
+          }
+        },
+        "required": [
+          "liability",
+          "utilisation",
+          "credit_remaining",
+          "cash_payable"
+        ],
+        "title": "Gstr3bPaymentOut",
+        "type": "object"
+      },
+      "Gstr3bSections": {
+        "description": "Every table of one GSTR-3B, and the shape the snapshot is stored in \u2014 the `gstr3b` analogue\nof `Gstr1Sections`.",
+        "properties": {
+          "itc": {
+            "$ref": "#/components/schemas/Gstr3bItcOut"
+          },
+          "itc_brought_forward": {
+            "$ref": "#/components/schemas/TaxHeadAmountsOut"
+          },
+          "outward": {
+            "$ref": "#/components/schemas/Gstr3bOutwardOut"
+          },
+          "payment": {
+            "$ref": "#/components/schemas/Gstr3bPaymentOut"
+          }
+        },
+        "required": [
+          "outward",
+          "itc",
+          "itc_brought_forward",
+          "payment"
+        ],
+        "title": "Gstr3bSections",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1490,6 +1615,11 @@
             "title": "Action",
             "type": "string"
           },
+          "expense_category": {
+            "default": "general",
+            "title": "Expense Category",
+            "type": "string"
+          },
           "note": {
             "anyOf": [
               {
@@ -1522,6 +1652,10 @@
           },
           "decided_by": {
             "title": "Decided By",
+            "type": "string"
+          },
+          "expense_category": {
+            "title": "Expense Category",
             "type": "string"
           },
           "id": {
@@ -1569,6 +1703,7 @@
           "note",
           "suggested_action",
           "suggestion_reason",
+          "expense_category",
           "decided_by",
           "decided_at"
         ],
@@ -2301,6 +2436,141 @@
         "title": "InvoiceWithholdingOut",
         "type": "object"
       },
+      "ItcBalanceOut": {
+        "description": "The ITC ledger's position for one registration as of one period \u2014 the figure Table 6.1\nutilises on top of the period's own net eligible credit.",
+        "properties": {
+          "gst_registration_id": {
+            "format": "uuid",
+            "title": "Gst Registration Id",
+            "type": "string"
+          },
+          "heads": {
+            "items": {
+              "$ref": "#/components/schemas/ItcHeadBalanceOut"
+            },
+            "title": "Heads",
+            "type": "array"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "total_balance_minor": {
+            "title": "Total Balance Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "gst_registration_id",
+          "period",
+          "heads",
+          "total_balance_minor"
+        ],
+        "title": "ItcBalanceOut",
+        "type": "object"
+      },
+      "ItcHeadBalanceOut": {
+        "description": "One tax head's position for one period: what accrued, what reversed, what was consumed,\nand the balance carried forward \u2014 `sum(amount_minor)` up to and including this period.",
+        "properties": {
+          "accrued_minor": {
+            "title": "Accrued Minor",
+            "type": "integer"
+          },
+          "balance_minor": {
+            "title": "Balance Minor",
+            "type": "integer"
+          },
+          "reversed_minor": {
+            "title": "Reversed Minor",
+            "type": "integer"
+          },
+          "tax_head": {
+            "title": "Tax Head",
+            "type": "string"
+          },
+          "utilised_minor": {
+            "title": "Utilised Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tax_head",
+          "accrued_minor",
+          "reversed_minor",
+          "utilised_minor",
+          "balance_minor"
+        ],
+        "title": "ItcHeadBalanceOut",
+        "type": "object"
+      },
+      "ItcLedgerEntryOut": {
+        "description": "One posting to the input-tax-credit ledger. Append-only: `accrual`, `reversal` or\n`utilisation` \u2014 never an edit to an earlier row.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "gst_registration_id": {
+            "format": "uuid",
+            "title": "Gst Registration Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "posted_at": {
+            "format": "date-time",
+            "title": "Posted At",
+            "type": "string"
+          },
+          "posted_by": {
+            "title": "Posted By",
+            "type": "string"
+          },
+          "source_id": {
+            "format": "uuid",
+            "title": "Source Id",
+            "type": "string"
+          },
+          "source_type": {
+            "title": "Source Type",
+            "type": "string"
+          },
+          "tax_head": {
+            "title": "Tax Head",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "gst_registration_id",
+          "period",
+          "tax_head",
+          "kind",
+          "amount_minor",
+          "source_type",
+          "source_id",
+          "description",
+          "posted_by",
+          "posted_at"
+        ],
+        "title": "ItcLedgerEntryOut",
+        "type": "object"
+      },
       "LedgerAccount": {
         "properties": {
           "code": {
@@ -2647,6 +2917,42 @@
           "pages"
         ],
         "title": "Page[InvoiceOut]",
+        "type": "object"
+      },
+      "Page_ItcLedgerEntryOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ItcLedgerEntryOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ItcLedgerEntryOut]",
         "type": "object"
       },
       "Page_PaymentOut_": {
@@ -3347,6 +3653,64 @@
         "title": "ServiceInfo",
         "type": "object"
       },
+      "TaxHeadAmountsOut": {
+        "description": "An amount broken across the four heads GST is payable under. `cess_minor` is carried for\nforward compatibility and is always zero today \u2014 see `domain.TaxHeadAmounts`.",
+        "properties": {
+          "cess_minor": {
+            "title": "Cess Minor",
+            "type": "integer"
+          },
+          "cgst_minor": {
+            "title": "Cgst Minor",
+            "type": "integer"
+          },
+          "igst_minor": {
+            "title": "Igst Minor",
+            "type": "integer"
+          },
+          "sgst_minor": {
+            "title": "Sgst Minor",
+            "type": "integer"
+          },
+          "total_minor": {
+            "title": "Total Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "igst_minor",
+          "cgst_minor",
+          "sgst_minor",
+          "cess_minor",
+          "total_minor"
+        ],
+        "title": "TaxHeadAmountsOut",
+        "type": "object"
+      },
+      "UtilisationLineOut": {
+        "description": "One application of credit against liability \u2014 see `domain.utilise_itc`.",
+        "properties": {
+          "against": {
+            "title": "Against",
+            "type": "string"
+          },
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "head": {
+            "title": "Head",
+            "type": "string"
+          }
+        },
+        "required": [
+          "head",
+          "against",
+          "amount_minor"
+        ],
+        "title": "UtilisationLineOut",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -3969,6 +4333,197 @@
         ]
       }
     },
+    "/api/v1/finance/gst/itc-ledger": {
+      "get": {
+        "operationId": "list_itc_ledger_api_v1_finance_gst_itc_ledger_get",
+        "parameters": [
+          {
+            "description": "One registration's postings",
+            "in": "query",
+            "name": "gst_registration_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One registration's postings",
+              "title": "Gst Registration Id"
+            }
+          },
+          {
+            "description": "Tax period, YYYY-MM",
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tax period, YYYY-MM",
+              "title": "Period"
+            }
+          },
+          {
+            "description": "igst|cgst|sgst|cess",
+            "in": "query",
+            "name": "tax_head",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "igst|cgst|sgst|cess",
+              "title": "Tax Head"
+            }
+          },
+          {
+            "description": "accrual|reversal|utilisation",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "accrual|reversal|utilisation",
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ItcLedgerEntryOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The input-tax-credit ledger \u2014 accrual, reversal and utilisation, newest first",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/gst/itc-ledger/balance": {
+      "get": {
+        "description": "Brought-forward plus every posting made *in* `period`, per head \u2014 what a GSTR-3B for the\n*next* period would have on top of its own accrual and reversal to utilise. Defaults to the\norganization's primary registration, the same default `generate_return` uses.",
+        "operationId": "read_itc_balance_api_v1_finance_gst_itc_ledger_balance_get",
+        "parameters": [
+          {
+            "description": "Tax period, YYYY-MM",
+            "in": "query",
+            "name": "period",
+            "required": true,
+            "schema": {
+              "description": "Tax period, YYYY-MM",
+              "title": "Period",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "gst_registration_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Gst Registration Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItcBalanceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The ledger's position for one registration as of the end of one period",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
     "/api/v1/finance/gst/registration": {
       "get": {
         "operationId": "read_gst_registration_api_v1_finance_gst_registration_get",
@@ -4072,7 +4627,7 @@
             }
           },
           {
-            "description": "gstr1|gstr7",
+            "description": "gstr1|gstr7|gstr3b",
             "in": "query",
             "name": "return_type",
             "required": false,
@@ -4085,7 +4640,7 @@
                   "type": "null"
                 }
               ],
-              "description": "gstr1|gstr7",
+              "description": "gstr1|gstr7|gstr3b",
               "title": "Return Type"
             }
           },

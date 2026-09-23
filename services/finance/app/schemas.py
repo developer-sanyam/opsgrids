@@ -46,7 +46,8 @@ FilingStatus = str  # pending | filed | failed | cancelled
 ImsStatus = str  # pending | accepted | rejected | pending_action
 ImsAction = str  # accept | reject | pending_action
 ImsReason = str  # matched | amount_mismatch | supplier_unknown | no_purchase_record | duplicate
-ReturnType = str  # gstr1 | gstr7
+ImsExpenseCategory = str  # general | ... — see domain.ITC_EXPENSE_CATEGORIES
+ReturnType = str  # gstr1 | gstr7 | gstr3b
 ReturnStatus = str  # draft | generated | filed
 EwayStatus = str  # pending | generated | failed | cancelled | expired
 WithholdingCode = str  # gst_tds_51 | itax_194q | itax_206c_1h
@@ -599,6 +600,7 @@ class ImsDecisionOut(BaseModel):
     note: str | None
     suggested_action: ImsAction | None
     suggestion_reason: ImsReason | None
+    expense_category: ImsExpenseCategory
     #: The subject id of whoever decided.
     decided_by: str
     decided_at: datetime
@@ -665,6 +667,11 @@ class ImsDecisionCreate(BaseModel):
     #: The operator's own note. Free text: the portal takes no reason code for an IMS action, and
     #: a dropdown would only invite an untrue answer.
     note: str | None = None
+    #: What the document was for — `domain.ITC_EXPENSE_CATEGORIES`. Decides, on an `accept`,
+    #: whether the ITC ledger accrues credit at all: a category in `domain.BLOCKED_ITC_CATEGORIES`
+    #: accrues nothing, which is how Section 17(5) is enforced when nothing upstream classifies an
+    #: inbound document any further than a supplier, a number and four money columns.
+    expense_category: ImsExpenseCategory = "general"
 
 
 class ImsSyncIn(BaseModel):
@@ -847,15 +854,84 @@ class GstReturnTransitionOut(BaseModel):
     transitioned_at: datetime
 
 
+# --------------------------------------------------------------------- GSTR-3B
+# The summary return: outward liability netted against the input-tax-credit ledger. Every figure
+# either comes straight off the same documents GSTR-1 is assembled from, or off the ITC ledger —
+# nothing here computes tax independently, for the same reason nothing in GSTR-1 does.
+
+
+class TaxHeadAmountsOut(BaseModel):
+    """An amount broken across the four heads GST is payable under. `cess_minor` is carried for
+    forward compatibility and is always zero today — see `domain.TaxHeadAmounts`."""
+
+    igst_minor: int
+    cgst_minor: int
+    sgst_minor: int
+    cess_minor: int
+    total_minor: int
+
+
+class Gstr3bOutwardOut(BaseModel):
+    """Table 3.1. Only (a) and (b) are ever non-zero — see `domain.Gstr3bOutward` for why (c),
+    (d) and (e) are always zero given what this platform records today."""
+
+    taxable_supplies: TaxHeadAmountsOut  # 3.1(a)
+    outward_taxable_minor: int
+    zero_rated: TaxHeadAmountsOut  # 3.1(b)
+    zero_rated_taxable_minor: int
+    nil_rated_taxable_minor: int  # 3.1(c) — always 0
+    reverse_charge_inward_taxable_minor: int  # 3.1(d) — always 0
+    non_gst_taxable_minor: int  # 3.1(e) — always 0
+
+
+class Gstr3bItcOut(BaseModel):
+    """Table 4. Only 4A(5) and 4D(1) are populated — see `domain.Gstr3bItc`."""
+
+    available: TaxHeadAmountsOut  # 4A(5)
+    blocked: TaxHeadAmountsOut  # 4D(1) — informational only, never in the balance or 4C
+    reversed_: TaxHeadAmountsOut  # 4B(1)
+    net_eligible: TaxHeadAmountsOut  # 4C = 4A - 4B
+
+
+class UtilisationLineOut(BaseModel):
+    """One application of credit against liability — see `domain.utilise_itc`."""
+
+    head: str
+    against: str
+    amount_minor: int
+
+
+class Gstr3bPaymentOut(BaseModel):
+    """Table 6.1 — the liability, how credit covered it, and what is left for cash. Late fee and
+    interest are out of scope for this slice; see the README."""
+
+    liability: TaxHeadAmountsOut
+    utilisation: list[UtilisationLineOut]
+    credit_remaining: TaxHeadAmountsOut
+    cash_payable: TaxHeadAmountsOut
+
+
+class Gstr3bSections(BaseModel):
+    """Every table of one GSTR-3B, and the shape the snapshot is stored in — the `gstr3b` analogue
+    of `Gstr1Sections`."""
+
+    outward: Gstr3bOutwardOut
+    itc: Gstr3bItcOut
+    itc_brought_forward: TaxHeadAmountsOut
+    payment: Gstr3bPaymentOut
+
+
 class GstReturnDetail(BaseModel):
     """The return with its sections and its whole status trail.
 
     `sections` is null on a `draft` — a period nobody has assembled has nothing to declare, and
-    an empty return and an unassembled one are different answers.
+    an empty return and an unassembled one are different answers. Which concrete shape it is —
+    `Gstr1Sections` or `Gstr3bSections` — follows `ret.return_type`; `selectors.return_detail`
+    picks the validator, since the two tables share nothing a discriminator could read.
     """
 
     ret: GstReturnOut
-    sections: Gstr1Sections | None
+    sections: Gstr1Sections | Gstr3bSections | None
     transitions: list[GstReturnTransitionOut]
 
 
@@ -911,6 +987,50 @@ class ReturnDiffOut(BaseModel):
     #: True when anything at all moved. The cheap question a screen asks first.
     changed: bool
     computed_at: datetime
+
+
+# --------------------------------------------------------------------- the ITC ledger
+
+
+class ItcLedgerEntryOut(BaseModel):
+    """One posting to the input-tax-credit ledger. Append-only: `accrual`, `reversal` or
+    `utilisation` — never an edit to an earlier row."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    gst_registration_id: uuid.UUID
+    period: str
+    tax_head: str
+    kind: str
+    #: Signed: positive on an accrual, negative on a reversal or a utilisation.
+    amount_minor: int
+    source_type: str
+    source_id: uuid.UUID
+    description: str
+    posted_by: str
+    posted_at: datetime
+
+
+class ItcHeadBalanceOut(BaseModel):
+    """One tax head's position for one period: what accrued, what reversed, what was consumed,
+    and the balance carried forward — `sum(amount_minor)` up to and including this period."""
+
+    tax_head: str
+    accrued_minor: int
+    reversed_minor: int
+    utilised_minor: int
+    balance_minor: int
+
+
+class ItcBalanceOut(BaseModel):
+    """The ITC ledger's position for one registration as of one period — the figure Table 6.1
+    utilises on top of the period's own net eligible credit."""
+
+    gst_registration_id: uuid.UUID
+    period: str
+    heads: list[ItcHeadBalanceOut]
+    total_balance_minor: int
 
 
 # --------------------------------------------------------------------- e-Way bills

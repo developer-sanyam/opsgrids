@@ -503,7 +503,7 @@ export interface Page<T> {
 /* --------------------------------------------------------------------- GST returns
  * The outward-supplies return, assembled from the invoices already recorded. */
 
-export type ReturnType = "gstr1" | "gstr7";
+export type ReturnType = "gstr1" | "gstr7" | "gstr3b";
 export type ReturnStatus = "draft" | "generated" | "filed";
 
 /** One period's return: the record, not the snapshot. What the list page renders. */
@@ -611,10 +611,72 @@ export interface Gstr1Sections {
   docs: DocumentSeries[];
 }
 
-/** The return with its sections and its whole status trail. `sections` is null on a `draft`. */
+/* --------------------------------------------------------------------- GSTR-3B
+ * The summary return: outward liability netted against the input-tax-credit ledger. Every figure
+ * is either summed straight off the invoices GSTR-1 reads too, or read off the ITC ledger. */
+
+/** An amount broken across the four heads GST is payable under. `cess_minor` is always zero
+ * today — no table in this platform carries a cess column yet. */
+export interface TaxHeadAmounts {
+  igst_minor: Minor;
+  cgst_minor: Minor;
+  sgst_minor: Minor;
+  cess_minor: Minor;
+  total_minor: Minor;
+}
+
+/** Table 3.1. Only (a) and (b) are ever non-zero — see the finance service's `domain.py` for why
+ * (c) nil/exempt, (d) reverse-charge inward and (e) non-GST outward always report zero today. */
+export interface Gstr3bOutward {
+  taxable_supplies: TaxHeadAmounts;
+  outward_taxable_minor: Minor;
+  zero_rated: TaxHeadAmounts;
+  zero_rated_taxable_minor: Minor;
+  nil_rated_taxable_minor: Minor;
+  reverse_charge_inward_taxable_minor: Minor;
+  non_gst_taxable_minor: Minor;
+}
+
+/** Table 4. Only "all other ITC" (4A(5)) and the informational blocked-credit line (4D(1)) are
+ * populated — imports, RCM inward supplies and ISD credit are not distinguishable in this book. */
+export interface Gstr3bItc {
+  available: TaxHeadAmounts;
+  blocked: TaxHeadAmounts;
+  reversed_: TaxHeadAmounts;
+  net_eligible: TaxHeadAmounts;
+}
+
+/** One application of credit against liability in the statutory order — IGST first against IGST,
+ * then CGST, then SGST; CGST against CGST then IGST, never SGST; SGST mirrors it. */
+export interface UtilisationLine {
+  head: string;
+  against: string;
+  amount_minor: Minor;
+}
+
+/** Table 6.1 — the liability, how credit covered it, and what is left for cash. Late fee and
+ * interest are out of scope for this slice. */
+export interface Gstr3bPayment {
+  liability: TaxHeadAmounts;
+  utilisation: UtilisationLine[];
+  credit_remaining: TaxHeadAmounts;
+  cash_payable: TaxHeadAmounts;
+}
+
+/** Every table of one GSTR-3B, and the shape the snapshot is stored in. */
+export interface Gstr3bSections {
+  outward: Gstr3bOutward;
+  itc: Gstr3bItc;
+  itc_brought_forward: TaxHeadAmounts;
+  payment: Gstr3bPayment;
+}
+
+/** The return with its sections and its whole status trail. `sections` is null on a `draft`; its
+ * concrete shape follows `ret.return_type` — `Gstr1Sections` for `gstr1`/`gstr7`, `Gstr3bSections`
+ * for `gstr3b`. */
 export interface GstReturnDetail {
   ret: GstReturn;
-  sections: Gstr1Sections | null;
+  sections: Gstr1Sections | Gstr3bSections | null;
   transitions: GstReturnTransition[];
 }
 

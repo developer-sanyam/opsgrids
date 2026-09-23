@@ -39,6 +39,7 @@ from app.models import (
     ImsReconciliation,
     Invoice,
     InvoiceWithholding,
+    ItcLedgerEntry,
     Payment,
     PaymentAllocation,
     PurchaseDocument,
@@ -57,6 +58,10 @@ from app.schemas import (
     EwayBillWithInvoice,
     EwayState,
     Gstr1Sections,
+    Gstr3bItcOut,
+    Gstr3bOutwardOut,
+    Gstr3bPaymentOut,
+    Gstr3bSections,
     GstRegistrationOut,
     GstReturnDetail,
     GstReturnOut,
@@ -69,6 +74,9 @@ from app.schemas import (
     InvoiceLineOut,
     InvoiceOut,
     InvoiceWithholdingOut,
+    ItcBalanceOut,
+    ItcHeadBalanceOut,
+    ItcLedgerEntryOut,
     LedgerAccount,
     LedgerReport,
     OverviewKpi,
@@ -79,6 +87,8 @@ from app.schemas import (
     RateGroupOut,
     ReturnInvoiceOut,
     ReturnTotalsOut,
+    TaxHeadAmountsOut,
+    UtilisationLineOut,
     WithholdingDeductorRow,
     WithholdingRateOut,
     WithholdingSummaryOut,
@@ -1522,21 +1532,271 @@ def to_return_transition_out(row: GstReturnTransition) -> GstReturnTransitionOut
     return GstReturnTransitionOut.model_validate(row)
 
 
+def _sections_model_for(return_type: str) -> type[Gstr1Sections] | type[Gstr3bSections]:
+    """Which contract a return's snapshot validates against. The two tables share nothing a
+    discriminated union could read off the JSONB itself, so `return_type` is the discriminator."""
+    return Gstr3bSections if return_type == "gstr3b" else Gstr1Sections
+
+
 async def return_detail(
     session: AsyncSession, org_id: uuid.UUID, ret: GstReturn
 ) -> GstReturnDetail:
     """The return, its snapshot and its trail.
 
-    The snapshot is re-validated through `Gstr1Sections` on the way out rather than handed back
-    as raw JSON: a snapshot written by an older revision of this service must either satisfy the
-    contract it is served under or fail loudly here, not reach a screen as a shape nothing
-    describes.
+    The snapshot is re-validated through `Gstr1Sections`/`Gstr3bSections` on the way out rather
+    than handed back as raw JSON: a snapshot written by an older revision of this service must
+    either satisfy the contract it is served under or fail loudly here, not reach a screen as a
+    shape nothing describes.
     """
     transitions = await return_transitions(session, org_id, ret.id)
+    model = _sections_model_for(ret.return_type)
     return GstReturnDetail(
         ret=to_return_out(ret),
-        sections=Gstr1Sections.model_validate(ret.sections) if ret.sections else None,
+        sections=model.model_validate(ret.sections) if ret.sections else None,
         transitions=[to_return_transition_out(t) for t in transitions],
+    )
+
+
+# --------------------------------------------------------------------- the ITC ledger
+# The reads behind GSTR-3B's Table 4 and Table 6.1, and the ledger's own list/balance surface.
+# Every posting is written by `services` in the same transaction as the decision or the filing
+# that produced it; nothing here writes.
+
+_ITC_HEADS: tuple[str, ...] = domain.ITC_TAX_HEAD_ORDER
+
+
+def itc_ledger_stmt(
+    ctx: ScopeContext,
+    *,
+    gst_registration_id: uuid.UUID | None = None,
+    period: str | None = None,
+    tax_head: str | None = None,
+    kind: str | None = None,
+) -> Select[Any]:
+    """Scope-filtered ledger list, newest posting first."""
+    stmt = select(ItcLedgerEntry).where(
+        ItcLedgerEntry.organization_id == ctx.organization_id,
+        ItcLedgerEntry.deleted_at.is_(None),
+    )
+    stmt = ctx.apply(stmt, owner_col=ItcLedgerEntry.id)
+    if gst_registration_id:
+        stmt = stmt.where(ItcLedgerEntry.gst_registration_id == gst_registration_id)
+    if period:
+        stmt = stmt.where(ItcLedgerEntry.period == period)
+    if tax_head:
+        stmt = stmt.where(ItcLedgerEntry.tax_head == tax_head)
+    if kind:
+        stmt = stmt.where(ItcLedgerEntry.kind == kind)
+    return stmt.order_by(ItcLedgerEntry.posted_at.desc(), ItcLedgerEntry.created_at.desc())
+
+
+def to_itc_ledger_entry_out(row: ItcLedgerEntry) -> ItcLedgerEntryOut:
+    return ItcLedgerEntryOut.model_validate(row)
+
+
+async def _itc_amounts_by_head(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    gst_registration_id: uuid.UUID,
+    *,
+    kind: str | None = None,
+    period: str | None = None,
+    period_before: str | None = None,
+) -> domain.TaxHeadAmounts:
+    """`SUM(amount_minor)` per tax head, filtered the way each caller below needs it — grouped in
+    SQL rather than pulled row by row, so a registration's whole history is one query."""
+    stmt = select(
+        ItcLedgerEntry.tax_head, func.coalesce(func.sum(ItcLedgerEntry.amount_minor), 0)
+    ).where(
+        ItcLedgerEntry.organization_id == org_id,
+        ItcLedgerEntry.gst_registration_id == gst_registration_id,
+        ItcLedgerEntry.deleted_at.is_(None),
+    )
+    if kind:
+        stmt = stmt.where(ItcLedgerEntry.kind == kind)
+    if period:
+        stmt = stmt.where(ItcLedgerEntry.period == period)
+    if period_before:
+        stmt = stmt.where(ItcLedgerEntry.period < period_before)
+    stmt = stmt.group_by(ItcLedgerEntry.tax_head)
+    totals = {head: int(amount) for head, amount in (await session.execute(stmt)).all()}
+    return domain.TaxHeadAmounts(
+        igst_minor=totals.get("igst", 0),
+        cgst_minor=totals.get("cgst", 0),
+        sgst_minor=totals.get("sgst", 0),
+        cess_minor=totals.get("cess", 0),
+    )
+
+
+async def itc_brought_forward(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, period: str
+) -> domain.TaxHeadAmounts:
+    """The ledger's balance carried into `period` — every posting of every kind from an earlier
+    period, summed. What Table 6.1 has *on top of* the period's own net eligible credit."""
+    return await _itc_amounts_by_head(session, org_id, gst_registration_id, period_before=period)
+
+
+async def itc_period_movement(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, period: str
+) -> tuple[domain.TaxHeadAmounts, domain.TaxHeadAmounts]:
+    """`(accrued, reversed)` for exactly this period — Table 4A(5) and 4B(1)."""
+    accrued = await _itc_amounts_by_head(
+        session, org_id, gst_registration_id, kind="accrual", period=period
+    )
+    reversed_ = await _itc_amounts_by_head(
+        session, org_id, gst_registration_id, kind="reversal", period=period
+    )
+    # Reversal rows are posted negative so the ledger's own balance needs no case split; a GSTR-3B
+    # table declares a reversal as a positive figure being taken back, so the sign flips here, at
+    # the read boundary, rather than in the ledger itself.
+    reversed_ = domain.TaxHeadAmounts(
+        igst_minor=-reversed_.igst_minor,
+        cgst_minor=-reversed_.cgst_minor,
+        sgst_minor=-reversed_.sgst_minor,
+        cess_minor=-reversed_.cess_minor,
+    )
+    return accrued, reversed_
+
+
+async def itc_document_net_accrued(
+    session: AsyncSession, org_id: uuid.UUID, ims_document_id: uuid.UUID
+) -> domain.TaxHeadAmounts:
+    """One document's net standing on the ledger — every accrual it ever posted, less every
+    reversal already posted against it. What a further reversal must exactly mirror, so a
+    document's credit can never be withdrawn twice or withdrawn past zero.
+
+    A ledger row's `source_id` is the **decision** that produced it, not the document — a document
+    accepted, rejected and accepted again posts a fresh accrual each time, keyed on the decision
+    that made it, and `source_ref`'s uniqueness depends on that. So finding a document's net
+    standing means going by way of its decision history rather than a direct filter.
+    """
+    decisions = await decisions_for_document(session, org_id, ims_document_id)
+    if not decisions:
+        return domain.ZERO_ITC
+    stmt = (
+        select(ItcLedgerEntry.tax_head, func.coalesce(func.sum(ItcLedgerEntry.amount_minor), 0))
+        .where(
+            ItcLedgerEntry.organization_id == org_id,
+            ItcLedgerEntry.source_type == "ims_decision",
+            ItcLedgerEntry.source_id.in_([d.id for d in decisions]),
+            ItcLedgerEntry.kind.in_(("accrual", "reversal")),
+            ItcLedgerEntry.deleted_at.is_(None),
+        )
+        .group_by(ItcLedgerEntry.tax_head)
+    )
+    totals = {head: int(amount) for head, amount in (await session.execute(stmt)).all()}
+    return domain.TaxHeadAmounts(
+        igst_minor=totals.get("igst", 0),
+        cgst_minor=totals.get("cgst", 0),
+        sgst_minor=totals.get("sgst", 0),
+        cess_minor=totals.get("cess", 0),
+    )
+
+
+async def itc_blocked_amounts_for_period(
+    session: AsyncSession, org_id: uuid.UUID, period: str
+) -> domain.TaxHeadAmounts:
+    """Table 4D(1), informational: the tax on documents accepted this period whose declared
+    category is blocked under s. 17(5), and which therefore posted **no** accrual at all.
+
+    Not read off the ledger — a blocked document leaves no row there by design — but off
+    `ims_documents` joined to each one's newest decision, which is where the category the person
+    asserted actually lives.
+    """
+    documents = await all_ims_documents(session, org_id, period=period)
+    accepted = [d for d in documents if d.status == "accepted"]
+    if not accepted:
+        return domain.ZERO_ITC
+    decisions = await latest_decisions(session, org_id, [d.id for d in accepted])
+    total = domain.ZERO_ITC
+    for document in accepted:
+        decision = decisions.get(document.id)
+        category = decision.expense_category if decision is not None else "general"
+        if domain.is_itc_eligible(category):
+            continue
+        total = total + domain.TaxHeadAmounts(
+            igst_minor=document.igst_minor,
+            cgst_minor=document.cgst_minor,
+            sgst_minor=document.sgst_minor,
+        )
+    return total
+
+
+def to_tax_head_amounts_out(amounts: domain.TaxHeadAmounts) -> TaxHeadAmountsOut:
+    return TaxHeadAmountsOut(
+        igst_minor=amounts.igst_minor,
+        cgst_minor=amounts.cgst_minor,
+        sgst_minor=amounts.sgst_minor,
+        cess_minor=amounts.cess_minor,
+        total_minor=amounts.total_minor,
+    )
+
+
+def to_gstr3b_sections(ret: domain.Gstr3bReturn) -> Gstr3bSections:
+    """The assembled GSTR-3B, on the wire — and the exact shape the snapshot is stored in."""
+    return Gstr3bSections(
+        outward=Gstr3bOutwardOut(
+            taxable_supplies=to_tax_head_amounts_out(ret.outward.taxable_supplies),
+            outward_taxable_minor=ret.outward.outward_taxable_minor,
+            zero_rated=to_tax_head_amounts_out(ret.outward.zero_rated),
+            zero_rated_taxable_minor=ret.outward.zero_rated_taxable_minor,
+            nil_rated_taxable_minor=ret.outward.nil_rated_taxable_minor,
+            reverse_charge_inward_taxable_minor=ret.outward.reverse_charge_inward_taxable_minor,
+            non_gst_taxable_minor=ret.outward.non_gst_taxable_minor,
+        ),
+        itc=Gstr3bItcOut(
+            available=to_tax_head_amounts_out(ret.itc.available),
+            blocked=to_tax_head_amounts_out(ret.itc.blocked),
+            reversed_=to_tax_head_amounts_out(ret.itc.reversed_),
+            net_eligible=to_tax_head_amounts_out(ret.itc.net_eligible),
+        ),
+        itc_brought_forward=to_tax_head_amounts_out(ret.itc_brought_forward),
+        payment=Gstr3bPaymentOut(
+            liability=to_tax_head_amounts_out(ret.payment.liability),
+            utilisation=[
+                UtilisationLineOut(
+                    head=line.head, against=line.against, amount_minor=line.amount_minor
+                )
+                for line in ret.payment.utilisation.lines
+            ],
+            credit_remaining=to_tax_head_amounts_out(ret.payment.utilisation.credit_remaining),
+            cash_payable=to_tax_head_amounts_out(ret.payment.cash_payable),
+        ),
+    )
+
+
+async def itc_balance(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, period: str
+) -> ItcBalanceOut:
+    """The ledger's position for one registration as of the end of `period` — brought-forward plus
+    every posting of every kind made *in* that period, per head."""
+    brought_forward = await itc_brought_forward(session, org_id, gst_registration_id, period)
+    accrued, reversed_ = await itc_period_movement(session, org_id, gst_registration_id, period)
+    utilised = await _itc_amounts_by_head(
+        session, org_id, gst_registration_id, kind="utilisation", period=period
+    )
+    heads = []
+    total = 0
+    for head in _ITC_HEADS:
+        accrued_h = accrued.for_head(head)
+        reversed_h = reversed_.for_head(head)
+        utilised_h = -utilised.for_head(head)
+        balance_h = brought_forward.for_head(head) + accrued_h - reversed_h - utilised_h
+        heads.append(
+            ItcHeadBalanceOut(
+                tax_head=head,
+                accrued_minor=accrued_h,
+                reversed_minor=reversed_h,
+                utilised_minor=utilised_h,
+                balance_minor=balance_h,
+            )
+        )
+        total += balance_h
+    return ItcBalanceOut(
+        gst_registration_id=gst_registration_id,
+        period=period,
+        heads=heads,
+        total_balance_minor=total,
     )
 
 
