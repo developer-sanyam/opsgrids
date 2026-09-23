@@ -18,6 +18,8 @@ import { apiRequest } from "@opsgrids/client";
 import {
   CONNECTION,
   CONTACTS,
+  CONVERSATION_MESSAGES,
+  CONVERSATIONS,
   DOMAINS,
   SENDERS,
   SUPPRESSIONS,
@@ -32,6 +34,12 @@ import type {
   ContactIn,
   ContactOut,
   ContactPatch,
+  ConversationAssignIn,
+  ConversationMessageOut,
+  ConversationOut,
+  ConversationReplyIn,
+  ConversationReplyOut,
+  ConversationStatus,
   DomainIn,
   DomainOut,
   DomainStatus,
@@ -415,4 +423,88 @@ export async function removeSuppression(suppressionId: string): Promise<void> {
   await apiRequest<void>(`/engage/suppressions/${encodeURIComponent(suppressionId)}`, {
     method: "DELETE",
   });
+}
+
+/* ----------------------------------- inbox (WhatsApp) ----------------------------------- */
+
+/** WhatsApp conversations, most recently active first — `GET /engage/conversations`. */
+export async function listConversations(
+  options: { status?: ConversationStatus } = {},
+): Promise<Page<ConversationOut>> {
+  const { status } = options;
+  if (USE_FIXTURES) {
+    const rows =
+      status === undefined ? CONVERSATIONS : CONVERSATIONS.filter((c) => c.status === status);
+    return settle(fixturePage(rows));
+  }
+  const query = new URLSearchParams({ size: String(FULL_PAGE) });
+  if (status !== undefined) query.set("status", status);
+  return apiRequest<Page<ConversationOut>>(`/engage/conversations?${query.toString()}`);
+}
+
+/** One conversation — `GET /engage/conversations/{id}`. */
+export async function getConversation(conversationId: string): Promise<ConversationOut> {
+  if (USE_FIXTURES) {
+    const found = CONVERSATIONS.find((c) => c.id === conversationId);
+    if (!found) throw new Error(`No such fixture conversation: ${conversationId}`);
+    return settle(found);
+  }
+  return apiRequest<ConversationOut>(
+    `/engage/conversations/${encodeURIComponent(conversationId)}`,
+  );
+}
+
+/** A conversation's thread, both directions, oldest first — `GET .../messages`, server-paged. */
+export async function listConversationMessages(
+  conversationId: string,
+  options: { page?: number; size?: number } = {},
+): Promise<Page<ConversationMessageOut>> {
+  const { page = 1, size = FULL_PAGE } = options;
+  if (USE_FIXTURES) {
+    return settle(fixturePage(CONVERSATION_MESSAGES[conversationId] ?? []));
+  }
+  const query = new URLSearchParams({ page: String(page), size: String(size) });
+  return apiRequest<Page<ConversationMessageOut>>(
+    `/engage/conversations/${encodeURIComponent(conversationId)}/messages?${query.toString()}`,
+  );
+}
+
+/**
+ * Send a free-text reply inside the 24-hour service window — `POST .../reply`.
+ *
+ * Refused by the service with a `409` outside the window, carrying `remedy: "template"` in the
+ * problem body: `replyRemedy` in `lib/errors.ts` is how the composer reads it.
+ */
+export async function replyToConversation(
+  conversationId: string,
+  input: ConversationReplyIn,
+): Promise<ConversationReplyOut> {
+  if (USE_FIXTURES) refuseWithoutService("Replying to a conversation");
+  return apiRequest<ConversationReplyOut>(
+    `/engage/conversations/${encodeURIComponent(conversationId)}/reply`,
+    { method: "POST", body: input },
+  );
+}
+
+/** Assign a conversation to a membership, or clear its assignment with `null` —
+ *  `POST .../{id}:assign`. */
+export async function assignConversation(
+  conversationId: string,
+  input: ConversationAssignIn,
+): Promise<ConversationOut> {
+  if (USE_FIXTURES) refuseWithoutService("Assigning a conversation");
+  return apiRequest<ConversationOut>(
+    `/engage/conversations/${encodeURIComponent(conversationId)}:assign`,
+    { method: "POST", body: input },
+  );
+}
+
+/** Close a conversation. A later reply, or the customer writing back, reopens it —
+ *  `POST .../{id}:close`. */
+export async function closeConversation(conversationId: string): Promise<ConversationOut> {
+  if (USE_FIXTURES) refuseWithoutService("Closing a conversation");
+  return apiRequest<ConversationOut>(
+    `/engage/conversations/${encodeURIComponent(conversationId)}:close`,
+    { method: "POST" },
+  );
 }
