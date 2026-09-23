@@ -356,3 +356,27 @@ export interface Permission {
   max_scope: Scope;
   is_dangerous: boolean;
 }
+
+// ------------------------------------------------------------------ email domains (SSO)
+
+/**
+ * `DomainOut`. `verification_host`/`verification_value` are what to publish as a DNS TXT
+ * record; `expires_at` is `null` once `verified_at` is set — the claim clock stops being read
+ * at all past that point.
+ */
+export interface Domain {
+  id: string;
+  domain: string;
+  is_primary: boolean;
+  auto_join: boolean;
+  verified_at: string | null;
+  created_at: string;
+  expires_at: string | null;
+  verification_host: string;
+  verification_value: string;
+}
+
+/** `DomainIn`. */
+export interface DomainCreate {
+  domain: string;
+}

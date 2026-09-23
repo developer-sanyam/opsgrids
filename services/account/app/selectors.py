@@ -24,19 +24,21 @@ from sqlalchemy import Select, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import contains_eager, selectinload
 
+from app import domain as domain_rules
 from app.models import (
     Invitation,
     Location,
     Membership,
     MembershipRole,
     Organization,
+    OrgDomain,
     OrgUnit,
     Permission,
     Role,
     RolePermission,
     User,
 )
-from app.schemas import GrantOut, MemberOut, OrgUnitNode, RoleOut
+from app.schemas import DomainOut, GrantOut, MemberOut, OrgUnitNode, RoleOut
 from platform_core.auth import Scope, ScopeContext
 
 # --------------------------------------------------------------------- organizations
@@ -409,6 +411,51 @@ async def get_location(
         Location.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+# --------------------------------------------------------------------- domains
+
+
+async def list_domains(session: AsyncSession, org_id: uuid.UUID) -> list[OrgDomain]:
+    stmt = (
+        select(OrgDomain).where(OrgDomain.organization_id == org_id).order_by(OrgDomain.created_at)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def get_domain(
+    session: AsyncSession, org_id: uuid.UUID, domain_id: uuid.UUID
+) -> OrgDomain | None:
+    stmt = select(OrgDomain).where(OrgDomain.id == domain_id, OrgDomain.organization_id == org_id)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_domain_by_name(
+    session: AsyncSession, org_id: uuid.UUID, domain: str
+) -> OrgDomain | None:
+    """This organization's own row for `domain`, if it has already claimed it.
+
+    Tenant-scoped like every other selector here. `domain` is unique platform-wide
+    (`uq_org_domains_domain`), so this can only ever find a row this organization itself
+    holds — it answers "have I already claimed this", never "who else has".
+    """
+    stmt = select(OrgDomain).where(OrgDomain.organization_id == org_id, OrgDomain.domain == domain)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def to_domain_out(row: OrgDomain) -> DomainOut:
+    still_pending = row.verified_at is None
+    return DomainOut(
+        id=row.id,
+        domain=row.domain,
+        is_primary=row.is_primary,
+        auto_join=row.auto_join,
+        verified_at=row.verified_at,
+        created_at=row.created_at,
+        expires_at=domain_rules.claim_expires_at(row.created_at) if still_pending else None,
+        verification_host=domain_rules.verification_txt_host(row.domain),
+        verification_value=domain_rules.verification_txt_value(row.verification_token),
+    )
 
 
 # --------------------------------------------------------------------- roles

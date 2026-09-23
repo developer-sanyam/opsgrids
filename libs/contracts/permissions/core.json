@@ -84,6 +84,24 @@
     },
     {
       "action": "read",
+      "default_scope": "ORG",
+      "description": "See claimed and verified domains",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "identity",
+      "resource": "domain"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Claim, verify and release email domains",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "identity",
+      "resource": "domain"
+    },
+    {
+      "action": "read",
       "default_scope": "TEAM",
       "description": "See who is in the organization",
       "is_dangerous": false,
@@ -277,6 +295,14 @@
         },
         {
           "code": "core.identity.audit.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.identity.domain.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.identity.domain.write",
           "scope": "ORG"
         },
         {

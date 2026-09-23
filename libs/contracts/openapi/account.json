@@ -1,6 +1,95 @@
 {
   "components": {
     "schemas": {
+      "DomainIn": {
+        "additionalProperties": false,
+        "description": "A domain to claim. `extra=\"forbid\"` \u2014 the write CLAUDE.md asks for at every boundary,\nand the first of these this service declares.",
+        "properties": {
+          "domain": {
+            "maxLength": 253,
+            "minLength": 1,
+            "title": "Domain",
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain"
+        ],
+        "title": "DomainIn",
+        "type": "object"
+      },
+      "DomainOut": {
+        "description": "A claimed domain, verified or not, plus what to publish while it is not.\n\n`verification_host`/`verification_value` are computed, not stored columns \u2014 they are a\npure function of the row's own `domain` and `verification_token`\n(`app.domain.verification_txt_host`/`verification_txt_value`), always in sync by\nconstruction rather than by remembering to update a second copy.",
+        "properties": {
+          "auto_join": {
+            "title": "Auto Join",
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "domain": {
+            "title": "Domain",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_primary": {
+            "title": "Is Primary",
+            "type": "boolean"
+          },
+          "verification_host": {
+            "title": "Verification Host",
+            "type": "string"
+          },
+          "verification_value": {
+            "title": "Verification Value",
+            "type": "string"
+          },
+          "verified_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified At"
+          }
+        },
+        "required": [
+          "id",
+          "domain",
+          "is_primary",
+          "auto_join",
+          "verified_at",
+          "created_at",
+          "expires_at",
+          "verification_host",
+          "verification_value"
+        ],
+        "title": "DomainOut",
+        "type": "object"
+      },
       "GrantIn": {
         "properties": {
           "permission_code": {
@@ -1696,6 +1785,183 @@
           }
         },
         "summary": "Create an organisation and become its owner",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/domains": {
+      "get": {
+        "operationId": "list_domains_api_v1_domains_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DomainOut"
+                  },
+                  "title": "Response List Domains Api V1 Domains Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Email domains this org claims",
+        "tags": [
+          "account"
+        ]
+      },
+      "post": {
+        "description": "Claim a domain for single sign-on. Starts (or restarts) unverified \u2014 see `DomainOut`\nfor the TXT record to publish, and `POST /domains/{id}/verify` to prove it.",
+        "operationId": "claim_domain_api_v1_domains_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DomainIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DomainOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "Claimed or verified by another organization \u2014 discloses nothing about who holds it"
+          },
+          "422": {
+            "description": "Not a domain, or a platform domain / public suffix"
+          }
+        },
+        "summary": "Claim an email domain",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain_id}": {
+      "delete": {
+        "operationId": "release_domain_api_v1_domains__domain_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Release a claimed domain",
+        "tags": [
+          "account"
+        ]
+      },
+      "get": {
+        "operationId": "read_domain_api_v1_domains__domain_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DomainOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One claimed domain",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain_id}/verify": {
+      "post": {
+        "operationId": "verify_domain_api_v1_domains__domain_id__verify_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DomainOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Expired claim, or the TXT record is not (yet) published"
+          },
+          "429": {
+            "description": "Rate limited per organization"
+          }
+        },
+        "summary": "Check DNS and mark a domain verified",
         "tags": [
           "account"
         ]

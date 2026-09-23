@@ -23,7 +23,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import selectors
+from app import dns_check, selectors
+from app import domain as domain_module
 from app.catalogue import CORE_REGISTRATION, ProductManifest, ProductRegistration, min_scope
 from app.models import (
     AuditLog,
@@ -32,6 +33,7 @@ from app.models import (
     Membership,
     MembershipRole,
     Organization,
+    OrgDomain,
     OrgUnit,
     OutboxEvent,
     Permission,
@@ -40,6 +42,7 @@ from app.models import (
     User,
 )
 from app.schemas import (
+    DomainIn,
     GrantIn,
     InvitationIn,
     LocationIn,
@@ -62,6 +65,7 @@ from platform_core.errors import (
     NotFoundProblem,
 )
 from platform_core.events import publish_event
+from platform_core.models import utcnow
 
 # Event names. `core.*` because these are the platform's own, not a product's.
 EVT_ORG_CREATED = "core.org.created"
@@ -1256,6 +1260,250 @@ async def _replace_grants(
                 "it yourself at that scope or wider."
             )
         session.add(RolePermission(role_id=role.id, permission_id=permission.id, scope=grant.scope))
+
+
+# --------------------------------------------------------------------- domains
+#
+# ADR-0000 §1: a verified domain selects an identity *provider*, never an organization, and
+# only once DNS has proved it. `account.org_domains.domain` is unique **platform-wide**
+# (`uq_org_domains_domain`) — a plain constraint, not scoped by tenant — which is what makes
+# takeover safety a database guarantee rather than an application one: whichever organization's
+# `INSERT` lands first is the only one that can hold a row for that string at all.
+#
+# **This is also this feature's one real limitation, stated here rather than left for someone
+# to discover in an incident.** Because `org_domains` carries row-level security
+# (`account.org_domains` policy: `organization_id = account.current_org()`) and this service's
+# only cross-tenant reader (`opsgrids_directory`, wired in `tools/dev-bootstrap/init-db.sql`)
+# is deliberately SELECT-only on this exact table — "the verification write stays on the
+# tenant-bound application role" is that file's own comment — a tenant-bound write can never
+# see, update or delete a row another organization holds, proved or not. So when the row this
+# domain already belongs to is *unverified*, this slice cannot tell that apart from *verified*
+# without a read this platform does not grant a live request, and cannot reassign it without a
+# write this platform does not grant one either. Both collisions therefore surface as the same
+# anonymous 409 (`claim_domain` below) — which satisfies "discloses nothing about the holder"
+# for both, at the cost of not implementing "a pending claim never blocks another organization"
+# or "verifying releases a competitor's pending claim" for the cross-organization case. Freeing
+# a domain abandoned by a *different* organization past `domain.CLAIM_TTL` needs a cross-tenant
+# write and belongs in a one-shot, admin-role tool shaped like `tools/reconcile_permissions.py`
+# (dry-run, one transaction per row, an audit row, platform staff only) — not in this endpoint,
+# and not implemented in this slice.
+#
+# What *is* fully implemented: an organization's own claim never blocks itself (re-claiming
+# rotates the token, per `domain.generate_verification_token`), an organization's own claim
+# expires lazily 14 days after it was last (re)claimed and `verify_domain` refuses a stale one
+# with a message that says so, and the internal directory read
+# (`api/internal.py:organization_by_domain`) already refuses to treat an unverified row as
+# proof for anything — unchanged by this slice, and covered by `tests/test_internal.py`.
+
+EVT_DOMAIN_CLAIMED = "core.identity.domain.claimed"
+EVT_DOMAIN_VERIFIED = "core.identity.domain.verified"
+EVT_DOMAIN_RELEASED = "core.identity.domain.released"
+
+
+async def claim_domain(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    payload: DomainIn,
+    *,
+    request: Request | None = None,
+) -> OrgDomain:
+    """Claim a domain, or re-claim one this organization already holds.
+
+    A fresh, unverified row for a domain nobody here has claimed before; a rotated token and a
+    reset clock for one this organization already claimed and has not yet verified; an
+    unchanged, idempotent no-op for one this organization has already verified — there is
+    nothing to prove twice, and rotating a verified domain's token would silently point a
+    published TXT record at a value nobody asked to be re-verified against.
+
+    A domain already claimed or verified by **another** organization is refused with the same
+    anonymous 409 either way — see the module docstring above for why this cannot distinguish
+    the two without a cross-tenant read this platform does not grant a live request.
+    """
+    normalised = domain_module.normalise_domain(payload.domain)
+
+    existing = await selectors.get_domain_by_name(session, ctx.organization_id, normalised)
+    if existing is not None:
+        if existing.verified_at is not None:
+            return existing
+        existing.verification_token = domain_module.generate_verification_token()
+        existing.created_at = utcnow()
+        await session.flush()
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=ctx.organization_id,
+            actor_id=ctx.principal.sub,
+            action="domain.claimed",
+            entity="org_domain",
+            entity_id=existing.id,
+            after={"domain": existing.domain, "reclaimed": True},
+            request=request,
+        )
+        publish_event(
+            session,
+            OutboxEvent,
+            organization_id=ctx.organization_id,
+            event_type=EVT_DOMAIN_CLAIMED,
+            aggregate_type="org_domain",
+            aggregate_id=existing.id,
+            payload={
+                "organization_id": str(ctx.organization_id),
+                "domain_id": str(existing.id),
+                "domain": existing.domain,
+            },
+            actor=_actor(ctx),
+        )
+        return existing
+
+    row = OrgDomain(
+        organization_id=ctx.organization_id,
+        domain=normalised,
+        is_primary=not await selectors.list_domains(session, ctx.organization_id),
+        verification_token=domain_module.generate_verification_token(),
+    )
+    session.add(row)
+    # `uq_org_domains_domain` is the arbiter, not a pre-check `SELECT` — see the module
+    # docstring. A `SELECT` for another organization's row is invisible under row-level
+    # security anyway, and would still race a concurrent claim. Flushed inside a savepoint
+    # so the collision becomes a named, anonymous `ConflictProblem` regardless of whether
+    # the caller reached here over HTTP (where the platform's own `IntegrityError` handler
+    # would otherwise catch it) or by calling this function directly, the same way
+    # `storefront`'s own `claim_custom_domain` names its own collision.
+    try:
+        async with session.begin_nested():
+            await session.flush()
+    except IntegrityError as exc:
+        raise ConflictProblem(
+            "That domain could not be claimed. It may already be in use."
+        ) from exc
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="domain.claimed",
+        entity="org_domain",
+        entity_id=row.id,
+        after={"domain": row.domain, "reclaimed": False},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_DOMAIN_CLAIMED,
+        aggregate_type="org_domain",
+        aggregate_id=row.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "domain_id": str(row.id),
+            "domain": row.domain,
+        },
+        actor=_actor(ctx),
+    )
+    return row
+
+
+async def verify_domain(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    row: OrgDomain,
+    *,
+    resolver: dns_check.Resolver | None = None,
+    request: Request | None = None,
+) -> OrgDomain:
+    """Check DNS for the TXT record this claim asked for, and mark it verified if it is there.
+
+    Idempotent once verified: a second call is a no-op rather than a fresh DNS round trip,
+    because nothing about "already proved" changes by asking again.
+
+    A claim past `domain.CLAIM_TTL` is refused with a message naming re-claiming rather than a
+    bare failed check — the token published for it is treated as abandoned evidence, the same
+    rule `domain.is_claim_expired` states.
+    """
+    if row.verified_at is not None:
+        return row
+    if domain_module.is_claim_expired(row.created_at):
+        raise BusinessRuleProblem(
+            "This claim has expired. Claim the domain again to get a new verification code."
+        )
+
+    host = domain_module.verification_txt_host(row.domain)
+    expected = domain_module.verification_txt_value(row.verification_token)
+    found = await dns_check.txt_contains(host, expected, resolver=resolver)
+    if not found:
+        raise BusinessRuleProblem(
+            f"No matching TXT record found at {host}. DNS changes can take a while to "
+            "propagate — publish the record and try again shortly."
+        )
+
+    row.verified_at = utcnow()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="domain.verified",
+        entity="org_domain",
+        entity_id=row.id,
+        after={"domain": row.domain, "verified": True},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_DOMAIN_VERIFIED,
+        aggregate_type="org_domain",
+        aggregate_id=row.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "domain_id": str(row.id),
+            "domain": row.domain,
+        },
+        actor=_actor(ctx),
+    )
+    return row
+
+
+async def release_domain(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    row: OrgDomain,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Release a domain. Once gone, `GET /internal/v1/domains/{domain}` finds nothing at all —
+    no different, from auth-service's side, than a domain nobody ever claimed."""
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="domain.released",
+        entity="org_domain",
+        entity_id=row.id,
+        before={"domain": row.domain, "verified": row.verified_at is not None},
+        request=request,
+    )
+    domain_id, domain_name = row.id, row.domain
+    await session.delete(row)
+    await session.flush()
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_DOMAIN_RELEASED,
+        aggregate_type="org_domain",
+        aggregate_id=domain_id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "domain_id": str(domain_id),
+            "domain": domain_name,
+        },
+        actor=_actor(ctx),
+    )
 
 
 # --------------------------------------------------------------------- invitations

@@ -25,6 +25,11 @@ class Settings(ServiceSettings):
     #: says none ever should.
     employee_service_url: str = "http://localhost:8120"
 
+    #: `POST /domains/{id}/verify` runs a real DNS lookup, so it is bounded per organization
+    #: the same way `storefront`'s own domain check is — one caller retrying in a loop must
+    #: not become this process's DNS traffic pattern.
+    domain_verify_rate_limit_window_seconds: int = 30
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]
