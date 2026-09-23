@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -57,6 +58,7 @@ from typing import Any
 
 import httpx
 import pytest
+from sqlalchemy.engine import make_url
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -65,17 +67,32 @@ ROOT = Path(__file__).resolve().parent.parent
 #: The worktree database. Pinned here and passed explicitly to every subprocess: the live
 #: demo lives in `opsgrids`, and no `.env` on any developer's machine may steer this suite
 #: into it.
-DATABASE_URL = "postgresql+asyncpg://opsgrids:opsgrids@localhost:5434/opsgrids_wt"
+#:
+#: `E2E_DATABASE`, `E2E_REDIS_DB` and `E2E_VHOST` move the whole run to a second isolated set
+#: — for a branch whose migrations must not land in the `opsgrids_wt` other worktrees share.
+#: They are deliberately *not* `DATABASE_URL`: nothing in `.env` sets them, so the pin still
+#: cannot be inherited by accident, and the shared `opsgrids` is refused outright.
+_E2E_DATABASE = os.environ.get("E2E_DATABASE", "opsgrids_wt")
+# A bare identifier and nothing else: `opsgrids?ssl=disable` or `opsgrids/x` would otherwise
+# slip past a string comparison and still resolve to the live database.
+if not re.fullmatch(r"[a-z][a-z0-9_]*", _E2E_DATABASE):
+    raise RuntimeError(f"E2E_DATABASE must be a bare database name, got {_E2E_DATABASE!r}")
+DATABASE_URL = f"postgresql+asyncpg://opsgrids:opsgrids@localhost:5434/{_E2E_DATABASE}"
+# And judged on what the URL actually resolves to, not on what the variable said.
+if make_url(DATABASE_URL).database == "opsgrids":
+    raise RuntimeError("this suite must never run against the live `opsgrids` database")
 
 #: Its own Redis db. The gateway keeps permission versions and rate-limit counters here, and
 #: sharing db 0 with a running stack makes both flaky.
-REDIS_URL = "redis://localhost:6380/9"
+REDIS_URL = f"redis://localhost:6380/{int(os.environ.get('E2E_REDIS_DB', '9'))}"
 
 #: Its own broker vhost, created on demand. Consumer queue names are compiled into the
 #: services (`account.events`), so on the default vhost this suite and a running stack would
 #: round-robin the same queue — and an event minted here could be consumed by a process
 #: writing to the live database.
-VHOST = "opsgrids_e2e"
+VHOST = os.environ.get("E2E_VHOST", "opsgrids_e2e")
+if VHOST in ("", "/"):
+    raise RuntimeError("E2E_VHOST must name a vhost of its own, never the default one")
 RABBITMQ_URL = f"amqp://opsgrids:opsgrids@localhost:5673/{VHOST}"
 RABBITMQ_MGMT = "http://localhost:15673"
 
@@ -92,6 +109,9 @@ PASSWORD = "e2e-Sufficiently-Long-Passw0rd!"
 #: plumbing), and the only way to prove its sending-identity API works for an authenticated
 #: caller — rather than merely refusing one with no token — is to boot the real service and
 #: drive it over HTTP.
+#: `subscription` and `finance` joined for `test_bundle_journey.py`: a bundle is bought as a
+#: subscription, and the trio it buys includes Finance — whose route has to answer 200 through
+#: the gateway, not merely stop answering 402 against a port nothing listens on.
 SERVICES = (
     "account",
     "product",
@@ -103,6 +123,8 @@ SERVICES = (
     "approval",
     "notification",
     "catalog",
+    "subscription",
+    "finance",
     "app-gateway",
 )
 
@@ -119,7 +141,9 @@ UPSTREAM_PORTS = {
     8131: "deal",
     8151: "notification",
     8152: "approval",
+    8161: "subscription",
     8164: "catalog",
+    8171: "finance",
 }
 
 #: The background processes that carry an event from the service that staged it to the service
@@ -134,7 +158,13 @@ UPSTREAM_PORTS = {
 #: `hrms.time.regularization.applied` and approval consumes that. Drop any one of these six
 #: processes and the journey stalls at a different step, which is exactly what makes them worth
 #: running for real.
+#:
+#: The bundle journey adds the commerce loop: subscription's relay publishes the
+#: `commerce.subscription.*` event, product's consumer projects each member's activation, and
+#: account's consumer (already here) installs each member's manifest.
 BACKGROUND = (
+    ("subscription-relay", "subscription", "app.relay"),
+    ("product-consumer", "product", "app.consumers"),
     ("product-relay", "product", "app.relay"),
     ("account-consumer", "account", "app.consumers"),
     ("employee-relay", "employee", "app.relay"),
@@ -270,6 +300,8 @@ def _base_env(ports: dict[str, int], routes_file: Path) -> dict[str, str]:
         "JWKS_URL": f"http://127.0.0.1:{ports['auth']}/.well-known/jwks.json",
         "ACCOUNT_SERVICE_URL": f"http://127.0.0.1:{ports['account']}",
         "PRODUCT_SERVICE_URL": f"http://127.0.0.1:{ports['product']}",
+        # subscription resolves the pin (and a bundle's members) from catalog's internal read.
+        "CATALOG_SERVICE_URL": f"http://127.0.0.1:{ports['catalog']}",
         # approval-service's hierarchy backfill reads employee-service's internal export
         # (ADR-0006 §2.1). The Wave 0 journey drives the hierarchy through the *event* stream
         # rather than the backfill, but the setting is part of the service's configuration and
@@ -489,6 +521,61 @@ def probe(platform: Platform) -> Any:
         return dict(json.loads(raw.splitlines()[-1]))
 
     return _read
+
+
+@pytest.fixture(scope="session")
+def event_probe(platform: Platform) -> Any:
+    """`probe`, for any service's outbox (`which="product"`) or consumer ledger
+    (`which="account"`), filtered by an event-type `LIKE` pattern — so the bundle journey can
+    watch `commerce.subscription.%` leave subscription-service and land in account-service."""
+
+    def _read(service: str, which: str, org_id: str, pattern: str) -> dict[str, Any]:
+        raw = _seed("_probe.py", service, which, org_id, pattern)
+        return dict(json.loads(raw.splitlines()[-1]))
+
+    return _read
+
+
+@pytest.fixture(scope="session")
+def operator_call(platform: Platform) -> Any:
+    """POST to a service's `/internal/v1` API with a service token, as an operator surface would.
+
+    Bundles are sold only through subscription's internal operator routes (the customer route
+    refuses them), and no operator console in this harness delegates yet — so the journey makes
+    the delegated call itself, with a token minted from the run's shared signing key and
+    addressed to the service by name, exactly as the gateway mints its own.
+    """
+    from platform_core.config import ServiceSettings
+    from platform_core.internal_auth import mint_service_token
+
+    caller = ServiceSettings(
+        service_name="e2e-operator", db_schema="public", internal_service_token=INTERNAL_TOKEN
+    )
+
+    def _post(service: str, path: str, body: dict[str, Any]) -> httpx.Response:
+        token = mint_service_token(caller, audience=service)
+        return httpx.post(
+            f"{platform.url(service)}{path}",
+            json=body,
+            headers={"X-Internal-Token": token, "X-Calling-Service": "e2e-operator"},
+            timeout=15.0,
+        )
+
+    return _post
+
+
+@pytest.fixture(scope="session")
+def bundle_tenant(platform: Platform, tenants: dict[str, Any]) -> dict[str, Any]:
+    """A fresh organization for the bundle journey, with a signed-in owner and nothing bought.
+
+    Its own tenant, like `approval_tenant`, because the journey's first assertion is a 402 on
+    every trio member — which alpha (CRM) and the approval tenant (HRMS) would each fail for a
+    reason unrelated to bundles. Depends on `tenants` for ordering only.
+    """
+    run = f"bundle-{uuid.uuid4().hex[:8]}"
+    seeded = json.loads(_seed("_seed_approval_org.py", "account", run).splitlines()[-1])
+    _seed("_seed_auth.py", "auth", seeded["owner"]["user_id"], PASSWORD, "keep")
+    return {**seeded, "run": run, "password": PASSWORD}
 
 
 @pytest.fixture(scope="session")

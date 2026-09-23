@@ -18,7 +18,10 @@ from __future__ import annotations
 import sys
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -33,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.config import settings
 from app.main import app
 from app.models import SCHEMA
-from app.storage import get_object_store
+from app.storage import OrphanScanner, get_object_store
 from platform_core.auth import Principal, get_principal
 from platform_core.cache import close_redis, init_redis
 from platform_core.db import TENANT_GUC, get_session
@@ -104,6 +107,58 @@ async def admin_session() -> AsyncIterator[AsyncSession]:
 def store() -> FakeObjectStore:
     """Records puts and deletes rather than performing them. See the module docstring."""
     return FakeObjectStore(settings())
+
+
+@pytest_asyncio.fixture
+async def sweep_engines(session: AsyncSession) -> AsyncIterator[tuple[Any, Any]]:
+    """The two engines the purge sweep runs on, wired exactly as `app/cron.py`'s `main()`
+    wires them. Depends on `session` only for its truncation, so a sweep test starts from a
+    clean schema. Same shape as `services/approval/tests/conftest.py`'s own `sweep_engines`.
+
+    * **discovery** connects on the real **outbox DSN** — the BYPASSRLS role the sweep
+      discovers due purges (and orphan candidates) with. Using it here rather than the admin
+      role proves the column grant `migrations/env.py`'s `grant_purge_sweep_reader` adds is
+      actually in effect: without it the sweep would raise `42501`; without BYPASSRLS it
+      would quietly find nothing.
+    * **work** connects on the app role, with the tenant bound per transaction, matching
+      `session_scope(organization_id=...)` in the real process.
+    """
+    cfg = settings()
+    discovery = create_async_engine(cfg.outbox_dsn, connect_args=_connect_args())
+    work = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
+    yield discovery, work
+    await discovery.dispose()
+    await work.dispose()
+
+
+@pytest_asyncio.fixture
+async def sweep(sweep_engines: tuple[Any, Any], store: FakeObjectStore) -> AsyncIterator[Any]:
+    """A `PurgeSweep` over real PostgreSQL, drivable one `tick(now)` at a time — real rows,
+    real locks, real policies, with no clock patched and the fake store standing in for S3 so
+    the row-purge assertions do not depend on `make infra`. The orphan pass stays disabled
+    here; `test_storage_minio.py` is where the real, list-capable bucket is exercised."""
+    from app.cron import PurgeSweep
+
+    discovery_engine, work_engine = sweep_engines
+    discovery = async_sessionmaker(discovery_engine, expire_on_commit=False)
+    work_maker = async_sessionmaker(work_engine, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def work_scope(organization_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
+        async with work_maker() as s, s.begin():
+            await s.execute(
+                text(f"SELECT set_config('{TENANT_GUC}', :org, true)"),
+                {"org": str(organization_id)},
+            )
+            yield s
+
+    yield PurgeSweep(
+        discovery_factory=discovery,
+        work_scope=work_scope,
+        store=store,
+        scanner=OrphanScanner(settings()),
+        retention=timedelta(days=30),
+    )
 
 
 @pytest_asyncio.fixture

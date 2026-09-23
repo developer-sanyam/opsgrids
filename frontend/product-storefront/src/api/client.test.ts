@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { adoptTheme as forkTheme } from "@/theme/store";
 import type { StoreDoc } from "@/theme/schema";
-import { depot, suggestedBrand } from "@/theme/themes";
+import { depot } from "@/theme/themes";
 
 import { listCategories, listProducts, saveStore } from "./client";
 
@@ -14,7 +14,7 @@ import { listCategories, listProducts, saveStore } from "./client";
  * in the library on any given day.
  */
 function storeInMode(mode: StoreDoc["mode"]): StoreDoc {
-  return { ...forkTheme(depot, suggestedBrand(depot.key)), mode };
+  return { ...forkTheme(depot), mode };
 }
 
 describe("the fixture catalogue slice", () => {

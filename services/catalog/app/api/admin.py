@@ -26,6 +26,7 @@ from starlette.requests import Request
 
 from app import selectors, services
 from app.models import PLATFORM_ORG, Plan, PlanVersion
+from app.registry import ProductRegistry
 from app.schemas import PlanCreateIn, PlanOut, PlanPatchIn, PlanVersionOut, VersionCreateIn
 from platform_core.auth import CurrentPrincipal, Principal
 from platform_core.config import ServiceSettings
@@ -75,6 +76,15 @@ async def get_operator_session(
 
 
 SessionDep = Annotated[AsyncSession, Depends(get_operator_session)]
+
+
+def get_product_registry(request: Request) -> ProductRegistry:
+    """The product-registry client, assembled once in the app lifespan. A dependency so a test
+    can substitute a fake and never make a real HTTP call."""
+    return request.app.state.product_registry  # type: ignore[no-any-return]
+
+
+RegistryDep = Annotated[ProductRegistry, Depends(get_product_registry)]
 
 
 def _plan_out(plan: Plan, versions: list[PlanVersion]) -> PlanOut:
@@ -134,10 +144,13 @@ async def create_version(
     payload: VersionCreateIn,
     session: SessionDep,
     operator: OperatorDep,
+    registry: RegistryDep,
     request: Request,
 ) -> PlanVersionOut:
     plan = await services.require_plan(session, plan_id)
-    version = await services.create_version(session, operator, plan, payload, request=request)
+    version = await services.create_version(
+        session, operator, plan, payload, request=request, registry=registry
+    )
     fresh = await selectors.get_version(session, version.id)
     return PlanVersionOut.model_validate(fresh)
 

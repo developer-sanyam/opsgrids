@@ -9,6 +9,10 @@ admin-most template is granted to the organization's owners. Without this, activ
 the gateway's 402 gate while every request behind it still 403s — the product is paid for and
 unusable, and nothing errors.
 
+A bundle subscription switches on several products, named in the event's `entitled_products`,
+and each is installed from its own manifest. The bundle's own key (`suite`) has no manifest and
+is never installed: it is sold, not routed (docs/commerce-packaging.md).
+
 The manifest comes from `libs/contracts/permissions/<product>.json`, exported from each
 product's own `app/catalogue.py` at build time (`tools/export_permissions.py`). Data, not an
 import: pulling another service's catalogue module into this process is exactly the coupling
@@ -64,6 +68,9 @@ ENTITLING_SUBSCRIPTION_EVENTS = (
     "commerce.subscription.upgraded",
     "commerce.subscription.downgraded",
     "commerce.subscription.past_due",
+    # Not a transition: subscription-service's one-off backfill re-announces a bundle that
+    # predates `entitled_products`, so its members' manifests are installed at last.
+    "commerce.subscription.entitlements_resynced",
 )
 
 #: Decided from the payload's `state`, not the event name, mirroring the projection in
@@ -72,12 +79,38 @@ ENTITLING_SUBSCRIPTION_EVENTS = (
 _DE_ENTITLING_STATES = ("suspended", "cancelled")
 
 
+def _products_to_install(payload: dict[str, Any]) -> list[str]:
+    """Every product this event switches on, in order, de-duplicated.
+
+    A bundle subscription names its members in `entitled_products`, and each member is its own
+    manifest — `suite` has none, and never will: it is sold, not routed. An event without the
+    field (a hand activation, or a subscription event from before it existed) speaks for the one
+    product it names. A malformed value raises rather than guessing which products a customer
+    paid for.
+    """
+    value = payload.get("entitled_products")
+    if value is None:
+        return [payload["product_key"]]
+    if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
+        raise ValueError(f"entitled_products must be a list of product keys, got {value!r}")
+    keys: list[str] = []
+    for key in value:
+        if key not in keys:
+            keys.append(key)
+    return keys
+
+
 async def install_registration_on_activation(envelope: dict[str, Any]) -> None:
-    """Install the activated product's manifest for the organization, idempotently."""
+    """Install the manifest of every product the event switches on, idempotently.
+
+    One transaction for all of them, marked processed once: a trio installs three manifests or
+    none, so a redelivery after a failure retries the whole set rather than skipping the members
+    that happened to land.
+    """
     event_id = uuid.UUID(envelope["event_id"])
     payload = envelope["payload"]
     organization_id = uuid.UUID(payload["organization_id"])
-    product_key: str = payload["product_key"]
+    product_keys = _products_to_install(payload)
     state = payload.get("state")
 
     # The GUC is set here, per message, for the whole transaction: the role and grant writes
@@ -91,33 +124,36 @@ async def install_registration_on_activation(envelope: dict[str, Any]) -> None:
             mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
             return
 
-        manifest = load_product_manifest(product_key)
-        if manifest is None:
-            log.warning(
-                "registration.manifest.missing",
-                event_id=str(event_id),
-                organization_id=str(organization_id),
-                product_key=product_key,
-                hint="no permission manifest ships for this product; if one should, export "
-                "it (make openapi) and re-run tools/wire_product.py for this organization",
+        summaries: list[dict[str, Any]] = []
+        for product_key in product_keys:
+            manifest = load_product_manifest(product_key)
+            if manifest is None:
+                log.warning(
+                    "registration.manifest.missing",
+                    event_id=str(event_id),
+                    organization_id=str(organization_id),
+                    product_key=product_key,
+                    hint="no permission manifest ships for this product; if one should, export "
+                    "it (make openapi) and re-run tools/wire_product.py for this organization",
+                )
+                continue
+            summaries.append(
+                await services.install_product_registration(
+                    session,
+                    org_id=organization_id,
+                    manifest=manifest,
+                    acting_as="product-activation",
+                )
             )
-            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
-            return
-
-        summary = await services.install_product_registration(
-            session,
-            org_id=organization_id,
-            manifest=manifest,
-            acting_as="product-activation",
-        )
         mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
 
-    log.info(
-        "registration.installed",
-        event_id=str(event_id),
-        organization_id=str(organization_id),
-        **summary,
-    )
+    for summary in summaries:
+        log.info(
+            "registration.installed",
+            event_id=str(event_id),
+            organization_id=str(organization_id),
+            **summary,
+        )
 
 
 consumer.on(EVT_PRODUCT_ACTIVATED)(install_registration_on_activation)

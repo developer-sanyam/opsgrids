@@ -21,6 +21,7 @@ from platform_core.events import build_envelope
 READ = "core.approval.request.read"
 DECIDE = "core.approval.request.decide"
 REQUEST_TYPE_REGULARIZATION = "hrms.time.regularization"
+REQUEST_TYPE_LEAVE = "hrms.time.leave"
 
 
 def principal_for(
@@ -126,6 +127,38 @@ async def open_request(
             source_ref=source_ref or uuid.uuid4(),
             requester_employee_id=requester_employee_id,
             summary=summary or {"date": "2026-09-12", "from": "absent", "to": "present"},
+            request_note=request_note,
+        )
+
+
+async def open_leave(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    *,
+    source_ref: uuid.UUID | None = None,
+    requester_employee_id: uuid.UUID,
+    summary: dict[str, Any] | None = None,
+    request_note: str | None = "family trip",
+) -> Any:
+    """`open_leave_request`, wrapped in its own transaction — `open_request`'s twin for the
+    second request type this service routes (HRMS leave slice 1)."""
+    from app.services import open_leave_request
+
+    async with session.begin():
+        return await open_leave_request(
+            session,
+            organization_id=org_id,
+            source_ref=source_ref or uuid.uuid4(),
+            requester_employee_id=requester_employee_id,
+            summary=summary
+            or {
+                "leave_type_id": str(uuid.uuid4()),
+                "start_date": "2027-03-01",
+                "end_date": "2027-03-02",
+                "half_day_start": False,
+                "half_day_end": False,
+                "total_half_days": 4,
+            },
             request_note=request_note,
         )
 
@@ -335,6 +368,134 @@ def regularization_applied_envelope(
         "aggregate_id": str(regularization_request_id),
         "occurred_at": datetime.now(UTC).isoformat(),
         "producer": "attendance",
+        "correlation_id": None,
+        "causation_id": None,
+        "actor": None,
+        "schema_uri": f"opsgrids://contracts/{event_type}/v1",
+        "payload": payload,
+    }
+
+
+def leave_requested_envelope(
+    *,
+    event_id: uuid.UUID | None = None,
+    organization_id: uuid.UUID,
+    leave_request_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    leave_type_id: uuid.UUID | None = None,
+    start_date: str = "2027-03-01",
+    end_date: str = "2027-03-02",
+    half_day_start: bool = False,
+    half_day_end: bool = False,
+    total_half_days: int = 4,
+    reason: str = "family trip",
+    event_type: str = "hrms.time.leave.requested",
+    payload_organization_id: uuid.UUID | str | None = None,
+) -> dict[str, Any]:
+    """An envelope shaped exactly the way `services/leave/app/services.py::apply_for_leave`
+    publishes it — verified against that code, not assumed, the same discipline
+    `regularization_requested_envelope` states for its own source. `payload_organization_id`
+    lets a test build the one shape production never does — an envelope and payload that
+    disagree — without hand-rolling the whole envelope."""
+    payload = {
+        "organization_id": str(
+            payload_organization_id if payload_organization_id is not None else organization_id
+        ),
+        "leave_request_id": str(leave_request_id),
+        "employee_id": str(employee_id),
+        "leave_type_id": str(leave_type_id or uuid.uuid4()),
+        "start_date": start_date,
+        "end_date": end_date,
+        "half_day_start": half_day_start,
+        "half_day_end": half_day_end,
+        "total_half_days": total_half_days,
+        "reason": reason,
+    }
+    return {
+        "event_id": str(event_id or uuid.uuid4()),
+        "event_type": event_type,
+        "version": 1,
+        "organization_id": str(organization_id),
+        "aggregate_type": "leave_request",
+        "aggregate_id": str(leave_request_id),
+        "occurred_at": datetime.now(UTC).isoformat(),
+        "producer": "leave",
+        "correlation_id": None,
+        "causation_id": None,
+        "actor": None,
+        "schema_uri": f"opsgrids://contracts/{event_type}/v1",
+        "payload": payload,
+    }
+
+
+def leave_applied_envelope(
+    *,
+    event_id: uuid.UUID | None = None,
+    organization_id: uuid.UUID,
+    leave_request_id: uuid.UUID,
+    approval_request_id: uuid.UUID | None = None,
+    outcome: str = "applied",
+    failure_reason: str | None = None,
+    event_type: str = "hrms.time.leave.applied",
+    payload_organization_id: uuid.UUID | str | None = None,
+) -> dict[str, Any]:
+    """Shaped the way `_publish_leave_applied` publishes it (verified, ADR-0006 §12)."""
+    payload: dict[str, Any] = {
+        "organization_id": str(
+            payload_organization_id if payload_organization_id is not None else organization_id
+        ),
+        "leave_request_id": str(leave_request_id),
+        "approval_request_id": str(approval_request_id) if approval_request_id else None,
+        "request_type": REQUEST_TYPE_LEAVE,
+        "outcome": outcome,
+    }
+    if failure_reason is not None:
+        payload["failure_reason"] = failure_reason
+    return {
+        "event_id": str(event_id or uuid.uuid4()),
+        "event_type": event_type,
+        "version": 1,
+        "organization_id": str(organization_id),
+        "aggregate_type": "leave_request",
+        "aggregate_id": str(leave_request_id),
+        "occurred_at": datetime.now(UTC).isoformat(),
+        "producer": "leave",
+        "correlation_id": None,
+        "causation_id": None,
+        "actor": None,
+        "schema_uri": f"opsgrids://contracts/{event_type}/v1",
+        "payload": payload,
+    }
+
+
+def leave_cancelled_envelope(
+    *,
+    event_id: uuid.UUID | None = None,
+    organization_id: uuid.UUID,
+    leave_request_id: uuid.UUID,
+    employee_id: uuid.UUID | None = None,
+    was_status: str = "pending",
+    event_type: str = "hrms.time.leave.cancelled",
+    payload_organization_id: uuid.UUID | str | None = None,
+) -> dict[str, Any]:
+    """Shaped the way `cancel_leave_request` publishes it (verified, ADR-0006 §12)."""
+    payload = {
+        "organization_id": str(
+            payload_organization_id if payload_organization_id is not None else organization_id
+        ),
+        "leave_request_id": str(leave_request_id),
+        "employee_id": str(employee_id or uuid.uuid4()),
+        "was_status": was_status,
+    }
+    return {
+        "event_id": str(event_id or uuid.uuid4()),
+        "event_type": event_type,
+        "version": 1,
+        "organization_id": str(organization_id),
+        "aggregate_type": "leave_request",
+        "aggregate_id": str(leave_request_id),
+        "occurred_at": datetime.now(UTC).isoformat(),
+        "producer": "leave",
         "correlation_id": None,
         "causation_id": None,
         "actor": None,

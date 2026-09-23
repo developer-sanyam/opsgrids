@@ -88,7 +88,7 @@ export function DeliveryPage() {
         actions={
           <div className="flex flex-wrap items-center justify-end gap-2">
             {USE_FIXTURES ? (
-              <SampleChip title="Representative data — services/storefront doesn't exist yet, so zones, checks and demand come from local fixtures" />
+              <SampleChip title="Representative data — running on local fixtures: zones, checks and demand are sample data" />
             ) : null}
             {canWrite && state.status === "success" ? (
               <Button onClick={() => setEditing({ zone: null })}>Add a zone</Button>

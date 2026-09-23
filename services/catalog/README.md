@@ -55,7 +55,10 @@ configuration over the tables above — a **bundle** is a plan version whose fea
 members and its rung, and a **partner price** is `restricted_to_org_id` pointed at the reseller,
 the same audience-of-one mechanism a negotiated enterprise price uses. `seat_classes` is the one
 that needed a table. Migration `f78c86fcec78` seeds a graduated ladder (`suite/duo`, `trio`,
-`full`) whose monotonicity is checked by a test against the seed's own numbers.
+`full`) whose monotonicity is checked by a test against the seed's own numbers. Authoring a
+version that declares `bundled_products` asks product-service's registry
+(`GET /internal/v1/products`, `PRODUCT_SERVICE_URL`) whether every member is a real, non-platform,
+non-bundle product and refuses the draft otherwise (503 if the registry cannot be reached).
 
 ## Surfaces
 

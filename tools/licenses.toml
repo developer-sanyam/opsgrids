@@ -50,3 +50,33 @@ allowed = [
 # Our own workspace library. It is first-party code, not a third-party dependency, and
 # its pyproject declares no licence because none is granted.
 platform-core = "first-party workspace package"
+
+# ---------------------------------------------------------------- the frontend (make frontend-licenses)
+# What `pnpm licenses list --prod` reports for frontend/ — the packages that ship to a browser.
+# Dev tooling (eslint, vitest, dependency-cruiser) is excluded by --prod on purpose: it never
+# reaches a customer, and its licence terms do not travel with the product.
+#
+# npm packages declare SPDX identifiers, so this list has one spelling per licence rather than
+# the several the Python side needs. The same families, the same reasoning, the same absences:
+# no GPL, AGPL, LGPL, SSPL or EUPL.
+[npm]
+allowed = [
+    "MIT",
+    "MIT-0",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "Apache-2.0",
+    # Blue Oak Model License: permissive, patent grant included, no copyleft.
+    "BlueOak-1.0.0",
+    # Public-domain dedications
+    "CC0-1.0",
+    "Unlicense",
+    # File-level copyleft, acceptable for an unmodified dependency (as above)
+    "MPL-2.0",
+]
+
+# npm packages allowed by name, each with the reason. Empty: every production package declares
+# an SPDX licence that is on the list above.
+[npm.packages]

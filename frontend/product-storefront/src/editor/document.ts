@@ -70,7 +70,6 @@ export type EditorAction =
   | { type: "reorder-depth"; id: string; direction: "forward" | "backward" }
   | { type: "set-setting"; id: string; key: string; value: SettingValue }
   | { type: "set-token"; key: keyof ThemeTokens; value: string | number }
-  | { type: "set-brand"; key: keyof StoreDoc["brand"]; value: string }
   | { type: "undo" }
   | { type: "redo" }
   | { type: "saved"; store: StoreDoc }
@@ -443,15 +442,6 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         tokens: { ...state.present.tokens, [action.key]: action.value },
       };
       return commit(state, next, `token:${action.key}`);
-    }
-
-    case "set-brand": {
-      if (state.present.brand[action.key] === action.value) return state;
-      const next: StoreDoc = {
-        ...state.present,
-        brand: { ...state.present.brand, [action.key]: action.value },
-      };
-      return commit(state, next, `brand:${action.key}`);
     }
 
     case "undo": {
