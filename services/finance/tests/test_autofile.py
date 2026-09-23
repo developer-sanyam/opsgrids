@@ -40,6 +40,7 @@ from app.schemas import (
     InvoiceLineCreate,
 )
 from platform_core.db import dispose_engine, init_engine
+from platform_core.events import PLATFORM_SCHEDULE_REQUESTED
 from tests.helpers import admin_ctx
 
 pytestmark = pytest.mark.integration
@@ -168,6 +169,35 @@ def _envelope(row: OutboxEvent) -> dict[str, Any]:
         "event_type": row.event_type,
         "organization_id": str(row.organization_id),
         "payload": row.payload,
+    }
+
+
+async def _scheduled_requests(session, org_id) -> list[OutboxEvent]:
+    """Rows finance staged asking the scheduler to deliver a filing retry later (ADR-0015) —
+    `request_filing`'s other branch, taken whenever `not_before` is still in the future."""
+    stmt = (
+        select(OutboxEvent)
+        .where(
+            OutboxEvent.organization_id == org_id,
+            OutboxEvent.event_type == PLATFORM_SCHEDULE_REQUESTED,
+        )
+        .order_by(OutboxEvent.created_at)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+def _fire(row: OutboxEvent) -> dict[str, Any]:
+    """The envelope the scheduler would eventually publish once one of its own rows' `due_at`
+    arrives — its own outbox row, addressed at the target event type, is what the relay turns
+    into a message; this stands in for that the same way `_envelope` stands in for the relay
+    itself. A fresh `event_id`, because that is what a brand-new outbox row on the scheduler's
+    own outbox actually gets."""
+    target = row.payload["target"]
+    return {
+        "event_id": str(uuid.uuid4()),
+        "event_type": target["event_type"],
+        "organization_id": str(row.organization_id),
+        "payload": target["payload"],
     }
 
 
@@ -496,11 +526,13 @@ class TestFilingIsIdempotent:
 
 
 class TestRetries:
-    async def test_an_outage_records_a_pending_attempt_and_queues_the_next(
+    async def test_an_outage_records_a_pending_attempt_and_schedules_the_next(
         self, session, org_id, monkeypatch
     ) -> None:
         """The document is fine, the portal is not — so the attempt is `pending`, and the retry is
-        a queued message rather than a sleeping coroutine nobody can inspect."""
+        **scheduled** rather than redelivered at once (ADR-0015): its backoff is still in the
+        future, so `request_filing` asks the scheduler to hold it instead of queuing another
+        `filing_requested` directly."""
         ctx = admin_ctx(org_id)
         invoice = await _finalize(session, ctx, "INV-AUTO-RETRY-1")
         portal = DownPortal()
@@ -513,13 +545,17 @@ class TestRetries:
         async with session.begin():
             filings = await selectors.filings_for_invoice(session, org_id, invoice.id)
             queued = await _requests(session, org_id)
+            scheduled = await _scheduled_requests(session, org_id)
         assert [f.status for f in filings] == ["pending"]
         assert filings[0].error_code == domain.ERR_PORTAL_UNAVAILABLE
-        assert len(queued) == 2
-        retry = queued[1].payload
+        # Only the finalize request was published directly; the retry went to the scheduler.
+        assert len(queued) == 1
+        assert len(scheduled) == 1
+        retry = scheduled[0].payload["target"]["payload"]
         assert retry["attempt"] == 2
         assert retry["trigger"] == "retry"
         assert retry["not_before"] is not None
+        assert scheduled[0].payload["due_at"] == retry["not_before"]
 
     async def test_the_backoff_grows_and_is_capped(self) -> None:
         """Exponential so a struggling portal is not hammered, capped because the obligation has a
@@ -543,19 +579,47 @@ class TestRetries:
         portal = DownPortal()
         monkeypatch.setattr("app.consumers.get_irp_client", lambda: portal)
 
+        # `_fire` delivers a retry the instant it is scheduled, not `FILING_RETRY_CEILING` (up to
+        # an hour) later the way the real scheduler would — this loop cannot wait for real clock
+        # time to actually reach every retry's `not_before`. The consumer's early-arrival guard
+        # (ADR-0015 §5) compares against the real wall clock, so without this the whole chain
+        # would look like it kept arriving early and never advance past attempt 1. Frozen safely
+        # past the worst-case cumulative backoff this chain can produce.
+        frozen_now = datetime.now(UTC) + domain.FILING_RETRY_CEILING * domain.MAX_FILING_ATTEMPTS
+
+        class _FrozenNow(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen_now
+
+        monkeypatch.setattr("app.consumers.datetime", _FrozenNow)
+
+        # Every retry after the first is scheduled rather than queued directly (ADR-0015), so
+        # draining the whole chain means feeding both a direct `_requests` row and, once one
+        # exists, the envelope a scheduler firing would eventually publish (`_fire`).
         handled: set[uuid.UUID] = set()
         for _ in range(domain.MAX_FILING_ATTEMPTS + 3):
             async with session.begin():
-                pending = [row for row in await _requests(session, org_id) if row.id not in handled]
-            if not pending:
-                break
-            for row in pending:
+                all_direct = await _requests(session, org_id)
+                all_scheduled = await _scheduled_requests(session, org_id)
+                direct = [row for row in all_direct if row.id not in handled]
+                scheduled = [row for row in all_scheduled if row.id not in handled]
+            pending_envelopes = []
+            for row in direct:
                 handled.add(row.id)
-                await file_requested_invoice(_envelope(row))
+                pending_envelopes.append(_envelope(row))
+            for row in scheduled:
+                handled.add(row.id)
+                pending_envelopes.append(_fire(row))
+            if not pending_envelopes:
+                break
+            for envelope in pending_envelopes:
+                await file_requested_invoice(envelope)
 
         async with session.begin():
             filings = await selectors.filings_for_invoice(session, org_id, invoice.id)
             queued = await _requests(session, org_id)
+            scheduled = await _scheduled_requests(session, org_id)
 
         assert portal.calls == domain.MAX_FILING_ATTEMPTS
         assert len(filings) == domain.MAX_FILING_ATTEMPTS
@@ -563,7 +627,9 @@ class TestRetries:
         assert filings[0].status == "failed"
         assert filings[0].error_code == domain.ERR_RETRY_EXHAUSTED
         assert {f.status for f in filings[1:]} == {"pending"}
-        assert len(queued) == domain.MAX_FILING_ATTEMPTS, "a retry was queued past the budget"
+        assert len(queued) + len(scheduled) == domain.MAX_FILING_ATTEMPTS, (
+            "a retry was queued or scheduled past the budget"
+        )
 
     async def test_giving_up_surfaces_to_the_operator(self, client, session, org_id) -> None:
         """A terminal failure that nobody can see is the same as no failure at all. The read model
@@ -619,6 +685,115 @@ class TestRetries:
         assert failed[0].payload["terminal"] is True
         # The finalize request, and nothing after it: the budget was already spent.
         assert len(queued) == 1
+
+
+# --------------------------------------------------------------------- not_before (ADR-0015)
+
+
+class TestNotBeforeScheduling:
+    async def test_a_past_not_before_is_dispatched_immediately(self, session, org_id) -> None:
+        """`not_before` in the past must behave exactly as if it were absent — the platform must
+        never wait for a moment that has already happened, and this is the one branch a bare
+        `> now` comparison could get backwards."""
+        ctx = admin_ctx(org_id)
+        invoice = await _finalize(session, ctx, "INV-AUTO-PASTNB-1")
+
+        async with session.begin():
+            services.request_filing(
+                session,
+                ctx,
+                invoice,
+                attempt=2,
+                not_before=datetime.now(UTC) - timedelta(minutes=1),
+                trigger="retry",
+            )
+
+        async with session.begin():
+            direct = await _requests(session, org_id)
+            scheduled = await _scheduled_requests(session, org_id)
+        # One from finalize (attempt 1), one from the manually staged past-due retry — both
+        # published directly, none scheduled.
+        assert len(direct) == 2
+        assert scheduled == []
+
+    async def test_a_null_not_before_is_dispatched_immediately(self, session, org_id) -> None:
+        ctx = admin_ctx(org_id)
+        invoice = await _finalize(session, ctx, "INV-AUTO-NONB-1")
+
+        async with session.begin():
+            services.request_filing(session, ctx, invoice, attempt=1, trigger="finalized")
+
+        async with session.begin():
+            direct = await _requests(session, org_id)
+            scheduled = await _scheduled_requests(session, org_id)
+        assert len(direct) == 2
+        assert scheduled == []
+
+    async def test_early_arrival_is_refused_and_rearmed(self, session, org_id, monkeypatch) -> None:
+        """A `filing_requested` message naming a `not_before` still in the future must not be
+        acted on even if it reaches the consumer early — defence in depth against a broker or an
+        operator redelivering it ahead of schedule (ADR-0015 §5)."""
+        ctx = admin_ctx(org_id)
+        await _finalize(session, ctx, "INV-AUTO-EARLY-1")
+        portal = CountingPortal()
+        monkeypatch.setattr("app.consumers.get_irp_client", lambda: portal)
+
+        async with session.begin():
+            rows = await _requests(session, org_id)
+        finalize_envelope = _envelope(rows[0])
+        future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        early_event_id = str(uuid.uuid4())
+        early_envelope = {
+            **finalize_envelope,
+            "event_id": early_event_id,
+            "payload": {**finalize_envelope["payload"], "attempt": 2, "not_before": future},
+        }
+
+        await file_requested_invoice(early_envelope)
+
+        assert portal.calls == []
+        async with session.begin():
+            filings = await selectors.filings_for_invoice(
+                session, org_id, uuid.UUID(finalize_envelope["payload"]["invoice_id"])
+            )
+            scheduled = await _scheduled_requests(session, org_id)
+            processed = await session.get(ProcessedEvent, uuid.UUID(early_event_id))
+        # Nothing was ever attempted against the portal for this attempt.
+        assert filings == []
+        assert len(scheduled) == 1
+        assert scheduled[0].payload["due_at"] == future
+        assert scheduled[0].payload["target"]["payload"]["attempt"] == 2
+        # `early-arrival:{event_id}` in the re-armed key: the original attempt-2 key already
+        # belongs to whichever schedule produced this very message.
+        assert early_event_id in scheduled[0].payload["idempotency_key"]
+        # The early message itself is not redelivered forever.
+        assert processed is not None
+
+    async def test_early_arrival_is_idempotent_under_redelivery(
+        self, session, org_id, monkeypatch
+    ) -> None:
+        ctx = admin_ctx(org_id)
+        await _finalize(session, ctx, "INV-AUTO-EARLY-2")
+        portal = CountingPortal()
+        monkeypatch.setattr("app.consumers.get_irp_client", lambda: portal)
+
+        async with session.begin():
+            rows = await _requests(session, org_id)
+        finalize_envelope = _envelope(rows[0])
+        future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        early_envelope = {
+            **finalize_envelope,
+            "event_id": str(uuid.uuid4()),
+            "payload": {**finalize_envelope["payload"], "attempt": 2, "not_before": future},
+        }
+
+        await file_requested_invoice(early_envelope)
+        await file_requested_invoice(early_envelope)  # redelivered
+
+        assert portal.calls == []
+        async with session.begin():
+            scheduled = await _scheduled_requests(session, org_id)
+        assert len(scheduled) == 1
 
 
 # --------------------------------------------------------------------- terminal rejection

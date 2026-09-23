@@ -28,6 +28,11 @@ Four properties are load-bearing, and each has a test:
   same bytes will be refused again. An outage is retried on an exponential backoff up to
   `domain.MAX_FILING_ATTEMPTS`, and when that budget is spent it becomes a terminal `failed` row
   carrying `retry_exhausted`. Nothing loops forever, and nothing fails silently.
+* **A retry waits for its own `not_before` (ADR-0015).** `services.request_filing` hands a future
+  `not_before` to the scheduler instead of publishing this event directly, so in normal operation
+  this handler never sees one still in the future. It checks anyway, as defence in depth against a
+  hand-redelivered message or a DLQ replay: acting early would jump a backoff that exists to stop
+  hammering a struggling portal. See `services.rearm_early_filing_request`.
 
 The handler never raises for a business situation. A missing invoice, a document that needs no
 IRN, one already filed — all are outcomes, logged. Raising would nack the message, and the second
@@ -39,6 +44,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from app import services
@@ -68,6 +74,8 @@ async def file_requested_invoice(envelope: dict[str, Any]) -> None:
     organization_id = uuid.UUID(payload["organization_id"])
     invoice_id = uuid.UUID(payload["invoice_id"])
     attempt = int(payload.get("attempt", 1))
+    not_before_raw = payload.get("not_before")
+    not_before = datetime.fromisoformat(not_before_raw) if not_before_raw else None
     client = get_irp_client()
 
     # The GUC is set here, per message, for the whole transaction: the filing row is a
@@ -76,6 +84,31 @@ async def file_requested_invoice(envelope: dict[str, Any]) -> None:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("finance.filing.duplicate", event_id=str(event_id))
             return
+
+        if not_before is not None and not_before > datetime.now(UTC):
+            # Defence in depth (ADR-0015 §5): the scheduler is supposed to hold this until
+            # `not_before`, so arriving early is not the ordinary case. Re-arm rather than act.
+            ctx = services.service_ctx(organization_id)
+            services.rearm_early_filing_request(
+                session,
+                ctx,
+                invoice_id=invoice_id,
+                event_id=event_id,
+                attempt=attempt,
+                not_before=not_before,
+                payload=payload,
+            )
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+            log.warning(
+                "finance.filing.early_arrival",
+                event_id=str(event_id),
+                organization_id=str(organization_id),
+                invoice_id=str(invoice_id),
+                attempt=attempt,
+                not_before=not_before.isoformat(),
+            )
+            return
+
         result = await services.autofile_invoice(
             session,
             services.service_ctx(organization_id),
