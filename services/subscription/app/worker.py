@@ -1,4 +1,4 @@
-"""The worker process: the payment-event consumer and the dunning sweep, side by side.
+"""The worker process: the payment-event consumer, the dunning sweep and the billing run.
 
 Two containers used to run this service's background work — `subscription-worker` on
 `app.consumers` and `subscription-cron` on `app.cron` — at 192 MB apiece (ADR-0013's
@@ -14,6 +14,11 @@ combining them changes neither: the consumer runs NOBYPASSRLS per event
 discovery from NOBYPASSRLS action every `poll_interval` (`app.cron.DunningSweep`, unchanged).
 This file only starts both in one process instead of two.
 
+The billing run (`app.billing_run.BillingRunSweep`, ADR-0005 addendum 2026-09-23) is the third
+loop, added here rather than as a container of its own because the box's memory budget is spent
+(ADR-0013's erratum): it is idle between passes exactly like the dunning sweep, uses the same two
+engines, and makes its billing and payment calls with no transaction open.
+
 `app/cron.py` keeps its own `main()` and remains directly runnable (`python -m app.cron`) for
 debugging the sweep in isolation on a laptop; `bin/cron` still points at it. Only `bin/worker`
 moved.
@@ -24,6 +29,7 @@ from __future__ import annotations
 import asyncio
 
 from app import consumers
+from app.billing_run import BillingRunSweep, HttpBilling, HttpPayment
 from app.config import settings
 from app.cron import DunningSweep
 from platform_core.db import (
@@ -58,12 +64,31 @@ async def main() -> None:
         work_scope=lambda organization_id: session_scope(organization_id=organization_id),
     )
 
-    log.info("subscription.worker.starting", queue="subscription.events", sweep="dunning")
+    billing_run = BillingRunSweep(
+        discovery_factory=get_outbox_sessionmaker(),
+        work_scope=lambda organization_id: session_scope(organization_id=organization_id),
+        billing=HttpBilling(cfg.billing_service_url, cfg),
+        payment=HttpPayment(cfg.payment_service_url, cfg),
+        poll_interval=cfg.billing_run_poll_interval,
+    )
+
+    log.info(
+        "subscription.worker.starting",
+        queue="subscription.events",
+        sweeps=["dunning", "billing_run"],
+    )
     # `gather` rather than sequential awaits: either loop returning is a failure, and the first
     # exception should bring the process down so the orchestrator restarts it, rather than
     # leaving one half running against a half-dead deploy (same reasoning as
     # notification/app/worker.py).
-    await asyncio.gather(consumers.consumer.run(), sweep.run())
+    loops = [consumers.consumer.run(), sweep.run()]
+    if cfg.billing_run_enabled:
+        loops.append(billing_run.run())
+    else:
+        # Staged rollout (the runbook's billing-run section): the process runs, the run does not.
+        # Loud, because a box left like this converts no trial and invoices nothing.
+        log.warning("billing_run.disabled", hint="BILLING_RUN_ENABLED=false; nothing is invoiced")
+    await asyncio.gather(*loops)
 
 
 if __name__ == "__main__":

@@ -40,6 +40,7 @@ TENANT_TABLES = (
     "subscription_items",
     "subscription_transitions",
     "dunning_cycles",
+    "billing_periods",
     "audit_logs",
     "outbox",
     "processed_events",

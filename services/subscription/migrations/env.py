@@ -30,8 +30,14 @@ config.set_main_option("sqlalchemy.url", cfg.admin_dsn)
 target_metadata = Base.metadata
 
 
+#: The tables the two sweeps discover work in, and nothing else. `dunning_cycles` for the dunning
+#: ladder (ADR-0005); `subscriptions` and `billing_periods` for the billing run and its
+#: `/health/billing-run` probe (ADR-0005 addendum, 2026-09-23). SELECT only.
+SWEEP_READABLE_TABLES = ("dunning_cycles", "subscriptions", "billing_periods")
+
+
 def grant_sweep_reader(connection: Connection) -> None:
-    """Cross-tenant SELECT on `dunning_cycles`, for the dunning sweep's discovery query.
+    """Cross-tenant SELECT on the sweeps' discovery tables (`SWEEP_READABLE_TABLES`).
 
     The sweep (`app/cron.py`, ADR-0005) has the outbox relay's problem exactly: its query exists
     to discover *which* organizations have work due, so there is no tenant to bind while asking,
@@ -40,13 +46,15 @@ def grant_sweep_reader(connection: Connection) -> None:
     provisioned "cross-tenant discovery, nothing else" identity — rather than a fourth BYPASSRLS
     role added to the bootstrap for one table.
 
-    **SELECT only, and one table.** Every write the sweep makes runs back on the app role inside a
-    tenant-bound transaction; the bypass buys discovery and never authority. `apply_schema_grants`
-    has already given this role `USAGE` on the schema and `SELECT, UPDATE` on `outbox`; this adds
-    the one table the sweep reads and nothing more.
+    **SELECT only, and only these tables.** Every write either sweep makes runs back on the app
+    role inside a tenant-bound transaction; the bypass buys discovery and never authority.
+    `apply_schema_grants` has already given this role `USAGE` on the schema and `SELECT, UPDATE`
+    on `outbox`; this adds the tables the sweeps read and nothing more. The billing run's
+    discovery returns `(organization_id, subscription_id)` pairs and nothing else — every price,
+    state and period it acts on is re-read under the tenant binding.
 
-    Runs here rather than in the bootstrap SQL because the table does not exist when that runs, and
-    is guarded by `to_regclass` so a downgrade that has dropped it is a no-op rather than an error.
+    Runs here rather than in the bootstrap SQL because the tables do not exist when that runs, and
+    is guarded by `to_regclass` so a downgrade that has dropped one is a no-op rather than an error.
     """
     reader = cfg.db_outbox_role
     if not reader:
@@ -55,10 +63,11 @@ def grant_sweep_reader(connection: Connection) -> None:
         text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": reader}
     ).scalar():
         return
-    if connection.execute(
-        text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.dunning_cycles"}
-    ).scalar():
-        connection.execute(text(f'GRANT SELECT ON "{SCHEMA}"."dunning_cycles" TO "{reader}"'))
+    for table in SWEEP_READABLE_TABLES:
+        if connection.execute(
+            text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.{table}"}
+        ).scalar():
+            connection.execute(text(f'GRANT SELECT ON "{SCHEMA}"."{table}" TO "{reader}"'))
     connection.commit()
 
 

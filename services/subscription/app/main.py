@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from app.api.health import router as health_router
 from app.api.internal import router as internal_router
 from app.api.routes import router
 from app.catalog import HttpPlanCatalog
@@ -46,3 +47,6 @@ app = create_app(
 # Root-mounted and excluded from the public schema: the operator console delegates a suspension
 # through this over a service token, with no tenant context of a person's own.
 app.include_router(internal_router)
+
+# Root-mounted beside `/health/outbox`: the billing run's backlog, counted cross-tenant.
+app.include_router(health_router)

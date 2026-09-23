@@ -216,7 +216,22 @@ async def main() -> None:
         discovery_factory=get_outbox_sessionmaker(),
         work_scope=lambda organization_id: session_scope(organization_id=organization_id),
     )
-    await sweep.run()
+    # The billing run shares this process for the same reason it shares `app/worker.py`'s: both
+    # are idle between passes, and both are due-work sweeps on the same two engines.
+    from app.billing_run import BillingRunSweep, HttpBilling, HttpPayment
+
+    billing_run = BillingRunSweep(
+        discovery_factory=get_outbox_sessionmaker(),
+        work_scope=lambda organization_id: session_scope(organization_id=organization_id),
+        billing=HttpBilling(cfg.billing_service_url, cfg),
+        payment=HttpPayment(cfg.payment_service_url, cfg),
+        poll_interval=cfg.billing_run_poll_interval,
+    )
+    if not cfg.billing_run_enabled:
+        log.warning("billing_run.disabled", hint="BILLING_RUN_ENABLED=false; nothing is invoiced")
+        await sweep.run()
+        return
+    await asyncio.gather(sweep.run(), billing_run.run())
 
 
 if __name__ == "__main__":

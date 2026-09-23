@@ -27,6 +27,21 @@ class Settings(ServiceSettings):
     #: refuse members the registry no longer vouches for (`app/registry.py`).
     product_service_url: str = "http://localhost:8112"
 
+    # --- the billing run (ADR-0005 addendum, 2026-09-23) -----------------------------------
+    #: Where billing answers `POST /internal/v1/subscription-invoices` — the run's one write.
+    billing_service_url: str = "http://localhost:8160"
+    #: Where payment answers the trial-end mandate question.
+    payment_service_url: str = "http://localhost:8163"
+    #: Seconds between billing-run passes. A trial that ended converts within one interval; the
+    #: `/health/billing-run` probe calls a subscription overdue after `billing_run_overdue_seconds`.
+    billing_run_poll_interval: float = 300.0
+    billing_run_overdue_seconds: int = 3600
+    #: The run's kill switch. On by default — trials that never convert are the defect it fixes —
+    #: but a first deploy onto a box with history converts every expired trial and bills every
+    #: overdue period on its first passes, so the runbook stages it: deploy with this `false`,
+    #: read `python -m app.billing_run --dry-run`, then turn it on.
+    billing_run_enabled: bool = True
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]
