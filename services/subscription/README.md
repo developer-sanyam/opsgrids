@@ -23,6 +23,11 @@ window anchored at the trial's end when it cannot (ADR-0013 §6). Active and pas
 at their stored end and are invoiced in advance, usage in arrears for the closed period; a
 suspended period rolls without an invoice; a cancelled subscription is never touched.
 
+Upgrades on a paid subscription are charged their prorated difference immediately (a `proration`
+claim); downgrades are pinned as `pending_change` and applied when the next period is claimed. A
+cancellation or suspension claims a usage-only `close` period. Only `trial` and `active`
+subscriptions may change plan. The loop is **off unless `BILLING_RUN_ENABLED=true`**.
+
 It is **claim → call → record**: a `billing_periods` row is claimed under
 `FOR UPDATE SKIP LOCKED` with a lease, billing is asked (outside any transaction) for the period's
 one invoice — idempotent on `(subscription, period_start)` — and the answer is recorded with the

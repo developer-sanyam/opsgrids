@@ -18,13 +18,19 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Select, and_, func, or_, select, union_all
+from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.domain import PERMANENT_AFTER_ATTEMPTS
 from app.models import (
     DUNNING_OPEN,
+    LIFECYCLE_KINDS,
+    PERIOD_KIND_CLOSE,
+    PERIOD_KIND_PRORATION,
+    PERIOD_KIND_TRIAL_CONVERSION,
     PERIOD_PENDING,
+    PERIOD_VOID_PENDING,
     STATE_ACTIVE,
     STATE_PAST_DUE,
     STATE_SUSPENDED,
@@ -168,59 +174,123 @@ async def due_dunning_cycles(
 _ROLLING_STATES = (STATE_ACTIVE, STATE_PAST_DUE, STATE_SUSPENDED)
 
 
-async def due_billing_subscriptions(
-    session: AsyncSession, *, now: datetime, limit: int = 100
-) -> list[tuple[uuid.UUID, uuid.UUID]]:
-    """Every subscription the billing run owes a period to, as `(organization_id, id)`.
+def _blocked_by_claim(wall: datetime) -> Any:
+    """A lifecycle claim for the subscription is leased (a call is out) or backing off.
 
-    **Cross-tenant, on the BYPASSRLS outbox role**, for the reason `due_dunning_cycles` gives:
-    it exists to find *which* organizations have work, so there is no tenant to bind while asking.
-    Two shapes of due, each served by its own partial index: a trial whose end has passed, and an
-    active, past-due or suspended subscription whose period has closed. A cancelled subscription
-    matches neither — it is never invoiced. Ordered by how long it has been due, so a backlog
-    drains oldest first.
-
-    Ids only. The state, the period and the pin are re-read, locked, under the tenant binding
-    before anything is decided — the bypass buys discovery, never authority.
+    Compared against the **wall clock**, never the run's business `now`: a lease is about how
+    long a process may be mid-call, which a synthetic instant says nothing about.
     """
-    trials = select(
-        Subscription.organization_id.label("organization_id"),
-        Subscription.id.label("id"),
-        Subscription.trial_ends_at.label("due_at"),
-    ).where(
+    return (
+        select(BillingPeriod.id)
+        .where(
+            BillingPeriod.organization_id == Subscription.organization_id,
+            BillingPeriod.subscription_id == Subscription.id,
+            BillingPeriod.kind.in_(LIFECYCLE_KINDS),
+            BillingPeriod.state == PERIOD_PENDING,
+            or_(BillingPeriod.lease_until > wall, BillingPeriod.next_attempt_at > wall),
+        )
+        .exists()
+    )
+
+
+def _retry_at() -> Any:
+    """When the subscription's pending lifecycle claim may next be tried, if it has one."""
+    return (
+        select(func.max(BillingPeriod.next_attempt_at))
+        .where(
+            BillingPeriod.organization_id == Subscription.organization_id,
+            BillingPeriod.subscription_id == Subscription.id,
+            BillingPeriod.kind.in_(LIFECYCLE_KINDS),
+            BillingPeriod.state == PERIOD_PENDING,
+        )
+        .scalar_subquery()
+    )
+
+
+async def due_billing_subscriptions(
+    session: AsyncSession, *, now: datetime, wall: datetime, limit: int = 100
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """Every subscription the billing run can work on now, as `(organization_id, id)`.
+
+    **Cross-tenant, on the BYPASSRLS outbox role**, for the reason `due_dunning_cycles` gives: it
+    exists to find *which* organizations have work, so there is no tenant to bind while asking.
+    Due is two shapes, each on its own partial index: a trial whose end has passed, and an active,
+    past-due or suspended subscription whose period has closed. A cancelled subscription matches
+    neither — it is never invoiced.
+
+    **A subscription whose claim is leased or backing off is not returned at all** (`NOT EXISTS`),
+    and the rest are ordered by when each next becomes workable — its retry time if it has failed
+    before, otherwise when it fell due. Without both, a batch of permanently failing rows at the
+    head of the order would be returned, skipped and returned again every pass, and a healthy
+    subscription behind them would never be reached.
+
+    Ids only, and it reads only the columns the outbox role is granted. The state, the period and
+    the pin are re-read, locked, under the tenant binding before anything is decided.
+    """
+    trial_due = and_(
         Subscription.state == STATE_TRIAL,
         Subscription.trial_ends_at.is_not(None),
         Subscription.trial_ends_at <= now,
     )
-    periods = select(
-        Subscription.organization_id.label("organization_id"),
-        Subscription.id.label("id"),
-        Subscription.current_period_end.label("due_at"),
-    ).where(
+    period_due = and_(
         Subscription.state.in_(_ROLLING_STATES),
         Subscription.current_period_end.is_not(None),
         Subscription.current_period_end <= now,
     )
-    due = union_all(trials, periods).subquery()
-    stmt = select(due.c.organization_id, due.c.id).order_by(due.c.due_at).limit(limit)
+    due_at = case(
+        (Subscription.state == STATE_TRIAL, Subscription.trial_ends_at),
+        else_=Subscription.current_period_end,
+    )
+    stmt = (
+        select(Subscription.organization_id, Subscription.id)
+        .where(or_(trial_due, period_due), ~_blocked_by_claim(wall))
+        .order_by(func.coalesce(_retry_at(), due_at), Subscription.id)
+        .limit(limit)
+    )
+    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+
+
+async def actionable_periods(
+    session: AsyncSession, *, wall: datetime, limit: int = 100
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """Rows that are their own work, as `(organization_id, period_id)`: a pending proration or
+    closing period, or an invoice to void — none leased or backing off. Cross-tenant on the
+    outbox role like the discovery above; ordered oldest first."""
+    stmt = (
+        select(BillingPeriod.organization_id, BillingPeriod.id)
+        .where(
+            or_(
+                and_(
+                    BillingPeriod.state == PERIOD_PENDING,
+                    BillingPeriod.kind.in_((PERIOD_KIND_PRORATION, PERIOD_KIND_CLOSE)),
+                ),
+                BillingPeriod.state == PERIOD_VOID_PENDING,
+            ),
+            or_(BillingPeriod.lease_until.is_(None), BillingPeriod.lease_until <= wall),
+            or_(BillingPeriod.next_attempt_at.is_(None), BillingPeriod.next_attempt_at <= wall),
+        )
+        .order_by(BillingPeriod.created_at, BillingPeriod.id)
+        .limit(limit)
+    )
     return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
 
 
 async def stale_pending_periods(
-    session: AsyncSession, *, now: datetime, limit: int = 100
+    session: AsyncSession, *, wall: datetime, limit: int = 100
 ) -> list[tuple[uuid.UUID, uuid.UUID]]:
-    """Claims nobody is working on: `pending`, lease lapsed. `(organization_id, period_id)`.
+    """Lifecycle claims nobody is working on: `pending`, lease lapsed, not backing off.
 
-    Cross-tenant on the outbox role, like the discovery above. A claim whose subscription is still
-    due is picked up again by `due_billing_subscriptions` on its own; this read exists for the
-    other kind — a claim whose subscription moved on (cancelled between claim and record) and so
-    will never be rediscovered, and would otherwise sit `pending` in the health probe forever.
+    A claim whose subscription is still due is picked up again by `due_billing_subscriptions`;
+    this read exists for the other kind — one whose subscription moved on (cancelled between
+    claim and record) and so will never be rediscovered.
     """
     stmt = (
         select(BillingPeriod.organization_id, BillingPeriod.id)
         .where(
             BillingPeriod.state == PERIOD_PENDING,
-            or_(BillingPeriod.lease_until.is_(None), BillingPeriod.lease_until <= now),
+            BillingPeriod.kind.in_(LIFECYCLE_KINDS),
+            or_(BillingPeriod.lease_until.is_(None), BillingPeriod.lease_until <= wall),
+            or_(BillingPeriod.next_attempt_at.is_(None), BillingPeriod.next_attempt_at <= wall),
         )
         .order_by(BillingPeriod.created_at)
         .limit(limit)
@@ -229,30 +299,41 @@ async def stale_pending_periods(
 
 
 async def lock_subscription(
-    session: AsyncSession, subscription_id: uuid.UUID, *, skip_locked: bool
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    subscription_id: uuid.UUID,
+    *,
+    skip_locked: bool,
 ) -> Subscription | None:
     """One subscription with its items, held `FOR UPDATE` for this transaction.
 
-    `skip_locked=True` is the claim's shape — the outbox relay's and the dunning sweep's — so
-    replicas divide the due set instead of queueing on it. The record step blocks instead: it
-    already owns a claim, and waiting a moment for a customer's request to finish is better than
-    leaving an invoice unrecorded until the lease lapses. Tenant-bound: another organization's
-    id is invisible.
+    `skip_locked=True` is the claim's shape — replicas divide the due set instead of queueing on
+    it. The record step blocks instead: it already owns a claim. Filtered on `organization_id` as
+    well as bound by RLS: the policy is the net, not the filter.
     """
     stmt = _with_items(
-        select(Subscription).where(Subscription.id == subscription_id)
+        select(Subscription).where(
+            Subscription.organization_id == organization_id,
+            Subscription.id == subscription_id,
+        )
     ).with_for_update(skip_locked=skip_locked, of=Subscription)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
 async def lock_billing_period(
-    session: AsyncSession, subscription_id: uuid.UUID, period_start: datetime
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    subscription_id: uuid.UUID,
+    kind: str,
+    period_start: datetime,
 ) -> BillingPeriod | None:
-    """The claim row for one subscription period, held `FOR UPDATE`."""
+    """The claim row for one subscription period of one kind, held `FOR UPDATE`."""
     stmt = (
         select(BillingPeriod)
         .where(
+            BillingPeriod.organization_id == organization_id,
             BillingPeriod.subscription_id == subscription_id,
+            BillingPeriod.kind == kind,
             BillingPeriod.period_start == period_start,
         )
         .with_for_update()
@@ -261,9 +342,37 @@ async def lock_billing_period(
 
 
 async def lock_billing_period_by_id(
-    session: AsyncSession, period_id: uuid.UUID
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    period_id: uuid.UUID,
+    *,
+    skip_locked: bool = False,
 ) -> BillingPeriod | None:
-    stmt = select(BillingPeriod).where(BillingPeriod.id == period_id).with_for_update()
+    stmt = (
+        select(BillingPeriod)
+        .where(BillingPeriod.organization_id == organization_id, BillingPeriod.id == period_id)
+        .with_for_update(skip_locked=skip_locked)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def pending_conversion(
+    session: AsyncSession, organization_id: uuid.UUID, subscription_id: uuid.UUID
+) -> BillingPeriod | None:
+    """The trial conversion claimed and not yet recorded for a subscription, held `FOR UPDATE` —
+    what a conversion charge that failed before the record step is written onto."""
+    stmt = (
+        select(BillingPeriod)
+        .where(
+            BillingPeriod.organization_id == organization_id,
+            BillingPeriod.subscription_id == subscription_id,
+            BillingPeriod.kind == PERIOD_KIND_TRIAL_CONVERSION,
+            BillingPeriod.state == PERIOD_PENDING,
+        )
+        .order_by(BillingPeriod.period_start.desc())
+        .limit(1)
+        .with_for_update()
+    )
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
@@ -272,23 +381,22 @@ async def billing_run_health(
 ) -> dict[str, Any]:
     """The billing run's vital signs, platform-wide. **Counts and instants only.**
 
-    Cross-tenant on the outbox role: the probe that exists to notice a stalled run must not be
-    blind to the rows a stall leaves behind, which is exactly what the NOBYPASSRLS app role with
-    no tenant bound would be. Nothing per-tenant is returned.
+    Cross-tenant on the outbox role, reading only its granted columns: the probe that exists to
+    notice a stalled run must not be blind to the rows a stall leaves behind.
 
     * `overdue` — subscriptions due for longer than `overdue_after`. The run polls every few
-      minutes, so a non-zero value here means it is not running, or not keeping up. **Alert on
-      this**: a stopped run does not error, it just never bills anybody.
+      minutes, so a non-zero value means it is off, not running, or not keeping up. **Alert.**
     * `pending` / `failing` / `oldest_pending_seconds` — claims not yet recorded, those whose
       last attempt failed, and how long the oldest has waited.
+    * `failing_permanent` — claims failing on a data defect, or failing for the fifth time or
+      more: a person has to fix something. **Alert.**
+    * `void_pending` — invoices for superseded periods still waiting to be voided.
     * `invoiced_24h` / `skipped_24h` / `last_recorded_at` — what it has actually done.
     """
     cutoff = now - overdue_after
     overdue = (
         await session.execute(
-            select(func.count())
-            .select_from(Subscription)
-            .where(
+            select(func.count(Subscription.id)).where(
                 or_(
                     and_(
                         Subscription.state == STATE_TRIAL,
@@ -302,21 +410,32 @@ async def billing_run_health(
             )
         )
     ).scalar_one()
-    pending, failing, oldest = (
+    pending, failing, permanent, oldest = (
         await session.execute(
             select(
-                func.count(),
-                func.count().filter(BillingPeriod.last_error.is_not(None)),
+                func.count(BillingPeriod.id),
+                func.count(BillingPeriod.id).filter(BillingPeriod.last_error.is_not(None)),
+                func.count(BillingPeriod.id).filter(
+                    or_(
+                        BillingPeriod.permanent_failure.is_(True),
+                        BillingPeriod.attempts >= PERMANENT_AFTER_ATTEMPTS,
+                    )
+                ),
                 func.min(BillingPeriod.created_at),
             ).where(BillingPeriod.state == PERIOD_PENDING)
         )
     ).one()
+    void_pending = (
+        await session.execute(
+            select(func.count(BillingPeriod.id)).where(BillingPeriod.state == PERIOD_VOID_PENDING)
+        )
+    ).scalar_one()
     since = now - timedelta(hours=24)
     invoiced, skipped, last = (
         await session.execute(
             select(
-                func.count().filter(BillingPeriod.invoice_id.is_not(None)),
-                func.count().filter(BillingPeriod.invoice_id.is_(None)),
+                func.count(BillingPeriod.id).filter(BillingPeriod.invoice_id.is_not(None)),
+                func.count(BillingPeriod.id).filter(BillingPeriod.invoice_id.is_(None)),
                 func.max(BillingPeriod.recorded_at),
             ).where(BillingPeriod.recorded_at >= since)
         )
@@ -325,6 +444,8 @@ async def billing_run_health(
         "overdue": int(overdue or 0),
         "pending": int(pending or 0),
         "failing": int(failing or 0),
+        "failing_permanent": int(permanent or 0),
+        "void_pending": int(void_pending or 0),
         "oldest_pending_seconds": (now - oldest).total_seconds() if oldest else 0.0,
         "invoiced_24h": int(invoiced or 0),
         "skipped_24h": int(skipped or 0),

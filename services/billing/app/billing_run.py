@@ -37,7 +37,11 @@ from starlette.requests import Request
 from app import domain, selectors, services
 from app.config import Settings
 from app.models import Invoice
-from app.schemas import BillSubscriptionPeriodIn
+from app.schemas import (
+    BillSubscriptionPeriodIn,
+    SubscriptionInvoiceKeyIn,
+    SubscriptionInvoiceVoidIn,
+)
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, set_tenant
 from platform_core.errors import BusinessRuleProblem, UpstreamUnavailableProblem
@@ -161,6 +165,48 @@ async def _bind(session: AsyncSession, organization_id: uuid.UUID, settings: Set
         await assert_tenant(session, organization_id)
 
 
+def _specs(version: CatalogVersion) -> list[domain.PriceSpec]:
+    return [
+        domain.PriceSpec(
+            id=p.id,
+            kind=p.kind,
+            currency=p.currency,
+            amount_minor=p.amount_minor,
+            unit=p.unit,
+            unit_price_micros=p.unit_price_micros,
+            meter_key=p.meter_key,
+        )
+        for p in version.prices
+    ]
+
+
+async def _pinned(
+    catalog: Catalog, plan_version_id: uuid.UUID, currency: str, product_key: str
+) -> CatalogVersion:
+    version = await catalog.get_plan_version(plan_version_id)
+    if version is None:
+        raise BusinessRuleProblem(f"plan version {plan_version_id} does not exist")
+    if version.currency.upper() != currency:
+        raise BusinessRuleProblem(
+            f"plan version is in {version.currency.upper()}, the subscription in {currency}"
+        )
+    if version.product_key is not None and version.product_key != product_key:
+        raise BusinessRuleProblem(
+            f"plan version belongs to {version.product_key!r}, not {product_key!r}"
+        )
+    return version
+
+
+def claim_key(payload: SubscriptionInvoiceKeyIn) -> str:
+    """The idempotency key for the claim a request names — built here, never sent as a string."""
+    return domain.subscription_invoice_key(
+        payload.subscription_id,
+        payload.period_start,
+        kind=payload.kind,
+        change_id=payload.change_id,
+    )
+
+
 async def bill_subscription_period(
     session: AsyncSession,
     payload: BillSubscriptionPeriodIn,
@@ -170,20 +216,20 @@ async def bill_subscription_period(
     settings: Settings,
     request: Request | None = None,
 ) -> tuple[Invoice, bool]:
-    """Invoice one subscription period, once. Returns `(invoice, created)`.
+    """Invoice one billing-run claim, once. Returns `(invoice, created)`.
 
     `session` must arrive with **no transaction open**: this function opens two short ones of its
     own and makes its network calls between them.
     """
     period = domain.Period(payload.period_start, payload.period_end)
-    key = domain.subscription_invoice_key(payload.subscription_id, period.start)
+    key = claim_key(payload)
     currency = payload.currency.upper()
 
     # 1. Read: already invoiced? And the tax rate in force on the period's first day.
     tax: domain.TaxSpec | None = None
     async with session.begin():
         await _bind(session, payload.organization_id, settings)
-        existing = await selectors.get_invoice_by_key(session, key)
+        existing = await selectors.get_invoice_by_key(session, payload.organization_id, key)
         if existing is not None:
             log.info(
                 "billing_run.invoice.exists",
@@ -209,52 +255,54 @@ async def bill_subscription_period(
             tax = domain.TaxSpec(code=rate.code, name=rate.name, rate_bps=int(rate.rate_bps))
 
     # 2. Call — no transaction is open on `session` from here until the record step.
-    version = await catalog.get_plan_version(payload.plan_version_id)
-    if version is None:
-        raise BusinessRuleProblem(f"plan version {payload.plan_version_id} does not exist")
-    if version.currency.upper() != currency:
-        raise BusinessRuleProblem(
-            f"plan version is in {version.currency.upper()}, the subscription in {currency}"
-        )
-    if version.product_key is not None and version.product_key != payload.product_key:
-        raise BusinessRuleProblem(
-            f"plan version belongs to {version.product_key!r}, not {payload.product_key!r}"
-        )
+    version = await _pinned(catalog, payload.plan_version_id, currency, payload.product_key)
+    items = [domain.ItemSpec(price_id=i.price_id, quantity=i.quantity) for i in payload.items]
 
-    usage_period: domain.Period | None = None
-    usage: dict[str, int] | None = None
-    if payload.usage_period_start is not None and payload.usage_period_end is not None:
-        usage_period = domain.Period(payload.usage_period_start, payload.usage_period_end)
-        if any(p.kind == domain.PRICE_USAGE for p in version.prices):
-            usage = await metering.billable_usage(
-                organization_id=payload.organization_id, period=usage_period
-            )
-
-    # 3. Price — pure.
     try:
-        lines = domain.price_subscription_period(
-            currency=currency,
-            plan_version_id=version.id,
-            prices=[
-                domain.PriceSpec(
-                    id=p.id,
-                    kind=p.kind,
-                    currency=p.currency,
-                    amount_minor=p.amount_minor,
-                    unit=p.unit,
-                    unit_price_micros=p.unit_price_micros,
-                    meter_key=p.meter_key,
-                )
-                for p in version.prices
-            ],
-            items=[
-                domain.ItemSpec(price_id=i.price_id, quantity=i.quantity) for i in payload.items
-            ],
-            period=period,
-            usage_period=usage_period,
-            usage=usage,
-            tax=tax,
-        )
+        if payload.kind == "proration":
+            assert payload.from_plan_version_id is not None
+            assert payload.full_period_start is not None
+            old = await _pinned(
+                catalog, payload.from_plan_version_id, currency, payload.product_key
+            )
+            # 3. Price — pure.
+            lines = domain.price_proration(
+                currency=currency,
+                new_plan_version_id=version.id,
+                new_prices=_specs(version),
+                new_items=items,
+                old_plan_version_id=old.id,
+                old_prices=_specs(old),
+                old_items=[
+                    domain.ItemSpec(price_id=i.price_id, quantity=i.quantity)
+                    for i in payload.from_items
+                ],
+                full_period=domain.Period(payload.full_period_start, payload.period_end),
+                effective_at=payload.period_start,
+                tax=tax,
+            )
+        else:
+            usage_period: domain.Period | None = None
+            usage: dict[str, int] | None = None
+            if payload.usage_period_start is not None and payload.usage_period_end is not None:
+                usage_period = domain.Period(payload.usage_period_start, payload.usage_period_end)
+                if any(p.kind == domain.PRICE_USAGE for p in version.prices):
+                    usage = await metering.billable_usage(
+                        organization_id=payload.organization_id, period=usage_period
+                    )
+            # 3. Price — pure. A closing period bills its usage and nothing recurring: that was
+            # billed in advance when the period opened.
+            lines = domain.price_subscription_period(
+                currency=currency,
+                plan_version_id=version.id,
+                prices=_specs(version),
+                items=items,
+                period=period,
+                usage_period=usage_period,
+                usage=usage,
+                tax=tax,
+                recurring=payload.kind != "close",
+            )
     except domain.PricingError as exc:
         raise BusinessRuleProblem(str(exc)) from exc
 
@@ -267,8 +315,10 @@ async def bill_subscription_period(
             subscription_id=payload.subscription_id,
             product_key=payload.product_key,
             currency=currency,
+            key=key,
             period=period,
             lines=lines,
+            kind=payload.kind,
             request=request,
         )
     log.info(
@@ -276,11 +326,31 @@ async def bill_subscription_period(
         organization_id=str(payload.organization_id),
         subscription_id=str(payload.subscription_id),
         invoice_id=str(invoice.id),
+        kind=payload.kind,
         total_minor=invoice.total_minor,
         currency=invoice.currency,
         period_start=_iso(period.start),
     )
     return invoice, created
+
+
+async def void_subscription_period(
+    session: AsyncSession,
+    payload: SubscriptionInvoiceVoidIn,
+    *,
+    settings: Settings,
+    request: Request | None = None,
+) -> tuple[bool, uuid.UUID | None]:
+    """Void the invoice under a claim's key, if one was raised. One short transaction."""
+    async with session.begin():
+        await _bind(session, payload.organization_id, settings)
+        return await services.void_subscription_invoice(
+            session,
+            organization_id=payload.organization_id,
+            key=claim_key(payload),
+            reason=payload.reason,
+            request=request,
+        )
 
 
 def _iso(at: datetime) -> str:

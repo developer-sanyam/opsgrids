@@ -256,8 +256,15 @@ class TestChangePlan:
             await services.change_plan(
                 session, _ctx(org_id), catalog, fresh, ChangePlanIn(plan_version_id=v2.id)
             )
+        # A paid downgrade waits for the next period (ADR-0005 addendum §4): nothing is emitted
+        # and the pin does not move now; the billing run applies it — and emits `downgraded` —
+        # when it claims the next period (tests/test_billing_run_review.py).
         rows = await _outbox(admin_session, org_id)
-        assert rows[-1].event_type == "commerce.subscription.downgraded"
+        assert rows[-1].event_type != "commerce.subscription.downgraded"
+        async with session.begin():
+            fresh = await services.require_subscription(session, sub_id)
+        assert fresh.plan_version_id == v1.id
+        assert fresh.pending_plan_version_id == v2.id
 
 
 # --------------------------------------------------------------------- append-only

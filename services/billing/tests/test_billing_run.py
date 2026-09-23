@@ -592,6 +592,7 @@ class TestIsolationAndRaces:
                     subscription_id=subscription_id,
                     product_key="hrms",
                     currency="INR",
+                    key=domain.subscription_invoice_key(subscription_id, period.start),
                     period=period,
                     lines=[line],
                 )
@@ -634,3 +635,299 @@ class TestIsolationAndRaces:
         [invoice] = mine.json()
         assert invoice["total_minor"] == 149900
         assert invoice["number"].startswith("INV-20261001-")
+
+
+# --------------------------------------------------------------------- review fixes
+
+
+def _price(amount: int, *, currency: str = "INR") -> CatalogPrice:
+    return CatalogPrice(id=uuid.uuid4(), kind="flat", amount_minor=amount, currency=currency)
+
+
+def _proration_body(
+    org_id: uuid.UUID,
+    new: CatalogVersion,
+    old: CatalogVersion,
+    *,
+    change_id: uuid.UUID,
+    effective_at: datetime,
+    subscription_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
+    return {
+        "organization_id": str(org_id),
+        "subscription_id": str(subscription_id or uuid.uuid4()),
+        "kind": "proration",
+        "change_id": str(change_id),
+        "product_key": "hrms",
+        "plan_version_id": str(new.id),
+        "currency": "INR",
+        "period_start": effective_at.isoformat(),
+        "period_end": PERIOD_END.isoformat(),
+        "full_period_start": PERIOD_START.isoformat(),
+        "items": [{"price_id": str(p.id), "quantity": 1} for p in new.prices],
+        "from_plan_version_id": str(old.id),
+        "from_items": [{"price_id": str(p.id), "quantity": 1} for p in old.prices],
+    }
+
+
+class TestProrationPricing:
+    def test_the_upgrade_charge_is_the_prorated_difference_in_integer_minor_units(self) -> None:
+        new, old = _price(200000), _price(100000)
+        lines = domain.price_proration(
+            currency="INR",
+            new_plan_version_id=uuid.uuid4(),
+            new_prices=[
+                domain.PriceSpec(id=new.id, kind="flat", currency="INR", amount_minor=200000)
+            ],
+            new_items=[domain.ItemSpec(new.id, 1)],
+            old_plan_version_id=uuid.uuid4(),
+            old_prices=[
+                domain.PriceSpec(id=old.id, kind="flat", currency="INR", amount_minor=100000)
+            ],
+            old_items=[domain.ItemSpec(old.id, 1)],
+            full_period=domain.Period(PERIOD_START, PERIOD_END),
+            effective_at=PERIOD_START + timedelta(days=10),
+            tax=domain.TaxSpec(code="gst", name="GST", rate_bps=1800),
+        )
+        # 20 of 30 days remain: 200000 -> 133333 and 100000 -> 66667 by largest remainder, so the
+        # difference is 66666; GST 18% of it is 11999.88 -> 12000.
+        assert [line.amount_minor for line in lines] == [66666, 12000]
+        assert all(isinstance(line.amount_minor, int) for line in lines)
+
+    def test_a_change_that_nets_to_nothing_bills_nothing(self) -> None:
+        a = _price(100000)
+        lines = domain.price_proration(
+            currency="INR",
+            new_plan_version_id=uuid.uuid4(),
+            new_prices=[
+                domain.PriceSpec(id=a.id, kind="flat", currency="INR", amount_minor=100000)
+            ],
+            new_items=[domain.ItemSpec(a.id, 1)],
+            old_plan_version_id=uuid.uuid4(),
+            old_prices=[
+                domain.PriceSpec(id=a.id, kind="flat", currency="INR", amount_minor=100000)
+            ],
+            old_items=[domain.ItemSpec(a.id, 1)],
+            full_period=domain.Period(PERIOD_START, PERIOD_END),
+            effective_at=PERIOD_START + timedelta(days=3),
+            tax=None,
+        )
+        assert lines == []
+
+    def test_keys_differ_by_kind_and_numbers_by_key(self) -> None:
+        sid, change = uuid.uuid4(), uuid.uuid4()
+        period_key = domain.subscription_invoice_key(sid, PERIOD_START)
+        close_key = domain.subscription_invoice_key(sid, PERIOD_START, kind="close")
+        proration_key = domain.subscription_invoice_key(
+            sid, PERIOD_START, kind="proration", change_id=change
+        )
+        assert close_key == f"{period_key}:close"
+        assert proration_key == f"subscription:{sid}:proration:{change}"
+        numbers = {
+            domain.subscription_invoice_number(k, PERIOD_START)
+            for k in (period_key, close_key, proration_key)
+        }
+        assert len(numbers) == 3
+
+
+class TestProrationAndCloseRoute:
+    async def test_an_upgrade_is_billed_its_prorated_difference_once(
+        self,
+        wired: AsyncClient,
+        catalog: FakeCatalog,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        new = CatalogVersion(
+            id=uuid.uuid4(), product_key="hrms", currency="INR", prices=[_price(200000)]
+        )
+        old = CatalogVersion(
+            id=uuid.uuid4(), product_key="hrms", currency="INR", prices=[_price(100000)]
+        )
+        catalog.versions[new.id] = new
+        catalog.versions[old.id] = old
+        change_id = uuid.uuid4()
+        body = _proration_body(
+            org_id, new, old, change_id=change_id, effective_at=PERIOD_START + timedelta(days=10)
+        )
+        first = await wired.post(
+            "/internal/v1/subscription-invoices", json=body, headers=_headers()
+        )
+        again = await wired.post(
+            "/internal/v1/subscription-invoices", json=body, headers=_headers()
+        )
+        assert first.status_code == 201, first.text
+        assert again.status_code == 200
+        invoice = first.json()["invoice"]
+        assert invoice["total_minor"] == 66666
+        assert again.json()["invoice"]["id"] == invoice["id"]
+        admin_session.expunge_all()
+        async with admin_session.begin():
+            key = (await admin_session.execute(select(Invoice.idempotency_key))).scalar_one()
+        assert key.endswith(f":proration:{change_id}")
+
+    async def test_a_proration_without_its_change_is_refused(
+        self, wired: AsyncClient, catalog: FakeCatalog, org_id: uuid.UUID
+    ) -> None:
+        new = CatalogVersion(
+            id=uuid.uuid4(), product_key="hrms", currency="INR", prices=[_price(2)]
+        )
+        body = _proration_body(
+            org_id, new, new, change_id=uuid.uuid4(), effective_at=PERIOD_START + timedelta(days=1)
+        )
+        del body["change_id"]
+        r = await wired.post("/internal/v1/subscription-invoices", json=body, headers=_headers())
+        assert r.status_code == 422
+
+    async def test_a_closing_period_bills_usage_and_nothing_recurring(
+        self,
+        wired: AsyncClient,
+        catalog: FakeCatalog,
+        metering: FakeMetering,
+        org_id: uuid.UUID,
+    ) -> None:
+        version, items = _version(flat=149900, usage_micros=1_000_000)
+        catalog.versions[version.id] = version
+        metering.usage = {"api_call": 7}
+        close_end = PERIOD_START + timedelta(days=9)
+        body = _body(org_id, version, items, usage=False)
+        body.update(
+            kind="close",
+            period_end=close_end.isoformat(),
+            usage_period_start=PERIOD_START.isoformat(),
+            usage_period_end=close_end.isoformat(),
+        )
+        r = await wired.post("/internal/v1/subscription-invoices", json=body, headers=_headers())
+        assert r.status_code == 201, r.text
+        invoice = r.json()["invoice"]
+        assert [line["amount_minor"] for line in invoice["lines"]] == [700]
+        assert metering.asked == [domain.Period(PERIOD_START, close_end)]
+
+
+class TestVoidByKey:
+    async def test_a_superseded_period_invoice_is_voided_by_its_key(
+        self,
+        wired: AsyncClient,
+        catalog: FakeCatalog,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        version, items = _version()
+        catalog.versions[version.id] = version
+        body = _body(org_id, version, items)
+        made = await wired.post("/internal/v1/subscription-invoices", json=body, headers=_headers())
+        void_body = {
+            "organization_id": body["organization_id"],
+            "subscription_id": body["subscription_id"],
+            "kind": "period",
+            "period_start": body["period_start"],
+            "reason": "superseded period",
+        }
+        first = await wired.post(
+            "/internal/v1/subscription-invoices:void", json=void_body, headers=_headers()
+        )
+        again = await wired.post(
+            "/internal/v1/subscription-invoices:void", json=void_body, headers=_headers()
+        )
+        assert first.status_code == 200, first.text
+        assert first.json() == {"voided": True, "invoice_id": made.json()["invoice"]["id"]}
+        assert again.json()["voided"] is True
+        admin_session.expunge_all()
+        async with admin_session.begin():
+            state = (await admin_session.execute(select(Invoice.state))).scalar_one()
+        assert state == "void"
+        assert await _count(admin_session, OutboxEvent, event_type="commerce.invoice.voided") == 1
+
+    async def test_nothing_to_void_says_so(self, wired: AsyncClient, org_id: uuid.UUID) -> None:
+        r = await wired.post(
+            "/internal/v1/subscription-invoices:void",
+            json={
+                "organization_id": str(org_id),
+                "subscription_id": str(uuid.uuid4()),
+                "kind": "period",
+                "period_start": PERIOD_START.isoformat(),
+                "reason": "superseded period",
+            },
+            headers=_headers(),
+        )
+        assert r.status_code == 200
+        assert r.json() == {"voided": False, "invoice_id": None}
+
+    async def test_only_subscription_may_void(self, wired: AsyncClient, org_id: uuid.UUID) -> None:
+        body = {
+            "organization_id": str(org_id),
+            "subscription_id": str(uuid.uuid4()),
+            "kind": "period",
+            "period_start": PERIOD_START.isoformat(),
+            "reason": "x",
+        }
+        assert (
+            await wired.post("/internal/v1/subscription-invoices:void", json=body)
+        ).status_code == 401
+        assert (
+            await wired.post(
+                "/internal/v1/subscription-invoices:void",
+                json=body,
+                headers=_headers(caller="payment"),
+            )
+        ).status_code == 403
+
+
+class TestNumbersAndScoping:
+    async def test_a_hand_invoice_holding_the_derived_number_does_not_block_the_run(
+        self,
+        wired: AsyncClient,
+        catalog: FakeCatalog,
+        session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        version, items = _version()
+        catalog.versions[version.id] = version
+        subscription_id = uuid.uuid4()
+        key = domain.subscription_invoice_key(subscription_id, PERIOD_START)
+        taken = domain.subscription_invoice_number(key, PERIOD_START)
+        async with session.begin():
+            session.add(
+                Invoice(
+                    organization_id=org_id,
+                    number=taken,
+                    state="finalized",
+                    currency="INR",
+                    total_minor=1,
+                    period_start=PERIOD_START,
+                    period_end=PERIOD_END,
+                    finalized_at=PERIOD_START,
+                )
+            )
+        r = await wired.post(
+            "/internal/v1/subscription-invoices",
+            json=_body(org_id, version, items, subscription_id=subscription_id),
+            headers=_headers(),
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["invoice"]["number"] == f"{taken}-2"
+
+    async def test_the_key_lookup_filters_the_organization_even_without_rls(
+        self, admin_session: AsyncSession, org_id: uuid.UUID, org_b: uuid.UUID
+    ) -> None:
+        """On the BYPASSRLS admin session only the explicit filter keeps org B's invoice out."""
+        from app import selectors
+
+        key = domain.subscription_invoice_key(uuid.uuid4(), PERIOD_START)
+        async with admin_session.begin():
+            admin_session.add(
+                Invoice(
+                    organization_id=org_b,
+                    number="B-KEY",
+                    state="finalized",
+                    currency="INR",
+                    total_minor=1,
+                    period_start=PERIOD_START,
+                    period_end=PERIOD_END,
+                    finalized_at=PERIOD_START,
+                    idempotency_key=key,
+                )
+            )
+        async with admin_session.begin():
+            assert await selectors.get_invoice_by_key(admin_session, org_id, key) is None
+            assert await selectors.get_invoice_by_key(admin_session, org_b, key) is not None

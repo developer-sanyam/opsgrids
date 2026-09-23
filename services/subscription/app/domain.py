@@ -37,6 +37,8 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from app.models import (
+    PERIOD_KIND_CLOSE,
+    PERIOD_KIND_PRORATION,
     PERIOD_KIND_RENEWAL,
     PERIOD_KIND_TRIAL_CONVERSION,
     STATE_ACTIVE,
@@ -466,13 +468,26 @@ class DuePeriod:
 
     kind: str
     start: datetime
-    end: datetime
+    #: None when the cadence has no period (`one_time`): the period is due and cannot be priced —
+    #: the run records a permanent failure for it rather than guessing an end.
+    end: datetime | None
     usage_start: datetime | None
     usage_end: datetime | None
+    error: str | None = None
+
+    @property
+    def billable(self) -> bool:
+        return self.end is not None
 
 
 KIND_TRIAL_CONVERSION = PERIOD_KIND_TRIAL_CONVERSION
 KIND_RENEWAL = PERIOD_KIND_RENEWAL
+KIND_PRORATION = PERIOD_KIND_PRORATION
+KIND_CLOSE = PERIOD_KIND_CLOSE
+
+#: A pending lifecycle claim that has failed this often is reported as permanently failing by the
+#: health probe even if each failure looked transient.
+PERMANENT_AFTER_ATTEMPTS = 5
 
 #: States whose period rolls. `suspended` rolls too — but is not invoiced (see `bills_period`).
 _ROLLING_STATES = frozenset({STATE_ACTIVE, STATE_PAST_DUE, STATE_SUSPENDED})
@@ -491,6 +506,7 @@ def due_period(
     current_period_end: datetime | None,
     billing_interval: str | None,
     now: datetime,
+    usage_billed_through: datetime | None = None,
 ) -> DuePeriod | None:
     """What, if anything, the billing run owes this subscription at `now`.
 
@@ -498,30 +514,81 @@ def due_period(
       end*, not at `now` — a sweep that runs six hours late must not shift every later period by
       six hours (the ADR-0005 rule: boundaries come from stored timestamps).
     * **An active, past-due or suspended subscription whose period has closed** rolls: the next
-      period opens *at the old one's end*, and the closed period is the usage window.
+      period opens *at the old one's end*, and the closed period is the usage window — from
+      `usage_billed_through` instead of the period start when a closing period (a suspension's)
+      already billed the first part of it.
     * **Anything else** — cancelled, a trial still running, a period still open — owes nothing.
 
-    One period per call. A sweep that was down for three months catches up one period per pass,
-    each with its own invoice and its own key, rather than collapsing three months into one.
+    A due period whose cadence has no period at all comes back with `end=None` and an `error`,
+    for the run to record as a failure rather than invoice by guess. One period per call: a sweep
+    that was down for three months catches up one period per pass, each with its own key.
     """
     interval = billing_interval or infer_interval(current_period_start, current_period_end)
+    unbillable = f"a {interval or 'unknown'} cadence has no period to bill"
     if state == STATE_TRIAL:
         if trial_ends_at is None or trial_ends_at > now:
             return None
         end = period_end(trial_ends_at, interval)
-        if end is None:
-            raise NotBillable(f"a {interval or 'unknown'!s} cadence has no period to bill")
-        return DuePeriod(KIND_TRIAL_CONVERSION, trial_ends_at, end, None, None)
+        return DuePeriod(
+            KIND_TRIAL_CONVERSION,
+            trial_ends_at,
+            end,
+            None,
+            None,
+            None if end else unbillable,
+        )
     if state in _ROLLING_STATES:
         if current_period_end is None or current_period_end > now:
             return None
         end = period_end(current_period_end, interval)
-        if end is None:
-            raise NotBillable(f"a {interval or 'unknown'!s} cadence has no period to bill")
+        usage_start = current_period_start
+        if (
+            usage_billed_through is not None
+            and usage_start is not None
+            and usage_billed_through > usage_start
+        ):
+            usage_start = usage_billed_through
+        usage_end: datetime | None = current_period_end
+        if usage_start is None or usage_start >= current_period_end:
+            usage_start, usage_end = None, None
         return DuePeriod(
-            KIND_RENEWAL, current_period_end, end, current_period_start, current_period_end
+            KIND_RENEWAL,
+            current_period_end,
+            end,
+            usage_start,
+            usage_end,
+            None if end else unbillable,
         )
     return None
+
+
+def closing_usage_window(
+    *,
+    state: str,
+    current_period_start: datetime | None,
+    usage_billed_through: datetime | None,
+    at: datetime,
+) -> tuple[datetime, datetime] | None:
+    """The usage-only window a cancellation or suspension at `at` leaves unbilled, if any.
+
+    Usage bills in arrears at the next roll — which never comes for a cancelled subscription,
+    and comes after the fact for a suspended one. So the stop itself claims
+    `[period start (or where the last close stopped), at)`. Only a served state has usage to bill:
+    a trial's is free, a suspended one's was closed when it was suspended.
+    """
+    if state not in (STATE_ACTIVE, STATE_PAST_DUE) or current_period_start is None:
+        return None
+    start = current_period_start
+    if usage_billed_through is not None and usage_billed_through > start:
+        start = usage_billed_through
+    if at <= start:
+        return None
+    return start, at
+
+
+def is_upgrade(new_list_minor: int, old_list_minor: int) -> bool:
+    """An upgrade costs at least as much at list; anything cheaper is a downgrade (addendum §4)."""
+    return new_list_minor >= old_list_minor
 
 
 def bills_period(state: str) -> bool:

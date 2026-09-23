@@ -115,19 +115,38 @@ async def get_reversal_of(session: AsyncSession, entry_id: uuid.UUID) -> CreditL
     ).scalar_one_or_none()
 
 
-async def get_invoice_by_key(session: AsyncSession, idempotency_key: str) -> Invoice | None:
-    """The billing run's invoice for one subscription period, if it has been raised.
+async def get_invoice_by_key(
+    session: AsyncSession, organization_id: uuid.UUID, idempotency_key: str
+) -> Invoice | None:
+    """The billing run's invoice for one claim, if it has been raised.
 
-    Scoped by row-level security to the bound tenant — the key is only unique per organization,
-    and another organization's invoice under the same key must be, and is, invisible.
+    The key is only unique per organization, so the organization is filtered explicitly — and
+    row-level security scopes the read to the bound tenant as the net under that filter.
     """
     return (
         await session.execute(
             select(Invoice)
             .options(selectinload(Invoice.lines))
-            .where(Invoice.idempotency_key == idempotency_key)
+            .where(
+                Invoice.organization_id == organization_id,
+                Invoice.idempotency_key == idempotency_key,
+            )
         )
     ).scalar_one_or_none()
+
+
+async def invoice_numbers_like(
+    session: AsyncSession, organization_id: uuid.UUID, number: str
+) -> set[str]:
+    """The organization's invoice numbers that are `number` or `number-<suffix>` — what a
+    billing-run invoice must steer round when a hand-finalized one took its derived number."""
+    rows = await session.execute(
+        select(Invoice.number).where(
+            Invoice.organization_id == organization_id,
+            or_(Invoice.number == number, Invoice.number.like(f"{number}-%")),
+        )
+    )
+    return {str(n) for n in rows.scalars().all()}
 
 
 async def effective_tax_rate(

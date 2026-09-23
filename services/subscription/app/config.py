@@ -36,11 +36,12 @@ class Settings(ServiceSettings):
     #: `/health/billing-run` probe calls a subscription overdue after `billing_run_overdue_seconds`.
     billing_run_poll_interval: float = 300.0
     billing_run_overdue_seconds: int = 3600
-    #: The run's kill switch. On by default — trials that never convert are the defect it fixes —
-    #: but a first deploy onto a box with history converts every expired trial and bills every
-    #: overdue period on its first passes, so the runbook stages it: deploy with this `false`,
-    #: read `python -m app.billing_run --dry-run`, then turn it on.
-    billing_run_enabled: bool = True
+    #: The run's kill switch — **off by default** (review fix 6). A first deploy onto a box with
+    #: history converts every expired trial and bills every overdue period on its first passes,
+    #: so it is turned on deliberately, after reading `python -m app.billing_run --dry-run`
+    #: (the runbook's procedure). Off, the worker logs `billing_run.disabled` at warning and
+    #: `/health/billing-run`'s `overdue` climbs.
+    billing_run_enabled: bool = False
 
 
 def settings() -> Settings:

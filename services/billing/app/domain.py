@@ -19,6 +19,7 @@ transaction. Nothing here imports catalog or metering; they arrive as the plain 
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -218,6 +219,7 @@ def price_subscription_period(
     usage_period: Period | None,
     usage: Mapping[str, int] | None,
     tax: TaxSpec | None,
+    recurring: bool = True,
 ) -> list[LineDraft]:
     """The lines of one subscription period's invoice, exactly, in integer minor units.
 
@@ -234,6 +236,8 @@ def price_subscription_period(
       invoice currency. Either failing is a `PricingError`, never a skipped line.
     * **Tax is exclusive and computed once on the subtotal** (`Money.percent_bps`, half-up), as
       its own line, so the lines still foot exactly to the total. A zero tax writes no line.
+    * `recurring=False` is a **closing period** (a cancellation's or suspension's): its recurring
+      prices were billed in advance when the period opened, so only usage is billed.
 
     Nothing here reads a clock, a database or the network.
     """
@@ -259,7 +263,7 @@ def price_subscription_period(
         if price.kind in (PRICE_FLAT, PRICE_PER_SEAT):
             if price.amount_minor is None or price.amount_minor < 0:
                 raise PricingError(f"{price.kind} price {price.id} has no amount")
-            if item.quantity == 0:
+            if item.quantity == 0 or not recurring:
                 continue
             amount = Money(price.amount_minor, currency) * item.quantity
             label = "Subscription" if price.kind == PRICE_FLAT else f"{price.unit or 'seat'}s"
@@ -302,6 +306,11 @@ def price_subscription_period(
         else:
             raise PricingError(f"price {price.id} has unknown kind {price.kind!r}")
 
+    return _with_tax(lines, currency, tax)
+
+
+def _with_tax(lines: list[LineDraft], currency: str, tax: TaxSpec | None) -> list[LineDraft]:
+    """Exclusive tax, once on the subtotal, half-up, as its own line; none on nothing."""
     if tax is not None and tax.rate_bps > 0 and lines:
         subtotal = sum_lines(lines, currency)
         tax_amount = subtotal.percent_bps(tax.rate_bps)
@@ -318,19 +327,115 @@ def price_subscription_period(
     return lines
 
 
-def subscription_invoice_key(subscription_id: UUID, period_start: datetime) -> str:
-    """The platform idempotency key for one subscription period's invoice.
+def recurring_total(
+    *,
+    currency: str,
+    plan_version_id: UUID,
+    prices: Sequence[PriceSpec],
+    items: Sequence[ItemSpec],
+) -> Money:
+    """One full period's recurring price (`flat` and `per_seat`) for a pin and its items — the
+    same lines `price_subscription_period` writes, summed, with usage and tax left out."""
+    period = Period(datetime(2000, 1, 1, tzinfo=UTC), datetime(2000, 1, 2, tzinfo=UTC))
+    lines = price_subscription_period(
+        currency=currency,
+        plan_version_id=plan_version_id,
+        prices=prices,
+        items=items,
+        period=period,
+        usage_period=None,
+        usage=None,
+        tax=None,
+    )
+    return sum_lines(lines, currency.upper())
 
-    Built by billing from the two facts that identify the period, never accepted from a caller
-    as free text, and normalised to UTC with microseconds so the same instant always yields the
-    same string however the caller's client serialised it.
+
+def price_proration(
+    *,
+    currency: str,
+    new_plan_version_id: UUID,
+    new_prices: Sequence[PriceSpec],
+    new_items: Sequence[ItemSpec],
+    old_plan_version_id: UUID,
+    old_prices: Sequence[PriceSpec],
+    old_items: Sequence[ItemSpec],
+    full_period: Period,
+    effective_at: datetime,
+    tax: TaxSpec | None,
+) -> list[LineDraft]:
+    """An upgrade's charge for the rest of the current period (ADR-0005 addendum §4, as revised).
+
+    Each side's full-period recurring price is prorated with `prorate` — largest-remainder over
+    whole **seconds** remaining out of the period's seconds, integer minor units throughout — and
+    the charge is the new share less the old share. Never negative: a change that nets to no more
+    (the list comparison called it an upgrade; seats or rounding made it equal) bills nothing and
+    writes no line, and no credit is issued here. Tax as everywhere else.
     """
+    currency = currency.upper()
+    if not full_period.start <= effective_at < full_period.end:
+        raise PricingError("the upgrade is not inside the period it prorates")
+    period_seconds = int((full_period.end - full_period.start).total_seconds())
+    remaining = int((full_period.end - effective_at).total_seconds())
+    new_full = recurring_total(
+        currency=currency, plan_version_id=new_plan_version_id, prices=new_prices, items=new_items
+    )
+    old_full = recurring_total(
+        currency=currency, plan_version_id=old_plan_version_id, prices=old_prices, items=old_items
+    )
+    new_share = prorate(new_full, elapsed_units=remaining, period_units=period_seconds)
+    old_share = prorate(old_full, elapsed_units=remaining, period_units=period_seconds)
+    difference = new_share - old_share
+    if difference.minor <= 0:
+        return []
+    lines = [
+        LineDraft(
+            description=(
+                f"Upgrade, prorated {_fmt_day(effective_at)} to {_fmt_day(full_period.end)}"
+            ),
+            quantity=Decimal(1),
+            amount_minor=difference.minor,
+            currency=currency,
+            plan_version_id=new_plan_version_id,
+        )
+    ]
+    return _with_tax(lines, currency, tax)
+
+
+def subscription_invoice_key(
+    subscription_id: UUID,
+    period_start: datetime,
+    *,
+    kind: str = "period",
+    change_id: UUID | None = None,
+) -> str:
+    """The platform idempotency key for one billing-run invoice.
+
+    Built by billing from the facts that identify the claim, never accepted from a caller as free
+    text, and normalised to UTC with microseconds so the same instant always yields the same
+    string however the caller's client serialised it:
+
+    * `period` — `subscription:{id}:{period_start}`
+    * `proration` — `subscription:{id}:proration:{change_id}` (one upgrade, one invoice)
+    * `close` — `subscription:{id}:{period_start}:close`
+    """
+    if kind == "proration":
+        if change_id is None:
+            raise ValueError("a proration is keyed on its change")
+        return f"subscription:{subscription_id}:proration:{change_id}"
     at = period_start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    return f"subscription:{subscription_id}:{at}"
+    base = f"subscription:{subscription_id}:{at}"
+    return f"{base}:close" if kind == "close" else base
 
 
-def subscription_invoice_number(subscription_id: UUID, period_start: datetime) -> str:
-    """A human-facing number, deterministic in the same two facts, so a retried run that races
-    another never mints two numbers for one period."""
+def subscription_invoice_number(key: str, period_start: datetime, attempt: int = 0) -> str:
+    """A human-facing number, deterministic in the invoice's key.
+
+    Derived from a hash of the **whole** key, so a period, its proration and its close — three
+    keys for one subscription and day — get three numbers, and a retry that races another mints
+    the same one. `attempt` suffixes it (`-2`, `-3`, …) for the one clash hashing cannot rule out:
+    a hand-finalized invoice that happened to take the number first (review fix 12).
+    """
     day = period_start.astimezone(UTC).strftime("%Y%m%d")
-    return f"INV-{day}-{subscription_id.hex[:12].upper()}"
+    digest = hashlib.sha256(key.encode()).hexdigest()[:10].upper()
+    number = f"INV-{day}-{digest}"
+    return number if attempt == 0 else f"{number}-{attempt + 1}"

@@ -29,10 +29,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # may be on the path in a given process.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.billing_run import BillingRunSweep
 from app.config import settings
 from app.main import app
 from app.models import SCHEMA
 from platform_core.db import TENANT_GUC, get_session
+from tests.billing_fakes import FakeBilling, FakePayment, _make_sweep
 from tests.helpers import FakeCatalog
 
 TENANT_TABLES = (
@@ -166,3 +168,25 @@ async def client(session: AsyncSession, catalog: FakeCatalog) -> AsyncIterator[A
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
     app.dependency_overrides.clear()
+
+
+# ------------------------------------------------------------------ the billing run's siblings
+
+
+@pytest_asyncio.fixture
+async def billing(session: AsyncSession) -> AsyncIterator[FakeBilling]:
+    fake = FakeBilling(settings().database_url)
+    yield fake
+    await fake.aclose()
+
+
+@pytest.fixture
+def payment() -> FakePayment:
+    return FakePayment()
+
+
+@pytest.fixture
+def run(
+    sweep_engines: tuple[Any, Any], billing: FakeBilling, payment: FakePayment
+) -> BillingRunSweep:
+    return _make_sweep(*sweep_engines, billing, payment)

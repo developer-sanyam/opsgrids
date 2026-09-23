@@ -36,6 +36,8 @@ from app.schemas import (
     CreditReverseIn,
     FinalizeInvoiceIn,
     InvoiceOut,
+    SubscriptionInvoiceVoidIn,
+    SubscriptionInvoiceVoidOut,
     VoidInvoiceIn,
 )
 from platform_core.auth import require_service_token
@@ -135,6 +137,27 @@ async def bill_subscription_period(
     if created:
         return body
     return JSONResponse(status_code=status.HTTP_200_OK, content=body.model_dump(mode="json"))
+
+
+@router.post(
+    "/subscription-invoices:void",
+    response_model=SubscriptionInvoiceVoidOut,
+    summary="Void the billing-run invoice under a claim's key — a superseded period",
+)
+async def void_subscription_period(
+    payload: SubscriptionInvoiceVoidIn, session: SessionDep, request: Request
+) -> SubscriptionInvoiceVoidOut:
+    """The billing run found the subscription had moved past a period it had already invoiced
+    (review fix 11). Void is a state on the frozen invoice — never a delete — and stages
+    `commerce.invoice.voided`. Idempotent; only subscription may ask."""
+    caller = getattr(request.state, "service_caller", None)
+    if caller not in BILLING_RUN_CALLERS:
+        raise ForbiddenProblem("this service may not void billing-run invoices")
+    settings: Settings = request.app.state.settings
+    voided, invoice_id = await billing_run.void_subscription_period(
+        session, payload, settings=settings, request=request
+    )
+    return SubscriptionInvoiceVoidOut(voided=voided, invoice_id=invoice_id)
 
 
 @router.post(

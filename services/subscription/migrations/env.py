@@ -30,28 +30,45 @@ config.set_main_option("sqlalchemy.url", cfg.admin_dsn)
 target_metadata = Base.metadata
 
 
-#: The tables the two sweeps discover work in, and nothing else. `dunning_cycles` for the dunning
-#: ladder (ADR-0005); `subscriptions` and `billing_periods` for the billing run and its
-#: `/health/billing-run` probe (ADR-0005 addendum, 2026-09-23). SELECT only.
-SWEEP_READABLE_TABLES = ("dunning_cycles", "subscriptions", "billing_periods")
+#: What the sweeps may read across tenants, and nothing else (ADR-0005 §6 and its 2026-09-23
+#: addendum). `dunning_cycles` whole, for the dunning ladder. The billing run's two tables by
+#: **column**: exactly what its discovery and the `/health/billing-run` probe read — ids, states
+#: and timestamps, never an amount, a pin, an item or an invoice id's neighbours. A `None` means the
+#: whole table.
+SWEEP_READABLE: dict[str, tuple[str, ...] | None] = {
+    "dunning_cycles": None,
+    "subscriptions": ("id", "organization_id", "state", "trial_ends_at", "current_period_end"),
+    "billing_periods": (
+        "id",
+        "organization_id",
+        "subscription_id",
+        "kind",
+        "state",
+        "lease_until",
+        "next_attempt_at",
+        "attempts",
+        "last_error",
+        "permanent_failure",
+        "invoice_id",
+        "created_at",
+        "recorded_at",
+    ),
+}
 
 
 def grant_sweep_reader(connection: Connection) -> None:
-    """Cross-tenant SELECT on the sweeps' discovery tables (`SWEEP_READABLE_TABLES`).
+    """Cross-tenant SELECT for the sweeps' discovery reads (`SWEEP_READABLE`).
 
-    The sweep (`app/cron.py`, ADR-0005) has the outbox relay's problem exactly: its query exists
-    to discover *which* organizations have work due, so there is no tenant to bind while asking,
-    and as the NOBYPASSRLS app role it would select nothing, log nothing, and leave every past-due
-    subscription in grace forever. It therefore reads on the relay's role — the platform's already
-    provisioned "cross-tenant discovery, nothing else" identity — rather than a fourth BYPASSRLS
-    role added to the bootstrap for one table.
+    The sweeps (`app/cron.py`, `app/billing_run.py`) have the outbox relay's problem exactly: their
+    queries exist to discover *which* organizations have work due, so there is no tenant to bind
+    while asking, and as the NOBYPASSRLS app role they would select nothing, log nothing, and leave
+    every past-due subscription in grace forever. They therefore read on the relay's role — the
+    platform's already provisioned "cross-tenant discovery, nothing else" identity.
 
-    **SELECT only, and only these tables.** Every write either sweep makes runs back on the app
-    role inside a tenant-bound transaction; the bypass buys discovery and never authority.
-    `apply_schema_grants` has already given this role `USAGE` on the schema and `SELECT, UPDATE`
-    on `outbox`; this adds the tables the sweeps read and nothing more. The billing run's
-    discovery returns `(organization_id, subscription_id)` pairs and nothing else — every price,
-    state and period it acts on is re-read under the tenant binding.
+    **SELECT only, and only these columns.** Every write either sweep makes runs back on the app
+    role inside a tenant-bound transaction; the bypass buys discovery and never authority. A
+    table-level grant an earlier revision of this function made is revoked first, so an existing
+    database narrows to the column list rather than keeping both.
 
     Runs here rather than in the bootstrap SQL because the tables do not exist when that runs, and
     is guarded by `to_regclass` so a downgrade that has dropped one is a no-op rather than an error.
@@ -63,11 +80,18 @@ def grant_sweep_reader(connection: Connection) -> None:
         text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": reader}
     ).scalar():
         return
-    for table in SWEEP_READABLE_TABLES:
-        if connection.execute(
+    for table, columns in SWEEP_READABLE.items():
+        if not connection.execute(
             text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.{table}"}
         ).scalar():
+            continue
+        if columns is None:
             connection.execute(text(f'GRANT SELECT ON "{SCHEMA}"."{table}" TO "{reader}"'))
+            continue
+        # Identifiers from the constant table above and the configured role — never input.
+        connection.execute(text(f'REVOKE SELECT ON "{SCHEMA}"."{table}" FROM "{reader}"'))  # noqa: S608
+        listed = ", ".join(f'"{c}"' for c in columns)
+        connection.execute(text(f'GRANT SELECT ({listed}) ON "{SCHEMA}"."{table}" TO "{reader}"'))
     connection.commit()
 
 

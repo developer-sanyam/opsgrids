@@ -31,6 +31,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -122,6 +123,18 @@ class Subscription(Base, TenantBase):
     #: that moves cadence takes effect at the next roll, never mid-period. NULL on a row written
     #: before the run existed; `domain.infer_interval` reads it off the period's length.
     billing_interval: Mapped[str | None] = mapped_column(String(20))
+
+    #: A downgrade waiting for the next period (ADR-0005 addendum §4): the version it moves to and
+    #: everything the roll needs to apply it without asking catalog — `{"plan_version_id",
+    #: "billing_interval", "items", "entitled_products", "requested_at", "actor"}`. NULL when
+    #: nothing is waiting. Applied by the billing run when it claims the next period.
+    pending_change: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    pending_plan_version_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
+    #: Usage up to this instant has already been invoiced by a closing period (a suspension's):
+    #: the next renewal's usage window starts here rather than at the period start, so the same
+    #: reading is never billed twice.
+    usage_billed_through: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     #: ISO-4217, read from the pinned version. One currency per subscription (ADR-0004 defaults:
     #: one currency per org for now); every amount that references it must agree.
@@ -375,32 +388,43 @@ class DunningCycle(Base, TenantBase):
 
 
 #: The states of one billing period's claim (the billing run, ADR-0005 addendum 2026-09-23).
-#: `pending` is claimed and not yet recorded — the only state the sweep ever retries; `invoiced`
-#: carries billing's answer; `skipped` is a period that was advanced without an invoice (a
-#: suspended subscription is not billed for time it is not served).
+#: `pending` is claimed and not yet recorded — retried after its lease or backoff; `invoiced`
+#: carries billing's answer; `skipped` was advanced without an invoice (a suspended roll, a stale
+#: claim that never reached billing). `void_pending` is an invoice raised for a period the
+#: subscription had already moved past — the run asks billing to void it — and `voided` is done.
 PERIOD_PENDING = "pending"
 PERIOD_INVOICED = "invoiced"
 PERIOD_SKIPPED = "skipped"
+PERIOD_VOID_PENDING = "void_pending"
+PERIOD_VOIDED = "voided"
 
-#: What opened the period: the end of a trial, or the end of the previous paid period.
+#: What opened the claim. `trial_conversion` and `renewal` open a period and move the
+#: subscription; `proration` is an upgrade's prorated difference for the rest of the current
+#: period; `close` is the usage-only closing period a cancellation or suspension leaves behind.
 PERIOD_KIND_TRIAL_CONVERSION = "trial_conversion"
 PERIOD_KIND_RENEWAL = "renewal"
+PERIOD_KIND_PRORATION = "proration"
+PERIOD_KIND_CLOSE = "close"
+
+#: The kinds that move the subscription and are discovered through it. The other two are
+#: discovered as rows of their own.
+LIFECYCLE_KINDS = (PERIOD_KIND_TRIAL_CONVERSION, PERIOD_KIND_RENEWAL)
 
 
 class BillingPeriod(Base, TenantBase):
-    """One subscription period the billing run owes an invoice for — the claim, then the record.
+    """One invoice the billing run owes for a subscription — the claim, then the record.
 
     The billing run's **claim → call → record** needs a row that survives a crash between the
-    three, and this is it. The claim writes it `pending` with everything the call will send —
-    the period, the usage window, the pin and a snapshot of the items — so a retry after a crash
-    asks billing for *exactly* the same invoice, and billing's idempotency key (the subscription
-    and `period_start`) answers it with the one it already made. The record step writes billing's
-    answer here and advances the subscription in the same transaction.
+    three, and this is it. The claim writes it `pending` with everything the call will send — the
+    period, the usage window, the pin and a snapshot of the items (and, for a proration, the pin
+    and items it moved off) — so a retry after a crash asks billing for *exactly* the same
+    invoice, and billing's idempotency key answers it with the one it already made.
 
-    `UNIQUE (organization_id, subscription_id, period_start)` is the net under the sweep's own
-    re-check: however many replicas claim at once, one period is one row. `lease_until` keeps a
-    second replica from calling billing while the first is mid-call, and doubles as the retry
-    backoff after a failure.
+    `UNIQUE (organization_id, subscription_id, kind, period_start)`: one period is one row however
+    many replicas claim at once. `lease_until` keeps a second replica from calling billing while
+    the first is mid-call; `next_attempt_at` is the backoff after a failure, and discovery skips a
+    subscription whose lifecycle claim is leased or backing off, so one stuck row never holds up
+    the batch behind it.
 
     **Mutable, like `dunning_cycles`, and for the same reason**: it is the run's live work item,
     not a financial fact. The invoice is billing's (append-only, frozen at finalize); the
@@ -418,35 +442,56 @@ class BillingPeriod(Base, TenantBase):
         ),
         nullable=False,
     )
-    #: `trial_conversion` or `renewal`.
+    #: `trial_conversion`, `renewal`, `proration` or `close`.
     kind: Mapped[str] = mapped_column(String(30), nullable=False)
-    #: The period billed **in advance** for recurring prices. Half-open.
+    #: The period the invoice covers. Half-open. For a proration it is the rest of the current
+    #: period from the change; for a close, the usage window it bills. `period_end` is NULL only on
+    #: a failure row for a cadence with no period at all (`one_time`, reported and never billed).
     period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    #: The period that just closed, billed **in arrears** for usage prices. NULL on a trial
-    #: conversion — trial usage is free.
+    period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The window billed **in arrears** for usage prices. NULL on a trial conversion — trial usage
+    #: is free — and on a proration.
     usage_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     usage_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    #: The pin at claim time. A change-plan after the claim affects the *next* period, never
-    #: this one (ADR-0005 addendum: a plan change is priced from the next period).
+    #: The pin the invoice is priced against, snapshotted at claim.
     plan_version_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     #: `[{"price_id": "...", "quantity": n}, ...]` — the items at claim time, sent verbatim.
     items: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
 
+    #: A proration's other side: the pin and items the upgrade moved off, and the change's id —
+    #: which billing's idempotency key is built from (`subscription:{id}:proration:{change_id}`).
+    change_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    from_plan_version_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    from_items: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
+    #: The start of the *whole* current period a proration is a fraction of.
+    full_period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     state: Mapped[str] = mapped_column(String(20), nullable=False, default=PERIOD_PENDING)
-    #: No replica calls billing for this row before this instant: the in-flight lease while a
-    #: call is out, and the backoff after one failed.
+    #: No replica calls billing for this row before this instant while a call is out.
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: After a failure, not before this instant (`domain.retry_backoff`).
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(String(300))
+    #: The last failure was a data defect a retry will not fix on its own (an item off the pin, a
+    #: `one_time` cadence, a 4xx from billing). Still retried at the backoff cap, so a fix is
+    #: picked up; counted apart by `/health/billing-run` so it pages a person.
+    permanent_failure: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+
+    #: A trial conversion's first charge failed before the record step ran (payment raced the
+    #: run). The record step then takes `trial -> past_due` instead of `active`.
+    payment_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    payment_failure_reason: Mapped[str | None] = mapped_column(String(200))
 
     #: Billing's answer, recorded. Plain UUID into billing's schema — never a foreign key.
     invoice_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     total_minor: Mapped[int | None] = mapped_column(BigInteger)
-    #: What recording did to the subscription: `activated`, `past_due`, `renewed`, or
-    #: `skipped_suspended` / `superseded` when it deliberately did nothing.
+    #: What recording did: `activated`, `past_due`, `renewed`, `prorated`, `closed`,
+    #: `skipped_suspended`, `superseded`, `nothing_to_void`.
     outcome: Mapped[str | None] = mapped_column(String(40))
     recorded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -454,12 +499,19 @@ class BillingPeriod(Base, TenantBase):
         UniqueConstraint(
             "organization_id",
             "subscription_id",
+            "kind",
             "period_start",
-            name="uq_billing_periods_org_subscription_start",
+            name="uq_billing_periods_org_subscription_kind_start",
         ),
-        CheckConstraint("state in ('pending', 'invoiced', 'skipped')", name="state"),
-        CheckConstraint("kind in ('trial_conversion', 'renewal')", name="kind"),
-        CheckConstraint("period_end > period_start", name="period_is_forward"),
+        CheckConstraint(
+            "state in ('pending', 'invoiced', 'skipped', 'void_pending', 'voided')", name="state"
+        ),
+        CheckConstraint(
+            "kind in ('trial_conversion', 'renewal', 'proration', 'close')", name="kind"
+        ),
+        CheckConstraint(
+            "period_end is null or period_end > period_start", name="period_is_forward"
+        ),
         CheckConstraint("attempts >= 0", name="attempts_non_negative"),
         CheckConstraint("length(currency) = 3", name="currency_iso"),
         CheckConstraint("total_minor is null or total_minor >= 0", name="total_non_negative"),
@@ -469,6 +521,12 @@ class BillingPeriod(Base, TenantBase):
             "ix_billing_periods_pending",
             "created_at",
             postgresql_where=text("state = 'pending'"),
+        ),
+        # Discovery of rows that are their own work (prorations, closes, voids to make).
+        Index(
+            "ix_billing_periods_actionable",
+            "created_at",
+            postgresql_where=text("state in ('pending', 'void_pending')"),
         ),
         Index("ix_billing_periods_recorded", "recorded_at"),
     )

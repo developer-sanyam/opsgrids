@@ -67,5 +67,8 @@ ids, state driven by injected webhook fixtures). A test asserts no keys or netwo
   (active, bank-confirmed, currency, cap). Asked by subscription's billing run when a trial ends
   (ADR-0013 §6, ADR-0005 addendum); **only subscription** may ask. Identifiers only.
 
+`commerce.payment.failed` carries `failure_reason` (additive), which subscription records on a
+trial conversion whose first charge failed before the billing run recorded the conversion.
+
 A `commerce.invoice.finalized` whose total is zero (a free plan's period) raises no charge: a zero
 debit is a provider call and a bank fee that moves no money.

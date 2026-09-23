@@ -42,6 +42,8 @@ from app.models import (
     PERIOD_INVOICED,
     PERIOD_PENDING,
     PERIOD_SKIPPED,
+    PERIOD_VOID_PENDING,
+    PERIOD_VOIDED,
     STATE_ACTIVE,
     STATE_CANCELLED,
     STATE_PAST_DUE,
@@ -466,10 +468,24 @@ async def _change_plan(
     An upgrade and a downgrade are the same state (`active`/`trial` unchanged), told apart by
     whether the new list price is higher — which decides only the event, not the money.
     """
+    # Only a trial or a paid-up subscription changes plan. `past_due -> past_due` is a legal edge
+    # for the billing run's renewal, and `decide` would therefore accept a self-edge re-pin from
+    # `past_due` — so the rule is stated here, explicitly, rather than left to the state machine:
+    # a customer who owes money does not move to a dearer plan until they have paid.
+    if subscription.state not in (STATE_TRIAL, STATE_ACTIVE):
+        raise BusinessRuleProblem(
+            f"a {subscription.state} subscription cannot change plan; "
+            "only a trial or an active one can"
+        )
     new_version = _validate_new_pin(
         await catalog.get_plan_version(plan_version_id), organization_id
     )
     if new_version.id == subscription.plan_version_id:
+        if subscription.pending_change is not None:
+            # Back to the pin they are on: the waiting downgrade is withdrawn.
+            _clear_pending_change(session, subscription, actor=actor, request=request)
+            await session.flush()
+            return subscription
         raise BusinessRuleProblem("the subscription is already pinned to that plan version")
     # A change-plan moves along one product's ladder. Re-pinning a `suite` subscription to an
     # `hrms` version would change what the row is *for* while keeping its key — and with
@@ -488,27 +504,39 @@ async def _change_plan(
 
     old_version = await catalog.get_plan_version(subscription.plan_version_id)
     old_total = _list_price_minor(old_version) if old_version else 0
-    reason = (
-        domain.REASON_UPGRADE
-        if _list_price_minor(new_version) >= old_total
-        else domain.REASON_DOWNGRADE
-    )
+    upgrade = domain.is_upgrade(_list_price_minor(new_version), old_total)
+    reason = domain.REASON_UPGRADE if upgrade else domain.REASON_DOWNGRADE
+
+    # ADR-0005 addendum §4. On a trial nothing is being paid for, so either direction applies
+    # now. On a paid subscription a **downgrade waits for the next period** — the customer paid
+    # for this one — and is applied by the billing run when it claims that period.
+    if not upgrade and subscription.state == STATE_ACTIVE:
+        _schedule_downgrade(
+            session,
+            subscription,
+            new_version,
+            members,
+            actor=actor,
+            request=request,
+        )
+        await session.flush()
+        return subscription
 
     decision = domain.decide(
         from_state=subscription.state, to_state=subscription.state, reason=reason
     )
 
     from_pin = subscription.plan_version_id
+    from_items = _items_snapshot(subscription)
     subscription.plan_version_id = new_version.id
-    # Money moves from the next period, not now (ADR-0005 addendum, 2026-09-23: no mid-period
-    # proration). The billing run prices the period it opens off whatever is pinned when it
-    # claims it, and rolls the period on the cadence recorded here — so neither the current
-    # period's boundaries nor anything already invoiced changes under this re-pin.
+    # The next roll uses the new version's cadence; the current period's boundaries do not move.
     subscription.billing_interval = new_version.billing_interval
     # Re-snapshotted with the pin, in the same transaction: the event below carries the new
-    # member set, and product-service diffs it against what this source entitled before — a
-    # trio→duo downgrade de-sources the member the duo does not include.
+    # member set, and product-service diffs it against what this source entitled before.
     subscription.entitled_products_snapshot = members
+    # An upgrade supersedes any downgrade that was waiting.
+    subscription.pending_change = None
+    subscription.pending_plan_version_id = None
 
     # Rebuild the items against the new pin. The old items go with the old pin, but that pin is
     # preserved on the transition row below, so history stays intact (ADR-0004 §2).
@@ -523,8 +551,83 @@ async def _change_plan(
         from_plan_version_id=from_pin,
         to_plan_version_id=new_version.id,
     )
+    # A paid upgrade is charged **now**, for the rest of the current period: the prorated
+    # difference between the new and the old recurring price. Claimed here, in the change's own
+    # transaction, and billed by the run — so the change and the money it owes commit together.
+    if upgrade and subscription.state == STATE_ACTIVE:
+        await _claim_proration(
+            session,
+            subscription,
+            from_plan_version_id=from_pin,
+            from_items=from_items,
+        )
     await session.flush()
     return subscription
+
+
+def _schedule_downgrade(
+    session: AsyncSession,
+    subscription: Subscription,
+    version: CatalogPlanVersion,
+    members: list[str],
+    *,
+    actor: dict[str, Any],
+    request: Request | None,
+) -> None:
+    """Pin a downgrade to the next period (addendum §4). Nothing about entitlement or money
+    changes now — the customer keeps what they paid for until the period ends — so this is an
+    audit row, not a transition or an event; the transition is written when the run applies it."""
+    subscription.pending_change = {
+        "plan_version_id": str(version.id),
+        "billing_interval": version.billing_interval,
+        "items": [{"price_id": str(p.id), "quantity": 1} for p in version.prices],
+        "entitled_products": members,
+        "requested_at": datetime.now(UTC).isoformat(),
+        "actor": actor,
+    }
+    subscription.pending_plan_version_id = version.id
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=subscription.organization_id,
+        actor_id=uuid.UUID(actor["id"]) if actor.get("type") == "user" else None,
+        action="commerce.subscription.downgrade_scheduled",
+        entity="subscription",
+        entity_id=subscription.id,
+        before={"plan_version_id": str(subscription.plan_version_id)},
+        after={
+            "pending_plan_version_id": str(version.id),
+            "effective_at": subscription.current_period_end.isoformat()
+            if subscription.current_period_end
+            else None,
+        },
+        reason=domain.REASON_DOWNGRADE,
+        request=request,
+    )
+
+
+def _clear_pending_change(
+    session: AsyncSession,
+    subscription: Subscription,
+    *,
+    actor: dict[str, Any],
+    request: Request | None,
+) -> None:
+    before = subscription.pending_plan_version_id
+    subscription.pending_change = None
+    subscription.pending_plan_version_id = None
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=subscription.organization_id,
+        actor_id=uuid.UUID(actor["id"]) if actor.get("type") == "user" else None,
+        action="commerce.subscription.downgrade_withdrawn",
+        entity="subscription",
+        entity_id=subscription.id,
+        before={"pending_plan_version_id": str(before) if before else None},
+        after={"plan_version_id": str(subscription.plan_version_id)},
+        request=request,
+    )
 
 
 async def cancel(
@@ -542,6 +645,9 @@ async def cancel(
         from_state=subscription.state, to_state=STATE_CANCELLED, reason=reason or "customer_cancel"
     )
     subscription.cancel_at = datetime.now(UTC)
+    # Usage bills in arrears at the next roll, which a cancelled subscription never reaches: the
+    # cancellation claims its own closing period (addendum, review fix 5).
+    await schedule_closing_usage(session, subscription, at=subscription.cancel_at)
     # A customer who cancels mid-dunning has settled the question the ladder was asking. Leaving
     # the cycle open would leave a sweep scheduled against a terminal subscription, and the
     # suspension it eventually tried would be an illegal edge — a handler that raises forever and
@@ -581,6 +687,7 @@ async def suspend(
     # because a human said so, and a sweep must not later "suspend" an already suspended
     # subscription on an edge the state machine forbids.
     await _close_open_cycle(session, subscription, reason="operator_suspend")
+    await schedule_closing_usage(session, subscription, at=datetime.now(UTC))
     _transition(
         session,
         subscription,
@@ -683,10 +790,41 @@ async def record_payment_failure(
     """
     from app import selectors
 
-    if subscription.state in (STATE_SUSPENDED, STATE_CANCELLED, STATE_TRIAL):
+    at = now or datetime.now(UTC)
+    if subscription.state == STATE_TRIAL:
+        # The one charge a trial can have is its conversion invoice's — raised by billing in the
+        # run's call step, and able to fail before the run's record step commits. Written onto
+        # the pending conversion claim, the record step then opens the grace window instead of
+        # activating (review fix 1). With no conversion in flight a trial carries no debt.
+        from app import selectors
+
+        conversion = await selectors.pending_conversion(
+            session, subscription.organization_id, subscription.id
+        )
+        if conversion is not None and conversion.payment_failed_at is None:
+            conversion.payment_failed_at = at
+            conversion.payment_failure_reason = (outcome.failure_reason or "payment_failed")[:200]
+            record_audit(
+                session,
+                AuditLog,
+                organization_id=subscription.organization_id,
+                actor_id=None,
+                acting_as="payment",
+                action="commerce.billing_run.conversion_charge_failed",
+                entity="subscription",
+                entity_id=subscription.id,
+                after={
+                    "period_id": str(conversion.id),
+                    "invoice_id": str(outcome.invoice_id) if outcome.invoice_id else None,
+                },
+                reason=domain.REASON_PAYMENT_FAILED,
+                request=request,
+            )
+            await session.flush()
+        return subscription
+    if subscription.state in (STATE_SUSPENDED, STATE_CANCELLED):
         return subscription
 
-    at = now or datetime.now(UTC)
     cycle = await selectors.get_open_cycle(session, subscription.id)
     if cycle is not None:
         cycle.failures_seen += 1
@@ -745,6 +883,7 @@ async def record_payment_failure(
 async def record_payment_captured(
     session: AsyncSession,
     subscription: Subscription,
+    outcome: PaymentOutcome | None = None,
     *,
     now: datetime | None = None,
     request: Request | None = None,
@@ -761,6 +900,22 @@ async def record_payment_captured(
     projection is not woken to write the row it already holds.
     """
     at = now or datetime.now(UTC)
+    from app import selectors
+
+    open_cycle = await selectors.get_open_cycle(session, subscription.id)
+    captured_invoice = outcome.invoice_id if outcome is not None else None
+    if open_cycle is not None and open_cycle.invoice_id != captured_invoice:
+        # Money for a *different* invoice — a renewal paid while an older one is still in
+        # dunning — settles nothing the window is about (review fix 3). The window stays open
+        # and the ladder carries on; recovering here would hand back a product whose unpaid
+        # invoice is still unpaid.
+        log.info(
+            "dunning.capture.other_invoice",
+            subscription_id=str(subscription.id),
+            cycle_invoice_id=str(open_cycle.invoice_id) if open_cycle.invoice_id else None,
+            captured_invoice_id=str(captured_invoice) if captured_invoice else None,
+        )
+        return subscription
     cycle = await _close_open_cycle(session, subscription, reason="payment_captured", now=at)
 
     if subscription.state not in (STATE_PAST_DUE, STATE_SUSPENDED):
@@ -892,6 +1047,8 @@ async def suspend_for_dunning(
         await session.flush()
         return subscription
 
+    # The window closed at its stored instant: that is where served usage stops.
+    await schedule_closing_usage(session, subscription, at=cycle.grace_ends_at)
     decision = domain.decide(
         from_state=subscription.state,
         to_state=STATE_SUSPENDED,
@@ -1019,6 +1176,13 @@ async def resync_entitlements(
 _BILLING_ACTOR = {"type": "service", "id": "subscription-billing-run"}
 
 
+def _wall() -> datetime:
+    """The wall clock, for leases, backoff and `recorded_at` — how long a process may be mid-call
+    and when it may retry are facts about now, never about the synthetic instant a test (or a
+    late sweep) decides due periods against."""
+    return datetime.now(UTC)
+
+
 def _billing_facts(period: BillingPeriod) -> dict[str, Any]:
     """The invoice a transition was raised with, on the event it rides — so a notification can
     say "your first invoice, ₹X for 1 Oct to 31 Oct" from the event alone."""
@@ -1027,7 +1191,7 @@ def _billing_facts(period: BillingPeriod) -> dict[str, Any]:
             "period_id": str(period.id),
             "kind": period.kind,
             "period_start": period.period_start.isoformat(),
-            "period_end": period.period_end.isoformat(),
+            "period_end": period.period_end.isoformat() if period.period_end else None,
             "invoice_id": str(period.invoice_id) if period.invoice_id else None,
             "total_minor": period.total_minor,
             "currency": period.currency,
@@ -1042,56 +1206,270 @@ def _items_snapshot(subscription: Subscription) -> list[dict[str, Any]]:
     ]
 
 
+def _billing_audit(
+    session: AsyncSession,
+    subscription_or_period: Subscription | BillingPeriod,
+    action: str,
+    after: dict[str, Any],
+    *,
+    reason: str | None = None,
+) -> None:
+    entity_id = (
+        subscription_or_period.id
+        if isinstance(subscription_or_period, Subscription)
+        else subscription_or_period.subscription_id
+    )
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=subscription_or_period.organization_id,
+        actor_id=None,
+        acting_as=_BILLING_ACTOR["id"],
+        action=action,
+        entity="subscription",
+        entity_id=entity_id,
+        after=after,
+        reason=reason,
+    )
+
+
+async def _insert_period(session: AsyncSession, values: dict[str, Any]) -> None:
+    """Insert a claim row, or do nothing if the period of that kind is already claimed."""
+    await session.execute(
+        pg_insert(BillingPeriod)
+        .values(id=uuid.uuid4(), state=PERIOD_PENDING, attempts=0, **values)
+        .on_conflict_do_nothing(
+            index_elements=["organization_id", "subscription_id", "kind", "period_start"]
+        )
+    )
+
+
+async def _claim_proration(
+    session: AsyncSession,
+    subscription: Subscription,
+    *,
+    from_plan_version_id: uuid.UUID,
+    from_items: list[dict[str, Any]],
+) -> None:
+    """Claim the prorated difference an upgrade owes for the rest of the current period.
+
+    `[now, current_period_end)` at the new pin, against the old pin and items, as a fraction of
+    `[current_period_start, current_period_end)`. Billing prices both from catalog and bills the
+    positive difference, keyed on the change (`subscription:{id}:proration:{change_id}`), so a
+    retried run cannot bill one upgrade twice and two upgrades are two invoices.
+    """
+    start, end = subscription.current_period_start, subscription.current_period_end
+    at = _wall()
+    if start is None or end is None or at >= end:
+        return
+    await _insert_period(
+        session,
+        {
+            "organization_id": subscription.organization_id,
+            "subscription_id": subscription.id,
+            "kind": domain.KIND_PRORATION,
+            "period_start": max(at, start),
+            "period_end": end,
+            "full_period_start": start,
+            "plan_version_id": subscription.plan_version_id,
+            "currency": subscription.currency,
+            "items": _items_snapshot_of_new(subscription),
+            "change_id": uuid.uuid4(),
+            "from_plan_version_id": from_plan_version_id,
+            "from_items": from_items,
+        },
+    )
+
+
+def _items_snapshot_of_new(subscription: Subscription) -> list[dict[str, Any]]:
+    # The items were just rebuilt in memory and are not flushed yet; they carry no id, only the
+    # price and quantity the snapshot needs.
+    return sorted(
+        ({"price_id": str(i.price_id), "quantity": int(i.quantity)} for i in subscription.items),
+        key=lambda d: d["price_id"],
+    )
+
+
+async def schedule_closing_usage(
+    session: AsyncSession, subscription: Subscription, *, at: datetime
+) -> None:
+    """Claim the usage-only closing period a cancellation or suspension at `at` leaves behind.
+
+    Usage bills in arrears at the next roll; a cancelled subscription never rolls again, and a
+    suspended one rolls without an invoice. So the stop claims `[period start, at)` itself — keyed
+    `subscription:{id}:{period_start}:close` at billing — and the run bills it like any other
+    claim. `usage_billed_through` moves to `at`, so a later renewal (after a suspension recovers)
+    starts its usage window there and never bills the same reading twice. Call it before the
+    state moves: only a served state has usage to close (`domain.closing_usage_window`).
+    """
+    window = domain.closing_usage_window(
+        state=subscription.state,
+        current_period_start=subscription.current_period_start,
+        usage_billed_through=subscription.usage_billed_through,
+        at=at,
+    )
+    if window is None:
+        return
+    start, end = window
+    await _insert_period(
+        session,
+        {
+            "organization_id": subscription.organization_id,
+            "subscription_id": subscription.id,
+            "kind": domain.KIND_CLOSE,
+            "period_start": start,
+            "period_end": end,
+            "usage_start": start,
+            "usage_end": end,
+            "plan_version_id": subscription.plan_version_id,
+            "currency": subscription.currency,
+            "items": _items_snapshot(subscription),
+        },
+    )
+    subscription.usage_billed_through = end
+
+
+async def apply_pending_change(session: AsyncSession, subscription: Subscription) -> bool:
+    """Apply a downgrade that was waiting for this roll (addendum §4). True if one was applied.
+
+    Called by the run's claim, in the claim's transaction, before the period is snapshotted — so
+    the new period is priced at the lower plan and rolled on its cadence. It is the moment the
+    downgrade *happens*, so it is the moment the transition and its `downgraded` event are
+    written; a suspended subscription takes the pin without an event (no edge, nothing served).
+    """
+    change = subscription.pending_change
+    if not change:
+        return False
+    from_pin = subscription.plan_version_id
+    to_pin = uuid.UUID(str(change["plan_version_id"]))
+    subscription.plan_version_id = to_pin
+    subscription.billing_interval = change.get("billing_interval") or subscription.billing_interval
+    subscription.entitled_products_snapshot = list(change.get("entitled_products") or []) or None
+    subscription.items.clear()
+    for item in change.get("items") or []:
+        subscription.items.append(
+            SubscriptionItem(
+                organization_id=subscription.organization_id,
+                price_id=uuid.UUID(str(item["price_id"])),
+                quantity=int(item.get("quantity", 1)),
+            )
+        )
+    subscription.pending_change = None
+    subscription.pending_plan_version_id = None
+    if subscription.state == STATE_SUSPENDED:
+        _billing_audit(
+            session,
+            subscription,
+            "commerce.subscription.downgrade_applied",
+            {"from": str(from_pin), "to": str(to_pin)},
+            reason=domain.REASON_DOWNGRADE,
+        )
+    else:
+        _transition(
+            session,
+            subscription,
+            domain.decide(
+                from_state=subscription.state,
+                to_state=subscription.state,
+                reason=domain.REASON_DOWNGRADE,
+            ),
+            actor=_BILLING_ACTOR,
+            request=None,
+            from_plan_version_id=from_pin,
+            to_plan_version_id=to_pin,
+        )
+    await session.flush()
+    return True
+
+
 async def claim_billing_period(
     session: AsyncSession,
     subscription: Subscription,
     due: domain.DuePeriod,
-    *,
-    now: datetime,
 ) -> BillingPeriod | None:
-    """The **claim** of claim → call → record: write (or re-find) the period's row and lease it.
+    """The **claim** of claim → call → record for a lifecycle period: write or re-find the row
+    and lease it.
 
-    The caller holds the subscription `FOR UPDATE SKIP LOCKED`, so this runs for one replica at a
-    time per subscription. The row is inserted `ON CONFLICT DO NOTHING` on the period, which makes
-    a crash-and-retry find the row it wrote last time — with the pin and items it snapshotted
-    then — rather than a new one priced off whatever changed since. Returns None when another
-    replica's lease is still live (its billing call is out) or the backoff after a failure has not
-    elapsed; the next pass tries again.
+    The caller holds the subscription `FOR UPDATE SKIP LOCKED`. The row is inserted
+    `ON CONFLICT DO NOTHING`, so a crash-and-retry finds the row it wrote last time — with the pin
+    and items it snapshotted then. Returns None when another replica's lease is live, or the
+    backoff after a failure has not elapsed (both on the wall clock), or the row is recorded.
     """
     from app import selectors
 
-    stmt = (
-        pg_insert(BillingPeriod)
-        .values(
-            id=uuid.uuid4(),
-            organization_id=subscription.organization_id,
-            subscription_id=subscription.id,
-            kind=due.kind,
-            period_start=due.start,
-            period_end=due.end,
-            usage_start=due.usage_start,
-            usage_end=due.usage_end,
-            plan_version_id=subscription.plan_version_id,
-            currency=subscription.currency,
-            items=_items_snapshot(subscription),
-            state=PERIOD_PENDING,
-            attempts=0,
-        )
-        .on_conflict_do_nothing(
-            index_elements=["organization_id", "subscription_id", "period_start"]
-        )
+    await _insert_period(
+        session,
+        {
+            "organization_id": subscription.organization_id,
+            "subscription_id": subscription.id,
+            "kind": due.kind,
+            "period_start": due.start,
+            "period_end": due.end,
+            "usage_start": due.usage_start,
+            "usage_end": due.usage_end,
+            "plan_version_id": subscription.plan_version_id,
+            "currency": subscription.currency,
+            "items": _items_snapshot(subscription),
+        },
     )
-    await session.execute(stmt)
-    period = await selectors.lock_billing_period(session, subscription.id, due.start)
-    if period is None or period.state != PERIOD_PENDING:
-        # Recorded already, yet the subscription still reads as due for it — only possible if the
-        # period was closed as superseded. Nothing to call; the stale-claim pass explains it.
+    period = await selectors.lock_billing_period(
+        session, subscription.organization_id, subscription.id, due.kind, due.start
+    )
+    return _lease(period)
+
+
+def _lease(period: BillingPeriod | None) -> BillingPeriod | None:
+    if period is None or period.state not in (PERIOD_PENDING, PERIOD_VOID_PENDING):
         return None
-    if period.lease_until is not None and period.lease_until > now:
+    wall = _wall()
+    if period.lease_until is not None and period.lease_until > wall:
         return None
-    period.lease_until = now + domain.BILLING_LEASE
+    if period.next_attempt_at is not None and period.next_attempt_at > wall:
+        return None
+    period.lease_until = wall + domain.BILLING_LEASE
     period.attempts += 1
-    await session.flush()
+    return period
+
+
+async def claim_actionable(session: AsyncSession, period: BillingPeriod) -> BillingPeriod | None:
+    """Lease a row that is its own work — a proration, a close, a void to make."""
+    leased = _lease(period)
+    if leased is not None:
+        await session.flush()
+    return leased
+
+
+async def record_not_billable(
+    session: AsyncSession, subscription: Subscription, due: domain.DuePeriod
+) -> BillingPeriod | None:
+    """A due period with no period to bill (`one_time`): persisted as a permanent failure.
+
+    A row, not a log line, so the subscription backs off like any other failure — discovery skips
+    it until `next_attempt_at` — instead of being rediscovered, and skipped, at the head of every
+    batch; and so the health probe's `failing_permanent` names it for a person.
+    """
+    from app import selectors
+
+    await _insert_period(
+        session,
+        {
+            "organization_id": subscription.organization_id,
+            "subscription_id": subscription.id,
+            "kind": due.kind,
+            "period_start": due.start,
+            "period_end": None,
+            "plan_version_id": subscription.plan_version_id,
+            "currency": subscription.currency,
+            "items": _items_snapshot(subscription),
+        },
+    )
+    period = await selectors.lock_billing_period(
+        session, subscription.organization_id, subscription.id, due.kind, due.start
+    )
+    if period is None or period.state != PERIOD_PENDING:
+        return None
+    period.attempts += 1
+    await fail_billing_period(session, period, error=due.error or "not billable", permanent=True)
     return period
 
 
@@ -1099,17 +1477,15 @@ async def skip_suspended_period(
     session: AsyncSession,
     subscription: Subscription,
     due: domain.DuePeriod,
-    *,
-    now: datetime,
 ) -> BillingPeriod:
     """Roll a suspended subscription's period without invoicing it.
 
-    A suspended customer is not served and is not billed for the time (ADR-0005 §4: the ladder
-    stops at `suspended`; nothing accrues after it). The period still advances, so a customer who
-    pays in week six comes back on a current period rather than being invoiced, one pass at a
-    time, for every month they were switched off. Not a transition — the state does not change —
-    so it is an audit row and a `skipped` period row, and no event.
+    A suspended customer is not served and is not billed for the time (ADR-0005 §4). The period
+    still advances, so a customer who pays in week six comes back on a current period rather than
+    being invoiced, one pass at a time, for every month they were switched off. Its usage up to
+    the suspension was already claimed as a closing period when it was suspended.
     """
+    assert due.end is not None
     period = BillingPeriod(
         organization_id=subscription.organization_id,
         subscription_id=subscription.id,
@@ -1124,21 +1500,16 @@ async def skip_suspended_period(
         state=PERIOD_SKIPPED,
         attempts=0,
         outcome="skipped_suspended",
-        recorded_at=now,
+        recorded_at=_wall(),
     )
     session.add(period)
     subscription.current_period_start = due.start
     subscription.current_period_end = due.end
-    record_audit(
+    _billing_audit(
         session,
-        AuditLog,
-        organization_id=subscription.organization_id,
-        actor_id=None,
-        acting_as=_BILLING_ACTOR["id"],
-        action="commerce.billing_run.period_skipped",
-        entity="subscription",
-        entity_id=subscription.id,
-        after={
+        subscription,
+        "commerce.billing_run.period_skipped",
+        {
             "period_start": due.start.isoformat(),
             "period_end": due.end.isoformat(),
             "state": subscription.state,
@@ -1150,7 +1521,7 @@ async def skip_suspended_period(
 
 
 def still_due_for(subscription: Subscription, period: BillingPeriod) -> bool:
-    """Is the subscription still exactly where it was when this period was claimed?"""
+    """Is the subscription still exactly where it was when this lifecycle period was claimed?"""
     if period.kind == domain.KIND_TRIAL_CONVERSION:
         return (
             subscription.state == STATE_TRIAL and subscription.trial_ends_at == period.period_start
@@ -1169,21 +1540,18 @@ async def record_billing_period(
     invoice_id: uuid.UUID,
     total_minor: int,
     collectable: bool | None,
-    now: datetime,
 ) -> str:
-    """The **record** of claim → call → record: write billing's answer and move the subscription.
-
-    One transaction, the subscription held `FOR UPDATE`. Returns the outcome it wrote.
+    """The **record** of claim → call → record for a lifecycle period: write billing's answer and
+    move the subscription. One transaction, the subscription held `FOR UPDATE`.
 
     * **Already recorded** (another replica got here first): nothing, `already_recorded`.
-    * **The subscription moved on** since the claim — cancelled, or advanced by hand — the
-      invoice exists in billing, so it is recorded here and the subscription is left alone:
-      `superseded`, logged at warning for a person to void it.
+    * **The subscription moved on** since the claim — cancelled, or advanced by hand: the invoice
+      exists in billing and must not stand, so the row goes to `void_pending` and the run voids it
+      through billing next (review fix 11): `superseded`.
     * **A trial conversion** opens the first paid period at the trial's end. With nothing to
-      collect, or a mandate that can collect it, `trial -> active` (`activated`). Otherwise
-      `trial -> past_due` and a dunning cycle anchored at the trial's end (ADR-0013 §6,
-      ADR-0005): the product keeps working for the grace window, and the ladder asks payment to
-      retry this invoice.
+      collect, or a mandate that can collect it **and no failure of its first charge already
+      recorded** (review fix 1), `trial -> active`. Otherwise `trial -> past_due` and a dunning
+      cycle anchored at the trial's end carrying this invoice.
     * **A renewal** rolls the period and emits `renewed` (`active` or `past_due` unchanged). One
       that became suspended between claim and record rolls with no event.
     """
@@ -1192,12 +1560,14 @@ async def record_billing_period(
 
     period.invoice_id = invoice_id
     period.total_minor = total_minor
-    period.state = PERIOD_INVOICED
-    period.recorded_at = now
+    period.recorded_at = _wall()
     period.lease_until = None
+    period.next_attempt_at = None
     period.last_error = None
+    period.permanent_failure = False
 
     if not still_due_for(subscription, period):
+        period.state = PERIOD_VOID_PENDING
         period.outcome = "superseded"
         log.warning(
             "billing_run.period.superseded",
@@ -1205,36 +1575,35 @@ async def record_billing_period(
             subscription_id=str(subscription.id),
             invoice_id=str(invoice_id),
             state=subscription.state,
-            hint="the subscription moved between claim and record; review and void the invoice",
+            hint="the subscription moved between claim and record; the run voids the invoice",
         )
-        record_audit(
+        _billing_audit(
             session,
-            AuditLog,
-            organization_id=subscription.organization_id,
-            actor_id=None,
-            acting_as=_BILLING_ACTOR["id"],
-            action="commerce.billing_run.period_superseded",
-            entity="subscription",
-            entity_id=subscription.id,
-            after={"invoice_id": str(invoice_id), "state": subscription.state},
+            subscription,
+            "commerce.billing_run.period_superseded",
+            {"invoice_id": str(invoice_id), "state": subscription.state},
             reason="superseded",
         )
         await session.flush()
         return "superseded"
 
+    period.state = PERIOD_INVOICED
+    assert period.period_end is not None
     subscription.current_period_start = period.period_start
     subscription.current_period_end = period.period_end
 
     if period.kind == domain.KIND_TRIAL_CONVERSION:
-        if total_minor == 0 or collectable:
-            decision = domain.decide(
-                from_state=STATE_TRIAL, to_state=STATE_ACTIVE, reason=domain.REASON_TRIAL_CONVERT
-            )
+        charge_failed = period.payment_failed_at is not None
+        if total_minor == 0 or (collectable and not charge_failed):
             period.outcome = "activated"
             _transition(
                 session,
                 subscription,
-                decision,
+                domain.decide(
+                    from_state=STATE_TRIAL,
+                    to_state=STATE_ACTIVE,
+                    reason=domain.REASON_TRIAL_CONVERT,
+                ),
                 actor=_BILLING_ACTOR,
                 request=None,
                 from_plan_version_id=subscription.plan_version_id,
@@ -1261,33 +1630,36 @@ async def record_billing_period(
             )
             session.add(cycle)
             await session.flush()
-            decision = domain.decide(
-                from_state=STATE_TRIAL, to_state=STATE_PAST_DUE, reason=domain.REASON_TRIAL_UNPAID
-            )
             period.outcome = "past_due"
+            extra = {**_dunning_facts(cycle), **_billing_facts(period)}
+            if charge_failed:
+                extra["billing"]["charge_failed_reason"] = period.payment_failure_reason
             _transition(
                 session,
                 subscription,
-                decision,
+                domain.decide(
+                    from_state=STATE_TRIAL,
+                    to_state=STATE_PAST_DUE,
+                    reason=domain.REASON_TRIAL_UNPAID,
+                ),
                 actor=_BILLING_ACTOR,
                 request=None,
                 from_plan_version_id=subscription.plan_version_id,
                 to_plan_version_id=subscription.plan_version_id,
-                extra={**_dunning_facts(cycle), **_billing_facts(period)},
+                extra=extra,
             )
     elif subscription.state == STATE_SUSPENDED:
         period.outcome = "rolled_while_suspended"
     else:
-        decision = domain.decide(
-            from_state=subscription.state,
-            to_state=subscription.state,
-            reason=domain.REASON_RENEW,
-        )
         period.outcome = "renewed"
         _transition(
             session,
             subscription,
-            decision,
+            domain.decide(
+                from_state=subscription.state,
+                to_state=subscription.state,
+                reason=domain.REASON_RENEW,
+            ),
             actor=_BILLING_ACTOR,
             request=None,
             from_plan_version_id=subscription.plan_version_id,
@@ -1298,35 +1670,88 @@ async def record_billing_period(
     return period.outcome or "recorded"
 
 
-async def fail_billing_period(
-    session: AsyncSession, period: BillingPeriod, *, error: str, now: datetime
-) -> None:
-    """A billing or payment call failed: keep the claim, say why, and back off.
-
-    The row stays `pending` — the only state the run retries — with the error a person can act
-    on and a lease pushed out by `domain.retry_backoff`, so a data defect is not hammered every
-    pass and a sibling's outage is retried soon after it ends.
-    """
-    period.last_error = error[:300]
-    period.lease_until = now + domain.retry_backoff(period.attempts)
-    await session.flush()
-
-
-async def close_stale_period(
-    session: AsyncSession, period: BillingPeriod, *, now: datetime
-) -> None:
-    """A pending claim whose subscription is no longer due for it — cancelled, say, after the
-    claim and before the record. It is closed `skipped`/`superseded` so the health probe stops
-    counting it, with the key billing would have used named in the error for a person to check:
-    if the crash came after billing committed, an invoice exists there that nothing recorded."""
-    period.state = PERIOD_SKIPPED
-    period.outcome = "superseded"
-    period.recorded_at = now
+async def record_actionable_invoice(
+    session: AsyncSession, period: BillingPeriod, *, invoice_id: uuid.UUID, total_minor: int
+) -> str:
+    """Record billing's answer for a proration or a closing period. Neither moves the
+    subscription: the upgrade already happened; the cancellation or suspension already did."""
+    if period.state != PERIOD_PENDING:
+        return "already_recorded"
+    period.invoice_id = invoice_id
+    period.total_minor = total_minor
+    period.state = PERIOD_INVOICED
+    period.outcome = "prorated" if period.kind == domain.KIND_PRORATION else "closed"
+    period.recorded_at = _wall()
     period.lease_until = None
-    period.last_error = (
-        f"subscription moved before record; check billing for key "
-        f"subscription:{period.subscription_id}:{period.period_start.isoformat()}"
-    )[:300]
+    period.next_attempt_at = None
+    period.last_error = None
+    period.permanent_failure = False
+    _billing_audit(
+        session,
+        period,
+        f"commerce.billing_run.{period.outcome}",
+        {"invoice_id": str(invoice_id), "total_minor": total_minor, "kind": period.kind},
+    )
+    await session.flush()
+    return period.outcome
+
+
+async def record_void(
+    session: AsyncSession, period: BillingPeriod, *, voided: bool, invoice_id: uuid.UUID | None
+) -> str:
+    """Billing voided the superseded period's invoice — or there was none to void (the stale
+    claim never reached billing's commit)."""
+    if period.state != PERIOD_VOID_PENDING:
+        return "already_recorded"
+    period.state = PERIOD_VOIDED if voided else PERIOD_SKIPPED
+    period.outcome = "voided" if voided else "nothing_to_void"
+    if invoice_id is not None:
+        period.invoice_id = invoice_id
+    period.recorded_at = _wall()
+    period.lease_until = None
+    period.next_attempt_at = None
+    period.last_error = None
+    _billing_audit(
+        session,
+        period,
+        "commerce.billing_run.period_voided",
+        {"invoice_id": str(invoice_id) if invoice_id else None, "voided": voided},
+        reason="superseded",
+    )
+    await session.flush()
+    return period.outcome
+
+
+async def fail_billing_period(
+    session: AsyncSession, period: BillingPeriod, *, error: str, permanent: bool = False
+) -> bool:
+    """A billing or payment call failed: keep the claim, say why, and back off. True if written.
+
+    Guarded on the row still being work — a failure reported for a row another replica recorded
+    in the meantime must not stamp an error and a backoff onto a finished period (review fix 8).
+    The lease is released and the retry scheduled on the **wall clock**
+    (`domain.retry_backoff`), so a data defect is not hammered every pass and a sibling's
+    outage is retried soon after it ends.
+    """
+    if period.state not in (PERIOD_PENDING, PERIOD_VOID_PENDING):
+        return False
+    period.last_error = error[:300]
+    period.permanent_failure = permanent
+    period.lease_until = None
+    period.next_attempt_at = _wall() + domain.retry_backoff(period.attempts)
+    await session.flush()
+    return True
+
+
+async def close_stale_period(session: AsyncSession, period: BillingPeriod) -> None:
+    """A pending lifecycle claim whose subscription is no longer due for it — cancelled, say,
+    between the claim and the record. If the crash came after billing committed, an invoice
+    exists that nothing will ever record; the row goes to `void_pending` and the run asks billing
+    to void whatever it holds under the period's key (review fix 11)."""
+    period.state = PERIOD_VOID_PENDING
+    period.outcome = "superseded"
+    period.lease_until = None
+    period.next_attempt_at = None
     log.warning(
         "billing_run.period.stale_closed",
         organization_id=str(period.organization_id),

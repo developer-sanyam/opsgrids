@@ -26,19 +26,16 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy import func, select, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import domain, selectors, services
-from app.billing_run import BilledInvoice, BillingRunSweep, PeriodRequest
+from app.billing_run import BillingRunSweep
 from app.config import settings
 from app.models import (
     PERIOD_INVOICED,
@@ -56,7 +53,8 @@ from app.models import (
     SubscriptionItem,
     SubscriptionTransition,
 )
-from platform_core.db import TENANT_GUC, dispose_outbox_engine, init_outbox_engine
+from platform_core.db import dispose_outbox_engine, init_outbox_engine
+from tests.billing_fakes import Crash, FakeBilling, FakePayment, _make_sweep, expire_leases
 
 pytestmark = pytest.mark.integration
 
@@ -64,139 +62,6 @@ T0 = datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
 MONTH = timedelta(days=30)
 PRICE_A = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
 PRICE_SEAT = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000002")
-
-
-class Crash(BaseException):
-    """A process kill, as far as the sweep can tell: a `BaseException`, so the sweep's
-    per-subscription `except Exception` does not catch it and nothing is recorded."""
-
-
-# --------------------------------------------------------------------- fakes
-
-
-class FakeBilling:
-    """billing's `POST /internal/v1/subscription-invoices`, in memory, idempotent on the period.
-
-    `totals` prices a subscription; `crash_before`/`crash_after` simulate a kill on either side of
-    billing's commit; `fail` answers with an error. Every call also asserts that the sweep holds
-    no open transaction on the subscription role while it waits — the claim → call → record rule.
-    """
-
-    def __init__(self, observer_dsn: str) -> None:
-        # The bootstrap superuser: only it (or pg_read_all_stats) can read another role's
-        # `pg_stat_activity.state`. Through the admin role every row reads as NULL and the
-        # tripwire below would pass whatever the sweep did.
-        self._admin = create_async_engine(observer_dsn)
-        self.check_transactions = True
-        self.invoices: dict[tuple[uuid.UUID, uuid.UUID, datetime], BilledInvoice] = {}
-        self.requests: list[PeriodRequest] = []
-        self.totals: dict[uuid.UUID, int] = {}
-        self.crash_before = False
-        self.crash_after = False
-        self.fail: str | None = None
-        self.gate: asyncio.Event | None = None
-
-    async def aclose(self) -> None:
-        await self._admin.dispose()
-
-    async def _assert_no_open_transaction(self) -> None:
-        if not self.check_transactions:
-            return
-        async with self._admin.connect() as conn:
-            open_txns = (
-                await conn.execute(
-                    text(
-                        "SELECT count(*) FROM pg_stat_activity "
-                        "WHERE datname = current_database() "
-                        "AND usename = 'opsgrids_subscription' "
-                        "AND state LIKE 'idle in transaction%'"
-                    )
-                )
-            ).scalar_one()
-        assert open_txns == 0, "billing was called while a subscription transaction was open"
-
-    async def bill_period(self, request: PeriodRequest) -> BilledInvoice:
-        await self._assert_no_open_transaction()
-        self.requests.append(request)
-        if self.gate is not None:
-            await self.gate.wait()
-        if self.crash_before:
-            self.crash_before = False
-            raise Crash
-        if self.fail is not None:
-            raise RuntimeError(self.fail)
-        key = (request.organization_id, request.subscription_id, request.period_start)
-        existing = self.invoices.get(key)
-        if existing is not None:
-            answer = BilledInvoice(
-                existing.invoice_id, existing.total_minor, existing.currency, False
-            )
-        else:
-            answer = BilledInvoice(
-                invoice_id=uuid.uuid4(),
-                total_minor=self.totals.get(request.subscription_id, 149900),
-                currency=request.currency,
-                created=True,
-            )
-            self.invoices[key] = answer
-        if self.crash_after:
-            self.crash_after = False
-            raise Crash
-        return answer
-
-
-class FakePayment:
-    def __init__(self) -> None:
-        self.usable = True
-        self.asked: list[tuple[uuid.UUID, str, int]] = []
-
-    async def can_collect(
-        self, *, organization_id: uuid.UUID, currency: str, amount_minor: int
-    ) -> bool:
-        self.asked.append((organization_id, currency, amount_minor))
-        return self.usable
-
-
-# --------------------------------------------------------------------- fixtures
-
-
-@pytest_asyncio.fixture
-async def billing(session: AsyncSession) -> AsyncIterator[FakeBilling]:
-    fake = FakeBilling(settings().database_url)
-    yield fake
-    await fake.aclose()
-
-
-@pytest.fixture
-def payment() -> FakePayment:
-    return FakePayment()
-
-
-def _make_sweep(
-    discovery_engine: Any, work_engine: Any, billing: FakeBilling, payment: FakePayment
-) -> BillingRunSweep:
-    discovery = async_sessionmaker(discovery_engine, expire_on_commit=False)
-    work_maker = async_sessionmaker(work_engine, expire_on_commit=False)
-
-    @asynccontextmanager
-    async def work_scope(organization_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
-        async with work_maker() as s, s.begin():
-            await s.execute(
-                text(f"SELECT set_config('{TENANT_GUC}', :org, true)"),
-                {"org": str(organization_id)},
-            )
-            yield s
-
-    return BillingRunSweep(
-        discovery_factory=discovery, work_scope=work_scope, billing=billing, payment=payment
-    )
-
-
-@pytest.fixture
-def run(
-    sweep_engines: tuple[Any, Any], billing: FakeBilling, payment: FakePayment
-) -> BillingRunSweep:
-    return _make_sweep(*sweep_engines, billing, payment)
 
 
 async def _seed(
@@ -348,15 +213,15 @@ class TestDomain:
         assert domain.infer_interval(T0, T0 + timedelta(days=31)) is None
 
     def test_a_one_time_cadence_is_not_billed_by_guess(self) -> None:
-        with pytest.raises(domain.NotBillable):
-            domain.due_period(
-                state=STATE_TRIAL,
-                trial_ends_at=T0,
-                current_period_start=None,
-                current_period_end=None,
-                billing_interval="one_time",
-                now=T0,
-            )
+        due = domain.due_period(
+            state=STATE_TRIAL,
+            trial_ends_at=T0,
+            current_period_start=None,
+            current_period_end=None,
+            billing_interval="one_time",
+            now=T0,
+        )
+        assert due is not None and not due.billable and due.error
 
     def test_backoff_doubles_and_is_capped(self) -> None:
         assert domain.retry_backoff(1) == timedelta(minutes=5)
@@ -506,7 +371,8 @@ class TestExactlyOnce:
         await run.tick(now=T0 + timedelta(minutes=5))
         assert len(billing.requests) == 1
 
-        await run.tick(now=T0 + domain.BILLING_LEASE + timedelta(seconds=1))
+        await expire_leases(subscription_id)
+        await run.tick(now=T0)
         assert len(billing.requests) == 2
         assert billing.requests[0] == billing.requests[1], "the retry must ask for the same thing"
         assert len(billing.invoices) == 1
@@ -526,7 +392,8 @@ class TestExactlyOnce:
             await run.tick(now=T0)
         assert billing.invoices == {}
 
-        await run.tick(now=T0 + domain.BILLING_LEASE + timedelta(seconds=1))
+        await expire_leases(subscription_id)
+        await run.tick(now=T0)
         assert len(billing.invoices) == 1
         assert (await _subscription(session, subscription_id)).state == STATE_ACTIVE
 
@@ -543,7 +410,9 @@ class TestExactlyOnce:
             assert row is not None
             row.plan_version_id = uuid.uuid4()
 
-        await run.tick(now=T0 + domain.BILLING_LEASE + timedelta(seconds=1))
+        await expire_leases(subscription_id)
+        await run.tick(now=T0)
+        assert len(billing.requests) == 2, "the retry must actually happen"
         assert billing.requests[-1].plan_version_id == first_pin
 
     async def test_two_sweeps_racing_raise_one_invoice(
@@ -584,12 +453,17 @@ class TestExactlyOnce:
         (period,) = await _periods(session, subscription_id)
         assert period.state == PERIOD_PENDING
         assert period.last_error is not None and "503" in period.last_error
-        assert period.lease_until == T0 + domain.retry_backoff(1)
+        assert period.lease_until is None
+        assert period.next_attempt_at is not None
+        assert period.next_attempt_at > datetime.now(UTC) + domain.retry_backoff(1) - timedelta(
+            seconds=30
+        ), "backoff runs on the wall clock"
 
         billing.fail = None
-        await run.tick(now=T0 + timedelta(minutes=1))  # still backing off
+        await run.tick(now=T0 + timedelta(days=30))  # a later synthetic now does not skip it
         assert (await _subscription(session, subscription_id)).state == STATE_TRIAL
-        await run.tick(now=T0 + domain.retry_backoff(1))
+        await expire_leases(subscription_id)
+        await run.tick(now=T0)
         assert (await _subscription(session, subscription_id)).state == STATE_ACTIVE
 
 
@@ -748,7 +622,11 @@ class TestPeriods:
         report = await run.tick(now=T0)
         assert report.failed == 1
         assert billing.requests == []
-        assert await _periods(session, subscription_id) == []
+        # Persisted as a permanent, backed-off failure — not rediscovered every pass (fix 2).
+        (period,) = await _periods(session, subscription_id)
+        assert period.state == PERIOD_PENDING and period.period_end is None
+        assert period.permanent_failure is True and period.next_attempt_at is not None
+        assert (await run.tick(now=T0)).considered == 0
 
     async def test_a_claim_whose_subscription_was_cancelled_is_closed_not_billed(
         self, run: BillingRunSweep, billing: FakeBilling, session: AsyncSession, org_id: uuid.UUID
@@ -762,11 +640,13 @@ class TestPeriods:
             assert row is not None
             row.state = STATE_CANCELLED
 
-        report = await run.tick(now=T0 + domain.BILLING_LEASE + timedelta(seconds=1))
+        await expire_leases(subscription_id)
+        report = await run.tick(now=T0)
         assert report.stale_closed == 1
         assert billing.invoices == {}
         (period,) = await _periods(session, subscription_id)
-        assert period.state == PERIOD_SKIPPED and period.outcome == "superseded"
+        # Sent to be voided; billing held nothing under the key, so there was nothing to void.
+        assert period.state == PERIOD_SKIPPED and period.outcome == "nothing_to_void"
 
 
 # --------------------------------------------------------------------- tenancy & health
@@ -795,7 +675,10 @@ class TestTenancyAndHealth:
         # The app role bound to org A cannot see, lock or record against org B's subscription.
         session.expunge_all()
         async with session.begin():
-            assert await selectors.lock_subscription(session, theirs, skip_locked=True) is None
+            assert (
+                await selectors.lock_subscription(session, other_org, theirs, skip_locked=True)
+                is None
+            )
             rows = (
                 await session.execute(select(func.count()).select_from(BillingPeriod))
             ).scalar_one()
@@ -826,6 +709,8 @@ class TestTenancyAndHealth:
                 "overdue",
                 "pending",
                 "failing",
+                "failing_permanent",
+                "void_pending",
                 "oldest_pending_seconds",
                 "invoiced_24h",
                 "skipped_24h",
@@ -849,7 +734,7 @@ class TestTenancyAndHealth:
         discovery_engine, _ = sweep_engines
         maker = async_sessionmaker(discovery_engine)
         async with maker() as s, s.begin():
-            due = await selectors.due_billing_subscriptions(s, now=T0)
+            due = await selectors.due_billing_subscriptions(s, now=T0, wall=datetime.now(UTC))
         assert {org for org, _ in due} == {org_id, other_org}
 
 
@@ -895,7 +780,7 @@ async def test_services_record_is_a_no_op_once_recorded(
     subscription_id = await _seed(session, org_id)
     async with session.begin():
         subscription = await selectors.lock_subscription(
-            session, subscription_id, skip_locked=False
+            session, org_id, subscription_id, skip_locked=False
         )
         assert subscription is not None
         due = domain.due_period(
@@ -907,7 +792,7 @@ async def test_services_record_is_a_no_op_once_recorded(
             now=T0,
         )
         assert due is not None
-        period = await services.claim_billing_period(session, subscription, due, now=T0)
+        period = await services.claim_billing_period(session, subscription, due)
         assert period is not None
         invoice_id = uuid.uuid4()
         first = await services.record_billing_period(
@@ -917,7 +802,6 @@ async def test_services_record_is_a_no_op_once_recorded(
             invoice_id=invoice_id,
             total_minor=10,
             collectable=True,
-            now=T0,
         )
         second = await services.record_billing_period(
             session,
@@ -926,7 +810,6 @@ async def test_services_record_is_a_no_op_once_recorded(
             invoice_id=uuid.uuid4(),
             total_minor=99,
             collectable=True,
-            now=T0,
         )
     assert (first, second) == ("activated", "already_recorded")
     (row,) = await _periods(session, subscription_id)
