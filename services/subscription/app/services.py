@@ -27,6 +27,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -49,10 +50,23 @@ from app.models import (
     SubscriptionItem,
     SubscriptionTransition,
 )
-from app.schemas import CatalogPlanVersion, ChangePlanIn, PaymentOutcome, SubscribeIn
+from app.registry import ProductRegistry
+from app.schemas import (
+    CatalogPlanVersion,
+    ChangePlanIn,
+    OperatorChangePlanIn,
+    OperatorSubscribeIn,
+    PaymentOutcome,
+    SubscribeIn,
+)
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
-from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
+from platform_core.errors import (
+    BusinessRuleProblem,
+    ConflictProblem,
+    ForbiddenProblem,
+    NotFoundProblem,
+)
 from platform_core.events import publish_event
 from platform_core.logging import get_logger
 
@@ -222,6 +236,55 @@ def _transition(
     )
 
 
+def _operator_actor(operator_id: str) -> dict[str, Any]:
+    return {"type": "operator", "id": operator_id}
+
+
+def _require_product(version: CatalogPlanVersion, product_key: str) -> None:
+    """The version must belong to the product the subscription is for — and must *say* so.
+
+    Fails closed: a catalog read that names no product is refused rather than trusted, because
+    it could be pinned under any key and entitle whatever that key's members are.
+    """
+    if version.product_key is None:
+        raise BusinessRuleProblem("that plan version names no product and cannot be pinned")
+    if version.product_key != product_key:
+        raise BusinessRuleProblem(
+            f"plan version belongs to product {version.product_key!r}, not {product_key!r}"
+        )
+
+
+async def _check_bundle(
+    registry: ProductRegistry | None, product_key: str, members: list[str]
+) -> None:
+    """Refuse a bundle sale the product registry cannot vouch for, at the moment of sale.
+
+    `registry` is None on the customer path, which is exactly where a bundle is refused: bundles
+    are sold by the platform team (docs/commerce-packaging.md, reversible). On the operator path
+    the registry must confirm the version's product is a bundle and every member is a registered,
+    launched (`status != 'soon'`), non-platform, non-bundle product.
+    """
+    if registry is None:
+        raise ForbiddenProblem(
+            "bundles are sold by the OpsGrids team; ask your account manager to set one up"
+        )
+    products = await registry.products()
+    bundle = products.get(product_key)
+    problems: list[str] = []
+    if bundle is None or not bundle.is_bundle:
+        problems.append(f"{product_key!r} is not a bundle product")
+    for member in members:
+        entry = products.get(member)
+        if entry is None:
+            problems.append(f"{member!r} is not a registered product")
+        elif entry.is_platform or entry.is_bundle:
+            problems.append(f"{member!r} cannot be a bundle member")
+        elif entry.status == "soon":
+            problems.append(f"{member!r} has not launched")
+    if problems:
+        raise BusinessRuleProblem("cannot sell this bundle: " + "; ".join(problems))
+
+
 async def subscribe(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -230,41 +293,84 @@ async def subscribe(
     *,
     request: Request | None = None,
 ) -> Subscription:
-    """Start a subscription for a product, pinned to a validated catalog version.
+    """A customer starts a subscription for one product. Bundles are refused here."""
+    return await _subscribe(
+        session,
+        organization_id=ctx.organization_id,
+        actor=_customer_actor(ctx),
+        catalog=catalog,
+        registry=None,
+        product_key=payload.product_key,
+        plan_version_id=payload.plan_version_id,
+        trial_requested=payload.trial_days,
+        request=request,
+    )
 
-    `trial_days` set opens it in `trial` with an end date (a trial is a subscription state, never
-    a separate object — ADR-0004 §4); otherwise it opens `active`. One subscription per product
-    per organization: an existing one is a conflict, not a second row.
+
+async def subscribe_as_operator(
+    session: AsyncSession,
+    catalog: PlanCatalog,
+    registry: ProductRegistry,
+    payload: OperatorSubscribeIn,
+    *,
+    request: Request | None = None,
+) -> Subscription:
+    """The platform team opens a subscription for a customer — the one path that sells a bundle."""
+    return await _subscribe(
+        session,
+        organization_id=payload.organization_id,
+        actor=_operator_actor(payload.operator_id),
+        catalog=catalog,
+        registry=registry,
+        product_key=payload.product_key,
+        plan_version_id=payload.plan_version_id,
+        # "A trial" means the version's own trial; the cap below makes that exact.
+        trial_requested=domain.MAX_TRIAL_DAYS if payload.trial else None,
+        request=request,
+    )
+
+
+async def _subscribe(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    actor: dict[str, Any],
+    catalog: PlanCatalog,
+    registry: ProductRegistry | None,
+    product_key: str,
+    plan_version_id: uuid.UUID,
+    trial_requested: int | None,
+    request: Request | None,
+) -> Subscription:
+    """Start a subscription pinned to a validated catalog version.
+
+    A trial opens in `trial` with an end date (a subscription state, never a separate object —
+    ADR-0004 §4), its length the version's and not the caller's. One subscription per product per
+    organization: an existing one is a conflict, not a second row.
     """
     from app import selectors
 
-    existing = await selectors.get_by_product(session, ctx.organization_id, payload.product_key)
+    existing = await selectors.get_by_product(session, organization_id, product_key)
     if existing is not None:
-        raise ConflictProblem(
-            f"this organization already has a subscription for {payload.product_key!r}"
-        )
+        raise ConflictProblem(f"this organization already has a subscription for {product_key!r}")
 
-    version = _validate_new_pin(
-        await catalog.get_plan_version(payload.plan_version_id), ctx.organization_id
-    )
-    if version.product_key and version.product_key != payload.product_key:
-        raise BusinessRuleProblem(
-            f"plan version belongs to product {version.product_key!r}, not {payload.product_key!r}"
-        )
+    version = _validate_new_pin(await catalog.get_plan_version(plan_version_id), organization_id)
+    _require_product(version, product_key)
 
-    # Read off the pinned version and nothing else — never the request body (MalformedBundle is
-    # a 422 before any row exists).
-    members = domain.entitled_products(
-        version.product_key or payload.product_key, version.feature_pairs()
-    )
+    features = version.feature_pairs()
+    # Read off the pinned version and nothing else — never the request body.
+    members = domain.entitled_products(product_key, features)
+    if domain.declares_bundle(features):
+        await _check_bundle(registry, product_key, members)
+    trial_days = domain.trial_days_granted(trial_requested, domain.trial_allowance(features))
 
     now = datetime.now(UTC)
-    to_state = STATE_TRIAL if payload.trial_days else STATE_ACTIVE
-    trial_ends_at = now + timedelta(days=payload.trial_days) if payload.trial_days else None
+    to_state = STATE_TRIAL if trial_days else STATE_ACTIVE
+    trial_ends_at = now + timedelta(days=trial_days) if trial_days else None
 
     subscription = Subscription(
-        organization_id=ctx.organization_id,
-        product_key=payload.product_key,
+        organization_id=organization_id,
+        product_key=product_key,
         plan_version_id=version.id,
         state=to_state,
         trial_ends_at=trial_ends_at,
@@ -288,7 +394,7 @@ async def subscribe(
         session,
         subscription,
         decision,
-        actor=_customer_actor(ctx),
+        actor=actor,
         request=request,
         from_plan_version_id=None,
         to_plan_version_id=version.id,
@@ -306,6 +412,55 @@ async def change_plan(
     *,
     request: Request | None = None,
 ) -> Subscription:
+    """A customer re-pins their own subscription. A bundle subscription — or a move onto a
+    bundle rung — is the platform team's to make, so both are refused here."""
+    if subscription.entitled_products != [subscription.product_key]:
+        raise ForbiddenProblem("a bundle's plan is changed by the OpsGrids team")
+    return await _change_plan(
+        session,
+        organization_id=ctx.organization_id,
+        actor=_customer_actor(ctx),
+        catalog=catalog,
+        registry=None,
+        subscription=subscription,
+        plan_version_id=payload.plan_version_id,
+        request=request,
+    )
+
+
+async def change_plan_as_operator(
+    session: AsyncSession,
+    catalog: PlanCatalog,
+    registry: ProductRegistry,
+    subscription: Subscription,
+    payload: OperatorChangePlanIn,
+    *,
+    request: Request | None = None,
+) -> Subscription:
+    """The platform team re-pins a subscription — how a bundle moves between rungs."""
+    return await _change_plan(
+        session,
+        organization_id=payload.organization_id,
+        actor=_operator_actor(payload.operator_id),
+        catalog=catalog,
+        registry=registry,
+        subscription=subscription,
+        plan_version_id=payload.plan_version_id,
+        request=request,
+    )
+
+
+async def _change_plan(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    actor: dict[str, Any],
+    catalog: PlanCatalog,
+    registry: ProductRegistry | None,
+    subscription: Subscription,
+    plan_version_id: uuid.UUID,
+    request: Request | None,
+) -> Subscription:
     """Re-pin a subscription to a different published version — an upgrade or a downgrade.
 
     The previous pin is preserved on the transition row, never overwritten: the version a past
@@ -314,19 +469,18 @@ async def change_plan(
     whether the new list price is higher — which decides only the event, not the money.
     """
     new_version = _validate_new_pin(
-        await catalog.get_plan_version(payload.plan_version_id), ctx.organization_id
+        await catalog.get_plan_version(plan_version_id), organization_id
     )
     if new_version.id == subscription.plan_version_id:
         raise BusinessRuleProblem("the subscription is already pinned to that plan version")
-    if new_version.product_key and new_version.product_key != subscription.product_key:
-        # A change-plan moves along one product's ladder. Re-pinning a `suite` subscription to an
-        # `hrms` version would change what the row is *for* while keeping its key — and with
-        # bundles, silently change which products it entitles.
-        raise BusinessRuleProblem(
-            f"plan version belongs to product {new_version.product_key!r}, "
-            f"not {subscription.product_key!r}"
-        )
-    members = domain.entitled_products(subscription.product_key, new_version.feature_pairs())
+    # A change-plan moves along one product's ladder. Re-pinning a `suite` subscription to an
+    # `hrms` version would change what the row is *for* while keeping its key — and with
+    # bundles, silently change which products it entitles.
+    _require_product(new_version, subscription.product_key)
+    features = new_version.feature_pairs()
+    members = domain.entitled_products(subscription.product_key, features)
+    if domain.declares_bundle(features):
+        await _check_bundle(registry, subscription.product_key, members)
     if new_version.currency.upper() != subscription.currency:
         # One currency per subscription for now (ADR-0004 defaults). A cross-currency change is a
         # cancel-and-resubscribe decision, not a silent re-pin.
@@ -361,7 +515,7 @@ async def change_plan(
         session,
         subscription,
         decision,
-        actor=_customer_actor(ctx),
+        actor=actor,
         request=request,
         from_plan_version_id=from_pin,
         to_plan_version_id=new_version.id,
@@ -806,6 +960,25 @@ async def resync_entitlements(
         return False
 
     members = domain.entitled_products(subscription.product_key, version.feature_pairs())
+    if version.id != subscription.plan_version_id:
+        return False
+    # Conditional, not read-then-write: a change-plan that committed after this row was read has
+    # already snapshotted the members of the *new* pin, and writing the old pin's members over
+    # them would entitle the plan the customer just left. The WHERE clause is the guard — no row
+    # matched means somebody else got there first, and that write is the right one.
+    written = await session.execute(
+        update(Subscription)
+        .where(
+            Subscription.id == subscription.id,
+            Subscription.entitled_products_snapshot.is_(None),
+            Subscription.plan_version_id == version.id,
+        )
+        .values(entitled_products_snapshot=members)
+        .execution_options(synchronize_session="fetch")
+    )
+    if getattr(written, "rowcount", 0) != 1:
+        log.info("entitlements.resync.superseded", subscription_id=str(subscription.id))
+        return False
     subscription.entitled_products_snapshot = members
 
     record_audit(

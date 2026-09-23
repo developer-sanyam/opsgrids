@@ -13,6 +13,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from app.registry import RegisteredProduct
 from app.schemas import CatalogFeature, CatalogPlanVersion, CatalogPrice
 from platform_core.auth import Principal
 
@@ -98,3 +99,24 @@ class FakeCatalog:
 
     async def get_plan_version(self, plan_version_id: uuid.UUID) -> CatalogPlanVersion | None:
         return self._versions.get(plan_version_id)
+
+
+class FakeRegistry:
+    """product-service's registry as the bundle sale path reads it: `suite` a bundle, `core` a
+    platform product, the trio's members launched, `projects` still `soon`."""
+
+    def __init__(self, overrides: dict[str, RegisteredProduct] | None = None) -> None:
+        self._entries = {
+            "core": RegisteredProduct("core", is_platform=True),
+            "suite": RegisteredProduct("suite", is_bundle=True),
+            "hrms": RegisteredProduct("hrms"),
+            "crm": RegisteredProduct("crm"),
+            "finance": RegisteredProduct("finance"),
+            "projects": RegisteredProduct("projects", status="soon"),
+            **(overrides or {}),
+        }
+        self.calls = 0
+
+    async def products(self) -> dict[str, RegisteredProduct]:
+        self.calls += 1
+        return dict(self._entries)

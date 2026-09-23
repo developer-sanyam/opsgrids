@@ -74,13 +74,23 @@ class CatalogPlanVersion(BaseModel):
 class SubscribeIn(BaseModel):
     """Start a subscription for a product, pinned to a catalog plan version.
 
-    `trial_days` set starts the subscription in `trial` with an end date; left null it starts
-    `active`. A trial is a *state of the subscription*, never a separate object (ADR-0004 §4).
+    `trial_days` set asks for a trial; left null it starts `active`. **The length is the pinned
+    version's, not the caller's**: the request is capped at the version's `trial_days` feature
+    (14 days when the version names none), and refused if the version sells no trial. A trial is
+    a *state of the subscription*, never a separate object (ADR-0004 §4).
+
+    A bundle cannot be bought here — it is sold by the platform team through the operator path
+    (docs/commerce-packaging.md).
     """
 
     product_key: str = Field(min_length=1, max_length=40)
     plan_version_id: uuid.UUID
-    trial_days: int | None = Field(default=None, ge=1, le=365)
+    trial_days: int | None = Field(
+        default=None,
+        ge=1,
+        le=365,
+        description="Ask for a trial. Capped at the plan version's own trial length.",
+    )
 
 
 class ChangePlanIn(BaseModel):
@@ -88,6 +98,29 @@ class ChangePlanIn(BaseModel):
     transition row — never overwritten in history (ADR-0004 §2)."""
 
     plan_version_id: uuid.UUID
+
+
+class OperatorSubscribeIn(BaseModel):
+    """A subscription opened by the platform team for a customer — the only way a bundle is sold.
+
+    Delegated over `/internal` by an operator surface, like a suspension. `organization_id` binds
+    the transaction; `operator_id` is the accountable human on the audit row. `trial` asks for the
+    version's own trial length; there is no length to type.
+    """
+
+    organization_id: uuid.UUID
+    product_key: str = Field(min_length=1, max_length=40)
+    plan_version_id: uuid.UUID
+    trial: bool = False
+    operator_id: str = Field(min_length=1, max_length=64)
+
+
+class OperatorChangePlanIn(BaseModel):
+    """Re-pin a subscription on the platform team's behalf — how a bundle moves between rungs."""
+
+    organization_id: uuid.UUID
+    plan_version_id: uuid.UUID
+    operator_id: str = Field(min_length=1, max_length=64)
 
 
 class CancelIn(BaseModel):

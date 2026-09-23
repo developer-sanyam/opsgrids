@@ -177,6 +177,53 @@ class MalformedBundle(BusinessRuleProblem):
     """
 
 
+def declares_bundle(features: Iterable[tuple[str, Any]]) -> bool:
+    """Whether a version is a bundle rung: it names members. Catalog only lets a bundle
+    product's plans declare them, and requires every bundle version to."""
+    return any(key == FEATURE_BUNDLED_PRODUCTS for key, _ in features)
+
+
+# ------------------------------------------------------------------------------------- trials
+
+#: The feature a plan version sets its trial length with, in days. `0` means the version sells
+#: no trial. Absent means the platform default below.
+FEATURE_TRIAL_DAYS = "trial_days"
+
+#: The platform default: the 14-day trial the marketplace offers (ADR-0013). A product that
+#: wants another length publishes a version with `trial_days`; the customer never chooses.
+DEFAULT_TRIAL_DAYS = 14
+MAX_TRIAL_DAYS = 365
+
+
+def trial_allowance(features: Iterable[tuple[str, Any]]) -> int:
+    """How many trial days the pinned version grants. Read from the version, never the caller:
+    a trial length a customer can type is a free year of every product."""
+    for key, value in features:
+        if key != FEATURE_TRIAL_DAYS:
+            continue
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 0 <= value <= MAX_TRIAL_DAYS
+        ):
+            raise BusinessRuleProblem(
+                f"{FEATURE_TRIAL_DAYS} must be a whole number of days from 0 to {MAX_TRIAL_DAYS}"
+            )
+        return value
+    return DEFAULT_TRIAL_DAYS
+
+
+def trial_days_granted(requested: int | None, allowance: int) -> int | None:
+    """The trial a subscribe actually opens: none if none was asked for, otherwise the request
+    capped at the version's allowance. A version that sells no trial refuses the request rather
+    than quietly opening a paid subscription the caller did not ask for."""
+    if not requested:
+        return None
+    if allowance == 0:
+        raise BusinessRuleProblem("this plan version does not offer a trial")
+    return min(requested, allowance)
+
+
 def entitled_products(product_key: str, features: Iterable[tuple[str, Any]]) -> list[str]:
     """The product keys a subscription to this version entitles, in declaration order.
 
