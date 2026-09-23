@@ -123,6 +123,15 @@ MAX_FILING_ATTEMPTS: int = 5
 FILING_RETRY_BASE: timedelta = timedelta(minutes=2)
 FILING_RETRY_CEILING: timedelta = timedelta(hours=1)
 
+#: How much clock skew the early-arrival guard forgives (`app/consumers.py:file_requested_invoice`,
+#: ADR-0015 §5) before it treats a `filing_requested` message as arriving early. The scheduler
+#: fires a job the instant its own discovery query sees `due_at <= now()` on the database's own
+#: clock; this consumer's guard reads wall-clock time on whatever pod happens to run it. Neither
+#: pod nor broker latency is expected to exceed this by much, and the guard exists for a message
+#: arriving *meaningfully* early (a hand redelivery, a DLQ replay), not to reject one the ordinary
+#: last few seconds of scheduling latency produced.
+FILING_EARLY_ARRIVAL_TOLERANCE: timedelta = timedelta(seconds=30)
+
 #: Error codes this *platform* writes, as opposed to the numbered ones the portal returns. Kept
 #: distinct from the portal's namespace (which is numeric) so "who said this" is never ambiguous
 #: in a support conversation: `2227` came from NIC, `retry_exhausted` came from us.

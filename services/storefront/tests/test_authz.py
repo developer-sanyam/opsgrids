@@ -51,6 +51,11 @@ ROUTES: list[tuple[str, str, str]] = [
     # the store's own setting with the largest consequence, not a different job (ADR-0011 §4).
     ("POST", "/api/v1/storefront/store/publish", STORE_WRITE),
     ("POST", "/api/v1/storefront/store/unpublish", STORE_WRITE),
+    # The custom domain (ADR-0012 §10): no new permission, folded into `store.settings.*`.
+    ("GET", "/api/v1/storefront/store/domain", STORE_READ),
+    ("PUT", "/api/v1/storefront/store/domain", STORE_WRITE),
+    ("DELETE", "/api/v1/storefront/store/domain", STORE_WRITE),
+    ("POST", "/api/v1/storefront/store/domain/check", STORE_WRITE),
     ("GET", "/api/v1/storefront/delivery/zones", ZONE_READ),
     ("POST", "/api/v1/storefront/delivery/zones", ZONE_WRITE),
     (
@@ -96,6 +101,7 @@ ROUTES: list[tuple[str, str, str]] = [
 
 _BODIES: dict[tuple[str, str], dict] = {
     ("PUT", "/api/v1/storefront/store"): {"slug": "a-store", "name": "A Store"},
+    ("PUT", "/api/v1/storefront/store/domain"): {"custom_domain": "merchant.example"},
     ("POST", "/api/v1/storefront/delivery/zones"): {
         "code": "Z",
         "name": "Z",

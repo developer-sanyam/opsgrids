@@ -96,7 +96,7 @@ class TestTheDecompressionBomb:
     def test_max_image_pixels_is_set_explicitly(self) -> None:
         """Pillow's default behaviour at this threshold is a *warning*, which is worse than
         either alternative. The module sets a real value at import."""
-        assert Image.MAX_IMAGE_PIXELS == domain.MAX_IMAGE_PIXELS == 50_000_000
+        assert Image.MAX_IMAGE_PIXELS == domain.MAX_IMAGE_PIXELS == 24_000_000
 
     def test_a_bomb_is_refused_before_it_is_decoded(self) -> None:
         """81 megapixels of flat colour is a few kilobytes on the wire — the attack a byte
@@ -107,8 +107,18 @@ class TestTheDecompressionBomb:
             domain.process_upload(raw)
         assert exc.value.code == "image_too_many_pixels"
 
+    def test_a_legal_sized_image_that_used_to_nearly_oom_is_now_refused(self) -> None:
+        """A 7000x7000 PNG (49 MP) was accepted under the old 50 MP ceiling and measured
+        ~489 MB peak RSS decoding, resizing and re-encoding it — against this container's 320m
+        `mem_limit`. Refusing it fast, off the header, before a single pixel decodes, is the
+        fix; see the module-level comment on MAX_IMAGE_PIXELS."""
+        raw = decompression_bomb(7000, 7000)
+        with pytest.raises(domain.ImageRejected) as exc:
+            domain.process_upload(raw)
+        assert exc.value.code == "image_too_many_pixels"
+
     def test_an_image_just_under_the_ceiling_is_accepted(self) -> None:
-        raw = decompression_bomb(7000, 7000)  # 49 MP
+        raw = decompression_bomb(4800, 4800)  # 23.04 MP, under the 24 MP ceiling
         assert domain.process_upload(raw).width == domain.MAX_LONG_EDGE
 
 

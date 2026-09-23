@@ -526,7 +526,10 @@ class TestTheHostCacheIsInvalidatedByTheWritesThatMoveIt:
     ) -> None:
         """The lookup caches under the key it was *asked* about, so a buyer who arrived at the
         `www` sibling has an entry under that key. Forgetting only the claimed value would leave
-        a released domain serving at its partner."""
+        a released domain serving at its partner.
+
+        Released through `DELETE /storefront/store/domain` — the only writer of a custom domain
+        left after ADR-0012 review finding 2b removed `custom_domain` from `StorePut`."""
         await seed_store(
             admin_session,
             org_id,
@@ -538,9 +541,7 @@ class TestTheHostCacheIsInvalidatedByTheWritesThatMoveIt:
         await client.post(PATH, json={"host": "www.merchant.example"})
 
         with as_principal(all_perms(org_id)):
-            await client.put(
-                "/api/v1/storefront/store", json=store_payload(slug, custom_domain=None)
-            )
+            await client.delete("/api/v1/storefront/store/domain")
 
         redis = get_redis()
         assert await redis.get(host_cache_key("merchant.example")) is None

@@ -45,6 +45,7 @@ All of these run from a clone on your laptop, and **all of them require you to n
 | `make edge-web-rollback HOST=… CONFIRM=…` | Point the edge back at the previous bundle |
 | `make edge-releases HOST=… CONFIRM=…` | Which bundles are on the box, which one is live |
 | `make edge-backup HOST=… CONFIRM=…` | Run the nightly backup now |
+| `make edge-reconcile HOST=… CONFIRM=… PRODUCTS=core [APPLY=1]` | Widen existing orgs' roles with new permission codes from a product's manifest — dry run without `APPLY=1` |
 
 On the box itself everything is `infrastructure/edge/remote.sh <command>` in
 `/srv/opsgrids/repo`, and raw compose is
@@ -150,6 +151,8 @@ openssl rand -hex 32     # OPSGRIDS_DB_PASSWORD   (alphanumeric only — it goes
 openssl rand -hex 32     # INTERNAL_SERVICE_TOKEN
 openssl rand -hex 32     # PII_ENCRYPTION_KEY
 openssl rand -hex 32     # BACKUP_S3_SECRET_ACCESS_KEY, if your provider does not issue one
+openssl rand -hex 16     # MINIO_ROOT_USER
+openssl rand -hex 32     # MINIO_ROOT_PASSWORD
 
 # The only private signing key in the platform.
 openssl genpkey -algorithm ed25519 -out /srv/opsgrids/secrets/jwt-ed25519.pem
@@ -175,6 +178,7 @@ real store is published.
 | `PII_ENCRYPTION_KEY` | Generated fresh, ≥32 bytes, **and backed up off this box before any data exists**. Lose it and encrypted PII is unreadable; there is no recovery |
 | `jwt-ed25519.pem` | Generated on this box. Never `make devkeys`' key — that one is on every developer's laptop, and anyone holding it can mint a token for any tenant |
 | `BACKUP_S3_*` | Scoped to write into the backup bucket and nothing else |
+| `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | Generated on this box, only exercised when `COMPOSE_PROFILES` includes `storefront`. `document` reuses the same credential — see "Document and MinIO" below |
 | `ACME_EMAIL` | Not a secret |
 
 Nothing above ever goes into git, a CI log, a screenshot, or this file.
@@ -244,6 +248,118 @@ crontab -l          # read it back
 Then run one by hand and read the output: `make edge-backup HOST=… CONFIRM=…`. **A backup you
 have not restored is not a backup** — do the [restore drill](#restore-from-backup) once now,
 while nothing is at stake.
+
+### 9. Document and MinIO (uploaded images, ADR-0009)
+
+The storefront console's image upload (`POST /api/v1/documents/assets`) needs two more
+containers, `document` and `minio`, both behind the `storefront` compose profile — see the
+comments on `minio` and `document` in `compose.prod.yml` for why they are profile-gated rather
+than always on. **Skip this section if this box does not sell Storefront.**
+
+**Add to the box `.env` (names only — see `.env.example` for what each one is and why):**
+
+- `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` — generate fresh, same rule as every other secret
+  in this file. `MINIO_ROOT_PASSWORD` must be at least 8 characters — MinIO's own minimum —
+  and preflight now enforces it.
+- `DOCUMENT_S3_ACCESS_KEY`, `DOCUMENT_S3_SECRET_KEY` — generate fresh. The scoped credential
+  `document` actually connects with; `minio-init` creates this user and a policy granting it
+  only `s3:PutObject`/`s3:DeleteObject` on this bucket, never the root account. Same 8-character
+  minimum, same preflight check.
+- `S3_PUBLIC_BUCKET` — the committed default (`opsgrids-public`) is fine unless you have a
+  reason to rename it.
+- `PUBLIC_ASSET_BASE_URL` — must be **exactly** `https://<this box's own EDGE_HOST>/<S3_PUBLIC_BUCKET>`
+  — not merely a name in `TLS_PLATFORM_HOSTS`. Caddy proxies `/opsgrids-public/*` to MinIO only on
+  EDGE_HOST's own site block, deliberately, so that a stray `response-content-type` on an
+  uploaded object can never be served back as HTML on a platform hostname carrying the
+  `.opsgrids.com`-scoped refresh cookie (ADR-0009 addendum, 2026-09-23). The committed default
+  already matches `EDGE_HOST`; change both together if you rename the box. Preflight refuses to
+  deploy if these two values disagree.
+- `COMPOSE_PROFILES` must list `storefront` (it already does if this box sells the product).
+
+**Merging this without the values above set on the box is safe and boring, not a surprise
+outage**: preflight refuses to deploy the moment any of them is missing, empty or still a
+placeholder, and a preflight failure changes nothing — the box keeps serving whatever ref it was
+already on. Nobody's shop goes down; the *next* deploy simply does not proceed until these are
+set. `make edge-preflight HOST=… CONFIRM=…` shows exactly which key.
+
+**Order.** No separate step for these two containers: the Deploy workflow (green `main`, or
+*Run workflow*) already does the right thing once the values above are in `.env` — it runs the
+same `remote.sh` steps `make deploy` does. The permission reconcile (below) is a genuinely
+separate, deliberate step and is never run automatically.
+
+1. `preflight` fails loudly if any of the required keys are missing, empty or still a
+   placeholder — the same blanket rule as every other key in `.env.example`.
+2. `build` builds the `document` image alongside everything else.
+3. `migrate` runs `document`'s Alembic migrations — it is in `remote.sh`'s
+   `SERVICES_WITH_SCHEMA` list, so this needs no manual step.
+4. `up` starts `minio`, then `minio-init` (a one-shot: creates the `opsgrids-public` bucket and
+   its anonymous-GetObject policy, then the scoped `document` user and its
+   put/delete-only policy — all idempotent on every later deploy), then `document`.
+5. **Reconcile the `core` permissions before anyone can upload in an organization that already
+   existed before this deploy** (ADR-0009 §4, ADR-0007). `core.content.asset.read` and
+   `core.content.asset.write` are two permissions added to the `core` manifest;
+   `install_registration` skips role codes that already exist, so `ORG_OWNER`/`ORG_ADMIN` in
+   every organization created *before* this deploy keep exactly the grants they had — every
+   upload 403s for them — while a brand-new organization works perfectly. **Dry run first,
+   always**:
+
+   ```bash
+   make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=core
+   # read the diff, then:
+   make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=core APPLY=1
+   ```
+
+   or, from the Deploy workflow's *Run workflow* form, set `reconcile: core` — that path applies
+   directly (no separate dry run in the pipeline), so run the dry run above by hand first if you
+   want to see the diff before it is written. This is a fleet write (every organization's
+   permission version bumps, which signs every member out of their cached token) and is
+   deliberately never part of an ordinary `make deploy`.
+6. **Publish (or republish) the `buyer` and `storefront` bundles after this deploy, not
+   before**: run the Deploy workflow with `apps: buyer,storefront` (it calls the same
+   `publish-web.sh publish` that `make edge-web APP=…` does). `publish-web.sh` reads `PUBLIC_ASSET_BASE_URL` off the box's `.env` at
+   build time and bakes it in as `VITE_ASSET_BASE_URL` — Vite bakes `import.meta.env.VITE_*`
+   in at build time, so this cannot be fixed by redeploying the box alone. If either bundle was
+   published **before** this box had `PUBLIC_ASSET_BASE_URL` set, every uploaded image 404s on
+   the live store until it is republished, even though the upload itself succeeds — republish
+   now if in doubt.
+7. **Verify the backup, not just the deploy.** The next nightly `backup.sh` run now also tars
+   MinIO's data volume and uploads it alongside the Postgres dump and Caddy's certificates
+   (skipped automatically on a box that does not run `minio`). Don't wait for cron: run
+   `make edge-backup HOST=… CONFIRM=…` once by hand right after this deploy and read its output
+   for `object storage: …, uploaded` — and do the [restore drill](#restore-from-backup) at least
+   once so "we have a backup" is a tested fact about this box, not an assumption about the
+   script.
+
+**Verify an upload end to end**, from a merchant's own signed-in session or with a token by hand:
+
+```bash
+# 1. Upload. Any small JPEG/PNG/WebP under 5 MiB.
+curl -sS -X POST https://edge.opsgrids.com/api/v1/documents/assets \
+  -H "Authorization: Bearer $TOKEN" -F file=@sample.jpg | tee /tmp/asset.json
+
+# 2. The response's "public_path" looks like /a/<org-uuid>/<asset-uuid>. Fetch it back through
+#    the same path Caddy proxies to MinIO — this is what a buyer's <img> actually does, not
+#    document's own preview "public_url" field, which points at the same address anyway.
+org_and_asset=$(python3 -c "import json,sys; print(json.load(open('/tmp/asset.json'))['public_path'][3:])")
+curl -sSI "https://edge.opsgrids.com/opsgrids-public/$org_and_asset"   # expect: 200, Content-Type: image/...
+
+# 3. Confirm the bucket really cannot be listed (the isolation argument ADR-0009 §3 depends on):
+curl -sSI "https://edge.opsgrids.com/opsgrids-public/"                # expect: 403, never a listing
+
+# 4. Confirm a response-content-type override cannot turn an object into HTML on this host
+#    (ADR-0009 addendum, 2026-09-23) — expect the object's own true content type, never text/html:
+curl -sSI "https://edge.opsgrids.com/opsgrids-public/$org_and_asset?response-content-type=text/html"
+
+# 5. Confirm the SAME path 404s on a platform hostname other than EDGE_HOST — it must NOT proxy
+#    there at all:
+curl -sSI "https://app.opsgrids.com/opsgrids-public/$org_and_asset"   # expect: 404
+```
+
+If step 2 returns 502, `minio` did not start — check `COMPOSE_PROFILES` and
+`make edge-logs SERVICE=minio`. If step 1 returns 404, the gateway has no route for
+`/api/v1/documents` — check `routes.prod.json` was actually deployed (`ROUTES_SHA` in
+`make edge-status`). If step 1 returns 403 for an organization that existed before this deploy,
+the permission reconcile (step 5 above) has not run yet.
 
 ---
 
@@ -496,9 +612,11 @@ If `BACKUP_S3_ENDPOINT` is set (anything other than AWS itself — R2, B2, the p
 object store), add `--endpoint-url "$BACKUP_S3_ENDPOINT"` to every `aws s3` command below.
 `backup.sh` does that for you; a command you type does not.
 
-Nightly `backup.sh` puts two files in `s3://$BACKUP_S3_BUCKET/$BACKUP_S3_PREFIX/`: a
-gzipped `pg_dump` of the whole database and a tar of Caddy's data volume. The provider's VM
-snapshot is the third copy and the one to use when the box itself is gone.
+Nightly `backup.sh` puts two or three files in `s3://$BACKUP_S3_BUCKET/$BACKUP_S3_PREFIX/`: a
+gzipped `pg_dump` of the whole database, a tar of Caddy's data volume, and — only when the
+`storefront` profile is on — a tar of MinIO's data volume (every uploaded merchant image,
+ADR-0009). The provider's VM snapshot is one more copy and the one to use when the box itself
+is gone.
 
 **The drill — do this once before you need it, and once a quarter after.** It restores into a
 scratch database on the live box and touches nothing that is serving:
@@ -589,6 +707,14 @@ Named here so nobody discovers them during an incident:
   whose profile is off and is harmless. Outbox depth per schema is still the truth:
   `select count(*) from <schema>.outbox where published_at is null`. Every service keeps its
   own `bin/relay`; going back to one container per service is a compose edit, not a rewrite.
+- **The scheduler (ADR-0015).** Behind the `finance` profile: finance's e-Invoice retry backoff
+  is its only producer today. One container, `scheduler`, runs `./bin/worker` — the event
+  consumer and the due-job sweep together in one process, for the same RAM reason as the shared
+  relay above. A retry that never seems to happen: check
+  `select count(*) from scheduler.scheduled_jobs where status = 'pending' and due_at <= now()` —
+  a non-zero count with the `scheduler` container up means the sweep itself is stuck (`make
+  edge-logs SERVICE=scheduler`); a non-zero count with it down or restarting is the container.
+  `scheduler.outbox` fills exactly like any other service's if `edge-relay` is not draining it.
 - *(historical)* **No RabbitMQ, no relay and no consumers — and this breaks product activation.** An earlier
   version of this paragraph said slice 1 publishes no event that anything consumes. That was
   wrong. `product.activate()` publishes `core.product.activated`, and the **only** thing that
@@ -617,8 +743,12 @@ Named here so nobody discovers them during an incident:
 - **No merchant admin SPA on this box.** The edge serves the anonymous buyer bundle only. The
   API is reachable at `https://<EDGE_HOST>/api/…`; the merchant console is ADR-0001's and is
   served elsewhere.
-- **No document service.** Uploaded images are not served from this box; a storefront that
-  references them renders broken images.
+- **Resolved: `document` and `minio` are on this box, behind the `storefront` profile** (see
+  "Document and MinIO" above). What is still missing: ADR-0009 §8's purge sweep
+  (`app/cron.py`) was designed and never built, the same gap `storefront-cron` has for custom
+  domains, so a soft-deleted asset's object is never actually removed from the bucket after its
+  30-day window. Harmless today — quota accounting is the thing that drifts, not correctness —
+  and it is the shared scheduler backlog item's job to fix, not a per-service cron.
 - **No log shipping.** Logs live in Docker's json-file driver on this disk and are lost when a
   container is pruned.
 - **No staging environment.** `caddy validate` and the local `make gate` are the only things

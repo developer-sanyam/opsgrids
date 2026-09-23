@@ -141,6 +141,67 @@ class TestAStoresOwnNames:
         assert "store" in response.json()["detail"].lower()
 
 
+class TestTheFullStateMachine:
+    """ADR-0012 §6's table, widened from the two values ADR-0011 shipped: `verified`, `live`
+    and `failing` all authorize a certificate — `failing` is still served, generously, because
+    taking a domain off the air on the first bad check is worse than a stale TXT record — and
+    `suspended` is the one state that now refuses, the same way an unpublished store already
+    does. This is the same `SERVING_DOMAIN_STATUSES` filter `store-context` reads, exercised
+    here against every value the column can now hold."""
+
+    @pytest.mark.parametrize("status", ["verified", "live", "failing"])
+    async def test_every_servable_state_is_authorized(
+        self, client, admin_session, org_id: uuid.UUID, slug: str, status: str
+    ) -> None:
+        await seed_store(
+            admin_session,
+            org_id,
+            slug,
+            custom_domain="merchant.example",
+            custom_domain_status=status,
+        )
+
+        response = await ask(client, "merchant.example")
+
+        assert response.status_code == 200
+        assert response.json()["reason"] == "store"
+
+    async def test_a_suspended_domain_gets_no_certificate(
+        self, client, admin_session, org_id: uuid.UUID, slug: str
+    ) -> None:
+        """Seven consecutive failures, or the store is unpublished — either way, `suspended`
+        is the one state ADR-0012 §6 says `ask` must refuse (ADR-0012 §7's gate 1)."""
+        await seed_store(
+            admin_session,
+            org_id,
+            slug,
+            custom_domain="merchant.example",
+            custom_domain_status="suspended",
+        )
+
+        response = await ask(client, "merchant.example")
+
+        assert response.status_code == 403
+
+    async def test_a_suspended_domain_on_a_still_published_store_is_still_refused(
+        self, client, admin_session, org_id: uuid.UUID, slug: str
+    ) -> None:
+        """The domain's own state governs independently of the store's — a domain can be
+        `suspended` for seven days of DNS trouble on a store the merchant never unpublished."""
+        await seed_store(
+            admin_session,
+            org_id,
+            slug,
+            status="published",
+            custom_domain="merchant.example",
+            custom_domain_status="suspended",
+        )
+
+        response = await ask(client, "merchant.example")
+
+        assert response.status_code == 403
+
+
 class TestTheInput:
     @pytest.mark.parametrize(
         "name",

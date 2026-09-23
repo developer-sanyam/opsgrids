@@ -62,6 +62,7 @@ TENANT_TABLES = (
     "categories",
     "enquiries",
     "theme_documents",
+    "custom_domain_claims",
     "storefronts",
     "audit_logs",
     "outbox",

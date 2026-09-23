@@ -1,3 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec python -m app.consumers
+# Production runs the event consumer and the due-job sweep together in one process
+# (`app/worker.py`) — the RAM-bound edge box does not get a second idle container for a sweep
+# this light. `make worker SERVICE=scheduler` still runs the consumer alone, via `app.consumers`.
+exec python -m app.worker

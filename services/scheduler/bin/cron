@@ -1,3 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec python -m app.relay
+# The due-job sweep and the retention pass (ADR-0015). The scaffold pointed this at the outbox
+# relay because no service work had a schedule yet (see `approval`, `subscription` and
+# `notification`'s own `bin/cron` headers for the same fix, made when each of them first grew
+# real cron work). Production runs this combined with the consumer instead — see `bin/worker` —
+# so nothing schedules this container by itself; it stays correct for `make cron SERVICE=scheduler`
+# and for running the two roles apart when debugging one of them.
+exec python -m app.cron
