@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { addListMembers, importContacts } from "@/api/client";
 import { CONTACT_IMPORT_MAX } from "@/api/types";
@@ -63,6 +63,11 @@ export function ListImportDialog({
   const [submitting, setSubmitting] = useState(false);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [lines, setLines] = useState<number[]>([]);
+  const outcomeRef = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => {
+    if (outcome !== null) outcomeRef.current?.focus();
+  }, [outcome]);
 
   function close() {
     setText("");
@@ -191,6 +196,11 @@ export function ListImportDialog({
         </>
       ) : (
         <div className="flex flex-col gap-4">
+          {/* Where focus lands once the import has run: the button that was pressed has just been
+              replaced by Done, and focus on the document behind a modal is focus nobody can see. */}
+          <h3 ref={outcomeRef} tabIndex={-1} className="text-base font-bold text-ink outline-none">
+            Import results
+          </h3>
           {outcome.addFailure !== null ? (
             <InlineAlert
               tone="danger"

@@ -7,7 +7,9 @@ import { ApiError } from "@opsgrids/client";
  * `useAsync`'s shape, plus what only a poll needs: `refresh` for an immediate out-of-band poll
  * (an action just taken should not wait for the interval), `isRefreshing` so a screen can show
  * a quiet indicator instead of the loading skeleton it would show on the first load, and
- * `stopped` so a screen can say the data on it is no longer being kept current.
+ * `stopped` so a screen can say the data on it is no longer being kept current. `refresh` re-reads
+ * *without* clearing what is on screen — an action just taken should not blank the list it is
+ * about.
  *
  * There is no cross-product `usePoll` in `@opsgrids/client` yet — the inbox is the first screen
  * on the platform that polls at all, so this stays local until a second product needs the same
@@ -76,6 +78,11 @@ export function usePolling<T>(
   });
   const loaderRef = useRef(loader);
   loaderRef.current = loader;
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  /* Set by `refresh()` and read by the effect it re-runs. A refresh is *not* a change of what is
+     being read — the deps did not move — so it must not throw away what is on screen. */
+  const softRefresh = useRef(false);
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
@@ -83,6 +90,12 @@ export function usePolling<T>(
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let backoff = 1;
+    /* Every poll is numbered as it is issued, and an answer is dropped if a *later* poll has
+       already been answered. Two polls can be in flight at once — the timer's and the one a tab
+       becoming visible again fires — and nothing orders their answers: the older one arriving last
+       would put old data back over new. */
+    let issued = 0;
+    let applied = 0;
 
     function clearTimer() {
       if (timer !== undefined) clearTimeout(timer);
@@ -96,6 +109,8 @@ export function usePolling<T>(
     }
 
     async function tick(isFirst: boolean) {
+      const mine = ++issued;
+      let superseded = false;
       if (!isFirst) {
         setState((previous) =>
           previous.status === "success" ? { ...previous, isRefreshing: true } : previous,
@@ -104,10 +119,20 @@ export function usePolling<T>(
       try {
         const data = await loaderRef.current();
         if (!active) return;
+        if (mine < applied) {
+          superseded = true;
+          return;
+        }
+        applied = mine;
         backoff = 1;
         setState({ status: "success", data, error: null, isRefreshing: false, stopped: false });
       } catch (caught: unknown) {
         if (!active) return;
+        if (mine < applied) {
+          superseded = true;
+          return;
+        }
+        applied = mine;
         const error = caught instanceof Error ? caught : new Error(String(caught));
         if (isAuthFailure(error)) {
           stopped = true;
@@ -125,7 +150,7 @@ export function usePolling<T>(
             : { status: "error", data: null, error, isRefreshing: false, stopped: false },
         );
       } finally {
-        scheduleNext();
+        if (!superseded) scheduleNext();
       }
     }
 
@@ -141,8 +166,17 @@ export function usePolling<T>(
     }
 
     document.addEventListener("visibilitychange", onVisibilityChange);
-    setState({ status: "loading", data: null, error: null, isRefreshing: false, stopped: false });
-    void tick(true);
+    const soft = softRefresh.current && stateRef.current.status === "success";
+    softRefresh.current = false;
+    if (soft) {
+      // The last good data stays on screen — and stays if this read is refused too. `stopped`
+      // clears only when a read succeeds: a person asked for this one, so it is not the automatic
+      // retry of a refusal that the platform's rule forbids.
+      void tick(false);
+    } else {
+      setState({ status: "loading", data: null, error: null, isRefreshing: false, stopped: false });
+      void tick(true);
+    }
     return () => {
       active = false;
       clearTimer();
@@ -151,5 +185,11 @@ export function usePolling<T>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, nonce, intervalMs]);
 
-  return { ...state, refresh: () => setNonce((n) => n + 1) };
+  return {
+    ...state,
+    refresh: () => {
+      softRefresh.current = true;
+      setNonce((n) => n + 1);
+    },
+  };
 }

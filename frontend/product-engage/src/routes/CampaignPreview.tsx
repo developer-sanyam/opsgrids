@@ -21,6 +21,13 @@ import { framePolicy } from "@/lib/previewPolicy";
  * it to `https:`; it is per preview, never remembered, and there is no way to load a non-`https`
  * or `data:` image at all.
  *
+ * **What the policy cannot promise.** A `Content-Security-Policy` governs the resources a page loads;
+ * it does not govern every way a browser may contact a host. Resource hints in the markup —
+ * `<link rel="prefetch">`, `preconnect`, `dns-prefetch` — are acted on by the browser's own
+ * networking and may reach their host even with images off, and there is no client-side way to
+ * remove them without rewriting the author's markup, which this preview never does. So the switch
+ * is worded as controlling *images*, and the note beside it says hints are not covered.
+ *
  * The plain-text body and the subject are rendered as React text children, which escape.
  *
  * The service sends both bodies **exactly as written** (`services.campaign_message`): there is no
@@ -101,8 +108,9 @@ export function CampaignPreview({
       <p className="text-xs text-muted">
         Sent exactly as written: merge fields such as {"{{first_name}}"} are not filled in. An
         unsubscribe link is added to the foot of every message automatically. Remote images are
-        blocked here unless you turn them on above; what a recipient&rsquo;s mail app shows is up to
-        that app.
+        blocked here unless you turn them on above. Prefetch, preconnect and DNS-prefetch hints in
+        the markup are not something this preview can block, so a body that contains them may still
+        contact those hosts. What a recipient&rsquo;s mail app shows is up to that app.
       </p>
     </section>
   );

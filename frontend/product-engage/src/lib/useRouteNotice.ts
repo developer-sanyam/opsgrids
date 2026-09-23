@@ -12,7 +12,7 @@ import { useAnnounce } from "@opsgrids/ui";
  * into its own live region — it is unmounted before the region is read — and the control they used
  * is gone, so focus would fall to the document. It hands the sentence to the destination as
  * `navigate(to, { state: { notice } })`; the destination announces it into its own region and moves
- * focus to its heading (`focusTarget`, a `PageTitle`).
+ * focus to its heading (`focusTarget`, a `PageHeading`).
  *
  * The notice is then cleared from the history entry. Router state survives a reload, and a page
  * that announced "October update deleted." again every time it was refreshed would be saying

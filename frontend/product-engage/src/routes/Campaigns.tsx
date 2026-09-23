@@ -7,7 +7,7 @@ import { MegaphoneIcon } from "@opsgrids/ui";
 import { listCampaigns } from "@/api/client";
 import type { CampaignOut, CampaignStatus } from "@/api/types";
 import { formatInstant, formatNumber } from "@/lib/format";
-import { audienceName, loadLists, resolveLists } from "@/lib/refs";
+import { audienceName, resolveLists } from "@/lib/refs";
 import type { ResolvedLists } from "@/lib/refs";
 import { useRouteNotice } from "@/lib/useRouteNotice";
 import {
@@ -17,8 +17,7 @@ import {
   Card,
   EmptyState,
   LoadFailure,
-  PageHeader,
-  PageTitle,
+  PageHeading,
   Pagination,
   Select,
   Skeleton,
@@ -73,22 +72,20 @@ const NO_RESOLVED: ResolvedLists = { lists: [], gone: new Set() };
 
 function Campaigns() {
   const navigate = useNavigate();
-  const titleRef = useRef<HTMLSpanElement>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null);
   useRouteNotice(titleRef);
   const [status, setStatus] = useState<CampaignStatus | "">("");
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(25);
 
   /* The list names are decoration: a caller who may read campaigns but not lists still gets every
-     row, with "A list" where the name would be. Lists the paged read did not reach are read by id,
-     so a campaign addressed to the 2,301st list still names it. */
+     row, with "A list" where the name would be. This page reads only the lists *it* shows, by id —
+     the distinct few on these rows — and never pages through every list in the organization to find
+     them: that is up to five calls, on every page turn and every filter change, to name a handful. */
   const loader = useCallback(async () => {
-    const [campaigns, lists] = await Promise.all([
-      listCampaigns({ ...(status === "" ? {} : { status }), page, size }),
-      loadLists(),
-    ]);
+    const campaigns = await listCampaigns({ ...(status === "" ? {} : { status }), page, size });
     const ids = campaigns.items.flatMap((c) => (c.list_id === null ? [] : [c.list_id]));
-    return { campaigns, resolved: await resolveLists(ids, lists.items) };
+    return { campaigns, resolved: await resolveLists(ids, []) };
   }, [status, page, size]);
   const state = useAsync(loader, [status, page, size]);
   const campaigns = state.status === "success" ? state.data.campaigns.items : NO_CAMPAIGNS;
@@ -96,9 +93,10 @@ function Campaigns() {
 
   return (
     <div className="rise flex flex-col gap-6">
-      <PageHeader
+      <PageHeading
+        ref={titleRef}
         eyebrow="Email"
-        title={<PageTitle ref={titleRef}>Campaigns</PageTitle>}
+        title="Campaigns"
         description="Drafted, scheduled, sending, sent and cancelled — every campaign this organization has ever addressed to its audience."
         actions={
           <Can permission="engage.campaign.campaign.write" scope="ORG">

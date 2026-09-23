@@ -16,8 +16,7 @@ import {
   ConfirmDialog,
   EmptyState,
   LoadFailure,
-  PageHeader,
-  PageTitle,
+  PageHeading,
   Pagination,
   Skeleton,
   useAnnounce,
@@ -86,7 +85,7 @@ function ContactLists() {
 
   const loader = useCallback(() => listLists({ page, size }), [page, size]);
   const state = useAsync(loader, [page, size]);
-  const titleRef = useRef<HTMLSpanElement>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null);
   const focusHeading = useFocusHeading(titleRef);
   const lists = state.status === "success" ? state.data.items : NO_LISTS;
 
@@ -125,9 +124,10 @@ function ContactLists() {
 
   return (
     <div className="rise flex flex-col gap-6">
-      <PageHeader
+      <PageHeading
+        ref={titleRef}
         eyebrow="Audience"
-        title={<PageTitle ref={titleRef}>Lists</PageTitle>}
+        title="Lists"
         description="Named slices of your audience a campaign can be addressed to. Deleting a list never deletes the contacts on it."
         actions={
           <Can permission="engage.audience.list.write" scope="ORG">

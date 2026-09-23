@@ -142,11 +142,15 @@ describe("populated", () => {
 
   it("names the audience: a list by name, everyone in plain words", async () => {
     vi.spyOn(client, "listCampaigns").mockResolvedValue(page(ALL));
-    mockLists();
+    // The page reads the lists it shows by id, not the organization's whole set.
+    const byId = vi.spyOn(client, "getList").mockResolvedValue(CONTACT_LISTS[0] as ContactListOut);
+    const paged = mockLists();
     renderPage();
 
     await screen.findByRole("link", { name: CAMPAIGN_DRAFT.name });
-    expect(screen.getByText("Enterprise accounts")).toBeTruthy();
+    expect(await screen.findByText("Enterprise accounts")).toBeTruthy();
+    expect(byId).toHaveBeenCalledTimes(1);
+    expect(paged).not.toHaveBeenCalled();
     expect(screen.getAllByText("Everyone you may mail").length).toBe(3);
   });
 

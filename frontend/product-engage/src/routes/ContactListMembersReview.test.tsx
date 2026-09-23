@@ -153,6 +153,67 @@ describe("who is offered the import", () => {
   });
 });
 
+describe("where focus is while the import dialog is up", () => {
+  /** Runs an import to its results screen and hands back the dialog and the user. */
+  async function importToResults(addRefused: boolean) {
+    mockRead([]);
+    vi.spyOn(client, "importContacts").mockResolvedValue(IMPORTED);
+    if (addRefused) {
+      vi.spyOn(client, "addListMembers").mockRejectedValue(
+        new ApiError(403, "You do not have engage.audience.list.write", null),
+      );
+    } else {
+      vi.spyOn(client, "addListMembers").mockResolvedValue({ changed: 2, unknown: [] });
+    }
+    const user = userEvent.setup();
+    renderMembers();
+    await user.click(await screen.findByRole("button", { name: "Import" }));
+    const dialog = screen.getByRole("dialog");
+    await user.type(
+      within(dialog).getByLabelText("Contacts to import"),
+      "priya@vaayu-logistics.example.com,Priya\narjun@vaayu-freight.example.com,Arjun",
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Import and add" }));
+    await within(dialog).findByText("2 created");
+    return { user, dialog };
+  }
+
+  it.each([
+    ["the rows were added", false],
+    ["the add to the list was refused", true],
+  ])("stays inside the dialog, on its results, when %s", async (_case, addRefused) => {
+    const { dialog } = await importToResults(addRefused);
+
+    // The page behind it re-read itself, and did not take focus with it: the heading behind an
+    // aria-modal dialog is focus nobody can see.
+    await waitFor(() => expect(document.activeElement?.closest('[role="dialog"]')).not.toBeNull());
+    expect(document.activeElement).toBe(within(dialog).getByRole("heading", { name: "Import results" }));
+    expect(screen.getByRole("heading", { level: 1 }).contains(document.activeElement)).toBe(false);
+  });
+
+  it("hands focus back to the Import button that opened it once Done closes the dialog", async () => {
+    const { user, dialog } = await importToResults(false);
+
+    await user.click(within(dialog).getByRole("button", { name: "Done" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Import" }));
+  });
+
+  it("still moves focus to the page heading for an action that has no dialog left open", async () => {
+    vi.spyOn(client, "getList").mockResolvedValue(LIST);
+    vi.spyOn(client, "listListMembers").mockResolvedValueOnce(page([A])).mockResolvedValue(page([]));
+    vi.spyOn(client, "removeListMembers").mockResolvedValue({ changed: 1, unknown: [] });
+    const user = userEvent.setup();
+    renderMembers();
+
+    await user.click(await screen.findByRole("button", { name: /^Remove Priya Raghavan/ }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Remove" }));
+
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 1 })));
+  });
+});
+
 describe("taking a staged contact back out of the picker", () => {
   async function stage(names: string[]) {
     const user = userEvent.setup();

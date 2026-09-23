@@ -7,7 +7,7 @@ import type { RefObject } from "react";
  * A screen that re-reads itself after a write (`useAsync`'s `reload`) puts its content back to a
  * loading skeleton, which unmounts the button or row the person was on — and the browser drops
  * focus to the document, so a keyboard or screen-reader user starts again from the top with no idea
- * what happened. The returned function sends focus to the page heading (`PageTitle`) instead, so
+ * what happened. The returned function sends focus to the page heading (`PageHeading`) instead, so
  * the very next thing read is where they are.
  *
  * **It focuses from an effect, after the commit, and not from the event handler.** A confirm dialog

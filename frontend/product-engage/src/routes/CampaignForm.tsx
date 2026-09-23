@@ -210,6 +210,21 @@ export function CampaignForm({
   const readOnly = usePermissionStatus("engage.campaign.campaign.write", "ORG") === "denied";
   const locked = submitting || readOnly;
 
+  /* Grants can resolve after the form is on screen: the fields are live until the caller is known
+     to lack the write grant (see above), so someone may already have typed. Once they are known
+     read-only, what they typed is text no one can save, and leaving it in a field that now claims
+     to be the saved draft is a lie about the draft — so it is dropped, and the form shows what the
+     service holds. Done during render, keyed on the transition, like the reseed above. */
+  const [wasReadOnly, setWasReadOnly] = useState(readOnly);
+  if (readOnly !== wasReadOnly) {
+    setWasReadOnly(readOnly);
+    if (readOnly) {
+      setValues(seed(campaign));
+      setErrors({});
+      setFailure(null);
+    }
+  }
+
   /* A member who can send but not write cannot have changed anything, so nothing here may report
      unsaved changes — that is what disables Send. */
   const dirty = !readOnly && isDirty(values, campaign);

@@ -17,6 +17,10 @@ nothing would go red. This file makes the coupling explicit in both directions:
 
 The long-term fix is not a better match: it is a stable `code` on the `422` problem document that
 the UI switches on and the prose stops being load-bearing. Until that lands, this is the guard.
+
+**These tests truncate the tenant tables** (every test in this service does, through the `session`
+fixture) and rewrite rows directly, so they must only ever run against an isolated database. The
+guard below refuses to run against `opsgrids` itself.
 """
 
 from __future__ import annotations
@@ -32,8 +36,10 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 from sqlalchemy import delete, update
+from sqlalchemy.engine import make_url
 
 from app import models, services
+from app.config import settings
 from app.main import app
 from platform_core.auth import Principal, Scope, get_principal
 from tests.helpers import ctx_for, principal_for
@@ -56,6 +62,16 @@ SEND_GATE_TS = (
     / "lib"
     / "sendGate.ts"
 )
+
+
+@pytest.fixture(autouse=True)
+def _only_an_isolated_database() -> None:
+    database = make_url(settings().database_url).database
+    if database == "opsgrids":
+        pytest.fail(
+            "This module's fixtures truncate the tenant tables; refusing to run against the "
+            "shared `opsgrids` database. Point DATABASE_URL at an isolated one."
+        )
 
 
 @contextlib.contextmanager
@@ -163,7 +179,11 @@ async def _domain_lapsed(session, org_id, monkeypatch) -> uuid.UUID:
     sender_id = await _identity(session, org_id)
     campaign_id = await _draft(session, org_id, sender_id)
     async with session.begin():
-        await session.execute(update(models.EmailDomain).values(status="pending"))
+        await session.execute(
+            update(models.EmailDomain)
+            .where(models.EmailDomain.organization_id == org_id)
+            .values(status="pending")
+        )
     return campaign_id
 
 

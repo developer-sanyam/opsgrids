@@ -7,7 +7,17 @@ import { ArrowLeftIcon } from "@opsgrids/ui";
 import { deleteCampaign, getCampaign } from "@/api/client";
 import type { CampaignOut } from "@/api/types";
 import { failureMessage } from "@/lib/errors";
-import { audienceName, loadRefs, resolveLists, senderName } from "@/lib/refs";
+import {
+  audienceName,
+  isDenied,
+  loadDomains,
+  loadLists,
+  loadRefs,
+  loadSenders,
+  notRead,
+  resolveLists,
+  senderName,
+} from "@/lib/refs";
 import type { Refs, ResolvedLists } from "@/lib/refs";
 import { useFocusHeading } from "@/lib/useFocusHeading";
 import { useRouteNotice } from "@/lib/useRouteNotice";
@@ -19,13 +29,14 @@ import {
   ConfirmDialog,
   LoadFailure,
   PageHeader,
-  PageTitle,
+  PageHeading,
   Skeleton,
   useAnnounce,
 } from "@/ui";
 import { CampaignForm } from "./CampaignForm";
 import type { FocusRequest } from "./CampaignForm";
 import { CampaignReport } from "./CampaignReport";
+import type { StatusChanged } from "./CampaignReport";
 import { CampaignSendPanel } from "./CampaignSendPanel";
 
 /**
@@ -79,7 +90,7 @@ function DraftView({
    *  focus and the page keeps its place. */
   onSaved: (campaign: CampaignOut, message: string) => void;
   /** The campaign's *status* moved (sent), so the page must be re-read and re-shown. */
-  onChanged: (message: string) => void;
+  onChanged: StatusChanged;
 }) {
   const navigate = useNavigate();
   const [dirty, setDirty] = useState(false);
@@ -154,31 +165,57 @@ function DraftView({
 
 function CampaignEditor({ campaignId }: { campaignId: string }) {
   const announce = useAnnounce();
-  const titleRef = useRef<HTMLSpanElement>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null);
   useRouteNotice(titleRef);
   /* The draft as the service last returned it from a save. Held here rather than re-fetched, so a
      save neither blanks the page to its skeleton nor throws away the form's focus and the test
      send's result. Cleared whenever the page is re-read. */
   const [saved, setSaved] = useState<CampaignOut | null>(null);
 
+  /* Reads what the campaign's *status* needs, and no more. Both views need the campaign and the
+     senders (to name who it goes as), so those two go together. Only a draft is a form, and only a
+     form needs the domains (to hide senders whose domain lapsed) and the lists (to pick one): a sent
+     campaign's report names its own list by id and reads nothing else. A typical draft is four
+     calls, a typical report three — see the budget in `lib/refs.ts`. */
   const loader = useCallback(async () => {
-    const [campaign, refs] = await Promise.all([getCampaign(campaignId), loadRefs()]);
-    const resolved = await resolveLists(
-      campaign.list_id === null ? [] : [campaign.list_id],
-      refs.lists.items,
-    );
-    return { campaign, refs, resolved };
+    const [campaign, senders] = await Promise.all([getCampaign(campaignId), loadSenders()]);
+    const listIds = campaign.list_id === null ? [] : [campaign.list_id];
+    if (campaign.status !== "draft") {
+      const resolved = await resolveLists(listIds, []);
+      const refs: Refs = { senders, domains: notRead(), lists: notRead() };
+      return { campaign, refs, resolved };
+    }
+    const [domains, lists] = await Promise.all([loadDomains(), loadLists()]);
+    // A by-id read needs the same permission the paged read of lists just failed for.
+    const resolved = await resolveLists(listIds, lists.items, { skip: isDenied(lists.error) });
+    return { campaign, refs: { senders, domains, lists }, resolved };
   }, [campaignId]);
   const state = useAsync(loader, [campaignId]);
   const { reload } = state;
   const focusHeading = useFocusHeading(titleRef);
+  /* Everything below the heading that a re-read replaces. Where focus is, relative to this, is what
+     decides whether a change the *service* made may move it. */
+  const contentRef = useRef<HTMLDivElement>(null);
 
   /* A status change unmounts whichever control caused it — Send, Cancel, Resume — and the browser
-     would drop focus to the document. Focus goes to the heading first, then the page re-reads. */
-  const onChanged = useCallback(
-    (message: string) => {
+     would drop focus to the document, so for a change the person asked for, focus goes to the
+     heading first and the page then re-reads.
+
+     A change the *service* made — a poll that found the campaign sent — is decided differently, and
+     **at the moment it is requested**: the person did nothing, and may be anywhere on the page. Focus
+     is taken only if it would be lost anyway — nothing is focused, or it is on something inside the
+     content that is about to be replaced, or inside a dialog that is about to be replaced with it.
+     Someone on the "All campaigns" link, or in the sidebar, keeps exactly where they are. */
+  const onChanged = useCallback<StatusChanged>(
+    (message, options) => {
       announce(message);
-      focusHeading();
+      const active = document.activeElement;
+      const wouldBeLost =
+        active === null ||
+        active === document.body ||
+        contentRef.current?.contains(active) === true ||
+        active.closest('[role="dialog"]') !== null;
+      if (options?.automatic !== true || wouldBeLost) focusHeading();
       setSaved(null);
       reload();
     },
@@ -200,9 +237,10 @@ function CampaignEditor({ campaignId }: { campaignId: string }) {
   return (
     <div className="rise flex flex-col gap-6">
       <BackLink />
-      <PageHeader
+      <PageHeading
+        ref={titleRef}
         eyebrow="Campaigns"
-        title={<PageTitle ref={titleRef}>{campaign?.name ?? "Campaign"}</PageTitle>}
+        title={campaign?.name ?? "Campaign"}
         {...(campaign !== null && campaign.status !== "draft"
           ? { description: campaign.subject === "" ? "No subject." : campaign.subject }
           : {})}
@@ -214,25 +252,28 @@ function CampaignEditor({ campaignId }: { campaignId: string }) {
         <LoadFailure error={state.error} title="Couldn't load this campaign" />
       ) : null}
 
-      {data !== null && campaign !== null && campaign.status === "draft" ? (
-        <DraftView
-          campaign={campaign}
-          refs={data.refs}
-          resolved={data.resolved}
-          onSaved={onSaved}
-          onChanged={onChanged}
-        />
-      ) : null}
+      {/* `contents`: this wrapper exists to be measured against, and takes no part in the layout. */}
+      <div ref={contentRef} className="contents">
+        {data !== null && campaign !== null && campaign.status === "draft" ? (
+          <DraftView
+            campaign={campaign}
+            refs={data.refs}
+            resolved={data.resolved}
+            onSaved={onSaved}
+            onChanged={onChanged}
+          />
+        ) : null}
 
-      {data !== null && campaign !== null && campaign.status !== "draft" ? (
-        <CampaignReport
-          key={campaign.status}
-          campaign={campaign}
-          senderLabel={senderName(campaign, data.refs.senders)}
-          audienceLabel={audienceName(campaign, data.resolved)}
-          onChanged={onChanged}
-        />
-      ) : null}
+        {data !== null && campaign !== null && campaign.status !== "draft" ? (
+          <CampaignReport
+            key={campaign.status}
+            campaign={campaign}
+            senderLabel={senderName(campaign, data.refs.senders)}
+            audienceLabel={audienceName(campaign, data.resolved)}
+            onChanged={onChanged}
+          />
+        ) : null}
+      </div>
     </div>
   );
 }

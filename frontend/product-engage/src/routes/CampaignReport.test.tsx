@@ -183,9 +183,11 @@ describe("a sent campaign", () => {
     const listed: CampaignOut = { ...SENT, audience: "list", list_id: LIST.id };
     mockRefs();
     vi.spyOn(client, "getCampaign").mockResolvedValue(listed);
+    vi.spyOn(client, "getList").mockResolvedValue(LIST);
     vi.spyOn(client, "listCampaignRecipients").mockResolvedValue(page(ROWS));
     renderReport(listed);
     await screen.findByRole("heading", { level: 2, name: "What was sent" });
+    await screen.findByText("Enterprise accounts");
     expect(screen.getByText("Vaayu Logistics Support <support@vaayu-logistics.example.com>")).toBeTruthy();
     expect(screen.getByText("Enterprise accounts")).toBeTruthy();
     const frame = screen.getByTitle("HTML preview of the campaign body");

@@ -30,6 +30,14 @@ import { CampaignRecipients } from "./CampaignRecipients";
  * settled form.
  */
 
+/**
+ * Told when a campaign's status moved and the page must be re-read. `automatic` is for a change the
+ * *service* made — a poll that found the campaign sent, or resumed by the driver — as opposed to one
+ * the person asked for (Send, Cancel, Resume): the first must not take their focus, because they
+ * did nothing and may be anywhere on the page.
+ */
+export type StatusChanged = (message: string, options?: { automatic?: boolean }) => void;
+
 const LIVE_INTERVAL_MS = 5_000;
 const CANCELLABLE = new Set(["scheduled", "sending", "paused"]);
 const LIVE_STATUSES = new Set(["sending", "paused"]);
@@ -109,7 +117,7 @@ function ReportView({
   /** Live updates were refused and have stopped; the figures on screen are the last good ones. */
   stopped: boolean;
   lastUpdated: string | null;
-  onChanged: (message: string) => void;
+  onChanged: StatusChanged;
 }) {
   const [cancelling, setCancelling] = useState(false);
   const [cancelPending, setCancelPending] = useState(false);
@@ -283,7 +291,7 @@ function LiveReport({
   initial: CampaignOut;
   senderLabel: string;
   audienceLabel: string;
-  onChanged: (message: string) => void;
+  onChanged: StatusChanged;
 }) {
   const state = usePolling(() => getCampaign(initial.id), [initial.id], LIVE_INTERVAL_MS);
   const polled = state.status === "success" ? state.data : null;
@@ -297,7 +305,7 @@ function LiveReport({
   // that status is shown in, rather than keep polling something that has stopped changing.
   useEffect(() => {
     if (polled !== null && polled.status !== initial.status) {
-      onChanged(`${polled.name} is now ${campaignStatusWord(polled.status)}.`);
+      onChanged(`${polled.name} is now ${campaignStatusWord(polled.status)}.`, { automatic: true });
     }
   }, [polled, initial.status, onChanged]);
 
@@ -325,7 +333,7 @@ export function CampaignReport({
   senderLabel: string;
   /** A list's name, "Everyone you may mail", or a neutral phrase — see `lib/refs.ts`. */
   audienceLabel: string;
-  onChanged: (message: string) => void;
+  onChanged: StatusChanged;
 }) {
   return LIVE_STATUSES.has(campaign.status) ? (
     <LiveReport

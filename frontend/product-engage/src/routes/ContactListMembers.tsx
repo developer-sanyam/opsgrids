@@ -16,8 +16,7 @@ import {
   ConfirmDialog,
   EmptyState,
   LoadFailure,
-  PageHeader,
-  PageTitle,
+  PageHeading,
   Pagination,
   Skeleton,
   useAnnounce,
@@ -69,7 +68,7 @@ function ContactListMembers({ listId }: { listId: string }) {
     [listId, page, size],
   );
   const state = useAsync(loader, [listId, page, size]);
-  const titleRef = useRef<HTMLSpanElement>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null);
   const focusHeading = useFocusHeading(titleRef);
 
   const list = state.status === "success" ? state.data[0] : null;
@@ -84,11 +83,15 @@ function ContactListMembers({ listId }: { listId: string }) {
 
   // The import dialog is deliberately left open: what it shows next is the per-row outcome, and
   // "Done" is what closes it — the same shape `Contacts.tsx` gives `ContactImportDialog`.
-  function reload(message: string) {
+  //
+  // `focus: false` is for exactly that case. Everything else that reloads has just closed its own
+  // dialog and lost the control it was on, so focus goes to the heading; the import has neither —
+  // its dialog is still up and holds focus (on its results), and a heading behind an `aria-modal`
+  // dialog is focus nobody can see.
+  function reload(message: string, { focus = true }: { focus?: boolean } = {}) {
     announce(message);
     setPicking(false);
-    // The row or button that was just used is about to be unmounted by the re-read.
-    focusHeading();
+    if (focus) focusHeading();
     state.reload();
   }
 
@@ -118,9 +121,10 @@ function ContactListMembers({ listId }: { listId: string }) {
         All lists
       </Link>
 
-      <PageHeader
+      <PageHeading
+        ref={titleRef}
         eyebrow="Audience · List"
-        title={<PageTitle ref={titleRef}>{list?.name ?? "List"}</PageTitle>}
+        title={list?.name ?? "List"}
         description={
           list === null
             ? "Who is on this list."
@@ -242,6 +246,7 @@ function ContactListMembers({ listId }: { listId: string }) {
             outcome.addFailed
               ? `Import finished: ${outcome.created} created, ${outcome.updated} updated, ${outcome.invalid} invalid. The contacts were not added to this list.`
               : `Import finished: ${outcome.created} created, ${outcome.updated} updated, ${outcome.invalid} invalid, ${outcome.added} added to this list.`,
+            { focus: false },
           )
         }
       />

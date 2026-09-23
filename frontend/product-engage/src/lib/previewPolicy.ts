@@ -5,6 +5,10 @@
  * Nothing loads except the markup's own inline styles and, only when the person previewing has
  * turned the switch on, images over `https:`. A fixed string per switch position — the test pins
  * both exactly, so a loosened policy fails a test rather than shipping.
+ *
+ * It is a policy on what the frame *loads*, and it stops there: `prefetch`, `preconnect` and
+ * `dns-prefetch` hints in the markup are the browser's own networking and are not governed by it.
+ * The preview says so beside the switch rather than implying nothing can be contacted.
  */
 export function framePolicy(remoteImages: boolean): string {
   const images = remoteImages ? "https:" : "'none'";
