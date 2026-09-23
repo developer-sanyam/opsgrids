@@ -38,7 +38,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app.inventory.quantity import MAX_ABS_MILLI, describe, format_qty
+from app.inventory.quantity import MAX_ABS_MILLI, QTY_SCALE, describe, format_qty, is_discrete
 from app.models import (
     STOCK_AGGREGATES,
     STOCK_STATUSES,
@@ -47,6 +47,7 @@ from app.models import (
     InventoryItem,
     InventoryMove,
     InventoryReservation,
+    InventoryReservationRelease,
     LedgerEntry,
     Location,
     OutboxEvent,
@@ -137,6 +138,17 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _terminal_status(reservation: InventoryReservation) -> str:
+    """The one rule both closing paths use (MEDIUM #2) for a reservation whose
+    `consumed_milli + released_milli` has just reached `quantity_milli`: `consumed` if any of it
+    was actually drawn against, `released` only if none of it ever was. Call this at the moment
+    of closing, before returning — whichever of `post_move` (a draw) or `release` (a release)
+    happens to be the one that closes it out must land on the same status for the same final
+    (consumed, released) pair, or a caller retrying a keyless release on an already-closed
+    reservation would get a different answer depending on which path got there first."""
+    return "consumed" if reservation.consumed_milli > 0 else "released"
+
+
 def _request_hash(payload: dict[str, Any]) -> str:
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()
@@ -188,14 +200,24 @@ def _validate_lines(kind: str, lines: Sequence[MoveLine]) -> None:
 async def _items(
     session: AsyncSession, org_id: uuid.UUID, ids: Iterable[uuid.UUID]
 ) -> dict[uuid.UUID, InventoryItem]:
+    """Every writer that reads an item's `uom` off this row takes `FOR SHARE` on it first (LOW
+    #5) — item, then balance, the same order `update_inventory_item`'s own `FOR UPDATE` uses
+    (`app/api/routes.py`'s item PATCH route locks the item before calling it). Without this, a
+    `uom` change and this organization's very first receipt of that item could interleave so the
+    receipt reads the old unit, the rename commits, and `has_stock_history` never gets a chance
+    to see the receipt and refuse it — the item would then show a new unit over a ledger row
+    recorded in the old one. `FOR SHARE` lets concurrent readers past each other but blocks on a
+    concurrent `FOR UPDATE`, so the two now serialise instead of racing."""
     wanted = set(ids)
     rows = (
         await session.execute(
-            select(InventoryItem).where(
+            select(InventoryItem)
+            .where(
                 InventoryItem.organization_id == org_id,
                 InventoryItem.id.in_(wanted),
                 InventoryItem.deleted_at.is_(None),
             )
+            .with_for_update(read=True)
         )
     ).scalars()
     found = {item.id: item for item in rows}
@@ -304,17 +326,56 @@ async def _refresh_items(session: AsyncSession, item_ids: Iterable[uuid.UUID]) -
             await session.refresh(obj, list(STOCK_AGGREGATES))
 
 
+async def _blocking_reservations(
+    session: AsyncSession, org_id: uuid.UUID, balance_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    """The active reservations holding a bucket's `reserved_milli` — named so a shortfall that is
+    really "enough stock, but it is promised" can be answered with *which* promises stand in the
+    way (ADR-0014 §11), rather than only the number they add up to. Oldest first: the order a
+    person would naturally release them in to make room."""
+    stmt = (
+        select(InventoryReservation)
+        .where(
+            InventoryReservation.organization_id == org_id,
+            InventoryReservation.balance_id == balance_id,
+            InventoryReservation.status == "active",
+        )
+        .order_by(InventoryReservation.created_at, InventoryReservation.id)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return [
+        {
+            "reservation_id": str(r.id),
+            "reference_type": r.reference_type,
+            "reference_id": str(r.reference_id) if r.reference_id else None,
+            "quantity": format_qty(r.quantity_milli - r.consumed_milli - r.released_milli),
+            "quantity_milli": r.quantity_milli - r.consumed_milli - r.released_milli,
+        }
+        for r in rows
+    ]
+
+
 def _shortfall(
-    item: InventoryItem, where: str, status: str, *, wanted: int, on_hand: int, reserved: int
+    item: InventoryItem,
+    where: str,
+    status: str,
+    *,
+    wanted: int,
+    on_hand: int,
+    reserved: int,
+    reservations: list[dict[str, Any]] | None = None,
 ) -> InsufficientStock:
     uom = item.uom
     available = on_hand - reserved
+    blocked_by_reservations = bool(reservations)
     detail = (
         f"Cannot take {describe(wanted, uom)} of {item.sku} from {where}"
         f"{'' if status == 'AVAILABLE' else f' ({status})'}: "
         f"{describe(on_hand, uom)} on hand, {describe(reserved, uom)} reserved, "
         f"so {describe(max(available, 0), uom)} available"
     )
+    if blocked_by_reservations:
+        detail += ". Release the reservation(s) blocking it, then try again"
     return InsufficientStock(
         detail,
         errors=[
@@ -327,6 +388,7 @@ def _shortfall(
                 "on_hand": format_qty(on_hand),
                 "reserved": format_qty(reserved),
                 "available": format_qty(max(available, 0)),
+                "reservations": reservations or [],
             }
         ],
     )
@@ -445,11 +507,25 @@ async def post_move(
                 raise ConflictProblem("That reservation is not on this stock")
             if reservation.status != "active":
                 raise ConflictProblem(f"That reservation is {reservation.status}")
-            drawn = min(-delta, reservation.quantity_milli - reservation.consumed_milli)
+            drawn = min(
+                -delta,
+                reservation.quantity_milli
+                - reservation.consumed_milli
+                - reservation.released_milli,
+            )
 
         new_on_hand = on_hand + delta
         new_reserved = reserved - drawn
         if new_on_hand < 0 or (delta < 0 and new_on_hand < new_reserved):
+            # Enough is physically there but reserved stock stands in the way — every outbound
+            # line (issue, relocation, a status change's paired move) and a count line are
+            # refused identically (ADR-0014 §11): name what is blocking it rather than only the
+            # number, so a caller can release the reservation and retry instead of guessing.
+            blocking = (
+                await _blocking_reservations(session, org_id, balance.id)
+                if new_on_hand >= 0
+                else []
+            )
             raise _shortfall(
                 item,
                 where[line.location_id],
@@ -457,6 +533,7 @@ async def post_move(
                 wanted=-delta - drawn,
                 on_hand=on_hand,
                 reserved=reserved,
+                reservations=blocking,
             )
 
         now = datetime.now(UTC)
@@ -465,8 +542,15 @@ async def post_move(
         balance.updated_at = now
         if reservation is not None and drawn:
             reservation.consumed_milli += drawn
-            if reservation.consumed_milli == reservation.quantity_milli:
-                reservation.status = "consumed"
+            if (
+                reservation.consumed_milli + reservation.released_milli
+                == reservation.quantity_milli
+            ):
+                # Fully spoken for — by consumption, by release, or a mix of both.
+                # `_terminal_status` is the one rule both closing paths use (MEDIUM #2):
+                # whichever of `post_move` or `release` closes it out, the same net
+                # (consumed, released) always lands on the same status.
+                reservation.status = _terminal_status(reservation)
                 reservation.closed_at = now
                 reservation.closed_by = str(ctx.principal.sub)
 
@@ -712,23 +796,47 @@ async def release(
     ctx: ScopeContext,
     reservation_id: uuid.UUID,
     *,
+    quantity_milli: int | None = None,
+    idempotency_key: str | None = None,
     request: Request | None = None,
 ) -> InventoryReservation:
-    """Give back the open remainder of a reservation. Releasing an already-released reservation
-    is a no-op (a retry is safe); releasing a fully consumed one is a 409."""
+    """Give back all (`quantity_milli=None`) or part of a reservation's open remainder
+    (ADR-0014 §11) — the documented resolution when a count or an outbound move (issue,
+    relocation, a status change's paired move) is refused because it would eat into reserved
+    stock: release the reservation, or enough of it, then retry.
+
+    Releasing an already-released reservation is a no-op (a retry is safe); releasing a fully
+    consumed one, or more than is still open, is a 409. `idempotency_key` makes a retried release
+    a replay rather than a second one: each key that actually released something is recorded in
+    `inventory_reservation_releases`, looked up under the reservation's own row lock (so a
+    concurrent duplicate blocks on that lock rather than racing the lookup) — the same key with
+    the same quantity replays, the same key with a different one is refused.
+    """
     org_id = ctx.organization_id
-    found = (
+    found_row = (
         await session.execute(
-            select(InventoryReservation.balance_id).where(
+            select(InventoryReservation.balance_id, InventoryReservation.inventory_item_id).where(
                 InventoryReservation.organization_id == org_id,
                 InventoryReservation.id == reservation_id,
             )
         )
-    ).scalar_one_or_none()
-    if found is None:
+    ).one_or_none()
+    if found_row is None:
         raise NotFoundProblem("That reservation is not part of this organization")
+    found, item_id = found_row
+    if quantity_milli is not None and (not _is_int(quantity_milli) or quantity_milli <= 0):
+        raise ValidationProblem("A release quantity is a positive integer of milli-units")
 
-    # Balance first, then the reservation: the one lock order every path in this module uses.
+    # Item, then balance, then the reservation: every path in this module locks in this order
+    # (MEDIUM #1/LOW #5). The item lock also gives a stable read of `uom` to check a partial
+    # release against — a caller cannot ask to release 0.5 of a `pcs` reservation any more than
+    # they could post a fractional issue of one (`parse_qty`'s own discreteness check, which
+    # `routes.py`'s `release_reservation` never threaded a `uom` into, so it never fired there).
+    item = (await _items(session, org_id, [item_id]))[item_id]
+    if quantity_milli is not None and is_discrete(item.uom) and quantity_milli % QTY_SCALE:
+        raise ValidationProblem(
+            f"{item.uom} is counted in whole units; {format_qty(quantity_milli)} is not whole"
+        )
     balance = (
         await session.execute(
             select(InventoryBalance)
@@ -739,25 +847,71 @@ async def release(
     ).scalar_one()
     reservation = await _lock_reservation(session, org_id, reservation_id)
     assert reservation is not None
+
+    request_hash = _request_hash({"quantity_milli": quantity_milli}) if idempotency_key else None
+    if idempotency_key is not None:
+        existing_release = (
+            await session.execute(
+                select(InventoryReservationRelease).where(
+                    InventoryReservationRelease.organization_id == org_id,
+                    InventoryReservationRelease.reservation_id == reservation_id,
+                    InventoryReservationRelease.idempotency_key == idempotency_key,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_release is not None:
+            if existing_release.request_hash != request_hash:
+                raise ConflictProblem(
+                    "That idempotency key was already used for a different release"
+                )
+            return reservation  # replay: already applied, nothing to redo
+
     if reservation.status == "released":
         return reservation
     if reservation.status == "consumed":
         raise ConflictProblem("That reservation has been fully consumed")
 
-    remaining = reservation.quantity_milli - reservation.consumed_milli
+    open_remaining = (
+        reservation.quantity_milli - reservation.consumed_milli - reservation.released_milli
+    )
+    if quantity_milli is not None and quantity_milli > open_remaining:
+        raise ConflictProblem(
+            f"Only {format_qty(open_remaining)} is still open on that reservation; "
+            f"cannot release {format_qty(quantity_milli)}"
+        )
+    released_now = open_remaining if quantity_milli is None else quantity_milli
+
     now = datetime.now(UTC)
-    balance.reserved_milli -= remaining
+    balance.reserved_milli -= released_now
     balance.updated_at = now
-    reservation.status = "released"
-    reservation.closed_at = now
-    reservation.closed_by = str(ctx.principal.sub)
+    reservation.released_milli += released_now
+    fully_released = (
+        reservation.consumed_milli + reservation.released_milli == reservation.quantity_milli
+    )
+    if fully_released:
+        reservation.status = _terminal_status(reservation)
+        reservation.closed_at = now
+        reservation.closed_by = str(ctx.principal.sub)
+    if idempotency_key is not None:
+        session.add(
+            InventoryReservationRelease(
+                organization_id=org_id,
+                reservation_id=reservation_id,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash or "",
+                released_milli=released_now,
+            )
+        )
     await session.flush()
 
     detail = {
         "reservation_id": str(reservation.id),
         "inventory_item_id": str(reservation.inventory_item_id),
-        "released": format_qty(remaining),
-        "released_milli": remaining,
+        "released": format_qty(released_now),
+        "released_milli": released_now,
+        "remaining": format_qty(open_remaining - released_now),
+        "remaining_milli": open_remaining - released_now,
+        "fully_released": fully_released,
     }
     record_audit(
         session,
@@ -768,7 +922,7 @@ async def release(
         entity="inventory_reservation",
         entity_id=reservation.id,
         before={"status": "active"},
-        after={"status": "released", **detail},
+        after={"status": reservation.status, **detail},
         request=request,
     )
     publish_event(

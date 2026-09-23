@@ -114,6 +114,7 @@ New (all `Entitled`; permissions in brackets):
 | `POST /operations/inventory/reconcile` | run the check for the caller's org now [`inventory.stock.reconcile`, ORG] |
 | `GET /operations/inventory/discrepancies` | open (or `?include_resolved=true`) findings [`inventory.stock.reconcile`] |
 | `POST /operations/inventory/discrepancies/{id}/resolve` | `{note}`; changes no stock [`inventory.stock.reconcile`] |
+| `POST /operations/inventory/reservations/{id}:release` | give back all or part of a reservation's open remainder (ADR-0014 §11) [`inventory.stock.reserve`, ORG] |
 
 `POST /operations/inventory/{id}/adjustments` now accepts an **`Idempotency-Key`** header. A
 retry replays the result; the same key with a different body is a 409. The SPA sends one per
@@ -178,22 +179,37 @@ profile) → the Operations SPA. The SPA must go **after** the API: it reads `on
 movement `quantity`, which the old API does not send. The old SPA keeps working against the new
 API, since every field it reads is still there.
 
+## Count-below-reserved, and the release that resolves it (Phase 1, ADR-0014 §11)
+
+**A count that lands below a bucket's reserved quantity is still refused, not reconciled** — the
+Phase 0 behaviour is unchanged. `post_move` applies one shortfall check to every outbound line and
+to a count: if the result would leave the bucket promising more than it holds, it raises
+`InsufficientStock` rather than posting. Silently shrinking a reservation to make a count fit would
+break a promise the count-taker cannot see and someone else made.
+
+What Phase 1 adds is the way out, and the numbers to act on it:
+
+- **`errors[0].reservations`** names every active reservation standing in the way of a shortfall
+  caused by reserved stock — `reservation_id`, `reference_type`/`reference_id`, and its open
+  quantity, oldest first. A shortfall with nothing physically there at all (`on_hand` itself would
+  go negative) carries no reservations — releasing one would not have helped.
+- **`POST /operations/inventory/reservations/{id}:release`** (`operations.inventory.stock.reserve`,
+  ORG) gives back all or part of a reservation's open remainder, through `ledger.release` — the
+  same kernel, under the same balance lock, audited and eventable
+  (`operations.inventory.stock.released`). An empty body releases everything still open; `{"quantity":
+  "12.5"}` releases only that much and leaves the reservation active for the rest. It is
+  idempotent: a retried `Idempotency-Key` replays; the same key against a different quantity is a
+  409.
+- **The same refusal, and the same naming, covers every outbound path** — issue, relocation (a
+  warehouse change, and a bin-to-bin transfer once Phase 1 exposes one), a status change's paired
+  move, and a count. They are all just lines with a negative delta (or a count below the held
+  figure) against a bucket, checked once in the kernel and never copied into a caller.
+
+So the resolution a stocktake screen offers is concrete: read `errors[0].reservations`, call
+`:release` on the one(s) blocking the count (in full or in part), then retry the count.
+
 ## Not in Phase 0
 
-HTTP APIs and screens for locations, lots, rolls, reservations and multi-location moves (the
-kernel supports them; nothing exposes them yet), per-item `uom_conversions`, costing layers,
-and every later phase. See [plan.md](plan.md).
-
-**A count that lands below a bucket's reserved quantity is refused, not reconciled.** `post_move`
-applies the same shortfall check (§ above) to a count line as to any outbound one: if the counted
-figure is below `reserved_milli`, it raises `InsufficientStock` rather than posting a count that
-would leave the bucket promising more than it holds. That is the safe failure — nothing goes
-negative and nothing silently breaks a reservation's promise — but it is also a dead end for the
-person doing the count: there is no API yet to release or adjust a reservation to make room, and
-the item-level count endpoint cannot target anything but the home bucket in the first place. This
-is latent rather than reachable today (Phase 0 exposes no way to reserve stock over HTTP at all,
-so a home bucket a count can reach never carries a reservation), but it is a **Phase 1
-prerequisite**: once reservations and multi-location counts are exposed, a stocktake needs either
-a documented resolution path (release the excess reservation first, then count) or the count
-service itself needs to decide what a short count does to an open reservation — a business
-decision ADR-0014 does not currently make, and this migration does not invent one for it.
+HTTP APIs and screens for locations, lots, rolls and multi-location moves (the kernel supports
+them; nothing but reservation release exposes them yet), per-item `uom_conversions`, costing
+layers, and every later phase. See [plan.md](plan.md).

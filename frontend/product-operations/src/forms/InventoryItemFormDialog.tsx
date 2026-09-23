@@ -2,11 +2,20 @@ import { useRef, useState } from "react";
 
 import { createInventoryItem, updateInventoryItem } from "@/api/client";
 import type { Category, InventoryItemIn, InventoryItemOut, InventoryItemPatch } from "@/api/types";
+import { useItemCategoryOptions } from "@/data/useItemCategoryOptions";
+import { useUomOptions } from "@/data/useUomOptions";
 import { useWarehouseOptions } from "@/data/useWarehouseOptions";
 import { minorToInput, parseInt0, parseMinor } from "@/lib/money";
 import { useMutation } from "@opsgrids/client";
 import { formDialogError } from "@/lib/formError";
-import { FormDialog, Select, TextField } from "@/ui";
+import { CheckboxGroup, FormDialog, SectionHeader, Select, Switch, TextField } from "@/ui";
+
+const TRACKING_OPTIONS = [
+  { value: "track_lot", label: "Lot tracking" },
+  { value: "track_roll", label: "Roll tracking" },
+  { value: "track_expiry", label: "Expiry tracking" },
+  { value: "track_quality", label: "Quality status tracking" },
+] as const;
 
 const CATEGORY_OPTIONS: { value: Category; label: string }[] = [
   { value: "raw_materials", label: "Raw materials" },
@@ -34,6 +43,8 @@ interface InventoryItemFormDialogProps {
  */
 export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryItemFormDialogProps) {
   const warehouses = useWarehouseOptions();
+  const itemCategories = useItemCategoryOptions();
+  const secondaryUoms = useUomOptions();
   const [sku, setSku] = useState(item?.sku ?? "");
   const [name, setName] = useState(item?.name ?? "");
   const [category, setCategory] = useState<Category | "">(item?.category ?? "");
@@ -43,6 +54,13 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
   const [unitValue, setUnitValue] = useState(item ? minorToInput(item.unit_value_minor) : "");
   const [currency, setCurrency] = useState(item?.currency ?? "INR");
   const [openingOnHand, setOpeningOnHand] = useState("0");
+  const [itemCategoryId, setItemCategoryId] = useState(item?.item_category_id ?? "");
+  const [secondaryUomId, setSecondaryUomId] = useState(item?.secondary_uom_id ?? "");
+  const [hsnCode, setHsnCode] = useState(item?.hsn_code ?? "");
+  const [tracking, setTracking] = useState<string[]>(
+    TRACKING_OPTIONS.filter((o) => item?.[o.value]).map((o) => o.value),
+  );
+  const [isActive, setIsActive] = useState(item?.is_active ?? true);
 
   const [skuError, setSkuError] = useState<string | undefined>(undefined);
   const [nameError, setNameError] = useState<string | undefined>(undefined);
@@ -107,6 +125,13 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
       return;
     }
 
+    const trackingFlags = {
+      track_lot: tracking.includes("track_lot"),
+      track_roll: tracking.includes("track_roll"),
+      track_expiry: tracking.includes("track_expiry"),
+      track_quality: tracking.includes("track_quality"),
+    };
+
     if (item) {
       const patch: InventoryItemPatch = {
         name: trimmedName,
@@ -115,6 +140,11 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
         uom: trimmedUom,
         reorder_point: reorder.value,
         unit_value_minor: value.minor,
+        item_category_id: itemCategoryId === "" ? null : itemCategoryId,
+        secondary_uom_id: secondaryUomId === "" ? null : secondaryUomId,
+        hsn_code: hsnCode.trim(),
+        ...trackingFlags,
+        is_active: isActive,
       };
       void save.mutate(patch);
       return;
@@ -135,6 +165,11 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
       unit_value_minor: value.minor,
       currency: currency.trim().toUpperCase() || "INR",
       opening_on_hand: opening.value,
+      ...(itemCategoryId === "" ? {} : { item_category_id: itemCategoryId }),
+      ...(secondaryUomId === "" ? {} : { secondary_uom_id: secondaryUomId }),
+      hsn_code: hsnCode.trim(),
+      ...trackingFlags,
+      is_active: isActive,
     };
     void save.mutate(input);
   }
@@ -238,6 +273,62 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
           />
         </div>
       )}
+
+      <SectionHeader
+        title="Item master"
+        subtitle="Optional classification and tracking — all additive, all editable later."
+      />
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Select
+          label="Item category"
+          value={itemCategoryId}
+          onChange={(e) => setItemCategoryId(e.target.value)}
+          placeholder={
+            itemCategories.status === "loading" ? "Loading categories…" : "No category"
+          }
+          options={itemCategories.options}
+          disabled={itemCategories.status !== "success"}
+          helper="The org's own catalogue tree — separate from the procurement category above."
+        />
+        <Select
+          label="Secondary UOM"
+          value={secondaryUomId}
+          onChange={(e) => setSecondaryUomId(e.target.value)}
+          placeholder={secondaryUoms.status === "loading" ? "Loading units…" : "None"}
+          options={secondaryUoms.options}
+          disabled={secondaryUoms.status !== "success"}
+          helper="An alternate reporting or purchase unit."
+        />
+        <TextField
+          label="HSN code"
+          value={hsnCode}
+          onChange={(e) => setHsnCode(e.target.value)}
+          placeholder="e.g. 5208"
+          helper="Tax classification, optional."
+        />
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <CheckboxGroup
+          label="Tracking"
+          options={TRACKING_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+          value={tracking}
+          onChange={setTracking}
+          orientation="horizontal"
+          helper="What this item's stock keeps a record of, beyond its ledger bucket."
+        />
+        <Switch
+          checked={isActive}
+          onChange={setIsActive}
+          label="Active"
+          description={
+            isActive
+              ? "Shows up in item pickers and new transactions."
+              : "Hidden from pickers; its history is untouched."
+          }
+        />
+      </div>
     </FormDialog>
   );
 }
