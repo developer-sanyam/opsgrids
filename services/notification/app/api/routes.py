@@ -52,7 +52,7 @@ router = APIRouter(tags=["notification"])
 
 #: **The tenancy chokepoint.** Opens the transaction and binds it to the caller's organization
 #: before the route body runs, so no route can read or write without one.
-SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 
 #: The `notification` entitlement gate, applied to every principal route as well as the gateway.
 Entitled = Depends(require_product("notification"))

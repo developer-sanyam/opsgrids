@@ -64,7 +64,7 @@ router = APIRouter(tags=["approval"])
 #: gets exactly this many, so the "showing the first 20" footer copy is never wrong.
 DELEGATE_CANDIDATES_LIMIT = 20
 
-SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 ReadCtx = Annotated[ScopeContext, Depends(require("core.approval.request.read"))]
 #: `decide` at **any** scope: `MEMBER` holds `decide:OWN` by default, and §6's eligibility check
 #: — not the permission scope — is what actually decides who may act on any given request
