@@ -77,7 +77,8 @@ async def _check_one_outbox_schema(
     """
     schema = spec.schema
     timeout_ms = int(statement_timeout_seconds * 1000)
-    try:
+
+    async def _connect_and_query() -> tuple[int, float | None, int] | None:
         async with engine.connect() as conn:
             await conn.execute(text("SET TRANSACTION READ ONLY"))
             await conn.execute(text(f"SET LOCAL statement_timeout = {timeout_ms}"))
@@ -85,7 +86,7 @@ async def _check_one_outbox_schema(
                 await conn.execute(text("SELECT to_regclass(:t)"), {"t": f"{schema}.outbox"})
             ).scalar()
             if exists is None:
-                return f"outbox.{schema}", None
+                return None
             # schema is this monitor's own configuration (EDGE_RELAY_SCHEMAS), never request
             # input — the same trust boundary tools/outbox.py's identical query has, and
             # validated against a plain-identifier pattern at config load
@@ -101,6 +102,23 @@ async def _check_one_outbox_schema(
             pending, oldest, exhausted = (
                 await conn.execute(text(query), {"cap": max_attempts})
             ).one()
+            return (
+                int(pending or 0),
+                float(oldest) if oldest is not None else None,
+                int(exhausted or 0),
+            )
+
+    try:
+        # m9 (round 3): wraps the *whole* thing — acquiring a connection (pool checkout, then
+        # the TCP handshake) as well as the query. `SET LOCAL statement_timeout` above only
+        # bounds the query once a connection is already in hand; a pool exhausted by other
+        # concurrent schema checks (this engine's own `pool_size=2` in `main.poll_loop`, many
+        # more schemas than that configured) or a host that accepts the socket and never
+        # answers is a hang neither the statement timeout nor this engine's own
+        # `connect_args={"timeout": ...}` (main.py, the TCP connect alone) fully covers on its
+        # own — this does, and it fails *this schema's* observation alone rather than the
+        # entire outbox check (every other schema's `asyncio.gather` entry is unaffected).
+        result = await asyncio.wait_for(_connect_and_query(), timeout=statement_timeout_seconds)
     except TimeoutError:
         return f"outbox.{schema}", Observation(
             ok=False, detail=f"{schema}: timed out after {statement_timeout_seconds:.0f}s"
@@ -109,6 +127,10 @@ async def _check_one_outbox_schema(
         return f"outbox.{schema}", Observation(
             ok=False, detail=f"{schema}: query failed: {summarize_exception(exc)}"
         )
+
+    if result is None:
+        return f"outbox.{schema}", None
+    pending, oldest, exhausted = result
 
     oldest_seconds = float(oldest) if oldest is not None else 0.0
     pending_count = int(pending or 0)
@@ -171,8 +193,14 @@ async def _check_one_dlq_queue(
     an `Observation`, because "does not exist yet" is itself a meaningful, ok result rather
     than "not applicable"."""
     dlq_name = f"{queue_name}.dlq"
-    channel = await connection.channel()
+    channel: aio_pika.abc.AbstractChannel | None = None
     try:
+        # m9 (round 3): opening the channel itself used to happen before this `try`, outside
+        # any timeout — a broker that accepts the connection but never answers `Channel.Open`
+        # (overloaded, or mid-restart) hung here with nothing bounding it but `main._collect`'s
+        # own outer timeout, which would then discard *every* queue's result in this call, not
+        # just this one's. Wrapping it here means only this queue's observation times out.
+        channel = await asyncio.wait_for(connection.channel(), timeout=timeout_seconds)
         queue = await asyncio.wait_for(
             channel.declare_queue(dlq_name, durable=True, passive=True), timeout=timeout_seconds
         )
@@ -191,7 +219,7 @@ async def _check_one_dlq_queue(
             ok=False, detail=f"{dlq_name}: check failed: {summarize_exception(exc)}"
         )
     finally:
-        if not channel.is_closed:
+        if channel is not None and not channel.is_closed:
             await channel.close()
 
 

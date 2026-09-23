@@ -469,6 +469,14 @@ name for a container this compose file defines with no budget entry.
 make deploy HOST=deploy@<ip> CONFIRM=edge.opsgrids.com REF=origin/main
 ```
 
+**Before you deploy a release that adds `.env` keys, add them to the box's `.env` first.**
+Preflight (step 3) treats every key in `.env.example` as required *to be present* — an empty
+value is fine for the ones marked optional, a missing line is not — and it refuses the deploy,
+before anything changes, when one is absent. The release that introduced `ops-monitor` (C10)
+adds four; see [alerts and what each means](#alerts-and-what-each-means) for the exact lines to
+paste. Any future release that adds a key to `.env.example` is a deploy prerequisite in exactly
+the same way, and its release notes must list the keys.
+
 What happens, in order, and what each step protects:
 
 1. **assert-host** — the box states its own `EDGE_HOST`. A mismatch aborts before anything is
@@ -651,13 +659,27 @@ through a small state machine (`libs/platform-core/src/platform_core/ops_monitor
 emails `OPS_ALERT_EMAIL` — direct SMTP, reusing the box's own `EMAIL_FROM`/`SMTP_*`,
 **deliberately not through notification-service**, which is one of the things being watched.
 
-**`.env` keys this feature added** (`.env.example` has the full comment for each):
-`OPS_ALERT_EMAIL` (optional — empty means alerts are logged only), `OPS_MONITOR_API_CONTAINERS`
-and `OPS_MONITOR_DLQ_QUEUES` (optional — empty means derive from `COMPOSE_PROFILES`, which
-already exists), and `SMTP_USE_SSL` (optional, defaults `false` — implicit TLS on 465 instead
-of STARTTLS on 587, for a provider that only offers SMTPS). None of the four are required; a
-box with none of them set still runs every check and still logs `ops.alert.firing`, it just
-pages nobody until `OPS_ALERT_EMAIL`/`SMTP_HOST` are filled in.
+**Deploy prerequisite — four new `.env` keys (release notes).** `preflight.sh` requires every
+key in `.env.example` to be *present* in the box's `.env` (it reads the key names from the
+example, so adding one there is what makes it required), so **a box that does not have these
+four lines will have its deploy refused at preflight, before anything changes.** Add them to
+`infrastructure/edge/.env` **before** deploying this release — empty values are accepted for
+all four:
+
+```
+OPS_ALERT_EMAIL=
+OPS_MONITOR_API_CONTAINERS=
+OPS_MONITOR_DLQ_QUEUES=
+SMTP_USE_SSL=false
+```
+
+What each means (`.env.example` has the full comment for each): `OPS_ALERT_EMAIL` (where alerts
+go — empty means alerts are logged only), `OPS_MONITOR_API_CONTAINERS` and
+`OPS_MONITOR_DLQ_QUEUES` (empty means derive from `COMPOSE_PROFILES`, which already exists;
+`COMPOSE_PROFILES=*` is understood too), and `SMTP_USE_SSL` (defaults `false` — implicit TLS on
+465 instead of STARTTLS on 587, for a provider that only offers SMTPS). Their *values* are
+optional, their *presence* is not: a box with all four empty still runs every check and still
+logs `ops.alert.firing`, it just pages nobody until `OPS_ALERT_EMAIL`/`SMTP_HOST` are filled in.
 
 **Hysteresis, so a single blip does not page anyone:** a check needs 3 consecutive failing
 polls (about 3 minutes) before it *opens* and sends one email; once open it *reminds* every 6
@@ -671,8 +693,24 @@ passes, fails, passes, fails.
 down) does not consume the state machine's "notified" bookkeeping — the next poll retries
 immediately, for up to 5 consecutive cycles, before falling back to the normal cadence so a
 long SMTP outage is not hammered forever. A rolling cap (12 emails/hour by default) throttles
-the other direction: a box genuinely falling apart pages once per email, with a "N suppressed"
-note on the next one that does go out, not once per check per minute.
+the other direction: a box genuinely falling apart pages once per email, not once per check per
+minute. What the cap holds back is queued and goes out, named check by check, in the next email
+that fits under it.
+
+The rules live in one pure function (`ops_monitor/delivery.py`, `plan_delivery`), and are worth
+knowing at 3am: (1) a check not reported firing in the last hour, and the daily digest, are
+**exempt from the cap** — a *new* problem is never held back because reminders used the budget;
+a check that re-fires within the hour of its last report is throttled like any reminder, so one
+flapping check cannot page you every few minutes. (2) Exempt notices have their own ceiling of
+twice the cap per hour, so they are generous, not unlimited. (3) A newer notice for a check
+replaces an older queued one — a queued "resolved" is dropped the moment its check fires again,
+so you are never told "all clear" about something that is failing right now. (4) A reminder for
+a check nobody has ever successfully been told about is treated as a first alert. (5) The queue
+is **in memory only** (200 entries, oldest dropped): restarting `ops-monitor` empties it. A
+queued firing/reminder comes back by itself — its "notified" bookkeeping was never committed, so
+the next cycle sees it as due again — but a queued *resolved* is simply lost (the check is OK
+again and `/status` says so; nothing regenerates the email). That is a deliberate trade against
+persisting a second file that could itself go stale.
 
 | Check | Fires when | Where to look |
 |---|---|---|
@@ -704,7 +742,9 @@ non-root user (never the `deploy` user's uid — those are not guaranteed to mat
 Azure's own provisioning already takes uid 1000 for `azureuser`), and needs
 `/srv/opsgrids/state/ops-monitor` to exist and be owned by that same uid before it can write its
 state file and heartbeat. `remote.sh up`'s `ensure_ops_monitor_state_dir` creates and chowns it
-automatically on every deploy — `make edge-preflight` also checks and warns if it is out of
+(recursively, to the image's real `uid:gid` — both asked of the image, both checked to be plain
+digits by `lib/numeric-id.sh` before anything runs as root, and the deploy aborts if either is
+not) automatically on every deploy — `make edge-preflight` also checks and warns if it is out of
 sync. If you ever need to fix it by hand outside a deploy: `ssh` to the box and run
 `infrastructure/edge/remote.sh up` (safe to run alone; it recreates only what changed).
 

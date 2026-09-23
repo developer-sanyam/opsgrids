@@ -14,7 +14,10 @@ from typing import Any
 import httpx
 import pytest
 
+from platform_core.edge_relay import SchemaSpec
 from platform_core.ops_monitor.checks import (
+    _check_one_dlq_queue,
+    _check_one_outbox_schema,
     _is_dns_failure,
     check_api_readiness,
     check_backup_freshness,
@@ -230,3 +233,103 @@ class TestParseApiContainers:
             "auth": 8000,
             "account": 8110,
         }
+
+
+class TestOutboxConnectTimeout:
+    """m9 (round 3): before this, only the query itself (`SET LOCAL statement_timeout`) was
+    bounded — acquiring the connection in the first place (pool checkout, then the TCP
+    handshake) was not wrapped in anything of this function's own. A pool exhausted by other
+    concurrent schema checks, or a host that accepts the socket and never answers, hung here
+    with nothing bounding it but `main._collect`'s own *outer* timeout — which discards every
+    schema's result for this cycle, not just the slow one's."""
+
+    async def test_a_hanging_connect_times_out_as_its_own_observation(self) -> None:
+        class _HangingConnectEngine:
+            def connect(self) -> _HangingConnectEngine:
+                return self
+
+            async def __aenter__(self) -> _HangingConnectEngine:
+                await asyncio.sleep(10)
+                return self
+
+            async def __aexit__(self, *exc: object) -> None:
+                return None
+
+        name, obs = await _check_one_outbox_schema(
+            _HangingConnectEngine(),  # type: ignore[arg-type]
+            SchemaSpec(schema="account", producer="account"),
+            warn_seconds=60,
+            crit_seconds=300,
+            max_attempts=5,
+            statement_timeout_seconds=0.05,
+        )
+        assert name == "outbox.account"
+        assert obs is not None
+        assert obs.ok is False
+        assert "timed out" in obs.detail
+
+    async def test_a_fast_connect_is_unaffected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The wrapping wait_for must not itself become the thing that fails a perfectly
+        healthy schema — a regression this fast/slow pair together guards against."""
+
+        class _Result:
+            def __init__(self, value: object) -> None:
+                self._value = value
+
+            def scalar(self) -> object:
+                return self._value
+
+            def one(self) -> tuple[int, float, int]:
+                return (0, 0.0, 0)
+
+        class _FastConn:
+            async def execute(self, statement: object, params: object | None = None) -> _Result:
+                text_str = str(statement)
+                if "to_regclass" in text_str:
+                    return _Result("account.outbox")
+                return _Result(None)
+
+        class _FastEngine:
+            def connect(self) -> _FastEngine:
+                return self
+
+            async def __aenter__(self) -> _FastConn:
+                return _FastConn()
+
+            async def __aexit__(self, *exc: object) -> None:
+                return None
+
+        name, obs = await _check_one_outbox_schema(
+            _FastEngine(),  # type: ignore[arg-type]
+            SchemaSpec(schema="account", producer="account"),
+            warn_seconds=60,
+            crit_seconds=300,
+            max_attempts=5,
+            statement_timeout_seconds=5.0,
+        )
+        assert name == "outbox.account"
+        assert obs is not None
+        assert obs.ok is True
+
+
+class TestDlqChannelOpenTimeout:
+    """m9 (round 3): opening the channel itself used to happen before the function's own
+    `try`, outside any timeout — a broker that accepts the connection but never answers
+    `Channel.Open` hung here with nothing bounding it but the outer `_collect` timeout, which
+    would then discard every queue's result in the same `check_dlq_depth` call, not just this
+    one's."""
+
+    async def test_a_hanging_channel_open_times_out_as_its_own_observation(self) -> None:
+        class _HangingConnection:
+            async def channel(self) -> object:
+                await asyncio.sleep(10)
+                raise AssertionError("unreachable")  # pragma: no cover
+
+        name, obs = await _check_one_dlq_queue(
+            _HangingConnection(),  # type: ignore[arg-type]
+            "notification.dispatch",
+            timeout_seconds=0.05,
+        )
+        assert name == "dlq.notification.dispatch"
+        assert obs.ok is False
+        assert "timed out" in obs.detail

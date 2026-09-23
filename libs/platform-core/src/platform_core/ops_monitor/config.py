@@ -104,13 +104,35 @@ def _parse_csv(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+#: m10 (round 3): docker compose's own wildcard — `COMPOSE_PROFILES=*` enables every profile,
+#: which is what a box that runs every product (a demo or staging box) sets. This module has no
+#: way to ask docker compose at runtime what "every profile" expands to, so it expands to every
+#: profile this file itself knows about (`PROFILE_API_CONTAINERS` and `PROFILE_DLQ_QUEUES` both,
+#: since a profile can have API containers and no worker, or vice versa) — the same two tables
+#: `tests/infra/test_ops_monitor_profile_containers.py` keeps in sync with `memory-budget.json`.
+#: Without this, `COMPOSE_PROFILES=*` was either rejected outright by the identifier check below
+#: or (had that passed) silently looked up as a profile literally named `*` and matched nothing,
+#: leaving a box that runs everything monitoring only its core containers.
+ALL_PROFILES_WILDCARD: Final[str] = "*"
+
+
+def expand_profiles(profiles: list[str]) -> list[str]:
+    """`["*"]` -> every profile this module knows about, sorted for determinism; anything else
+    unchanged. Only the sole-entry form is the wildcard — `["*", "hrms"]` is not a thing docker
+    compose itself accepts either, and is left alone (then rejected by the identifier check)."""
+    if profiles == [ALL_PROFILES_WILDCARD]:
+        return sorted(set(PROFILE_API_CONTAINERS) | set(PROFILE_DLQ_QUEUES))
+    return profiles
+
+
 def expected_api_containers(profiles: list[str]) -> list[str]:
     """Every API container this box's `COMPOSE_PROFILES` says should exist — core always,
     plus each enabled profile's own. Order is deterministic (core first, then profiles in the
     order given, each profile's own containers in the order `PROFILE_API_CONTAINERS` lists
-    them) so a rendered `.env` or a test fixture can compare it literally."""
+    them) so a rendered `.env` or a test fixture can compare it literally. `["*"]` expands to
+    every known profile (`expand_profiles`)."""
     result = list(CORE_API_CONTAINERS)
-    for profile in profiles:
+    for profile in expand_profiles(profiles):
         result.extend(PROFILE_API_CONTAINERS.get(profile, ()))
     return result
 
@@ -118,7 +140,7 @@ def expected_api_containers(profiles: list[str]) -> list[str]:
 def expected_dlq_queues(profiles: list[str]) -> list[str]:
     """The DLQ-bearing counterpart of `expected_api_containers`."""
     result = list(CORE_DLQ_QUEUES)
-    for profile in profiles:
+    for profile in expand_profiles(profiles):
         result.extend(PROFILE_DLQ_QUEUES.get(profile, ()))
     return result
 
@@ -282,6 +304,10 @@ class OpsMonitorSettings(ServiceSettings):
     @field_validator("compose_profiles")
     @classmethod
     def _validate_compose_profiles(cls, v: list[str]) -> list[str]:
+        if v == [ALL_PROFILES_WILDCARD]:
+            # m10: docker compose's own "every profile" wildcard, not a schema identifier —
+            # expanded (never looked up literally) by `expand_profiles`.
+            return v
         return _validate_identifiers(
             v, field_name="COMPOSE_PROFILES", pattern=_VALID_SCHEMA_IDENTIFIER
         )

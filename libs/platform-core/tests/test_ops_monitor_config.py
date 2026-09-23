@@ -5,6 +5,8 @@ production-shaped environment without the two secrets it deliberately never rece
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 from pydantic import ValidationError
 
@@ -12,6 +14,7 @@ from platform_core.ops_monitor.config import (
     CORE_API_CONTAINERS,
     CORE_DLQ_QUEUES,
     OpsMonitorSettings,
+    expand_profiles,
     expected_api_containers,
     expected_dlq_queues,
 )
@@ -117,6 +120,49 @@ class TestComposeProfilesValidation:
     def test_an_invalid_profile_name_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match="COMPOSE_PROFILES"):
             OpsMonitorSettings(compose_profiles="hrms;drop table x")
+
+
+class TestComposeProfilesWildcard:
+    """m10 (round 3): `COMPOSE_PROFILES=*` is docker compose's own "every profile". Before
+    this it was either rejected by the identifier check or (past it) looked up as a profile
+    literally named `*`, matching nothing — a box running every product monitored only its
+    core containers, silently."""
+
+    _ALL: ClassVar[list[str]] = [
+        "inventory",
+        "storefront",
+        "hrms",
+        "crm",
+        "pulseboard",
+        "projects",
+        "support",
+        "marketing",
+        "finance",
+        "itsm",
+    ]
+
+    def test_the_wildcard_is_accepted_by_the_validator(self) -> None:
+        settings = OpsMonitorSettings(compose_profiles="*")
+        assert settings.compose_profiles == ["*"]
+
+    def test_the_wildcard_expands_to_every_known_profile(self) -> None:
+        assert expand_profiles(["*"]) == sorted(self._ALL)
+        assert set(expected_api_containers(["*"])) == set(expected_api_containers(self._ALL))
+        assert set(expected_dlq_queues(["*"])) == set(expected_dlq_queues(self._ALL))
+
+    def test_the_wildcard_is_not_silently_core_only(self) -> None:
+        settings = OpsMonitorSettings(compose_profiles="*")
+        assert "operations" in settings.ops_monitor_api_containers  # inventory
+        assert "approval.events" in settings.ops_monitor_dlq_queues  # hrms worker
+        assert "finance.events" in settings.ops_monitor_dlq_queues  # finance worker
+
+    def test_the_wildcard_mixed_with_a_name_is_still_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="COMPOSE_PROFILES"):
+            OpsMonitorSettings(compose_profiles="*,hrms")
+
+    def test_no_profile_and_a_named_profile_are_untouched_by_expansion(self) -> None:
+        assert expand_profiles([]) == []
+        assert expand_profiles(["hrms"]) == ["hrms"]
 
 
 class TestProductionSecretGuardIsSkipped:

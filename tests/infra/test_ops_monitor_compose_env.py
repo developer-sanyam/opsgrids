@@ -13,6 +13,7 @@ running in an environment where `docker compose config` is also checked as a sep
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -91,3 +92,43 @@ def test_ops_monitor_uid_and_gid_keys_are_gone() -> None:
     env_example = (REPO_ROOT / "infrastructure/edge/.env.example").read_text()
     assert "OPS_MONITOR_UID" not in env_example
     assert "OPS_MONITOR_GID" not in env_example
+
+
+#: The `.env` keys C10 added. `preflight.sh` requires every key in `.env.example` to be
+#: *present* in a box's `.env` (empty is fine for the ones in its `optional_empty` list), so a
+#: box that predates them has its deploy refused before anything changes — which makes them a
+#: deploy prerequisite, not "optional keys".
+C10_NEW_ENV_KEYS = (
+    "OPS_ALERT_EMAIL",
+    "OPS_MONITOR_API_CONTAINERS",
+    "OPS_MONITOR_DLQ_QUEUES",
+    "SMTP_USE_SSL",
+)
+
+
+def test_the_new_keys_are_in_the_example_and_allowed_empty_by_preflight() -> None:
+    edge = REPO_ROOT / "infrastructure/edge"
+    example_keys = {
+        line.split("=", 1)[0]
+        for line in (edge / ".env.example").read_text().splitlines()
+        if re.match(r"^[A-Z][A-Z0-9_]*=", line)
+    }
+    preflight = (edge / "preflight.sh").read_text()
+    for key in C10_NEW_ENV_KEYS:
+        assert key in example_keys, f"{key} must be in .env.example (that is what requires it)"
+        assert key in preflight, f"preflight.sh never mentions {key}: an empty value would refuse"
+
+
+def test_the_runbook_names_the_new_keys_as_a_deploy_prerequisite() -> None:
+    """m7 (round 3): the alerts section used to say "None of the four are required", which is
+    false for *presence* — preflight refuses a deploy when a key from `.env.example` is absent
+    from the box's `.env`. The runbook must list all four, verbatim as `.env` lines, and say
+    that the deploy is refused without them."""
+    runbook = (REPO_ROOT / "infrastructure/edge/RUNBOOK.md").read_text()
+    assert "None of the four are required" not in runbook
+    assert "Deploy prerequisite" in runbook
+    for key in C10_NEW_ENV_KEYS:
+        assert re.search(rf"^{key}=", runbook, flags=re.MULTILINE), (
+            f"RUNBOOK.md has no `{key}=` line to paste into .env"
+        )
+    assert "refused at preflight" in runbook

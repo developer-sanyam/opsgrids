@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 
 from platform_core.metrics import Sample, render
+from platform_core.ops_monitor.delivery import SentRecord
 from platform_core.ops_monitor.mailer import Mailer
 from platform_core.ops_monitor.state import MonitorState, Notification, Status
 
@@ -36,13 +37,22 @@ class MonitorRuntime:
     last_cycle_error: str | None = None
     #: M6/M3 delivery bookkeeping — not persisted (`state.py`'s `MonitorState` carries only
     #: check history), because it describes this *process's* recent sending, not a fact about
-    #: any check: a restart is allowed to start the hourly cap and the retry count fresh.
-    sent_at_history: list[datetime] = field(default_factory=list)
+    #: any check: a restart is allowed to start the hourly cap, the exempt ceiling and the
+    #: retry count fresh. `sent_history` feeds `delivery.plan_delivery`'s two rolling-hour
+    #: counters (round 3) — see `SentRecord` for what `exempt` means there.
+    sent_history: list[SentRecord] = field(default_factory=list)
     consecutive_send_failures: int = 0
-    #: M3/m4: notifications held back by the per-hour cap or by a failed send, carried forward
-    #: to the next cycle so they are not lost — named by check on `/status` rather than reduced
-    #: to a bare count, so "which checks are waiting" is visible without reading logs.
+    #: M3/m4: notifications held back by the per-hour cap, the exempt ceiling, or a failed
+    #: send, carried forward to the next cycle so they are not lost — named by check on
+    #: `/status` rather than reduced to a bare count, so "which checks are waiting" is visible
+    #: without reading logs.
     pending_notifications: list[Notification] = field(default_factory=list)
+    #: round 3: the last time a `firing`-like notification (see `delivery.is_firing_like`) was
+    #: *actually delivered* for each check — never merely attempted. What `plan_delivery` reads
+    #: to decide whether a fresh `firing` for that check is exempt from the per-hour cap: a
+    #: check that has not been reported firing within the last hour always gets through: one
+    #: still inside that hour (a flapper) is throttled like any other reminder.
+    last_fired_at: dict[str, datetime] = field(default_factory=dict)
 
 
 _HELP = {

@@ -16,7 +16,11 @@ eats a firing/reminder/digest notification for a full interval. `run_cycle_and_n
 just that bookkeeping when `mailer.send` fails, up to `ops_monitor_max_immediate_send_retries`
 consecutive cycles, before giving up and falling back to the normal cadence — and a rolling cap
 (`ops_monitor_max_emails_per_hour`) throttles delivery itself so a genuinely falling-apart box
-pages a human once, with a "N suppressed" note, not once per check per cycle.
+pages a human once, not once per check per cycle.
+
+**What to send and what to hold back is not decided here** (round 3): `delivery.plan_delivery`
+is a pure function that takes the queue, this cycle's notifications, the send history and
+`last_fired_at`, and returns the plan; `_deliver` below only attempts it and applies the result.
 """
 
 from __future__ import annotations
@@ -36,6 +40,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from platform_core.logging import configure_logging, get_logger
 from platform_core.ops_monitor import checks
 from platform_core.ops_monitor.config import OpsMonitorSettings
+from platform_core.ops_monitor.delivery import (
+    SentRecord,
+    bounded_requeue,
+    is_firing_like,
+    plan_delivery,
+)
 from platform_core.ops_monitor.mailer import Mailer
 from platform_core.ops_monitor.redact import summarize_exception
 from platform_core.ops_monitor.server import MonitorRuntime, build_app
@@ -196,19 +206,6 @@ async def run_one_cycle(
     return observations
 
 
-#: Notification kinds the per-hour cap never holds back (M3, round 2): the first `firing` of a
-#: check that was not already notified this incident, and the daily digest. A first alert is
-#: exactly the thing a cap must never swallow — silence about a *new* problem because an
-#: unrelated flurry of reminders already used up the hour's budget is worse than the flurry
-#: itself. The digest is the dead-man's switch; capping it could make the monitor look stopped
-#: on the one day it was actually busy.
-_CAP_EXEMPT_KINDS = frozenset({"firing", "digest"})
-#: m3/m4: how many notification objects `MonitorRuntime.pending_notifications` carries forward
-#: across cycles before the oldest are dropped — a bound on memory, not a design target; a real
-#: box's incident count staying anywhere near this would already be its own emergency.
-_MAX_PENDING_NOTIFICATIONS = 200
-
-
 def format_email(notifications: list[Notification]) -> tuple[str, str]:
     """One subject/body covering every check that changed this cycle — "one email per cycle
     grouping all changed checks", never one email per check."""
@@ -241,17 +238,6 @@ def format_email(notifications: list[Notification]) -> tuple[str, str]:
         lines.extend(f"{n.check}: {n.detail}" for n in group)
         lines.append("")
     return subject, "\n".join(lines).strip() + "\n"
-
-
-def _merge_pending(pending: list[Notification], new: list[Notification]) -> list[Notification]:
-    """A fresh notification for a check replaces any pending one already queued for it (it is
-    more current information); a pending entry for a check untouched this cycle carries
-    forward unchanged. Order: untouched pending entries first, then this cycle's, so the
-    longest-waiting checks are still listed first in the eventual email."""
-    by_check = {n.check: n for n in pending}
-    for n in new:
-        by_check[n.check] = n
-    return list(by_check.values())[-_MAX_PENDING_NOTIFICATIONS:]
 
 
 def _revert_notification_bookkeeping(
@@ -291,57 +277,67 @@ async def _deliver(
     notifications: list[Notification],
     now: datetime,
 ) -> list[Notification]:
-    """Send this cycle's notifications, or decide not to — the rate cap (M3) and the bounded
-    immediate-retry count (M6) both live here.
+    """Execute `delivery.plan_delivery`'s plan — this function decides nothing about what to
+    send or hold back (round 3: that logic failed review twice as a patch on top of this
+    function and was pulled out into its own pure module). All this does is attempt the send
+    `plan_delivery` decided on, and apply the result: on success, commit `plan.new_pending` and
+    advance `last_fired_at`/`sent_history`; on failure, requeue exactly what was attempted
+    (`bounded_requeue`, original `Notification` objects, original `kind`) alongside whatever
+    was already held back — same bounded-retry fallback as before (M6) once
+    `ops_monitor_max_immediate_send_retries` is exceeded.
 
-    Returns the notifications whose state-machine bookkeeping the caller must revert (queued
-    for a later cycle instead of committed now) — either because the per-hour cap held them
-    back, or because the send itself failed. `_CAP_EXEMPT_KINDS` (a brand-new `firing`, and the
-    daily digest) are never held back by the cap, only by an actual send failure.
+    Returns the notifications (from `notifications`, this cycle's fresh ones) whose
+    state-machine bookkeeping the caller must revert because they were not delivered this
+    cycle — a queued `pending_notifications` entry from an *earlier* cycle already had its own
+    bookkeeping reverted back when it was first queued, so it is never in this return value.
     """
-    exempt = [n for n in notifications if n.kind in _CAP_EXEMPT_KINDS]
-    capped_eligible = [n for n in notifications if n.kind not in _CAP_EXEMPT_KINDS]
+    cutoff = now - timedelta(hours=1)
+    runtime.sent_history = [r for r in runtime.sent_history if r.at >= cutoff]
 
-    runtime.sent_at_history = [t for t in runtime.sent_at_history if now - t < timedelta(hours=1)]
-    at_cap = len(runtime.sent_at_history) >= settings.ops_monitor_max_emails_per_hour
+    plan = plan_delivery(
+        runtime.pending_notifications,
+        notifications,
+        now,
+        runtime.sent_history,
+        runtime.last_fired_at,
+        settings.ops_monitor_max_emails_per_hour,
+    )
 
-    if at_cap and capped_eligible:
-        runtime.pending_notifications = _merge_pending(
-            runtime.pending_notifications, capped_eligible
-        )
-        log.warning(
-            "ops_monitor.notification_capped",
-            count=len(capped_eligible),
-            pending_total=len(runtime.pending_notifications),
-            cap=settings.ops_monitor_max_emails_per_hour,
-        )
-        to_send = exempt
-        reverted = list(capped_eligible)
-    else:
-        # Flush anything still owed from an earlier capped or failed cycle alongside whatever
-        # is new this cycle — one email lists every check that has been waiting, by name.
-        to_send = exempt + _merge_pending(runtime.pending_notifications, capped_eligible)
-        reverted = []
+    if not plan.to_send:
+        runtime.pending_notifications = plan.new_pending
+        if notifications:
+            log.warning(
+                "ops_monitor.notification_capped",
+                count=len(notifications),
+                pending_total=len(runtime.pending_notifications),
+                cap=settings.ops_monitor_max_emails_per_hour,
+            )
+        return list(notifications)
 
-    if not to_send:
-        return reverted
+    sent_checks = {n.check for n in plan.to_send}
+    reverted = [n for n in notifications if n.check not in sent_checks]
 
-    subject, body = format_email(to_send)
+    subject, body = format_email(plan.to_send)
     delivered = await mailer.send(subject, body)
-    for n in to_send:
+    for n in plan.to_send:
         log.info("ops_monitor.notification", check=n.check, kind=n.kind, detail=n.detail)
 
     if delivered:
-        runtime.sent_at_history.append(now)
+        runtime.sent_history.append(SentRecord(at=now, exempt=plan.exempt_send))
         runtime.consecutive_send_failures = 0
-        runtime.pending_notifications = []
+        runtime.pending_notifications = plan.new_pending
+        for n in plan.to_send:
+            if is_firing_like(n, runtime.last_fired_at):
+                runtime.last_fired_at[n.check] = now
         return reverted
 
     runtime.consecutive_send_failures += 1
     if runtime.consecutive_send_failures > settings.ops_monitor_max_immediate_send_retries:
         # Stop hammering a broken SMTP config every single cycle — fall back to the normal
         # reminder/digest cadence, and let the next real change try again from a clean slate.
-        # Whatever was queued is dropped rather than retried forever with no way out.
+        # Whatever was actually attempted (`plan.to_send`) is accepted as if it had gone out —
+        # its bookkeeping is *not* reverted, so this does not retry forever with no way out;
+        # only whatever the cap itself was already holding back (`reverted`) still needs it.
         log.error(
             "ops_monitor.notification_retry_exhausted",
             consecutive_failures=runtime.consecutive_send_failures,
@@ -350,13 +346,10 @@ async def _deliver(
         runtime.pending_notifications = []
         return reverted
 
-    # The whole batch failed to send — everything in it (including anything exempt from the
-    # cap) needs its bookkeeping reverted and, for the kinds that do not naturally regenerate
-    # (resolved), carried forward so the next attempt still knows about it.
-    runtime.pending_notifications = _merge_pending(
-        runtime.pending_notifications, [n for n in to_send if n.kind not in _CAP_EXEMPT_KINDS]
-    )
-    return list(to_send)
+    # The whole batch failed to send — everything attempted goes back into the queue as the
+    # same objects (original kind intact), alongside whatever was already held back.
+    runtime.pending_notifications = bounded_requeue(plan.to_send, plan.new_pending)
+    return list(notifications)
 
 
 async def run_cycle_and_notify(
@@ -436,6 +429,14 @@ async def poll_loop(settings: OpsMonitorSettings, runtime: MonitorRuntime, maile
         pool_size=2,
         max_overflow=2,
         pool_pre_ping=True,
+        # m9 (round 3): below `ops_monitor_probe_timeout_seconds` on purpose. Many more
+        # schemas than `pool_size + max_overflow` checking concurrently (`checks.py`'s own
+        # `asyncio.gather`) means some of them wait for a connection to free up; left at
+        # SQLAlchemy's 30s default, that wait alone could outlast the whole probe's timeout
+        # budget, and `_check_one_outbox_schema`'s own `asyncio.wait_for` (bounded by
+        # `ops_monitor_outbox_statement_timeout_seconds`) would never get the chance to turn
+        # it into a clean per-schema failing observation instead.
+        pool_timeout=settings.ops_monitor_outbox_statement_timeout_seconds,
         connect_args={
             "server_settings": {"application_name": "ops-monitor"},
             # M4: bound the TCP/handshake connect itself — a Postgres that accepts the socket

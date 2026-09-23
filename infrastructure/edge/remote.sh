@@ -34,6 +34,8 @@ source lib/rebuild-decision.sh
 source lib/health-check.sh
 # shellcheck source=lib/role-reconcile.sh
 source lib/role-reconcile.sh
+# shellcheck source=lib/numeric-id.sh
+source lib/numeric-id.sh
 
 COMPOSE=(docker compose -f compose.prod.yml --env-file .env)
 
@@ -201,11 +203,21 @@ migrate() {
 # `deploy-log` and `backup.last-ok` stay `deploy`'s, exactly as `record_ref`/`backup.sh` expect.
 ensure_ops_monitor_state_dir() {
 	local state_dir="${EDGE_STATE_DIR:-/srv/opsgrids/state}/ops-monitor"
-	local uid
-	uid=$("${COMPOSE[@]}" run --rm --no-deps -T --entrypoint id product -u)
+	local raw_uid raw_gid uid gid
+	raw_uid=$("${COMPOSE[@]}" run --rm --no-deps -T --entrypoint id product -u)
+	raw_gid=$("${COMPOSE[@]}" run --rm --no-deps -T --entrypoint id product -g)
+	# Both are validated as plain digits (lib/numeric-id.sh) before either reaches a root-owned
+	# `chown`: this is output that crossed a `docker compose run` boundary, and the group is
+	# asked for rather than assumed equal to the user (an image is free to differ). Passed as
+	# argv, never through `sh -c`, so there is no shell left to interpret anything anyway.
+	uid=$(require_numeric_id uid "$raw_uid") || return 1
+	gid=$(require_numeric_id gid "$raw_gid") || return 1
 	mkdir -p "$state_dir"
-	docker run --rm --user 0 -v "$state_dir:/s" opsgrids-edge/product sh -c "chown $uid:$uid /s"
-	echo "ops-monitor state dir: $state_dir owned by uid $uid"
+	# `-R`: an earlier deploy, or an operator reproducing a problem by hand, may have left
+	# files under this directory owned by someone else; the container must be able to
+	# overwrite its own state file, not just create new ones.
+	docker run --rm --user 0 --entrypoint chown -v "$state_dir:/s" opsgrids-edge/product -R "$uid:$gid" /s
+	echo "ops-monitor state dir: $state_dir owned by $uid:$gid"
 }
 
 up() {
