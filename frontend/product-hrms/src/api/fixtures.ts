@@ -22,8 +22,18 @@ import type {
   GeofenceOut,
   GeofencePatch,
   InboxItemOut,
+  LeaveBalanceGrantIn,
+  LeaveBalanceOut,
+  LeaveCancelIn,
+  LeaveLedgerEntryOut,
+  LeaveRequestIn,
+  LeaveRequestOut,
+  LeaveTypeIn,
+  LeaveTypeOut,
+  LeaveTypePatch,
   LocationOut,
   OrganizationOut,
+  Paged,
   PiiUnmaskIn,
   PolicyOut,
   RequestDetailOut,
@@ -1673,4 +1683,331 @@ export function __deleteFixtureGeofence(id: string): void {
 
 export function __resetFixtureGeofencesForTests(): void {
   geofenceStore = FIXTURE_GEOFENCES.map((g) => ({ ...g }));
+}
+
+/* --------------------------------------------------------------------------------- leave */
+
+const LEAVE_TYPE_SEEDS: Omit<LeaveTypeOut, "id" | "created_at">[] = [
+  {
+    code: "EL",
+    name: "Earned leave",
+    is_paid: true,
+    annual_quota_half_days: 48,
+    monthly_accrual_half_days: 4,
+    carry_forward_cap_half_days: 20,
+    active: true,
+  },
+  {
+    code: "SL",
+    name: "Sick leave",
+    is_paid: true,
+    annual_quota_half_days: 24,
+    monthly_accrual_half_days: null,
+    carry_forward_cap_half_days: null,
+    active: true,
+  },
+  {
+    code: "LOP",
+    name: "Loss of pay",
+    is_paid: false,
+    annual_quota_half_days: null,
+    monthly_accrual_half_days: null,
+    carry_forward_cap_half_days: null,
+    active: true,
+  },
+];
+
+const FIXTURE_LEAVE_TYPES: LeaveTypeOut[] = LEAVE_TYPE_SEEDS.map((t, i) => ({
+  id: uuid(6000 + i + 1),
+  created_at: "2026-01-01T09:00:00Z",
+  ...t,
+}));
+
+const FIXTURE_LEAVE_EL_ID = FIXTURE_LEAVE_TYPES[0]!.id;
+const FIXTURE_LEAVE_SL_ID = FIXTURE_LEAVE_TYPES[1]!.id;
+
+const FIXTURE_LEAVE_REQUEST_SEED_ID = uuid(6200);
+
+/** Every ledger posting ever made, in this session — the fixture's own append-only store, the
+ *  same "sum of every posting" rule `leave.selectors.balance_half_days` enforces for real. */
+let leaveLedgerStore: LeaveLedgerEntryOut[] = [
+  {
+    id: uuid(6100),
+    employee_id: FIXTURE_EMPLOYEE_ID,
+    leave_type_id: FIXTURE_LEAVE_EL_ID,
+    entry_type: "grant",
+    delta_half_days: 40,
+    leave_request_id: null,
+    note: "Annual grant, 2026",
+    created_at: "2026-01-01T09:00:00Z",
+  },
+  {
+    id: uuid(6101),
+    employee_id: FIXTURE_EMPLOYEE_ID,
+    leave_type_id: FIXTURE_LEAVE_SL_ID,
+    entry_type: "grant",
+    delta_half_days: 24,
+    leave_request_id: null,
+    note: "Annual grant, 2026",
+    created_at: "2026-01-01T09:00:00Z",
+  },
+  {
+    id: uuid(6102),
+    employee_id: FIXTURE_EMPLOYEE_ID,
+    leave_type_id: FIXTURE_LEAVE_EL_ID,
+    entry_type: "consumption",
+    delta_half_days: -4,
+    leave_request_id: FIXTURE_LEAVE_REQUEST_SEED_ID,
+    note: `Approved leave request ${FIXTURE_LEAVE_REQUEST_SEED_ID}`,
+    created_at: "2026-08-21T06:00:00Z",
+  },
+];
+
+let leaveRequestStore: LeaveRequestOut[] = [
+  {
+    id: FIXTURE_LEAVE_REQUEST_SEED_ID,
+    employee_id: FIXTURE_EMPLOYEE_ID,
+    leave_type_id: FIXTURE_LEAVE_EL_ID,
+    start_date: "2026-09-01",
+    end_date: "2026-09-02",
+    half_day_start: false,
+    half_day_end: false,
+    total_half_days: 4,
+    reason: "Family function",
+    status: "approved",
+    approval_request_id: uuid(6300),
+    approval_opened_at: "2026-08-20T04:00:00Z",
+    approver_employee_id: uuid(3),
+    approver_name: "Priya Nair",
+    approver_unassigned: false,
+    decided_at: "2026-08-21T06:00:00Z",
+    decision_comment: null,
+    decided_by_name: "Priya Nair",
+    failure_reason: null,
+    cancelled_at: null,
+    cancellation_reason: null,
+    created_at: "2026-08-20T04:00:00Z",
+  },
+];
+
+let leaveTypeStore: LeaveTypeOut[] = FIXTURE_LEAVE_TYPES.map((t) => ({ ...t }));
+let leaveTypeSeq = 6000;
+let leaveRequestSeq = 6200;
+let leaveLedgerSeq = 6100;
+
+function balanceFor(employeeId: string, leaveTypeId: string): number {
+  return leaveLedgerStore
+    .filter((e) => e.employee_id === employeeId && e.leave_type_id === leaveTypeId)
+    .reduce((sum, e) => sum + e.delta_half_days, 0);
+}
+
+export function __listFixtureLeaveTypes(
+  page: number,
+  size: number,
+  includeInactive: boolean,
+): Paged<LeaveTypeOut> {
+  const filtered = leaveTypeStore.filter((t) => includeInactive || t.active);
+  const start = (page - 1) * size;
+  const items = filtered.slice(start, start + size);
+  return {
+    items,
+    total: filtered.length,
+    page,
+    size,
+    pages: Math.max(1, Math.ceil(filtered.length / size)),
+  };
+}
+
+export function __createFixtureLeaveType(body: LeaveTypeIn): LeaveTypeOut {
+  if (leaveTypeStore.some((t) => t.code === body.code)) {
+    throw problemErrorFor(409, `A leave type coded '${body.code}' already exists`, [
+      { field: "code", code: "duplicate", message: "This code is already in use." },
+    ]);
+  }
+  leaveTypeSeq += 1;
+  const created: LeaveTypeOut = {
+    id: uuid(leaveTypeSeq),
+    code: body.code,
+    name: body.name,
+    is_paid: body.is_paid ?? true,
+    annual_quota_half_days: body.annual_quota_half_days ?? null,
+    monthly_accrual_half_days: body.monthly_accrual_half_days ?? null,
+    carry_forward_cap_half_days: body.carry_forward_cap_half_days ?? null,
+    active: true,
+    created_at: new Date().toISOString(),
+  };
+  leaveTypeStore = [...leaveTypeStore, created];
+  return created;
+}
+
+export function __updateFixtureLeaveType(id: string, patch: LeaveTypePatch): LeaveTypeOut {
+  const existing = leaveTypeStore.find((t) => t.id === id);
+  if (!existing) throw problemErrorFor(404, "That leave type isn't part of this organization");
+  const updated: LeaveTypeOut = { ...existing, ...patch };
+  leaveTypeStore = leaveTypeStore.map((t) => (t.id === id ? updated : t));
+  return updated;
+}
+
+export function __deleteFixtureLeaveType(id: string): void {
+  const existing = leaveTypeStore.find((t) => t.id === id);
+  if (!existing) throw problemErrorFor(404, "That leave type isn't part of this organization");
+  leaveTypeStore = leaveTypeStore.map((t) => (t.id === id ? { ...t, active: false } : t));
+}
+
+export function __listFixtureLeaveBalances(employeeId: string): LeaveBalanceOut[] {
+  return leaveTypeStore
+    .filter((t) => t.active)
+    .map((t) => ({
+      employee_id: employeeId,
+      leave_type_id: t.id,
+      leave_type_code: t.code,
+      balance_half_days: balanceFor(employeeId, t.id),
+    }));
+}
+
+export function __listFixtureLeaveLedger(
+  employeeId: string,
+  leaveTypeId: string,
+): LeaveLedgerEntryOut[] {
+  return leaveLedgerStore
+    .filter((e) => e.employee_id === employeeId && e.leave_type_id === leaveTypeId)
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+}
+
+export function __grantFixtureLeaveBalance(body: LeaveBalanceGrantIn): LeaveLedgerEntryOut {
+  if (body.idempotency_key) {
+    const existing = leaveLedgerStore.find((e) => e.note === body.idempotency_key);
+    if (existing) return existing;
+  }
+  leaveLedgerSeq += 1;
+  const entry: LeaveLedgerEntryOut = {
+    id: uuid(leaveLedgerSeq),
+    employee_id: body.employee_id,
+    leave_type_id: body.leave_type_id,
+    entry_type: body.entry_type ?? "grant",
+    delta_half_days: body.half_days,
+    leave_request_id: null,
+    note: body.idempotency_key ?? body.note ?? null,
+    created_at: new Date().toISOString(),
+  };
+  leaveLedgerStore = [...leaveLedgerStore, entry];
+  return entry;
+}
+
+export function __listFixtureLeaveRequests(
+  employeeId: string | undefined,
+  status: LeaveRequestOut["status"] | undefined,
+  page: number,
+  size: number,
+): Paged<LeaveRequestOut> {
+  const filtered = leaveRequestStore
+    .filter((r) => !employeeId || r.employee_id === employeeId)
+    .filter((r) => !status || r.status === status)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const start = (page - 1) * size;
+  const items = filtered.slice(start, start + size);
+  return {
+    items,
+    total: filtered.length,
+    page,
+    size,
+    pages: Math.max(1, Math.ceil(filtered.length / size)),
+  };
+}
+
+export function __applyFixtureLeave(body: LeaveRequestIn): LeaveRequestOut {
+  const overlapping = leaveRequestStore.some(
+    (r) =>
+      r.employee_id === FIXTURE_EMPLOYEE_ID &&
+      (r.status === "pending" || r.status === "approved") &&
+      body.start_date <= r.end_date &&
+      body.end_date >= r.start_date,
+  );
+  if (overlapping) {
+    throw problemErrorFor(
+      409,
+      "You already have a pending or approved leave request that overlaps these dates",
+    );
+  }
+  const leaveType = leaveTypeStore.find((t) => t.id === body.leave_type_id);
+  if (!leaveType) throw problemErrorFor(404, "That leave type isn't part of this organization");
+
+  leaveRequestSeq += 1;
+  const created: LeaveRequestOut = {
+    id: uuid(leaveRequestSeq),
+    employee_id: FIXTURE_EMPLOYEE_ID,
+    leave_type_id: body.leave_type_id,
+    start_date: body.start_date,
+    end_date: body.end_date,
+    half_day_start: body.half_day_start ?? false,
+    half_day_end: body.half_day_end ?? false,
+    total_half_days: 2,
+    reason: body.reason,
+    status: "pending",
+    approval_request_id: null,
+    approval_opened_at: null,
+    approver_employee_id: null,
+    approver_name: null,
+    approver_unassigned: null,
+    decided_at: null,
+    decision_comment: null,
+    decided_by_name: null,
+    failure_reason: null,
+    cancelled_at: null,
+    cancellation_reason: null,
+    created_at: new Date().toISOString(),
+  };
+  leaveRequestStore = [...leaveRequestStore, created];
+  return created;
+}
+
+function cancelFixtureLeaveInternal(requestId: string, body: LeaveCancelIn): LeaveRequestOut {
+  const existing = leaveRequestStore.find((r) => r.id === requestId);
+  if (!existing) throw problemErrorFor(404, "That leave request isn't part of this organization");
+  if (existing.status !== "pending" && existing.status !== "approved") {
+    throw problemErrorFor(422, `A ${existing.status} leave request cannot be cancelled`);
+  }
+  const wasApproved = existing.status === "approved";
+  const cancelledAt = new Date().toISOString();
+  const updated: LeaveRequestOut = {
+    ...existing,
+    status: "cancelled",
+    cancelled_at: cancelledAt,
+    cancellation_reason: body.reason ?? null,
+  };
+  leaveRequestStore = leaveRequestStore.map((r) => (r.id === requestId ? updated : r));
+  if (wasApproved) {
+    leaveLedgerSeq += 1;
+    leaveLedgerStore = [
+      ...leaveLedgerStore,
+      {
+        id: uuid(leaveLedgerSeq),
+        employee_id: existing.employee_id,
+        leave_type_id: existing.leave_type_id,
+        entry_type: "reversal",
+        delta_half_days: existing.total_half_days,
+        leave_request_id: existing.id,
+        note: `Cancelled leave request ${existing.id}`,
+        created_at: cancelledAt,
+      },
+    ];
+  }
+  return updated;
+}
+
+export function __cancelFixtureLeave(requestId: string, body: LeaveCancelIn): LeaveRequestOut {
+  return cancelFixtureLeaveInternal(requestId, body);
+}
+
+export function __forceCancelFixtureLeave(
+  requestId: string,
+  body: LeaveCancelIn,
+): LeaveRequestOut {
+  return cancelFixtureLeaveInternal(requestId, body);
+}
+
+export function __resetFixtureLeaveForTests(): void {
+  leaveTypeStore = FIXTURE_LEAVE_TYPES.map((t) => ({ ...t }));
+  leaveRequestStore = [];
+  leaveLedgerStore = [];
 }

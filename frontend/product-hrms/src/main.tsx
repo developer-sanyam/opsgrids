@@ -13,6 +13,8 @@ import { EmployeesPage } from "./routes/Employees";
 import { EmployeeDetailPage } from "./routes/EmployeeDetail";
 import { AttendancePage } from "./routes/Attendance";
 import { ShiftsPage } from "./routes/Shifts";
+import { LeavePage } from "./routes/Leave";
+import { LeaveTypesPage } from "./routes/LeaveTypes";
 import { ApprovalsPage } from "./routes/Approvals";
 import { RequestDetailPage } from "./routes/RequestDetail";
 import { MyRequestsPage } from "./routes/MyRequests";
@@ -45,6 +47,8 @@ const router = createBrowserRouter([
           { path: "employees/:employeeId", element: <EmployeeDetailPage /> },
           { path: "attendance", element: <AttendancePage /> },
           { path: "shifts", element: <ShiftsPage /> },
+          { path: "leave", element: <LeavePage /> },
+          { path: "leave/types", element: <LeaveTypesPage /> },
           { path: "approvals", element: <ApprovalsPage /> },
           { path: "approvals/mine", element: <MyRequestsPage /> },
           { path: "approvals/requests/:requestId", element: <RequestDetailPage /> },

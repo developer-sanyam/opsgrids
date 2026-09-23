@@ -2,6 +2,7 @@ import { useAuth, usePermission } from "@opsgrids/client";
 import {
   BuildingIcon,
   CalendarCheckIcon,
+  CalendarIcon,
   ClipboardListIcon,
   ClockIcon,
   HomeIcon,
@@ -22,6 +23,7 @@ const MAIN_MENU: NavGroup = {
   items: [
     { to: "/", label: "Dashboard", icon: HomeIcon, end: true },
     { to: "/attendance", label: "Attendance", icon: CalendarCheckIcon },
+    { to: "/leave", label: "Leave", icon: CalendarIcon },
   ],
 };
 
@@ -64,11 +66,15 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     ],
   };
 
+  const canReadLeaveTypes = usePermission("hrms.time.leave_type.read", "ORG");
   const records: NavGroup = {
     title: "Records",
     items: [
       { to: "/employees", label: "Employees", icon: UsersIcon },
       ...(canReadShifts ? ([{ to: "/shifts", label: "Shifts & geo-fences", icon: ClockIcon }] as NavEntry[]) : []),
+      ...(canReadLeaveTypes
+        ? ([{ to: "/leave/types", label: "Leave types", icon: ClipboardListIcon }] as NavEntry[])
+        : []),
       { to: "/departments", label: "Departments", icon: BuildingIcon },
       { to: "/locations", label: "Locations", icon: MapPinIcon },
     ],
