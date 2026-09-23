@@ -11,14 +11,20 @@ RabbitMQ: a dedicated vhost, created and torn down per test through the manageme
 (the `rabbitmq:3-management-alpine` image `make infra` already runs) — never the default `/`
 vhost every other suite's DLQ would collide with.
 
-Needs, once — a worktree-local `DATABASE_URL` pointed at `opsgrids_mon` instead of `opsgrids`:
+Needs, once — a worktree-local `DATABASE_URL` pointed at `opsgrids_mon` instead of `opsgrids`
+(this suite's own fixtures never trust that file either — see `_mon_dsn` below):
 
     make infra
     make ops-monitor-db
     cd services/account && DATABASE_URL=$MON_DSN uv run alembic upgrade head
     cd services/product && DATABASE_URL=$MON_DSN uv run alembic upgrade head
 
-where `$MON_DSN` is `postgresql+asyncpg://opsgrids:opsgrids@localhost:5434/opsgrids_mon`.
+where `$MON_DSN` is `postgresql+asyncpg://opsgrids:opsgrids@localhost:5434/opsgrids_mon`. If
+`DATABASE_URL` itself is repointed at `opsgrids_mon` for the whole worktree (so a stray test
+elsewhere in `libs` cannot fall back to the shared `opsgrids` database by accident), also
+migrate `activity` and `scheduler` the same way — `test_edge_relay_integration.py` and
+`test_outbox_relay_guaranteed_routing.py` need those two schemas to exist wherever
+`DATABASE_URL` points.
 """
 
 from __future__ import annotations
@@ -42,6 +48,7 @@ from sqlalchemy.ext.asyncio import (
 
 from platform_core.config import ServiceSettings
 from platform_core.edge_relay import SchemaSpec, _make_outbox_model
+from platform_core.logging import get_logger
 from platform_core.ops_monitor import checks
 from platform_core.ops_monitor.config import OpsMonitorSettings
 from platform_core.ops_monitor.mailer import Mailer
@@ -50,6 +57,12 @@ from platform_core.ops_monitor.state import MonitorState, Notification, Status, 
 
 pytestmark = pytest.mark.integration
 
+log = get_logger("test_ops_monitor_integration")
+
+#: Never the shared `opsgrids` database — a coordinator review of an earlier version of this
+#: suite found the worktree's own `.env` pointed `DATABASE_URL` at `opsgrids` (the database
+#: every other developer's `make infra` shares), which is exactly the mistake `_mon_dsn`'s own
+#: assertion below exists to catch even if a future `.env` regresses the same way.
 MON_DATABASE = "opsgrids_mon"
 RABBITMQ_MGMT_URL = "http://opsgrids:opsgrids@localhost:15673"
 MAILHOG_SMTP_PORT = 1026
@@ -63,9 +76,23 @@ class _MonSettings(ServiceSettings):
 
 def _mon_dsn(role: str | None) -> str:
     """`DATABASE_URL` with the database swapped to `opsgrids_mon` — never the shared
-    `opsgrids` database this monitor's own integration tests must not touch."""
+    `opsgrids` database this monitor's own integration tests must not touch, regardless of
+    what this worktree's own `.env` says `DATABASE_URL` is (a coordinator review found it
+    still pointed at the shared `opsgrids` database once — this override, not that file, is
+    what every fixture here actually trusts).
+
+    Also logs the resolved DSN (password redacted) every time this is called, so a
+    misconfigured `.env` is visible in the test output before a single query runs.
+    """
     base = _MonSettings().dsn_as(role)
-    return make_url(base).set(database=MON_DATABASE).render_as_string(hide_password=False)
+    url = make_url(base).set(database=MON_DATABASE)
+    assert url.database == MON_DATABASE  # the override above, made an explicit assertion
+    log.info(
+        "ops_monitor_test.resolved_dsn",
+        role=role,
+        dsn=url.render_as_string(hide_password=True),
+    )
+    return url.render_as_string(hide_password=False)
 
 
 def _admin_dsn() -> str:
@@ -113,6 +140,23 @@ async def _delete_row(admin_engine: AsyncEngine, schema: str, row_id: uuid.UUID)
         await conn.execute(text(statement), {"id": str(row_id)})
 
 
+class TestNeverTheSharedDatabase:
+    def test_mon_dsn_always_resolves_to_opsgrids_mon_regardless_of_database_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The exact regression a coordinator review caught: a worktree `.env` whose
+        `DATABASE_URL` still names the shared `opsgrids` database must not leak into this
+        suite's own connections — `_mon_dsn` overrides the database unconditionally, for
+        every role this suite ever asks for."""
+        monkeypatch.setenv(
+            "DATABASE_URL", "postgresql+asyncpg://opsgrids:opsgrids@localhost:5434/opsgrids"
+        )
+        for role in ("opsgrids_admin", "opsgrids_outbox", None):
+            resolved = _mon_dsn(role)
+            assert make_url(resolved).database == MON_DATABASE
+            assert make_url(resolved).database != "opsgrids"
+
+
 class TestOutboxLagFiring:
     async def test_a_stale_row_in_an_isolated_schema_reaches_firing(
         self, admin_engine: AsyncEngine, outbox_engine: AsyncEngine
@@ -139,6 +183,35 @@ class TestOutboxLagFiring:
             assert state.checks["outbox.account"].status is Status.FIRING
             assert len(notifications) == 1
             assert notifications[0].kind == "firing"
+        finally:
+            await _delete_row(admin_engine, "account", row_id)
+
+    async def test_a_warn_level_lag_does_not_fail_the_check(
+        self, admin_engine: AsyncEngine, outbox_engine: AsyncEngine
+    ) -> None:
+        """M7: warn is visible detail, never a failing observation — only crit opens a check
+        and pages anyone. A warn that paged would make "the outbox is a little slow"
+        indistinguishable from "the relay is dead"."""
+        row_id = await _insert_stale_row(admin_engine, "account", age=timedelta(minutes=6))
+        try:
+            observations = await checks.check_outbox_lag(
+                outbox_engine,
+                [SchemaSpec(schema="account", producer="account")],
+                warn_seconds=300,
+                crit_seconds=900,
+                max_attempts=50,
+            )
+            assert observations["outbox.account"].ok is True
+            assert "warn" in observations["outbox.account"].detail
+
+            state = MonitorState()
+            now = datetime(2026, 1, 1, tzinfo=UTC)
+            for i in range(5):
+                state, notifications = evaluate(
+                    state, observations, now + timedelta(minutes=i), pending_threshold=3
+                )
+                assert notifications == []
+            assert state.checks["outbox.account"].status is Status.OK
         finally:
             await _delete_row(admin_engine, "account", row_id)
 

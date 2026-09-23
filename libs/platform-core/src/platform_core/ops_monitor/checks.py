@@ -55,6 +55,7 @@ async def check_outbox_lag(
     warn_seconds: float,
     crit_seconds: float,
     max_attempts: int,
+    statement_timeout_seconds: float = 10.0,
 ) -> dict[str, Observation]:
     """One `outbox.<schema>` observation per configured schema.
 
@@ -62,19 +63,32 @@ async def check_outbox_lag(
     skipped entirely — not reported ok, not reported failing, simply absent from the return
     value this cycle, the same "a profile that is off just has no table" tolerance
     `edge_relay.py` already has for the identical situation.
+
+    Each schema gets its own **read-only** transaction with `SET LOCAL statement_timeout`
+    (m11/M4): `opsgrids_outbox` also holds `UPDATE` (it has to, for the relay this monitor
+    reuses the role of), but this check never issues one, and declaring the transaction
+    read-only means a bug here cannot write even by accident. The statement timeout means a
+    locked `outbox` table (a stuck relay, a long migration) costs this one schema a timed-out
+    observation rather than holding the connection — and the whole cycle behind it — open
+    indefinitely; `main._collect`'s own `asyncio.wait_for` is the second, outer bound.
     """
     results: dict[str, Observation] = {}
-    async with engine.connect() as conn:
-        for spec in schemas:
-            schema = spec.schema
-            exists = (
-                await conn.execute(text("SELECT to_regclass(:t)"), {"t": f"{schema}.outbox"})
-            ).scalar()
-            if exists is None:
-                continue
-            try:
+    timeout_ms = int(statement_timeout_seconds * 1000)
+    for spec in schemas:
+        schema = spec.schema
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(text("SET TRANSACTION READ ONLY"))
+                await conn.execute(text(f"SET LOCAL statement_timeout = {timeout_ms}"))
+                exists = (
+                    await conn.execute(text("SELECT to_regclass(:t)"), {"t": f"{schema}.outbox"})
+                ).scalar()
+                if exists is None:
+                    continue
                 # schema is this monitor's own configuration (EDGE_RELAY_SCHEMAS), never
-                # request input — the same trust boundary tools/outbox.py's identical query has.
+                # request input — the same trust boundary tools/outbox.py's identical query has,
+                # and validated against a plain-identifier pattern at config load
+                # (`config._validate_identifiers`).
                 query = (
                     "SELECT "  # noqa: S608
                     "count(*) FILTER (WHERE published_at IS NULL), "
@@ -86,34 +100,59 @@ async def check_outbox_lag(
                 pending, oldest, exhausted = (
                     await conn.execute(text(query), {"cap": max_attempts})
                 ).one()
-            except Exception as exc:
-                results[f"outbox.{schema}"] = Observation(
-                    ok=False, detail=f"query failed: {exc!s:.200}"
-                )
-                continue
-            oldest_seconds = float(oldest) if oldest is not None else 0.0
-            pending_count = int(pending or 0)
-            exhausted_count = int(exhausted or 0)
-            detail = (
-                f"pending={pending_count} oldest={oldest_seconds:.0f}s exhausted={exhausted_count}"
+        except Exception as exc:
+            results[f"outbox.{schema}"] = Observation(
+                ok=False, detail=f"query failed: {exc!s:.200}"
             )
-            if exhausted_count > 0:
-                ok = False
-                detail = f"{exhausted_count} exhausted row(s) — {detail}"
-            elif oldest_seconds >= crit_seconds:
-                ok = False
-                detail = f"oldest {oldest_seconds:.0f}s >= crit {crit_seconds:.0f}s — {detail}"
-            elif oldest_seconds >= warn_seconds:
-                ok = False
-                detail = f"oldest {oldest_seconds:.0f}s >= warn {warn_seconds:.0f}s — {detail}"
-            else:
-                ok = True
-            results[f"outbox.{schema}"] = Observation(ok=ok, detail=detail)
+            continue
+        oldest_seconds = float(oldest) if oldest is not None else 0.0
+        pending_count = int(pending or 0)
+        exhausted_count = int(exhausted or 0)
+        detail = f"pending={pending_count} oldest={oldest_seconds:.0f}s exhausted={exhausted_count}"
+        if exhausted_count > 0:
+            ok = False
+            detail = f"{exhausted_count} exhausted row(s) — {detail}"
+        elif oldest_seconds >= crit_seconds:
+            ok = False
+            detail = f"oldest {oldest_seconds:.0f}s >= crit {crit_seconds:.0f}s — {detail}"
+        elif oldest_seconds >= warn_seconds:
+            # Warn is visible on /status and in this Observation's detail, but it is NOT a
+            # failing observation (M7): only `crit` opens a check and pages anyone. A warn
+            # that paged would make "outbox is a little slow" indistinguishable from "the
+            # relay is dead", and the crit threshold exists precisely to be the one that does.
+            ok = True
+            detail = f"warn: oldest {oldest_seconds:.0f}s >= warn {warn_seconds:.0f}s — {detail}"
+        else:
+            ok = True
+        results[f"outbox.{schema}"] = Observation(ok=ok, detail=detail)
     return results
 
 
-async def check_dlq_depth(amqp_url: str, queue_names: Iterable[str]) -> dict[str, Observation]:
+def _is_dns_failure(exc: BaseException) -> bool:
+    """True when `exc`'s cause chain bottoms out in `socket.gaierror` — a name that does not
+    resolve on the compose network, which for `OPS_MONITOR_API_CONTAINERS` means "this
+    container's profile is off", not "this container is broken" (B3). A connection actively
+    refused, or a request that times out, is a real API failure and must not be swallowed the
+    same way — this checks the specific DNS-resolution exception, nothing broader."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, socket.gaierror):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+async def check_dlq_depth(
+    amqp_url: str, queue_names: Iterable[str], *, connect_timeout_seconds: float = 5.0
+) -> dict[str, Observation]:
     """One `dlq.<queue>` observation per configured consumer queue, checking `{queue}.dlq`.
+
+    `aio_pika.connect` (M4), not `connect_robust` — the robust variant retries forever on its
+    own schedule and never raises, which is right for a long-lived relay and wrong for a probe
+    that must report *this* cycle's outcome and give its connection back. `connect_timeout_seconds`
+    bounds the one thing that would otherwise hang past it: the broker not answering at all.
 
     A passive `queue_declare` on a queue that does not exist yet closes the channel it was
     issued on (that is plain AMQP, not a bug) — so a fresh channel is opened for every queue,
@@ -122,7 +161,7 @@ async def check_dlq_depth(amqp_url: str, queue_names: Iterable[str]) -> dict[str
     """
     results: dict[str, Observation] = {}
     try:
-        connection = await aio_pika.connect_robust(amqp_url)
+        connection = await aio_pika.connect(amqp_url, timeout=connect_timeout_seconds)
     except Exception as exc:
         detail = f"amqp connect failed: {exc!s:.200}"
         return {f"dlq.{q}": Observation(ok=False, detail=detail) for q in queue_names}
@@ -154,7 +193,11 @@ async def check_dlq_depth(amqp_url: str, queue_names: Iterable[str]) -> dict[str
 async def check_api_readiness(
     client: httpx.AsyncClient, containers: Mapping[str, int]
 ) -> dict[str, Observation]:
-    """One `api.<name>` observation per configured container, `GET http://<name>:<port>/health/ready`.
+    """One `api.<name>` observation per configured container, `GET http://<name>:<port>/health/ready`
+    — except a name that does not resolve on this network at all (B3): that container's own
+    product profile is off, and is skipped exactly like a schema with no `outbox` table, never
+    reported as a failure that would eventually page someone for a container this box was never
+    going to run.
 
     Hysteresis (3 consecutive fails before this fires) is `state.py`'s job, not this
     function's — it reports one HTTP call's outcome, nothing more.
@@ -171,6 +214,11 @@ async def check_api_readiness(
             results[f"api.{name}"] = Observation(
                 ok=ok, detail=f"HTTP {response.status_code} {body.get('status', '')}".strip()
             )
+        except httpx.ConnectError as exc:
+            if _is_dns_failure(exc):
+                log.info("ops_monitor.api_container_not_deployed", container=name)
+                continue
+            results[f"api.{name}"] = Observation(ok=False, detail=f"{url}: {exc!s:.200}")
         except Exception as exc:
             results[f"api.{name}"] = Observation(ok=False, detail=f"{url}: {exc!s:.200}")
     return results

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import smtplib
+import ssl
 from datetime import UTC, datetime
 from email.message import EmailMessage
 
@@ -67,6 +68,13 @@ class Mailer:
         return True
 
     def _send_sync(self, subject: str, body: str) -> None:
+        """M5: a verified TLS context on `starttls`, implicit TLS (`SMTP_SSL`) as an
+        alternative to it, and a hard refusal to `login()` — send a password anywhere — over a
+        connection that ended up neither. A default `starttls()` with no `context=` accepts
+        whatever the interpreter's own default happens to be, which has not always meant
+        "verified"; passing `ssl.create_default_context()` explicitly means this always checks
+        the hostname and the chain, on every Python this runs on.
+        """
         settings = self._settings
         message = EmailMessage()
         message["Subject"] = subject
@@ -74,9 +82,29 @@ class Mailer:
         message["To"] = settings.ops_alert_email
         message.set_content(body)
 
-        with smtplib.SMTP(settings.smtp_host or "", settings.smtp_port, timeout=10) as smtp:
+        if settings.smtp_use_tls and settings.smtp_use_ssl:
+            raise ValueError(
+                "SMTP_USE_TLS and SMTP_USE_SSL are mutually exclusive — STARTTLS upgrades a "
+                "plain connection, SSL/SMTPS is encrypted from the first byte; pick one"
+            )
+
+        context = ssl.create_default_context()
+        host = settings.smtp_host or ""
+        smtp: smtplib.SMTP
+        if settings.smtp_use_ssl:
+            smtp = smtplib.SMTP_SSL(host, settings.smtp_port, timeout=10, context=context)
+        else:
+            smtp = smtplib.SMTP(host, settings.smtp_port, timeout=10)
+
+        with smtp:
             if settings.smtp_use_tls:
-                smtp.starttls()
+                smtp.starttls(context=context)
+            encrypted = settings.smtp_use_tls or settings.smtp_use_ssl
             if settings.smtp_username:
+                if not encrypted:
+                    raise ValueError(
+                        "refusing to send SMTP_USERNAME/SMTP_PASSWORD over an unencrypted "
+                        "connection — set SMTP_USE_TLS or SMTP_USE_SSL"
+                    )
                 smtp.login(settings.smtp_username, settings.smtp_password or "")
             smtp.send_message(message)

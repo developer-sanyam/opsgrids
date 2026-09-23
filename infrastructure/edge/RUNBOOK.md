@@ -655,6 +655,16 @@ emails `OPS_ALERT_EMAIL` — direct SMTP, reusing the box's own `EMAIL_FROM`/`SM
 polls (about 3 minutes) before it *opens* and sends one email; once open it *reminds* every 6
 hours for as long as it keeps failing; 3 consecutive good polls *resolves* it and sends one more
 email. Every check that changes state in the same poll goes out in **one** email, not one each.
+A check that never fails 3 *in a row* but fails often enough — 3 of its last 5 polls, by
+default — still opens: pure consecutive counting would never catch a flapper that fails,
+passes, fails, passes, fails.
+
+**Delivery is retried, capped, and never claimed before it happens.** A failed send (SMTP
+down) does not consume the state machine's "notified" bookkeeping — the next poll retries
+immediately, for up to 5 consecutive cycles, before falling back to the normal cadence so a
+long SMTP outage is not hammered forever. A rolling cap (12 emails/hour by default) throttles
+the other direction: a box genuinely falling apart pages once per email, with a "N suppressed"
+note on the next one that does go out, not once per check per minute.
 
 | Check | Fires when | Where to look |
 |---|---|---|

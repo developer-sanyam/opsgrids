@@ -77,3 +77,21 @@ def test_negative_and_float_values_parse() -> None:
     text = render([Sample("ops_monitor_last_cycle_timestamp_seconds", 1735689600.5)])
     _, samples = _parse(text)
     assert samples == ["ops_monitor_last_cycle_timestamp_seconds 1735689600.5"]
+
+
+class TestLabelValueEscaping:
+    """m11: a label value that happens to carry a quote, a backslash or a newline must not
+    break the exposition format for every metric on the line, or the ones after it."""
+
+    def test_a_double_quote_is_escaped(self) -> None:
+        text = render([Sample("m", 1.0, {"check": 'say "hi"'})])
+        assert text == 'm{check="say \\"hi\\""} 1.0\n'
+
+    def test_a_backslash_is_escaped_before_the_quote_escape_is_added(self) -> None:
+        text = render([Sample("m", 1.0, {"check": "a\\b"})])
+        assert text == 'm{check="a\\\\b"} 1.0\n'
+
+    def test_a_newline_is_escaped(self) -> None:
+        text = render([Sample("m", 1.0, {"check": "line1\nline2"})])
+        assert text == 'm{check="line1\\nline2"} 1.0\n'
+        assert text.count("\n") == 1  # the escaped \n is literal text, not a real newline

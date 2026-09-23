@@ -34,6 +34,12 @@ class MonitorRuntime:
     state: MonitorState = field(default_factory=MonitorState)
     last_cycle_at: datetime | None = None
     last_cycle_error: str | None = None
+    #: M6/m9 delivery bookkeeping — not persisted (`state.py`'s `MonitorState` carries only
+    #: check history), because it describes this *process's* recent sending, not a fact about
+    #: any check: a restart is allowed to start the hourly cap and the retry count fresh.
+    sent_at_history: list[datetime] = field(default_factory=list)
+    consecutive_send_failures: int = 0
+    suppressed_count: int = 0
 
 
 _HELP = {
@@ -87,6 +93,8 @@ def render_status(runtime: MonitorRuntime, mailer: Mailer) -> dict[str, Any]:
             }
             for name, cs in sorted(runtime.state.checks.items())
         },
+        "notifications_suppressed_this_hour": runtime.suppressed_count,
+        "consecutive_send_failures": runtime.consecutive_send_failures,
         **mailer.status(),
     }
 

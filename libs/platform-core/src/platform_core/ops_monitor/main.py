@@ -1,10 +1,22 @@
 """Wires `state`, `checks`, `mailer` and `server` into the running process.
 
-One 60-second loop (`ops_monitor_poll_interval_seconds`): run every check, feed the results to
-`state.evaluate()`, persist the result, send one grouped email for whatever changed this cycle,
-touch the heartbeat file, and — once a day — ask `state.evaluate_digest()` whether the dead-man's
-switch should fire. The HTTP server (`server.build_app`) runs alongside it as a second task in
-the same event loop, reading the same `MonitorRuntime` the loop writes.
+One 60-second loop (`ops_monitor_poll_interval_seconds`): run every check (each bounded by
+`asyncio.wait_for`, M4), feed the results to `state.evaluate()`, persist the result, send one
+grouped email for whatever changed this cycle, touch the heartbeat file, and — once a day — ask
+`state.evaluate_digest()` whether the dead-man's switch should fire. The HTTP server
+(`server.build_app`) runs alongside it as a second task in the same event loop, reading the same
+`MonitorRuntime` the loop writes.
+
+**M6, delivery is not the same event as detection.** `state.evaluate()`/`evaluate_digest()`
+advance a check's real status unconditionally — that is a fact about the world, observed this
+cycle, independent of whether anyone gets told about it. But the *bookkeeping* those functions
+also advance (`last_notified_at`, `last_digest_date`) exists only to pace *delivery*, and
+committing it before delivery has actually succeeded means a transient SMTP outage silently
+eats a firing/reminder/digest notification for a full interval. `run_cycle_and_notify` reverts
+just that bookkeeping when `mailer.send` fails, up to `ops_monitor_max_immediate_send_retries`
+consecutive cycles, before giving up and falling back to the normal cadence — and a rolling cap
+(`ops_monitor_max_emails_per_hour`) throttles delivery itself so a genuinely falling-apart box
+pages a human once, with a "N suppressed" note, not once per check per cycle.
 """
 
 from __future__ import annotations
@@ -13,6 +25,7 @@ import asyncio
 import signal
 from collections.abc import Awaitable
 from contextlib import suppress
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -26,6 +39,8 @@ from platform_core.ops_monitor.config import OpsMonitorSettings
 from platform_core.ops_monitor.mailer import Mailer
 from platform_core.ops_monitor.server import MonitorRuntime, build_app
 from platform_core.ops_monitor.state import (
+    CheckState,
+    MonitorState,
     Notification,
     Observation,
     dump,
@@ -51,20 +66,50 @@ def parse_api_containers(entries: list[str]) -> dict[str, int]:
 
 
 async def _collect(
-    name: str, coro: Awaitable[dict[str, Observation]], observations: dict[str, Observation]
+    name: str,
+    coro: Awaitable[dict[str, Observation]],
+    observations: dict[str, Observation],
+    *,
+    timeout_seconds: float,
 ) -> None:
-    """Run one probe and merge its results into `observations`.
+    """Run one probe, bounded by `timeout_seconds` (M4), and merge its results into
+    `observations`.
 
-    A probe that raises is reported as one failing observation named after it, rather than
-    dropping the cycle's results for every check that probe would have produced — an absent
-    check name is a check `state.evaluate()` leaves untouched (looks like nothing happened),
-    which is the wrong outcome for "this probe just crashed".
+    A probe that raises — or that outlives its timeout, a hung broker or a locked table being
+    exactly the case this bounds — is reported as one failing observation named after it,
+    rather than dropping the cycle's results for every check that probe would have produced (an
+    absent check name is a check `state.evaluate()` leaves untouched, which looks like nothing
+    happened — the wrong outcome for "this probe just hung or crashed"), and never blocks the
+    other probes or the heartbeat behind it.
     """
     try:
-        observations.update(await coro)
+        observations.update(await asyncio.wait_for(coro, timeout=timeout_seconds))
+    except TimeoutError:
+        observations[name] = Observation(ok=False, detail=f"timed out after {timeout_seconds:.0f}s")
+        log.error("ops_monitor.probe_timed_out", probe=name, timeout_seconds=timeout_seconds)
     except Exception as exc:  # a probe's own bug must not sink the whole cycle
         observations[name] = Observation(ok=False, detail=f"probe crashed: {exc!s:.200}")
         log.error("ops_monitor.probe_crashed", probe=name, error=str(exc)[:300])
+
+
+async def _check_disk_async(path: str, *, min_free_percent: float) -> dict[str, Observation]:
+    return await asyncio.to_thread(checks.check_disk, path, min_free_percent=min_free_percent)
+
+
+async def _check_backup_freshness_async(
+    marker_path: Path, *, max_age_hours: float, now: datetime
+) -> dict[str, Observation]:
+    return await asyncio.to_thread(
+        checks.check_backup_freshness, marker_path, max_age_hours=max_age_hours, now=now
+    )
+
+
+async def _check_cert_expiry_async(
+    host: str, *, port: int, sni: str, warn_days: int, now: datetime
+) -> dict[str, Observation]:
+    return await asyncio.to_thread(
+        checks.check_cert_expiry, host, port=port, sni=sni, warn_days=warn_days, now=now
+    )
 
 
 async def run_one_cycle(
@@ -74,8 +119,14 @@ async def run_one_cycle(
     http_client: httpx.AsyncClient,
     now: datetime,
 ) -> dict[str, Observation]:
-    """Run every configured check and merge the results into one observations mapping."""
+    """Run every configured check and merge the results into one observations mapping.
+
+    Every probe — outbox, DLQ, API, disk, backup and cert alike (M4) — goes through `_collect`,
+    so one hung or crashing check can cost this cycle only its own observation, never the
+    others, and never the heartbeat write that proves the loop itself is still alive.
+    """
     observations: dict[str, Observation] = {}
+    timeout = settings.ops_monitor_probe_timeout_seconds
 
     await _collect(
         "outbox",
@@ -85,13 +136,20 @@ async def run_one_cycle(
             warn_seconds=settings.ops_monitor_outbox_warn_seconds,
             crit_seconds=settings.ops_monitor_outbox_crit_seconds,
             max_attempts=settings.ops_monitor_outbox_max_attempts,
+            statement_timeout_seconds=settings.ops_monitor_outbox_statement_timeout_seconds,
         ),
         observations,
+        timeout_seconds=timeout,
     )
     await _collect(
         "dlq",
-        checks.check_dlq_depth(settings.rabbitmq_url, settings.ops_monitor_dlq_queues),
+        checks.check_dlq_depth(
+            settings.rabbitmq_url,
+            settings.ops_monitor_dlq_queues,
+            connect_timeout_seconds=settings.ops_monitor_amqp_connect_timeout_seconds,
+        ),
         observations,
+        timeout_seconds=timeout,
     )
     await _collect(
         "api",
@@ -99,41 +157,47 @@ async def run_one_cycle(
             http_client, parse_api_containers(settings.ops_monitor_api_containers)
         ),
         observations,
+        timeout_seconds=timeout,
     )
-
-    try:
-        observations.update(
-            checks.check_disk(
-                settings.ops_monitor_disk_path,
-                min_free_percent=settings.ops_monitor_disk_min_free_percent,
-            )
-        )
-    except OSError as exc:
-        observations["disk"] = Observation(ok=False, detail=f"probe crashed: {exc!s:.200}")
-
-    observations.update(
-        checks.check_backup_freshness(
+    await _collect(
+        "disk",
+        _check_disk_async(
+            settings.ops_monitor_disk_path,
+            min_free_percent=settings.ops_monitor_disk_min_free_percent,
+        ),
+        observations,
+        timeout_seconds=timeout,
+    )
+    await _collect(
+        "backup",
+        _check_backup_freshness_async(
             Path(settings.ops_monitor_backup_marker_path),
             max_age_hours=settings.ops_monitor_backup_max_age_hours,
             now=now,
-        )
+        ),
+        observations,
+        timeout_seconds=timeout,
     )
-    observations.update(
-        await asyncio.to_thread(
-            checks.check_cert_expiry,
+    await _collect(
+        "cert",
+        _check_cert_expiry_async(
             settings.ops_monitor_cert_host,
             port=settings.ops_monitor_cert_port,
             sni=settings.edge_host,
             warn_days=settings.ops_monitor_cert_warn_days,
             now=now,
-        )
+        ),
+        observations,
+        timeout_seconds=timeout,
     )
     return observations
 
 
-def format_email(notifications: list[Notification]) -> tuple[str, str]:
+def format_email(notifications: list[Notification], *, suppressed: int = 0) -> tuple[str, str]:
     """One subject/body covering every check that changed this cycle — "one email per cycle
-    grouping all changed checks", never one email per check."""
+    grouping all changed checks", never one email per check. `suppressed` (m9) notes how many
+    earlier notifications this hour were held back by the rate cap, so the next email that does
+    go out says so instead of the gap looking like silence."""
     opened = [n for n in notifications if n.kind == "firing"]
     reminders = [n for n in notifications if n.kind == "reminder"]
     resolved = [n for n in notifications if n.kind == "resolved"]
@@ -148,9 +212,17 @@ def format_email(notifications: list[Notification]) -> tuple[str, str]:
         parts.append(f"{len(resolved)} resolved")
     if digest:
         parts.append("daily digest")
+    if suppressed:
+        parts.append(f"{suppressed} suppressed")
     subject = f"[opsgrids] ops-monitor: {', '.join(parts) or 'update'}"
 
     lines: list[str] = []
+    if suppressed:
+        lines.append(
+            f"-- {suppressed} earlier notification(s) this hour were suppressed by the "
+            "per-hour cap --"
+        )
+        lines.append("")
     for group_name, group in (
         ("OPENED", opened),
         ("STILL FIRING", reminders),
@@ -163,6 +235,78 @@ def format_email(notifications: list[Notification]) -> tuple[str, str]:
         lines.extend(f"{n.check}: {n.detail}" for n in group)
         lines.append("")
     return subject, "\n".join(lines).strip() + "\n"
+
+
+def _revert_notification_bookkeeping(
+    prev_state: MonitorState, new_state: MonitorState, notifications: list[Notification]
+) -> MonitorState:
+    """M6: undo only the *delivery* bookkeeping (`last_notified_at`, `last_digest_date`) for a
+    cycle whose email did not go out — never a check's real status, which reflects an actual
+    observation regardless of whether anyone was told about it. Reverting `last_notified_at`
+    back to what it was before this cycle's `evaluate()` call means next cycle's reminder-due
+    check sees it as still due, so a failed send is retried immediately rather than waiting a
+    full `ops_monitor_reminder_interval_seconds`."""
+    reverted_checks = dict(new_state.checks)
+    for note in notifications:
+        if note.kind in ("firing", "reminder") and note.check in reverted_checks:
+            prev_check = prev_state.checks.get(note.check, CheckState())
+            reverted_checks[note.check] = replace(
+                reverted_checks[note.check], last_notified_at=prev_check.last_notified_at
+            )
+    last_digest_date = new_state.last_digest_date
+    if any(note.kind == "digest" for note in notifications):
+        last_digest_date = prev_state.last_digest_date
+    return MonitorState(checks=reverted_checks, last_digest_date=last_digest_date)
+
+
+async def _deliver(
+    settings: OpsMonitorSettings,
+    runtime: MonitorRuntime,
+    mailer: Mailer,
+    notifications: list[Notification],
+    now: datetime,
+) -> bool:
+    """Send this cycle's notifications, or decide not to — the rate cap (m9) and the bounded
+    immediate-retry count (M6) both live here. Returns whether the caller should treat this
+    cycle's notification bookkeeping as committed (`True`) or reverted for a retry (`False`).
+    """
+    runtime.sent_at_history = [t for t in runtime.sent_at_history if now - t < timedelta(hours=1)]
+    if len(runtime.sent_at_history) >= settings.ops_monitor_max_emails_per_hour:
+        runtime.suppressed_count += len(notifications)
+        log.warning(
+            "ops_monitor.notification_suppressed",
+            count=len(notifications),
+            suppressed_total=runtime.suppressed_count,
+            cap=settings.ops_monitor_max_emails_per_hour,
+        )
+        # A rate-limit is a deliberate policy choice, not a delivery failure — the check
+        # really did change state, and retrying it every cycle just to re-hit the same cap
+        # would be pointless. Bookkeeping commits; the next email under the cap says how many
+        # were held back.
+        return True
+
+    subject, body = format_email(notifications, suppressed=runtime.suppressed_count)
+    delivered = await mailer.send(subject, body)
+    for n in notifications:
+        log.info("ops_monitor.notification", check=n.check, kind=n.kind, detail=n.detail)
+
+    if delivered:
+        runtime.sent_at_history.append(now)
+        runtime.consecutive_send_failures = 0
+        runtime.suppressed_count = 0
+        return True
+
+    runtime.consecutive_send_failures += 1
+    if runtime.consecutive_send_failures > settings.ops_monitor_max_immediate_send_retries:
+        # Stop hammering a broken SMTP config every single cycle — fall back to the normal
+        # reminder/digest cadence, and let the next real change try again from a clean slate.
+        log.error(
+            "ops_monitor.notification_retry_exhausted",
+            consecutive_failures=runtime.consecutive_send_failures,
+        )
+        runtime.consecutive_send_failures = 0
+        return True
+    return False
 
 
 async def run_cycle_and_notify(
@@ -184,6 +328,8 @@ async def run_cycle_and_notify(
         pending_threshold=settings.ops_monitor_pending_threshold,
         recovery_threshold=settings.ops_monitor_recovery_threshold,
         reminder_interval=timedelta(seconds=settings.ops_monitor_reminder_interval_seconds),
+        flap_window=settings.ops_monitor_flap_window,
+        flap_threshold=settings.ops_monitor_flap_threshold,
     )
     new_state, digest_notification = evaluate_digest(
         new_state, now, digest_hour_utc=settings.ops_monitor_digest_hour_utc
@@ -192,20 +338,43 @@ async def run_cycle_and_notify(
         notifications.append(digest_notification)
 
     if notifications:
-        subject, body = format_email(notifications)
-        await mailer.send(subject, body)
-        for n in notifications:
-            log.info("ops_monitor.notification", check=n.check, kind=n.kind, detail=n.detail)
+        committed = await _deliver(settings, runtime, mailer, notifications, now)
+        if not committed:
+            new_state = _revert_notification_bookkeeping(runtime.state, new_state, notifications)
 
     runtime.state = new_state
     runtime.last_cycle_at = now
     runtime.last_cycle_error = None
-    dump(new_state, Path(settings.ops_monitor_state_path))
+    _dump_safely(new_state, Path(settings.ops_monitor_state_path))
+
+
+def _dump_safely(state: MonitorState, path: Path) -> None:
+    """B2: a state write that fails (an unwritable directory, a full disk) is logged, never
+    fatal — the loop keeps running on the in-memory state `runtime.state` already holds
+    (assigned by the caller before this is called), and the next successful write catches up.
+    A monitor that crashes because it cannot persist its own bookkeeping is worse than one that
+    persists nothing until the underlying problem — usually a permissions mismatch between this
+    container's `user:` and the bind mount's owner, see `compose.prod.yml`'s own comment on
+    `ops-monitor` — is fixed."""
+    try:
+        dump(state, path)
+    except OSError as exc:
+        log.error("ops_monitor.state_write_failed", path=str(path), error=str(exc)[:300])
 
 
 def _write_heartbeat(path: Path, now: datetime) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(now.isoformat(), encoding="utf-8")
+
+
+def _write_heartbeat_safely(path: Path, now: datetime) -> None:
+    """B2: same reasoning as `_dump_safely` — a heartbeat write failing must not be what takes
+    the process down; it already tells the container's own healthcheck that something is
+    wrong (a stale heartbeat) without also killing the loop trying to check anything else."""
+    try:
+        _write_heartbeat(path, now)
+    except OSError as exc:
+        log.error("ops_monitor.heartbeat_write_failed", path=str(path), error=str(exc)[:300])
 
 
 async def poll_loop(settings: OpsMonitorSettings, runtime: MonitorRuntime, mailer: Mailer) -> None:
@@ -217,7 +386,13 @@ async def poll_loop(settings: OpsMonitorSettings, runtime: MonitorRuntime, maile
         pool_size=2,
         max_overflow=2,
         pool_pre_ping=True,
-        connect_args={"server_settings": {"application_name": "ops-monitor"}},
+        connect_args={
+            "server_settings": {"application_name": "ops-monitor"},
+            # M4: bound the TCP/handshake connect itself — a Postgres that accepts the socket
+            # and then never answers (a host-level network problem, not a query-level one)
+            # must not hang past this, independent of the per-query statement_timeout below.
+            "timeout": settings.ops_monitor_probe_timeout_seconds,
+        },
     )
     http_client = httpx.AsyncClient()
 
@@ -241,7 +416,7 @@ async def poll_loop(settings: OpsMonitorSettings, runtime: MonitorRuntime, maile
             # independent of whether any individual check succeeded. The compose healthcheck
             # is `find heartbeat -mmin -3`: three missed cycles at the default interval.
             # Off the event loop: `Path.write_text` is a blocking syscall, however small.
-            await asyncio.to_thread(_write_heartbeat, heartbeat_path, now)
+            await asyncio.to_thread(_write_heartbeat_safely, heartbeat_path, now)
 
             await asyncio.sleep(settings.ops_monitor_poll_interval_seconds)
     finally:

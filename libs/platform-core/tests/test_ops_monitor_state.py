@@ -282,3 +282,153 @@ class TestPersistence:
         assert path.exists()
         assert not path.with_suffix(path.suffix + ".tmp").exists()
         assert json.loads(path.read_text(encoding="utf-8")) == MonitorState().to_dict()
+
+
+class TestFlapping:
+    """m9: a check that never fails N times *in a row* but fails often enough over a short
+    window is not healthy, and pure consecutive-fail hysteresis would never open for it."""
+
+    def test_pure_consecutive_hysteresis_alone_never_opens_a_2_of_3_flapper(self) -> None:
+        """The failure mode this feature exists to fix: fail, ok, fail, ok, fail — 3 of 5,
+        never 2 in a row — must open under `flap_threshold=3`."""
+        state = MonitorState()
+        pattern = [_fail(), _ok(), _fail(), _ok(), _fail()]
+        notes: list[Notification] = []
+        for i, obs in enumerate(pattern):
+            state, notes = evaluate(
+                state,
+                {"flaky": obs},
+                _tick(i),
+                pending_threshold=3,  # never reached — no 3 IN A ROW in this pattern
+                flap_window=5,
+                flap_threshold=3,
+            )
+        assert state.checks["flaky"].status is Status.FIRING
+        assert len(notes) == 1
+        assert notes[0].kind == "firing"
+        assert "flapping" in notes[0].detail
+
+    def test_two_failures_in_the_window_do_not_open(self) -> None:
+        state = MonitorState()
+        pattern = [_fail(), _ok(), _ok(), _fail(), _ok()]
+        for i, obs in enumerate(pattern):
+            state, notes = evaluate(
+                state,
+                {"flaky": obs},
+                _tick(i),
+                pending_threshold=3,
+                flap_window=5,
+                flap_threshold=3,
+            )
+            assert notes == []
+        assert state.checks["flaky"].status is Status.OK
+
+    def test_the_window_is_maintained_on_passes_too_so_old_failures_age_out(self) -> None:
+        """Two fails, then enough passes to push both out of a window of 3 — the check must
+        not still read as flapping just because it failed at some point in the distant past."""
+        state = MonitorState()
+        for i, obs in enumerate([_fail(), _fail(), _ok(), _ok(), _ok()]):
+            state, _ = evaluate(
+                state,
+                {"flaky": obs},
+                _tick(i),
+                pending_threshold=3,
+                flap_window=3,
+                flap_threshold=2,
+            )
+        assert state.checks["flaky"].recent == (True, True, True)
+        assert state.checks["flaky"].status is Status.OK
+
+    def test_flapping_state_round_trips_through_dump_and_load(self, tmp_path: Path) -> None:
+        state = MonitorState()
+        for i, obs in enumerate([_fail(), _ok(), _fail()]):
+            state, _ = evaluate(state, {"flaky": obs}, _tick(i), flap_window=5, flap_threshold=3)
+        path = tmp_path / "ops-monitor.json"
+        dump(state, path)
+        loaded = load(path)
+        assert loaded.checks["flaky"].recent == state.checks["flaky"].recent
+
+
+class TestRobustLoad:
+    """m8: a single corrupt entry in the state file must degrade only that entry, and never
+    crash the process reading it."""
+
+    def _write(self, path: Path, payload: object) -> None:
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def test_checks_field_as_a_list_is_treated_as_no_history(self, tmp_path: Path) -> None:
+        path = tmp_path / "s.json"
+        self._write(path, {"checks": [], "last_digest_date": None})
+        assert load(path) == MonitorState()
+
+    def test_checks_field_as_null_is_treated_as_no_history(self, tmp_path: Path) -> None:
+        path = tmp_path / "s.json"
+        self._write(path, {"checks": None, "last_digest_date": None})
+        assert load(path) == MonitorState()
+
+    def test_top_level_null_is_a_cold_but_valid_start(self, tmp_path: Path) -> None:
+        path = tmp_path / "s.json"
+        self._write(path, None)
+        assert load(path) == MonitorState()
+
+    def test_top_level_list_is_a_cold_but_valid_start(self, tmp_path: Path) -> None:
+        path = tmp_path / "s.json"
+        self._write(path, [1, 2, 3])
+        assert load(path) == MonitorState()
+
+    def test_a_bad_status_on_one_check_degrades_only_that_check(self, tmp_path: Path) -> None:
+        path = tmp_path / "s.json"
+        self._write(
+            path,
+            {
+                "checks": {
+                    "good": CheckState(status=Status.FIRING, consecutive_fails=5).to_dict(),
+                    "bad": {"status": "not-a-real-status"},
+                },
+                "last_digest_date": None,
+            },
+        )
+        loaded = load(path)
+        assert loaded.checks["good"].status is Status.FIRING
+        assert loaded.checks["good"].consecutive_fails == 5
+        assert loaded.checks["bad"] == CheckState()
+
+    def test_a_bad_timestamp_on_one_check_degrades_only_that_check(self, tmp_path: Path) -> None:
+        path = tmp_path / "s.json"
+        self._write(
+            path,
+            {
+                "checks": {
+                    "good": CheckState(status=Status.OK).to_dict(),
+                    "bad": {"status": "firing", "last_notified_at": "not-a-timestamp"},
+                },
+                "last_digest_date": None,
+            },
+        )
+        loaded = load(path)
+        assert loaded.checks["good"].status is Status.OK
+        assert loaded.checks["bad"] == CheckState()
+
+    def test_a_non_list_recent_field_degrades_only_that_check(self, tmp_path: Path) -> None:
+        path = tmp_path / "s.json"
+        self._write(
+            path,
+            {
+                "checks": {"bad": {"status": "ok", "recent": "not-a-list"}},
+                "last_digest_date": None,
+            },
+        )
+        loaded = load(path)
+        assert loaded.checks["bad"] == CheckState()
+
+    def test_a_non_string_last_digest_date_is_dropped(self, tmp_path: Path) -> None:
+        path = tmp_path / "s.json"
+        self._write(path, {"checks": {}, "last_digest_date": 12345})
+        loaded = load(path)
+        assert loaded.last_digest_date is None
+
+    def test_a_non_dict_check_entry_degrades_to_fresh(self, tmp_path: Path) -> None:
+        path = tmp_path / "s.json"
+        self._write(path, {"checks": {"bad": "not-a-mapping"}, "last_digest_date": None})
+        loaded = load(path)
+        assert loaded.checks["bad"] == CheckState()

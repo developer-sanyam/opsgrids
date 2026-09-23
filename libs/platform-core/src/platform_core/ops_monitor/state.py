@@ -6,13 +6,27 @@ Every check moves through the same four-state ladder, independently of every oth
            ^  |          |
            |  +--(pass)--+ (back to ok before N fails)
            +-------(N consecutive fails)---------> firing: ONE "opened" notification
+           +-------(F fails within the last W polls)------> firing, same notification
+                     (a flapper that never fails N times *in a row* still opens — see
+                     "Flapping" below)
     firing -> (M consecutive passes) -> ok: ONE "resolved" notification
     firing -> (still failing, >= reminder_interval since the last notification) -> firing:
               ONE "reminder" notification, and the clock resets
 
+**Flapping.** A check that fails, passes, fails, passes, fails never reaches N *consecutive*
+fails and would never open under pure hysteresis — which is wrong, because three failures in
+five polls is not a healthy check. Every `CheckState` keeps a short rolling window of its last
+`flap_window` pass/fail results (default 5); opening also fires when `flap_threshold` (default
+3) or more of them are failures, regardless of the consecutive-fail counter. The window is
+maintained every cycle, on a pass or a fail alike, so a check that stabilises ages the bad
+results out of it in `flap_window` polls without needing anything special to happen.
+
 `evaluate()` processes every check in one call and returns every notification that call
 produced — so "one email per cycle grouping all changed checks" is just "one call to the
-mailer per call to `evaluate()`" in `main.py`; this module never sends anything itself.
+mailer per call to `evaluate()`" in `main.py`; this module never sends anything itself, and it
+never decides whether a send succeeded — see `main.py`'s own handling of that (M6): a failed
+send must not consume the reminder/digest clock this module advances, so the caller is
+responsible for reverting `last_notified_at`/`last_digest_date` on a failed send, not this one.
 
 `evaluate_digest()` is the dead-man's switch: once a day, at a fixed hour, if nothing is
 firing, it produces one "digest" notification saying so. It never fires while something is
@@ -20,7 +34,10 @@ already firing — the reminder above already covers that case, and a digest on 
 reminder is one more email to read at 3am for no new information.
 
 Persistence (`dump`/`load`) is JSON to `state/ops-monitor.json`, not the database — this
-process must keep working when Postgres is the thing it is watching.
+process must keep working when Postgres is the thing it is watching. Loading is defensive on
+purpose (m8): a single corrupt check's entry, or a state file that predates a field this module
+now expects, degrades that one check back to fresh rather than crashing the whole process on
+its own persisted history.
 """
 
 from __future__ import annotations
@@ -33,12 +50,20 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final
 
+from platform_core.logging import get_logger
+
+log = get_logger("ops_monitor")
+
 #: Defaults named here, not scattered as bare literals through `evaluate`'s signature and
 #: `config.py` both — one place to change the platform's idea of "how many fails is real".
 DEFAULT_PENDING_THRESHOLD: Final[int] = 3
 DEFAULT_RECOVERY_THRESHOLD: Final[int] = 3
 DEFAULT_REMINDER_INTERVAL: Final[timedelta] = timedelta(hours=6)
 DEFAULT_DIGEST_HOUR_UTC: Final[int] = 8
+#: m9: a check that fails this many times or more within the last `DEFAULT_FLAP_WINDOW` polls
+#: opens even without `DEFAULT_PENDING_THRESHOLD` consecutive fails.
+DEFAULT_FLAP_WINDOW: Final[int] = 5
+DEFAULT_FLAP_THRESHOLD: Final[int] = 3
 
 
 class Status(StrEnum):
@@ -67,6 +92,10 @@ class CheckState:
     #: ISO-8601, UTC. The last time this check caused a notification (opened or reminder) —
     #: what the 6-hour reminder cadence is measured from. Cleared on resolution.
     last_notified_at: str | None = None
+    #: m9: the last `flap_window` pass(`True`)/fail(`False`) results, oldest first. Bounded by
+    #: whatever `flap_window` `evaluate()` is called with; a longer or shorter window than a
+    #: persisted history simply grows or is trimmed on the next cycle.
+    recent: tuple[bool, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,17 +105,32 @@ class CheckState:
             "last_detail": self.last_detail,
             "since": self.since,
             "last_notified_at": self.last_notified_at,
+            "recent": list(self.recent),
         }
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> CheckState:
+        """Raises on anything unparseable — callers (`MonitorState.from_dict`) catch per
+        entry, so one bad check's history degrades that check back to fresh rather than
+        taking every other check's history down with it."""
+        recent_raw = raw.get("recent", [])
+        if not isinstance(recent_raw, list):
+            raise ValueError(f"'recent' must be a list, got {type(recent_raw).__name__}")
+        since = raw.get("since")
+        last_notified_at = raw.get("last_notified_at")
+        for name, value in (("since", since), ("last_notified_at", last_notified_at)):
+            if value is not None:
+                if not isinstance(value, str):
+                    raise ValueError(f"{name!r} must be a string or null")
+                datetime.fromisoformat(value)  # raises ValueError on anything unparseable
         return cls(
             status=Status(raw.get("status", Status.OK.value)),
             consecutive_fails=int(raw.get("consecutive_fails", 0)),
             consecutive_passes=int(raw.get("consecutive_passes", 0)),
             last_detail=str(raw.get("last_detail", "")),
-            since=raw.get("since"),
-            last_notified_at=raw.get("last_notified_at"),
+            since=since,
+            last_notified_at=last_notified_at,
+            recent=tuple(bool(v) for v in recent_raw),
         )
 
 
@@ -114,8 +158,41 @@ class MonitorState:
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> MonitorState:
-        checks = {name: CheckState.from_dict(cs) for name, cs in raw.get("checks", {}).items()}
-        return cls(checks=checks, last_digest_date=raw.get("last_digest_date"))
+        """Never raises (m8): a state file this defensive about its own history has no excuse
+        crashing the process that reads it. `checks` that is not a mapping at all (`[]`,
+        `null`, a stray string) is treated as "no history yet"; any *individual* check whose
+        entry cannot be parsed (a bad `status`, an unparseable timestamp, `recent` that is not
+        a list) is logged and dropped back to a fresh `CheckState()` rather than taking the
+        whole file down with it — the alternative is a single corrupt entry permanently
+        wiping every other check's carefully-built hysteresis history on the next restart.
+        """
+        raw_checks = raw.get("checks")
+        checks: dict[str, CheckState] = {}
+        if isinstance(raw_checks, Mapping):
+            for name, entry in raw_checks.items():
+                try:
+                    if not isinstance(entry, Mapping):
+                        raise ValueError(f"expected a mapping, got {type(entry).__name__}")
+                    checks[name] = CheckState.from_dict(entry)
+                except Exception as exc:  # one bad entry must not sink every other check
+                    log.warning(
+                        "ops_monitor.state.corrupt_check_entry",
+                        check=name,
+                        error=str(exc)[:200],
+                    )
+                    checks[name] = CheckState()
+        elif raw_checks not in (None, {}):
+            log.warning(
+                "ops_monitor.state.corrupt_checks_field",
+                type=type(raw_checks).__name__,
+            )
+
+        last_digest_date = raw.get("last_digest_date")
+        if last_digest_date is not None and not isinstance(last_digest_date, str):
+            log.warning("ops_monitor.state.corrupt_last_digest_date", value=repr(last_digest_date))
+            last_digest_date = None
+
+        return cls(checks=checks, last_digest_date=last_digest_date)
 
 
 def _now_iso(now: datetime) -> str:
@@ -126,6 +203,14 @@ def _parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
+def _push_recent(prev: tuple[bool, ...], ok: bool, *, flap_window: int) -> tuple[bool, ...]:
+    return (*prev, ok)[-flap_window:]
+
+
+def _is_flapping(recent: tuple[bool, ...], *, flap_threshold: int) -> bool:
+    return sum(1 for ok in recent if not ok) >= flap_threshold
+
+
 def _evaluate_one(
     prev: CheckState,
     obs: Observation,
@@ -134,8 +219,11 @@ def _evaluate_one(
     pending_threshold: int,
     recovery_threshold: int,
     reminder_interval: timedelta,
+    flap_window: int,
+    flap_threshold: int,
 ) -> tuple[CheckState, Notification | None]:
     now_iso = _now_iso(now)
+    recent = _push_recent(prev.recent, obs.ok, flap_window=flap_window)
 
     if obs.ok:
         if prev.status is Status.FIRING:
@@ -147,6 +235,7 @@ def _evaluate_one(
                         last_detail=obs.detail,
                         since=now_iso,
                         last_notified_at=None,
+                        recent=recent,
                     ),
                     Notification(check="", kind="resolved", detail=obs.detail),
                 )
@@ -156,6 +245,7 @@ def _evaluate_one(
                     consecutive_passes=passes,
                     consecutive_fails=0,
                     last_detail=obs.detail,
+                    recent=recent,
                 ),
                 None,
             )
@@ -163,54 +253,40 @@ def _evaluate_one(
             # Recovered before the pending threshold was reached — nothing was ever sent,
             # so there is nothing to resolve either.
             return (
-                CheckState(status=Status.OK, last_detail=obs.detail, since=now_iso),
+                CheckState(status=Status.OK, last_detail=obs.detail, since=now_iso, recent=recent),
                 None,
             )
         # Already OK: just refresh the detail so /status shows the latest reading.
         return (
-            replace(prev, last_detail=obs.detail, since=prev.since or now_iso),
+            replace(prev, last_detail=obs.detail, since=prev.since or now_iso, recent=recent),
             None,
         )
 
     # obs.ok is False from here down.
-    if prev.status is Status.OK:
-        fails = 1
-        if fails >= pending_threshold:
+    if prev.status is Status.OK or prev.status is Status.PENDING:
+        fails = prev.consecutive_fails + 1 if prev.status is Status.PENDING else 1
+        flapping = _is_flapping(recent, flap_threshold=flap_threshold)
+        if fails >= pending_threshold or flapping:
+            reason = obs.detail if fails >= pending_threshold else f"flapping — {obs.detail}"
             return (
                 CheckState(
                     status=Status.FIRING,
                     consecutive_fails=fails,
-                    last_detail=obs.detail,
+                    last_detail=reason,
                     since=now_iso,
                     last_notified_at=now_iso,
+                    recent=recent,
                 ),
-                Notification(check="", kind="firing", detail=obs.detail),
+                Notification(check="", kind="firing", detail=reason),
             )
         return (
             CheckState(
                 status=Status.PENDING,
                 consecutive_fails=fails,
                 last_detail=obs.detail,
-                since=now_iso,
+                since=prev.since if prev.status is Status.PENDING else now_iso,
+                recent=recent,
             ),
-            None,
-        )
-
-    if prev.status is Status.PENDING:
-        fails = prev.consecutive_fails + 1
-        if fails >= pending_threshold:
-            return (
-                CheckState(
-                    status=Status.FIRING,
-                    consecutive_fails=fails,
-                    last_detail=obs.detail,
-                    since=now_iso,
-                    last_notified_at=now_iso,
-                ),
-                Notification(check="", kind="firing", detail=obs.detail),
-            )
-        return (
-            replace(prev, consecutive_fails=fails, last_detail=obs.detail),
             None,
         )
 
@@ -227,11 +303,12 @@ def _evaluate_one(
                 consecutive_passes=0,
                 last_detail=obs.detail,
                 last_notified_at=now_iso,
+                recent=recent,
             ),
             Notification(check="", kind="reminder", detail=obs.detail),
         )
     return (
-        replace(prev, consecutive_passes=0, last_detail=obs.detail),
+        replace(prev, consecutive_passes=0, last_detail=obs.detail, recent=recent),
         None,
     )
 
@@ -244,6 +321,8 @@ def evaluate(
     pending_threshold: int = DEFAULT_PENDING_THRESHOLD,
     recovery_threshold: int = DEFAULT_RECOVERY_THRESHOLD,
     reminder_interval: timedelta = DEFAULT_REMINDER_INTERVAL,
+    flap_window: int = DEFAULT_FLAP_WINDOW,
+    flap_threshold: int = DEFAULT_FLAP_THRESHOLD,
 ) -> tuple[MonitorState, list[Notification]]:
     """Advance every check in `observations` by one cycle.
 
@@ -264,6 +343,8 @@ def evaluate(
             pending_threshold=pending_threshold,
             recovery_threshold=recovery_threshold,
             reminder_interval=reminder_interval,
+            flap_window=flap_window,
+            flap_threshold=flap_threshold,
         )
         new_checks[name] = new
         if notification is not None:
@@ -319,6 +400,10 @@ def load(path: Path) -> MonitorState:
         return MonitorState()
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("ops_monitor.state.unreadable", path=str(path), error=str(exc)[:200])
+        return MonitorState()
+    if not isinstance(raw, Mapping):
+        log.warning("ops_monitor.state.not_an_object", path=str(path), type=type(raw).__name__)
         return MonitorState()
     return MonitorState.from_dict(raw)

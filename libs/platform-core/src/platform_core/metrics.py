@@ -24,10 +24,23 @@ class Sample:
     labels: Mapping[str, str] | None = None
 
 
+def _escape_label_value(value: str) -> str:
+    """Prometheus's own escaping rule for a label value: backslash, then double-quote, then
+    newline (https://prometheus.io/docs/instrumenting/exposition_formats/, "label_value" —
+    order matters, escaping the quote or newline first would double-escape the backslash that
+    step just introduced). `ops_monitor`'s check names are its own fixed vocabulary, but the
+    label value on `outbox.<schema>`/`dlq.<queue>`/`api.<name>` embeds an operator-supplied
+    name from `EDGE_RELAY_SCHEMAS`/`OPS_MONITOR_DLQ_QUEUES`/`OPS_MONITOR_API_CONTAINERS` (m11)
+    — validated to a plain identifier at config load (`config._validate_identifiers`), which
+    already rules out a quote or a newline, but escaping here does not get to assume that stays
+    true forever, and costs nothing when it is."""
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
 def _format_labels(labels: Mapping[str, str] | None) -> str:
     if not labels:
         return ""
-    parts = ", ".join(f'{key}="{value}"' for key, value in labels.items())
+    parts = ", ".join(f'{key}="{_escape_label_value(value)}"' for key, value in labels.items())
     return "{" + parts + "}"
 
 
