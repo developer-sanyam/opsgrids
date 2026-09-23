@@ -1124,8 +1124,10 @@ it removes: storefront's domain claim holds its `FOR UPDATE` transaction across 
 "network I/O inside a transaction" pattern D3 (#14, #16) is removing at the source — while the API's
 request pool is 3 + 2. With the bulkhead a slow probe can neither take one of those five nor be
 starved by buyer traffic. Cost: one more Postgres connection per API process that runs a sweep,
-opened lazily, plus an engine object (no measurable RSS: the sweep-off/on readings above differed by
-~1 MiB). **Sequential use only** — a pool of one would deadlock a scope that nested a second on the
+opened lazily, plus an engine object. Re-measured *with* the bulkhead (the same method, images
+rebuilt from this tree, `RUN_SWEEPS_IN_API` off then on): operations 97,324 -> 97,820 kB (+0.5
+MiB), storefront 100,420 -> 101,324 kB (+0.9 MiB), document 104,820 -> 104,648 kB (-0.2 MiB) — a
+sweep plus its bulkhead costs an API container about 1 MiB or less. **Sequential use only** — a pool of one would deadlock a scope that nested a second on the
 same engine; no sweep does, and a test pins that a second scope waits rather than growing the pool.
 D3's priority is unchanged: this contains the blast radius, it does not remove the pattern.
 Tests: `libs/platform-core/tests/test_bulkhead.py` (pool of one with no overflow; app role;
@@ -1206,7 +1208,7 @@ ssh carries no environment, so an exported variable would never arrive; `remote.
 default 4, anything that is not a positive whole number falls back to 4; tested), a quiet window,
 `vmstat 5` in a second session. **There is no automatic rollback**: `health` gives up after 600 s
 with the containers as they are and no `record_ref`; the rollback is `make edge-rollback`. The
-key table lists all 19 keys `.env.example` gained since the production ref.
+key table lists all 20 keys `.env.example` gained since the production ref (the last, `ADMIN_GATEWAY_HOP_KEY`, arrived with the second merge of this round). **The rollback is not clean for this release**: it crosses the operator-MFA reseal that `migrate` runs before `up`, after which a pre-reseal ref cannot read any MFA factor and every MFA sign-in is a 500 until rolling forward — the RUNBOOK's own "do not roll back past" warning, restated in the rollout section, and one more reason the owner decision and the `.env` keys are to be settled *before* the deploy.
 
 ### Still not done, and why
 

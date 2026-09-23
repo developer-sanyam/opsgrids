@@ -1161,8 +1161,11 @@ make edge-preflight HOST=… CONFIRM=…     # read-only; prints the projection 
 
 Owner pre-deploy key list — every one of these is either set deliberately or knowingly absent.
 **A missing key fails preflight before anything changes** (`missing or empty in .env: …`), so the
-worst case of forgetting one is a re-run, but `.env.example` has 19 keys the production ref's did
-not (17 of them must be present on the box), and knowing them beforehand is cheaper:
+worst case of forgetting one is a re-run, but `.env.example` has 20 keys the production ref's did
+not (18 of them must be present on the box), and knowing them beforehand is cheaper. **Quote any
+value that contains a space** (`OPS_ALERT_EMAIL="ops team <ops@…>"`): `.env` is sourced as shell, and
+preflight fails an unquoted one by name, before reading the file, instead of letting bash run the
+words after the space as a command (exit 127, no footer):
 
 | Key | State | Note |
 |---|---|---|
@@ -1179,7 +1182,7 @@ not (17 of them must be present on the box), and knowing them beforehand is chea
 | `DOCUMENT_S3_ORPHAN_ACCESS_KEY`, `DOCUMENT_S3_ORPHAN_SECRET_KEY` | keys present, may be empty | the by-hand orphan pass only; held by no always-on container |
 | `S3_PUBLIC_BUCKET`, `PUBLIC_ASSET_BASE_URL` | defaults are right | `PUBLIC_ASSET_BASE_URL` must be exactly `https://<EDGE_HOST>/<bucket>` |
 | `ASSET_PURGE_RETENTION_DAYS`, `DOCUMENT_ORPHAN_SWEEP_ENABLED`, `DOCUMENT_ORPHAN_SWEEP_DRY_RUN` | defaults are right | `30`, `false`, `true` |
-| `ADMIN_GATEWAY_HOP_KEY` | **not in `.env.example` yet** | arrives with a later release; add it to this table when it lands — until then no box has one to set |
+| `ADMIN_GATEWAY_HOP_KEY` | **needs a real value, and `auth` will not start without it** | `openssl rand -hex 32`, at least 32 bytes and **different from `INTERNAL_SERVICE_TOKEN`** (preflight's secret-strength check refuses a weak or reused one). See "ADMIN_GATEWAY_HOP_KEY — auth refuses to start without it" under Operator MFA |
 
 `last-ok` — `${EDGE_STATE_DIR:-/srv/opsgrids/state}/edge-budget.last-ok`, written by `remote.sh
 record-budget` after each healthy deploy — is **informational only**: preflight prints it ("last
@@ -1296,14 +1299,21 @@ this tight a slow start is expected (containers importing on two cores while swa
 unhealthy list before deciding. The rollback is the operator's: `make edge-rollback HOST=…
 CONFIRM=…`.
 
-**Rollback.** `make edge-rollback` redeploys the previous good ref (`47143a0`): its compose file
-recreates `approval-cron` and `subscription-cron`, and `--remove-orphans` removes the eight
-containers this release added (the previous image ignores `RUN_SWEEPS_IN_API`). This slice changes
-no schema, and a sweep briefly running in two places during either direction is safe (each is
-idempotent or claims its rows with `SKIP LOCKED`); other slices in the release carry their own
-migrations — their notes govern the data. If the rollback target predates the *explicit-profiles*
-change and this box's `COMPOSE_PROFILES` is not the full list, write it back by hand first — the
-older `remote.sh` may still expect a computed default that no longer exists.
+**Rollback — and why this release's is not clean.** `make edge-rollback` redeploys the previous good
+ref (`47143a0`): its compose file recreates `approval-cron` and `subscription-cron`, and
+`--remove-orphans` removes the eight containers this release added (the previous image ignores
+`RUN_SWEEPS_IN_API`). This slice changes no schema, and a sweep briefly running in two places
+during either direction is safe (each is idempotent or claims its rows with `SKIP LOCKED`). **But
+`47143a0` predates the MFA reseal** that `remote.sh migrate` runs in this release (Operator MFA,
+above): once the factors are sealed, a ref from before it cannot read them, and *every* MFA
+sign-in is a 500 until you roll forward again — the warning under "Roll back a bad deploy" applies
+to this deploy in full, and applies from the moment `migrate` finishes, i.e. before `up`. So for
+this release: **prefer rolling forward with a fix**; if you must go back, expect MFA sign-in to be
+down for the duration and say so. That is one more reason to settle the memory decision and the
+`.env` keys *before* deploying — the deploy has a point of no easy return that a slow `up` does not
+help with. If the rollback target predates the *explicit-profiles* change and this box's
+`COMPOSE_PROFILES` is not the full list, write it back by hand first — the older `remote.sh` may
+still expect a computed default that no longer exists.
 
 ---
 
