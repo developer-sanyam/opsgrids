@@ -1,5 +1,6 @@
 import { useId, useRef } from "react";
 import type { ReactNode, RefObject } from "react";
+import { createPortal } from "react-dom";
 
 import { cn } from "../lib/cn";
 import { isTopDialogLayer } from "../lib/dialogStack";
@@ -97,7 +98,19 @@ export function Dialog({
     onClose();
   }
 
-  return (
+  /*
+   * Portalled to `<body>`, and it has to be.
+   *
+   * `Dialog` positions itself with `position: fixed`, which is relative to the viewport only
+   * while no ancestor is transformed, filtered, or otherwise given a containing block of its
+   * own — and pages routinely are: `.rise`/`.cascade` (`console.css`) run a page-load animation
+   * with `animation-fill-mode: both`, which holds the keyframe's final `transform` on the
+   * element for good once the animation ends. A dialog mounted underneath that becomes trapped
+   * inside it instead of the viewport — the backdrop stops at the transformed ancestor's edge
+   * and the panel can be pushed off-screen top or bottom. Rendering through a portal means no
+   * ancestor, present or future, can do that to it.
+   */
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-6">
       <div
         className="absolute inset-0 bg-ink/50"
@@ -153,6 +166,7 @@ export function Dialog({
           </div>
         ) : null}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
