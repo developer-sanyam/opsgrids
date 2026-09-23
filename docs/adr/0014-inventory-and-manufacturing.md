@@ -146,6 +146,69 @@ break every client for no gain. Instead:
   movements, rather than silently picking one; its downgrade refuses if any quantity carries a
   fraction or any stock sits outside an item's home bucket.
 
+## 11. Count-below-reserved stays refused; the resolution is a partial release
+
+**Amended 2026-09-23, resolving the Phase 1 prerequisite [ledger.md](../inventory/ledger.md) §
+"Not in Phase 0" left open.** Phase 0 built the check — a count (or any outbound move) that would
+leave a bucket promising more than it holds is refused, `InsufficientStock`, rather than posted —
+and left the way out of that refusal unbuilt, because nothing yet exposed a reservation over HTTP.
+Phase 1's item master and location APIs make that refusal reachable for the first time, so it
+needs a real resolution now, not a future promise.
+
+**Decision: the refusal stays exactly as Phase 0 built it, and the resolution is releasing the
+reservation(s) in the way, through the same kernel.**
+
+- **A count below `reserved_milli` is still refused, not reconciled.** Silently shrinking a
+  reservation to make a count fit would break a promise the count-taker has no way to know was
+  made, to someone the count screen never shows. A person decides, explicitly, which promise gives
+  way — the kernel does not decide it for them.
+- **The resolution is `POST /operations/inventory/reservations/{id}:release`** (`operations.
+  inventory.stock.reserve`, ORG). It can give back a reservation's whole open remainder, or —
+  new in Phase 1 — a **named quantity**, in milli-units, leaving the rest active. Partial release
+  exists because a reservation is often bigger than the one count that is blocked by it: releasing
+  all of a 500-piece production reservation to fix a count that is 12 pieces short over-corrects.
+  Both forms go through `app.inventory.ledger.release` — still the kernel's, still under the
+  balance's lock, still audited (`inventory_reservation.released`) and still eventable
+  (`operations.inventory.stock.released`, carrying `released_milli`, `remaining_milli` and
+  `fully_released`).
+- **The endpoint is idempotent.** A retried release with the same `Idempotency-Key` replays
+  rather than releasing twice; the same key against a different quantity is a 409. The key and a
+  hash of the request are kept on the reservation row itself, compared under the row's own lock,
+  rather than a global unique index — the property being protected is "this reservation's writers
+  serialise", which the lock already gives, not "this key is unique across every reservation in
+  the organization".
+- **`InsufficientStock` names what is blocking it.** When a shortfall is caused by reserved stock
+  rather than by there being too little on hand at all, `errors[0].reservations` lists every
+  active reservation on that bucket — `reservation_id`, `reference_type`/`reference_id`, and the
+  open quantity each still holds, oldest first. A shortfall with nothing physically there to give
+  (`on_hand` itself would go negative) carries no reservations: releasing one would not have
+  helped, so naming one would mislead. This is what lets a stocktake screen offer "release 12
+  pieces from reservation X, then count" instead of a bare refusal.
+- **Every outbound path through the kernel is covered by the same check, not a copy of it.**
+  `post_move` applies one shortfall test to every line — issue, relocation (a warehouse change,
+  and Phase 1's bin-to-bin transfer), a status change's paired move, and a count — because they
+  are all just lines with a negative delta (or a count below the held figure) against a bucket.
+  There is one refusal, proven once, reused everywhere a bucket can go outbound; a transfer or a
+  status change out of a reserved bucket refuses on exactly the same numbers a count would.
+
+**Rejected:**
+
+- **Auto-releasing the oldest reservation to let a count through.** Silent, and wrong exactly when
+  the oldest reservation is the most important one (a production order already committed to a
+  ship date). A person who can see *which* reservation is in the way makes a better call than a
+  FIFO guess.
+- **A "force count" override that posts anyway and desyncs `reserved_milli` from real
+  reservations.** That is precisely the drift `inventory_discrepancies` exists to catch, invented
+  on purpose instead of found by accident. Every override this platform has (negative-stock
+  override, is planned the same way, dangerous and explicit) — this is not the place to add one
+  without also adding its permission and its audit trail, which a resolved shortfall does not need
+  once release exists.
+- **Rejecting the reservation's remainder instead of shrinking it.** Would need a second verb
+  (`reject`) with its own semantics for what happens to the demand that made the reservation in
+  the first place (a production order, a sales order) — a Phase 3+ concern once those documents
+  exist. Release is the only operation Phase 1 needs, because nothing yet creates a reservation
+  over HTTP for a person to reject *from*.
+
 ## Consequences
 
 - `operations` becomes the largest service; the module split is required, not optional.

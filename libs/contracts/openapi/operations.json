@@ -278,6 +278,28 @@
             "title": "Currency",
             "type": "string"
           },
+          "hsn_code": {
+            "default": "",
+            "pattern": "^(\\d{4}(\\d{2}(\\d{2})?)?)?$",
+            "title": "Hsn Code",
+            "type": "string"
+          },
+          "is_active": {
+            "default": true,
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "item_category_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Category Id"
+          },
           "name": {
             "maxLength": 200,
             "minLength": 1,
@@ -297,12 +319,43 @@
             "title": "Reorder Point",
             "type": "integer"
           },
+          "secondary_uom_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secondary Uom Id"
+          },
           "sku": {
             "maxLength": 60,
             "minLength": 1,
             "pattern": "^[A-Za-z0-9._-]+$",
             "title": "Sku",
             "type": "string"
+          },
+          "track_expiry": {
+            "default": false,
+            "title": "Track Expiry",
+            "type": "boolean"
+          },
+          "track_lot": {
+            "default": false,
+            "title": "Track Lot",
+            "type": "boolean"
+          },
+          "track_quality": {
+            "default": false,
+            "title": "Track Quality",
+            "type": "boolean"
+          },
+          "track_roll": {
+            "default": false,
+            "title": "Track Roll",
+            "type": "boolean"
           },
           "unit_value_minor": {
             "default": 0,
@@ -360,9 +413,28 @@
             "title": "Currency",
             "type": "string"
           },
+          "hsn_code": {
+            "title": "Hsn Code",
+            "type": "string"
+          },
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "item_category_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Category Id"
           },
           "name": {
             "title": "Name",
@@ -392,9 +464,36 @@
             "title": "Reserved Qty",
             "type": "string"
           },
+          "secondary_uom_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secondary Uom Id"
+          },
           "sku": {
             "title": "Sku",
             "type": "string"
+          },
+          "track_expiry": {
+            "title": "Track Expiry",
+            "type": "boolean"
+          },
+          "track_lot": {
+            "title": "Track Lot",
+            "type": "boolean"
+          },
+          "track_quality": {
+            "title": "Track Quality",
+            "type": "boolean"
+          },
+          "track_roll": {
+            "title": "Track Roll",
+            "type": "boolean"
           },
           "unit_value_minor": {
             "title": "Unit Value Minor",
@@ -428,7 +527,15 @@
           "uom",
           "unit_value_minor",
           "currency",
-          "updated_at"
+          "updated_at",
+          "item_category_id",
+          "secondary_uom_id",
+          "hsn_code",
+          "track_lot",
+          "track_roll",
+          "track_expiry",
+          "track_quality",
+          "is_active"
         ],
         "title": "InventoryItemOut",
         "type": "object"
@@ -456,6 +563,40 @@
             ],
             "title": "Category"
           },
+          "hsn_code": {
+            "anyOf": [
+              {
+                "pattern": "^(\\d{4}(\\d{2}(\\d{2})?)?)?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hsn Code"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "item_category_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Category Id"
+          },
           "name": {
             "anyOf": [
               {
@@ -480,6 +621,61 @@
               }
             ],
             "title": "Reorder Point"
+          },
+          "secondary_uom_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secondary Uom Id"
+          },
+          "track_expiry": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Expiry"
+          },
+          "track_lot": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Lot"
+          },
+          "track_quality": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Quality"
+          },
+          "track_roll": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Roll"
           },
           "unit_value_minor": {
             "anyOf": [
@@ -521,6 +717,439 @@
           }
         },
         "title": "InventoryItemPatch",
+        "type": "object"
+      },
+      "InventoryReservationOut": {
+        "description": "Stock promised to a demand without moving it (ADR-0014 \u00a711). `quantity` is the original\npromise, unchanged by a partial release; `consumed` is what an outbound move has drawn\nagainst it; `released` is what has been explicitly given back; `remaining` is what is still\nopen \u2014 the three sum to `quantity`.",
+        "properties": {
+          "consumed": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Consumed",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "reference_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Id"
+          },
+          "reference_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Type"
+          },
+          "released": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Released",
+            "type": "string"
+          },
+          "remaining": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Remaining",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "released",
+              "consumed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "inventory_item_id",
+          "quantity",
+          "consumed",
+          "released",
+          "remaining",
+          "status",
+          "reference_type",
+          "reference_id"
+        ],
+        "title": "InventoryReservationOut",
+        "type": "object"
+      },
+      "ItemAttributeIn": {
+        "additionalProperties": false,
+        "description": "`PUT /inventory/{id}/attributes/{key}`. **Typed values only**: `value_type` names which\nsingle `value_*` field is set \u2014 the others must be absent \u2014 so there is no untyped `value`\na caller could mass-assign into. `value_number` is an integer (GSM, mm): attributes are not\nstock, but the platform's no-float rule still applies to them (ADR-0014 \u00a72).",
+        "properties": {
+          "value_boolean": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Boolean"
+          },
+          "value_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Date"
+          },
+          "value_number": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740992.0,
+                "minimum": -9007199254740992.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Number"
+          },
+          "value_text": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Text"
+          },
+          "value_type": {
+            "enum": [
+              "text",
+              "number",
+              "boolean",
+              "date"
+            ],
+            "title": "Value Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value_type"
+        ],
+        "title": "ItemAttributeIn",
+        "type": "object"
+      },
+      "ItemAttributeOut": {
+        "description": "One typed key/value fact about an item (ADR-0014 Phase 1). Exactly one of the four\n`value_*` fields is non-null, matching `value_type`.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "value_boolean": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Boolean"
+          },
+          "value_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Date"
+          },
+          "value_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Number"
+          },
+          "value_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Text"
+          },
+          "value_type": {
+            "enum": [
+              "text",
+              "number",
+              "boolean",
+              "date"
+            ],
+            "title": "Value Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "value_type",
+          "value_text",
+          "value_number",
+          "value_boolean",
+          "value_date"
+        ],
+        "title": "ItemAttributeOut",
+        "type": "object"
+      },
+      "ItemCategoryIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/categories`. `parent_id`, when given, must name an existing category in\nthe org.",
+        "properties": {
+          "code": {
+            "maxLength": 40,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$",
+            "title": "Code",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          }
+        },
+        "required": [
+          "code",
+          "name"
+        ],
+        "title": "ItemCategoryIn",
+        "type": "object"
+      },
+      "ItemCategoryOut": {
+        "description": "A node in the item master's own category tree (ADR-0014 Phase 1) \u2014 additive to, and\ndistinct from, the fixed procurement `category` enum every item already carries.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "parent_id"
+        ],
+        "title": "ItemCategoryOut",
+        "type": "object"
+      },
+      "ItemCategoryPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /inventory/categories/{id}`. `code` is immutable once created, like a warehouse's.",
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          }
+        },
+        "title": "ItemCategoryPatch",
+        "type": "object"
+      },
+      "ItemVariantIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/{id}/variants`.",
+        "properties": {
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "sku": {
+            "maxLength": 60,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$",
+            "title": "Sku",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sku",
+          "name"
+        ],
+        "title": "ItemVariantIn",
+        "type": "object"
+      },
+      "ItemVariantOut": {
+        "description": "A purchasable/stockable variant of an item master row \u2014 its own SKU (ADR-0014 Phase 1).",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "inventory_item_id",
+          "sku",
+          "name",
+          "is_active"
+        ],
+        "title": "ItemVariantOut",
+        "type": "object"
+      },
+      "ItemVariantPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /inventory/{id}/variants/{variant_id}`. `sku` is immutable once created.",
+        "properties": {
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "ItemVariantPatch",
         "type": "object"
       },
       "OverviewOut": {
@@ -664,6 +1293,42 @@
         "title": "Page[InventoryItemOut]",
         "type": "object"
       },
+      "Page_ItemCategoryOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ItemCategoryOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ItemCategoryOut]",
+        "type": "object"
+      },
       "Page_PurchaseOrderOut_": {
         "properties": {
           "items": {
@@ -770,6 +1435,42 @@
           "pages"
         ],
         "title": "Page[SupplierOut]",
+        "type": "object"
+      },
+      "Page_UomOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/UomOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[UomOut]",
         "type": "object"
       },
       "Page_WarehouseOut_": {
@@ -1337,6 +2038,29 @@
           "discrepancies"
         ],
         "title": "ReconcileOut",
+        "type": "object"
+      },
+      "ReservationReleaseIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/reservations/{id}:release`. An empty body releases the whole open\nremainder; `quantity` releases only that much, leaving the rest active.",
+        "properties": {
+          "quantity": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          }
+        },
+        "title": "ReservationReleaseIn",
         "type": "object"
       },
       "ServiceInfo": {
@@ -2059,6 +2783,45 @@
         "title": "SupplierSpend",
         "type": "object"
       },
+      "UomOut": {
+        "description": "One entry in the organization's UOM directory (ADR-0014 Phase 1). `is_system` marks a\nunit seeded from the fixed registry; a caller cannot tell the two apart except by this flag \u2014\nboth are equally usable as an item's `uom`.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "dimension": {
+            "title": "Dimension",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_discrete": {
+            "title": "Is Discrete",
+            "type": "boolean"
+          },
+          "is_system": {
+            "title": "Is System",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "dimension",
+          "is_discrete",
+          "is_system"
+        ],
+        "title": "UomOut",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -2262,6 +3025,23 @@
           },
           {
             "in": "query",
+            "name": "item_category_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Item Category Id"
+            }
+          },
+          {
+            "in": "query",
             "name": "warehouse",
             "required": false,
             "schema": {
@@ -2292,6 +3072,22 @@
               ],
               "description": "Only items at/under reorder point",
               "title": "Low Stock"
+            }
+          },
+          {
+            "in": "query",
+            "name": "is_active",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Is Active"
             }
           },
           {
@@ -2398,6 +3194,229 @@
           }
         },
         "summary": "Add an inventory item",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/categories": {
+      "get": {
+        "operationId": "list_item_categories_api_v1_operations_inventory_categories_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ItemCategoryOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The item master's own category tree",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "operationId": "create_item_category_api_v1_operations_inventory_categories_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ItemCategoryIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemCategoryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a category",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/categories/{category_id}": {
+      "delete": {
+        "operationId": "delete_item_category_api_v1_operations_inventory_categories__category_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "category_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Category Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a category",
+        "tags": [
+          "operations"
+        ]
+      },
+      "get": {
+        "operationId": "read_item_category_api_v1_operations_inventory_categories__category_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "category_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Category Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemCategoryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One category",
+        "tags": [
+          "operations"
+        ]
+      },
+      "patch": {
+        "operationId": "update_item_category_api_v1_operations_inventory_categories__category_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "category_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Category Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ItemCategoryPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemCategoryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update a category",
         "tags": [
           "operations"
         ]
@@ -2538,6 +3557,142 @@
           }
         },
         "summary": "Check this organization's stock ledger against its balances now",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/reservations/{reservation_id}:release": {
+      "post": {
+        "operationId": "release_reservation_api_v1_operations_inventory_reservations__reservation_id__release_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "reservation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Reservation Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ReservationReleaseIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InventoryReservationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Give back all or part of a reservation's open remainder (ADR-0014 \u00a711)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/uoms": {
+      "get": {
+        "operationId": "list_uoms_api_v1_operations_inventory_uoms_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_UomOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The org's UOM directory (registry units first, then custom ones)",
         "tags": [
           "operations"
         ]
@@ -2744,6 +3899,162 @@
         ]
       }
     },
+    "/api/v1/operations/inventory/{item_id}/attributes": {
+      "get": {
+        "operationId": "list_item_attributes_api_v1_operations_inventory__item_id__attributes_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ItemAttributeOut"
+                  },
+                  "title": "Response List Item Attributes Api V1 Operations Inventory  Item Id  Attributes Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "An item's typed attributes (GSM, width, shade, \u2026)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/{item_id}/attributes/{key}": {
+      "delete": {
+        "operationId": "delete_item_attribute_api_v1_operations_inventory__item_id__attributes__key__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "maxLength": 60,
+              "minLength": 1,
+              "title": "Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove a typed attribute",
+        "tags": [
+          "operations"
+        ]
+      },
+      "put": {
+        "operationId": "set_item_attribute_api_v1_operations_inventory__item_id__attributes__key__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "maxLength": 60,
+              "minLength": 1,
+              "title": "Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ItemAttributeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemAttributeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create or overwrite one typed attribute",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
     "/api/v1/operations/inventory/{item_id}/balances": {
       "get": {
         "operationId": "list_balances_api_v1_operations_inventory__item_id__balances_get",
@@ -2870,6 +4181,211 @@
           }
         },
         "summary": "An item's stock movement history, newest first",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/{item_id}/variants": {
+      "get": {
+        "operationId": "list_item_variants_api_v1_operations_inventory__item_id__variants_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ItemVariantOut"
+                  },
+                  "title": "Response List Item Variants Api V1 Operations Inventory  Item Id  Variants Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "An item's purchasable/stockable variants",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "operationId": "create_item_variant_api_v1_operations_inventory__item_id__variants_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ItemVariantIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemVariantOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a variant",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/{item_id}/variants/{variant_id}": {
+      "delete": {
+        "operationId": "delete_item_variant_api_v1_operations_inventory__item_id__variants__variant_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "variant_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Variant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a variant",
+        "tags": [
+          "operations"
+        ]
+      },
+      "patch": {
+        "operationId": "update_item_variant_api_v1_operations_inventory__item_id__variants__variant_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "variant_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Variant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ItemVariantPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemVariantOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update a variant",
         "tags": [
           "operations"
         ]

@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { deleteInventoryItem, listInventory } from "@/api/client";
 import type { InventoryItemOut } from "@/api/types";
 import { CATEGORY_LABEL } from "@/data/derive";
+import { useItemCategoryOptions } from "@/data/useItemCategoryOptions";
 import { useWarehouseOptions } from "@/data/useWarehouseOptions";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
@@ -54,6 +55,7 @@ export function InventoryPage() {
   const debouncedSearch = useDebouncedValue(search);
   const [filter, setFilter] = useState<Filter>("all");
   const [warehouse, setWarehouse] = useState<string | "all">("all");
+  const [itemCategoryId, setItemCategoryId] = useState<string | "all">("all");
   const [sort, setSort] = useState<SortKey>("value");
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(25);
@@ -64,17 +66,27 @@ export function InventoryPage() {
   const canWrite = useCan("operations.inventory.item.write", "ORG");
   const canAdjust = useCan("operations.inventory.stock.adjust", "ORG");
   const warehouses = useWarehouseOptions();
+  const itemCategories = useItemCategoryOptions();
 
   const loader = () =>
     listInventory({
       q: debouncedSearch,
       warehouse,
+      item_category_id: itemCategoryId,
       sort,
       page,
       size,
       ...(filter === "low" ? { low_stock: true } : {}),
     });
-  const state = useAsync(loader, [debouncedSearch, filter, warehouse, sort, page, size]);
+  const state = useAsync(loader, [
+    debouncedSearch,
+    filter,
+    warehouse,
+    itemCategoryId,
+    sort,
+    page,
+    size,
+  ]);
 
   const remove = useMutation((item: InventoryItemOut) => deleteInventoryItem(item.id), {
     onSuccess: (_result, item) => {
@@ -84,7 +96,8 @@ export function InventoryPage() {
     },
   });
 
-  const filtersActive = debouncedSearch !== "" || filter !== "all" || warehouse !== "all";
+  const filtersActive =
+    debouncedSearch !== "" || filter !== "all" || warehouse !== "all" || itemCategoryId !== "all";
 
   const columns: Column<InventoryItemOut>[] = [
     {
@@ -227,6 +240,16 @@ export function InventoryPage() {
               setPage(1);
             }}
             options={[{ value: "all", label: "All warehouses" }, ...warehouses.options]}
+          />
+          <Select
+            label="Item category"
+            containerClassName="lg:w-48"
+            value={itemCategoryId}
+            onChange={(e) => {
+              setItemCategoryId(e.target.value);
+              setPage(1);
+            }}
+            options={[{ value: "all", label: "All categories" }, ...itemCategories.options]}
           />
           <Select
             label="Sort inventory"

@@ -29,7 +29,7 @@ from platform_core.errors import NotFoundProblem
 
 router = APIRouter(tags=["billing"])
 
-SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 
 #: Reading invoices and the credit balance is an organization-level act — there is no per-user
 #: "own" invoice — so both require ORG scope.

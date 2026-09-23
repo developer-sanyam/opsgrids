@@ -39,7 +39,7 @@ from platform_core.db import get_tenant_session
 
 router = APIRouter(tags=["subscription"])
 
-SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 ManageCtx = Annotated[
     ScopeContext, Depends(require("core.product.activation.write", minimum=Scope.ORG))
 ]
