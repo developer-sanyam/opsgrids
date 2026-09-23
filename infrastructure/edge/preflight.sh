@@ -43,7 +43,15 @@ optional_empty="PII_DECRYPT_KEYS SENTRY_DSN BACKUP_S3_ENDPOINT BACKUP_S3_ACCESS_
 # Email and payments may be unconfigured on a box that is being stood up: the services are
 # inert without them (notification logs, payment reaches no network) and each is warned about
 # below. WhatsApp is optional until a Meta app exists. COMPOSE_PROFILES empty means core only.
-optional_empty="$optional_empty SMTP_HOST SMTP_USERNAME SMTP_PASSWORD RAZORPAY_KEY_ID RAZORPAY_KEY_SECRET"
+# OPS_ALERT_EMAIL is the same shape: ops-monitor still runs and still logs `ops.alert.firing`
+# with nothing configured, it just pages nobody — warned about below, not refused.
+optional_empty="$optional_empty SMTP_HOST SMTP_USERNAME SMTP_PASSWORD RAZORPAY_KEY_ID RAZORPAY_KEY_SECRET OPS_ALERT_EMAIL"
+# Empty means "derive from COMPOSE_PROFILES" (`OpsMonitorSettings`'s own `expected_api_containers`/
+# `expected_dlq_queues`) — a perfectly valid state for every box, not a placeholder to fill in;
+# set explicitly only to narrow or override that computed list. SMTP_USE_SSL false is also the
+# ordinary default (STARTTLS on 587, not implicit TLS on 465) for every box that has not been
+# told to use a provider that only offers SMTPS.
+optional_empty="$optional_empty OPS_MONITOR_API_CONTAINERS OPS_MONITOR_DLQ_QUEUES SMTP_USE_SSL"
 optional_empty="$optional_empty WHATSAPP_APP_SECRET WHATSAPP_VERIFY_TOKEN WHATSAPP_PHONE_NUMBER_ID WHATSAPP_ACCESS_TOKEN COMPOSE_PROFILES"
 # A box with no floating IP yet (or a provider that does not offer one) has nothing to put here;
 # storefront's own settings default it to empty and print "the platform address" instead of a
@@ -222,6 +230,41 @@ if [ -z "${RAZORPAY_KEY_ID:-}" ]; then
 	echo "  warn  RAZORPAY_KEY_ID empty: payments are inert. Trials end in past_due, never active." >&2
 else
 	ok "payment provider keys present"
+fi
+
+# ops-monitor (C10) always runs and always checks; this is only about whether a firing check
+# reaches a human. Without both, it still does the right thing — `ops.alert.firing` at error
+# in the logs, and `/status` says "disabled" in so many words — but nobody not already
+# watching logs finds out. Same shape as the EMAIL_TRANSPORT warning above: loud, not fatal.
+if [ -z "${OPS_ALERT_EMAIL:-}" ] || [ -z "${SMTP_HOST:-}" ]; then
+	echo "  warn  OPS_ALERT_EMAIL/SMTP_HOST not fully set: ops-monitor logs alerts but sends" >&2
+	echo "        NONE. Nobody is paged. Set OPS_ALERT_EMAIL and the SMTP_* values — see" >&2
+	echo "        RUNBOOK.md, 'alerts and what each means'." >&2
+else
+	ok "ops-monitor alerts email: $OPS_ALERT_EMAIL"
+fi
+
+# ops-monitor's own state subdirectory (C10, M2): it runs as the `product` image's baked-in
+# non-root user, not `deploy`, so it can only write there if `remote.sh up`'s
+# `ensure_ops_monitor_state_dir` has already chowned it to that uid. A mismatch here means the
+# container will crash on its very first state/heartbeat write — not fatal to preflight (the
+# next deploy's `up` step fixes it automatically), but worth a human noticing sooner than that.
+ops_monitor_state_dir="${EDGE_STATE_DIR:-/srv/opsgrids/state}/ops-monitor"
+if [ -d "$ops_monitor_state_dir" ]; then
+	owner_uid=$(stat -c '%u' "$ops_monitor_state_dir" 2>/dev/null || stat -f '%u' "$ops_monitor_state_dir")
+	image_uid=$(docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T --entrypoint id product -u 2>/dev/null || echo "")
+	if [ -z "$image_uid" ]; then
+		echo "  warn  could not determine the product image's uid (is it built yet?) — skipping the ops-monitor state dir ownership check" >&2
+	elif [ "$owner_uid" != "$image_uid" ]; then
+		echo "  warn  $ops_monitor_state_dir is owned by uid $owner_uid; the product image runs as uid $image_uid." >&2
+		echo "        ops-monitor will crash on its first write until this matches — 'make deploy' fixes it" >&2
+		echo "        automatically (remote.sh's ensure_ops_monitor_state_dir), or run it by hand:" >&2
+		echo "        ./remote.sh up" >&2
+	else
+		ok "ops-monitor state dir owned by the image's own uid ($owner_uid)"
+	fi
+else
+	echo "  warn  $ops_monitor_state_dir does not exist yet — created and chowned automatically on the next 'make deploy'" >&2
 fi
 
 # The send gate itself refuses a campaign outside local/test/ci while this is still
