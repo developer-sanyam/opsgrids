@@ -31,7 +31,8 @@ different service's outbox, which has no product_key to filter on at all.
 Reads only, as the migration role, from **inside the service's own directory** — one
 interpreter can hold only one service's `app`.
 
-Usage: `_probe.py <service_dir> <product|account> <organization_id> [event_type_pattern] [product_key]`
+Usage:
+    _probe.py <service_dir> <product|account> <organization_id> [event_type_pattern] [product_key]
 
 `event_type_pattern` is a SQL `LIKE` pattern, defaulting to the exact string
 `core.product.activated` when omitted — every existing product-activation caller (`probe`'s
@@ -72,7 +73,7 @@ async def main() -> None:
 
     async with engine.connect() as conn:
         if WHICH == "product":
-            where = 'WHERE organization_id = :org AND event_type LIKE :evt'  # noqa: S608
+            where = "WHERE organization_id = :org AND event_type LIKE :evt"
             params: dict[str, object] = {"org": ORG_ID, "evt": EVENT_TYPE_PATTERN}
             if PRODUCT_KEY is not None:
                 where += " AND payload ->> 'product_key' = :product_key"
