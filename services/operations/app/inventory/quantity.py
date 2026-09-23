@@ -128,6 +128,17 @@ def is_discrete(code: str) -> bool:
     return bool(u and u.discrete)
 
 
+def canonical_uom_code(code: str) -> str:
+    """The code a wire `uom` string resolves to, stripped, alias-folded, and case-folded exactly
+    as `app.inventory.services.resolve_or_create_uom` folds it before it ever reaches a `uoms`
+    row: a code the registry knows becomes its canonical spelling; anything else is lower-cased.
+    Two spellings that canonicalise the same way name the same unit — `"PCS"`, `"pc"`, and
+    `"piece"` are one thing on an item whose stock is already `pcs`, not three different ones."""
+    stripped = code.strip()
+    known = unit(stripped)
+    return known.code if known else stripped.lower()
+
+
 def parse_qty(value: str | int, uom: str = "", *, allow_negative: bool = False) -> int:
     """A wire quantity → milli-units, exactly.
 

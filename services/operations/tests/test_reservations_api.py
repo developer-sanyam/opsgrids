@@ -38,6 +38,23 @@ async def _reserved(session, org_id, *, quantity: str = "40") -> tuple[uuid.UUID
     return t.fabric, made.reservation.id
 
 
+async def _reserved_discrete(session, org_id, *, quantity: str = "100") -> uuid.UUID:
+    """`t.buttons` (pcs — a discrete unit) with `quantity` reserved. Returns the reservation id."""
+    t = await build_textile(session, org_id)
+    async with session.begin():
+        await ledger.post_move(
+            session,
+            t.ctx,
+            kind="receipt",
+            lines=[MoveLine(t.buttons, t.weaving, q("100"))],
+            occurred_on=TODAY,
+        )
+        made = await ledger.reserve(
+            session, t.ctx, item_id=t.buttons, location_id=t.weaving, quantity_milli=q(quantity)
+        )
+    return made.reservation.id
+
+
 class TestRelease:
     async def test_a_full_release_empties_the_promise(self, client, session, org_id) -> None:
         _, rid = await _reserved(session, org_id)
@@ -79,6 +96,19 @@ class TestRelease:
             resp = await client.post(
                 f"/api/v1/operations/inventory/reservations/{rid}:release",
                 json={"quantity": "-1"},
+            )
+        assert resp.status_code == 422
+
+    async def test_a_fractional_release_of_a_discrete_item_is_a_validation_error(
+        self, client, session, org_id
+    ) -> None:
+        """MEDIUM #1: `parse_qty` in `routes.py` never gets the item's `uom`, so a fractional
+        piece only gets caught because `ledger.release` checks discreteness itself."""
+        rid = await _reserved_discrete(session, org_id)
+        with as_principal(principal_for(org_id, [RESERVE])):
+            resp = await client.post(
+                f"/api/v1/operations/inventory/reservations/{rid}:release",
+                json={"quantity": "0.5"},
             )
         assert resp.status_code == 422
 

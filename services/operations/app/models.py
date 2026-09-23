@@ -880,6 +880,12 @@ class InventoryReservationRelease(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
 
     __tablename__ = "inventory_reservation_releases"
 
+    # Overrides `OrgScopedMixin`'s automatic single-column index (INFO): the only read this table
+    # ever serves is `ledger.release`'s exact `(organization_id, reservation_id, idempotency_key)`
+    # lookup, already served by the composite unique index below, which also leads with
+    # `organization_id`. A second, single-column index on the same leading column would only cost
+    # every append an extra write with nothing ever reading it alone.
+    organization_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     reservation_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("operations.inventory_reservations.id", ondelete="RESTRICT"),

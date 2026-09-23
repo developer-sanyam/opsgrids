@@ -363,6 +363,29 @@ class TestReservations:
             assert (res.status, res.consumed_milli) == ("consumed", q("40"))
 
     async def test_release_gives_back_the_remainder_and_is_safe_to_retry(self, session, t) -> None:
+        """A reservation nothing has ever drawn against closes as `released`, and a further
+        keyless release is a safe no-op — the reservation's own already-`released` early return,
+        not the append-only idempotency table (that needs a key). Contrast
+        `test_a_keyless_release_after_a_consuming_close_is_a_real_conflict` below: once any of it
+        has been consumed, the terminal status is `consumed` and a retry is not a no-op."""
+        await post(session, t, "receipt", MoveLine(t.fabric, t.weaving, q("100")))
+        async with session.begin():
+            made = await ledger.reserve(
+                session, t.ctx, item_id=t.fabric, location_id=t.weaving, quantity_milli=q("40")
+            )
+        rid = made.reservation.id
+        for _ in range(2):
+            async with session.begin():
+                released = await ledger.release(session, t.ctx, rid)
+            assert released.status == "released"
+        assert await balance(session, t.org_id, t.fabric, t.weaving) == (q("100"), 0)
+
+    async def test_a_keyless_release_after_a_consuming_close_is_a_real_conflict(
+        self, session, t
+    ) -> None:
+        """MEDIUM #2's other half: once `consumed_milli > 0`, the reservation closes as
+        `consumed` regardless of which call closed it — so a further keyless release hits the
+        same `ConflictProblem` a reservation consumed from the start would, not a silent no-op."""
         await post(session, t, "receipt", MoveLine(t.fabric, t.weaving, q("100")))
         async with session.begin():
             made = await ledger.reserve(
@@ -370,10 +393,16 @@ class TestReservations:
             )
         rid = made.reservation.id
         await post(session, t, "issue", MoveLine(t.fabric, t.weaving, -q("10"), reservation_id=rid))
-        for _ in range(2):
+        async with session.begin():
+            released = await ledger.release(session, t.ctx, rid)
+        assert (released.status, released.consumed_milli, released.released_milli) == (
+            "consumed",
+            q("10"),
+            q("30"),
+        )
+        with pytest.raises(ConflictProblem, match="fully consumed"):
             async with session.begin():
-                released = await ledger.release(session, t.ctx, rid)
-            assert released.status == "released"
+                await ledger.release(session, t.ctx, rid)
         assert await balance(session, t.org_id, t.fabric, t.weaving) == (q("90"), 0)
 
     async def test_nothing_to_reserve_is_refused(self, session, t) -> None:
@@ -438,6 +467,22 @@ class TestReservations:
         assert fully.status == "released"
         assert await balance(session, t.org_id, t.fabric, t.weaving) == (q("85"), 0)
         await assert_reconciles_clean(session, t.org_id)
+
+    async def test_a_fractional_release_of_a_discrete_item_is_refused(self, session, t) -> None:
+        """`ledger.release` enforces discreteness itself (MEDIUM #1) rather than relying on
+        `parse_qty`'s — `routes.py`'s release endpoint never threads an item's `uom` into
+        `parse_qty`, so without this a caller could ask to release half of one button."""
+        await post(session, t, "receipt", MoveLine(t.buttons, t.weaving, q("100")))
+        async with session.begin():
+            made = await ledger.reserve(
+                session, t.ctx, item_id=t.buttons, location_id=t.weaving, quantity_milli=q("100")
+            )
+        rid = made.reservation.id
+        with pytest.raises(ValidationProblem, match="whole units"):
+            async with session.begin():
+                await ledger.release(session, t.ctx, rid, quantity_milli=q("0.5"))
+        # Refused before anything moved.
+        assert await balance(session, t.org_id, t.buttons, t.weaving) == (q("100"), q("100"))
 
     async def test_a_partial_release_then_an_issue_draws_only_what_is_still_reserved(
         self, session, t

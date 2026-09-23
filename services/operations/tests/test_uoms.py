@@ -187,3 +187,40 @@ class TestItemUsesTheDirectory:
             assert item.uom_id is not None
             uom = await inv_selectors.get_uom(session, org_id, item.uom_id)
         assert uom is not None and uom.code == "tonnes"
+
+    async def test_a_different_spelling_of_the_same_unit_is_not_a_change(
+        self, client, session, org_id, data
+    ) -> None:
+        """LOW #3: `changes["uom"] != item.uom` compared the raw wire strings — "PCS" on an item
+        already stocked in "pcs" looked like a real change and, once the item had any stock
+        history, was wrongly refused by M5's guard. Canonicalising both sides first (the same
+        resolution `resolve_or_create_uom` would do) means only a *real* unit change trips it."""
+        with as_principal(principal_for(org_id, [WRITE])):
+            item_id = (
+                await client.post(
+                    "/api/v1/operations/inventory",
+                    json={
+                        "sku": "RM-UOM-SAME-SPELLING",
+                        "name": "Bag of clips",
+                        "category": "components",
+                        "warehouse": "Pune Plant",
+                        "uom": "pcs",
+                        "opening_on_hand": 5,
+                    },
+                )
+            ).json()["id"]
+        async with session.begin():
+            item = await inv_selectors.get_inventory_item(session, org_id, uuid.UUID(item_id))
+            assert item.uom_id is not None
+            uom_id_before = str(item.uom_id)
+
+        with as_principal(principal_for(org_id, [WRITE])):
+            resp = await client.patch(
+                f"/api/v1/operations/inventory/{item_id}", json={"uom": "PCS"}
+            )
+        assert resp.status_code == 200
+        assert resp.json()["uom"] == "PCS"  # the wire display string does update
+        async with session.begin():
+            item = await inv_selectors.get_inventory_item(session, org_id, uuid.UUID(item_id))
+            # ...but it is still the same underlying `uoms` row: no ConflictProblem, no new row.
+            assert str(item.uom_id) == uom_id_before

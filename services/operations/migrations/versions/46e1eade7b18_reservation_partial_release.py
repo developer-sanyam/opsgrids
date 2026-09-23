@@ -91,9 +91,7 @@ def upgrade() -> None:
         sa.Column("released_milli", sa.BigInteger(), nullable=False, server_default="0"),
         schema=SCHEMA,
     )
-    op.alter_column(
-        "inventory_reservations", "released_milli", server_default=None, schema=SCHEMA
-    )
+    op.alter_column("inventory_reservations", "released_milli", server_default=None, schema=SCHEMA)
     op.drop_constraint(
         "ck_inventory_reservations_consumed_within", "inventory_reservations", schema=SCHEMA
     )
@@ -120,7 +118,8 @@ def upgrade() -> None:
         sa.Column("id", sa.UUID(), nullable=False),
         sa.Column("organization_id", sa.UUID(), nullable=False),
         sa.CheckConstraint(
-            "released_milli > 0", name=op.f("ck_inventory_reservation_releases_released_milli_positive")
+            "released_milli > 0",
+            name=op.f("ck_inventory_reservation_releases_released_milli_positive"),
         ),
         sa.ForeignKeyConstraint(
             ["reservation_id"],
@@ -131,12 +130,8 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk_inventory_reservation_releases")),
         schema=SCHEMA,
     )
-    op.create_index(
-        op.f("ix_operations_inventory_reservation_releases_organization_id"),
-        "inventory_reservation_releases",
-        ["organization_id"],
-        schema=SCHEMA,
-    )
+    # No plain single-column organization_id index (INFO): the composite unique index below
+    # already leads with it, and this table's only read is the exact idempotency-key lookup.
     op.create_index(
         "uq_inventory_reservation_releases_org_reservation_key",
         "inventory_reservation_releases",

@@ -154,7 +154,7 @@ async def resolve_or_create_uom(
     if not stripped:
         raise ValidationProblem("A unit of measure cannot be blank")
     known = quantity.unit(stripped)
-    canonical = known.code if known else stripped.lower()
+    canonical = quantity.canonical_uom_code(stripped)
     existing = await inv_selectors.get_uom_by_code(session, org_id, canonical)
     if existing is not None:
         return existing
@@ -412,6 +412,41 @@ async def _lock_category_tree(session: AsyncSession, org_id: uuid.UUID) -> None:
     )
 
 
+async def _reread_category_locked(
+    session: AsyncSession, org_id: uuid.UUID, category_id: uuid.UUID
+) -> ItemCategory | None:
+    """Re-read a category under `_lock_category_tree`'s lock (LOW #6). The route loads `category`
+    *before* taking the lock, so a concurrent delete or re-parent that reached the lock first is
+    invisible to that copy; `populate_existing` forces a fresh read instead of the stale
+    identity-mapped one, and `deleted_at IS NULL` means a category a concurrent request just
+    deleted comes back `None` here rather than as a row that looks alive. Without this, two
+    concurrent deletes of the same category each pass their own pre-lock "does it still have
+    children?" check and both write a soft-delete, an audit row and an event for the same delete."""
+    return (
+        await session.execute(
+            select(ItemCategory)
+            .where(
+                ItemCategory.organization_id == org_id,
+                ItemCategory.id == category_id,
+                ItemCategory.deleted_at.is_(None),
+            )
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+
+
+async def _lock_sku(session: AsyncSession, org_id: uuid.UUID, sku: str) -> None:
+    """Serialise every writer of this exact SKU spelling for the rest of the transaction (LOW
+    #4). An item's SKU and a variant's SKU share one namespace but live in two different tables,
+    each checked with its own `SELECT` — two concurrent creates, one an item and one a variant,
+    naming the same SKU, can each see the other's table as clear and both commit. Locked
+    case-insensitively, the same way the uniqueness itself is judged."""
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"sku:{org_id}:{sku.lower()}"},
+    )
+
+
 async def _would_cycle(
     session: AsyncSession, org_id: uuid.UUID, category_id: uuid.UUID, new_parent_id: uuid.UUID
 ) -> bool:
@@ -506,6 +541,10 @@ async def update_item_category(
     if "parent_id" in changes:
         # Only a re-parent needs the tree-wide lock — a plain rename cannot create a cycle.
         await _lock_category_tree(session, ctx.organization_id)
+        current = await _reread_category_locked(session, ctx.organization_id, category.id)
+        if current is None:
+            raise NotFoundProblem("That category is not part of this organization")
+        category = current
         changes["parent_id"] = await _resolve_category_parent(
             session, ctx.organization_id, changes["parent_id"], own_id=category.id
         )
@@ -556,6 +595,12 @@ async def delete_item_category(
     live item — move or clear them first."""
     org_id = ctx.organization_id
     await _lock_category_tree(session, org_id)
+    current = await _reread_category_locked(session, org_id, category.id)
+    if current is None:
+        # Already deleted by a concurrent request that reached the lock first (LOW #6) — deleting
+        # a category is idempotent, so this is a no-op rather than a second audit row and event.
+        return
+    category = current
     children = await inv_selectors.count_item_category_children(session, org_id, category.id)
     items = await inv_selectors.count_items_in_category(session, org_id, category.id)
     if children or items:
@@ -664,8 +709,11 @@ async def create_inventory_item(
     organization (ADR-0014 Phase 1) — validated here, not left to the foreign key to refuse with
     a bare `IntegrityError`.
     """
+    await _lock_sku(session, ctx.organization_id, sku)
     if await inv_selectors.get_inventory_by_sku(session, ctx.organization_id, sku):
         raise ConflictProblem(f"An inventory item with SKU {sku!r} already exists")
+    if await inv_selectors.get_item_variant_by_sku(session, ctx.organization_id, sku):
+        raise ConflictProblem(f"A variant with SKU {sku!r} already exists")
     home = await _home_for(session, ctx.organization_id, warehouse) if warehouse else None
     resolved_uom = (
         await resolve_or_create_uom(session, ctx.organization_id, uom, str(ctx.principal.sub))
@@ -775,7 +823,13 @@ async def update_inventory_item(
     elif "warehouse" in changes:
         await _home_for(session, ctx.organization_id, changes["warehouse"])
     new_uom = None
-    if "uom" in changes and changes["uom"] != item.uom:
+    uom_actually_changes = "uom" in changes and quantity.canonical_uom_code(
+        changes["uom"]
+    ) != quantity.canonical_uom_code(item.uom)
+    if uom_actually_changes:
+        # Compared canonically (LOW #3), the same way `resolve_or_create_uom` would resolve each
+        # string — "PCS", "pc" and "piece" on an item already stocked in "pcs" are the same unit,
+        # not a change, so they neither trip the M5 guard below nor mint a redundant custom row.
         # The unit is the scale every existing milli-quantity for this item was recorded in
         # (M5) — changing it once any balance or ledger row exists would silently reinterpret
         # that history in a different unit, not just "how much is on hand right now".
@@ -1085,6 +1139,7 @@ async def create_item_variant(
     request: Request | None = None,
 ) -> ItemVariant:
     org_id = ctx.organization_id
+    await _lock_sku(session, org_id, sku)
     if await inv_selectors.get_item_variant_by_sku(session, org_id, sku):
         raise ConflictProblem(f"A variant with SKU {sku!r} already exists")
     # A variant's SKU shares one namespace with the item SKU it decorates — nothing else in this

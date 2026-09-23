@@ -38,7 +38,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app.inventory.quantity import MAX_ABS_MILLI, describe, format_qty
+from app.inventory.quantity import MAX_ABS_MILLI, QTY_SCALE, describe, format_qty, is_discrete
 from app.models import (
     STOCK_AGGREGATES,
     STOCK_STATUSES,
@@ -138,6 +138,17 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _terminal_status(reservation: InventoryReservation) -> str:
+    """The one rule both closing paths use (MEDIUM #2) for a reservation whose
+    `consumed_milli + released_milli` has just reached `quantity_milli`: `consumed` if any of it
+    was actually drawn against, `released` only if none of it ever was. Call this at the moment
+    of closing, before returning — whichever of `post_move` (a draw) or `release` (a release)
+    happens to be the one that closes it out must land on the same status for the same final
+    (consumed, released) pair, or a caller retrying a keyless release on an already-closed
+    reservation would get a different answer depending on which path got there first."""
+    return "consumed" if reservation.consumed_milli > 0 else "released"
+
+
 def _request_hash(payload: dict[str, Any]) -> str:
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()
@@ -189,14 +200,24 @@ def _validate_lines(kind: str, lines: Sequence[MoveLine]) -> None:
 async def _items(
     session: AsyncSession, org_id: uuid.UUID, ids: Iterable[uuid.UUID]
 ) -> dict[uuid.UUID, InventoryItem]:
+    """Every writer that reads an item's `uom` off this row takes `FOR SHARE` on it first (LOW
+    #5) — item, then balance, the same order `update_inventory_item`'s own `FOR UPDATE` uses
+    (`app/api/routes.py`'s item PATCH route locks the item before calling it). Without this, a
+    `uom` change and this organization's very first receipt of that item could interleave so the
+    receipt reads the old unit, the rename commits, and `has_stock_history` never gets a chance
+    to see the receipt and refuse it — the item would then show a new unit over a ledger row
+    recorded in the old one. `FOR SHARE` lets concurrent readers past each other but blocks on a
+    concurrent `FOR UPDATE`, so the two now serialise instead of racing."""
     wanted = set(ids)
     rows = (
         await session.execute(
-            select(InventoryItem).where(
+            select(InventoryItem)
+            .where(
                 InventoryItem.organization_id == org_id,
                 InventoryItem.id.in_(wanted),
                 InventoryItem.deleted_at.is_(None),
             )
+            .with_for_update(read=True)
         )
     ).scalars()
     found = {item.id: item for item in rows}
@@ -525,10 +546,11 @@ async def post_move(
                 reservation.consumed_milli + reservation.released_milli
                 == reservation.quantity_milli
             ):
-                # Fully spoken for — by consumption, by release, or a mix of both. `consumed >
-                # 0` here (this branch only runs when `drawn` was non-zero) so "consumed" is
-                # always the right terminal status even if a release closed the remainder.
-                reservation.status = "consumed"
+                # Fully spoken for — by consumption, by release, or a mix of both.
+                # `_terminal_status` is the one rule both closing paths use (MEDIUM #2):
+                # whichever of `post_move` or `release` closes it out, the same net
+                # (consumed, released) always lands on the same status.
+                reservation.status = _terminal_status(reservation)
                 reservation.closed_at = now
                 reservation.closed_by = str(ctx.principal.sub)
 
@@ -791,20 +813,30 @@ async def release(
     the same quantity replays, the same key with a different one is refused.
     """
     org_id = ctx.organization_id
-    found = (
+    found_row = (
         await session.execute(
-            select(InventoryReservation.balance_id).where(
+            select(InventoryReservation.balance_id, InventoryReservation.inventory_item_id).where(
                 InventoryReservation.organization_id == org_id,
                 InventoryReservation.id == reservation_id,
             )
         )
-    ).scalar_one_or_none()
-    if found is None:
+    ).one_or_none()
+    if found_row is None:
         raise NotFoundProblem("That reservation is not part of this organization")
+    found, item_id = found_row
     if quantity_milli is not None and (not _is_int(quantity_milli) or quantity_milli <= 0):
         raise ValidationProblem("A release quantity is a positive integer of milli-units")
 
-    # Balance first, then the reservation: the one lock order every path in this module uses.
+    # Item, then balance, then the reservation: every path in this module locks in this order
+    # (MEDIUM #1/LOW #5). The item lock also gives a stable read of `uom` to check a partial
+    # release against — a caller cannot ask to release 0.5 of a `pcs` reservation any more than
+    # they could post a fractional issue of one (`parse_qty`'s own discreteness check, which
+    # `routes.py`'s `release_reservation` never threaded a `uom` into, so it never fired there).
+    item = (await _items(session, org_id, [item_id]))[item_id]
+    if quantity_milli is not None and is_discrete(item.uom) and quantity_milli % QTY_SCALE:
+        raise ValidationProblem(
+            f"{item.uom} is counted in whole units; {format_qty(quantity_milli)} is not whole"
+        )
     balance = (
         await session.execute(
             select(InventoryBalance)
@@ -857,7 +889,7 @@ async def release(
         reservation.consumed_milli + reservation.released_milli == reservation.quantity_milli
     )
     if fully_released:
-        reservation.status = "released"
+        reservation.status = _terminal_status(reservation)
         reservation.closed_at = now
         reservation.closed_by = str(ctx.principal.sub)
     if idempotency_key is not None:

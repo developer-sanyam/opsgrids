@@ -324,3 +324,80 @@ class TestScenarioE_ReleaseRacingConsumptionOfTheSameReservation:
         else:
             assert (on_hand, reserved) == (q("100"), q("40"))
         await assert_reconciled(session, t)
+
+    async def _run_to_completion(self, maker, org_id: uuid.UUID, work: Work) -> None:
+        """One work item on its own connection, awaited to commit before returning — a
+        deterministic order, not `race`'s `asyncio.gather` (MEDIUM #2: the tests below need to
+        pin down *which* of two operations closes the reservation, not merely that neither one
+        corrupts state under a race whichever way the lock queue happens to fall)."""
+        async with maker() as s:
+
+            @event.listens_for(s.sync_session, "after_begin")
+            def _bind(_s, _t, connection) -> None:  # type: ignore[no-untyped-def]
+                connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
+
+            async with s.begin():
+                await work(s)
+
+    async def test_a_release_then_the_remaining_issue_both_close_it_as_consumed(
+        self, session, maker, t
+    ) -> None:
+        """Release first (leaves 40 open), then an issue draws exactly what is left —
+        `post_move`'s closing branch is the one that fires."""
+        await stock(session, t, q("100"))
+        async with session.begin():
+            made = await ledger.reserve(
+                session, t.ctx, item_id=t.fabric, location_id=t.weaving, quantity_milli=q("100")
+            )
+        rid = made.reservation.id
+
+        await self._run_to_completion(maker, t.org_id, release(t, rid, q("60")))
+        await self._run_to_completion(maker, t.org_id, issue(t, q("40"), reservation_id=rid))
+
+        async with session.begin():
+            res = (
+                await session.execute(
+                    select(InventoryReservation)
+                    .where(InventoryReservation.id == rid)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one()
+        assert (res.status, res.consumed_milli, res.released_milli) == (
+            "consumed",
+            q("40"),
+            q("60"),
+        )
+        await assert_reconciled(session, t)
+
+    async def test_an_issue_then_the_remaining_release_also_closes_it_as_consumed(
+        self, session, maker, t
+    ) -> None:
+        """Reversed order from the test above — an issue first (leaves 60 open), then a release
+        gives back exactly what is left, so `release`'s own closing branch is the one that fires
+        this time. Before the fix this branch always set `released` regardless of what had
+        already been consumed; the terminal status must not depend on which path closed it
+        (MEDIUM #2) — this is the one order that fails without the fix."""
+        await stock(session, t, q("100"))
+        async with session.begin():
+            made = await ledger.reserve(
+                session, t.ctx, item_id=t.fabric, location_id=t.weaving, quantity_milli=q("100")
+            )
+        rid = made.reservation.id
+
+        await self._run_to_completion(maker, t.org_id, issue(t, q("40"), reservation_id=rid))
+        await self._run_to_completion(maker, t.org_id, release(t, rid, q("60")))
+
+        async with session.begin():
+            res = (
+                await session.execute(
+                    select(InventoryReservation)
+                    .where(InventoryReservation.id == rid)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one()
+        assert (res.status, res.consumed_milli, res.released_milli) == (
+            "consumed",
+            q("40"),
+            q("60"),
+        )
+        await assert_reconciled(session, t)

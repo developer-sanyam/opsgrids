@@ -16,11 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.config import settings
 from app.inventory import selectors as inv_selectors
 from app.inventory import services as inv_services
-from app.models import SCHEMA, ItemAttribute, ItemCategory
+from app.models import SCHEMA, AuditLog, ItemAttribute, ItemCategory, OutboxEvent
 from app.schemas import ItemCategoryPatch
 from platform_core.auth import Scope
 from platform_core.db import TENANT_GUC
-from platform_core.errors import ValidationProblem
+from platform_core.errors import ConflictProblem, ValidationProblem
 from tests.helpers import as_principal, ctx_for, principal_for
 from tests.inventory_fixtures import build_textile
 
@@ -388,6 +388,31 @@ class TestItemVariants:
             )
         assert resp.status_code == 409
 
+    async def test_a_new_items_sku_cannot_collide_with_an_existing_variants_sku(
+        self, client, org_id, data
+    ) -> None:
+        """LOW #4, the other direction: an item's own create path checks the variant namespace
+        too, and the two checks are serialised by a per-SKU advisory lock so a variant-create and
+        an item-create naming the same SKU cannot both pass their own table's check at once."""
+        item_id = data["low_stock_item"].id
+        with as_principal(principal_for(org_id, [WRITE])):
+            variant = await client.post(
+                f"/api/v1/operations/inventory/{item_id}/variants",
+                json={"sku": "RM-ALU-7075-VARIANT", "name": "A variant"},
+            )
+            assert variant.status_code == 201
+            resp = await client.post(
+                "/api/v1/operations/inventory",
+                json={
+                    "sku": "RM-ALU-7075-VARIANT",
+                    "name": "Collides with a variant",
+                    "category": "raw_materials",
+                    "warehouse": "Pune Plant",
+                    "uom": "kg",
+                },
+            )
+        assert resp.status_code == 409
+
     async def test_writing_needs_item_write(self, client, org_id, data) -> None:
         item_id = data["low_stock_item"].id
         with as_principal(principal_for(org_id, [READ])):
@@ -655,3 +680,142 @@ class TestCategoryTreeConcurrency:
         # Exactly one of the two now has a parent, and it is not a cycle.
         non_null = [p for p in parents.values() if p is not None]
         assert len(non_null) == 1
+
+    async def test_two_concurrent_deletes_of_the_same_category_write_one_audit_row_and_event(
+        self, session, maker, org_id
+    ) -> None:
+        """LOW #6: both routes read the category (not yet deleted) before either reaches
+        `_lock_category_tree`. Without re-reading it under the lock, the second delete to get the
+        lock still sees its own stale, pre-race copy and unconditionally soft-deletes it again —
+        a second audit row and a second event for one logical delete."""
+        ctx = ctx_for(org_id, "operations.inventory.item.write", Scope.ORG)
+        async with session.begin():
+            category = await inv_services.create_item_category(session, ctx, code="DBL", name="DBL")
+
+        async def delete_once() -> str:
+            s = await self._connection(maker, org_id)
+            try:
+                async with s.begin():
+                    inner_ctx = ctx_for(org_id, "operations.inventory.item.write", Scope.ORG)
+                    current = await inv_selectors.get_item_category(s, org_id, category.id)
+                    assert current is not None  # both requests read it before either deletes
+                    await inv_services.delete_item_category(s, inner_ctx, current)
+            finally:
+                await s.close()
+            return "ok"
+
+        results = await asyncio.gather(delete_once(), delete_once())
+        assert results == ["ok", "ok"]  # a delete is idempotent; neither call raises
+
+        async with session.begin():
+            audits = (
+                (
+                    await session.execute(
+                        select(AuditLog).where(
+                            AuditLog.organization_id == org_id,
+                            AuditLog.entity_id == category.id,
+                            AuditLog.action == "item_category.deleted",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            events = (
+                (
+                    await session.execute(
+                        select(OutboxEvent).where(
+                            OutboxEvent.organization_id == org_id,
+                            OutboxEvent.aggregate_id == category.id,
+                            OutboxEvent.event_type == "operations.inventory.item_category.deleted",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(audits) == 1
+        assert len(events) == 1
+
+
+class TestSkuCreationConcurrency:
+    """LOW #4: an item's SKU and a variant's SKU share one namespace across two different
+    tables, each checked with its own `SELECT` — without `_lock_sku` serialising them, a
+    concurrent item-create and variant-create naming the same SKU can each see the other's table
+    as clear and both commit."""
+
+    @pytest.fixture
+    async def maker(self):  # type: ignore[no-untyped-def]
+        engine = create_async_engine(
+            settings().app_dsn,
+            connect_args={"server_settings": {"search_path": f"{SCHEMA},public"}},
+            pool_size=10,
+            max_overflow=0,
+        )
+        yield async_sessionmaker(engine, expire_on_commit=False)
+        await engine.dispose()
+
+    async def _connection(self, maker, org_id: uuid.UUID) -> AsyncSession:  # type: ignore[no-untyped-def]
+        s = maker()
+
+        @event.listens_for(s.sync_session, "after_begin")
+        def _bind(_s, _t, connection) -> None:  # type: ignore[no-untyped-def]
+            connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
+
+        return s
+
+    async def test_a_concurrent_item_create_and_variant_create_never_both_win_the_same_sku(
+        self, session, maker, org_id
+    ) -> None:
+        ctx = ctx_for(org_id, "operations.inventory.item.write", Scope.ORG)
+        async with session.begin():
+            await inv_services.create_warehouse(session, ctx, code="WH-RACE", name="Race Store")
+            host = await inv_services.create_inventory_item(
+                session,
+                ctx,
+                sku="HOST-ITEM",
+                name="Host item",
+                category="raw_materials",
+                warehouse="Race Store",
+                uom="kg",
+            )
+
+        async def create_item() -> str:
+            s = await self._connection(maker, org_id)
+            try:
+                async with s.begin():
+                    inner_ctx = ctx_for(org_id, "operations.inventory.item.write", Scope.ORG)
+                    await inv_services.create_inventory_item(
+                        s,
+                        inner_ctx,
+                        sku="RACE-SKU",
+                        name="Racing item",
+                        category="raw_materials",
+                        warehouse="Race Store",
+                        uom="kg",
+                    )
+            except ConflictProblem:
+                return "refused"
+            finally:
+                await s.close()
+            return "ok"
+
+        async def create_variant() -> str:
+            s = await self._connection(maker, org_id)
+            try:
+                async with s.begin():
+                    inner_ctx = ctx_for(org_id, "operations.inventory.item.write", Scope.ORG)
+                    item = await inv_selectors.get_inventory_item(s, org_id, host.id)
+                    assert item is not None
+                    await inv_services.create_item_variant(
+                        s, inner_ctx, item, sku="RACE-SKU", name="Racing variant"
+                    )
+            except ConflictProblem:
+                return "refused"
+            finally:
+                await s.close()
+            return "ok"
+
+        results = await asyncio.gather(create_item(), create_variant(), return_exceptions=False)
+        # Never both "ok" — that would be the same SKU claimed by an item and a variant at once.
+        assert sorted(results) == ["ok", "refused"]
