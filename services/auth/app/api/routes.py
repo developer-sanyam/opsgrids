@@ -698,11 +698,7 @@ async def operator_refresh(
         raise UnauthorizedProblem("No session to refresh")
     issued = await services.operator_rotate_refresh(session, cfg=cfg, pair=pair, raw_token=raw)
     _set_refresh_cookie(response, cfg, issued.refresh_token)
-    return OperatorTokenOut(
-        access_token=issued.access_token,
-        expires_in=issued.expires_in,
-        operator_roles=issued.operator_roles,
-    )
+    return _operator_token_out(issued)
 
 
 @router.post(
