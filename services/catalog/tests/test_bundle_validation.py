@@ -62,16 +62,53 @@ class TestTheRules:
     def test_only_a_bundle_product_may_declare_members(self) -> None:
         assert any("not a bundle product" in p for p in _problems("crm", ["hrms"]))
 
-    def test_the_seeded_ladder_passes_its_own_validation(self) -> None:
-        """Every rung migration f78c86fcec78 shipped names members the registry knows."""
+    def test_the_seeded_ladder_passes_except_the_retired_full_rung(self) -> None:
+        """duo and trio pass as seeded. `full` names `projects`, which is still `soon` — which is
+        exactly why migration c5f1e8a2b7d4 retires that plan rather than selling it."""
         from tests.test_packaging import _seed_module
 
         seed = _seed_module()
         registry = {e.key: e for e in [*REGISTRY._entries.values()]}
-        for _id, _version, key, value in seed.FEATURES:
-            if key != "bundled_products":
-                continue
-            assert domain.bundle_member_problems(registry["suite"], "suite", value, registry) == []
+        verdicts = {
+            version: domain.bundle_member_problems(registry["suite"], "suite", value, registry)
+            for _id, version, key, value in seed.FEATURES
+            if key == "bundled_products"
+        }
+        full_version = next(v[0] for v in seed.VERSIONS if v[1] == _full_plan_id())
+        assert verdicts.pop(full_version) == ["'projects' has not launched (status 'soon')"]
+        assert all(problems == [] for problems in verdicts.values())
+
+    def test_the_retirement_migration_names_the_seeded_full_plan(self) -> None:
+        from tests.test_packaging import _seed_module
+
+        full = next(p for p in _seed_module().PLANS if p[2] == "full")
+        assert full[0] == _full_plan_id()
+
+    def test_a_soon_member_is_named(self) -> None:
+        registry = {
+            "suite": RegisteredProduct("suite", is_bundle=True),
+            "projects": RegisteredProduct("projects", status="soon"),
+        }
+        assert domain.bundle_member_problems(
+            registry["suite"], "suite", ["projects"], registry
+        ) == ["'projects' has not launched (status 'soon')"]
+
+
+def _full_plan_id() -> str:
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "migrations"
+        / "versions"
+        / "c5f1e8a2b7d4_retire_full_suite_until_projects.py"
+    )
+    spec = importlib.util.spec_from_file_location("_retire_full", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return str(module.FULL_PLAN)
 
 
 async def _suite_plan(session: AsyncSession, code: str) -> Any:
@@ -240,3 +277,122 @@ class TestOverHttp:
                 json=_bundle(["hrms", "crm"]).model_dump(mode="json"),
             )
         assert resp.status_code == 404
+
+    async def test_an_explicit_null_member_list_is_refused_not_ignored(self, client: Any) -> None:
+        """The key's presence makes it a bundle declaration; `null` is a malformed one."""
+        plan_id = await self._plan_id(client)
+        body = _bundle(["hrms"]).model_dump(mode="json")
+        body["features"] = [{"feature_key": "bundled_products", "value": None}]
+        with _as(operator_principal(), REGISTRY):
+            resp = await client.post(f"/api/v1/admin/catalog/plans/{plan_id}/versions", json=body)
+        assert resp.status_code == 422
+        assert "non-empty list" in resp.text
+
+    async def test_a_soon_member_is_refused(self, client: Any) -> None:
+        plan_id = await self._plan_id(client)
+        with _as(operator_principal(), REGISTRY):
+            resp = await client.post(
+                f"/api/v1/admin/catalog/plans/{plan_id}/versions",
+                json=_bundle(["hrms", "projects"]).model_dump(mode="json"),
+            )
+        assert resp.status_code == 422
+        assert "'projects' has not launched" in resp.text
+
+
+class TestTrialLength:
+    @pytest.mark.parametrize("value", [-1, 366, "14", 1.5, True, None])
+    async def test_a_malformed_trial_length_is_refused(
+        self, platform_session: AsyncSession, value: Any
+    ) -> None:
+        with pytest.raises(BusinessRuleProblem, match="trial_days"):
+            async with platform_session.begin():
+                plan = await services.create_plan(
+                    platform_session,
+                    operator_principal(),
+                    PlanCreateIn(product_key="hrms", code="trial-bad", name="Trial"),
+                    request=None,
+                )
+                await services.create_version(
+                    platform_session,
+                    operator_principal(),
+                    plan,
+                    VersionCreateIn(
+                        currency="INR",
+                        prices=[PriceIn(kind="flat", amount_minor=1000, currency="INR")],
+                        features=[FeatureIn(feature_key="trial_days", value=value)],
+                    ),
+                    request=None,
+                    registry=REGISTRY,
+                )
+
+    async def test_a_valid_trial_length_authors(self, platform_session: AsyncSession) -> None:
+        async with platform_session.begin():
+            plan = await services.create_plan(
+                platform_session,
+                operator_principal(),
+                PlanCreateIn(product_key="hrms", code="trial-ok", name="Trial"),
+                request=None,
+            )
+            version = await services.create_version(
+                platform_session,
+                operator_principal(),
+                plan,
+                VersionCreateIn(
+                    currency="INR",
+                    prices=[PriceIn(kind="flat", amount_minor=1000, currency="INR")],
+                    features=[FeatureIn(feature_key="trial_days", value=0)],
+                ),
+                request=None,
+                registry=REGISTRY,
+            )
+        assert version.state == "draft"
+
+
+class TestTheDeployAudit:
+    """`python -m app.bundle_audit` — every sellable bundle re-judged against the registry."""
+
+    async def _bundle_version(
+        self, session: AsyncSession, code: str, members: list[str], *, retire: bool = False
+    ) -> None:
+        """Author with a permissive registry (as if the members were live then), publish, and
+        optionally retire the plan — the registry the audit sees is the one that moved on."""
+        permissive = FakeRegistry(
+            [RegisteredProduct("suite", is_bundle=True), *(RegisteredProduct(m) for m in members)]
+        )
+        plan = await _suite_plan(session, code)
+        version = await services.create_version(
+            session, operator_principal(), plan, _bundle(members), request=None, registry=permissive
+        )
+        await services.publish_version(session, operator_principal(), version, request=None)
+        if retire:
+            await services.retire_plan(session, operator_principal(), plan, request=None)
+
+    async def test_an_offered_rung_with_a_bad_member_fails_a_retired_one_warns(
+        self, platform_session: AsyncSession
+    ) -> None:
+        from app.bundle_audit import audit
+
+        async with platform_session.begin():
+            await self._bundle_version(platform_session, "audit-ok", ["hrms", "crm"])
+            await self._bundle_version(platform_session, "audit-bad", ["hrms", "retired-one"])
+            await self._bundle_version(
+                platform_session, "audit-old", ["hrms", "projects"], retire=True
+            )
+        # The registry the audit sees: `retired-one` is gone, `projects` is still `soon`.
+        async with platform_session.begin():
+            report = await audit(platform_session, REGISTRY)
+
+        assert report.audited == 3
+        assert not report.ok
+        assert [f.plan for f in report.errors] == ["suite/audit-bad"]
+        assert report.errors[0].problems == ["'retired-one' is not a registered product"]
+        assert [f.plan for f in report.warnings] == ["suite/audit-old"]
+
+    async def test_a_clean_catalogue_passes(self, platform_session: AsyncSession) -> None:
+        from app.bundle_audit import audit
+
+        async with platform_session.begin():
+            await self._bundle_version(platform_session, "audit-clean", ["hrms", "finance"])
+        async with platform_session.begin():
+            report = await audit(platform_session, REGISTRY)
+        assert report.ok and report.audited == 1

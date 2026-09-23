@@ -22,6 +22,7 @@ from starlette.requests import Request
 from app import domain, selectors
 from app.models import (
     FEATURE_BUNDLED_PRODUCTS,
+    FEATURE_TRIAL_DAYS,
     PLAN_RETIRED,
     PLATFORM_ORG,
     PRICE_PER_SEAT,
@@ -265,6 +266,13 @@ async def create_version(
     return version
 
 
+def _validate_trial_days(value: Any) -> None:
+    """A version's trial length, the only one subscription will grant (the caller no longer
+    chooses). Whole days, 0 (no trial) to 365."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 365:
+        raise BusinessRuleProblem(f"{FEATURE_TRIAL_DAYS} must be a whole number of days, 0 to 365")
+
+
 async def _validate_bundle(
     plan: Plan, declared: list[tuple[str, Any]], registry: ProductRegistry | None
 ) -> None:
@@ -273,9 +281,14 @@ async def _validate_bundle(
     Only a version that declares one pays for the registry read; every other version authors
     exactly as before. With no registry to ask, a bundle is refused rather than trusted.
     """
-    members = next((v for k, v in declared if k == FEATURE_BUNDLED_PRODUCTS), None)
-    if members is None:
+    # Presence of the key, not truthiness of its value: an explicit `"bundled_products": null`
+    # is a malformed bundle declaration, and must be refused rather than read as "not a bundle".
+    features = dict(declared)
+    if FEATURE_TRIAL_DAYS in features:
+        _validate_trial_days(features[FEATURE_TRIAL_DAYS])
+    if FEATURE_BUNDLED_PRODUCTS not in features:
         return
+    members = features[FEATURE_BUNDLED_PRODUCTS]
     if registry is None:
         raise BusinessRuleProblem(
             "a bundle cannot be authored without the product registry to check its members"

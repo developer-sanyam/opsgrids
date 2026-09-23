@@ -168,6 +168,8 @@ class RegisteredProduct:
     key: str
     is_platform: bool = False
     is_bundle: bool = False
+    #: `available`, `beta`, `soon`. A `soon` product has no service behind it on this deployment.
+    status: str = "available"
 
 
 def bundle_member_problems(
@@ -188,7 +190,9 @@ def bundle_member_problems(
     * no member is a **platform** product — every customer already has those, so selling one is
       charging for nothing;
     * no member is itself a **bundle** — a bundle's key routes nowhere, and nesting would entitle
-      a key that means nothing to the gateway.
+      a key that means nothing to the gateway;
+    * no member is still **`soon`** — a product with no service behind it is a customer paying
+      for 404s (product-service refuses to project one too).
     """
     problems: list[str] = []
     if bundle is None or not bundle.is_bundle:
@@ -211,6 +215,8 @@ def bundle_member_problems(
             problems.append(f"{member!r} is a platform product every customer already has")
         elif entry.is_bundle:
             problems.append(f"{member!r} is itself a bundle")
+        elif entry.status == "soon":
+            problems.append(f"{member!r} has not launched (status 'soon')")
     return problems
 
 

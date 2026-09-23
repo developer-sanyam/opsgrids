@@ -70,12 +70,14 @@ class FakeRegistry:
 
     @classmethod
     def default(cls) -> FakeRegistry:
-        plain = ["hrms", "crm", "finance", "projects", "support", "operations", "engage"]
+        plain = ["hrms", "crm", "finance", "support", "operations", "engage"]
         return cls(
             [
                 RegisteredProduct("core", is_platform=True),
                 RegisteredProduct("notification", is_platform=True),
                 RegisteredProduct("suite", is_bundle=True),
+                # Seeded `soon`: no service behind it yet, so no bundle may sell it.
+                RegisteredProduct("projects", status="soon"),
                 *(RegisteredProduct(key) for key in plain),
             ]
         )

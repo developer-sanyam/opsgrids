@@ -95,6 +95,9 @@ FEATURE_BUNDLE_TIER = "bundle_tier"
 #: is `restricted_to_org_id`, which is the same audience-of-one mechanism a negotiated enterprise
 #: price uses. Present so an operator screen can say "partner price" rather than infer it.
 FEATURE_PARTNER_OF = "partner_of"
+#: How long a trial of this version lasts, in whole days; 0 sells no trial. Subscription reads it
+#: at subscribe and caps whatever a customer asks for at it; absent means the platform's 14 days.
+FEATURE_TRIAL_DAYS = "trial_days"
 
 
 class Base(_Base):

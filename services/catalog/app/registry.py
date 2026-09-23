@@ -66,6 +66,7 @@ class HttpProductRegistry:
                 key=row["key"],
                 is_platform=bool(row.get("is_platform")),
                 is_bundle=bool(row.get("is_bundle")),
+                status=str(row.get("status", "soon")),
             )
             for row in response.json()["products"]
         }
