@@ -803,9 +803,16 @@ def billing_tenant(platform: Platform, tenants: dict[str, Any]) -> dict[str, Any
     be this organization's alone. Depends on `tenants` for ordering only.
     """
     run = f"billing-{uuid.uuid4().hex[:8]}"
-    seeded = json.loads(_seed("_seed_approval_org.py", "account", run).splitlines()[-1])
-    _seed("_seed_auth.py", "auth", seeded["owner"]["user_id"], PASSWORD, "keep")
-    return {**seeded, "run": run, "password": PASSWORD}
+    slug = f"e2e-{run}"
+    email = f"e2e-{run}-owner@example.com"
+    with httpx.Client(base_url=platform.gateway, timeout=30.0) as http:
+        org_id = _signup(
+            http, org_name="Epsilon Exports", slug=slug, full_name="Epsilon Owner", email=email
+        )
+        _set_password_via_reset(http, email, PASSWORD)
+        token = _login(http, email, PASSWORD, org_id)
+        owner = _find_member(http, token, email)
+    return {"org_id": org_id, "org_slug": slug, "owner": owner, "run": run, "password": PASSWORD}
 
 
 @pytest.fixture(scope="session")

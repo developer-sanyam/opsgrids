@@ -595,7 +595,19 @@ make edge-logs SERVICE=subscription-worker | grep billing_run
 | `failing` | claims whose last attempt failed; retried with backoff (5 min doubling to 6 h) | > 0 for a day |
 | `failing_permanent` | a data defect (a 4xx from billing, a `one_time` cadence) or five failures; still retried at the cap | **> 0** — a person must fix the data |
 | `void_pending` | invoices for superseded periods waiting to be voided in billing | > 0 for an hour |
+| `finalize_pending` | recorded claims whose draft invoice billing has not finalized yet — nothing is chargeable until it is | > 0 for an hour |
+| `close_charges_failed` | closing-period charges that failed after the customer cancelled — owed, not dunned | **> 0** — a person decides |
 | `invoiced_24h` / `skipped_24h` / `last_recorded_at` | throughput; `skipped` is suspended periods rolled without an invoice | — |
+
+Run invoices are **drafts** until the run has recorded them; only then are they finalized (and
+charged). A customer never sees a draft. A plan change to another billing cadence is refused —
+cancel and subscribe again.
+
+The worker exits non-zero if any of its loops (the payment consumer, the dunning sweep, the billing
+run) stops; `restart: unless-stopped` brings it back. `worker.loop_failed` / `worker.loop_returned`
+name the loop. A pass that fails is retried with backoff (`dunning.sweep.tick_failed`,
+`billing_run.tick_failed`); one poisoned dunning cycle is `dunning.sweep.cycle_failed` and is
+pushed back fifteen minutes.
 
 Log lines: `billing_run.pass` (counts, only when a pass did something), `billing_run.recorded`
 and `billing_run.failed` (per subscription, with its ids), `billing_run.not_billable` (a

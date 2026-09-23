@@ -411,8 +411,15 @@ review replaced it with the rule below.*
 - **Only a trial or an active subscription changes plan** — an explicit check in
   `_change_plan`, not left to the state machine, because `past_due -> past_due` is now a legal
   edge for the renewal and would otherwise let a customer who owes money move up a plan.
-- **On a trial**, either direction re-pins immediately and moves no money: nothing is being paid.
-- **An upgrade** (the new version's recurring list price at least the old one's) re-pins and
+- **One cadence for life** (round 2): a change to a version with a different billing interval, or
+  to `one_time`, is refused with a 422 — cancel and subscribe again. Monthly and yearly periods do
+  not line up, so no proration can price one against the other honestly.
+- **Direction is per day, in integers**: `new × old_days` against `old × new_days` (30 for a month,
+  365 for a year). Greater is an upgrade, less a downgrade, **equal moves no money** — re-pinned now,
+  no proration, usage so far still closed at the old pin.
+- **On a trial with nothing claimed**, either direction re-pins immediately and moves no money.
+  A trial whose conversion is already claimed is priced like an active subscription (round 2, B2).
+- **An upgrade** (the new version's recurring list price per day above the old one's) re-pins and
   re-entitles immediately, and **charges now the prorated difference for the rest of the current
   period**: a `proration` claim over `[change, period end)` as a fraction of the whole period,
   billed by the run like any other claim. Billing prices both versions from catalog, prorates each
@@ -525,4 +532,47 @@ each implemented with a test that fails without it.
     grace window — anchored at the trial's end — has already expired.
 
 Added to *Deferred*: payment consuming `commerce.invoice.voided` to cancel an unsettled charge for
-a voided invoice.
+a voided invoice. *(Round 2's finalize-after-record makes this moot for the billing run: a
+superseded period is now a voided draft that was never announced.)*
+
+### Review fixes, round 2 (2026-09-24)
+
+- **B1 — one cadence.** See §4: a different interval or `one_time` is refused (422); direction is
+  compared per day with integer cross-multiplication.
+- **B2 — changes against a claim.** When a renewal or a trial conversion is claimed and not yet
+  recorded, an upgrade is prorated against **the claim's** period `[change, claim end)` from the
+  pin it moved off, and the record step checks the claim's pin against the subscription's and
+  claims the same proration again under a change id derived from the claim and the new pin — a
+  unique index makes that a no-op when the change-plan path already did it. A downgrade scheduled
+  after a claim is applied only when a period **not yet claimed** is claimed.
+- **M3 — usage at the old pin.** Whenever a paid subscription's pin changes, usage up to the change
+  is closed at the old pin: an immediate change claims `close [floor, change)`; a deferred downgrade
+  claims `close [floor, period end)` before it is applied, and that renewal carries no usage window.
+  An equal-price switch closes usage too, and raises no proration.
+- **M4 — stops against a claim.** A closing window starts at the latest of the period start,
+  `usage_billed_through`, and the usage end of any lifecycle claim already made. A claimed renewal
+  is never pre-empted by a suspended roll; if the subscription was suspended between claim and
+  record, the renewal's draft is voided (no advance charge for an unserved period), the period
+  still rolls, and the usage it carried is re-claimed as a closing period of its own — the same
+  happens to any superseded renewal. Cancel, suspend and change-plan take the subscription row
+  lock the run's claim and record take. Any failure while billing a subscription backs its pending
+  claim off.
+- **M5 — finalize after record.** Billing raises a run invoice as a **draft**, with no event.
+  Subscription records the claim (`finalize_pending`), then — a fourth step, keyed and idempotent —
+  asks `POST /internal/v1/subscription-invoices:finalize`, which moves `draft -> finalized`, freezes
+  the invoice and stages `commerce.invoice.finalized` exactly once (`finalized`). The freeze
+  trigger already allowed a draft to take lines and change; it freezes at finalize as before.
+  A superseded or stale period is therefore a **draft** voided — as a state, with an audit row and
+  no event — before anything could charge it. Customers never see a draft. Discovery picks up
+  `finalize_pending` with the same lease and backoff as a call; `/health/billing-run` counts it.
+- **m6** — the column-grant hook grants only columns the current revision has, so a partial
+  downgrade works. **m7** — a trial conversion is stamped with a failed charge only when the failure
+  names the conversion's own invoice. **m8** — a proration that nets to nothing writes no invoice.
+- **m9 — deferred:** a closing-period charge that fails after the customer cancelled is not dunned
+  (there is nothing left to suspend). It is stamped on the closing period and counted by
+  `/health/billing-run` as `close_charges_failed`; collecting it is a person's decision.
+- **Worker supervision.** The worker's loops are supervised (`app/supervise.py`): a sweep pass that
+  raises is logged and retried with capped exponential backoff, a dunning cycle whose action raises
+  is pushed back 15 minutes and the pass carries on, and any loop that raises **or returns** stops
+  the process non-zero, cancelling the others — no zombie worker without its payment consumer.
+  `CancelledError` always propagates.
