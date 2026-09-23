@@ -176,6 +176,16 @@ export interface InventoryItemOut {
   unit_value_minor: number;
   currency: string;
   updated_at: string;
+  /** The item master's own category tree (ADR-0014 Phase 1) — additive to `category` above. */
+  item_category_id: string | null;
+  /** An alternate reporting/purchase unit; its ratio to `uom` is a per-item conversion. */
+  secondary_uom_id: string | null;
+  hsn_code: string;
+  track_lot: boolean;
+  track_roll: boolean;
+  track_expiry: boolean;
+  track_quality: boolean;
+  is_active: boolean;
 }
 
 /** `POST /inventory`. `on_hand` is never accepted — `opening_on_hand` becomes the item's first
@@ -190,6 +200,14 @@ export interface InventoryItemIn {
   unit_value_minor?: number;
   currency?: string;
   opening_on_hand?: number;
+  item_category_id?: string | null;
+  secondary_uom_id?: string | null;
+  hsn_code?: string;
+  track_lot?: boolean;
+  track_roll?: boolean;
+  track_expiry?: boolean;
+  track_quality?: boolean;
+  is_active?: boolean;
 }
 
 /** `PATCH /inventory/{id}`. `sku`, `currency` and — above all — `on_hand` are never accepted:
@@ -201,6 +219,93 @@ export interface InventoryItemPatch {
   uom?: string;
   reorder_point?: number;
   unit_value_minor?: number;
+  item_category_id?: string | null;
+  secondary_uom_id?: string | null;
+  hsn_code?: string;
+  track_lot?: boolean;
+  track_roll?: boolean;
+  track_expiry?: boolean;
+  track_quality?: boolean;
+  is_active?: boolean;
+}
+
+/* ---------------------------- item master (Phase 1) ----------------------- */
+
+/** A node in the item master's own category tree — additive to the fixed `Category` enum. */
+export interface ItemCategoryOut {
+  id: string;
+  code: string;
+  name: string;
+  parent_id: string | null;
+}
+
+/** `POST /inventory/categories`. */
+export interface ItemCategoryIn {
+  code: string;
+  name: string;
+  parent_id?: string | null;
+}
+
+/** `PATCH /inventory/categories/{id}`. `code` is immutable once created. */
+export interface ItemCategoryPatch {
+  name?: string;
+  parent_id?: string | null;
+}
+
+/** One entry in the org's UOM directory. `is_system` marks a unit seeded from the fixed
+ *  registry; both are equally usable as an item's `uom`. */
+export interface UomOut {
+  id: string;
+  code: string;
+  name: string;
+  dimension: string;
+  is_discrete: boolean;
+  is_system: boolean;
+}
+
+export type ItemAttributeType = "text" | "number" | "boolean" | "date";
+
+/** One typed key/value fact about an item (GSM, width, shade, …). Exactly one of the four
+ *  `value_*` fields is non-null, matching `value_type`. */
+export interface ItemAttributeOut {
+  id: string;
+  key: string;
+  value_type: ItemAttributeType;
+  value_text: string | null;
+  value_number: number | null;
+  value_boolean: boolean | null;
+  value_date: string | null;
+}
+
+/** `PUT /inventory/{id}/attributes/{key}`. Typed values only: set exactly the one `value_*`
+ *  field matching `value_type`, and no other — the API rejects anything else. */
+export interface ItemAttributeIn {
+  value_type: ItemAttributeType;
+  value_text?: string | null;
+  value_number?: number | null;
+  value_boolean?: boolean | null;
+  value_date?: string | null;
+}
+
+/** A purchasable/stockable variant of an item master row — its own SKU. */
+export interface ItemVariantOut {
+  id: string;
+  inventory_item_id: string;
+  sku: string;
+  name: string;
+  is_active: boolean;
+}
+
+/** `POST /inventory/{id}/variants`. */
+export interface ItemVariantIn {
+  sku: string;
+  name: string;
+}
+
+/** `PATCH /inventory/{id}/variants/{id}`. `sku` is immutable once created. */
+export interface ItemVariantPatch {
+  name?: string;
+  is_active?: boolean;
 }
 
 export type StockMovementKind =

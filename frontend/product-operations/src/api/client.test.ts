@@ -11,21 +11,33 @@ import {
   cancelPurchaseOrder,
   closePurchaseOrder,
   createInventoryItem,
+  createItemCategory,
+  createItemVariant,
   createPurchaseOrder,
   createSupplier,
   createWarehouse,
   deleteInventoryItem,
+  deleteItemAttribute,
+  deleteItemCategory,
+  deleteItemVariant,
   deletePurchaseOrder,
   deleteSupplier,
   deleteWarehouse,
   getInventoryItem,
   listInventory,
+  listItemAttributes,
+  listItemCategories,
+  listItemVariants,
   listMovements,
   listPurchaseOrders,
   listSuppliers,
+  listUoms,
   listWarehouses,
   receivePurchaseOrder,
+  setItemAttribute,
   updateInventoryItem,
+  updateItemCategory,
+  updateItemVariant,
   updatePurchaseOrder,
   updateSupplier,
   updateWarehouse,
@@ -324,6 +336,129 @@ describe("deleteWarehouse", () => {
     await deleteWarehouse("wh-1");
     const { url, init } = requested(fetchMock);
     expect(url).toBe("/api/v1/operations/warehouses/wh-1");
+    expect(init.method).toBe("DELETE");
+  });
+});
+
+describe("listUoms", () => {
+  it("calls GET /operations/inventory/uoms", async () => {
+    const fetchMock = stubFetch(PAGE_ENVELOPE);
+    await listUoms();
+    const { url } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/inventory/uoms?page=1&size=200");
+  });
+});
+
+describe("listItemCategories", () => {
+  it("calls GET /operations/inventory/categories", async () => {
+    const fetchMock = stubFetch(PAGE_ENVELOPE);
+    await listItemCategories();
+    const { url } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/inventory/categories?page=1&size=200");
+  });
+});
+
+describe("createItemCategory", () => {
+  it("POSTs the ItemCategoryIn body verbatim", async () => {
+    const fetchMock = stubFetch({ id: "cat-1" }, 201);
+    const body = { code: "FABRICS", name: "Fabrics" };
+    await createItemCategory(body);
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/inventory/categories");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual(body);
+  });
+});
+
+describe("updateItemCategory", () => {
+  it("PATCHes only the changed fields", async () => {
+    const fetchMock = stubFetch({ id: "cat-1" });
+    await updateItemCategory("cat-1", { name: "Renamed" });
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/inventory/categories/cat-1");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body as string)).toEqual({ name: "Renamed" });
+  });
+});
+
+describe("deleteItemCategory", () => {
+  it("DELETEs by id", async () => {
+    const fetchMock = stubFetch(undefined, 204);
+    await deleteItemCategory("cat-1");
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/inventory/categories/cat-1");
+    expect(init.method).toBe("DELETE");
+  });
+});
+
+describe("listItemAttributes", () => {
+  it("calls GET /operations/inventory/:id/attributes", async () => {
+    const fetchMock = stubFetch([]);
+    await listItemAttributes("inv-1");
+    const { url } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/inventory/inv-1/attributes");
+  });
+});
+
+describe("setItemAttribute", () => {
+  it("PUTs exactly the one value field matching value_type", async () => {
+    const fetchMock = stubFetch({ id: "attr-1", key: "gsm" });
+    await setItemAttribute("inv-1", "gsm", { value_type: "number", value_number: 180 });
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/inventory/inv-1/attributes/gsm");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({ value_type: "number", value_number: 180 });
+  });
+});
+
+describe("deleteItemAttribute", () => {
+  it("DELETEs by item id and key", async () => {
+    const fetchMock = stubFetch(undefined, 204);
+    await deleteItemAttribute("inv-1", "gsm");
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/inventory/inv-1/attributes/gsm");
+    expect(init.method).toBe("DELETE");
+  });
+});
+
+describe("listItemVariants", () => {
+  it("calls GET /operations/inventory/:id/variants", async () => {
+    const fetchMock = stubFetch([]);
+    await listItemVariants("inv-1");
+    const { url } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/inventory/inv-1/variants");
+  });
+});
+
+describe("createItemVariant", () => {
+  it("POSTs the ItemVariantIn body verbatim", async () => {
+    const fetchMock = stubFetch({ id: "var-1" }, 201);
+    const body = { sku: "RM-ALU-7075-BLK", name: "Black anodised" };
+    await createItemVariant("inv-1", body);
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/inventory/inv-1/variants");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual(body);
+  });
+});
+
+describe("updateItemVariant", () => {
+  it("PATCHes only the changed fields", async () => {
+    const fetchMock = stubFetch({ id: "var-1" });
+    await updateItemVariant("inv-1", "var-1", { is_active: false });
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/inventory/inv-1/variants/var-1");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body as string)).toEqual({ is_active: false });
+  });
+});
+
+describe("deleteItemVariant", () => {
+  it("DELETEs by item id and variant id", async () => {
+    const fetchMock = stubFetch(undefined, 204);
+    await deleteItemVariant("inv-1", "var-1");
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/inventory/inv-1/variants/var-1");
     expect(init.method).toBe("DELETE");
   });
 });
