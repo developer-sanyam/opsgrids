@@ -778,6 +778,9 @@ services:
       # billing run" before turning it on: the first passes convert every expired trial and bill
       # every overdue period.
       BILLING_RUN_ENABLED: ${BILLING_RUN_ENABLED:-false}
+      # The billing cutover, required once the run is on (the worker refuses to start the run
+      # without it): nothing that began before it is invoiced. See the runbook.
+      BILLING_RUN_NOT_BEFORE: ${BILLING_RUN_NOT_BEFORE:-}
 
   # Prices the billing run's invoices off the pinned catalog version and metering's usage for the
   # closed period. BILLING_TAX_CODE unset means no tax line (ADR-0004 "Open: Tax"); set it (and

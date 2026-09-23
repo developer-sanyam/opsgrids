@@ -227,7 +227,15 @@ fi
 if [ "${BILLING_RUN_ENABLED:-}" != "true" ]; then
 	echo "  warn  BILLING_RUN_ENABLED is ${BILLING_RUN_ENABLED:-unset}: the billing run is OFF. No trial converts and nothing is invoiced. Read the runbook's \"The billing run\" first." >&2
 else
-	ok "billing run enabled"
+	# On, it needs its cutover (final review, fix 3): without one the worker refuses to start the
+	# run, and a malformed one would stop the worker parsing its settings at all.
+	if [ -z "${BILLING_RUN_NOT_BEFORE:-}" ]; then
+		bad "BILLING_RUN_ENABLED=true but BILLING_RUN_NOT_BEFORE is empty — set it to the moment billing goes live, with a UTC offset (the runbook's \"The billing run\")"
+	elif ! printf '%s' "$BILLING_RUN_NOT_BEFORE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?([+-][0-9]{2}:[0-9]{2}|Z)$'; then
+		bad "BILLING_RUN_NOT_BEFORE must be an ISO instant with a UTC offset, e.g. 2026-10-01T09:00:00+05:30"
+	else
+		ok "billing run enabled, cutover $BILLING_RUN_NOT_BEFORE"
+	fi
 fi
 
 if [ -z "${RAZORPAY_KEY_ID:-}" ]; then

@@ -592,14 +592,13 @@ superseded period is now a voided draft that was never announced.)*
   marker row (`skipped`, `equal_price`, never billed) so the last pin is always known; an
   equal-price switch after an upgrade therefore charges exactly one proration, whichever door
   (customer or operator) it came through.
-- **M3 — no money decisions while the run lags.** A customer or operator plan change, and a
-  customer cancel, are refused **409 "billing is catching up on this subscription — try again
-  shortly"** while a period end or trial end is due and unclaimed, or while a claim is pending for
-  a period that has already ended. The run claims within one pass, so the wait is minutes. While
-  `BILLING_RUN_ENABLED=false` it means changes on every overdue subscription are refused — the
-  runbook's enable step says so. We chose refusal over "claim first, then change" for the operator
-  too: it is one rule in one place, and there is no operator cancel route to special-case (an
-  operator stops service with the internal suspend, which is not refused).
+- **M3 — no money decisions while the run lags.** A customer or operator **plan change** is
+  refused **409 "billing is catching up on this subscription — try again shortly"** while a period
+  end or trial end is due and unclaimed, or while a claim is pending for a period that has already
+  ended. The run claims within one pass, so the wait is minutes. While `BILLING_RUN_ENABLED=false`
+  it means plan changes on every overdue subscription are refused — the runbook's enable step says
+  so. We chose refusal over "claim first, then change" for the operator too: it is one rule in one
+  place. *(Amended by the final review: a customer cancel is **not** refused — see below.)*
 - **Opening charges (found by the property test).** A subscription that started `active` without
   a trial was never charged its first period: the run charged the *next* period in advance at each
   roll, and nothing charged the first. It now claims an **opening** charge at subscribe —
@@ -631,10 +630,64 @@ superseded period is now a voided draft that was never announced.)*
   subscription through random sequences of trial, upgrade, downgrade, equal-price switch,
   suspension, resumption, failed and recovered payments, crashes between every step of the run,
   billing outages and passes of the run, on a controlled clock, then cancels it and lets the run
-  catch up. Seeds are deterministic (`BILLING_PROPERTY_SEEDS`, default 200). Over what billing
+  catch up. Seeds are deterministic (`BILLING_PROPERTY_SEEDS`; 25 by default since the final review). Over what billing
   finalized: base charges never overlap, never start before the paid start or at/after the
   cancellation, and cover every served instant; usage windows never overlap, stay inside paid
   time and cover every served instant; each is priced at the pin in force at its start and no pin
   change falls inside a usage window; nothing is charged on a voided or skipped parent and no
   finalized invoice is voided; no upgrade is charged twice; totals are integers. On the round-2
   head it failed 171 of 200 seeds.
+
+### Final review (2026-09-24)
+
+- **Blocker — a payment is not a key to every suspension.** Both suspension paths close the cycle
+  first, so a capture on a suspended subscription used to find no open cycle and resume it — any
+  capture: the run's closing-usage invoice, raised *by* the suspension and captured moments later,
+  lifted an operator's fraud hold, and a customer dunned for a ₹1,000 invoice resumed by paying a
+  ₹40 usage invoice. Now, on `suspended` with no open cycle, a capture resumes only if the last move
+  into `suspended` was dunning's (`dunning_exhausted`, read off the transition log) **and** the
+  latest cycle closed `grace_expired` for exactly the captured invoice. Anything else logs
+  `dunning.capture.no_resume` and moves nothing. **An operator's suspension is never lifted by a
+  payment**; there is no resume route yet, so a person lifts it with a reviewed data change.
+- **Major 2 — a cancel is never refused.** With the run off by default, M3's refusal would have
+  answered 409 to every cancel in production. A customer cancel always succeeds; a period that was
+  due and unclaimed at the cancel is never opened, and the run bills the cancellation's closing
+  usage only. (The served time since that period's boundary is not charged — the same deliberate,
+  customer-favouring deferral as round 3's late-run cancel.) Plan changes keep the 409.
+- **Major 3 — the billing cutover.** `BILLING_RUN_NOT_BEFORE`, a timezone-aware instant,
+  **required** when `BILLING_RUN_ENABLED=true`: the worker refuses to start the run's loop without
+  it (`billing_run.refused`; the payment consumer and dunning keep running), and preflight fails.
+  The operator sets it to the moment they turn the run on and never moves it later. Chosen:
+  * recurring money — a renewal, a trial conversion, a proration, an opening — for a period that
+    **began before** the cutover is never invoiced: the row is written or settled `skipped` with
+    outcome `pre_cutover` and the period rolls. An existing subscription starts paying at its
+    first period that begins after the cutover; the period straddling it is free;
+  * a trial that **ended before** the cutover converts to `active` with no invoice, no mandate
+    question and no dunning (the conversion's `activated` event says `invoiced: false`); its first
+    paid period opens at the trial's end and is that free straddling period. A trial ending after
+    the cutover converts and is dunned exactly as before;
+  * **no usage from before the cutover is billed**: a renewal's usage window starts no earlier
+    than it, a closing window straddling it is billed from it (only the usage window moves — the
+    row's `period_start`, billing's key, stays), and one that ended by it is skipped. We clamp
+    rather than skip straddling usage because usage after the cutover is consumption billing is
+    live for;
+  * `python -m app.billing_run --dry-run [--not-before …]` splits each due subscription's periods
+    into `periods_pre_cutover` / `periods_invoiced` / `periods_suspended_roll`, and reports the
+    backlog of rows that are their own work by kind (`opening`, `close`, `proration`,
+    `finalize_pending`, `void_pending`) with how many would be invoiced, clamped or skipped.
+- **A stop while the run lags applies a lapsed downgrade first** (found by the property test once
+  dunning suspensions joined it). A deferred downgrade takes effect at the first unclaimed
+  boundary, which the run applies when it claims that roll. If the run is behind and the
+  subscription is cancelled or suspended (by an operator, or by dunning at its window's end)
+  after that boundary, the stop's closing usage ran across it at the old, dearer pin. The stop now
+  applies the downgrade at the boundary first: usage to it closes at the old pin, the rest at the
+  new one, and later rolls price at the new pin as they would have.
+- **Minors.** Billing's drafts probe reads `invoices(state, created_at)` only — `id` and
+  `organization_id` are revoked on every migrate. The property test tolerates only the refusals a
+  customer can meet (`BillingCatchingUp`, and 409/422/403 problems) — anything else fails the
+  seed; it now suspends through dunning as well as by an operator, checks every resumption against
+  the rule above, and checks that every charged proration prices from the pin in force just
+  before it. It runs 25 seeds in the ordinary suite; `make test-billing-properties` runs 500
+  (nightly, and by hand before changing the run). The runbook notes that a permanently failing
+  claim freezes its subscription's plan changes (409) once its own period has ended too, until a
+  person fixes it — `failing_permanent` is the alert.

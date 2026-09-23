@@ -542,7 +542,9 @@ The billing run (ADR-0005's 2026-09-23 addendum and its review fixes) is the loo
 ended trials, invoices every period, bills an upgrade's prorated difference, bills the closing
 usage a cancellation or suspension leaves, and voids an invoice for a period the subscription
 moved past. **It is off unless `.env` sets `BILLING_RUN_ENABLED=true`** — preflight warns while it
-is off, and `/health/billing-run`'s `overdue` climbs. It lives in `subscription-worker` beside the payment consumer and the
+is off, and `/health/billing-run`'s `overdue` climbs — **and on, it needs `BILLING_RUN_NOT_BEFORE`**,
+the cutover (below): without it preflight fails and the worker refuses to start the run
+(`billing_run.refused` in the log; the payment consumer and dunning keep running). It lives in `subscription-worker` beside the payment consumer and the
 dunning sweep — no container of its own. It calls billing (`POST /internal/v1/subscription-invoices`)
 and payment (the mandate question) over the back network; billing in turn reads catalog and
 metering. None of those calls holds a database transaction open.
@@ -553,50 +555,76 @@ metering. None of those calls holds a database transaction open.
 `f5a7b9c1d3e6` (the finalize step's states and `payment_failed_at`) and `a1c3e5f7b9d2` (a
 proration's `against_period_id`, the `opening` kind, `subscriptions.suspended_at`).
 `migrations/env.py` grants the outbox role `SELECT` on **named columns only** of the tables it
-discovers from — in subscription, and in billing on `invoices(id, organization_id, state,
-created_at)` for `/health/billing-drafts`. Billing, metering and payment must be serving the new routes before the worker's first
+discovers from — in subscription, and in billing on `invoices(state, created_at)` for
+`/health/billing-drafts` (an earlier grant of `id, organization_id` is revoked on every migrate). Billing, metering and payment must be serving the new routes before the worker's first
 pass; a single `make deploy` does that, and a pass that runs early only backs off and retries.
 
-**First deploy onto a box with history — stage it.** Until now nothing ever converted a trial or
-rolled a period, so the first passes will: every trial past its end is invoiced for its first
-period and moves to `active` (a usable mandate) or `past_due` (none — which is every trial while
-Razorpay keys are empty, and a trial that ended more than fourteen days ago is then suspended by
-the dunning sweep's next pass), and every active subscription whose period has closed is invoiced
-**one period per pass** for every period it is behind. Look before that happens:
+**The cutover — `BILLING_RUN_NOT_BEFORE`.** Until now nothing ever converted a trial or rolled
+a period, so without a cutover the first passes would invoice every period and conversion a box
+has owed since before billing existed. The cutover is the moment billing goes live, set once, to
+the moment you turn the run on, with a UTC offset (`2026-10-01T09:00:00+05:30`), and **never moved
+later** (rows already billed are not revisited). From it:
+
+* **Recurring money for a period that began before it is never invoiced.** Such a period rolls
+  `skipped` with outcome `pre_cutover` (a renewal, a proration, an opening). An existing
+  subscription therefore starts paying at its **first period that begins after the cutover**; the
+  period that straddles it is free.
+* **A trial that ended before it converts to `active` with no invoice**, no mandate question and no
+  dunning — its first paid period opens at the trial's end and is the free straddling period
+  above. A trial that ends after it is invoiced and dunned exactly as before.
+* **No usage from before it is billed.** A renewal's usage window starts no earlier than the
+  cutover; a closing window that straddles it is billed from the cutover on; one that ended before
+  it is skipped `pre_cutover`.
+
+Stage it:
 
 ```bash
 # 1. Deploy. The run is off by default; preflight says so.
 make deploy HOST=… CONFIRM=…
-# 2. What it would do: one JSON line per subscription, then a summary. Writes nothing.
+# 2. Pick the cutover — the moment you will turn the run on — and preview against it. One JSON
+#    line per due subscription, then a summary. Writes nothing.
 docker compose -f compose.prod.yml --env-file .env run --rm -T subscription-worker \
-  python -m app.billing_run --dry-run
-# 3. Decide. Then turn it on and recreate the worker.
-echo 'BILLING_RUN_ENABLED=true' >> .env && docker compose -f compose.prod.yml --env-file .env up -d subscription-worker
+  python -m app.billing_run --dry-run --not-before 2026-10-01T09:00:00+05:30
+# 3. Decide. Then set both, and recreate the worker.
+printf 'BILLING_RUN_ENABLED=true\nBILLING_RUN_NOT_BEFORE=2026-10-01T09:00:00+05:30\n' >> .env
+docker compose -f compose.prod.yml --env-file .env up -d subscription-worker
 ```
 
-**While the run is off, changes on overdue subscriptions are refused.** A customer or operator
-plan change, and a customer cancel, answer **409 "billing is catching up on this subscription —
-try again shortly"** whenever a period end or a trial end is due and the run has not claimed it
+Per subscription the dry run prints `periods_owed`, split into `periods_pre_cutover` (rolled with
+no invoice), `periods_invoiced` and `periods_suspended_roll` (suspended, rolled with no invoice),
+and `grace_already_expired` for a trial that ended after the cutover more than fourteen days ago
+(without a usable mandate the dunning sweep suspends it on its next pass). The summary adds the
+backlog of rows that are their own work — `backlog` by kind (`opening`, `close`, `proration`,
+`finalize_pending`, `void_pending`), and how many of the billable ones would be invoiced
+(`backlog_invoiced`, of which `backlog_usage_clamped` start at the cutover) or skipped
+(`backlog_pre_cutover`). `periods_invoiced` above 1 for a subscription means it is more than one
+period behind **after** the cutover — expected only if the run was held after its cutover; the run
+bills from the stored boundary, one period per pass.
+
+**While the run is off, plan changes on overdue subscriptions are refused** — cancellations never
+are. A customer or operator plan change answers **409 "billing is catching up on this subscription
+— try again shortly"** whenever a period end or a trial end is due and the run has not claimed it
 (ADR-0005 addendum, round 3, M3). With `BILLING_RUN_ENABLED=false` nothing claims, so every
-subscription past its boundary is frozen for changes until the run is turned on and has caught up
-(one period per pass). That is deliberate: deciding money against a period nobody has opened is
-how the earlier defects were made. There is no operator cancel route; an operator who must stop
-service now uses the internal suspend (not refused), and cancels once the run has caught up.
+subscription past its boundary cannot change plan until the run is on and has caught up (one
+period per pass). A customer cancel always succeeds: the period that was due and never opened is
+never billed (the run bills the cancellation's closing usage only — ADR-0005, final review).
+
+**A permanently failing claim freezes that subscription's plan changes.** A claim that fails
+permanently (`failing_permanent` below) stays pending; once its own period has ended too, the
+subscription is more than one period behind and its plan changes answer 409 until a person fixes
+the claim. `failing_permanent > 0` is the alert; cancels still work.
 
 **New on the first pass after `a1c3e5f7b9d2`:** a subscription that started `active` without a
 trial was never charged its first period. From this revision every new such subscription is
-charged an **opening** charge (the first period, at the pin in force) on the run's next pass.
-Existing rows are not back-charged — the dry run does not list them and nothing claims one; a
-back-charge is a person's decision.
+charged an **opening** charge (the first period, at the pin in force) on the run's next pass —
+unless it began before the cutover, when it is skipped `pre_cutover` like any other early period.
 
-The summary splits `periods_invoiced` (invoices that will be raised) from
-`periods_suspended_roll` (suspended periods that only roll), and counts `grace_already_expired`:
-trials whose fourteen-day window, anchored at the trial's end, has already passed — without a
-usable mandate those are suspended by the dunning sweep's next pass. `periods_invoiced` above 1
-for a subscription means back-invoicing. If that is not what the business wants for a
-subscription, move its period forward by hand (a reviewed `UPDATE` of `current_period_start` /
-`current_period_end` on that one row) before turning the run on — the run bills from the stored
-boundary, which is what makes it safe, and also what makes it literal.
+**A payment is not a key to every suspension.** A suspension by dunning (the window ran out) is
+lifted only by a capture of **the invoice that window was about**; the run's closing-usage invoice
+and any other capture are recorded by payment and move nothing (`dunning.capture.no_resume` in the
+log). An **operator's** suspension is never lifted by a payment at all — a person lifts it. There
+is no internal resume route yet, so lifting an operator suspension is a reviewed data change
+(the subscription's state, and its `suspended -> active` transition row) until one exists.
 
 **Watching it.**
 
@@ -617,7 +645,7 @@ make edge-logs SERVICE=subscription-worker | grep billing_run
 | `close_charges_failed` | closing-period charges that failed after the customer cancelled — owed, not dunned | **> 0** — a person decides |
 | `proration_charges_failed` | upgrade or opening charges that failed after the subscription was cancelled or suspended — owed, not dunned | **> 0** — a person decides |
 | `prorations_on_voided_parent` | a proration charged although the period it was priced against was voided or skipped — must be zero by construction | **> 0** — refund it; report a bug |
-| `invoiced_24h` / `skipped_24h` / `last_recorded_at` | throughput; `skipped` is suspended periods rolled without an invoice | — |
+| `invoiced_24h` / `skipped_24h` / `last_recorded_at` | throughput; `skipped` is suspended periods rolled without an invoice, and anything skipped `pre_cutover` | — |
 
 Billing has its own probe, `/health/billing-drafts` (`docker compose … exec billing python -c
 "…u.urlopen('http://127.0.0.1:8000/health/billing-drafts')…"`): `drafts`, `drafts_stale` (older
@@ -642,7 +670,9 @@ name the loop. A pass that fails is retried with backoff (`dunning.sweep.tick_fa
 `billing_run.tick_failed`); one poisoned dunning cycle is `dunning.sweep.cycle_failed` and is
 pushed back fifteen minutes.
 
-Log lines: `billing_run.pass` (counts, only when a pass did something), `billing_run.recorded`
+Log lines: `billing_run.cutover` (the cutover the loop started with), `billing_run.refused` (enabled
+without a cutover — the run is not running), `billing_run.pass` (counts, only when a pass did
+something; `skipped_pre_cutover` among them), `billing_run.recorded`
 and `billing_run.failed` (per subscription, with its ids), `billing_run.not_billable` (a
 `one_time` plan's trial — nothing sells one today), `billing_run.period.superseded` /
 `billing_run.period.stale_closed` (the subscription changed between claim and record — the run
