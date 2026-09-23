@@ -22,7 +22,7 @@ from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
-from app.domain import PERMANENT_AFTER_ATTEMPTS
+from app.domain import OUTCOME_PRE_CUTOVER, PERMANENT_AFTER_ATTEMPTS
 from app.models import (
     DUNNING_OPEN,
     LIFECYCLE_KINDS,
@@ -139,14 +139,15 @@ async def latest_cycle(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def latest_suspension_reason(
+async def latest_suspension_actor(
     session: AsyncSession, organization_id: uuid.UUID, subscription_id: uuid.UUID
-) -> str | None:
-    """Why the subscription was last moved into `suspended` — dunning's window running out, or
-    an operator — read off the append-only transition log, so a subscription suspended before
-    `suspended_at` existed answers too."""
+) -> dict[str, Any] | None:
+    """Who last moved the subscription into `suspended` — the dunning sweep or an operator —
+    read off the append-only transition log, so a subscription suspended before `suspended_at`
+    existed answers too. The **actor**, not the reason: a reason is free text an operator
+    supplies (final money review)."""
     stmt = (
-        select(SubscriptionTransition.reason)
+        select(SubscriptionTransition.actor)
         .where(
             SubscriptionTransition.organization_id == organization_id,
             SubscriptionTransition.subscription_id == subscription_id,
@@ -569,6 +570,23 @@ async def base_charge_covering(
         BillingPeriod.subscription_id == subscription_id,
         BillingPeriod.kind.in_((*LIFECYCLE_KINDS, PERIOD_KIND_OPENING)),
         BillingPeriod.state.in_((PERIOD_PENDING, PERIOD_FINALIZE_PENDING, PERIOD_FINALIZED)),
+        BillingPeriod.period_start <= at,
+        BillingPeriod.period_end > at,
+    )
+    return bool((await session.execute(stmt)).scalar_one())
+
+
+async def pre_cutover_covering(
+    session: AsyncSession, organization_id: uuid.UUID, subscription_id: uuid.UUID, at: datetime
+) -> bool:
+    """Whether a period the billing cutover made free — a roll, conversion or opening skipped
+    `pre_cutover` — covers the instant `at`."""
+    stmt = select(func.count(BillingPeriod.id)).where(
+        BillingPeriod.organization_id == organization_id,
+        BillingPeriod.subscription_id == subscription_id,
+        BillingPeriod.kind.in_((*LIFECYCLE_KINDS, PERIOD_KIND_OPENING)),
+        BillingPeriod.state == PERIOD_SKIPPED,
+        BillingPeriod.outcome == OUTCOME_PRE_CUTOVER,
         BillingPeriod.period_start <= at,
         BillingPeriod.period_end > at,
     )

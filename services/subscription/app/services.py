@@ -762,6 +762,11 @@ async def suspend(
     """
     from app import selectors
 
+    if reason is not None and reason.strip().lower() in domain.RESERVED_REASONS:
+        raise BusinessRuleProblem(
+            f"{reason!r} is a reason only the platform's own machinery records; "
+            "describe the operator's reason in words of your own"
+        )
     await selectors.lock_subscription(
         session, subscription.organization_id, subscription.id, skip_locked=False
     )
@@ -991,8 +996,9 @@ async def record_payment_captured(
     than a new row that has forgotten what they used to have.
 
     From `suspended`, only a capture of the invoice whose grace window expired resumes — the
-    suspension in force is dunning's (the last move into `suspended` was `dunning_exhausted`) and
-    the latest cycle closed `grace_expired` for exactly that invoice. Any other capture (the run's
+    suspension in force is dunning's (the last move into `suspended` was written by the sweep's
+    service actor — never judged by the free-text reason) and the latest cycle closed
+    `grace_expired` for exactly that invoice. Any other capture (the run's
     closing-usage invoice, an older invoice) is recorded by payment and moves nothing here, and an
     operator's suspension is never lifted by a payment at all.
 
@@ -1044,12 +1050,17 @@ async def record_payment_captured(
             session, subscription.organization_id, subscription.id
         )
         # The suspension in force must be dunning's own: a customer resumed from an earlier
-        # dunning suspension and since held by an operator has an exhausted cycle too.
-        suspended_by = await selectors.latest_suspension_reason(
+        # dunning suspension and since held by an operator has an exhausted cycle too. Decided by
+        # who wrote the suspension (the sweep's service actor), never by its free-text reason.
+        actor = await selectors.latest_suspension_actor(
             session, subscription.organization_id, subscription.id
         )
+        suspended_by = (actor or {}).get("id")
+        by_dunning = (actor or {}).get("type") == _SWEEP_ACTOR["type"] and (
+            suspended_by == _SWEEP_ACTOR["id"]
+        )
         if (
-            suspended_by != domain.REASON_DUNNING_EXHAUSTED
+            not by_dunning
             or exhausted is None
             or exhausted.closed_reason != "grace_expired"
             or exhausted.invoice_id is None
@@ -1491,11 +1502,24 @@ def served_into(subscription: Subscription, period_start: datetime) -> bool:
 async def charge_uncovered_remainder(
     session: AsyncSession, subscription: Subscription, *, at: datetime
 ) -> None:
-    """On resumption: charge the rest of the current period if no live charge covers `at`."""
+    """On resumption: charge the rest of the current period if no live charge covers `at`.
+
+    Not inside the period that straddles the billing cutover (second post-review fixup): that
+    period is free, so a customer resumed inside it is not charged its remainder either — known
+    from the configured cutover, or from a `pre_cutover` row the run already wrote for it.
+    """
     from app import selectors
+    from app.config import settings
 
     start, end = subscription.current_period_start, subscription.current_period_end
     if start is None or end is None or at >= end:
+        return
+    cutover = settings().billing_run_not_before
+    if cutover is not None and start < cutover:
+        return
+    if await selectors.pre_cutover_covering(
+        session, subscription.organization_id, subscription.id, at
+    ):
         return
     if await selectors.base_charge_covering(
         session, subscription.organization_id, subscription.id, at

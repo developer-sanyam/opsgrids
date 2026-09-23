@@ -757,7 +757,8 @@ superseded period is now a voided draft that was never announced.)*
   capture: the run's closing-usage invoice, raised *by* the suspension and captured moments later,
   lifted an operator's fraud hold, and a customer dunned for a ₹1,000 invoice resumed by paying a
   ₹40 usage invoice. Now, on `suspended` with no open cycle, a capture resumes only if the last move
-  into `suspended` was dunning's (`dunning_exhausted`, read off the transition log) **and** the
+  into `suspended` was dunning's (written by the sweep's service actor, read off the transition
+  log — amended below: the actor, not the reason) **and** the
   latest cycle closed `grace_expired` for exactly the captured invoice. Anything else logs
   `dunning.capture.no_resume` and moves nothing. **An operator's suspension is never lifted by a
   payment**; there is no resume route yet, so a person lifts it with a reviewed data change.

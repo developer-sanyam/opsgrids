@@ -25,7 +25,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
 
 from app import domain, services
 from app.billing_run import BillingRunSweep, billing_run_loop, summarise_preview
@@ -457,8 +456,11 @@ def test_the_loop_refuses_to_start_without_a_cutover() -> None:
 
 
 def test_the_cutover_is_an_instant_with_an_offset() -> None:
-    with pytest.raises(ValidationError, match="UTC offset"):
-        Settings(billing_run_not_before="2026-10-01T09:00:00")  # type: ignore[arg-type]
+    # Refused softly since the second post-review fixup (test_billing_run_hardening.py): the
+    # value is dropped and the reason kept, so the worker still starts and the run is refused.
+    naive = Settings(billing_run_not_before="2026-10-01T09:00:00")  # type: ignore[arg-type]
+    assert naive.billing_run_not_before is None
+    assert "UTC offset" in (naive.billing_run_not_before_invalid or "")
     assert Settings(billing_run_not_before="").billing_run_not_before is None  # type: ignore[arg-type]
     aware = Settings(billing_run_not_before="2026-10-01T09:00:00+05:30")  # type: ignore[arg-type]
     assert aware.billing_run_not_before == datetime(2026, 10, 1, 3, 30, tzinfo=UTC)

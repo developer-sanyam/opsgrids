@@ -42,7 +42,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import domain
-from app.config import Settings
+from app.config import Settings, parse_cutover
 from app.models import (
     LIFECYCLE_KINDS,
     PERIOD_FINALIZE_PENDING,
@@ -708,7 +708,11 @@ class BillingRunSweep:
                 action = "bill"
             subscription = await selectors.get_subscription(session, period.subscription_id)
             product_key = subscription.product_key if subscription is not None else ""
-            if action == "bill":
+            # The cutover decides a row once, before its first lease (`attempts == 0`). A row
+            # already sent to billing is retried exactly as sent — neither skipped nor re-clamped
+            # — even if someone moved the cutover later in between (documented as never to be
+            # done): billing may hold an invoice for it, and the retry must land on that invoice.
+            if action == "bill" and period.attempts == 0:
                 cutover = domain.cutover_action(
                     kind=period.kind,
                     period_start=period.period_start,
@@ -722,9 +726,6 @@ class BillingRunSweep:
                     return
                 if cutover == domain.CUTOVER_CLAMP:
                     # Only the usage window moves; `period_start` is the billing key and stays.
-                    # The clamp happens before the row's first call to billing (the run only
-                    # ever runs after the cutover, and a clamped row no longer straddles it), so
-                    # billing never holds an invoice priced on the unclamped window.
                     period.usage_start = self._not_before
             if await services.claim_actionable(session, period) is None:
                 report.skipped += 1
@@ -915,12 +916,17 @@ class BillingRunSweep:
                 by_kind[period.state] += 1
                 continue
             by_kind[period.kind] = by_kind.get(period.kind, 0) + 1
-            cutover = domain.cutover_action(
-                kind=period.kind,
-                period_start=period.period_start,
-                usage_start=period.usage_start,
-                usage_end=period.usage_end,
-                not_before=self._not_before,
+            # As the run decides it: only a row never yet sent to billing is judged by the cutover.
+            cutover = (
+                domain.cutover_action(
+                    kind=period.kind,
+                    period_start=period.period_start,
+                    usage_start=period.usage_start,
+                    usage_end=period.usage_end,
+                    not_before=self._not_before,
+                )
+                if period.attempts == 0
+                else None
             )
             if cutover == domain.CUTOVER_SKIP:
                 pre_cutover += 1
@@ -949,6 +955,11 @@ def billing_run_loop(cfg: Settings, sweep: BillingRunSweep) -> Coroutine[Any, An
         # Staged rollout (the runbook's billing-run section): the process runs, the run does not.
         # Loud, because a box left like this converts no trial and invoices nothing.
         log.warning("billing_run.disabled", hint="BILLING_RUN_ENABLED=false; nothing is invoiced")
+        return None
+    if cfg.billing_run_not_before_invalid:
+        # A malformed cutover is refused here, not at settings load: the worker's other loops
+        # must keep running (second post-review fixup).
+        log.error("billing_run.refused", hint=cfg.billing_run_not_before_invalid)
         return None
     if cfg.billing_run_not_before is None:
         log.error(
@@ -992,9 +1003,12 @@ async def main(argv: list[str] | None = None) -> None:
     cfg = settings()
     not_before = cfg.billing_run_not_before
     if args.not_before:
-        not_before = datetime.fromisoformat(args.not_before)
-        if not_before.tzinfo is None:
-            parser.error("--not-before must carry a UTC offset")
+        parsed, problem = parse_cutover(args.not_before)
+        if problem is not None:
+            parser.error(problem.replace("BILLING_RUN_NOT_BEFORE", "--not-before"))
+        not_before = parsed
+    elif cfg.billing_run_not_before_invalid:
+        parser.error(cfg.billing_run_not_before_invalid)
     engine = init_engine(cfg)
     await assert_app_role(engine, environment=cfg.environment)
     init_outbox_engine(cfg)

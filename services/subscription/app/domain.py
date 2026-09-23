@@ -91,6 +91,26 @@ REASON_DUNNING_RECOVERED = "dunning_recovered"
 REASON_TRIAL_CONVERT = "trial_convert"
 REASON_TRIAL_UNPAID = "trial_ended_unpaid"
 
+#: Reasons only the machinery writes. An operator's free-text reason may not borrow one: the
+#: transition stream would then say "dunning suspended this" of a person's hold (final money
+#: review). Which suspension is in force is decided by the transition's **actor**, not its reason
+#: — this keeps the stream honest for the humans who read it.
+RESERVED_REASONS = frozenset(
+    {
+        REASON_RENEW,
+        REASON_UPGRADE,
+        REASON_DOWNGRADE,
+        REASON_PAYMENT_FAILED,
+        REASON_DUNNING_EXHAUSTED,
+        REASON_DUNNING_RECOVERED,
+        REASON_TRIAL_CONVERT,
+        REASON_TRIAL_UNPAID,
+        "grace_expired",
+        "payment_captured",
+        "pre_cutover",
+    }
+)
+
 #: The legal edges. A key of `None` is birth — a subscription that does not exist yet. `cancelled`
 #: is terminal: it maps to nothing, which is what makes `cancel -> active` refused. Self-edges on
 #: `trial`/`active` are the renewals and plan changes that keep the state and move only the pin.
