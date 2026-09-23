@@ -65,6 +65,7 @@ TENANT_TABLES = (
     # cascades on delete, but truncation order is stated explicitly here for the same reason
     # every other pair above is — readable intent, not a constraint this relies on.
     "inbound_messages",
+    "inbound_dead_letters",
     "conversations",
     "messages",
     "rules",
