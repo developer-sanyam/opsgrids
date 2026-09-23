@@ -93,8 +93,15 @@ build() {
 	[ "${FORCE_PULL:-0}" = "1" ] && pull=(--pull)
 	prev=$(good_ref)
 	# Anything every image is made from changed, or there is no baseline: build them all.
+	#
+	# `libs/contracts` is not something every image is made from, and counting it as one took
+	# the whole box down: it is JSON, not a workspace package, and `.dockerignore` keeps it out
+	# of every image. Its one runtime reader — account's permission manifests — gets it through
+	# a bind mount, read afresh on each activation. But almost every service PR regenerates an
+	# OpenAPI file there, so every such deploy rebuilt and recreated all ~60 containers, which on
+	# this box outlasts any retry window: an invitation accepted mid-deploy got a 502.
 	if [ -z "$prev" ] || [ "${FORCE_PULL:-0}" = "1" ] ||
-		! git -C ../.. diff --quiet "$prev" HEAD -- libs pyproject.toml uv.lock .dockerignore; then
+		! git -C ../.. diff --quiet "$prev" HEAD -- libs ':!libs/contracts' pyproject.toml uv.lock .dockerignore; then
 		"${COMPOSE[@]}" build ${pull[@]+"${pull[@]}"}
 		return
 	fi
