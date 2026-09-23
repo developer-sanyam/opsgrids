@@ -156,6 +156,7 @@
 
     "finance": { "kind": "api", "profile": "finance" },
     "finance-worker": { "kind": "background", "profile": "finance" },
+    "scheduler": { "kind": "background", "profile": "finance" },
 
     "itsm": { "kind": "api", "profile": "itsm" }
   }
