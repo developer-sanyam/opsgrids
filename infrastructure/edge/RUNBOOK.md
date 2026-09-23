@@ -265,8 +265,9 @@ than always on. **Skip this section if this box does not sell Storefront.**
   committed default already matches `EDGE_HOST`; change both together if you rename the box.
 - `COMPOSE_PROFILES` must list `storefront` (it already does if this box sells the product).
 
-**Order.** No separate step: `make deploy` already does the right thing once the four values
-above are in `.env`.
+**Order.** No separate step: the Deploy workflow (green `main`, or *Run workflow*) already does
+the right thing once the four values above are in `.env` — it runs the same `remote.sh` steps
+`make deploy` does.
 
 1. `preflight` fails loudly if any of the four are missing, empty or still a placeholder — the
    same blanket rule as every other key in `.env.example`.
@@ -276,8 +277,8 @@ above are in `.env`.
 4. `up` starts `minio`, then `minio-init` (a one-shot: creates the `opsgrids-public` bucket
    and its anonymous-GetObject policy, idempotent on every later deploy), then `document`.
 5. **Publish (or republish) the `buyer` and `storefront` bundles after this deploy, not
-   before**: `make edge-web APP=buyer HOST=… CONFIRM=…` and `make edge-web APP=storefront
-   HOST=… CONFIRM=…`. `publish-web.sh` reads `PUBLIC_ASSET_BASE_URL` off the box's `.env` at
+   before**: run the Deploy workflow with `apps: buyer,storefront` (it calls the same
+   `publish-web.sh publish` that `make edge-web APP=…` does). `publish-web.sh` reads `PUBLIC_ASSET_BASE_URL` off the box's `.env` at
    build time and bakes it in as `VITE_ASSET_BASE_URL` — Vite bakes `import.meta.env.VITE_*`
    in at build time, so this cannot be fixed by redeploying the box alone. If either bundle was
    published **before** this box had `PUBLIC_ASSET_BASE_URL` set, every uploaded image 404s on
