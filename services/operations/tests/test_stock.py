@@ -237,6 +237,37 @@ class TestAdjustStockOverHttp:
             )
         assert response.status_code == 422
 
+    async def test_a_quantity_delta_beyond_the_ledger_ceiling_is_422(
+        self, client, org_id, data
+    ) -> None:
+        # Captured once: a request through the shared session can expire the ORM object, and a
+        # second access outside the request's own greenlet context would then fail to lazy-load.
+        url = f"/api/v1/operations/inventory/{data['low_stock_item'].id}/adjustments"
+        principal = principal_for(
+            org_id, ["operations.inventory.stock.adjust:ORG"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(url, json={"quantity_delta": 10**13, "reason": "found"})
+        assert response.status_code == 422
+        with as_principal(principal):
+            response = await client.post(
+                url, json={"quantity_delta": -(10**13), "reason": "damaged"}
+            )
+        assert response.status_code == 422
+
+    async def test_a_counted_on_hand_beyond_the_ledger_ceiling_is_422(
+        self, client, org_id, data
+    ) -> None:
+        principal = principal_for(
+            org_id, ["operations.inventory.stock.adjust:ORG"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                f"/api/v1/operations/inventory/{data['low_stock_item'].id}/adjustments",
+                json={"counted_on_hand": 10**13},
+            )
+        assert response.status_code == 422
+
     async def test_overdrawing_is_a_409(self, client, org_id, data) -> None:
         principal = principal_for(
             org_id, ["operations.inventory.stock.adjust:ORG"], subject_ref=data["subject_a"]

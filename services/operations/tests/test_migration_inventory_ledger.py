@@ -287,3 +287,149 @@ async def test_upgrade_refuses_when_on_hand_disagrees_with_its_movements(admin) 
         await conn.execute(
             text(f"UPDATE {SCHEMA}.inventory_items SET on_hand = 0 WHERE sku = 'RM-EMPTY'")
         )
+
+
+async def test_a_live_item_naming_only_a_soft_deleted_warehouse_is_redirected_by_its_actual_name(
+    admin,
+) -> None:
+    """A live item whose `warehouse` string names nothing but a soft-deleted warehouse is exactly
+    as stranded as one naming nothing at all: it must be redirected to UNASSIGNED, not silently
+    pointed at a bin under a warehouse `post_move`'s own location lookup will never find again
+    (review finding: soft-deleted warehouses must be excluded from the redirect decision).
+
+    A soft-deleted item making the same match is left alone — coherent history, not a stranded
+    item — and the redirect uses the org's *own* UNASSIGNED warehouse's real name rather than a
+    hardcoded string, for an org that already had one under a name of its choosing.
+    """
+    org = uuid.uuid4()
+    old_depot, misc, live_orphan, dead_orphan = (uuid.uuid4() for _ in range(4))
+    async with admin.begin() as conn:
+        await conn.execute(
+            text(
+                f"""
+                INSERT INTO {SCHEMA}.warehouses
+                    (id, organization_id, code, name, location, created_at, updated_at, deleted_at)
+                VALUES (:old, :org, 'WH-OLD', 'Old Depot', '', now(), now(), now()),
+                       (:misc, :org, 'UNASSIGNED', 'Miscellaneous Stock', '', now(), now(), NULL)
+                """
+            ),
+            {"old": old_depot, "misc": misc, "org": org},
+        )
+        for item_id, sku, on_hand, deleted in (
+            (live_orphan, "RM-LIVE-ORPHAN", 5, None),
+            (dead_orphan, "RM-DEAD-ORPHAN", 3, "now()"),
+        ):
+            await conn.execute(
+                text(
+                    f"""
+                    INSERT INTO {SCHEMA}.inventory_items
+                        (id, organization_id, sku, name, category, warehouse, on_hand,
+                         reorder_point, uom, unit_value_minor, currency, stocked_at, created_at,
+                         updated_at, deleted_at)
+                    VALUES (:id, :org, :sku, :sku, 'raw_materials', 'Old Depot', :on_hand, 0,
+                            'MT', 100, 'INR', '2026-08-01', now(), now(), {deleted or "NULL"})
+                    """
+                ),
+                {"id": item_id, "org": org, "sku": sku, "on_hand": on_hand},
+            )
+        for n, (item_id, delta) in enumerate(((live_orphan, 5), (dead_orphan, 3))):
+            await conn.execute(
+                text(
+                    f"""
+                    INSERT INTO {SCHEMA}.stock_movements
+                        (id, organization_id, inventory_item_id, kind, reason, quantity_delta,
+                         on_hand_after, note, occurred_on, created_at)
+                    VALUES (gen_random_uuid(), :org, :item, 'opening', NULL, :delta, :delta, '',
+                            '2026-08-01', now() + make_interval(secs => :n))
+                    """
+                ),
+                {"org": org, "item": item_id, "delta": delta, "n": n},
+            )
+
+    up = alembic("upgrade", "head")
+    assert up.returncode == 0, up.stderr[-2000:]
+
+    async with admin.begin() as conn:
+        live_home = (
+            await conn.execute(
+                text(
+                    f"""
+                    SELECT w.code, w.name, w.deleted_at IS NULL, i.warehouse
+                      FROM {SCHEMA}.inventory_items i
+                      JOIN {SCHEMA}.locations l ON l.id = i.home_location_id
+                      JOIN {SCHEMA}.warehouses w ON w.id = l.warehouse_id
+                     WHERE i.id = :i
+                    """
+                ),
+                {"i": live_orphan},
+            )
+        ).one()
+        assert tuple(live_home) == (
+            "UNASSIGNED",
+            "Miscellaneous Stock",
+            True,
+            "Miscellaneous Stock",
+        )
+
+        dead_home = (
+            await conn.execute(
+                text(
+                    f"""
+                    SELECT w.code, w.deleted_at IS NOT NULL, i.warehouse
+                      FROM {SCHEMA}.inventory_items i
+                      JOIN {SCHEMA}.locations l ON l.id = i.home_location_id
+                      JOIN {SCHEMA}.warehouses w ON w.id = l.warehouse_id
+                     WHERE i.id = :i
+                    """
+                ),
+                {"i": dead_orphan},
+            )
+        ).one()
+        assert tuple(dead_home) == ("WH-OLD", True, "Old Depot")
+
+        # No second UNASSIGNED warehouse was invented: the org's own is reused.
+        assert (
+            await conn.execute(
+                text(
+                    f"SELECT count(*) FROM {SCHEMA}.warehouses "
+                    "WHERE organization_id = :org AND code = 'UNASSIGNED'"
+                ),
+                {"org": org},
+            )
+        ).scalar_one() == 1
+
+    down = alembic("downgrade", BEFORE)
+    assert down.returncode == 0, down.stderr[-2000:]
+
+
+async def test_downgrade_keeps_an_unassigned_warehouse_a_live_item_still_names(admin) -> None:
+    """The `UNASSIGNED` warehouse the upgrade invents for an orphaned item must survive the
+    downgrade while that item still names it — checking only purchase orders (the original code)
+    would delete it out from under a live item, leaving `inventory_items.warehouse` naming
+    nothing (review finding)."""
+    org = uuid.uuid4()
+    async with admin.begin() as conn:
+        ids = await seed_old_shape(conn, org)  # RM-GHOST is redirected to UNASSIGNED on upgrade
+
+    up = alembic("upgrade", "head")
+    assert up.returncode == 0, up.stderr[-2000:]
+
+    down = alembic("downgrade", BEFORE)
+    assert down.returncode == 0, down.stderr[-2000:]
+
+    async with admin.begin() as conn:
+        assert (
+            await conn.execute(
+                text(f"SELECT warehouse FROM {SCHEMA}.inventory_items WHERE id = :i"),
+                {"i": ids["ghost"]},
+            )
+        ).scalar_one() == "Unassigned stock"
+        assert (
+            await conn.execute(
+                text(
+                    f"SELECT count(*) FROM {SCHEMA}.warehouses "
+                    "WHERE organization_id = :org AND code = 'UNASSIGNED'"
+                ),
+                {"org": org},
+            )
+        ).scalar_one() == 1

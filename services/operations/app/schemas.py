@@ -27,9 +27,17 @@ from pydantic import (
     model_validator,
 )
 
+from app.inventory.quantity import MAX_ABS_MILLI, QTY_SCALE
+
 #: Validates a non-empty string as an email address — used where the field is "email format or
 #: empty" rather than always-required, so `EmailStr` itself (which rejects empty) does not fit.
 _EMAIL = TypeAdapter(EmailStr)
+
+#: The largest whole-unit quantity the pre-Phase-1 item-level API can accept without its
+#: milli-unit equivalent (`* QTY_SCALE`) overflowing what `quantity.MAX_ABS_MILLI` allows through
+#: the ledger — bounding it here turns an overflow into a 422 instead of a 500 from the kernel or
+#: the database.
+_MAX_WHOLE_QTY = MAX_ABS_MILLI // QTY_SCALE
 
 
 def _validate_email_or_empty(value: str) -> str:
@@ -311,7 +319,7 @@ class InventoryItemIn(BaseModel):
     reorder_point: int = Field(default=0, ge=0)
     unit_value_minor: int = Field(default=0, ge=0)
     currency: str = Field(default="INR", min_length=3, max_length=3)
-    opening_on_hand: int = Field(default=0, ge=0)
+    opening_on_hand: int = Field(default=0, ge=0, le=_MAX_WHOLE_QTY)
 
 
 class InventoryItemPatch(BaseModel):
@@ -338,8 +346,8 @@ class StockAdjustmentIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    quantity_delta: int | None = None
-    counted_on_hand: int | None = Field(default=None, ge=0)
+    quantity_delta: int | None = Field(default=None, ge=-_MAX_WHOLE_QTY, le=_MAX_WHOLE_QTY)
+    counted_on_hand: int | None = Field(default=None, ge=0, le=_MAX_WHOLE_QTY)
     reason: StockMovementReason | None = None
     note: str = Field(default="", max_length=500)
     occurred_on: date = Field(default_factory=date.today)

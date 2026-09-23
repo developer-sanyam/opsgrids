@@ -358,6 +358,7 @@ async def create_inventory_item(
                     location_id=_home(item),
                     quantity_milli=on_hand * QTY_SCALE,
                     unit_cost_minor=unit_value_minor,
+                    unit_cost_currency=item.currency,
                 )
             ],
             occurred_on=opening_date,
@@ -466,10 +467,29 @@ async def _relocate_home_stock(
     new_home: uuid.UUID,
     request: Request | None,
 ) -> None:
-    balance = await ledger.lock_bucket(
-        session, ctx.organization_id, item_id=item.id, location_id=old_home, create=False
-    )
-    if balance is None or balance.quantity_milli == 0:
+    """Move whatever stock sits in the item's old home bucket into its new one, as a paired
+    `relocation` move. Refused while any of it is reserved: a reservation is a promise about
+    stock at a place.
+
+    Locks both buckets, in the same order `post_move` would sort its own two lines by (ADR-0014
+    §3: item, location, status, lot, roll — location is what varies here), before reading either
+    one. Locking the old bucket alone first — regardless of where it falls in that order — is the
+    one lock order this module does not otherwise use, and is a deadlock waiting for a concurrent
+    move over the same two buckets taken the other way round.
+    """
+    org_id = ctx.organization_id
+    first_loc, second_loc = sorted((old_home, new_home), key=str)
+    locked = {
+        first_loc: await ledger.lock_bucket(
+            session, org_id, item_id=item.id, location_id=first_loc
+        ),
+        second_loc: await ledger.lock_bucket(
+            session, org_id, item_id=item.id, location_id=second_loc
+        ),
+    }
+    balance = locked[old_home]
+    assert balance is not None  # lock_bucket creates the row (at zero) when it does not exist
+    if balance.quantity_milli == 0:
         return
     if balance.reserved_milli:
         raise ConflictProblem(
@@ -564,6 +584,7 @@ async def adjust_stock(
     reason: str | None = None,
     note: str = "",
     occurred_on: date | None = None,
+    occurred_on_explicit: bool = True,
     idempotency_key: str | None = None,
     request: Request | None = None,
 ) -> InventoryItem:
@@ -575,6 +596,10 @@ async def adjust_stock(
     anywhere but its home bucket: the whole-item figure it asserts would silently overwrite
     stock it cannot see. A retried request with the same `idempotency_key` changes nothing and
     answers with the item as it stands.
+
+    `occurred_on_explicit=False` — the caller's `occurred_on` came from a default rather than
+    something a client sent — keeps it out of the idempotency hash, so a retry that crosses
+    midnight is still recognised as the same request rather than a 409 (see `ledger.post_move`).
     """
     effective_date = occurred_on or date.today()
     home = _home(item)
@@ -604,6 +629,7 @@ async def adjust_stock(
         note=note,
         occurred_on=effective_date,
         idempotency_key=idempotency_key,
+        occurred_on_explicit=occurred_on_explicit,
         request=request,
     )
     if posted.replayed:
@@ -658,10 +684,17 @@ async def receive_into_home(
     purchase_order_id: uuid.UUID,
     occurred_on: date,
     unit_cost_minor: int | None = None,
+    unit_cost_currency: str | None = None,
     request: Request | None = None,
 ) -> uuid.UUID:
     """Post a purchase-order line's receipt (whole units) into the item's home bucket; returns
-    the ledger entry id. `item` must be locked by the caller."""
+    the ledger entry id. `item` must be locked by the caller.
+
+    `unit_cost_currency` is the PO's currency, not necessarily the item's: a receipt is recorded
+    in whatever currency it was actually priced in, never converted (ADR-0014 §8). One of
+    `unit_cost_minor` / `unit_cost_currency` given without the other is a bug in the caller — the
+    kernel refuses it rather than guessing.
+    """
     posted = await ledger.post_move(
         session,
         ctx,
@@ -672,6 +705,7 @@ async def receive_into_home(
                 location_id=_home(item),
                 quantity_milli=quantity * QTY_SCALE,
                 unit_cost_minor=unit_cost_minor,
+                unit_cost_currency=unit_cost_currency,
             )
         ],
         reference_type="purchase_order",

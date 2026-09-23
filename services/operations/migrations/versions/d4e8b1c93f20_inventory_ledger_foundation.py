@@ -7,13 +7,25 @@ milli-unit deltas per bucket, with a locked balance projection":
    the migration never silently picks one of two numbers that should be equal.
 2. `locations`: one default bin per warehouse (soft-deleted warehouses too, so historical
    movements have somewhere to point).
-3. Items whose `warehouse` string names no warehouse get a per-organization `UNASSIGNED`
-   warehouse, so no stock is dropped for want of a place. Nothing in the live API can create such
-   an item today; this is for data that predates the checks.
-4. `inventory_items.home_location_id` ← that warehouse's default bin.
+3. **Live** items whose `warehouse` string names no *live* warehouse get redirected to a
+   per-organization `UNASSIGNED` warehouse (by that warehouse's own name — an org that already
+   had one under a name of its choosing is matched, not overwritten), so no stock is dropped for
+   want of a place, and no live item is left pointed at a bin under a warehouse the live API can
+   never address again (`post_move`'s own location lookup excludes soft-deleted warehouses).
+   Nothing in the live API can create such an item today; this is for data that predates the
+   checks. A soft-deleted item that names only a soft-deleted warehouse is left alone — that is
+   coherent history, not a stranded item, and step 4's tie-break still finds it.
+4. `inventory_items.home_location_id` ← that warehouse's default bin, preferring a live warehouse
+   over a soft-deleted one of the same name. Refuses, naming the item, if one with existing
+   movements still has no home afterwards — the alternative is a bare `NOT NULL` violation four
+   steps later with nothing to point at.
 5. `inventory_moves` (header, one per old movement, **same UUID**), then `stock_movements` is
    renamed `inventory_ledger` in place — row ids unchanged — and its integer quantities become
-   milli-units (`× 1000`, exact).
+   milli-units (`× 1000`, exact). `unit_cost_minor` and its new `unit_cost_currency` both arrive
+   NULL for every pre-existing row: the currency a cost was struck in was never recorded either,
+   so neither is invented (ADR-0014 §8, revised for the currency defect found in review — a
+   receipt's cost and the item's own stock-value currency are not always the same, and this
+   migration does not assume they are).
 6. `inventory_balances` backfilled as `SUM(ledger)` per bucket — so balance = ledger by
    construction — and `inventory_items.on_hand` is dropped: one source of truth.
 7. `inventory_reservations`, `inventory_discrepancies`.
@@ -24,7 +36,9 @@ Every new tenant table gets ENABLE + FORCE RLS and the standard `tenant_isolatio
 
 **Downgrade** restores the integer model exactly, and refuses — rather than truncating — when
 the data has outgrown it: a fractional quantity, stock outside an item's home bucket, an active
-reservation, or a move kind the old vocabulary lacks.
+reservation, or a move kind the old vocabulary lacks. The `UNASSIGNED` warehouses this migration
+invented are removed only when nothing — a purchase order's destination or an item's `warehouse`
+string — still names them.
 
 Revision ID: d4e8b1c93f20
 Revises: a1c7fe093d42
@@ -177,7 +191,18 @@ def upgrade() -> None:
     )
     _rls("locations")
 
-    # --- 3. a home for stock whose warehouse string names nothing ----------------------------
+    # --- 3. a home for *live* stock whose warehouse string names no *live* warehouse ---------
+    # Matched against live warehouses only, mirroring the write path (`get_warehouse_by_name`):
+    # a live item whose `warehouse` string names nothing but a soft-deleted warehouse is exactly
+    # as stranded as one naming nothing at all — its ledger rows would end up pointed, in step 4
+    # below, at a bin under a warehouse the live API can never address again, and every future
+    # write to it (`post_move`'s own location lookup excludes soft-deleted warehouses) would 404.
+    #
+    # Restricted to *live* items (`i.deleted_at IS NULL`): a soft-deleted item that named a since
+    # soft-deleted warehouse is coherent history — it really was there, before both it and its
+    # warehouse went away — and step 4's tie-break still finds that warehouse for it. Redirecting
+    # it here too would rewrite that history to say it was never assigned anywhere, which is not
+    # what happened.
     op.execute(
         f"""
         INSERT INTO {SCHEMA}.warehouses
@@ -186,21 +211,32 @@ def upgrade() -> None:
                now(), now(), '{MIGRATION_ACTOR}'
           FROM (SELECT DISTINCT i.organization_id
                   FROM {SCHEMA}.inventory_items i
-                 WHERE NOT EXISTS (SELECT 1 FROM {SCHEMA}.warehouses w
+                 WHERE i.deleted_at IS NULL
+                   AND NOT EXISTS (SELECT 1 FROM {SCHEMA}.warehouses w
                                     WHERE w.organization_id = i.organization_id
-                                      AND w.name = i.warehouse)) AS o
+                                      AND w.name = i.warehouse
+                                      AND w.deleted_at IS NULL)) AS o
          WHERE NOT EXISTS (SELECT 1 FROM {SCHEMA}.warehouses w
                             WHERE w.organization_id = o.organization_id
                               AND w.code = 'UNASSIGNED' AND w.deleted_at IS NULL)
         """
     )
+    # Redirect to the org's actual UNASSIGNED warehouse **by its own name** — never a hardcoded
+    # string — so an org that already had a live warehouse coded UNASSIGNED under a name of its
+    # own choosing (from before this migration ever ran) is matched correctly in step 4, instead
+    # of being pointed at a name that warehouse does not actually have.
     op.execute(
         f"""
         UPDATE {SCHEMA}.inventory_items i
-           SET warehouse = 'Unassigned stock'
-         WHERE NOT EXISTS (SELECT 1 FROM {SCHEMA}.warehouses w
+           SET warehouse = u.name
+          FROM {SCHEMA}.warehouses u
+         WHERE i.deleted_at IS NULL
+           AND u.organization_id = i.organization_id
+           AND u.code = 'UNASSIGNED' AND u.deleted_at IS NULL
+           AND NOT EXISTS (SELECT 1 FROM {SCHEMA}.warehouses w
                             WHERE w.organization_id = i.organization_id
-                              AND w.name = i.warehouse)
+                              AND w.name = i.warehouse
+                              AND w.deleted_at IS NULL)
         """
     )
 
@@ -233,6 +269,9 @@ def upgrade() -> None:
     )
     # Names are unique among live warehouses (the write path enforces it); prefer the live one,
     # then the lowest code, so the pick is deterministic even over old soft-deleted duplicates.
+    # Step 3 already redirected every *live* item that named no live warehouse, so the only thing
+    # this can still match to a soft-deleted warehouse is a soft-deleted item — coherent history,
+    # not a stranded one (step 3's comment).
     op.execute(
         f"""
         UPDATE {SCHEMA}.inventory_items i
@@ -244,6 +283,19 @@ def upgrade() -> None:
                  ORDER BY (w.deleted_at IS NULL) DESC, w.code, w.id
                  LIMIT 1)
         """
+    )
+    # A NULL home here would surface later as a bare NOT NULL violation on `inventory_ledger.
+    # location_id` (step 5b) — this names the item instead, while the column it names is still
+    # easy to inspect and fix.
+    _refuse_if(
+        f"""
+        SELECT DISTINCT i.id
+          FROM {SCHEMA}.inventory_items i
+          JOIN {SCHEMA}.stock_movements m ON m.inventory_item_id = i.id
+         WHERE i.home_location_id IS NULL
+        """,
+        "some items with existing stock movements have no home location after the warehouse "
+        "backfill; fix their `warehouse` string, or the warehouse it should name, and re-run",
     )
 
     # --- 5a. move headers, one per existing movement, same id --------------------------------
@@ -328,6 +380,7 @@ def upgrade() -> None:
         sa.Column("quantity_milli", sa.BigInteger(), nullable=True),
         sa.Column("balance_after_milli", sa.BigInteger(), nullable=True),
         sa.Column("unit_cost_minor", sa.BigInteger(), nullable=True),
+        sa.Column("unit_cost_currency", sa.String(length=3), nullable=True),
     ):
         op.add_column("inventory_ledger", column, schema=SCHEMA)
 
@@ -367,6 +420,12 @@ def upgrade() -> None:
     )
     op.create_check_constraint(
         op.f("ck_inventory_ledger_status_known"), "inventory_ledger", STATUS_CHECK, schema=SCHEMA
+    )
+    op.create_check_constraint(
+        op.f("ck_inventory_ledger_unit_cost_currency_matches_minor"),
+        "inventory_ledger",
+        "(unit_cost_minor IS NULL) = (unit_cost_currency IS NULL)",
+        schema=SCHEMA,
     )
     op.create_foreign_key(
         op.f("fk_inventory_ledger_move_id_inventory_moves"),
@@ -676,6 +735,9 @@ def downgrade() -> None:
     op.drop_constraint(
         "ck_inventory_ledger_balance_after_non_negative", "inventory_ledger", schema=SCHEMA
     )
+    op.drop_constraint(
+        "ck_inventory_ledger_unit_cost_currency_matches_minor", "inventory_ledger", schema=SCHEMA
+    )
     for name in (
         "move_id",
         "location_id",
@@ -685,6 +747,7 @@ def downgrade() -> None:
         "quantity_milli",
         "balance_after_milli",
         "unit_cost_minor",
+        "unit_cost_currency",
     ):
         op.drop_column("inventory_ledger", name, schema=SCHEMA)
     # `op.f`: these are the finished names. Without it the naming convention would prefix them
@@ -730,12 +793,17 @@ def downgrade() -> None:
     op.drop_column("inventory_items", "home_location_id", schema=SCHEMA)
     _unrls("locations")
     op.drop_table("locations", schema=SCHEMA)
-    # The UNASSIGNED warehouses this migration invented, unless something now refers to them.
+    # The UNASSIGNED warehouses this migration invented, unless something now refers to them —
+    # a purchase order's destination, *or* an item's `warehouse` string, which is exactly what
+    # step 3 pointed at one of these to begin with. Checking only purchase orders would delete a
+    # warehouse still named by a live item, leaving it pointing at nothing.
     op.execute(
         f"""
         DELETE FROM {SCHEMA}.warehouses w
          WHERE w.created_by = '{MIGRATION_ACTOR}'
            AND NOT EXISTS (SELECT 1 FROM {SCHEMA}.purchase_orders p
                             WHERE p.organization_id = w.organization_id AND p.warehouse = w.name)
+           AND NOT EXISTS (SELECT 1 FROM {SCHEMA}.inventory_items i
+                            WHERE i.organization_id = w.organization_id AND i.warehouse = w.name)
         """
     )

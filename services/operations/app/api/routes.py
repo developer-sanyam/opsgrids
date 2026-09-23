@@ -619,6 +619,10 @@ async def adjust_stock(
         reason=payload.reason,
         note=payload.note,
         occurred_on=payload.occurred_on,
+        # `occurred_on` defaults to today at parse time when the client omits it; keeping a
+        # defaulted value out of the idempotency hash means a retry that lands on the other side
+        # of midnight is still recognised as the same request rather than a false 409.
+        occurred_on_explicit="occurred_on" in payload.model_fields_set,
         idempotency_key=idempotency_key,
         request=request,
     )

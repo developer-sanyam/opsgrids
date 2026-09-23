@@ -742,6 +742,12 @@ async def receive_purchase_order(
     `+quantity`, referencing this PO. A line with no matching SKU is a service/logistics line,
     not an error — it posts nothing, and its SKU is listed in `unmatched_skus` on the audit row
     and the event payload so that is visible rather than silent.
+
+    The ledger row's cost is recorded in **the PO's currency**, not the item's: `unit_price_minor`
+    is priced in `po.currency`, and a receipt in a currency other than the item's `currency` is
+    common (an item's stock value can be set in the org's home currency while a supplier bills in
+    their own) and is never converted here — that would be inventing an exchange rate nobody
+    agreed to (ADR-0014 §8).
     """
     if not domain.can_transition_po(po.status, "received"):
         if po.status == "draft":
@@ -777,6 +783,7 @@ async def receive_purchase_order(
             purchase_order_id=po.id,
             occurred_on=landed,
             unit_cost_minor=line.unit_price_minor,
+            unit_cost_currency=po.currency,
             request=request,
         )
         matched_lines.append(

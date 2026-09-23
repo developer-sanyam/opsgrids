@@ -90,6 +90,45 @@ class TestIdempotentAdjustments:
             )
         assert clash.status_code == 409
 
+    async def test_omitting_occurred_on_still_replays_and_an_explicit_change_still_conflicts(
+        self, client, org_id, data
+    ) -> None:
+        """`occurred_on` defaults to today at request-parse time when the client omits it, so it
+        must not count toward "is this a retry of the same request" — otherwise a legitimate
+        retry that happens to land on the other side of midnight gets a false 409. A client that
+        *does* send `occurred_on` still has it counted: changing it under the same key is still a
+        different request."""
+        item_id = data["low_stock_item"].id
+        url = f"/api/v1/operations/inventory/{item_id}/adjustments"
+
+        with as_principal(principal_for(org_id, [READ, ADJUST])):
+            omitted_first = await client.post(
+                url,
+                json={"quantity_delta": 1, "reason": "found"},
+                headers={"Idempotency-Key": "adj-no-date"},
+            )
+            omitted_retry = await client.post(
+                url,
+                json={"quantity_delta": 1, "reason": "found"},
+                headers={"Idempotency-Key": "adj-no-date"},
+            )
+        assert (omitted_first.status_code, omitted_retry.status_code) == (201, 201)
+        assert omitted_first.json()["on_hand"] == omitted_retry.json()["on_hand"]
+
+        with as_principal(principal_for(org_id, [READ, ADJUST])):
+            explicit_first = await client.post(
+                url,
+                json={"quantity_delta": 1, "reason": "found", "occurred_on": "2026-09-20"},
+                headers={"Idempotency-Key": "adj-explicit-date"},
+            )
+            explicit_changed = await client.post(
+                url,
+                json={"quantity_delta": 1, "reason": "found", "occurred_on": "2026-09-21"},
+                headers={"Idempotency-Key": "adj-explicit-date"},
+            )
+        assert explicit_first.status_code == 201
+        assert explicit_changed.status_code == 409
+
     async def test_a_refused_adjustment_explains_itself(self, client, org_id, data) -> None:
         url = f"/api/v1/operations/inventory/{data['low_stock_item'].id}/adjustments"
         with as_principal(principal_for(org_id, [READ, ADJUST])):

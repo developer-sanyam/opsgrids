@@ -277,6 +277,20 @@ class TestOverHttp:
                 await client.get("/api/v1/operations/inventory/discrepancies")
             ).status_code == 403
 
+    async def test_an_inventory_reader_cannot_resolve_a_discrepancy(self, client, t) -> None:
+        reader = principal_for(
+            t.org_id,
+            ["operations.inventory.item.read:ORG", "operations.inventory.stock.adjust:ORG"],
+        )
+        with as_principal(reader):
+            response = await client.post(
+                f"/api/v1/operations/inventory/discrepancies/{uuid.uuid4()}/resolve",
+                json={"note": "not my call"},
+            )
+        # The permission check runs before the discrepancy is looked up, so a made-up id still
+        # proves the authz gate rather than a 404 racing ahead of it.
+        assert response.status_code == 403
+
     async def test_another_organizations_discrepancy_is_not_found(
         self, client, session, admin_session, t
     ) -> None:

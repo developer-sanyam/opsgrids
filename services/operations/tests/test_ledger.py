@@ -17,7 +17,7 @@ from app.inventory import ledger
 from app.inventory import selectors as inv_selectors
 from app.inventory import services as inv_services
 from app.inventory.ledger import InsufficientStock, MoveLine
-from app.inventory.quantity import format_qty
+from app.inventory.quantity import MAX_ABS_MILLI, format_qty
 from app.models import AuditLog, InventoryMove, InventoryReservation, OutboxEvent
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
 from tests.inventory_fixtures import (
@@ -93,13 +93,43 @@ class TestDecimalQuantities:
 
     async def test_unit_cost_is_kept_on_inbound_rows_only(self, session, t) -> None:
         received = await post(
-            session, t, "receipt", MoveLine(t.fabric, t.weaving, q("10"), unit_cost_minor=123_45)
+            session,
+            t,
+            "receipt",
+            MoveLine(
+                t.fabric, t.weaving, q("10"), unit_cost_minor=123_45, unit_cost_currency="INR"
+            ),
         )
         issued = await post(
-            session, t, "issue", MoveLine(t.fabric, t.weaving, -q("1"), unit_cost_minor=123_45)
+            session,
+            t,
+            "issue",
+            MoveLine(
+                t.fabric, t.weaving, -q("1"), unit_cost_minor=123_45, unit_cost_currency="INR"
+            ),
         )
-        assert received.entries[0].unit_cost_minor == 123_45
-        assert issued.entries[0].unit_cost_minor is None
+        assert (received.entries[0].unit_cost_minor, received.entries[0].unit_cost_currency) == (
+            123_45,
+            "INR",
+        )
+        assert (issued.entries[0].unit_cost_minor, issued.entries[0].unit_cost_currency) == (
+            None,
+            None,
+        )
+
+    async def test_a_receipt_records_its_own_currency_not_the_items(self, session, t) -> None:
+        """A PO priced in a currency other than the item's own is recorded as-is (ADR-0014 §8,
+        revised) — never converted, and never silently relabelled into the item's currency."""
+        received = await post(
+            session,
+            t,
+            "receipt",
+            MoveLine(t.fabric, t.weaving, q("10"), unit_cost_minor=900, unit_cost_currency="USD"),
+        )
+        assert (received.entries[0].unit_cost_minor, received.entries[0].unit_cost_currency) == (
+            900,
+            "USD",
+        )
 
 
 class TestRefusals:
@@ -137,6 +167,45 @@ class TestRefusals:
             await post(session, t, "receipt", MoveLine(t.fabric, t.weaving, 1, status="LOST"))
         with pytest.raises(ValidationProblem, match="move kind"):
             await post(session, t, "teleport", MoveLine(t.fabric, t.weaving, 1))
+
+    async def test_a_quantity_larger_than_the_ceiling_is_refused(self, session, t) -> None:
+        with pytest.raises(ValidationProblem, match="too large"):
+            await post(session, t, "receipt", MoveLine(t.fabric, t.weaving, MAX_ABS_MILLI + 1))
+        with pytest.raises(ValidationProblem, match="too large"):
+            await post(session, t, "issue", MoveLine(t.fabric, t.weaving, -(MAX_ABS_MILLI + 1)))
+
+    async def test_an_oversized_counted_quantity_is_refused(self, session, t) -> None:
+        with pytest.raises(ValidationProblem, match="too large"):
+            await post(
+                session,
+                t,
+                "count",
+                MoveLine(t.fabric, t.weaving, counted_milli=MAX_ABS_MILLI + 1),
+            )
+
+    async def test_a_unit_cost_without_a_currency_is_refused(self, session, t) -> None:
+        with pytest.raises(ValidationProblem, match="given together"):
+            await post(
+                session, t, "receipt", MoveLine(t.fabric, t.weaving, q("1"), unit_cost_minor=100)
+            )
+
+    async def test_a_currency_without_a_unit_cost_is_refused(self, session, t) -> None:
+        with pytest.raises(ValidationProblem, match="given together"):
+            await post(
+                session,
+                t,
+                "receipt",
+                MoveLine(t.fabric, t.weaving, q("1"), unit_cost_currency="INR"),
+            )
+
+    async def test_a_malformed_currency_code_is_refused(self, session, t) -> None:
+        with pytest.raises(ValidationProblem, match="3-letter"):
+            await post(
+                session,
+                t,
+                "receipt",
+                MoveLine(t.fabric, t.weaving, q("1"), unit_cost_minor=100, unit_cost_currency="XX"),
+            )
 
     async def test_one_bucket_twice_in_a_move_is_refused(self, session, t) -> None:
         with pytest.raises(ValidationProblem, match="at most once"):
@@ -281,6 +350,54 @@ class TestIdempotency:
         assert await ledger_rows(session, t.org_id, t.fabric) == 1
         assert await balance(session, t.org_id, t.fabric, t.weaving) == (q("82.5"), 0)
 
+    async def test_a_defaulted_occurred_on_does_not_break_a_retry_across_midnight(
+        self, session, t
+    ) -> None:
+        """`occurred_on_explicit=False` marks an `occurred_on` the caller defaulted rather than
+        received from the client — the item-level adjustments API's case, since its schema
+        defaults `occurred_on` to `date.today()` at parse time. A retry landing on the other side
+        of midnight must still replay, not 409, even though the two calls carry different dates."""
+        line = MoveLine(t.fabric, t.weaving, q("10"))
+        async with session.begin():
+            first = await ledger.post_move(
+                session,
+                t.ctx,
+                kind="adjustment",
+                lines=[line],
+                occurred_on=TODAY,
+                occurred_on_explicit=False,
+                idempotency_key="adj-midnight",
+            )
+        async with session.begin():
+            again = await ledger.post_move(
+                session,
+                t.ctx,
+                kind="adjustment",
+                lines=[line],
+                occurred_on=TODAY.replace(day=TODAY.day + 1),
+                occurred_on_explicit=False,
+                idempotency_key="adj-midnight",
+            )
+        assert (first.replayed, again.replayed) == (False, True)
+        assert again.move.id == first.move.id
+
+    async def test_an_explicit_occurred_on_still_participates_in_the_hash(self, session, t) -> None:
+        """The default behaviour (`occurred_on_explicit=True`) is unchanged: a caller that does
+        send `occurred_on` still has it treated as part of what makes a request the *same*
+        request, so a retry with a genuinely different date is a conflict, not a replay."""
+        line = MoveLine(t.fabric, t.weaving, q("10"))
+        await post(session, t, "adjustment", line, idempotency_key="adj-explicit")
+        with pytest.raises(ConflictProblem, match="different stock move"):
+            async with session.begin():
+                await ledger.post_move(
+                    session,
+                    t.ctx,
+                    kind="adjustment",
+                    lines=[line],
+                    occurred_on=TODAY.replace(day=TODAY.day + 1),
+                    idempotency_key="adj-explicit",
+                )
+
     async def test_the_same_key_for_a_different_request_is_a_conflict(self, session, t) -> None:
         await post(
             session, t, "receipt", MoveLine(t.fabric, t.weaving, q("1")), idempotency_key="k"
@@ -398,6 +515,29 @@ class TestItemLevelCompatibility:
         assert await balance(session, t.org_id, t.fabric, t.weaving) == (0, 0)
         assert await balance(session, t.org_id, t.fabric, t.finishing) == (q("82.5"), 0)
         assert await ledger_total(session, t.org_id, t.fabric) == q("82.5")
+
+    async def test_reserved_stock_blocks_a_warehouse_change(self, session, t) -> None:
+        """`_relocate_home_stock` now locks both buckets before reading either one (review
+        finding on lock order); this is the regression check that the reserved-stock refusal it
+        computes from that locked read still fires correctly."""
+        from app.schemas import InventoryItemPatch
+
+        await post(session, t, "receipt", MoveLine(t.fabric, t.weaving, q("100")))
+        async with session.begin():
+            await ledger.reserve(
+                session, t.ctx, item_id=t.fabric, location_id=t.weaving, quantity_milli=q("30")
+            )
+        with pytest.raises(ConflictProblem, match="reserved stock"):
+            async with session.begin():
+                item = await inv_selectors.get_inventory_item(
+                    session, t.org_id, t.fabric, for_update=True
+                )
+                await inv_services.update_inventory_item(
+                    session, t.ctx, item, InventoryItemPatch(warehouse="Finishing")
+                )
+        # Refused before anything moved.
+        assert await balance(session, t.org_id, t.fabric, t.weaving) == (q("100"), q("30"))
+        assert await balance(session, t.org_id, t.fabric, t.finishing) == (0, 0)
 
     async def test_a_count_refuses_when_stock_is_outside_the_home_bucket(self, session, t) -> None:
         await post(session, t, "receipt", MoveLine(t.fabric, t.finishing, q("5")))

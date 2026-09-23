@@ -71,7 +71,10 @@ In one transaction (the caller's, i.e. the request's):
    UPDATE`s it
 5. checks under the lock: result ≥ 0, and an outbound line may not dip into reserved stock unless
    it draws on a reservation. Otherwise it raises `InsufficientStock` (409,
-   `type …/insufficient-stock`) with `requested / on_hand / reserved / available` in `errors`
+   `type …/insufficient-stock`) with `requested / on_hand / reserved / available` in `errors`. A
+   **count** line is checked the same way, against the counted figure rather than a delta — a
+   count that lands below the bucket's `reserved_milli` is refused, not reconciled against the
+   reservations it disagrees with (see *Not in Phase 0* below)
 6. updates the balance and appends the ledger row with `balance_after_milli`
 7. stages one `inventory_move.posted` audit row and one `operations.inventory.stock.posted`
    outbox event (published by the relay after commit)
@@ -180,3 +183,17 @@ API, since every field it reads is still there.
 HTTP APIs and screens for locations, lots, rolls, reservations and multi-location moves (the
 kernel supports them; nothing exposes them yet), per-item `uom_conversions`, costing layers,
 and every later phase. See [plan.md](plan.md).
+
+**A count that lands below a bucket's reserved quantity is refused, not reconciled.** `post_move`
+applies the same shortfall check (§ above) to a count line as to any outbound one: if the counted
+figure is below `reserved_milli`, it raises `InsufficientStock` rather than posting a count that
+would leave the bucket promising more than it holds. That is the safe failure — nothing goes
+negative and nothing silently breaks a reservation's promise — but it is also a dead end for the
+person doing the count: there is no API yet to release or adjust a reservation to make room, and
+the item-level count endpoint cannot target anything but the home bucket in the first place. This
+is latent rather than reachable today (Phase 0 exposes no way to reserve stock over HTTP at all,
+so a home bucket a count can reach never carries a reservation), but it is a **Phase 1
+prerequisite**: once reservations and multi-location counts are exposed, a stocktake needs either
+a documented resolution path (release the excess reservation first, then count) or the count
+service itself needs to decide what a short count does to an open reservation — a business
+decision ADR-0014 does not currently make, and this migration does not invent one for it.

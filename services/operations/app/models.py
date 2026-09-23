@@ -451,7 +451,12 @@ class LedgerEntry(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     quantity_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
     balance_after_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
     #: Per-unit cost of an inbound row, integer minor units — the costing input (ADR-0014 §8).
+    #: Its currency is whatever the receipt was priced in — a purchase order's currency, which
+    #: is not necessarily the item's `currency` — recorded as-is and never converted (§8, revised
+    #: for the currency defect found in review). NULL exactly when `unit_cost_minor` is NULL: a
+    #: cost with no currency, or a currency with no cost, is a number nobody can act on.
     unit_cost_minor: Mapped[int | None] = mapped_column(BigInteger)
+    unit_cost_currency: Mapped[str | None] = mapped_column(String(3))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -464,6 +469,10 @@ class LedgerEntry(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     __table_args__ = (
         CheckConstraint("balance_after_milli >= 0", name="balance_after_non_negative"),
         CheckConstraint(f"status IN ({_STATUS_SQL})", name="status_known"),
+        CheckConstraint(
+            "(unit_cost_minor IS NULL) = (unit_cost_currency IS NULL)",
+            name="unit_cost_currency_matches_minor",
+        ),
         Index(
             "ix_inventory_ledger_org_item_created",
             "organization_id",

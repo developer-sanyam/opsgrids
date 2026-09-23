@@ -286,6 +286,7 @@
           },
           "opening_on_hand": {
             "default": 0,
+            "maximum": 1000000000000.0,
             "minimum": 0.0,
             "title": "Opening On Hand",
             "type": "integer"
@@ -1418,6 +1419,7 @@
           "counted_on_hand": {
             "anyOf": [
               {
+                "maximum": 1000000000000.0,
                 "minimum": 0.0,
                 "type": "integer"
               },
@@ -1441,6 +1443,8 @@
           "quantity_delta": {
             "anyOf": [
               {
+                "maximum": 1000000000000.0,
+                "minimum": -1000000000000.0,
                 "type": "integer"
               },
               {

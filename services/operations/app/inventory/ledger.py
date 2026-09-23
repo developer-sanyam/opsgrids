@@ -38,7 +38,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app.inventory.quantity import describe, format_qty
+from app.inventory.quantity import MAX_ABS_MILLI, describe, format_qty
 from app.models import (
     STOCK_AGGREGATES,
     STOCK_STATUSES,
@@ -86,6 +86,11 @@ class MoveLine:
     `reservation_id` lets an outbound line draw on a reservation of the same bucket: that much of
     the line comes out of reserved stock (and closes the reservation when it is used up); any
     excess comes out of unreserved available stock.
+
+    `unit_cost_currency` names the ISO currency `unit_cost_minor` is in — the currency the
+    receipt was actually priced in (a purchase order's, say), never the item's own `currency` by
+    assumption and never converted between the two (ADR-0014 §8, revised). The two travel
+    together: one without the other is refused.
     """
 
     item_id: uuid.UUID
@@ -96,6 +101,7 @@ class MoveLine:
     lot_id: uuid.UUID | None = None
     roll_id: uuid.UUID | None = None
     unit_cost_minor: int | None = None
+    unit_cost_currency: str | None = None
     reservation_id: uuid.UUID | None = None
 
     def bucket(self) -> tuple[str, str, str, str, str]:
@@ -149,6 +155,8 @@ def _validate_lines(kind: str, lines: Sequence[MoveLine]) -> None:
                 raise ValidationProblem("Only a count line may give a counted quantity")
             if not _is_int(line.counted_milli) or line.counted_milli < 0:
                 raise ValidationProblem("A counted quantity is a non-negative integer of milli")
+            if line.counted_milli > MAX_ABS_MILLI:
+                raise ValidationProblem("That quantity is too large")
             if line.reservation_id is not None:
                 raise ValidationProblem("A count cannot draw on a reservation")
             continue
@@ -157,12 +165,22 @@ def _validate_lines(kind: str, lines: Sequence[MoveLine]) -> None:
             raise ValidationProblem("A quantity must be an integer of milli-units")
         if line.quantity_milli == 0:
             raise ValidationProblem("A stock move line must change the quantity")
+        if abs(line.quantity_milli) > MAX_ABS_MILLI:
+            raise ValidationProblem("That quantity is too large")
         if line.reservation_id is not None and line.quantity_milli > 0:
             raise ValidationProblem("Only an outbound line can draw on a reservation")
         if line.unit_cost_minor is not None and (
             not _is_int(line.unit_cost_minor) or line.unit_cost_minor < 0
         ):
             raise ValidationProblem("A unit cost is a non-negative integer of minor units")
+        if (line.unit_cost_minor is None) != (line.unit_cost_currency is None):
+            raise ValidationProblem(
+                "A unit cost and its currency must be given together, or not at all"
+            )
+        if line.unit_cost_currency is not None and (
+            len(line.unit_cost_currency) != 3 or not line.unit_cost_currency.isalpha()
+        ):
+            raise ValidationProblem("A unit cost currency is a 3-letter ISO code")
     if len({line.bucket() for line in lines}) != len(lines):
         raise ValidationProblem("A stock move touches each bucket at most once")
 
@@ -329,6 +347,7 @@ async def post_move(
     reference_id: uuid.UUID | None = None,
     note: str = "",
     idempotency_key: str | None = None,
+    occurred_on_explicit: bool = True,
     request: Request | None = None,
 ) -> PostedMove:
     """Post one stock move. See the module docstring for the guarantees.
@@ -337,6 +356,12 @@ async def post_move(
     the caller's organization — never a hint that it exists elsewhere), `InsufficientStock` (a
     bucket would go negative or into reserved stock), and `ConflictProblem` (an idempotency key
     reused for a different request, or a reservation that does not fit).
+
+    `occurred_on_explicit=False` leaves `occurred_on` out of the idempotency hash: it names a
+    caller whose `occurred_on` is a server-side default (e.g. "today", computed fresh on every
+    call) rather than something the client sent, so a legitimate retry that lands on the other
+    side of midnight is still the same request. `occurred_on` is still stored on the move header
+    either way — only whether it counts toward "is this a replay or a different request" changes.
     """
     _validate_lines(kind, lines)
     if idempotency_key is not None and not 1 <= len(idempotency_key) <= 128:
@@ -353,13 +378,14 @@ async def post_move(
             "reference_type": reference_type,
             "reference_id": reference_id,
             "note": note,
-            "occurred_on": occurred_on,
+            **({"occurred_on": occurred_on} if occurred_on_explicit else {}),
             "lines": sorted(
                 (
                     *line.bucket(),
                     line.quantity_milli,
                     line.counted_milli,
                     line.unit_cost_minor,
+                    line.unit_cost_currency,
                     str(line.reservation_id),
                 )
                 for line in lines
@@ -455,6 +481,7 @@ async def post_move(
             quantity_milli=delta,
             balance_after_milli=new_on_hand,
             unit_cost_minor=line.unit_cost_minor if delta > 0 else None,
+            unit_cost_currency=line.unit_cost_currency if delta > 0 else None,
             created_by=str(ctx.principal.sub),
         )
         session.add(entry)
