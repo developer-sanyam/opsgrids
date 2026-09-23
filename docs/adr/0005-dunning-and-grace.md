@@ -576,3 +576,65 @@ superseded period is now a voided draft that was never announced.)*
   is pushed back 15 minutes and the pass carries on, and any loop that raises **or returns** stops
   the process non-zero, cancelling the others — no zombie worker without its payment consumer.
   `CancelledError` always propagates.
+
+### Review fixes, round 3 (2026-09-24)
+
+- **B1 — a proration belongs to its claim.** A proration raised while a renewal or trial
+  conversion is claimed and unrecorded records that claim (`against_period_id`, a plain uuid in
+  the same schema). It is not billed until the claim is **finalized**; and whatever moves the
+  claim to `void_pending` or `skipped` (a cancel, a suspension the claimed period was not served
+  into, a stale or superseded claim) moves its prorations too: pending → `skipped`
+  (`parent_voided`), a recorded draft → `void_pending`. A finalized proration on a voided parent
+  cannot arise; if it ever does it is logged and counted (`prorations_on_voided_parent`).
+- **B2 — the last pin is the baseline.** The record step's backstop prices a missed change from
+  the **last pin already prorated against the claim**, not the claim's own pin, and does nothing
+  if the subscription is on that pin. An equal-price switch against a claim writes a settled
+  marker row (`skipped`, `equal_price`, never billed) so the last pin is always known; an
+  equal-price switch after an upgrade therefore charges exactly one proration, whichever door
+  (customer or operator) it came through.
+- **M3 — no money decisions while the run lags.** A customer or operator plan change, and a
+  customer cancel, are refused **409 "billing is catching up on this subscription — try again
+  shortly"** while a period end or trial end is due and unclaimed, or while a claim is pending for
+  a period that has already ended. The run claims within one pass, so the wait is minutes. While
+  `BILLING_RUN_ENABLED=false` it means changes on every overdue subscription are refused — the
+  runbook's enable step says so. We chose refusal over "claim first, then change" for the operator
+  too: it is one rule in one place, and there is no operator cancel route to special-case (an
+  operator stops service with the internal suspend, which is not refused).
+- **Opening charges (found by the property test).** A subscription that started `active` without
+  a trial was never charged its first period: the run charged the *next* period in advance at each
+  roll, and nothing charged the first. It now claims an **opening** charge at subscribe —
+  `[start, period end)` at the pin, billed by billing as a proration from nothing (keyed on its own
+  change id). The same kind charges the rest of a period on **resumption** after a suspension that
+  crossed a roll, when no base charge covers the resumption instant. Existing subscriptions are not
+  back-charged.
+- **A suspension that came after the period opened does not make it free.**
+  `subscriptions.suspended_at` records when service stopped (an operator's suspension now; a
+  dunning suspension at its grace end). A claimed or due period that opened **before** that instant
+  is charged in advance like any other — the run being late to roll it must not make it free —
+  and a period that opened after it is voided or skipped as before (`served_into`).
+- **m4** — billing reads the invoice under its key `FOR UPDATE` (with `populate_existing`) for
+  finalize and void: two racing finalizes serialise, the second answers `(invoice, False)`.
+  **m5** — every `*_for_update` selector in subscription sets `populate_existing`. **m6** —
+  `failing` / `failing_permanent` count claims in `pending`, `finalize_pending` and
+  `void_pending`; billing's `/health/billing-drafts` counts drafts, and drafts older than an hour.
+  **m7** — a failed charge on a close, proration or opening row of a cancelled or suspended
+  subscription is stamped on that row and counted (`close_charges_failed`,
+  `proration_charges_failed`); the dead conversion branch in `record_payment_failure` is gone.
+  **m8** — the model's state comments name every state; the runbook covers the `f5a7b9c1d3e6`
+  downgrade leaving billing drafts un-finalized.
+- **Deferred, deliberately:** a **cancel** against a claim whose period opened a little before the
+  cancel (the run was late) skips the claim — the served time between the period start and the
+  cancel is not charged. It is bounded by the run's lateness, it favours the customer, and
+  charging a full period in arrears to someone who has just cancelled is worse than the leak. A
+  pro-rata charge for that sliver is the right fix and is not built.
+- **The property test.** `services/subscription/tests/test_billing_run_properties.py` drives a
+  subscription through random sequences of trial, upgrade, downgrade, equal-price switch,
+  suspension, resumption, failed and recovered payments, crashes between every step of the run,
+  billing outages and passes of the run, on a controlled clock, then cancels it and lets the run
+  catch up. Seeds are deterministic (`BILLING_PROPERTY_SEEDS`, default 200). Over what billing
+  finalized: base charges never overlap, never start before the paid start or at/after the
+  cancellation, and cover every served instant; usage windows never overlap, stay inside paid
+  time and cover every served instant; each is priced at the pin in force at its start and no pin
+  change falls inside a usage window; nothing is charged on a voided or skipped parent and no
+  finalized invoice is voided; no upgrade is charged twice; totals are integers. On the round-2
+  head it failed 171 of 200 seeds.

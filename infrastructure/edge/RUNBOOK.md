@@ -547,11 +547,14 @@ dunning sweep — no container of its own. It calls billing (`POST /internal/v1/
 and payment (the mandate question) over the back network; billing in turn reads catalog and
 metering. None of those calls holds a database transaction open.
 
-**Order.** Three migrations, all additive: billing `b5e2c8d4f1a9` (the invoice idempotency key)
-and subscription `d8b3f5a7c9e1` + `e4f6a8c0b2d4` (`billing_periods` with its proration/close kinds
-and void states, `subscriptions.billing_interval` / `pending_change` / `usage_billed_through`,
-discovery indexes). `migrations/env.py` grants the outbox role `SELECT` on **named columns only**
-of the two tables it discovers from. Billing, metering and payment must be serving the new routes before the worker's first
+**Order.** All additive: billing `b5e2c8d4f1a9` (the invoice idempotency key) and subscription
+`d8b3f5a7c9e1` + `e4f6a8c0b2d4` (`billing_periods` with its proration/close kinds and void states,
+`subscriptions.billing_interval` / `pending_change` / `usage_billed_through`, discovery indexes),
+`f5a7b9c1d3e6` (the finalize step's states and `payment_failed_at`) and `a1c3e5f7b9d2` (a
+proration's `against_period_id`, the `opening` kind, `subscriptions.suspended_at`).
+`migrations/env.py` grants the outbox role `SELECT` on **named columns only** of the tables it
+discovers from — in subscription, and in billing on `invoices(id, organization_id, state,
+created_at)` for `/health/billing-drafts`. Billing, metering and payment must be serving the new routes before the worker's first
 pass; a single `make deploy` does that, and a pass that runs early only backs off and retries.
 
 **First deploy onto a box with history — stage it.** Until now nothing ever converted a trial or
@@ -570,6 +573,21 @@ docker compose -f compose.prod.yml --env-file .env run --rm -T subscription-work
 # 3. Decide. Then turn it on and recreate the worker.
 echo 'BILLING_RUN_ENABLED=true' >> .env && docker compose -f compose.prod.yml --env-file .env up -d subscription-worker
 ```
+
+**While the run is off, changes on overdue subscriptions are refused.** A customer or operator
+plan change, and a customer cancel, answer **409 "billing is catching up on this subscription —
+try again shortly"** whenever a period end or a trial end is due and the run has not claimed it
+(ADR-0005 addendum, round 3, M3). With `BILLING_RUN_ENABLED=false` nothing claims, so every
+subscription past its boundary is frozen for changes until the run is turned on and has caught up
+(one period per pass). That is deliberate: deciding money against a period nobody has opened is
+how the earlier defects were made. There is no operator cancel route; an operator who must stop
+service now uses the internal suspend (not refused), and cancels once the run has caught up.
+
+**New on the first pass after `a1c3e5f7b9d2`:** a subscription that started `active` without a
+trial was never charged its first period. From this revision every new such subscription is
+charged an **opening** charge (the first period, at the pin in force) on the run's next pass.
+Existing rows are not back-charged — the dry run does not list them and nothing claims one; a
+back-charge is a person's decision.
 
 The summary splits `periods_invoiced` (invoices that will be raised) from
 `periods_suspended_roll` (suspended periods that only roll), and counts `grace_already_expired`:
@@ -597,7 +615,22 @@ make edge-logs SERVICE=subscription-worker | grep billing_run
 | `void_pending` | invoices for superseded periods waiting to be voided in billing | > 0 for an hour |
 | `finalize_pending` | recorded claims whose draft invoice billing has not finalized yet — nothing is chargeable until it is | > 0 for an hour |
 | `close_charges_failed` | closing-period charges that failed after the customer cancelled — owed, not dunned | **> 0** — a person decides |
+| `proration_charges_failed` | upgrade or opening charges that failed after the subscription was cancelled or suspended — owed, not dunned | **> 0** — a person decides |
+| `prorations_on_voided_parent` | a proration charged although the period it was priced against was voided or skipped — must be zero by construction | **> 0** — refund it; report a bug |
 | `invoiced_24h` / `skipped_24h` / `last_recorded_at` | throughput; `skipped` is suspended periods rolled without an invoice | — |
+
+Billing has its own probe, `/health/billing-drafts` (`docker compose … exec billing python -c
+"…u.urlopen('http://127.0.0.1:8000/health/billing-drafts')…"`): `drafts`, `drafts_stale` (older
+than an hour) and `oldest_draft_seconds`. **Alert on `drafts_stale > 0`** — a draft the run never
+finalized is a period nobody is being charged for.
+
+**Rolling back past `f5a7b9c1d3e6` leaves drafts behind.** That downgrade removes the finalize
+step's states from subscription: a claim that was `finalize_pending` at that moment becomes
+`invoiced`, the older code has no finalize step, and billing keeps its **draft** invoice,
+un-finalized and uncharged, forever. Before downgrading,
+let `finalize_pending` reach 0 (or stop the worker and accept it), and afterwards read
+`/health/billing-drafts`: each stale draft needs a person — finalize it through the internal
+route once the forward revision is back, or void it.
 
 Run invoices are **drafts** until the run has recorded them; only then are they finalized (and
 charged). A customer never sees a draft. A plan change to another billing cadence is refused —
