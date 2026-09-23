@@ -177,8 +177,16 @@ the `crm` profile and to `memory-budget.json`.
   and someone then deleted would refuse every later attempt on the same ids. `Lead
   .conversion_generation` is folded into that derivation (generation `0` derives exactly the
   ids it always has, so nothing already converted changes); `fail_conversion` bumps it when
-  customer answers `company-deleted` or `contact-deleted`, and the next `:convert` derives a
-  fresh set. The records the earlier attempt created stay deleted; this attempt makes new ones.
+  customer answers `company-deleted` or `contact-deleted`, and also on a `finalize_conversion`
+  abort caused by the lead being reassigned mid-conversion (the records the abandoned attempt
+  opened belong to the old owner, so the retry must not reuse them), and the next `:convert`
+  derives a fresh set. The deal's *name* carries the generation too (`… · a5065d10/1`;
+  generation 0 names are unchanged), because deal-service refuses a second live deal with the
+  same name. **Earlier generations' records that were not themselves deleted — typically the
+  deal — are left live as orphans**; nothing removes them, and `crm.lead.conversion_aborted`
+  (above) is the hook a future cleanup would subscribe to. A deal-name 409 that still happens
+  (someone else already used that exact name) is refused with a specific 422 rather than the
+  generic "check the lead's details".
 - **Databases that ran an earlier version of this branch's migrations must be recreated.**
   customer's `e230c025337e` and lead's whole migration chain were rewritten in place while the
   branch was unmerged and undeployed; a dev or branch database that applied the earlier versions

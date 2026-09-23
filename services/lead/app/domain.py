@@ -156,12 +156,20 @@ DEAL_NAME_MAX_LENGTH = 200
 _TRUNCATION_MARK = "…"
 
 
-def deal_name(company: str, full_name: str, lead_id: uuid.UUID) -> str:
+def deal_name(company: str, full_name: str, lead_id: uuid.UUID, generation: int = 0) -> str:
     """The name `:convert` gives the deal it creates for `lead_id` — bounded to fit
     deal-service's column, and suffixed with a short, fixed-width slice of the lead's own id
     so two different leads naming the same company and the same person still produce two
-    distinguishable deal names instead of one that silently reads as a single duplicate."""
-    suffix = f" · {str(lead_id)[:8]}"
+    distinguishable deal names instead of one that silently reads as a single duplicate.
+
+    `generation` (`Lead.conversion_generation`) is folded into the suffix for every generation
+    after the first — `"… · a5065d10/1"`. Deal-service refuses a second live deal with the same
+    name, and an earlier generation's deal is usually still live (the record that made a new
+    generation necessary is more often the company or contact, or an abort that could not take
+    the deal back), so a bumped generation that reused the old name would trade one permanent
+    dead end for another. Generation `0` names are exactly what they always were.
+    """
+    suffix = f" · {str(lead_id)[:8]}" + (f"/{generation}" if generation else "")
     budget = DEAL_NAME_MAX_LENGTH - len(suffix)
     base = f"{company} — {full_name}"
     if len(base) > budget:

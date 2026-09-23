@@ -55,6 +55,13 @@ class CompanyDeleted(ConversionRejected):
     is gone, point this lead somewhere else"."""
 
 
+class DealNameConflict(ConversionRejected):
+    """deal-service refused the deal with a 409 — the only 409 `POST leads:convert` can answer
+    on the deal side is "a deal with that name already exists". Permanent for this name, and
+    distinct from the generic rejection so the caller can say so instead of "check the lead's
+    details", which would send the rep looking at fields that are not the problem."""
+
+
 class ContactDeleted(ConversionRejected):
     """The contact-side twin of `CompanyDeleted`: the contact an earlier attempt created for
     this lead has since been deleted. Same handling — permanent for *these* ids, recoverable
@@ -205,6 +212,9 @@ async def ensure_deal(
         if owns_client:
             await client.aclose()
 
+    if response.status_code == 409:
+        log.warning("lead.clients.deal_name_conflict", status=response.status_code)
+        raise DealNameConflict("a deal with that name already exists in the CRM book")
     if response.status_code >= 500:
         log.error("lead.clients.deal_upstream_error", status=response.status_code)
         raise ConversionUnavailable("deal-service is temporarily unavailable")

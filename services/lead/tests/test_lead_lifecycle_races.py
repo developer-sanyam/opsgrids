@@ -28,9 +28,10 @@ from pathlib import Path
 import pytest
 from sqlalchemy import event as sa_event
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app import selectors, services
+from app import clients, selectors, services
 from app.config import settings
 from app.models import SCHEMA, AuditLog, OutboxEvent
 from app.schemas import LeadPatch
@@ -296,6 +297,95 @@ class TestAnAbortedConversionLeavesATrail:
         assert lead.owner_id == new_owner
         assert lead.conversion_claim_id is None
         assert lead.converted_company_id is None
+
+
+class TestUpdateLeadNeverHoldsTheRowAcrossTheDirectoryCall:
+    """Fix round 4, finding 4: `update_lead` used to lock the lead's row and *then* ask
+    customer-service whether the new owner is active, so a hanging customer-service froze every
+    other PATCH — and `:convert`'s claim and finalize — on that lead for as long as the call
+    took. The scope check and the directory call now run before `get_lead_for_update`."""
+
+    async def test_the_leads_row_is_free_while_the_new_owner_is_being_validated(
+        self, session, org_id, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        write = ctx_for(org_id, "crm.lead.lead.write", Scope.ORG)
+        rep_a, rep_b = uuid.uuid4(), uuid.uuid4()
+        async with session.begin():
+            lead = await services.create_lead(
+                session,
+                write,
+                full_name="Lock probe",
+                company=None,
+                email=None,
+                phone=None,
+                source="form",
+                owner_id=rep_a,
+                notes="",
+            )
+        lead_id = lead.id
+
+        directory_call_started = asyncio.Event()
+        release_directory_call = asyncio.Event()
+
+        async def _slow_directory(cfg, organization_id, owner_ids):  # type: ignore[no-untyped-def]
+            directory_call_started.set()
+            await release_directory_call.wait()
+            return []
+
+        monkeypatch.setattr(clients, "invalid_owner_ids", _slow_directory)
+
+        cfg = settings()
+        engine_a = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
+        engine_b = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
+        maker_a = async_sessionmaker(engine_a, expire_on_commit=False)
+        maker_b = async_sessionmaker(engine_b, expire_on_commit=False)
+
+        def _bind(org: uuid.UUID):
+            def _listener(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+                connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org}', true)")
+
+            return _listener
+
+        outcome: dict[str, str] = {}
+        try:
+            async with maker_a() as session_a, maker_b() as session_b:
+                sa_event.listen(session_a.sync_session, "after_begin", _bind(org_id))
+                sa_event.listen(session_b.sync_session, "after_begin", _bind(org_id))
+
+                async def _patch() -> None:
+                    async with session_a.begin():
+                        await services.update_lead(
+                            session_a, write, lead_id, LeadPatch(owner_id=rep_b)
+                        )
+
+                async def _probe() -> None:
+                    await directory_call_started.wait()
+                    try:
+                        async with session_b.begin():
+                            await session_b.execute(
+                                text("SELECT id FROM leads WHERE id = :i FOR UPDATE NOWAIT"),
+                                {"i": lead_id},
+                            )
+                        outcome["lead_row"] = "free"
+                    except DBAPIError as exc:
+                        outcome["lead_row"] = f"locked: {type(exc.orig).__name__}"
+
+                task_a = asyncio.create_task(_patch())
+                await asyncio.wait_for(_probe(), timeout=15.0)
+                release_directory_call.set()
+                await asyncio.wait_for(task_a, timeout=15.0)
+        finally:
+            await engine_a.dispose()
+            await engine_b.dispose()
+
+        assert outcome["lead_row"] == "free"
+
+        # The fixture's session cached this lead when it created it; the patch ran on another.
+        session.expire_all()
+        async with session.begin():
+            patched = await selectors.get_lead(session, org_id, lead_id)
+        assert patched is not None
+        assert patched.owner_id == rep_b
 
 
 class TestPatchVersusFinalizeConcurrency:

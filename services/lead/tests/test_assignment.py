@@ -7,6 +7,7 @@ separate transactions the way separate HTTP requests would see it.
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 
 import pytest
@@ -189,8 +190,9 @@ class TestRoundRobinSkipsInactiveOwners:
         self, session, org_id, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """m2, fix round 3 (reverses the earlier fail-open): when the directory cannot be
-        asked, the last *confirmed* active set for this exact owner set is used however old it
-        is — never "everyone is active", and not "nobody" either while a real answer exists."""
+        asked, the last *confirmed* active set for this exact owner set is used once past its
+        TTL — never "everyone is active", and not "nobody" either while a real, recent-enough
+        answer exists."""
         write = ctx_for(org_id, "crm.lead.lead.write", Scope.ORG)
         good_a, gone_bad, good_b = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
         async with session.begin():
@@ -205,9 +207,10 @@ class TestRoundRobinSkipsInactiveOwners:
         async with session.begin():
             await _create(session, write, "Confirms the directory once")
 
-        # Age the confirmed answer past its TTL without touching what it says.
-        key, active, _expired_at = services._assignment_active_cache[org_id]
-        services._assignment_active_cache[org_id] = (key, active, 0.0)
+        # Age the confirmed answer past its TTL (but nowhere near the staleness limit)
+        # without touching what it says.
+        confirmed = services._assignment_active_cache[org_id]
+        services._assignment_active_cache[org_id] = confirmed._replace(expires_at=0.0)
 
         async def _unreachable(cfg, organization_id, owner_ids):  # type: ignore[no-untyped-def]
             raise clients.OwnersValidateUnavailable("down")
@@ -223,6 +226,51 @@ class TestRoundRobinSkipsInactiveOwners:
         assert gone_bad not in assigned
         assert None not in assigned
         assert set(assigned) <= {good_a, good_b}
+
+    async def test_a_confirmed_answer_older_than_ten_minutes_is_not_trusted_during_an_outage(
+        self, session, org_id, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fix round 4, finding 5: "we last heard this rep was active" is not an answer about a
+        rep who may have been deactivated an hour ago — past
+        `_ASSIGNMENT_STALE_LIMIT_SECONDS` nobody is assigned until the directory answers."""
+        write = ctx_for(org_id, "crm.lead.lead.write", Scope.ORG)
+        owners = [uuid.uuid4(), uuid.uuid4()]
+        async with session.begin():
+            await services.set_assignment_rule(session, write, mode="round_robin", owner_ids=owners)
+
+        async def _all_active(cfg, organization_id, owner_ids):  # type: ignore[no-untyped-def]
+            return []
+
+        monkeypatch.setattr(clients, "invalid_owner_ids", _all_active)
+        async with session.begin():
+            await _create(session, write, "Confirms the directory once")
+
+        confirmed = services._assignment_active_cache[org_id]
+        just_inside = time.monotonic() - (10 * 60 - 30)
+        services._assignment_active_cache[org_id] = confirmed._replace(
+            expires_at=0.0, confirmed_at=just_inside
+        )
+
+        async def _unreachable(cfg, organization_id, owner_ids):  # type: ignore[no-untyped-def]
+            raise clients.OwnersValidateUnavailable("down")
+
+        monkeypatch.setattr(clients, "invalid_owner_ids", _unreachable)
+
+        async with session.begin():
+            still_trusted = await _create(session, write, "Nine and a half minutes")
+        assert still_trusted.owner_id in owners
+
+        # Ten minutes and a bit: too old. Clear the 15s "unavailable" memory so the directory
+        # is genuinely asked (and refuses) again rather than short-circuiting on it.
+        services._assignment_unavailable_cache.pop(org_id, None)
+        confirmed = services._assignment_active_cache[org_id]
+        too_old = time.monotonic() - (10 * 60 + 30)
+        services._assignment_active_cache[org_id] = confirmed._replace(
+            expires_at=0.0, confirmed_at=too_old
+        )
+        async with session.begin():
+            untrusted = await _create(session, write, "Ten minutes and a bit")
+        assert untrusted.owner_id is None
 
     async def test_the_directory_is_not_asked_again_within_the_cache_window(
         self, session, org_id, monkeypatch: pytest.MonkeyPatch
@@ -372,9 +420,12 @@ class TestOwnerDirectoryNeverBlocksTheRotationLock:
 
                 task_a = asyncio.create_task(_create_a())
                 task_b = asyncio.create_task(_lock_rule_from_b())
-                await asyncio.wait_for(task_b, timeout=2.0)
+                # Generous on purpose: a *held* lock never lets `task_b` finish (the directory
+                # call only ends when this test sets the event below), so any timeout fails it
+                # — this one just has to outlast a slow, shared CI database.
+                await asyncio.wait_for(task_b, timeout=15.0)
                 release_directory_call.set()
-                await asyncio.wait_for(task_a, timeout=2.0)
+                await asyncio.wait_for(task_a, timeout=15.0)
         finally:
             await engine_a.dispose()
             await engine_b.dispose()

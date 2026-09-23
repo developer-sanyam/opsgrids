@@ -438,6 +438,40 @@ class TestEnsureDeal:
                 ),
             )
 
+    async def test_a_409_raises_deal_name_conflict_not_a_generic_rejection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                409,
+                json={
+                    "type": "https://errors.opsgrids.dev/conflict",
+                    "title": "Conflict",
+                    "status": 409,
+                    "detail": "A deal with that name already exists",
+                },
+            )
+
+        with pytest.raises(clients.DealNameConflict) as excinfo:
+            await _with_transport(
+                handler,
+                monkeypatch,
+                lambda: clients.ensure_deal(
+                    _settings(),
+                    uuid.uuid4(),
+                    deal_id=uuid.uuid4(),
+                    company_id=uuid.uuid4(),
+                    contact_id=None,
+                    owner_id=uuid.uuid4(),
+                    name="x",
+                    close_date="2026-10-23",
+                    source="form",
+                ),
+            )
+        # Still a `ConversionRejected` (permanent), never carrying the upstream body.
+        assert isinstance(excinfo.value, clients.ConversionRejected)
+        assert "A deal with that name already exists" not in str(excinfo.value)
+
     async def test_a_5xx_raises_conversion_unavailable(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

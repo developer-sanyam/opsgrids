@@ -36,7 +36,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
@@ -222,7 +222,26 @@ _ASSIGNMENT_UNAVAILABLE_CACHE_TTL_SECONDS = 15
 #: newly-inactive owner keeps a slot in the rotation for up to a minute longer than it should,
 #: never the other direction (an active owner wrongly skipped), so a cold cache or a
 #: multi-process deployment degrades to "revalidate more often", not to an incorrect answer.
-_assignment_active_cache: dict[uuid.UUID, tuple[frozenset[uuid.UUID], set[uuid.UUID], float]] = {}
+#: The oldest a *confirmed* answer may be and still stand in for a directory that cannot be
+#: asked right now. Ten minutes: long enough to ride out an ordinary customer-service restart
+#: or deploy, short enough that "we last heard this rep was active" is not an answer about a
+#: rep who was deactivated an hour ago — past it, nobody is assigned until the directory
+#: answers again.
+_ASSIGNMENT_STALE_LIMIT_SECONDS = 600
+
+
+class _ConfirmedActive(NamedTuple):
+    """One confirmed answer from the directory: which owner set it was for, which of them were
+    active, until when it is fresh (`expires_at`, the ordinary TTL), and when it was actually
+    heard (`confirmed_at`, what `_last_confirmed_active`'s staleness limit measures)."""
+
+    key: frozenset[uuid.UUID]
+    active: set[uuid.UUID]
+    expires_at: float
+    confirmed_at: float
+
+
+_assignment_active_cache: dict[uuid.UUID, _ConfirmedActive] = {}
 
 #: Which (organization, owner set) the directory most recently refused to answer, and until
 #: when that failure is still remembered — `_active_owner_ids_for_assignment`'s own circuit
@@ -232,14 +251,21 @@ _assignment_unavailable_cache: dict[uuid.UUID, tuple[frozenset[uuid.UUID], float
 
 
 def _last_confirmed_active(organization_id: uuid.UUID, key: frozenset[uuid.UUID]) -> set[uuid.UUID]:
-    """The most recent *confirmed* answer for this exact owner set, regardless of how long ago
-    it expired — used only when the directory cannot be asked again right now. Never a value
-    for a *different* owner set: a reconfigure invalidates the cache the same way it always
-    has, because a different set never matches here either."""
+    """The most recent *confirmed* answer for this exact owner set, past its ordinary TTL but
+    no older than `_ASSIGNMENT_STALE_LIMIT_SECONDS` — used only when the directory cannot be
+    asked again right now. Never a value for a *different* owner set: a reconfigure
+    invalidates the cache the same way it always has, because a different set never matches
+    here either. An answer older than the limit is ignored (empty set: nobody assigned, and a
+    log line saying why) rather than trusted about reps who may have left since."""
     cached = _assignment_active_cache.get(organization_id)
-    if cached is not None and cached[0] == key:
-        return cached[1]
-    return set()
+    if cached is None or cached.key != key:
+        return set()
+    if time.monotonic() - cached.confirmed_at > _ASSIGNMENT_STALE_LIMIT_SECONDS:
+        log.warning(
+            "lead.assignment.confirmed_answer_too_old", organization_id=str(organization_id)
+        )
+        return set()
+    return cached.active
 
 
 async def _active_owner_ids_for_assignment(
@@ -259,8 +285,9 @@ async def _active_owner_ids_for_assignment(
     Fails **closed** on `OwnersValidateUnavailable` (reversed from this function's first
     version, which failed open): an owner this function cannot actually confirm is active is
     never handed out. Falls back to the last *confirmed* answer for this exact set if one
-    exists, however stale, and to an empty set — nobody assigned, `_assign_owner`'s own
-    all-inactive path — if there has never been one. A failure is itself remembered for
+    exists and is no older than `_ASSIGNMENT_STALE_LIMIT_SECONDS`, and to an empty set —
+    nobody assigned, `_assign_owner`'s own all-inactive path — if there is none or it is
+    older than that. A failure is itself remembered for
     `_ASSIGNMENT_UNAVAILABLE_CACHE_TTL_SECONDS`, so a customer-service outage costs this
     function one attempt per organization per that window, not one per lead captured in it —
     the same reasoning `_ASSIGNMENT_ACTIVE_CACHE_TTL_SECONDS` already gives a healthy answer,
@@ -272,8 +299,8 @@ async def _active_owner_ids_for_assignment(
     now = time.monotonic()
 
     cached = _assignment_active_cache.get(organization_id)
-    if cached is not None and cached[0] == key and now < cached[2]:
-        return cached[1]
+    if cached is not None and cached.key == key and now < cached.expires_at:
+        return cached.active
 
     unavailable = _assignment_unavailable_cache.get(organization_id)
     if unavailable is not None and unavailable[0] == key and now < unavailable[1]:
@@ -300,10 +327,8 @@ async def _active_owner_ids_for_assignment(
         return _last_confirmed_active(organization_id, key)
 
     active = set(owner_ids) - invalid
-    _assignment_active_cache[organization_id] = (
-        key,
-        active,
-        now + _ASSIGNMENT_ACTIVE_CACHE_TTL_SECONDS,
+    _assignment_active_cache[organization_id] = _ConfirmedActive(
+        key, active, now + _ASSIGNMENT_ACTIVE_CACHE_TTL_SECONDS, now
     )
     return active
 
@@ -370,8 +395,8 @@ async def _assign_owner(
     else:
         key = frozenset(rule.owner_ids)
         cached = _assignment_active_cache.get(ctx.organization_id)
-        if cached is not None and cached[0] == key and time.monotonic() < cached[2]:
-            active = cached[1]
+        if cached is not None and cached.key == key and time.monotonic() < cached.expires_at:
+            active = cached.active
         else:
             log.warning(
                 "lead.assignment.owner_set_changed_under_lock",
@@ -548,12 +573,26 @@ async def update_lead(
     now genuinely blocks the other until it commits, instead of both reading a "before" that
     is stale by the time either one writes.
     """
+    changes = payload.model_dump(exclude_unset=True)
+
+    # Everything about the *new* owner that does not depend on the lead's own row — the scope
+    # check and the customer-service round trip — runs **before** the row is locked. Asking
+    # customer-service whether a rep is active is a network call, and doing it after
+    # `get_lead_for_update` held this lead's row lock across however long it took: a hanging
+    # customer-service froze every other PATCH, and `:convert`'s own claim and finalize, on the
+    # same lead. (The same reasoning `_resolve_round_robin_snapshot` applies to the rotation.)
+    if "owner_id" in changes:
+        if changes["owner_id"] is None:
+            if ctx.scope is not Scope.ORG:
+                raise ForbiddenProblem("Unassigning a lead requires ORG scope")
+        else:
+            ctx.assert_can_touch(owner_id=changes["owner_id"])
+            await _ensure_owners_active(ctx.organization_id, [changes["owner_id"]])
+
     lead = await selectors.get_lead_for_update(session, ctx.organization_id, lead_id)
     if lead is None:
         raise NotFoundProblem("That lead is not part of this organization")
     ctx.assert_can_touch(owner_id=lead.owner_id)
-
-    changes = payload.model_dump(exclude_unset=True)
 
     touches_conversion_state = "status" in changes or "owner_id" in changes
     if touches_conversion_state:
@@ -571,14 +610,6 @@ async def update_lead(
         # thing standing in for that lock.
         if domain.claim_is_live(lead.conversion_claimed_at, now=utcnow()):
             raise ConflictProblem("This lead's conversion is in progress. Try again in a moment.")
-
-    if "owner_id" in changes:
-        if changes["owner_id"] is None:
-            if ctx.scope is not Scope.ORG:
-                raise ForbiddenProblem("Unassigning a lead requires ORG scope")
-        else:
-            ctx.assert_can_touch(owner_id=changes["owner_id"])
-            await _ensure_owners_active(ctx.organization_id, [changes["owner_id"]])
 
     if "status" in changes:
         new_status = changes["status"]
@@ -638,6 +669,9 @@ class ConversionClaim:
     company_id: uuid.UUID
     contact_id: uuid.UUID | None
     deal_id: uuid.UUID
+    #: `Lead.conversion_generation` at the moment of the claim — the generation the three ids
+    #: above were derived under, and the one `domain.deal_name` folds into the deal's name.
+    generation: int
     #: `None` only on the `already_converted` branch's stale-data edge case (the owner was
     #: unassigned by a `PATCH` after this lead already converted) — never on a fresh claim,
     #: which refuses before it gets here (`claim_conversion`'s own "assign an owner" check).
@@ -694,6 +728,7 @@ async def claim_conversion(
                 company_id=lead.converted_company_id,
                 contact_id=lead.converted_contact_id,
                 deal_id=lead.converted_deal_id,
+                generation=lead.conversion_generation,
                 owner_id=lead.owner_id,
                 full_name=lead.full_name,
                 company=lead.company,
@@ -754,6 +789,7 @@ async def claim_conversion(
             company_id=company_id,
             contact_id=contact_id,
             deal_id=deal_id,
+            generation=lead.conversion_generation,
             owner_id=owner_id,
             full_name=lead.full_name,
             company=lead.company,
@@ -794,7 +830,8 @@ async def finalize_conversion(
     claim instead of overwriting whatever it moved to, and records why — including the ids of
     the records the calls already created, which nothing here can take back — and stages
     `crm.lead.conversion_aborted` so something that can (a consumer, later) knows they are
-    now orphans.
+    now orphans. An `owner_changed` abort also bumps `Lead.conversion_generation`, so the retry
+    creates fresh records for the new owner instead of reusing the old owner's.
     """
     # `abort_reason`/`missing_claim` decide what to raise *after* the `async with` below exits —
     # never from inside it. Raising from inside a `session.begin()` block rolls the whole
@@ -824,12 +861,21 @@ async def finalize_conversion(
                 lead.conversion_claim_id = None
                 lead.conversion_claimed_at = None
                 lead.updated_by = str(ctx.principal.sub)
-                await session.flush()
                 orphans = {
                     "company_id": str(company_id),
                     "contact_id": str(contact_id) if contact_id else None,
                     "deal_id": str(deal_id),
                 }
+                abort_after: dict[str, Any] = {"reason": detail, **orphans}
+                if abort_reason == "owner_changed":
+                    # The records the abandoned attempt created were opened *for the old
+                    # owner*, so reusing them (same ids, idempotent-by-id) on the retry would
+                    # hand the new owner a company and deal that belong to someone else. A
+                    # new generation makes the retry create fresh ones for the new owner; the
+                    # old ones stay behind as the orphans this audit row and the event name.
+                    lead.conversion_generation += 1
+                    abort_after["conversion_generation"] = lead.conversion_generation
+                await session.flush()
                 record_audit(
                     session,
                     AuditLog,
@@ -842,7 +888,7 @@ async def finalize_conversion(
                         "status": before_status,
                         "owner_id": str(lead.owner_id) if lead.owner_id else None,
                     },
-                    after={"reason": detail, **orphans},
+                    after=abort_after,
                     request=request,
                 )
                 publish_event(
@@ -1039,7 +1085,7 @@ async def convert_lead(
             company_id=company_id,
             contact_id=contact_id,
             owner_id=owner_id,
-            name=domain.deal_name(company_name, claim.full_name, claim.lead_id),
+            name=domain.deal_name(company_name, claim.full_name, claim.lead_id, claim.generation),
             close_date=close_date.isoformat(),
             source=claim.source,
             actor_id=ctx.principal.sub,
@@ -1068,6 +1114,16 @@ async def convert_lead(
         raise ValidationProblem(
             "The CRM record created by an earlier attempt was deleted — convert again to "
             "create fresh records."
+        ) from exc
+    except clients.DealNameConflict as exc:
+        # Before the generic `ConversionRejected` below (it is a subclass): "check the lead's
+        # details" would send the rep to fields that are not the problem.
+        await fail_conversion(
+            session, ctx, lead_id=claim.lead_id, claim_id=claim_id, reason=str(exc)
+        )
+        raise ValidationProblem(
+            "A deal with this name already exists in the CRM book. Rename or remove that deal, "
+            "then convert this lead again."
         ) from exc
     except clients.ConversionRejected as exc:
         await fail_conversion(

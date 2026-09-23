@@ -18,7 +18,7 @@ import uuid
 
 import pytest
 from sqlalchemy import event as sa_event
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app import clients, domain, selectors, services
@@ -576,3 +576,144 @@ class TestConvertConcurrency:
 
         assert audits == 1
         assert events == 1
+
+
+def _stateful_deal_service(monkeypatch, live_names: set[str], calls: list):
+    """A deal-service that behaves like the real one where it matters here: it refuses a second
+    live deal with the same name (a 409 -> `DealNameConflict`), and is idempotent by `deal_id`
+    only in the sense the lead cares about — a name it has already seen is a conflict."""
+
+    async def _fake(settings, organization_id, **kwargs):
+        calls.append(("deal", kwargs))
+        if kwargs["name"] in live_names:
+            raise clients.DealNameConflict("a deal with that name already exists")
+        live_names.add(kwargs["name"])
+        return kwargs["deal_id"]
+
+    monkeypatch.setattr(clients, "ensure_deal", _fake)
+
+
+class TestGenerationsAndDealNames:
+    """Fix round 4, findings 3 and 6. A bumped `conversion_generation` gives the retry fresh
+    company/contact/deal *ids* — but deal-service also refuses a second live deal with the same
+    *name*, and the earlier generation's deal is usually still live, so the name has to change
+    with the generation or the retry trades one permanent dead end for another."""
+
+    async def test_a_bumped_generation_does_not_collide_with_the_earlier_generations_live_deal(
+        self, session, org_id, data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        lead_id = data["lead_a_id"]
+        generation_zero_name = domain.deal_name("Stellar Robotics", "Priya Sharma", lead_id, 0)
+        live_names = {generation_zero_name}
+        calls: list = []
+        _fake_ensure_company_and_contact(monkeypatch, calls)
+        _stateful_deal_service(monkeypatch, live_names, calls)
+
+        async with session.begin():
+            await session.execute(
+                text('UPDATE "lead"."leads" SET conversion_generation = 1 WHERE id = :id'),
+                {"id": lead_id},
+            )
+
+        ctx = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
+        await services.convert_lead(session, ctx, lead_id)
+
+        new_name = next(kw["name"] for kind, kw in calls if kind == "deal")
+        assert new_name != generation_zero_name
+        assert new_name.endswith("/1")
+        # The earlier generation's deal is still live: nothing here removed it.
+        assert generation_zero_name in live_names
+
+    async def test_the_same_generation_still_conflicts_with_a_live_deal_of_that_name(
+        self, session, org_id, data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The control for the test above, and the 422 the rep sees: generation 0 against a
+        live deal already holding its name is a clear, specific refusal — not the generic
+        "check the lead's details" — and the claim is released."""
+        lead_id = data["lead_a_id"]
+        live_names = {domain.deal_name("Stellar Robotics", "Priya Sharma", lead_id, 0)}
+        calls: list = []
+        _fake_ensure_company_and_contact(monkeypatch, calls)
+        _stateful_deal_service(monkeypatch, live_names, calls)
+
+        ctx = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
+        with pytest.raises(ValidationProblem, match="deal with this name already exists"):
+            await services.convert_lead(session, ctx, lead_id)
+
+        async with session.begin():
+            lead = await selectors.get_lead(session, org_id, lead_id)
+        assert lead is not None
+        assert lead.conversion_claim_id is None
+        assert lead.conversion_generation == 0
+        assert lead.status == "qualified"
+
+    async def test_an_owner_change_mid_convert_aborts_and_the_retry_creates_fresh_records(
+        self, session, org_id, data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        lead_id = data["lead_a_id"]
+        old_owner = data["owner_a"]
+        new_owner = uuid.uuid4()
+        live_names: set[str] = set()
+        first_calls: list = []
+        _stateful_deal_service(monkeypatch, live_names, first_calls)
+
+        async def _company_then_a_reassignment(settings, organization_id, **kwargs):
+            first_calls.append(("company", kwargs))
+            # A concurrent reassignment landing in the gap between claim and finalize — the
+            # session has no transaction open here, exactly as during the real network call.
+            async with session.begin():
+                await session.execute(
+                    text('UPDATE "lead"."leads" SET owner_id = :owner WHERE id = :id'),
+                    {"owner": new_owner, "id": lead_id},
+                )
+            return kwargs["company_id"], kwargs["contact_id"]
+
+        monkeypatch.setattr(clients, "ensure_company_and_contact", _company_then_a_reassignment)
+
+        ctx = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
+        with pytest.raises(ConflictProblem, match="reassigned"):
+            await services.convert_lead(session, ctx, lead_id)
+
+        first_company = next(kw for kind, kw in first_calls if kind == "company")
+        first_deal = next(kw for kind, kw in first_calls if kind == "deal")
+        assert first_company["owner_id"] == old_owner
+
+        async with session.begin():
+            lead = await selectors.get_lead(session, org_id, lead_id)
+            aborted = (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "lead.conversion_aborted",
+                        AuditLog.entity_id == lead_id,
+                    )
+                )
+            ).scalar_one()
+        assert lead is not None
+        assert lead.status == "qualified"
+        assert lead.conversion_claim_id is None
+        assert lead.conversion_generation == 1
+        assert aborted.after["conversion_generation"] == 1
+
+        retry_calls: list = []
+        _stateful_deal_service(monkeypatch, live_names, retry_calls)
+        _fake_ensure_company_and_contact(monkeypatch, retry_calls)
+        converted_company_id, _contact, _deal = await services.convert_lead(session, ctx, lead_id)
+
+        retry_company = next(kw for kind, kw in retry_calls if kind == "company")
+        retry_deal = next(kw for kind, kw in retry_calls if kind == "deal")
+        expected_company, _contact, expected_deal = domain.conversion_ids(lead_id, 1)
+        assert retry_company["company_id"] == expected_company
+        assert retry_company["company_id"] != first_company["company_id"]
+        assert retry_deal["deal_id"] == expected_deal
+        assert retry_deal["deal_id"] != first_deal["deal_id"]
+        assert retry_company["owner_id"] == new_owner
+        assert retry_deal["owner_id"] == new_owner
+        # The abandoned attempt's deal is still live, and the retry's name did not collide.
+        assert first_deal["name"] in live_names
+        assert retry_deal["name"] != first_deal["name"]
+
+        async with session.begin():
+            converted = await selectors.get_lead(session, org_id, lead_id)
+        assert converted is not None
+        assert converted.status == "converted"
+        assert converted.converted_company_id == converted_company_id
