@@ -722,10 +722,14 @@ print` keeps the RUNBOOK's worked example (`EDGE_BUDGET_ACCEPTED_MB=3894`) from 
 priced total.
 
 **The decision this leaves open, plainly.** Ten profiles is 3894 MB on a 3862 MB box after the
-consolidation — a swap-backed box that already swaps at 90% would run at 100.8%. The three
-options are in the RUNBOOK; the recommendation is the first (more RAM), because it is the only one
-that adds headroom rather than redistributing it, and the planned backlog (+1068 MB) does not fit
-on this box under any of them.
+consolidation — a box that already swaps at 90% would run at 100.8%. The three options are in the
+RUNBOOK. More RAM is the only one that adds headroom rather than redistributing it, but the
+erratum above recorded that the owner would not resize this box; that was decided at ~90%, before
+this release added ~400 MB net, so the RUNBOOK asks again rather than assuming. The planned
+backlog (+1068 MB) does not fit on this box under any of the three. **And the price list may be
+low:** see the RSS measurements below — the API images measured at 94-102 MiB against `kinds.api`'s
+85 MB, which across the 27 API containers is ~270 MB the projection does not contain. The RUNBOOK
+asks the owner to cross-check against `free -m` on the box before writing the ceiling down.
 
 ### Consolidation — `operations-cron`, `storefront-cron`, `document-cron` folded into their APIs
 
@@ -762,10 +766,28 @@ collides.
 - Deleted from `compose.prod.yml` and `memory-budget.json`: the three `*-cron` services and their
   entries (the RUNBOOK's backup-restore stop/start lists and the storefront/document sections were
   updated to match).
-- Measured saving: 3 x 85 MB = **255 MB** (4149 -> 3894 MB, table above). Each API container
-  carries the sweep's few extra MB inside its existing 85 MB estimate; the `api` kind was measured
-  at 92-95 MB VmRSS in the original addendum and a sweep imports nothing the API does not already
-  hold.
+- Saving: 3 x 85 MB = **255 MB** in the budget (4149 -> 3894 MB, table above).
+- **Measured, not assumed:** the three real production images (`docker build` of each service's
+  Dockerfile) were run against an isolated Postgres/Redis/RabbitMQ (`d4b2_iso`, ports 55442 /
+  63992 / 56742 — never the shared dev stack) with compose's `MALLOC_ARENA_MAX=2`, trim threshold
+  and pool sizes, `RUN_SWEEPS_IN_API` off and on, 40 health probes, `/proc/1/status` `VmRSS`:
+
+  | image | sweep off (kB) | sweep on (kB) | difference |
+  |---|---|---|---|
+  | `operations` | 96,984 | 96,516 | -468 (noise) |
+  | `storefront` | 99,996 | 101,040 | +1,044 |
+  | `document` | 104,260 | 104,336 | +76 |
+
+  The sweep costs an API container about 1 MB at most (it imports nothing the API does not
+  already hold), so the ~255 MB is genuinely given back rather than moved. The `operations` and
+  `storefront` containers logged `inventory.reconcile.pass` / `storefront.domain.sweep.pass` from
+  inside the API process, against the isolated database, on their first tick.
+- **What the same run says about the price list.** These three images idled at ~95-104 MB (94-102
+  MiB), above `kinds.api`'s 85 MB planning figure and in line with the 92-95 MB `account` showed in
+  the original measurement. `kinds.api` was not changed in this round: a laptop's RSS is not the
+  box's, the reviewer asked about something else, and re-pricing 27 containers should be its own
+  decision made against `docker stats` on the real box. But an owner deciding on
+  `EDGE_BUDGET_ACCEPTED_MB` should know the projection may understate by up to ~270 MB.
 
 Tests: `libs/platform-core/tests/test_supervise.py::TestBackgroundSweep` (start then stop cancels
 cleanly; stopping a never-started task is a no-op; a sweep that finished on its own is not an

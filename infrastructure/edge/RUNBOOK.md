@@ -808,7 +808,10 @@ profiles on and priced at 4149 MB (107%); folding `operations-cron`, `storefront
 added. Nothing in a repository can shrink that to fit; what can change is which of three things
 the owner chooses:
 
-1. **Resize the VM** (more RAM) — the only option that adds headroom rather than redistributing it.
+1. **Resize the VM** (more RAM) — the only option that adds headroom rather than redistributing
+   it. The memory erratum (ADR-0013) recorded that the owner would not resize this box; that was
+   decided when the running set priced at ~90%, before this release added ~400 MB net. Worth
+   asking again with the numbers above in hand.
 2. **De-list a product** — and drop its profile from `COMPOSE_PROFILES`, *after* confirming with
    the catalogue that no organization has an active activation of it (preflight refuses
    otherwise: a paying customer would lose their product).
@@ -818,6 +821,16 @@ the owner chooses:
    instead of refusing; a deploy asking for even one MB more than the accepted number still
    refuses. The number is static — nothing a deploy does raises it — so raising it is itself the
    auditable record (a diff to `.env`) that the owner chose the larger overcommit.
+
+**Cross-check the price list against the box before choosing.** `memory-budget.json` prices an
+API container at 85 MB; the images measured for this release idled at 94-102 MiB (see the file's
+header). If the real containers run heavier, the projection is an under-estimate and the accepted
+number should be set with that in mind. Read-only, on the box:
+
+```bash
+free -m                                                        # used + swap used, right now
+docker stats --no-stream --format '{{.Name}} {{.MemUsage}}'    # what each container really holds
+```
 
 **Do this before the first deploy of this release**, not after it refuses:
 
