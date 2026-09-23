@@ -59,6 +59,7 @@ TENANT_TABLES = (
     "gst_returns",
     "gst_return_transitions",
     "invoice_withholdings",
+    "itc_ledger_entries",
     "purchase_documents",
     "ims_documents",
     "ims_reconciliations",
