@@ -92,3 +92,30 @@ follows for provider responses (`oidc.py`'s module docstring).
   token it returns.
 - It does not replace the discovery-issuer check (`found != issuer`), which stays: adopting
   whatever a discovery document claims would make that check circular.
+
+## Decisions on open questions (2026-09-24)
+
+### Q1. "Nothing enforces this by construction — it is a review point" — **DECIDED: a classification test, landed with the next tenant-URL fetch**
+
+**Decision.** A static test in `tests/infra/` walks every service's `app/` for code that builds
+an outbound HTTP client or request: `httpx.AsyncClient(`, `httpx.Client(`, `httpx.request(` and
+`requests.`. It fails unless every such site is listed in a checked-in allowlist, each entry
+tagged either
+- `platform-configured` — the URL comes from this platform's own settings, or
+- `egress-guard` — the site calls `EgressGuard.request`.
+
+A new call site fails CI until someone classifies it. So "did this URL come from a tenant?" is
+asked once per call site, in review, with the answer written down. It is the same shape as the
+network-in-transaction guard with its allowlist added by D3. The first new tenant-supplied URL on
+the backlog is **Q8**'s outbound customer webhooks. They must fetch through `EgressGuard`, and Q8
+lands this test.
+
+**Why.** A lint rule cannot tell where a URL came from. A per-call-site classification can, and it
+turns this ADR's "review point" into a check that is recorded and cannot be skipped.
+
+**Rejected.** Routing every outbound call through `EgressGuard`: platform-internal calls to
+`http://account:8000` would be refused as private addresses, which is the guard working correctly.
+A runtime monkeypatch of `httpx`: it changes library behaviour for every call, invisibly.
+
+**Consequences.** **Implemented with Q8** (eventbridge outbound webhooks). If Q8 slips, this test
+is still the first thing any new tenant-URL fetch must land with. The register lists it.

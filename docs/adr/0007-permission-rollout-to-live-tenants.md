@@ -291,3 +291,91 @@ no audit row: "nothing happened" is not an event.
   the manifest schema, the roles API's validation and §1's widen — a change to ADR-0000 §5's grammar
   and §6's ladder, and a migration over grants that already exist. It needs more than one service
   wanting it; ADR-0006 §11 wanted it and was cheaper to satisfy by defining the rungs.
+
+---
+
+## Decisions on open questions (2026-09-24)
+
+**Status note.** This ADR's header says Proposed. It is implemented: `tools/reconcile_permissions.py`
+exists, and the deploy notes for every change that added `core` permissions name it as a
+required step (ADR-0006's approval grants, ADR-0009's asset permissions). This pass treats it as
+accepted. Two questions it left without an answer are
+decided below. The other "Revisit when" items are genuine demand triggers and stay as they are.
+The register of every ADR question is [open-questions-register.md](open-questions-register.md).
+
+### Q1. Removing a permission from every tenant, and what a narrowed token does mid-session — **DECIDED (built when first needed)**
+
+**Decision.** A fleet revocation is a **separate command**, never a flag on the reconciler:
+
+```
+uv run python tools/revoke_permission.py <permission_code> --role <ROLE_CODE> [--org <id> | --all] [--dry-run] [--pace 250]
+```
+
+It follows the reconciler's rules, with one change for revocation:
+- It removes the grant **only from system roles** (`is_system = True`) with that role code. It
+  never edits a customer-authored role.
+- For each organization it reports the customer roles that still hold the code
+  (`custom_roles_holding`), for a person to follow up. This mirrors §4's `memberships_without`.
+- It runs one transaction per organization, on the NOBYPASSRLS app role, paced sequentially,
+  with `--dry-run` first.
+- It writes one audit row per organization (`permissions.revoked`, carrying before/after grant
+  sets).
+- **It bumps `pv` in every organization whose diff is non-empty. The bump is unconditional
+  because this is a revocation**, following ADR-0000 §4's asymmetry.
+
+The ordering reverses §3's:
+1. Turn off the UI that assumes the permission.
+2. Run the revocation (`--dry-run`, then for real).
+3. Deploy the service that no longer enforces the permission, or enforces it more narrowly.
+4. Only after that, remove the permission from the catalogue and re-export the manifests.
+
+Removing it from the catalogue first would leave the grants pointing at a permission row the
+service no longer declares, and on the next reconcile nothing would say why.
+
+**Mid-session.** The `pv` bump makes the gateway refuse every access token in that organization
+with `TokenStaleProblem`. The client refreshes, the gateway resolves grants again from account
+(the resolver keys its cache on `pv`), and the narrowed set takes effect on the **next request**.
+Nothing is killed mid-request. A request already in flight finishes under the grants it was
+admitted with, which is the same contract every interactive revocation has today.
+
+**Why.** Union-only widening (§1) was chosen because revoking across the fleet is rare and
+dangerous. A separate command makes it impossible to revoke by accident while widening. The rules
+are written down now so that the first real removal does not invent them under deadline.
+
+**Rejected.** An exact-sync flag on the reconciler (§1). Narrowing customer-authored roles, which
+is ADR-0000 §5's corollary broken from the other end. Revocation without a `pv` bump, which leaves
+the revoked capability usable for up to fifteen minutes.
+
+**Consequences.** Nothing is built now. The trigger is the first permission that must leave every
+tenant. When it comes, the command above is the deliverable, reviewed like any fleet write.
+
+### Q2. A second mechanism that writes grants — **DECIDED: account stays the only writer; seat classes are enforced by account, not written by commerce**
+
+**Decision.** Grants are written in exactly three places, all in account:
+- the roles API;
+- `install_registration`, on activation and at organization creation;
+- this ADR's reconciler, and Q1's revocation command.
+
+The first candidate for a second writer has arrived. `catalog` now models **seat classes**
+(`catalog.seat_classes`, `can_write`), and `catalog/app/domain.py:seat_class_grants` derives the
+permission set a seat of a given class may hold. It stays a **derivation**, not a writer:
+1. A seat class's permission set is installed as a **system role template** (for example
+   `<PRODUCT>_VIEWER`), through `install_registration` on activation and through this reconciler
+   for live tenants. The grants are written by the existing writer.
+2. Account refuses to assign a membership that occupies a view-only seat a role whose grant set is
+   not a subset of that seat class's set. The seat-class snapshot comes from the entitlement, and
+   this is an **assignment rule** in account, not a second grant table.
+
+Seat-count limits are enforced at the same assignment point.
+
+**Why.** "Who may write a grant" needs one owner. That is this ADR's "Revisit when" condition, and
+seat classes (backlog O2) are the concrete second use. Letting subscription or catalog write grants
+would give two writers with two audit vocabularies for one table, and a rolled-back entitlement
+would strand grants with nothing enforcing them — the same failure §3 refuses for automatic
+reconciles.
+
+**Rejected.** Commerce writing `role_permissions` directly on a seat-class change. A per-membership
+grant table beside roles, which bypasses the roles API's validation and ceiling checks.
+
+**Consequences.** O2 (per-seat-class quantities) is built on account's installer plus an assignment
+rule, and O2's new viewer templates need this ADR's reconcile. **Implemented by O2** (after C6).
