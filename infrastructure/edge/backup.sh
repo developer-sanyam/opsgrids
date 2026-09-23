@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # Nightly backup, run ON THE BOX by cron. See RUNBOOK.md, "backups and restore".
 #
-# Two things go off-box, for two different disasters:
+# Three things go off-box, for three different disasters:
 #
 #   * `pg_dump` of the whole cluster — every merchant's store, domain claims and audit rows.
-#     A backup on the same disk as the database is not a backup, which is also why MinIO on
-#     this VM would not have counted.
+#     A backup on the same disk as the database is not a backup, which is also why MinIO's own
+#     data living on this same VM would not count on its own — it goes off-box separately below.
 #   * a tar of Caddy's `/data` volume — the ACME account key and every certificate. Losing it
 #     is survivable (every name re-issues on its next handshake) and expensive (the whole
 #     fleet re-issues at once, which is the Let's Encrypt rate-limit event). A few hundred
 #     kilobytes a night is a cheap way not to find out.
+#   * a tar of MinIO's `/data` volume — every uploaded merchant image (ADR-0009). Unlike the
+#     certificates, there is no re-issue: a lost object is a merchant's broken hero image with
+#     no automatic recovery. Skipped when the `storefront` profile is off, because there is then
+#     no MinIO container and nothing to read the volume from.
 #
 # Exit codes matter: cron mails non-zero output to the box's local user, and in slice 1 that
 # is the only thing resembling an alert. Read RUNBOOK.md "how a human finds out" before
@@ -60,6 +64,19 @@ echo "  database: $dump ($size bytes)"
 	-c "tar czf /backup/$(basename "$certs") -C /data ." >/dev/null
 echo "  certificates: $certs"
 
+# --- MinIO's uploaded images (ADR-0009) ----------------------------------------
+# Only when the storefront profile actually started it: `run` against a service whose profile
+# is off fails with "no such service", and there is nothing on the volume to lose anyway.
+assets=""
+if "${COMPOSE[@]}" ps --status running minio 2>/dev/null | grep -q minio; then
+	assets="$dir/minio-data-$stamp.tar.gz"
+	"${COMPOSE[@]}" run --rm --no-deps -T --entrypoint sh -v "$dir:/backup" minio \
+		-c "tar czf /backup/$(basename "$assets") -C /data ." >/dev/null
+	echo "  object storage: $assets"
+else
+	echo "  object storage: minio is not running on this box (storefront profile off) — skipped"
+fi
+
 # --- off the box --------------------------------------------------------------
 if [ -z "${BACKUP_S3_BUCKET:-}" ] || [ -z "${BACKUP_S3_ACCESS_KEY_ID:-}" ]; then
 	echo "backup: no off-box destination configured — these files are ON THE SAME DISK as the" >&2
@@ -88,11 +105,17 @@ upload() {
 
 upload "$dump"
 upload "$certs"
+# `if` rather than `[ … ] && …`: under `set -e` the second form exits the script when $assets
+# is empty (minio off), which is the normal case on a box that does not sell storefront.
+if [ -n "$assets" ]; then
+	upload "$assets"
+fi
 echo "  uploaded to s3://$BACKUP_S3_BUCKET/${BACKUP_S3_PREFIX:-edge}/"
 
 # --- prune the local copies ---------------------------------------------------
 keep="${BACKUP_LOCAL_KEEP:-7}"
 find "$dir" -name 'opsgrids-*.sql.gz' -type f | sort | head -n -"$keep" | xargs -r rm -f
 find "$dir" -name 'caddy-data-*.tar.gz' -type f | sort | head -n -"$keep" | xargs -r rm -f
+find "$dir" -name 'minio-data-*.tar.gz' -type f | sort | head -n -"$keep" | xargs -r rm -f
 
 echo "backup: ok ($(du -sh "$dir" | cut -f1) kept locally, $keep newest of each)"

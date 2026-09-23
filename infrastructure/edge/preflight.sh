@@ -156,6 +156,16 @@ for upstream in $(grep -o '"upstream": *"http://[a-z-]*' routes.prod.json | sed 
 	esac
 done
 
+# Same check for the Caddyfile's own reverse proxies (the gateway aside, `minio` is the one
+# that is profile-gated today): a store's uploaded images 502 through Caddy rather than 404
+# from the gateway, which is a worse symptom to debug cold, so it gets named here too.
+for upstream in $(grep -oE 'reverse_proxy [a-z-]+:[0-9]+' caddy/Caddyfile | awk '{print $2}' | cut -d: -f1 | sort -u); do
+	case "$running_services" in
+	*" $upstream "*) ;;
+	*) echo "  warn  caddy/Caddyfile reverse-proxies to '$upstream', which this box's profiles do not run (that path 502s)" >&2 ;;
+	esac
+done
+
 # The catalogue says which products are sold; COMPOSE_PROFILES says which product services
 # run. They must agree (ADR-0013 §5): an `available` product with no service behind it is a
 # 504 the customer finds. Only checkable once Postgres exists — on the first deploy it does

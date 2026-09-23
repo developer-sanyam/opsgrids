@@ -150,6 +150,8 @@ openssl rand -hex 32     # OPSGRIDS_DB_PASSWORD   (alphanumeric only — it goes
 openssl rand -hex 32     # INTERNAL_SERVICE_TOKEN
 openssl rand -hex 32     # PII_ENCRYPTION_KEY
 openssl rand -hex 32     # BACKUP_S3_SECRET_ACCESS_KEY, if your provider does not issue one
+openssl rand -hex 16     # MINIO_ROOT_USER
+openssl rand -hex 32     # MINIO_ROOT_PASSWORD
 
 # The only private signing key in the platform.
 openssl genpkey -algorithm ed25519 -out /srv/opsgrids/secrets/jwt-ed25519.pem
@@ -175,6 +177,7 @@ real store is published.
 | `PII_ENCRYPTION_KEY` | Generated fresh, ≥32 bytes, **and backed up off this box before any data exists**. Lose it and encrypted PII is unreadable; there is no recovery |
 | `jwt-ed25519.pem` | Generated on this box. Never `make devkeys`' key — that one is on every developer's laptop, and anyone holding it can mint a token for any tenant |
 | `BACKUP_S3_*` | Scoped to write into the backup bucket and nothing else |
+| `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | Generated on this box, only exercised when `COMPOSE_PROFILES` includes `storefront`. `document` reuses the same credential — see "Document and MinIO" below |
 | `ACME_EMAIL` | Not a secret |
 
 Nothing above ever goes into git, a CI log, a screenshot, or this file.
@@ -244,6 +247,64 @@ crontab -l          # read it back
 Then run one by hand and read the output: `make edge-backup HOST=… CONFIRM=…`. **A backup you
 have not restored is not a backup** — do the [restore drill](#restore-from-backup) once now,
 while nothing is at stake.
+
+### 9. Document and MinIO (uploaded images, ADR-0009)
+
+The storefront console's image upload (`POST /api/v1/documents/assets`) needs two more
+containers, `document` and `minio`, both behind the `storefront` compose profile — see the
+comments on `minio` and `document` in `compose.prod.yml` for why they are profile-gated rather
+than always on. **Skip this section if this box does not sell Storefront.**
+
+**Add to the box `.env` (names only — see `.env.example` for what each one is and why):**
+
+- `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` — generate fresh, same rule as every other secret
+  in this file.
+- `S3_PUBLIC_BUCKET` — the committed default (`opsgrids-public`) is fine unless you have a
+  reason to rename it.
+- `PUBLIC_ASSET_BASE_URL` — must be `https://<a TLS_PLATFORM_HOSTS name>/opsgrids-public`. The
+  committed default already matches `EDGE_HOST`; change both together if you rename the box.
+- `COMPOSE_PROFILES` must list `storefront` (it already does if this box sells the product).
+
+**Order.** No separate step: `make deploy` already does the right thing once the four values
+above are in `.env`.
+
+1. `preflight` fails loudly if any of the four are missing, empty or still a placeholder — the
+   same blanket rule as every other key in `.env.example`.
+2. `build` builds the `document` image alongside everything else.
+3. `migrate` runs `document`'s Alembic migrations — it is in `remote.sh`'s
+   `SERVICES_WITH_SCHEMA` list, so this needs no manual step.
+4. `up` starts `minio`, then `minio-init` (a one-shot: creates the `opsgrids-public` bucket
+   and its anonymous-GetObject policy, idempotent on every later deploy), then `document`.
+5. **Publish (or republish) the `buyer` and `storefront` bundles after this deploy, not
+   before**: `make edge-web APP=buyer HOST=… CONFIRM=…` and `make edge-web APP=storefront
+   HOST=… CONFIRM=…`. `publish-web.sh` reads `PUBLIC_ASSET_BASE_URL` off the box's `.env` at
+   build time and bakes it in as `VITE_ASSET_BASE_URL` — Vite bakes `import.meta.env.VITE_*`
+   in at build time, so this cannot be fixed by redeploying the box alone. If either bundle was
+   published **before** this box had `PUBLIC_ASSET_BASE_URL` set, every uploaded image 404s on
+   the live store until it is republished, even though the upload itself succeeds — republish
+   now if in doubt.
+
+**Verify an upload end to end**, from a merchant's own signed-in session or with a token by hand:
+
+```bash
+# 1. Upload. Any small JPEG/PNG/WebP under 5 MiB.
+curl -sS -X POST https://edge.opsgrids.com/api/v1/documents/assets \
+  -H "Authorization: Bearer $TOKEN" -F file=@sample.jpg | tee /tmp/asset.json
+
+# 2. The response's "public_path" looks like /a/<org-uuid>/<asset-uuid>. Fetch it back through
+#    the same path Caddy proxies to MinIO — this is what a buyer's <img> actually does, not
+#    document's own preview "public_url" field, which points at the same address anyway.
+org_and_asset=$(python3 -c "import json,sys; print(json.load(open('/tmp/asset.json'))['public_path'][3:])")
+curl -sSI "https://edge.opsgrids.com/opsgrids-public/$org_and_asset"   # expect: 200, Content-Type: image/...
+
+# 3. Confirm the bucket really cannot be listed (the isolation argument ADR-0009 §3 depends on):
+curl -sSI "https://edge.opsgrids.com/opsgrids-public/"                # expect: 403, never a listing
+```
+
+If step 2 returns 502, `minio` did not start — check `COMPOSE_PROFILES` and
+`make edge-logs SERVICE=minio`. If step 1 returns 404, the gateway has no route for
+`/api/v1/documents` — check `routes.prod.json` was actually deployed (`ROUTES_SHA` in
+`make edge-status`).
 
 ---
 
@@ -496,9 +557,11 @@ If `BACKUP_S3_ENDPOINT` is set (anything other than AWS itself — R2, B2, the p
 object store), add `--endpoint-url "$BACKUP_S3_ENDPOINT"` to every `aws s3` command below.
 `backup.sh` does that for you; a command you type does not.
 
-Nightly `backup.sh` puts two files in `s3://$BACKUP_S3_BUCKET/$BACKUP_S3_PREFIX/`: a
-gzipped `pg_dump` of the whole database and a tar of Caddy's data volume. The provider's VM
-snapshot is the third copy and the one to use when the box itself is gone.
+Nightly `backup.sh` puts two or three files in `s3://$BACKUP_S3_BUCKET/$BACKUP_S3_PREFIX/`: a
+gzipped `pg_dump` of the whole database, a tar of Caddy's data volume, and — only when the
+`storefront` profile is on — a tar of MinIO's data volume (every uploaded merchant image,
+ADR-0009). The provider's VM snapshot is one more copy and the one to use when the box itself
+is gone.
 
 **The drill — do this once before you need it, and once a quarter after.** It restores into a
 scratch database on the live box and touches nothing that is serving:
@@ -617,8 +680,12 @@ Named here so nobody discovers them during an incident:
 - **No merchant admin SPA on this box.** The edge serves the anonymous buyer bundle only. The
   API is reachable at `https://<EDGE_HOST>/api/…`; the merchant console is ADR-0001's and is
   served elsewhere.
-- **No document service.** Uploaded images are not served from this box; a storefront that
-  references them renders broken images.
+- **Resolved: `document` and `minio` are on this box, behind the `storefront` profile** (see
+  "Document and MinIO" above). What is still missing: ADR-0009 §8's purge sweep
+  (`app/cron.py`) was designed and never built, the same gap `storefront-cron` has for custom
+  domains, so a soft-deleted asset's object is never actually removed from the bucket after its
+  30-day window. Harmless today — quota accounting is the thing that drifts, not correctness —
+  and it is the shared scheduler backlog item's job to fix, not a per-service cron.
 - **No log shipping.** Logs live in Docker's json-file driver on this disk and are lost when a
   container is pruned.
 - **No staging environment.** `caddy validate` and the local `make gate` are the only things

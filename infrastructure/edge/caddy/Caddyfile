@@ -72,6 +72,28 @@
 		respond "Not found" 404
 	}
 
+	# Uploaded merchant images (ADR-0009). The bucket is world-readable in its entirety and
+	# MinIO never gets a host port (compose.prod.yml) — this is the only way into it from the
+	# internet. It is a plain reverse proxy with no application logic and no auth check, because
+	# none is wanted: `s3:GetObject` is the only permission the bucket's anonymous policy grants
+	# (`minio-init`'s bootstrap), so there is nothing here to authorize, and this is *not* the
+	# authorizing content proxy ADR-0009 §"What this rejects" refuses. Restricting the method is
+	# redundant with that policy and is written anyway, because the policy is data a later
+	# contributor could get wrong and this line is code in front of it. Present on every host
+	# this Caddyfile serves — not just EDGE_HOST — so a stored `/a/{org}/{asset}` path resolves
+	# the same way regardless of which merchant domain the browser happens to be on; images need
+	# no CORS handling, so serving them off a domain other than the one that loaded the page
+	# costs nothing. `document`'s `PUBLIC_ASSET_BASE_URL` and the storefront bundle's
+	# `VITE_ASSET_BASE_URL` both resolve against `{$EDGE_HOST}/opsgrids-public` — see
+	# `.env.example`.
+	@opsgrids_public {
+		path /opsgrids-public/*
+		method GET HEAD
+	}
+	handle @opsgrids_public {
+		reverse_proxy minio:9000
+	}
+
 	# Same-origin API. The browser on merchant.com — or on app.opsgrids.com — calls its own
 	# host's /api/..., so no hostname adds a CORS surface and `cors_origins` never grows a row.
 	# Caddy preserves the incoming Host header on reverse_proxy by default, and sets

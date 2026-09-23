@@ -226,7 +226,30 @@ MISSING
 		exit 1
 	fi
 
-	echo "building $app with node $node_major"
+	# `buyer` and `storefront` are the two entry points that ever render an uploaded image
+	# (ADR-0009 §6, `theme/render/assetSrc.ts`). Vite bakes `import.meta.env.VITE_*` in at build
+	# time from the shell's own environment, so this has to be read from the box's `.env` here,
+	# on the laptop doing the build, not set anywhere on the box itself. Left unset, the resolver
+	# falls back to same-origin — `/{org}/{asset}` at the bundle's own root — which is NOT where
+	# Caddy proxies the bucket (`/opsgrids-public/*`), so every uploaded image would 404 on a
+	# live store while the upload itself kept succeeding: the quiet-failure shape this platform
+	# specifically tries not to ship.
+	case "$app" in
+	buyer | storefront)
+		asset_base=$(ssh_box "sed -n 's/^PUBLIC_ASSET_BASE_URL=//p' '$repo/infrastructure/edge/.env' | head -1")
+		if [ -z "$asset_base" ]; then
+			echo "refusing to publish: PUBLIC_ASSET_BASE_URL is empty in the box's .env." >&2
+			echo "  Every uploaded image would 404 on the live store. Set it (infrastructure/edge/.env.example)" >&2
+			echo "  and deploy before publishing $app." >&2
+			exit 1
+		fi
+		export VITE_ASSET_BASE_URL="$asset_base"
+		echo "building $app with node $node_major (VITE_ASSET_BASE_URL=$asset_base)"
+		;;
+	*)
+		echo "building $app with node $node_major"
+		;;
+	esac
 	(cd "$repo_root/frontend" && pnpm install --frozen-lockfile)
 	(cd "$app_dir" && pnpm run "$build_script")
 

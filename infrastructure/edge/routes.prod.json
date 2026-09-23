@@ -86,6 +86,8 @@
     { "prefix": "/api/v1/operations", "upstream": "http://operations:8000", "product": "operations" },
 
     { "prefix": "/api/v1/storefront/public", "upstream": "http://storefront:8000" },
-    { "prefix": "/api/v1/storefront", "upstream": "http://storefront:8000", "product": "storefront" }
+    { "prefix": "/api/v1/storefront", "upstream": "http://storefront:8000", "product": "storefront" },
+
+    { "prefix": "/api/v1/documents", "upstream": "http://document:8000", "max_body_bytes": 6291456 }
   ]
 }
