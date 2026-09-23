@@ -108,6 +108,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["S105", "S106"]   # hardcoded test credentials are fine
 "tools/**" = ["T201"]              # a CLI talks to the terminal; that is its job
+# preflight.sh's memory budget check shells out to this file's own tiny CLI (see its module
+# docstring for why Python and not another awk pass) — printing the total is the whole point.
+"infrastructure/edge/lib/memory_budget_totals.py" = ["T201"]
 # The demo seeders carry fixture data verbatim from the product SPAs: long single-row records,
 # print output, and display glyphs (₹, ⇄, en-dashes, ×) that must render identically to the fixtures.
 "tools/demo/seed_*.py" = ["E501", "T201", "RUF001", "RUF002"]
