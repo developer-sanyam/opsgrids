@@ -75,7 +75,7 @@ def _function_text() -> str:
 
 
 def _run_ensure(
-    tmp_path: Path, *, uid: str, gid: str
+    tmp_path: Path, *, uid: str, gid: str, symlink_to: Path | None = None
 ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -91,6 +91,9 @@ def _run_ensure(
     )
     fake.chmod(0o755)
     state_root = tmp_path / "state"
+    if symlink_to is not None:
+        state_root.mkdir()
+        (state_root / "ops-monitor").symlink_to(symlink_to, target_is_directory=True)
     script = (
         "set -euo pipefail\n"
         f'source "{NUMERIC_ID_LIB}"\n'
@@ -124,7 +127,9 @@ def test_it_asks_for_the_gid_separately_and_chowns_recursively_as_argv(tmp_path:
     chown = [c for c in calls if c.startswith("run --rm --user 0")]
     assert len(chown) == 1
     assert "--entrypoint chown" in chown[0]
-    assert "-R 1001:1002 /s" in chown[0], "must be recursive and use the real uid:gid pair"
+    assert "-R -h 1001:1002 /s" in chown[0], (
+        "must be recursive, must not follow symlinks (-h), and use the real uid:gid pair"
+    )
     assert "sh -c" not in chown[0], "no shell string to interpolate into"
     assert state_dir.is_dir()
 
@@ -151,3 +156,17 @@ def test_a_non_numeric_id_aborts_before_anything_runs_as_root(
         "a root-owned chown must never be issued with an unvalidated id"
     )
     assert not state_dir.exists(), "validation must happen before the directory is touched"
+
+
+def test_a_symlinked_state_dir_is_refused_before_anything_runs(tmp_path: Path) -> None:
+    """Post-review fixup: a symlink at `state/ops-monitor` would have the root-run `chown -R`
+    (and the bind mount) act on wherever it points. Refused outright, before the image is even
+    asked for its uid — no docker call of any kind is made."""
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    result, calls, _ = _run_ensure(tmp_path, uid="1001", gid="1002", symlink_to=target)
+
+    assert result.returncode != 0
+    assert "is a symlink" in result.stderr
+    assert calls == [], "nothing may run, as root or otherwise, before the symlink check"
+    assert list(target.iterdir()) == [], "the link's target must be left exactly as it was"

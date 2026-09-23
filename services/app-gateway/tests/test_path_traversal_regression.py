@@ -20,10 +20,14 @@ easier one.
 ("Bearer ")` and failed there — before the request ever reached `RouteTable.resolve` or
 `_forward`, since `proxy()` resolves the route *before* branching on public-vs-authenticated
 (see `gateway.py`). A payload that never reaches routing or forwarding cannot prove either is
-safe; it only proves the auth gate runs first. Setting `public_path_prefixes=("/api/",)` here
-(matched against the *raw*, unnormalised prefix "/api/", which every one of these requests
-carries) lets every payload actually reach route resolution and — for whichever ones would
-otherwise have matched a real prefix — forwarding. `enforce_rate_limit` is stubbed to a no-op
+safe; it only proves the auth gate runs first. Setting `public_path_prefixes=frozenset({"/api/"})`
+here means a request whose **normalised** `full_path` starts with `/api/` (that is what
+`gateway.py` matches the prefix against — `full_path.startswith(prefix)`, after `_normalize_path`,
+never the raw string) skips the bearer-token check and goes straight on to the rate limit and
+`_forward`, so that any payload that does resolve to a real route reaches forwarding instead of
+being stopped at auth. Under the real normaliser none of them resolves (see below), so what these
+tests actually pin is the 404 — and, under the identity-normaliser mutation, the divergence that
+proves the pin is real. `enforce_rate_limit` is stubbed to a no-op
 because it talks to Redis, which this test has none of; stubbing it, not disabling the public
 branch, is what keeps this test about routing and forwarding rather than about rate limiting.
 
@@ -109,10 +113,12 @@ def _build_app(routes_file: Path, upstream: _CapturingUpstream) -> FastAPI:
     cfg = _Settings()
     app = create_app(cfg, title="probe-gateway", database=False, redis=False)
     routes = RouteTable.from_file(routes_file)
-    # Bypassing auth by prefix, not by leaving `public_paths`/`public_path_prefixes` empty, is
-    # what lets every payload reach `RouteTable.resolve`/`_forward` — see the module docstring.
+    # `proxy()` resolves the route before it looks at auth, so this prefix changes nothing for a
+    # payload that 404s. What it does is make a payload that *does* resolve (the identity-
+    # normaliser mutation below) run on to the rate limit and `_forward` rather than stop at
+    # the bearer-token check — see the module docstring. A frozenset, as `GatewayPolicy` types it.
     policy = GatewayPolicy(
-        audience="app", public_paths=frozenset(), public_path_prefixes=("/api/",)
+        audience="app", public_paths=frozenset(), public_path_prefixes=frozenset({"/api/"})
     )
     build_gateway(app, settings=cfg, routes=routes, policy=policy)
     app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(upstream.handler))

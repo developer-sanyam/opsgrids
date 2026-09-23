@@ -110,7 +110,9 @@ def test_what_ops_monitor_expects_is_what_compose_runs_for_the_same_profiles() -
     service compose would actually start for that same `COMPOSE_PROFILES` — including the
     wildcard, which `OpsMonitorSettings` expands itself (m10) and docker compose expands
     natively."""
-    for profiles in ("", "hrms,finance", "*"):
+    # `hrms,*` and `*,hrms`: docker compose treats `*` as "every profile" wherever it sits in the
+    # list (post-review fixup, finding 4), and so must the monitor's own expansion.
+    for profiles in ("", "hrms,finance", "*", "hrms,*", "*,hrms"):
         rendered = _render(profiles)
         rendered_profiles = rendered["services"]["ops-monitor"]["environment"]["COMPOSE_PROFILES"]
         assert rendered_profiles == profiles

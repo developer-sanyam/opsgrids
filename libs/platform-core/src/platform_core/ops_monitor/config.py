@@ -117,10 +117,12 @@ ALL_PROFILES_WILDCARD: Final[str] = "*"
 
 
 def expand_profiles(profiles: list[str]) -> list[str]:
-    """`["*"]` -> every profile this module knows about, sorted for determinism; anything else
-    unchanged. Only the sole-entry form is the wildcard — `["*", "hrms"]` is not a thing docker
-    compose itself accepts either, and is left alone (then rejected by the identifier check)."""
-    if profiles == [ALL_PROFILES_WILDCARD]:
+    """A list containing `*` anywhere (`["*"]`, `["hrms", "*"]`) -> every profile this module
+    knows about, sorted for determinism; anything else unchanged. Anywhere, not only alone,
+    because that is what docker compose itself does: `COMPOSE_PROFILES=hrms,*` enables every
+    profile (`tests/infra/test_ops_monitor_profile_coupling.py` renders it), so a monitor that
+    only recognised the sole-entry form would watch `hrms` on a box compose is running whole."""
+    if ALL_PROFILES_WILDCARD in profiles:
         return sorted(set(PROFILE_API_CONTAINERS) | set(PROFILE_DLQ_QUEUES))
     return profiles
 
@@ -180,8 +182,10 @@ class OpsMonitorSettings(ServiceSettings):
     ops_monitor_flap_threshold: int = 3
     #: m9/M6: at most this many notification emails per rolling hour — a box that is genuinely
     #: falling apart pages a human once, not once per check per cycle. Once the cap is hit,
-    #: further notifications this hour are logged and counted, not sent; the next email under
-    #: the cap says how many were suppressed.
+    #: further notifications are **queued** (in memory, bounded, oldest dropped) and go out
+    #: together, named check by check, in the first email that fits under the cap again. A
+    #: first alert for a check not reported firing in the last hour is exempt from this cap, up
+    #: to its own ceiling of twice this value per hour — the rules live in `delivery.py`.
     ops_monitor_max_emails_per_hour: int = 12
     #: M6: how many consecutive cycles a failed send is retried immediately (by *not*
     #: committing the notification's `last_notified_at`/`last_digest_date` advance) before
@@ -304,13 +308,16 @@ class OpsMonitorSettings(ServiceSettings):
     @field_validator("compose_profiles")
     @classmethod
     def _validate_compose_profiles(cls, v: list[str]) -> list[str]:
-        if v == [ALL_PROFILES_WILDCARD]:
-            # m10: docker compose's own "every profile" wildcard, not a schema identifier —
-            # expanded (never looked up literally) by `expand_profiles`.
-            return v
-        return _validate_identifiers(
-            v, field_name="COMPOSE_PROFILES", pattern=_VALID_SCHEMA_IDENTIFIER
+        # m10: `*` is docker compose's own "every profile" wildcard, not a schema identifier —
+        # accepted anywhere in the list (compose does), expanded (never looked up literally) by
+        # `expand_profiles`. Every *other* entry is still held to the identifier pattern, so
+        # `hrms;drop table x,*` is refused.
+        _validate_identifiers(
+            [p for p in v if p != ALL_PROFILES_WILDCARD],
+            field_name="COMPOSE_PROFILES",
+            pattern=_VALID_SCHEMA_IDENTIFIER,
         )
+        return v
 
     @model_validator(mode="after")
     def _default_expected_names_from_profiles(self) -> OpsMonitorSettings:

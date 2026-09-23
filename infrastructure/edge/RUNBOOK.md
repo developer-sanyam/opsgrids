@@ -700,11 +700,15 @@ that fits under it.
 The rules live in one pure function (`ops_monitor/delivery.py`, `plan_delivery`), and are worth
 knowing at 3am: (1) a check not reported firing in the last hour, and the daily digest, are
 **exempt from the cap** — a *new* problem is never held back because reminders used the budget;
-a check that re-fires within the hour of its last report is throttled like any reminder, so one
-flapping check cannot page you every few minutes. (2) Exempt notices have their own ceiling of
-twice the cap per hour, so they are generous, not unlimited. (3) A newer notice for a check
-replaces an older queued one — a queued "resolved" is dropped the moment its check fires again,
-so you are never told "all clear" about something that is failing right now. (4) A reminder for
+a check that re-fires within the hour of its last report is throttled like any reminder — and so
+is its "resolved" — so one flapping check cannot page you every few minutes, nor starve a
+brand-new check of its first alert. (2) Exempt notices have their own ceiling of twice the cap
+per hour, so they are generous, not unlimited. (3) A newer notice for a check replaces an older
+queued one — a queued "resolved" is dropped the moment its check fires again, so you are never
+told "all clear" about something that is failing right now. A "resolved" that replaces an
+opening which was **never emailed** (held back by the cap or a failed send) says so, in so many
+words, and carries the opening's own detail; a first alert whose send failed still reads OPENED,
+not "still firing", when it finally goes out. (4) A reminder for
 a check nobody has ever successfully been told about is treated as a first alert. (5) The queue
 is **in memory only** (200 entries, oldest dropped): restarting `ops-monitor` empties it. A
 queued firing/reminder comes back by itself — its "notified" bookkeeping was never committed, so

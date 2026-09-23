@@ -291,8 +291,12 @@ async def _deliver(
     cycle — a queued `pending_notifications` entry from an *earlier* cycle already had its own
     bookkeeping reverted back when it was first queued, so it is never in this return value.
     """
+    # Prune to `[now - 1h, now]`: the upper bound drops records dated in the future, which only
+    # exist if the clock stepped backwards after they were written. Left in, 36 sends made
+    # while the clock ran a day ahead would hold the cap shut for that whole day of real time
+    # (`delivery.plan_delivery` ignores them too; this is so they do not accumulate).
     cutoff = now - timedelta(hours=1)
-    runtime.sent_history = [r for r in runtime.sent_history if r.at >= cutoff]
+    runtime.sent_history = [r for r in runtime.sent_history if cutoff <= r.at <= now]
 
     plan = plan_delivery(
         runtime.pending_notifications,
@@ -338,12 +342,15 @@ async def _deliver(
         # Whatever was actually attempted (`plan.to_send`) is accepted as if it had gone out —
         # its bookkeeping is *not* reverted, so this does not retry forever with no way out;
         # only whatever the cap itself was already holding back (`reverted`) still needs it.
+        # That held-back set (`plan.new_pending`) stays queued: a `resolved` or a `digest`
+        # the plan did not even attempt this cycle has nothing to do with the SMTP failures
+        # that used up the retries, and dropping it would lose a state change for good.
         log.error(
             "ops_monitor.notification_retry_exhausted",
             consecutive_failures=runtime.consecutive_send_failures,
         )
         runtime.consecutive_send_failures = 0
-        runtime.pending_notifications = []
+        runtime.pending_notifications = plan.new_pending
         return reverted
 
     # The whole batch failed to send — everything attempted goes back into the queue as the

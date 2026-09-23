@@ -31,17 +31,30 @@ invariant, not an incidental side effect.
 **Merge order.** Pending and this cycle's new notifications are merged by check name, and the
 newer one — always this cycle's — wins: a queued `resolved` is dropped the instant its check
 fires again (never send a false all-clear for a check that is firing right now), and a queued
-`firing`/`reminder` is dropped the instant its check resolves. The one exception is closing an
-incident nobody was ever told about: a `resolved` that is about to replace a still-undelivered
-`firing`/`reminder` is treated as exempt too, so closing that loop is not left to rot in the
-queue behind whatever else the cap is holding back this hour — the check would otherwise end
-up reported as neither having opened nor having resolved.
+`firing`/`reminder` is dropped the instant its check resolves. Two refinements keep the
+replacement from losing information:
+
+* A `reminder` that replaces a queued `firing` stays a `firing` (with the newer detail): the
+  operator was never told the incident opened, so the email must say OPENED, not "still
+  firing".
+* A `resolved` that replaces a still-undelivered opening (a queued `firing`, or a `reminder`
+  for a check nobody was ever told about) has its detail rewritten to carry the opening's
+  detail and to say it was never emailed — otherwise the operator's first and only word about
+  the incident would be a bare "back to normal". That closing notice is also **exempt**, so it
+  is not left to rot behind the cap — *unless* the check was reported firing within the last
+  hour. A flapper's closing notices are then throttled like everything else; making every one
+  exempt let a single flapping check send about a third more than the cap and, out of phase
+  with a few others, spend the whole exempt ceiling ahead of a brand-new check's first alert.
+
+**Clock.** Both rolling-hour windows count only records dated at or before `now` and less than
+an hour old. A clock that stepped backwards would otherwise leave future-dated sends looking
+"recent" indefinitely and hold the cap shut long after the real hour had passed.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
 from platform_core.ops_monitor.state import Notification
@@ -58,6 +71,13 @@ MAX_PENDING_NOTIFICATIONS = 200
 EXEMPT_CEILING_MULTIPLIER = 2
 
 _ONE_HOUR = timedelta(hours=1)
+_ZERO = timedelta(0)
+
+
+def _within_the_last_hour(at: datetime, now: datetime) -> bool:
+    """`at` is not in the future and is less than an hour old — see the module docstring's
+    "Clock" paragraph for why the lower bound matters."""
+    return _ZERO <= now - at < _ONE_HOUR
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +114,7 @@ def _fired_within_the_last_hour(
     check: str, now: datetime, last_fired_at: Mapping[str, datetime]
 ) -> bool:
     fired_at = last_fired_at.get(check)
-    return fired_at is not None and now - fired_at < _ONE_HOUR
+    return fired_at is not None and _within_the_last_hour(fired_at, now)
 
 
 def is_firing_like(notification: Notification, last_fired_at: Mapping[str, datetime]) -> bool:
@@ -132,7 +152,43 @@ def _is_exempt(
         return True
     if is_firing_like(notification, last_fired_at):
         return not _fired_within_the_last_hour(notification.check, now, last_fired_at)
+    if notification.kind == "resolved" and _fired_within_the_last_hour(
+        notification.check, now, last_fired_at
+    ):
+        # A check reported firing inside the last hour is a flapper (or a very recent
+        # incident); its closing notices count against the cap like any other. Without this,
+        # each `resolved` that replaced a queued re-firing was "closing an unreported
+        # incident" and therefore exempt — one flapper at cap 12 sent 16 emails an hour, and a
+        # few out of phase spent the whole exempt ceiling ahead of a brand-new check.
+        return False
     return _closes_an_unreported_incident(notification, merged_from_pending)
+
+
+def _reconcile(
+    previous: Notification | None,
+    notification: Notification,
+    last_fired_at: Mapping[str, datetime],
+) -> Notification:
+    """`notification` (this cycle's) replacing `previous` (queued) for the same check — newer
+    wins, minus the two ways a bare replacement would lose something (module docstring,
+    "Merge order")."""
+    if previous is None:
+        return notification
+    if previous.kind == "firing" and notification.kind == "reminder":
+        return replace(notification, kind="firing")
+    if (
+        notification.kind == "resolved"
+        and previous.kind in ("firing", "reminder")
+        and is_firing_like(previous, last_fired_at)
+    ):
+        return replace(
+            notification,
+            detail=(
+                f"{notification.detail} — it had fired ({previous.detail}) but that alert "
+                "was never emailed (held back by the rate cap or a failed send)"
+            ),
+        )
+    return notification
 
 
 def plan_delivery(
@@ -161,9 +217,11 @@ def plan_delivery(
     merged_from_pending: dict[str, Notification] = {n.check: n for n in pending}
     merged: dict[str, Notification] = dict(merged_from_pending)
     for notification in new:
-        merged[notification.check] = notification
+        merged[notification.check] = _reconcile(
+            merged.get(notification.check), notification, last_fired_at
+        )
 
-    recent = [record for record in sent_history if now - record.at < _ONE_HOUR]
+    recent = [record for record in sent_history if _within_the_last_hour(record.at, now)]
     regular_sent = sum(1 for record in recent if not record.exempt)
     exempt_sent = sum(1 for record in recent if record.exempt)
 

@@ -181,8 +181,8 @@ class TestExemptCeiling:
 
 
 class TestMergeOrder:
-    """Rule 3: merge by check name, newer wins, with one exception for closing a loop nobody
-    was ever told was open."""
+    """Rule 3: merge by check name, newer wins — with two refinements so that a bare
+    replacement does not lose information (module docstring, "Merge order")."""
 
     def test_a_queued_resolved_is_dropped_when_the_check_fires_again(self) -> None:
         pending = [Notification(check="api.x", kind="resolved", detail="was up")]
@@ -194,18 +194,72 @@ class TestMergeOrder:
         pending = [Notification(check="api.x", kind="firing", detail="down")]
         new = [Notification(check="api.x", kind="resolved", detail="up")]
         plan = plan_delivery(pending, new, NOW, [], {}, cap=12)  # under cap -- flush
-        assert plan.to_send == [Notification(check="api.x", kind="resolved", detail="up")]
+        assert [(n.check, n.kind) for n in plan.to_send] == [("api.x", "resolved")]
         assert plan.new_pending == []
 
+    def test_a_resolved_that_replaces_a_never_emailed_firing_says_so(self) -> None:
+        """Finding 6 (post-review fixup): the operator's first and only word about this
+        incident would otherwise be a bare "back to normal"."""
+        pending = [Notification(check="api.x", kind="firing", detail="HTTP 503")]
+        new = [Notification(check="api.x", kind="resolved", detail="HTTP 200 ok")]
+        plan = plan_delivery(pending, new, NOW, [], {}, cap=12)
+        (resolved,) = plan.to_send
+        assert resolved.kind == "resolved"
+        assert "HTTP 200 ok" in resolved.detail
+        assert "HTTP 503" in resolved.detail, "the undelivered firing's own detail is carried"
+        assert "never emailed" in resolved.detail
+        assert "rate cap" in resolved.detail
+
+    def test_a_resolved_replacing_a_reminder_for_an_already_reported_check_is_left_alone(
+        self,
+    ) -> None:
+        """The incident *was* emailed (that is what `last_fired_at` says) — only a reminder was
+        held back — so "never emailed" would be false."""
+        pending = [Notification(check="disk", kind="reminder", detail="still down")]
+        new = [Notification(check="disk", kind="resolved", detail="back")]
+        plan = plan_delivery(pending, new, NOW, [], {"disk": NOW - timedelta(hours=3)}, cap=12)
+        assert plan.to_send == [Notification(check="disk", kind="resolved", detail="back")]
+
+    def test_a_resolved_replacing_a_reminder_for_a_never_reported_check_says_so(self) -> None:
+        pending = [Notification(check="disk", kind="reminder", detail="still down")]
+        new = [Notification(check="disk", kind="resolved", detail="back")]
+        plan = plan_delivery(pending, new, NOW, [], {}, cap=12)
+        assert "never emailed" in plan.to_send[0].detail
+
     def test_closing_an_undelivered_incident_is_exempt_even_at_cap(self) -> None:
-        """The queued `firing` was never delivered -- if the `resolved` that replaces it were
-        just an ordinary capped item, the check could end up reported as neither having opened
-        nor having resolved. Closing that loop is prioritised instead."""
+        """The queued `firing` was never delivered, and the check was not reported firing in the
+        last hour -- if the `resolved` that replaces it were just an ordinary capped item, the
+        check could end up reported as neither having opened nor having resolved. Closing that
+        loop is prioritised instead."""
         pending = [Notification(check="api.x", kind="firing", detail="down")]
         new = [Notification(check="api.x", kind="resolved", detail="up")]
         plan = plan_delivery(pending, new, NOW, _at_cap(12), {}, cap=12)
-        assert plan.to_send == [Notification(check="api.x", kind="resolved", detail="up")]
+        assert [(n.check, n.kind) for n in plan.to_send] == [("api.x", "resolved")]
         assert plan.exempt_send is True
+
+    def test_closing_an_incident_last_reported_over_an_hour_ago_is_still_exempt(self) -> None:
+        pending = [Notification(check="api.x", kind="firing", detail="down")]
+        new = [Notification(check="api.x", kind="resolved", detail="up")]
+        last_fired_at = {"api.x": NOW - timedelta(hours=2)}
+        plan = plan_delivery(pending, new, NOW, _at_cap(12), last_fired_at, cap=12)
+        assert [(n.check, n.kind) for n in plan.to_send] == [("api.x", "resolved")]
+        assert plan.exempt_send is True
+
+    def test_a_flappers_closing_notice_is_throttled_like_everything_else(self) -> None:
+        """Finding 1 (post-review fixup, the MAJOR): the check was reported firing 10 minutes
+        ago, so this is a flapper. Its `resolved` -- which replaces a queued re-firing -- was
+        treated as "closing an unreported incident" and therefore exempt: one flapper at cap 12
+        sent 16 emails an hour, 12 of them back-to-back RESOLVED with no OPENED, and a few
+        out of phase spent the whole exempt ceiling ahead of a brand-new check's first alert."""
+        pending = [Notification(check="X", kind="firing", detail="down")]
+        new = [Notification(check="X", kind="resolved", detail="up")]
+        plan = plan_delivery(
+            pending, new, NOW, _at_cap(12), {"X": NOW - timedelta(minutes=10)}, cap=12
+        )
+        assert plan.to_send == []
+        (queued,) = plan.new_pending
+        assert (queued.check, queued.kind) == ("X", "resolved")
+        assert plan.exempt_send is False
 
     def test_an_untouched_pending_entry_carries_forward_unchanged(self) -> None:
         pending = [Notification(check="disk", kind="reminder", detail="d")]
@@ -214,6 +268,56 @@ class TestMergeOrder:
         )
         assert plan.to_send == []
         assert plan.new_pending == pending
+
+    def test_a_reminder_replacing_a_queued_firing_stays_an_opening(self) -> None:
+        """Finding 2 (post-review fixup): a first notification that was capped or failed to send
+        comes back next cycle as a *reminder* (its bookkeeping was reverted, so the reminder
+        clock reads it as due). Replacing the queued `firing` with it must not turn the
+        operator's first word about the incident into "STILL FIRING"."""
+        pending = [Notification(check="disk", kind="firing", detail="down")]
+        new = [Notification(check="disk", kind="reminder", detail="still down (newer)")]
+        plan = plan_delivery(pending, new, NOW, [], {}, cap=12)
+        assert plan.to_send == [
+            Notification(check="disk", kind="firing", detail="still down (newer)")
+        ]
+
+    def test_a_reminder_replacing_a_queued_reminder_stays_a_reminder(self) -> None:
+        pending = [Notification(check="disk", kind="reminder", detail="old")]
+        new = [Notification(check="disk", kind="reminder", detail="new")]
+        plan = plan_delivery(pending, new, NOW, [], {"disk": NOW - timedelta(hours=2)}, cap=12)
+        assert plan.to_send == [Notification(check="disk", kind="reminder", detail="new")]
+
+
+class TestClockStepsBackwards:
+    """Finding 3 (post-review fixup): both rolling-hour windows require `0 <= now - at < 1h`."""
+
+    def test_sends_dated_in_the_future_do_not_hold_the_cap_shut(self) -> None:
+        future = NOW + timedelta(days=1)
+        history = [SentRecord(at=future, exempt=False) for _ in range(36)]
+        plan = plan_delivery(
+            [], [Notification(check="cert", kind="firing", detail="c")], NOW, history, {}, cap=12
+        )
+        assert plan.to_send == [Notification(check="cert", kind="firing", detail="c")]
+
+    def test_a_future_dated_exempt_record_does_not_count_toward_the_ceiling(self) -> None:
+        future = NOW + timedelta(days=1)
+        history = _at_cap(12) + [SentRecord(at=future, exempt=True) for _ in range(24)]
+        plan = plan_delivery(
+            [], [Notification(check="cert", kind="firing", detail="c")], NOW, history, {}, cap=12
+        )
+        assert plan.to_send == [Notification(check="cert", kind="firing", detail="c")]
+        assert plan.exempt_send is True
+
+    def test_a_future_dated_last_report_does_not_make_a_check_look_recently_reported(self) -> None:
+        plan = plan_delivery(
+            [],
+            [Notification(check="cert", kind="firing", detail="c")],
+            NOW,
+            _at_cap(12),
+            {"cert": NOW + timedelta(days=1)},
+            cap=12,
+        )
+        assert plan.to_send == [Notification(check="cert", kind="firing", detail="c")]
 
 
 class TestPendingBound:
@@ -290,6 +394,17 @@ def _replay_cycle(
     """Exactly what `main._deliver` does with one `plan_delivery` result -- see its own
     docstring. Returns `(new_pending, new_sent_history, new_last_fired_at, actually_sent)`."""
     plan = plan_delivery(pending, new, now, sent_history, last_fired_at, cap)
+    if plan.exempt_send:
+        # Invariant 6 (post-review fixup, finding 1): nothing that goes out through the exempt
+        # path, past a full ordinary cap, may be about a check reported firing in the last hour
+        # -- that is a flapper (or a very recent incident), and its every notice, `resolved`
+        # included, counts against the cap. The digest is the one exempt kind with no check.
+        for n in plan.to_send:
+            fired_at = last_fired_at.get(n.check)
+            assert n.kind == "digest" or fired_at is None or now - fired_at >= timedelta(hours=1), (
+                f"{n.check} ({n.kind}) went out through the exempt path although it was "
+                f"reported firing at {fired_at}, within the last hour of {now}"
+            )
     if not plan.to_send:
         return plan.new_pending, sent_history, last_fired_at, []
     if delivered:
@@ -341,6 +456,18 @@ def test_delivery_invariants_hold_under_random_check_sequences(
     def _exempt_sent_in_the_last_hour() -> int:
         return sum(1 for r in sent_history if now - r.at < timedelta(hours=1) and r.exempt)
 
+    def _told(sent: list[Notification]) -> None:
+        for n in sent:
+            # Invariant 5 (post-review fixup, finding 6): a `resolved` about a check whose
+            # opening was never emailed must say so, carrying the opening's own detail --
+            # otherwise a bare "back to normal" is the operator's only word about the incident.
+            if n.kind == "resolved" and last_told_kind.get(n.check) not in ("firing", "reminder"):
+                assert "never emailed" in n.detail and "down" in n.detail, (
+                    f"{n.check}: RESOLVED emailed with no OPENED before it and no note saying "
+                    f"the opening was never sent: {n.detail!r}"
+                )
+            last_told_kind[n.check] = n.kind
+
     for check, action, delivered in actions:
         new: list[Notification] = []
         if action == "open" and true_state[check] == "ok":
@@ -368,8 +495,7 @@ def test_delivery_invariants_hold_under_random_check_sequences(
         pending, sent_history, last_fired_at, sent = _replay_cycle(
             pending, sent_history, last_fired_at, new, now, cap, delivered
         )
-        for n in sent:
-            last_told_kind[n.check] = n.kind
+        _told(sent)
 
         if never_reported_before and delivered:
             assert opened_this_cycle in sent or ceiling_was_full, (
@@ -396,8 +522,8 @@ def test_delivery_invariants_hold_under_random_check_sequences(
         pending, sent_history, last_fired_at, sent = _replay_cycle(
             pending, sent_history, last_fired_at, [], now, cap, delivered=True
         )
+        _told(sent)
         for n in sent:
-            last_told_kind[n.check] = n.kind
             # Invariant 3 holds while draining too: a stale queued `resolved` must never be
             # what finally gets flushed for a check that is firing again.
             if n.kind == "resolved":

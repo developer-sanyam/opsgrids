@@ -156,9 +156,20 @@ class TestComposeProfilesWildcard:
         assert "approval.events" in settings.ops_monitor_dlq_queues  # hrms worker
         assert "finance.events" in settings.ops_monitor_dlq_queues  # finance worker
 
-    def test_the_wildcard_mixed_with_a_name_is_still_rejected(self) -> None:
+    @pytest.mark.parametrize("raw", ["hrms,*", "*,hrms", "crm, * ,finance"])
+    def test_the_wildcard_anywhere_in_the_list_means_every_profile(self, raw: str) -> None:
+        """Post-review fixup: docker compose treats `*` as "every profile" wherever it sits in
+        `COMPOSE_PROFILES` (`hrms,*` runs everything — rendered in `tests/infra/
+        test_ops_monitor_profile_coupling.py`), so a monitor that only understood the sole-entry
+        form would watch `hrms` on a box compose is running whole."""
+        settings = OpsMonitorSettings(compose_profiles=raw)
+        assert expand_profiles(settings.compose_profiles) == sorted(self._ALL)
+        assert set(settings.ops_monitor_api_containers) == set(expected_api_containers(self._ALL))
+        assert set(settings.ops_monitor_dlq_queues) == set(expected_dlq_queues(self._ALL))
+
+    def test_a_bad_name_beside_the_wildcard_is_still_rejected(self) -> None:
         with pytest.raises(ValidationError, match="COMPOSE_PROFILES"):
-            OpsMonitorSettings(compose_profiles="*,hrms")
+            OpsMonitorSettings(compose_profiles="hrms;drop table x,*")
 
     def test_no_profile_and_a_named_profile_are_untouched_by_expansion(self) -> None:
         assert expand_profiles([]) == []

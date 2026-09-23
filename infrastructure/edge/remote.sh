@@ -204,6 +204,14 @@ migrate() {
 ensure_ops_monitor_state_dir() {
 	local state_dir="${EDGE_STATE_DIR:-/srv/opsgrids/state}/ops-monitor"
 	local raw_uid raw_gid uid gid
+	# Defence in depth, before anything runs as root: a symlink at this path would have the
+	# `chown -R` below (and the bind mount) act on wherever it points. `-h` below also stops
+	# chown following links *inside* the tree, but the top-level path is the one that decides
+	# what gets mounted, so it is refused outright.
+	if [ -L "$state_dir" ]; then
+		echo "ensure_ops_monitor_state_dir: $state_dir is a symlink; refusing to chown through it" >&2
+		return 1
+	fi
 	raw_uid=$("${COMPOSE[@]}" run --rm --no-deps -T --entrypoint id product -u)
 	raw_gid=$("${COMPOSE[@]}" run --rm --no-deps -T --entrypoint id product -g)
 	# Both are validated as plain digits (lib/numeric-id.sh) before either reaches a root-owned
@@ -215,8 +223,10 @@ ensure_ops_monitor_state_dir() {
 	mkdir -p "$state_dir"
 	# `-R`: an earlier deploy, or an operator reproducing a problem by hand, may have left
 	# files under this directory owned by someone else; the container must be able to
-	# overwrite its own state file, not just create new ones.
-	docker run --rm --user 0 --entrypoint chown -v "$state_dir:/s" opsgrids-edge/product -R "$uid:$gid" /s
+	# overwrite its own state file, not just create new ones. `-h`: change a symlink's own
+	# ownership, never its target's — nothing under here is meant to be a link, and a stray one
+	# must not turn this root-run chown into a way to change ownership elsewhere.
+	docker run --rm --user 0 --entrypoint chown -v "$state_dir:/s" opsgrids-edge/product -R -h "$uid:$gid" /s
 	echo "ops-monitor state dir: $state_dir owned by $uid:$gid"
 }
 
