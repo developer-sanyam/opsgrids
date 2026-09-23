@@ -494,7 +494,7 @@ keep their exact meanings.
 | `verified` | TXT seen. Traffic may or may not point here yet | **yes** | yes |
 | `live` | TXT seen, traffic resolves here, and a TLS handshake for this name succeeded | yes | yes |
 | `failing` | Was `verified`/`live`; at least one check has failed recently. **Still served** | yes | yes |
-| `suspended` | Seven consecutive days failing, or the store is not `published` | **no** | **no** — 410 |
+| `suspended` | Seven consecutive *daily* failures, or the store is not `published`. Recovers to `verified` — never straight to `live` — the moment ownership and routing both pass again (erratum 17; `ask` blocks issuance while `suspended`, so the ordinary all-three-probes-ok path can never fire from here on its own) | **no** | **no** — 404 from `POST /public/store-context` today, per §11's own wire format. A raw browser hit on the bare host getting a `410 Gone` from the edge itself is §7's design; `infrastructure/edge/caddy/Caddyfile` does not implement that catch-all yet (erratum 17), so nothing in this platform actually returns a 410 as of this writing |
 
 No claim at all is `custom_domain IS NULL AND custom_domain_status IS NULL`, which ADR-0011 already
 enforces with a check constraint. An expired claim (§3) returns to that, rather than becoming a
@@ -545,6 +545,42 @@ purpose. DNS providers have outages, resolvers return SERVFAIL, and taking a mer
 because a probe was wrong is strictly worse than serving a domain whose TXT record vanished
 yesterday. `failing` is visible to the merchant from the first failure and warns them with a date.
 
+**"Daily" has to mean days, not calls, and slice 1 did not enforce that** (erratum 17). Both the
+sweep and `POST .../domain/check` drive the identical state machine, and the check route is
+rate-limited to one call per 30 seconds, not per day — nothing stopped a merchant clicking "Check
+now" seven times in three and a half minutes and suspending their own domain. The claim row now
+carries `last_failure_counted_on`, and the counter advances at most once per calendar day
+regardless of how many times either caller asks that day.
+
+**Recovering from `suspended` cannot be the ordinary verified → live path, because that path is
+unreachable from `suspended` by construction** (erratum 17). `ask` refuses issuance for a
+`suspended` name (§5), so a domain suspended by the failure count can never again present a
+certificate — nothing will issue it one — and "every probe passed" can therefore never become
+true again on its own. The fix is a dedicated transition: the moment ownership and routing both
+check out for a `suspended` claim, it moves to `verified` (not `live`) instead, `ask` starts
+authorising issuance again, and the ordinary verified → live branch picks it up once Caddy has
+actually obtained a certificate.
+
+**A routing failure must not count toward suspension before a claim has ever been `live`.** The
+gap between "ownership proved" and "the merchant actually pointed DNS here" is cutover — normal
+operation, per §4, sometimes for a long time — not an outage. Counting it against the seven-day
+budget would suspend a domain nobody has moved traffic to yet, for not being ready. It stays
+`verified` or `failing`, uncounted, for as long as ownership itself keeps checking out; a
+merchant who stops proving ownership is a different, real problem and the counter still moves for
+that.
+
+**The certificate probe does not run at all unless routing already passed.** A name that has not
+been pointed at the edge cannot possibly have a certificate for it, so probing anyway only ever
+burns a handshake attempt — and, against the real edge, a Let's Encrypt validation — for an
+answer already known. `certificate_state` reads `pending`, not `failing`, while this is true:
+nothing was actually checked.
+
+**The certificate probe also verifies the certificate it is shown**, not just that a handshake
+completed: the presented certificate's SAN must cover the host (`san_mismatch` otherwise — the
+handshake's own `check_hostname` is deliberately off, because this dials Caddy, not the
+merchant's browser, and nothing else was checking), and `not_after` must be more than seven days
+out (`expiring_soon` otherwise, the code this table already reserved for it).
+
 **The sweep is ADR-0005 §6's due-work pattern**, and `bin/cron` must be repointed from
 `python -m app.relay` to `python -m app.cron` — the scaffold default that
 `services/subscription/bin/cron` already documents having had to change. **Getting this wrong means
@@ -564,8 +600,19 @@ async with session_scope(organization_id=org):   # ≤ 1 claim row per tenant
 
 At ≤50 merchants this is ≤50 small transactions per tick and needs **no new grant on any bypass
 role**. It does not scale to ten thousand tenants; the trigger and the fix (a grant, or its own
-role) are in "Revisit when". The loop wakes every 60 s and processes at most 20 due domains per
+role) are in "Revisit when". The loop wakes every 60 s and advances at most 20 *due* claims per
 tick, so a slow resolver cannot make the tick unbounded.
+
+**The cap applies to due work, ordered oldest-first — not to a slice of discovery** (erratum 17).
+Slice 1 capped `org_ids[:20]` straight off the unordered `DISTINCT organization_id` above, before
+checking which of those organizations had anything due at all. With more than 20 organizations
+claiming a domain, whichever ones happened to sort first in that scan would be the *only* ones
+ever probed — every organization past the cut would starve forever, however overdue, and nothing
+would show it happening. The sweep now reads every discovered organization's own claim first (one
+cheap indexed row each, no probe, no write), keeps the ones actually due, sorts them by
+`next_check_at` ascending, and only then takes the oldest 20 to probe. A tick with more due work
+than the cap allows serves the longest-waiting organizations first and leaves the rest for the
+next tick, rather than picking the same subset forever.
 
 ### 7. Removal, lapse, and why a dangling record cannot become a takeover
 
@@ -920,10 +967,18 @@ releases the old one and mints a new token; the response is the same shape.
 ```
 
 The refusals: a scheme, a port or a path; fewer than two labels; anything under `opsgrids.com` or
-`opsgrids.dev`; and a name that does not survive `idna` encoding. **A U-label is converted to its
-A-label before validation** — `münchen-shop.de` is stored as `xn--mnchen-shop-thb.de` — because
-ADR-0011's `custom_domain_shape` check constraint is ASCII-only and a merchant cannot be expected to
-punycode their own domain (§17).
+`opsgrids.dev`; and any non-ASCII character. **Corrected by the security review (2026-09-23,
+erratum 17): non-ASCII is rejected outright, not silently converted.** This paragraph originally
+said a U-label is converted to its A-label before validation — `münchen-shop.de` stored as
+`xn--mnchen-shop-thb.de` — but `domain.normalise_custom_domain` has never done that: it raises
+`custom_domain_invalid` with a message naming punycode and asking the merchant to paste the
+`xn--…` form themselves. That is deliberate, not a shortfall to close: silently guessing at a
+conversion the merchant did not type is exactly the kind of surprise "validate at the boundary"
+exists to prevent, and idna encodings are not always unique or obvious enough to auto-apply
+behind a merchant's back. **This is the buyer-arrival host, not the claim, that converts** —
+`domain.normalise_request_host` (§2) does run `idna.encode(…, uts46=True)` on the Host header a
+browser actually sends, because that value is never merchant-authored text to double-guess; it
+is what the wire already carries. §17's item 6 is corrected to match.
 
 #### `POST /api/v1/storefront/store/domain/check` — `store.settings.write`
 
@@ -1148,10 +1203,14 @@ Named rather than smoothed over.
 5. **Whether merchants' registrars will reliably let them create a TXT record at an underscore
    label.** Some cheap control panels mangle them. If that turns out to be common, the fallback is a
    TXT at the apex itself, which is uglier and sits next to SPF and DMARC.
-6. **Internationalised domains.** ADR-0011's `custom_domain_shape` constraint is ASCII-only, so a
-   merchant must submit punycode or the writer must convert. §11 specifies conversion in the writer;
-   I have not checked that `idna` round-trips every form a merchant might paste, and a wrong
-   conversion stores a domain nobody can reach.
+6. **Internationalised domains.** *Resolved, 2026-09-23 (erratum 17): the writer never converts.*
+   ADR-0011's `custom_domain_shape` constraint is ASCII-only, so a merchant must submit punycode
+   themselves; `domain.normalise_custom_domain` rejects any non-ASCII character outright rather
+   than guessing at a conversion, which closes exactly the risk this item named — a wrong
+   conversion storing a domain nobody can reach — by never attempting one. The residual is a
+   worse first-time experience for an internationalised-domain merchant (a manual `idna.encode`
+   step, or a support ticket), accepted in exchange for never storing a value the merchant did
+   not type.
 7. **Whether one VM's Docker network and a single Caddy process survive a merchant pointing genuinely
    high-traffic domain at us.** No measurement exists, and §12's numbers are ADR-0010's assumptions
    carried forward.
@@ -1553,3 +1612,91 @@ into the other.
 **16. The Caddyfile had never been through `caddy validate` (§17).** It has now, on
 `caddy:2.10.0-alpine`: valid, with two warnings — an unnecessary `header_up X-Forwarded-Host`
 (removed) and `caddy fmt` formatting (applied).
+
+### Errata, sixth pass — security review (2026-09-23)
+
+**17. Six findings above are this pass's, gathered here as one entry because each is threaded
+into the section it corrects** (§6 twice, §11, §17). Named again in one place for anyone reading
+top to bottom rather than by section:
+
+- The daily failure count was actually per-*call* (§6): fixed with `last_failure_counted_on`.
+- `suspended` had no way back once the failure count (not `unpublish`) put it there, because
+  `ask` blocking issuance made the ordinary recovery path unreachable from that state (§6): fixed
+  with a dedicated `suspended` → `verified` transition.
+- A routing failure before a claim's first `live` counted toward suspension even though cutover
+  is normal, unfinished-onboarding behaviour, not an outage (§6): it no longer counts.
+- The certificate probe ran even when routing had already failed, and never checked the SAN or
+  the expiry of what it was handed (§6): it now runs only after routing passes, and refuses a
+  certificate for the wrong name or one expiring inside seven days.
+- The sweep's batch cap applied to an unordered slice of *discovered* organizations rather than
+  to *due* work, so any organization past the cut on a busy platform would starve forever (§6):
+  it now sorts due work oldest-first and caps that.
+- §11's non-ASCII paragraph documented silent punycode conversion the writer has never
+  performed; the writer rejects non-ASCII outright (§11, §17 item 6).
+
+**18. Re-claiming a domain reset its 14-day expiry with no ceiling — a squatting vector with no
+time limit.** `PUT /storefront/store/domain` minted a fresh `claim_expires_at` on every call
+including a re-PUT of the exact string an organization already held, so an organization could
+hold an unverified name indefinitely — which `uq_storefronts_custom_domain` makes exclusive
+platform-wide — by re-submitting the same value roughly every two weeks, forever, having proved
+nothing. Fixed: re-claiming the string an organization already holds is now a no-op, returning
+the existing claim (its token, its expiry, its probe history) unchanged. A genuinely different
+string is unaffected — it still releases the old claim and mints a fresh token and a fresh
+14-day clock, because a verification attaches to the value claimed and must not survive that
+value changing.
+
+**19. `StorePut`'s older `custom_domain` field is gone, closing the gap erratum 15 left known
+and open.** ADR-0011 shipped the field first, evidence-free: a merchant could set it here and
+land on `custom_domain_status = 'unverified'` with **no `custom_domain_claims` row behind it** —
+nothing for the sweep to ever pick up (`app/cron.py`'s `TestTheStorePutSeam` documents exactly
+that shape) — and no `www`-partner collision check, because that check lives only in
+`claim_custom_domain`. Rather than wait for the front end to retire the field on its own
+schedule, the field is removed from `StorePut` and a `model_validator` refuses a request that
+still sends it with a 422 naming `PUT /storefront/store/domain`. **Pre-existing rows from before
+this fix** — none exist in this environment, but the migration does not assume that stays true —
+are backfilled a real `unverified` claim, freshly tokened, with a 14-day expiry from the
+migration's own run time, in `ea0b8b84b84d` (amended in place: the table this migration creates
+is also where the backfilled rows land, so there was never a later migration to put it in).
+
+**20. Two organizations racing to claim `x.com` and `www.x.com` at the same instant could both
+pass the collision check before either committed.** `custom_domain_claimed_by_other_org` runs on
+a separate BYPASSRLS connection from the write, and nothing serialised two concurrent writers
+against each other. A transaction-scoped `pg_advisory_xact_lock` on the pair's apex form now runs
+before the check, so the second writer blocks until the first's transaction resolves and then
+sees its committed row. `uq_storefronts_custom_domain` remains the actual arbiter of
+exclusivity; the lock only removes the window in which two writers could both believe they had
+won it.
+
+**21. The sweep took no row lock, and neither did "Check now."** Two probe passes against the
+same claim — the daily sweep and a merchant's own "Check now," or two browser tabs — could run
+concurrently and have whichever finished last silently overwrite the other's result. Both now
+take `SELECT ... FOR UPDATE SKIP LOCKED` on the claim before probing: `SKIP LOCKED` because a row
+already locked by a check in progress is a cue to leave it alone until next time, not to queue
+behind it. The probes themselves still run *inside* the transaction that holds the lock — the
+fuller fix, probing outside the transaction and re-locking only to write, is named but not built
+here; ADR-0012 §13's own worst case (three 5 s probe timeouts) bounds the exposure to roughly 15
+seconds, not the far longer hold a sweep tick advancing many claims in sequence might suggest.
+
+**22. Cache invalidation ran before the write it invalidated for was durable, not after.**
+§2 says a state transition "deletes the host key ... in the same transaction that writes the
+state," which is not literally possible — Redis is not Postgres — and slice 1's actual behaviour
+was closer to the opposite: `_forget_host` / `_forget_slug` ran inline, mid-transaction, so a
+concurrent reader could query between "we deleted the cache entry" and "Postgres made the write
+durable," see the pre-write row, and repopulate the cache with the state being replaced — stale
+for the rest of `store_host_cache_seconds`. Both helpers now schedule the actual `cache_delete`
+on SQLAlchemy's `after_commit` event instead of calling it directly, so a key is only ever
+forgotten once the row it describes is durably the new one, and never at all if the transaction
+rolls back.
+
+**23. `bin/cron` never called `init_redis`.** Every cache invalidation above is `cache_delete`
+against *this process's own* Redis client, which does not exist until something calls
+`init_redis`. Without it, `get_redis()` raises inside the `after_commit` callback, nothing
+propagates the error (`cache_delete` itself also swallows a *reachable* Redis's own failures, by
+design), and a suspended or released domain keeps resolving — and `tls-authorize` keeps saying
+yes for a released one — for up to `store_host_cache_seconds` after *every* transition, forever.
+The same silent-nothing failure shape as the directory role (ADR-0010 §4) and `bin/cron` pointing
+at the relay (erratum 15): nothing errors, nothing in a log says why, and every test fixture that
+exercises the sweep or the HTTP client calls `init_redis` itself, which hides exactly this
+regression. `app/cron.py`'s `main()` now calls `init_redis(cfg.redis_url)` before starting the
+sweep and `close_redis()` once it stops; `tests/test_cron.py::TestMainInitialisesRedis` drives
+`main()` itself rather than the fixture that would hide the bug.
