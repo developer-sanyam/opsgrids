@@ -110,6 +110,11 @@ class TestAddressClasses:
             ("unspecified v6", "::"),
             ("ipv4-mapped loopback", "::ffff:127.0.0.1"),
             ("ipv4-mapped metadata", "::ffff:169.254.169.254"),
+            ("nat64 metadata", "64:ff9b::a9fe:a9fe"),
+            ("6to4 wrapping rfc1918", "2002:0a00:0001::1"),
+            ("teredo wrapping loopback client", "2001:0:4136:e378:8000:63bf:80ff:fffe"),
+            ("reserved 240/4", "240.0.0.1"),
+            ("documentation 198.51.100/24", "198.51.100.7"),
         ],
     )
     async def test_a_disallowed_address_is_refused_with_no_request_sent(

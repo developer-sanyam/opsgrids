@@ -69,6 +69,9 @@ log = get_logger("platform_core.egress")
 #: (checked directly below, unlike the ranges that are).
 _CGNAT = ipaddress.ip_network("100.64.0.0/10")
 
+#: `64:ff9b::/96` — RFC 6052 NAT64 well-known prefix; the low 32 bits are an IPv4 address.
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
 #: Resolves a hostname to the literal addresses it answers to. A `Callable` rather than a
 #: `Protocol` so a test can pass a plain async function.
 Resolver = Callable[[str], Awaitable[list[str]]]
@@ -134,6 +137,25 @@ def _is_disallowed(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str |
         return "private"
     if isinstance(addr, ipaddress.IPv4Address) and addr in _CGNAT:
         return "carrier-grade-nat"
+    if isinstance(addr, ipaddress.IPv6Address):
+        # IPv6 forms that carry an IPv4 address inside them. A resolver answering with one of
+        # these for a private IPv4 target is the same bypass as the mapped form above.
+        embedded: list[ipaddress.IPv4Address] = []
+        if addr in _NAT64:
+            embedded.append(ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF))
+        if addr.sixtofour is not None:
+            embedded.append(addr.sixtofour)
+        if addr.teredo is not None:
+            embedded.extend(addr.teredo)
+        for inner_addr in embedded:
+            inner = _is_disallowed(inner_addr)
+            if inner:
+                return f"embedded {inner}"
+    if not addr.is_global:
+        # Anything else IANA does not route publicly (reserved 240.0.0.0/4, benchmarking,
+        # documentation ranges, ...). The named checks above exist for the log message; this
+        # is the net under them.
+        return "non-global"
     return None
 
 

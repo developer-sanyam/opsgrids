@@ -1,4 +1,4 @@
-# ADR-0015 — The egress guard: fetching a URL a tenant typed in
+# ADR-0016 — The egress guard: fetching a URL a tenant typed in
 
 Status: **accepted** · Date: 2026-09-23
 
