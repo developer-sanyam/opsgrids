@@ -112,6 +112,10 @@ PASSWORD = "e2e-Sufficiently-Long-Passw0rd!"
 #: `subscription` and `finance` joined for `test_bundle_journey.py`: a bundle is bought as a
 #: subscription, and the trio it buys includes Finance — whose route has to answer 200 through
 #: the gateway, not merely stop answering 402 against a port nothing listens on.
+#: `billing`, `metering` and `payment` joined for `test_billing_run_journey.py`: a trial ends,
+#: subscription's billing run asks billing for the first invoice (billing reads catalog and
+#: metering to price it) and payment whether a mandate can collect it, and payment charges the
+#: invoice when billing's `commerce.invoice.finalized` reaches it.
 SERVICES = (
     "account",
     "product",
@@ -125,6 +129,9 @@ SERVICES = (
     "catalog",
     "subscription",
     "finance",
+    "billing",
+    "metering",
+    "payment",
     "app-gateway",
 )
 
@@ -141,7 +148,9 @@ UPSTREAM_PORTS = {
     8131: "deal",
     8151: "notification",
     8152: "approval",
+    8160: "billing",
     8161: "subscription",
+    8162: "metering",
     8164: "catalog",
     8171: "finance",
 }
@@ -172,7 +181,16 @@ BACKGROUND = (
     ("attendance-consumer", "attendance", "app.consumers"),
     ("approval-relay", "approval", "app.relay"),
     ("approval-consumer", "approval", "app.consumers"),
+    # The billing run's money hop: billing stages `commerce.invoice.finalized`, its relay
+    # publishes it, payment's consumer raises the charge against the (stubbed) provider.
+    ("billing-relay", "billing", "app.relay"),
+    ("payment-consumer", "payment", "app.consumers"),
 )
+
+#: Booted services with no route in `routes.json`, on purpose. payment has no customer surface —
+#: a person never creates a charge — so the product gateway routes nothing to it; the billing run
+#: reaches it service to service, and its webhook is admin-gateway's.
+UNROUTED = frozenset({"payment"})
 
 #: The signing key for the whole run. One value shared by every process, which is what
 #: `internal_auth` expects; the gateway and each service derive per-call tokens from it.
@@ -271,7 +289,7 @@ def _generate_routes(ports: dict[str, int], target: Path) -> None:
             route["upstream"] = f"http://127.0.0.1:{ports[service]}"
             routed.add(service)
 
-    missing = {s for s in SERVICES if s != "app-gateway"} - routed
+    missing = {s for s in SERVICES if s != "app-gateway" and s not in UNROUTED} - routed
     if missing:
         raise RuntimeError(
             f"no route in routes.json points at {sorted(missing)} — UPSTREAM_PORTS in this "
@@ -302,6 +320,11 @@ def _base_env(ports: dict[str, int], routes_file: Path) -> dict[str, str]:
         "PRODUCT_SERVICE_URL": f"http://127.0.0.1:{ports['product']}",
         # subscription resolves the pin (and a bundle's members) from catalog's internal read.
         "CATALOG_SERVICE_URL": f"http://127.0.0.1:{ports['catalog']}",
+        # The billing run: subscription calls billing and payment; billing reads catalog (above)
+        # and metering to price a period.
+        "BILLING_SERVICE_URL": f"http://127.0.0.1:{ports['billing']}",
+        "PAYMENT_SERVICE_URL": f"http://127.0.0.1:{ports['payment']}",
+        "METERING_SERVICE_URL": f"http://127.0.0.1:{ports['metering']}",
         # approval-service's hierarchy backfill reads employee-service's internal export
         # (ADR-0006 §2.1). The Wave 0 journey drives the hierarchy through the *event* stream
         # rather than the backfill, but the setting is part of the service's configuration and
@@ -359,7 +382,7 @@ def _wait_until_ready(
     )
 
 
-def _seed(script: str, service: str, *args: str) -> str:
+def _seed(script: str, service: str, *args: str, extra_env: dict[str, str] | None = None) -> str:
     """Run a seeder inside its own service directory.
 
     Its own process for the same reason the services are: one interpreter can hold only one
@@ -384,6 +407,7 @@ def _seed(script: str, service: str, *args: str) -> str:
             # connected on the wrong role fails here with the reason instead of silently seeing
             # no rows — the same reasoning the module docstring gives for the services.
             "ENVIRONMENT": "ci",
+            **(extra_env or {}),
         },
         capture_output=True,
         text=True,
@@ -576,6 +600,62 @@ def bundle_tenant(platform: Platform, tenants: dict[str, Any]) -> dict[str, Any]
     seeded = json.loads(_seed("_seed_approval_org.py", "account", run).splitlines()[-1])
     _seed("_seed_auth.py", "auth", seeded["owner"]["user_id"], PASSWORD, "keep")
     return {**seeded, "run": run, "password": PASSWORD}
+
+
+@pytest.fixture(scope="session")
+def billing_tenant(platform: Platform, tenants: dict[str, Any]) -> dict[str, Any]:
+    """A fresh organization for the billing-run journey: a signed-in owner, nothing bought.
+
+    Its own tenant for the bundle tenant's reason — the journey's invoice and charge counts must
+    be this organization's alone. Depends on `tenants` for ordering only.
+    """
+    run = f"billing-{uuid.uuid4().hex[:8]}"
+    seeded = json.loads(_seed("_seed_approval_org.py", "account", run).splitlines()[-1])
+    _seed("_seed_auth.py", "auth", seeded["owner"]["user_id"], PASSWORD, "keep")
+    return {**seeded, "run": run, "password": PASSWORD}
+
+
+@pytest.fixture(scope="session")
+def billing_run(platform: Platform) -> Any:
+    """One pass of subscription's real billing run, `seconds_ahead` past PostgreSQL's `now()`,
+    calling the running billing and payment services with the run's shared signing key."""
+
+    def _tick(seconds_ahead: int) -> dict[str, Any]:
+        raw = _seed(
+            "_billing_run.py",
+            "subscription",
+            str(seconds_ahead),
+            extra_env={
+                "BILLING_SERVICE_URL": platform.url("billing"),
+                "PAYMENT_SERVICE_URL": platform.url("payment"),
+                "INTERNAL_SERVICE_TOKEN": INTERNAL_TOKEN,
+            },
+        )
+        return dict(json.loads(raw.splitlines()[-1]))
+
+    return _tick
+
+
+@pytest.fixture(scope="session")
+def seed_mandate(platform: Platform) -> Any:
+    """An active, bank-confirmed mandate for one organization (payment has no route for it yet)."""
+
+    def _seed_one(org_id: str, currency: str, cap_minor: int) -> str:
+        raw = _seed("_seed_mandate.py", "payment", org_id, currency, str(cap_minor))
+        return str(json.loads(raw.splitlines()[-1])["mandate_id"])
+
+    return _seed_one
+
+
+@pytest.fixture(scope="session")
+def commerce_probe(platform: Platform) -> Any:
+    """billing's invoices or payment's charges for one organization, read off the database."""
+
+    def _read(which: str, org_id: str) -> dict[str, Any]:
+        raw = _seed("_commerce_probe.py", which, which, org_id)
+        return dict(json.loads(raw.splitlines()[-1]))
+
+    return _read
 
 
 @pytest.fixture(scope="session")
