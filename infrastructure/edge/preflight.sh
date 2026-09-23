@@ -45,6 +45,10 @@ optional_empty="PII_DECRYPT_KEYS SENTRY_DSN BACKUP_S3_ENDPOINT BACKUP_S3_ACCESS_
 # below. WhatsApp is optional until a Meta app exists. COMPOSE_PROFILES empty means core only.
 optional_empty="$optional_empty SMTP_HOST SMTP_USERNAME SMTP_PASSWORD RAZORPAY_KEY_ID RAZORPAY_KEY_SECRET"
 optional_empty="$optional_empty WHATSAPP_APP_SECRET WHATSAPP_VERIFY_TOKEN WHATSAPP_PHONE_NUMBER_ID WHATSAPP_ACCESS_TOKEN COMPOSE_PROFILES"
+# A box with no floating IP yet (or a provider that does not offer one) has nothing to put here;
+# storefront's own settings default it to empty and print "the platform address" instead of a
+# literal until it is filled in. Checked separately, below, for a documentation-range value.
+optional_empty="$optional_empty EDGE_RESERVED_IP"
 
 # shellcheck disable=SC1091  # .env is data, generated on the box from .env.example
 set -a
@@ -69,9 +73,7 @@ for key in $required; do
 		esac
 	fi
 	case "$value" in
-	replace-me* | CHANGE_ME* | dev-only-* | ci-only-* | *example.com* | 198.51.100.7)
-		# 198.51.100.7 is the RFC 5737 documentation address used in the ADR and in
-		# .env.example. Left in place, the merchant UI prints an address that reaches nobody.
+	replace-me* | CHANGE_ME* | dev-only-* | ci-only-* | *example.com*)
 		# `ops@example.com` is the committed ACME placeholder; a real deploy needs an inbox a
 		# human reads, because in slice 1 Let's Encrypt's expiry email is the only notification
 		# that exists.
@@ -85,6 +87,21 @@ done
 [ -z "$placeholder" ] && ok "no placeholder values" ||
 	bad "still carrying a placeholder value:$placeholder"
 
+# EDGE_RESERVED_IP is allowed empty (a box with no floating IP yet), but if it is set it must be
+# a real address: an address in one of RFC 5737's three documentation ranges (192.0.2.0/24,
+# 198.51.100.0/24, 203.0.113.0/24 — the ADR's own worked examples use 198.51.100.7) reaches
+# nobody, and a merchant who copies it into their apex A record gets a shop that never resolves.
+# A warning, not a hard failure: a box can be legitimately mid-setup with a value someone typed
+# by hand and has not finished checking yet.
+case "${EDGE_RESERVED_IP:-}" in
+"") ;;
+192.0.2.* | 198.51.100.* | 203.0.113.*)
+	echo "  warn  EDGE_RESERVED_IP ($EDGE_RESERVED_IP) is an RFC 5737 documentation address —" >&2
+	echo "        it reaches nobody. Set the box's real reserved IP, or leave it empty." >&2
+	;;
+*) ok "EDGE_RESERVED_IP is not a documentation-range address" ;;
+esac
+
 if [ -z "${BACKUP_S3_ACCESS_KEY_ID:-}" ] && [ -z "${BACKUP_S3_SECRET_ACCESS_KEY:-}" ]; then
 	echo "  warn  BACKUP_S3_ACCESS_KEY_ID/SECRET are empty: NO OFF-BOX BACKUP. The nightly dump" >&2
 	echo "        stays on this disk, next to the database it backs up. Configure a bucket" >&2
@@ -94,6 +111,32 @@ elif [ -z "${BACKUP_S3_ACCESS_KEY_ID:-}" ] || [ -z "${BACKUP_S3_SECRET_ACCESS_KE
 else
 	ok "off-box backup credentials present"
 fi
+
+# ---------------------------------------------------------------- object storage (ADR-0009)
+# MinIO enforces an 8-character minimum on both its root password and any user it creates.
+# Failing here, before minio-init ever runs, turns a cryptic MinIO startup/user-creation error
+# into a preflight message that names the key — never the value.
+for key in MINIO_ROOT_PASSWORD DOCUMENT_S3_SECRET_KEY; do
+	value="${!key:-}"
+	if [ -n "$value" ] && [ "${#value}" -lt 8 ]; then
+		bad "$key is shorter than MinIO's 8-character minimum"
+	else
+		ok "$key length"
+	fi
+done
+
+# PUBLIC_ASSET_BASE_URL must resolve to exactly the one host `caddy/Caddyfile` proxies
+# `/opsgrids-public/*` on — EDGE_HOST, and only EDGE_HOST (see the Caddyfile's "uploaded
+# merchant images" section: the route was deliberately narrowed off the shared snippet every
+# other platform hostname imports, to close a stored-XSS path through MinIO's
+# `?response-content-type=` override on a host carrying the `.opsgrids.com`-scoped refresh
+# cookie). Pointing it at a different host — even one correctly listed in TLS_PLATFORM_HOSTS —
+# builds a URL Caddy now answers 404 on, for a reason nobody will guess from the symptom.
+expected_asset_base="https://${EDGE_HOST:-}/${S3_PUBLIC_BUCKET:-opsgrids-public}"
+case "${PUBLIC_ASSET_BASE_URL:-}" in
+"$expected_asset_base") ok "PUBLIC_ASSET_BASE_URL matches https://\$EDGE_HOST/\$S3_PUBLIC_BUCKET" ;;
+*) bad "PUBLIC_ASSET_BASE_URL must be exactly https://\$EDGE_HOST/\$S3_PUBLIC_BUCKET (names only: currently pointed somewhere that is not this box's own EDGE_HOST, or at the wrong bucket path)" ;;
+esac
 
 # ---------------------------------------------------------------- the signing key
 if [ -n "${JWT_PRIVATE_KEY_HOST_PATH:-}" ] && [ -f "$JWT_PRIVATE_KEY_HOST_PATH" ]; then
@@ -164,6 +207,16 @@ for upstream in $(grep -o '"upstream": *"http://[a-z-]*' routes.prod.json | sed 
 	case "$running_services" in
 	*" $upstream "*) ;;
 	*) echo "  warn  routes.prod.json sends traffic to '$upstream', which this box's profiles do not run (callers get 504)" >&2 ;;
+	esac
+done
+
+# Same check for the Caddyfile's own reverse proxies (the gateway aside, `minio` is the one
+# that is profile-gated today): a store's uploaded images 502 through Caddy rather than 404
+# from the gateway, which is a worse symptom to debug cold, so it gets named here too.
+for upstream in $(grep -oE 'reverse_proxy [a-z-]+:[0-9]+' caddy/Caddyfile | awk '{print $2}' | cut -d: -f1 | sort -u); do
+	case "$running_services" in
+	*" $upstream "*) ;;
+	*) echo "  warn  caddy/Caddyfile reverse-proxies to '$upstream', which this box's profiles do not run (that path 502s)" >&2 ;;
 	esac
 done
 

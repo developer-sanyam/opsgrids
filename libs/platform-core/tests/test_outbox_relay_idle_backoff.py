@@ -40,7 +40,12 @@ class _FakeConnection:
     async def __aexit__(self, *exc: object) -> bool:
         return False
 
-    async def channel(self, *, publisher_confirms: bool = True) -> _FakeChannel:
+    async def channel(
+        self, *, publisher_confirms: bool = True, on_return_raises: bool = False
+    ) -> _FakeChannel:
+        # `run()` opens a second, guaranteed-routing channel (ADR-0015 review fix) alongside
+        # the ordinary one; `_drain` is faked out below regardless, so which channel object
+        # ends up where is never observed here — only that `run()` can open both.
         return _FakeChannel()
 
 
@@ -78,7 +83,7 @@ async def _run_and_collect(
 
     remaining = list(drain_results)
 
-    async def fake_drain(exchange: Any) -> tuple[int, int]:
+    async def fake_drain(exchange: Any, guaranteed_exchange: Any = None) -> tuple[int, int]:
         # Stop the relay as we hand back the *last* scripted pass, not after: `run()` still
         # sleeps for that final pass before the loop condition is re-checked, but a "stop
         # after the queue is empty" approach would add one extra, unwanted sleep call.

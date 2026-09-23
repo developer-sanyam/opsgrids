@@ -340,6 +340,21 @@ async def get_directory_session() -> AsyncIterator[AsyncSession]:
         yield session
 
 
+def get_directory_sessionmaker() -> async_sessionmaker[AsyncSession]:
+    """What a poll loop drains the directory reader through when there is no FastAPI request to
+    hang a `Depends` off — storefront's custom-domain sweep (ADR-0012 §6) discovers which
+    organizations hold a custom domain on this same BYPASSRLS, SELECT-only role, outside any
+    request.
+
+    Falls back to the application sessionmaker when no directory role is configured, the same
+    direction `get_directory_session` and `get_outbox_sessionmaker` fall in — the safe one to be
+    wrong in, at the cost of the bypass simply not happening.
+    """
+    if _directory_sessionmaker is None:
+        return get_sessionmaker()
+    return _directory_sessionmaker
+
+
 def init_outbox_engine(settings: ServiceSettings) -> None:
     """A third engine, for the two things that must see every tenant's outbox rows.
 

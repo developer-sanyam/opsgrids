@@ -21,7 +21,7 @@ import datetime as dt
 import uuid
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, EmailStr, Field, model_validator
 
 from app import domain
 
@@ -356,14 +356,15 @@ class StoreOut(BaseModel):
         ),
     ]
     custom_domain_status: Annotated[
-        Literal["unverified", "verified"] | None,
+        Literal["unverified", "verified", "live", "failing", "suspended"] | None,
         Field(
             description=(
-                "`unverified` whenever `custom_domain` is set, `null` when it is not. **Nothing "
-                "can move it off `unverified` today**: verifying that a merchant owns a domain "
-                "is DNS work nobody has done, and it is a precondition of ever serving one — "
-                "serving a domain on the strength of a form submission is how one merchant "
-                "takes another's traffic."
+                "`unverified` whenever `custom_domain` is set and never yet proved; `null` when "
+                "there is no claim. `verified`, `live`, `failing` and `suspended` are the "
+                "domain-hosting state machine's (ADR-0012 §6) — this is the same column "
+                "`GET /storefront/store/domain`'s `status` reads, so the two screens cannot "
+                "disagree. See that route for the verification token, the DNS records to "
+                "publish, and each probe's own state."
             )
         ),
     ]
@@ -430,25 +431,128 @@ class StorePut(BaseModel):
     #: IANA. Validated against the system's timezone database, because a bad one would produce a
     #: promised date that is wrong by hours and looks perfectly well-formed.
     timezone: Annotated[str, Field(min_length=1, max_length=64)] = "Asia/Kolkata"
-    custom_domain: (
-        Annotated[
-            str,
-            Field(
-                max_length=CUSTOM_DOMAIN_LENGTH,
-                description=(
-                    "The domain the merchant **intends** to use, stored lower-cased with no "
-                    "scheme, path or port. **Setting it records an intention and changes "
-                    "nothing about reachability**: no request is served on it, nothing here "
-                    "checks that the merchant owns it, and the stored status is `unverified` "
-                    "with no path off it. `null` or an empty string releases the claim. A "
-                    "domain another organization has already claimed is a 409 "
-                    "`custom_domain_taken`."
-                ),
-                examples=["shop.example.com"],
+
+    @model_validator(mode="before")
+    @classmethod
+    def _custom_domain_moved(cls, data: Any) -> Any:
+        """`custom_domain` used to live on this payload (ADR-0011). ADR-0012 gave the domain its
+        own evidence-bearing route — `PUT /storefront/store/domain`, which mints a verification
+        token and creates the `custom_domain_claims` row the sweep needs — and the console
+        stopped sending the field here (`frontend/product-storefront/src/settings/storeForm.ts`).
+        A client that still does gets a refusal that names where the field went, rather than
+        `extra="forbid"`'s generic "extra fields not permitted" (ADR-0012 review finding 2b):
+        the older path let a merchant land on `custom_domain_status = 'unverified'` with no
+        claim row behind it — a claim the sweep could never pick up, and one that skipped the
+        `www`-partner collision check the dedicated route runs.
+        """
+        if isinstance(data, dict) and "custom_domain" in data:
+            raise ValueError(
+                "custom_domain can no longer be set through PUT /storefront/store — connect or "
+                "change it with PUT /storefront/store/domain instead."
+            )
+        return data
+
+
+# --------------------------------------------------------------------- the custom domain (ADR-0012)
+
+
+class DomainClaimIn(BaseModel):
+    """`PUT /storefront/store/domain` — the merchant's request to put the store on a domain
+    they own. A separate resource from `StorePut`, deliberately: this route mints a
+    verification token and creates the evidence row `GET` reads back; `StorePut.custom_domain`
+    is the older, evidence-free intention field ADR-0011 shipped first."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    custom_domain: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=CUSTOM_DOMAIN_LENGTH,
+            description=(
+                "The domain to claim, e.g. `shop.example.com`. Replacing an existing claim "
+                "releases the old one and mints a new token — a verification proves control of "
+                "the value claimed, and must not survive that value changing."
             ),
-        ]
-        | None
-    ) = None
+            examples=["shop.example.com"],
+        ),
+    ]
+
+
+class DnsRecordOut(BaseModel):
+    """One DNS record row the merchant is told to publish, exactly as ADR-0012 §11 prints it."""
+
+    record_type: str
+    name: str
+    value: str
+    note: str | None = None
+
+
+class DomainVerificationOut(BaseModel):
+    """The TXT record that proves ownership (ADR-0012 §3). `value` carries the token in the
+    clear — it is returned only over this tenant-bound, permission-gated route, and it is never
+    logged."""
+
+    record_type: Literal["TXT"] = "TXT"
+    name: str
+    value: str
+    issued_at: dt.datetime
+    claim_expires_at: dt.datetime
+
+
+class DomainDnsOut(BaseModel):
+    """What the merchant is told to publish, and how (ADR-0012 §4). `apex` decides which of
+    `preferred` / `fallback` a UI leads with — an ALIAS is offered first everywhere it works,
+    the literal A records are the "works everywhere" fallback."""
+
+    apex: bool
+    preferred: DnsRecordOut
+    fallback: list[DnsRecordOut]
+    proxy_warning: str
+    also_served: list[str]
+
+
+class DomainCheckStateOut(BaseModel):
+    """One probe's last result (ADR-0012 §6). `state` is `pending` until the probe has ever
+    run — routing and certificate stay `pending` for the whole time a claim is `unverified`,
+    because neither is checked before ownership is proved. `not_after` is only ever set by the
+    certificate probe; `null` on the other two."""
+
+    state: Literal["pending", "ok", "failing"]
+    last_checked_at: dt.datetime | None
+    next_check_at: dt.datetime | None
+    code: str | None
+    detail: str | None
+    not_after: dt.datetime | None = None
+
+
+class DomainChecksOut(BaseModel):
+    ownership: DomainCheckStateOut
+    routing: DomainCheckStateOut
+    certificate: DomainCheckStateOut
+
+
+class DomainOut(BaseModel):
+    """`GET /storefront/store/domain` — the whole of what a merchant sees about their custom
+    domain, per ADR-0012 §11's printed wire format.
+
+    Every field is present on every response; `verification`, `dns` and `checks` are `null`
+    together, exactly once — when there is no claim at all. **`status` reads the same column
+    `StoreOut.custom_domain_status` does**, so the settings screen and this one cannot disagree.
+    """
+
+    custom_domain: str | None
+    status: Literal["unverified", "verified", "live", "failing", "suspended"] | None
+    #: `<slug>.stores.opsgrids.com` — never retires, and always present, claim or no claim
+    #: (ADR-0012 §8).
+    platform_host: str
+    #: The custom domain once it is `live`; the platform host otherwise, including while a
+    #: previously-live domain is `failing` (ADR-0012 §8) — the same value
+    #: `StoreContextOut.canonical_host` computes for a buyer.
+    canonical_host: str
+    verification: DomainVerificationOut | None
+    dns: DomainDnsOut | None
+    checks: DomainChecksOut | None
 
 
 # --------------------------------------------------------------------- zones

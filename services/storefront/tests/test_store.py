@@ -1,6 +1,6 @@
-"""The store's identity: its brand, its address, its status and its domain claim (ADR-0011).
+"""The store's identity: its brand, its address and its status (ADR-0011).
 
-Four things here are worth more than the rest, because each is a failure that would otherwise be
+Three things here are worth more than the rest, because each is a failure that would otherwise be
 found by a merchant rather than by this file:
 
 * **A brand is identity, not styling.** These tests read the name back off the identity row, not
@@ -8,12 +8,11 @@ found by a merchant rather than by this file:
 * **A settings save cannot publish a store.** `status` is not on the payload at all, and
   `extra="forbid"` turns an attempt into a 422. Publishing is its own endpoint with its own audit
   row, because putting a store in front of the internet is not a side effect of editing a tagline.
-* **Two tenants claiming one domain is a named 409, not a 500.** The collision is reachable only
-  across organizations — the row that collides is invisible to the tenant colliding with it — so
-  the other organization's store is seeded on the bypass role and the claim is made over HTTP.
-* **The domain claim does not make anything reachable.** The status it comes back with says so,
-  and there is no path off `unverified`, because nothing in this repository serves a custom
-  domain.
+* **`custom_domain` is not a field on this payload at all** (ADR-0012 review finding 2b) — ADR-0011
+  shipped it here first, evidence-free, and `PUT /storefront/store/domain`
+  (`tests/test_store_domain.py`) is now the only writer. This file only proves the field is
+  refused; the domain claim itself — its verification, its `www`-partner collision, its
+  reachability (or lack of it) — is that other file's job.
 """
 
 from __future__ import annotations
@@ -23,7 +22,6 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from app.domain import MAX_CUSTOM_DOMAIN_LENGTH
 from app.main import app
 from app.models import (
     LOGO_TEXT_LENGTH,
@@ -279,202 +277,43 @@ class TestTheSlugCannotChange:
         assert "organization" not in response.json()["detail"].lower()
 
 
-class TestTheCustomDomainIsAnIntentionAndNotAnAddress:
-    async def test_claiming_one_stores_it_unverified_and_says_so(
+class TestTheCustomDomainIsNoLongerOnThisPayload:
+    """ADR-0012 review finding 2b. ADR-0011 shipped `custom_domain` on this route first, and a
+    merchant could land on `custom_domain_status = 'unverified'` with **no evidence row behind
+    it** — nothing for the domain sweep to ever pick up, and no `www`-partner collision check.
+    `PUT /storefront/store/domain` (`tests/test_store_domain.py`) is now the only writer, and it
+    always creates the evidence row alongside the column. This route refuses the field outright
+    rather than silently ignoring it, and says where to go instead."""
+
+    async def test_sending_custom_domain_is_a_422_naming_the_dedicated_route(
         self, client, as_principal, org_id: uuid.UUID, slug: str
     ) -> None:
-        """Nothing in this platform serves a custom domain — no ingress, no TLS termination, no
-        host-based routing — so the response must not let a merchant conclude their site is
-        live (ADR-0011 §5)."""
         with as_principal(all_perms(org_id)):
             response = await client.put(
-                STORE, json=store_payload(slug, custom_domain="Shop.Example.COM.")
+                STORE, json=store_payload(slug, custom_domain="shop.example.com")
             )
 
-        body = response.json()
-        assert body["custom_domain"] == "shop.example.com"
-        assert body["custom_domain_status"] == "unverified"
+        assert response.status_code == 422
+        detail = response.json()["detail"] + str(response.json().get("errors", ""))
+        assert "/storefront/store/domain" in detail
 
-    def test_there_is_no_route_that_moves_it_off_unverified(self) -> None:
-        """An honest dead end, asserted against the published contract. If a verification
-        endpoint ever appears, this is what tells whoever adds it to update ADR-0011 rather than
-        leaving the field quietly lying about what it does."""
+    async def test_a_store_can_still_be_created_and_updated_with_no_domain_field_at_all(
+        self, client, as_principal, org_id: uuid.UUID, slug: str
+    ) -> None:
+        with as_principal(all_perms(org_id)):
+            created = await client.put(STORE, json=store_payload(slug))
+            updated = await client.put(STORE, json=store_payload(slug, name="Verma & Sons"))
+
+        assert created.status_code == 200
+        assert created.json()["custom_domain"] is None
+        assert updated.status_code == 200
+        assert updated.json()["name"] == "Verma & Sons"
+
+    def test_there_is_no_route_that_verifies_a_domain_set_through_this_form(self) -> None:
+        """An honest dead end for the field's own old promise, asserted against the published
+        contract: `custom_domain` cannot be set here at all any more, so nothing here could ever
+        verify one either."""
         assert not [p for p in app.openapi()["paths"] if "verif" in p.lower()]
-
-    async def test_changing_the_domain_resets_the_status(
-        self, client, as_principal, org_id: uuid.UUID, slug: str
-    ) -> None:
-        """A verification attaches to a value, not to a row. Written now, while it costs a
-        line."""
-        with as_principal(all_perms(org_id)):
-            await client.put(STORE, json=store_payload(slug, custom_domain="shop.example.com"))
-            changed = await client.put(
-                STORE, json=store_payload(slug, custom_domain="store.example.com")
-            )
-
-        assert changed.json()["custom_domain"] == "store.example.com"
-        assert changed.json()["custom_domain_status"] == "unverified"
-
-    async def test_clearing_it_releases_the_claim_and_the_status_with_it(
-        self, client, as_principal, org_id: uuid.UUID, slug: str
-    ) -> None:
-        with as_principal(all_perms(org_id)):
-            await client.put(STORE, json=store_payload(slug, custom_domain="shop.example.com"))
-            cleared = await client.put(STORE, json=store_payload(slug, custom_domain=None))
-
-        assert cleared.json()["custom_domain"] is None
-        assert cleared.json()["custom_domain_status"] is None
-
-    async def test_a_released_domain_can_then_be_claimed_by_another_organization(
-        self,
-        client,
-        as_principal,
-        admin_session,
-        org_id: uuid.UUID,
-        other_org: uuid.UUID,
-        slug: str,
-    ) -> None:
-        """The partial unique index is over live claims, so releasing one actually releases
-        it — which is the only remedy a squatted domain has until verification exists."""
-        theirs = f"t{uuid.uuid4().hex[:16]}"
-        await seed_store(admin_session, other_org, theirs, custom_domain="shop.example.com")
-
-        with as_principal(all_perms(org_id)):
-            refused = await client.put(
-                STORE, json=store_payload(slug, custom_domain="shop.example.com")
-            )
-
-        await admin_session.rollback()
-        store = (
-            await admin_session.execute(
-                select(Storefront).where(Storefront.organization_id == other_org)
-            )
-        ).scalar_one()
-        store.custom_domain = None
-        store.custom_domain_status = None
-        await admin_session.commit()
-
-        with as_principal(all_perms(org_id)):
-            accepted = await client.put(
-                STORE, json=store_payload(slug, custom_domain="shop.example.com")
-            )
-
-        assert refused.status_code == 409
-        assert accepted.status_code == 200
-
-    async def test_two_organizations_claiming_one_domain_is_a_named_409_not_a_500(
-        self,
-        client,
-        as_principal,
-        admin_session,
-        org_id: uuid.UUID,
-        other_org: uuid.UUID,
-        slug: str,
-    ) -> None:
-        """**The collision path.** It is only reachable across tenants: row-level security hides
-        the row that collides from the organization colliding with it, which is exactly why the
-        unique index is the arbiter and a pre-flight SELECT would be both a cross-tenant read
-        and a race."""
-        theirs = f"t{uuid.uuid4().hex[:16]}"
-        await seed_store(admin_session, other_org, theirs, custom_domain="shop.example.com")
-
-        with as_principal(all_perms(org_id)):
-            response = await client.put(
-                STORE, json=store_payload(slug, custom_domain="shop.example.com")
-            )
-
-        assert response.status_code == 409
-        assert _code(response) == "custom_domain_taken"
-        # Nothing about the other tenant: not its slug, not its id, not its name.
-        assert theirs not in response.text
-        assert str(other_org) not in response.text
-
-    async def test_the_losing_claim_leaves_the_store_editable_afterwards(
-        self,
-        client,
-        as_principal,
-        admin_session,
-        org_id: uuid.UUID,
-        other_org: uuid.UUID,
-        slug: str,
-    ) -> None:
-        """The savepoint earns its place here: a 409 must not leave a merchant unable to save
-        anything else."""
-        theirs = f"t{uuid.uuid4().hex[:16]}"
-        await seed_store(admin_session, other_org, theirs, custom_domain="shop.example.com")
-
-        with as_principal(all_perms(org_id)):
-            await client.put(STORE, json=store_payload(slug))
-            refused = await client.put(
-                STORE, json=store_payload(slug, custom_domain="shop.example.com")
-            )
-            recovered = await client.put(STORE, json=store_payload(slug, name="Still Editable"))
-
-        assert refused.status_code == 409
-        assert recovered.status_code == 200
-        assert recovered.json()["name"] == "Still Editable"
-        assert recovered.json()["custom_domain"] is None
-
-    @pytest.mark.parametrize(
-        "value",
-        [
-            "https://shop.example.com",
-            "shop.example.com/path",
-            "shop.example.com:8443",
-            "*.example.com",
-            "localhost",
-            "192.168.0.1",
-            "köln.de",
-            "-shop.example.com",
-            "shop..example.com",
-        ],
-    )
-    async def test_a_value_that_is_not_a_hostname_is_refused(
-        self, client, as_principal, org_id: uuid.UUID, slug: str, value: str
-    ) -> None:
-        with as_principal(all_perms(org_id)):
-            response = await client.put(STORE, json=store_payload(slug, custom_domain=value))
-        assert response.status_code == 422
-        assert _code(response) in {"custom_domain_invalid", "custom_domain_reserved"}
-
-    async def test_a_domain_longer_than_a_domain_can_be_is_refused(
-        self, client, as_principal, org_id: uuid.UUID, slug: str
-    ) -> None:
-        too_long = ".".join(["a" * 60] * 4) + ".example.com"
-        assert len(too_long) > MAX_CUSTOM_DOMAIN_LENGTH
-        with as_principal(all_perms(org_id)):
-            response = await client.put(STORE, json=store_payload(slug, custom_domain=too_long))
-        assert response.status_code == 422
-
-    @pytest.mark.parametrize("value", ["opsgrids.com", "api.opsgrids.com", "shop.opsgrids.dev"])
-    async def test_the_platforms_own_domains_cannot_be_claimed(
-        self, client, as_principal, org_id: uuid.UUID, slug: str, value: str
-    ) -> None:
-        """Nothing verifies ownership, so the one claim that must not be storable is the
-        platform's own: an unverified row naming `api.opsgrids.com` becomes live routing the day
-        somebody builds host-based routing and trusts this column."""
-        with as_principal(all_perms(org_id)):
-            response = await client.put(STORE, json=store_payload(slug, custom_domain=value))
-        assert response.status_code == 422
-        assert _code(response) == "custom_domain_reserved"
-
-    async def test_a_claim_is_audited_on_its_own_row(
-        self, client, as_principal, session, org_id: uuid.UUID, slug: str
-    ) -> None:
-        """A domain claim is the one field here two organizations can contest, and support
-        adjudicating one should not have to read it out of a generic update's `after` blob."""
-        with as_principal(all_perms(org_id)):
-            await client.put(STORE, json=store_payload(slug, custom_domain="shop.example.com"))
-            await client.put(STORE, json=store_payload(slug, custom_domain=None))
-
-        # Sorted, not ordered: the two rows a single request writes share its transaction and
-        # therefore share `at` to the microsecond, so their relative order is not a fact.
-        assert sorted(await _audit_actions(session, org_id)) == [
-            "storefront.created",
-            "storefront.custom_domain.claimed",
-            "storefront.custom_domain.released",
-            "storefront.updated",
-        ]
 
 
 class TestPublishingIsItsOwnDeliberateAct:

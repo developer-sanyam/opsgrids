@@ -9,6 +9,8 @@ from __future__ import annotations
 import datetime as dt
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from app import domain
 
@@ -376,3 +378,363 @@ class TestWhichAddressIsCanonical:
         entry: a claim is stored on the word of whoever typed it."""
         assert "unverified" not in domain.SERVING_DOMAIN_STATUSES
         assert "verified" in domain.SERVING_DOMAIN_STATUSES
+
+
+# --------------------------------------------------------------------- the domain claim state
+
+
+class TestVerificationTexts:
+    def test_the_token_is_32_hex_characters(self) -> None:
+        """`secrets.token_hex(16)` — 128 bits (ADR-0012 §3)."""
+        token = domain.mint_verification_token()
+        assert len(token) == 32
+        int(token, 16)  # does not raise
+
+    def test_two_mints_never_collide_in_a_reasonable_sample(self) -> None:
+        assert len({domain.mint_verification_token() for _ in range(1000)}) == 1000
+
+    def test_the_txt_name_and_value_are_what_the_probe_looks_for(self) -> None:
+        assert domain.verification_txt_name("merchant.com") == "_opsgrids-challenge.merchant.com"
+        assert domain.verification_txt_value("abc123") == "opsgrids-domain-verification=abc123"
+
+
+class TestTheUnverifiedBackoff:
+    """ADR-0012 §6: 60s for 15 minutes, then 5 minutes, then 30 minutes, then hourly, until the
+    14-day expiry."""
+
+    def test_the_first_fifteen_minutes_are_checked_every_sixty_seconds(self) -> None:
+        assert domain.unverified_check_interval(dt.timedelta(0)) == dt.timedelta(seconds=60)
+        assert domain.unverified_check_interval(
+            dt.timedelta(minutes=14, seconds=59)
+        ) == dt.timedelta(seconds=60)
+
+    def test_the_next_stage_is_five_minutes(self) -> None:
+        assert domain.unverified_check_interval(dt.timedelta(minutes=15)) == dt.timedelta(minutes=5)
+        assert domain.unverified_check_interval(dt.timedelta(minutes=45)) == dt.timedelta(minutes=5)
+
+    def test_the_next_stage_is_thirty_minutes(self) -> None:
+        assert domain.unverified_check_interval(dt.timedelta(hours=1, minutes=15)) == dt.timedelta(
+            minutes=30
+        )
+
+    def test_it_settles_at_hourly_and_stays_there(self) -> None:
+        assert domain.unverified_check_interval(dt.timedelta(hours=26)) == dt.timedelta(hours=1)
+        assert domain.unverified_check_interval(dt.timedelta(days=13, hours=23)) == dt.timedelta(
+            hours=1
+        )
+
+    @given(
+        st.floats(min_value=0, max_value=domain.CLAIM_EXPIRY.total_seconds() * 2, allow_nan=False)
+    )
+    def test_the_schedule_never_gets_shorter_as_time_passes(self, later_offset: float) -> None:
+        """A property, not a table of examples: for any two elapsed durations where the second
+        is later than the first, the interval the later one gets is never shorter — "the
+        schedule only ever relaxes", the sentence the docstring promises rather than merely
+        asserts."""
+        earlier = dt.timedelta(seconds=0)
+        later = earlier + dt.timedelta(seconds=later_offset)
+        assert domain.unverified_check_interval(later) >= domain.unverified_check_interval(earlier)
+
+
+class TestClaimExpiry:
+    def test_a_claim_expires_fourteen_days_after_its_token_was_issued(self) -> None:
+        issued = dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
+        assert domain.claim_expires_at(issued) == dt.datetime(2026, 1, 15, tzinfo=dt.UTC)
+
+    def test_expiry_is_a_closed_boundary(self) -> None:
+        expires = dt.datetime(2026, 1, 15, tzinfo=dt.UTC)
+        assert domain.is_claim_expired(expires, now=expires) is True
+        assert domain.is_claim_expired(expires, now=expires - dt.timedelta(seconds=1)) is False
+
+
+class TestPromotionFromUnverified:
+    def test_a_successful_ownership_check_promotes_to_verified(self) -> None:
+        assert domain.promote_from_unverified(ownership_ok=True) == "verified"
+
+    def test_a_failed_one_leaves_it_unverified(self) -> None:
+        assert domain.promote_from_unverified(ownership_ok=False) == "unverified"
+
+
+#: `advance_verified_or_later`'s defaults for the common case a test does not care about:
+#: publishing, never-suspended, already `live` once, and today's first check.
+_DAY_ONE = dt.date(2026, 1, 1)
+
+
+def _advance(
+    *,
+    store_published: bool = True,
+    was_suspended: bool = False,
+    has_been_live: bool = True,
+    ownership_ok: bool,
+    routing_ok: bool,
+    certificate_ok: bool,
+    consecutive_failures: int = 0,
+    last_failure_counted_on: dt.date | None = None,
+    today: dt.date = _DAY_ONE,
+) -> domain.ClaimAdvance:
+    return domain.advance_verified_or_later(
+        store_published=store_published,
+        was_suspended=was_suspended,
+        has_been_live=has_been_live,
+        ownership_ok=ownership_ok,
+        routing_ok=routing_ok,
+        certificate_ok=certificate_ok,
+        consecutive_failures=consecutive_failures,
+        last_failure_counted_on=last_failure_counted_on,
+        today=today,
+    )
+
+
+class TestAdvanceVerifiedOrLater:
+    """ADR-0012 §6, §7. `store_published=False` is the manual kill switch and is checked before
+    anything else; every other failure gets the seven-day tolerance."""
+
+    def test_all_three_probes_ok_reaches_live_and_resets_the_counter(self) -> None:
+        result = _advance(
+            ownership_ok=True, routing_ok=True, certificate_ok=True, consecutive_failures=5
+        )
+        assert result.status == "live"
+        assert result.consecutive_failures == 0
+        assert result.last_failure_counted_on is None
+
+    @pytest.mark.parametrize(
+        ("ownership_ok", "routing_ok", "certificate_ok"),
+        [(False, True, True), (True, False, True), (True, True, False)],
+    )
+    def test_any_single_probe_failing_is_failing_not_suspended(
+        self, ownership_ok: bool, routing_ok: bool, certificate_ok: bool
+    ) -> None:
+        result = _advance(
+            ownership_ok=ownership_ok, routing_ok=routing_ok, certificate_ok=certificate_ok
+        )
+        assert result.status == "failing"
+        assert result.consecutive_failures == 1
+        assert result.last_failure_counted_on == _DAY_ONE
+
+    def test_the_seventh_consecutive_failure_suspends(self) -> None:
+        result = _advance(
+            ownership_ok=False,
+            routing_ok=True,
+            certificate_ok=True,
+            consecutive_failures=domain.SUSPEND_AFTER_CONSECUTIVE_FAILURES - 1,
+            last_failure_counted_on=_DAY_ONE - dt.timedelta(days=1),
+        )
+        assert result.status == "suspended"
+        assert result.consecutive_failures == domain.SUSPEND_AFTER_CONSECUTIVE_FAILURES
+
+    def test_the_sixth_consecutive_failure_is_still_only_failing(self) -> None:
+        """Generous on purpose (ADR-0012 §6): a DNS provider's bad day must not take a
+        merchant's shop off the air before the seventh day."""
+        result = _advance(
+            ownership_ok=False,
+            routing_ok=True,
+            certificate_ok=True,
+            consecutive_failures=domain.SUSPEND_AFTER_CONSECUTIVE_FAILURES - 2,
+            last_failure_counted_on=_DAY_ONE - dt.timedelta(days=1),
+        )
+        assert result.status == "failing"
+
+    def test_an_unpublished_store_suspends_immediately_regardless_of_the_failure_count(
+        self,
+    ) -> None:
+        """ADR-0011's `unpublish` is the manual kill switch (ADR-0012 §7) — a merchant who
+        switched their own shop off must not wait seven days for the domain to follow it."""
+        result = _advance(
+            store_published=False, ownership_ok=True, routing_ok=True, certificate_ok=True
+        )
+        assert result.status == "suspended"
+
+    def test_recovery_resets_the_counter_rather_than_carrying_it_forward(self) -> None:
+        """A domain that failed for six days and then answers cleanly is not one failure away
+        from suspension the next time something hiccups."""
+        result = _advance(
+            ownership_ok=True, routing_ok=True, certificate_ok=True, consecutive_failures=6
+        )
+        assert result.consecutive_failures == 0
+
+
+class TestAFailureCountsAtMostOncePerDay:
+    """ADR-0012 review finding 4: "seven consecutive **daily** failures" (§6) means the sweep's
+    once-a-day cadence, not the number of times anything calls this function. `POST
+    .../domain/check` runs the same probes on demand, rate-limited to once per 30 seconds — a
+    merchant leaning on "Check now" could otherwise suspend their own domain in a few minutes."""
+
+    def test_a_second_failing_call_the_same_day_does_not_advance_the_counter(self) -> None:
+        first = _advance(ownership_ok=False, routing_ok=True, certificate_ok=True)
+        assert first.consecutive_failures == 1
+        assert first.last_failure_counted_on == _DAY_ONE
+
+        second = _advance(
+            ownership_ok=False,
+            routing_ok=True,
+            certificate_ok=True,
+            consecutive_failures=first.consecutive_failures,
+            last_failure_counted_on=first.last_failure_counted_on,
+        )
+        assert second.consecutive_failures == 1
+        assert second.status == "failing"
+
+    def test_seven_manual_checks_in_one_day_never_suspends(self) -> None:
+        """The bug, made concrete: seven calls, same day, same claim."""
+        failures = 0
+        last_counted: dt.date | None = None
+        status = "verified"
+        for _ in range(7):
+            result = _advance(
+                ownership_ok=False,
+                routing_ok=True,
+                certificate_ok=True,
+                consecutive_failures=failures,
+                last_failure_counted_on=last_counted,
+            )
+            failures = result.consecutive_failures
+            last_counted = result.last_failure_counted_on
+            status = result.status
+        assert failures == 1
+        assert status == "failing"
+
+    def test_a_failure_on_a_new_day_does_advance_the_counter(self) -> None:
+        result = _advance(
+            ownership_ok=False,
+            routing_ok=True,
+            certificate_ok=True,
+            consecutive_failures=1,
+            last_failure_counted_on=_DAY_ONE,
+            today=_DAY_ONE + dt.timedelta(days=1),
+        )
+        assert result.consecutive_failures == 2
+        assert result.last_failure_counted_on == _DAY_ONE + dt.timedelta(days=1)
+
+
+class TestRecoveryFromSuspension:
+    """ADR-0012 review finding 5: `suspended` blocks `ask` (§5), so a claim suspended by the
+    failure count can never again pass its certificate probe — "all three probes ok" is
+    unreachable from `suspended` by construction. Recovery has to be its own path."""
+
+    def test_ownership_and_routing_ok_moves_a_suspended_claim_to_verified_not_live(self) -> None:
+        """Not straight to `live`: no certificate exists yet, because `ask` only just started
+        saying yes again. The *next* check, once Caddy has issued one, takes it the rest of the
+        way through the ordinary verified -> live branch."""
+        result = _advance(
+            was_suspended=True,
+            ownership_ok=True,
+            routing_ok=True,
+            certificate_ok=False,
+            consecutive_failures=9,
+            last_failure_counted_on=_DAY_ONE,
+        )
+        assert result.status == "verified"
+        assert result.consecutive_failures == 0
+        assert result.last_failure_counted_on is None
+
+    def test_ownership_still_failing_leaves_a_suspended_claim_suspended(self) -> None:
+        """Recovery needs *both* ownership and routing back; a still-missing TXT record is not
+        recovery, whatever the certificate probe (which does not even run) would have said."""
+        result = _advance(
+            was_suspended=True,
+            ownership_ok=False,
+            routing_ok=True,
+            certificate_ok=False,
+            consecutive_failures=9,
+            last_failure_counted_on=_DAY_ONE,
+        )
+        assert result.status == "suspended"
+
+    def test_a_claim_not_suspended_does_not_take_the_recovery_path(self) -> None:
+        """`was_suspended=False` — an ordinary `failing` claim with two probes ok still needs
+        all three to reach `live`; it does not get shortcut to `verified` on the way."""
+        result = _advance(
+            was_suspended=False,
+            ownership_ok=True,
+            routing_ok=True,
+            certificate_ok=False,
+            consecutive_failures=2,
+            last_failure_counted_on=_DAY_ONE,
+        )
+        assert result.status == "failing"
+
+
+class TestARoutingFailureBeforeGoingLiveIsNotSuspendable:
+    """ADR-0012 review finding 5: cutover — the gap between "ownership proved" and "the merchant
+    actually pointed DNS here" — is normal operation (§4), sometimes for a long time, not an
+    outage. A claim that has never been `live` must not be suspended for a merchant not having
+    finished cutover yet."""
+
+    def test_routing_alone_failing_pre_live_never_advances_the_counter(self) -> None:
+        result = _advance(
+            has_been_live=False,
+            ownership_ok=True,
+            routing_ok=False,
+            certificate_ok=False,
+            consecutive_failures=0,
+        )
+        assert result.status == "failing"
+        assert result.consecutive_failures == 0
+        assert result.last_failure_counted_on is None
+
+    def test_it_still_never_suspends_no_matter_how_many_days_pass(self) -> None:
+        failures = 0
+        last_counted: dt.date | None = None
+        for day in range(30):
+            today = _DAY_ONE + dt.timedelta(days=day)
+            result = _advance(
+                has_been_live=False,
+                ownership_ok=True,
+                routing_ok=False,
+                certificate_ok=False,
+                consecutive_failures=failures,
+                last_failure_counted_on=last_counted,
+                today=today,
+            )
+            failures = result.consecutive_failures
+            last_counted = result.last_failure_counted_on
+            assert result.status == "failing"
+        assert failures == 0
+
+    def test_ownership_also_failing_pre_live_does_count(self) -> None:
+        """A merchant who stops proving ownership is a different, real problem — routing not
+        being finished yet does not exempt a *second*, independent failure from counting."""
+        result = _advance(
+            has_been_live=False,
+            ownership_ok=False,
+            routing_ok=False,
+            certificate_ok=False,
+            consecutive_failures=0,
+        )
+        assert result.status == "failing"
+        assert result.consecutive_failures == 1
+
+    def test_once_it_has_been_live_a_routing_failure_counts_normally(self) -> None:
+        result = _advance(
+            has_been_live=True,
+            ownership_ok=True,
+            routing_ok=False,
+            certificate_ok=False,
+            consecutive_failures=0,
+        )
+        assert result.status == "failing"
+        assert result.consecutive_failures == 1
+
+
+class TestAuditActionForTransition:
+    def test_no_change_is_not_audited(self) -> None:
+        assert domain.audit_action_for_transition("live", "live") is None
+
+    @pytest.mark.parametrize(
+        ("new_status", "action"),
+        [
+            ("verified", "storefront.domain.verified"),
+            ("live", "storefront.domain.activated"),
+            ("failing", "storefront.domain.failing"),
+            ("suspended", "storefront.domain.suspended"),
+        ],
+    )
+    def test_every_reachable_transition_has_a_named_action(
+        self, new_status: str, action: str
+    ) -> None:
+        assert domain.audit_action_for_transition("unverified", new_status) == action
+
+    def test_unverified_has_no_action_of_its_own(self) -> None:
+        """The claim itself is audited as `storefront.domain.claimed` when it is written, not
+        as a transition into a state that existed before anything did."""
+        assert domain.audit_action_for_transition("live", "unverified") is None
