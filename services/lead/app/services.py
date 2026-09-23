@@ -24,12 +24,15 @@ needed to keep decrypted PII off an open connection.
 
 from __future__ import annotations
 
+import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -48,8 +51,11 @@ from platform_core.errors import (
     ValidationProblem,
 )
 from platform_core.events import publish_event
+from platform_core.logging import get_logger
 from platform_core.models import utcnow
 from platform_core.pii import blind_index, open_sealed, seal
+
+log = get_logger("lead.services")
 
 # Event names. `crm.*` because these are the product's own, not the platform's.
 EVT_LEAD_CREATED = "crm.lead.created"
@@ -80,6 +86,20 @@ async def _bind_tenant(session: AsyncSession, organization_id: uuid.UUID) -> Non
     await set_tenant(session, organization_id)
     if not settings().is_production:
         await assert_tenant(session, organization_id)
+
+
+def _integrity_error_constraint(exc: IntegrityError) -> str | None:
+    """The name of the constraint that actually fired, when the driver surfaces one. Same
+    extraction `approval.services._integrity_error_constraint` and
+    `leave.services._integrity_error_constraint` use, for the identical
+    asyncpg-wraps-the-driver-exception reason."""
+    orig = exc.orig
+    name = getattr(orig, "constraint_name", None)
+    if name is not None:
+        return str(name)
+    cause = getattr(orig, "__cause__", None)
+    name = getattr(cause, "constraint_name", None)
+    return str(name) if name is not None else None
 
 
 async def _ensure_owners_active(organization_id: uuid.UUID, owner_ids: list[uuid.UUID]) -> None:
@@ -173,17 +193,88 @@ async def set_assignment_rule(
     return rule
 
 
-async def _assign_owner(session: AsyncSession, rule: AssignmentRule) -> uuid.UUID | None:
+#: How long `_active_owner_ids_for_assignment` trusts its last answer for a given
+#: (organization, exact owner set) before asking customer-service again. A lead capture is a
+#: hot path in a way an explicit `owner_id` write or a rule reconfiguration is not, so this
+#: exists to spare customer-service a round trip per lead rather than per minute; see that
+#: function's own docstring for the trade this makes.
+_ASSIGNMENT_ACTIVE_CACHE_TTL_SECONDS = 60
+
+#: Process-local, not shared across workers or restarts — a stale entry only ever means a
+#: newly-inactive owner keeps a slot in the rotation for up to a minute longer than it should,
+#: never the other direction (an active owner wrongly skipped), so a cold cache or a
+#: multi-process deployment degrades to "revalidate more often", not to an incorrect answer.
+_assignment_active_cache: dict[uuid.UUID, tuple[frozenset[uuid.UUID], set[uuid.UUID], float]] = {}
+
+
+async def _active_owner_ids_for_assignment(
+    organization_id: uuid.UUID, owner_ids: Sequence[uuid.UUID]
+) -> set[uuid.UUID]:
+    """Which of `owner_ids` are still active reps, specifically for round-robin assignment.
+
+    `set_assignment_rule` already refuses to *save* a rule naming an inactive or unknown
+    owner, but a rep configured as active then deactivated later stays in the saved list
+    forever — nothing revalidates it again until this. Cached up to
+    `_ASSIGNMENT_ACTIVE_CACHE_TTL_SECONDS` per exact `(organization, owner set)` pair, so a
+    lead captured every few seconds costs one customer-service round trip a minute, not one
+    per lead; the cache key naturally invalidates itself the moment `owner_ids` changes (a
+    reconfigure, an owner added or removed), because a different set never matches a cached
+    one.
+
+    Fails open on `OwnersValidateUnavailable` — an explicit `owner_id` write refuses outright
+    when the directory cannot be reached (`_ensure_owners_active`), but that write has a
+    caller right there to tell "try again"; a lead capture behind an unreachable directory has
+    none, and failing every capture along with the directory is a worse outage than assigning
+    a lead to a rep who turns out, rarely, to have just been deactivated.
+    """
+    key = frozenset(owner_ids)
+    now = time.monotonic()
+    cached = _assignment_active_cache.get(organization_id)
+    if cached is not None:
+        cached_key, cached_active, expires_at = cached
+        if cached_key == key and now < expires_at:
+            return cached_active
+
+    cfg = settings()
+    try:
+        invalid = set(await clients.invalid_owner_ids(cfg, organization_id, list(owner_ids)))
+    except clients.OwnersValidateUnavailable:
+        log.warning(
+            "lead.assignment.owner_directory_unreachable",
+            organization_id=str(organization_id),
+        )
+        return set(owner_ids)
+
+    active = set(owner_ids) - invalid
+    _assignment_active_cache[organization_id] = (
+        key,
+        active,
+        now + _ASSIGNMENT_ACTIVE_CACHE_TTL_SECONDS,
+    )
+    return active
+
+
+async def _assign_owner(
+    session: AsyncSession, ctx: ScopeContext, rule: AssignmentRule
+) -> uuid.UUID | None:
     """Round-robin's write half: `domain.next_owner` picks, this advances the cursor in the
     same transaction as the lead it assigns. `rule` must already be row-locked
     (`_get_or_create_rule`/`get_assignment_rule_for_update`) — the lock plus this one atomic
     read-modify-write is what stops two concurrent lead creates from both picking
     `owner_ids[0]` and both advancing the cursor to `1`, the same rep twice with the rotation
-    never having moved. Returns `None` under `manual` mode or an empty rotation — a lead with
-    no owner is a valid, unassigned lead, not an error."""
+    never having moved. Returns `None` under `manual` mode, an empty rotation, or one whose
+    every owner has since gone inactive (logged, once, the moment it happens rather than
+    silently) — a lead with no owner is a valid, unassigned lead, not an error."""
     if rule.mode != "round_robin":
         return None
-    owner_id, new_cursor = domain.next_owner(rule.owner_ids, rule.cursor)
+    if not rule.owner_ids:
+        return None
+    active = await _active_owner_ids_for_assignment(ctx.organization_id, rule.owner_ids)
+    rotation = [owner_id for owner_id in rule.owner_ids if owner_id in active]
+    if not rotation:
+        log.warning("lead.assignment.all_owners_inactive", organization_id=str(ctx.organization_id))
+        return None
+    owner_id, new_cursor = domain.next_owner(rotation, rule.cursor)
     if owner_id is not None:
         rule.cursor = new_cursor
         await session.flush()
@@ -243,7 +334,7 @@ async def create_lead(
     resolved_owner_id = owner_id
     if resolved_owner_id is None:
         rule = await _get_or_create_rule(session, ctx)
-        resolved_owner_id = await _assign_owner(session, rule)
+        resolved_owner_id = await _assign_owner(session, ctx, rule)
 
     lead = Lead(
         organization_id=ctx.organization_id,
@@ -261,8 +352,23 @@ async def create_lead(
         owner_id=resolved_owner_id,
         notes=notes,
     )
-    session.add(lead)
-    await session.flush()
+    try:
+        # A SAVEPOINT, not a bare `session.add` + `flush()`: once a statement inside a
+        # transaction raises, Postgres marks the *whole* transaction aborted until a ROLLBACK
+        # (or a ROLLBACK TO SAVEPOINT), so a later statement on it — including the recovery
+        # read below — would fail with "current transaction is aborted" without this.
+        # `leave.services.create_ledger_entry` takes the identical shape for its own
+        # concurrent-duplicate race.
+        async with session.begin_nested():
+            session.add(lead)
+            await session.flush()
+    except IntegrityError as exc:
+        if _integrity_error_constraint(exc) != "uq_leads_org_email_index":
+            raise
+        # The race the pre-check above cannot see: two concurrent captures of the same email
+        # in this organization. The pre-check reduces this to a rare event; it does not
+        # eliminate it, and only the database's own unique index is the actual guarantee.
+        raise ConflictProblem("A lead with that email already exists") from exc
 
     record_audit(
         session,
@@ -296,7 +402,7 @@ async def create_lead(
 async def update_lead(
     session: AsyncSession,
     ctx: ScopeContext,
-    lead: Lead,
+    lead_id: uuid.UUID,
     payload: LeadPatch,
     *,
     request: Request | None = None,
@@ -312,8 +418,40 @@ async def update_lead(
     check already confirmed the caller may touch this lead's *current* owner, but removing an
     owner is a step further than reassigning to yourself, and OWN scope was never meant to
     cover it.
+
+    Fetches the row **row-locked** (`get_lead_for_update`), not the plain read the route used
+    to pass in — a PATCH racing `:convert`'s claim/call/record shape used to read the lead
+    unlocked, so a disqualify sent while a conversion was mid-flight (no transaction open
+    between the claim and the network calls, by design) would see "qualified", allow the
+    move, and commit — and `finalize_conversion`, coming back afterward, would still hold the
+    same `conversion_claim_id` and overwrite the disqualification with "converted" anyway.
+    Locking here means whichever of this PATCH or `finalize_conversion` gets to the row first
+    now genuinely blocks the other until it commits, instead of both reading a "before" that
+    is stale by the time either one writes.
     """
+    lead = await selectors.get_lead_for_update(session, ctx.organization_id, lead_id)
+    if lead is None:
+        raise NotFoundProblem("That lead is not part of this organization")
+    ctx.assert_can_touch(owner_id=lead.owner_id)
+
     changes = payload.model_dump(exclude_unset=True)
+
+    touches_conversion_state = "status" in changes or "owner_id" in changes
+    if touches_conversion_state:
+        # Terminal, belt-and-suspenders: `can_transition` already refuses every *status* move
+        # once `lead.status == "converted"`, but a converted lead's ids are the thing that
+        # actually matters — checked directly here so an owner reassignment is refused too,
+        # and so a row somehow carrying converted ids without a literal "converted" status
+        # (a hand-edited row, a bad migration) still cannot be patched as if it were live.
+        if lead.status == "converted" or lead.converted_company_id is not None:
+            raise ConflictProblem(
+                "A converted lead cannot be reassigned or have its status changed"
+            )
+        # A conversion attempt is between its claim and its record — no transaction is open
+        # right now to have blocked this PATCH from reaching the row, so the lease is the only
+        # thing standing in for that lock.
+        if domain.claim_is_live(lead.conversion_claimed_at, now=utcnow()):
+            raise ConflictProblem("This lead's conversion is in progress. Try again in a moment.")
 
     if "owner_id" in changes:
         if changes["owner_id"] is None:
@@ -524,59 +662,104 @@ async def finalize_conversion(
     this raises rather than finalizing a conversion the row no longer agrees this attempt
     owns (the second attempt's own `finalize_conversion` is the one that gets to write the
     outcome; this one's caller should treat the 409 as "someone else finished this").
+
+    Also requires the row's own `status` still be `"qualified"` before writing "converted" —
+    the claim/lease pair stops a *second `:convert`* from racing this one, and `update_lead`'s
+    own claim check stops an ordinary PATCH from doing it while this attempt's lease is live,
+    but neither is airtight against every future caller of this row (an admin tool, a bulk
+    script) and this is the last place before "converted" is written that can still say no. A
+    status other than `"qualified"` here aborts the claim instead of overwriting whatever it
+    moved to, and records why.
     """
+    # `aborted`/`missing_claim` decide what to raise *after* the `async with` below exits —
+    # never from inside it. Raising from inside a `session.begin()` block rolls the whole
+    # transaction back, which for the abort path would silently undo the very things this
+    # function exists to make durable: the cleared claim and the audit row explaining why.
+    missing_claim = False
+    aborted_status: str | None = None
+
     async with session.begin():
         await _bind_tenant(session, ctx.organization_id)
 
         lead = await selectors.get_lead_for_update(session, ctx.organization_id, lead_id)
         if lead is None or lead.conversion_claim_id != claim_id:
-            raise ConflictProblem(
-                "This lead's conversion claim was taken over by another attempt. "
-                "Call :convert again to get the current result."
-            )
+            missing_claim = True
+        else:
+            before_status = lead.status
+            if before_status != "qualified":
+                aborted_status = before_status
+                lead.conversion_claim_id = None
+                lead.conversion_claimed_at = None
+                lead.updated_by = str(ctx.principal.sub)
+                await session.flush()
+                record_audit(
+                    session,
+                    AuditLog,
+                    organization_id=ctx.organization_id,
+                    actor_id=ctx.principal.sub,
+                    action="lead.conversion_aborted",
+                    entity="lead",
+                    entity_id=lead.id,
+                    before={"status": before_status},
+                    after={
+                        "reason": f"lead moved to {before_status!r} before the conversion finished"
+                    },
+                    request=request,
+                )
+            else:
+                lead.status = "converted"
+                lead.converted_company_id = company_id
+                lead.converted_contact_id = contact_id
+                lead.converted_deal_id = deal_id
+                lead.converted_at = utcnow()
+                lead.conversion_claim_id = None
+                lead.conversion_claimed_at = None
+                lead.updated_by = str(ctx.principal.sub)
+                await session.flush()
 
-        lead.status = "converted"
-        lead.converted_company_id = company_id
-        lead.converted_contact_id = contact_id
-        lead.converted_deal_id = deal_id
-        lead.converted_at = utcnow()
-        lead.conversion_claim_id = None
-        lead.conversion_claimed_at = None
-        lead.updated_by = str(ctx.principal.sub)
-        await session.flush()
+                record_audit(
+                    session,
+                    AuditLog,
+                    organization_id=ctx.organization_id,
+                    actor_id=ctx.principal.sub,
+                    action="lead.converted",
+                    entity="lead",
+                    entity_id=lead.id,
+                    before={"status": before_status},
+                    after={
+                        "status": "converted",
+                        "company_id": str(company_id),
+                        "contact_id": str(contact_id) if contact_id else None,
+                        "deal_id": str(deal_id),
+                    },
+                    request=request,
+                )
+                publish_event(
+                    session,
+                    OutboxEvent,
+                    organization_id=ctx.organization_id,
+                    event_type=EVT_LEAD_CONVERTED,
+                    aggregate_type="lead",
+                    aggregate_id=lead.id,
+                    payload={
+                        "organization_id": str(ctx.organization_id),
+                        "lead_id": str(lead.id),
+                        "company_id": str(company_id),
+                        "contact_id": str(contact_id) if contact_id else None,
+                        "deal_id": str(deal_id),
+                    },
+                    actor=_actor(ctx),
+                )
 
-        record_audit(
-            session,
-            AuditLog,
-            organization_id=ctx.organization_id,
-            actor_id=ctx.principal.sub,
-            action="lead.converted",
-            entity="lead",
-            entity_id=lead.id,
-            before={"status": "qualified"},
-            after={
-                "status": "converted",
-                "company_id": str(company_id),
-                "contact_id": str(contact_id) if contact_id else None,
-                "deal_id": str(deal_id),
-            },
-            request=request,
+    if missing_claim:
+        raise ConflictProblem(
+            "This lead's conversion claim was taken over by another attempt. "
+            "Call :convert again to get the current result."
         )
-        publish_event(
-            session,
-            OutboxEvent,
-            organization_id=ctx.organization_id,
-            event_type=EVT_LEAD_CONVERTED,
-            aggregate_type="lead",
-            aggregate_id=lead.id,
-            payload={
-                "organization_id": str(ctx.organization_id),
-                "lead_id": str(lead.id),
-                "company_id": str(company_id),
-                "contact_id": str(contact_id) if contact_id else None,
-                "deal_id": str(deal_id),
-            },
-            actor=_actor(ctx),
+    if aborted_status is not None:
+        raise ConflictProblem(
+            "This lead's status changed before the conversion could complete. "
+            "Check its current status and try again."
         )
 
 
@@ -686,7 +869,7 @@ async def convert_lead(
             company_id=company_id,
             contact_id=contact_id,
             owner_id=owner_id,
-            name=f"{company_name} — {claim.full_name}",
+            name=domain.deal_name(company_name, claim.full_name, claim.lead_id),
             close_date=close_date.isoformat(),
             source=claim.source,
             actor_id=ctx.principal.sub,
@@ -697,6 +880,17 @@ async def convert_lead(
         )
         raise ValidationProblem(
             "Assign an owner known to the CRM book before converting this lead"
+        ) from exc
+    except clients.CompanyDeleted as exc:
+        # Checked by exception type (customer's own `company-deleted` problem type,
+        # `clients._problem_type`), never by re-deriving it from a bare 404 or 409 alone —
+        # a 404 here means "unknown owner" (`OwnerUnknown`, above), not a deleted company.
+        await fail_conversion(
+            session, ctx, lead_id=claim.lead_id, claim_id=claim_id, reason=str(exc)
+        )
+        raise ValidationProblem(
+            "The company was deleted in the CRM book. Assign this lead to a different "
+            "company before converting it."
         ) from exc
     except clients.ConversionRejected as exc:
         await fail_conversion(

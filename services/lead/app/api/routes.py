@@ -176,11 +176,10 @@ async def update_lead(
     ctx: LeadWrite,
     request: Request,
 ) -> LeadOut:
-    lead = await selectors.get_lead(session, ctx.organization_id, lead_id)
-    if lead is None:
-        raise NotFoundProblem("That lead is not part of this organization")
-    ctx.assert_can_touch(owner_id=lead.owner_id)
-    updated = await services.update_lead(session, ctx, lead, payload, request=request)
+    """`services.update_lead` does its own row-locked fetch, the not-found check and the
+    object-level scope check — it has to be the one holding the lock across all of it, so
+    there is no separate unlocked pre-fetch here the way most other routes do."""
+    updated = await services.update_lead(session, ctx, lead_id, payload, request=request)
     return selectors.lead_out(updated)
 
 

@@ -94,6 +94,22 @@ class TestConvertHappyPath:
         deal_call = next(kwargs for name, kwargs in calls if name == "deal")
         assert deal_call["deal_id"] == expected_deal
 
+    async def test_the_deal_name_carries_a_lead_id_suffix_and_fits_the_column(
+        self, session, org_id, data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list = []
+        _fake_ensure_company_and_contact(monkeypatch, calls)
+        _fake_ensure_deal(monkeypatch, calls)
+
+        ctx = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
+        await services.convert_lead(session, ctx, data["lead_a_id"])
+
+        deal_call = next(kwargs for name, kwargs in calls if name == "deal")
+        assert deal_call["name"] == domain.deal_name(
+            "Stellar Robotics", "Priya Sharma", data["lead_a_id"]
+        )
+        assert len(deal_call["name"]) <= domain.DEAL_NAME_MAX_LENGTH
+
     async def test_converting_stages_an_audit_row_and_an_outbox_event(
         self, session, org_id, data, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -232,6 +248,26 @@ class TestConvertRefusals:
             await services.convert_lead(session, ctx, data["lead_a_id"])
 
         # The failed attempt cleared its own claim — a retry is not blocked by the lease.
+        async with session.begin():
+            lead = await selectors.get_lead(session, org_id, data["lead_a_id"])
+        assert lead is not None
+        assert lead.conversion_claim_id is None
+        assert lead.status == "qualified"
+
+    async def test_a_deleted_company_on_customers_side_becomes_a_validation_problem(
+        self, session, org_id, data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _deleted(settings, organization_id, **kwargs):
+            raise clients.CompanyDeleted("gone")
+
+        monkeypatch.setattr(clients, "ensure_company_and_contact", _deleted)
+
+        ctx = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
+        with pytest.raises(ValidationProblem, match="deleted"):
+            await services.convert_lead(session, ctx, data["lead_a_id"])
+
+        # Same as any other permanent rejection: the claim clears so a retry (against, say, a
+        # different company) is not blocked by the lease.
         async with session.begin():
             lead = await selectors.get_lead(session, org_id, data["lead_a_id"])
         assert lead is not None

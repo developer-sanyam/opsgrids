@@ -61,11 +61,21 @@ async def get_lead_for_update(
     """The same fetch as `get_lead`, row-locked for the rest of this transaction —
     `services.claim_conversion` and `services.finalize_conversion`/`fail_conversion` all read
     then write this row, and without the lock two concurrent `:convert` calls on the same
-    lead would both read "not yet claimed" and both proceed."""
+    lead would both read "not yet claimed" and both proceed.
+
+    `populate_existing=True`: `claim_conversion`, `finalize_conversion` and `fail_conversion`
+    run as *separate* transactions on the *same* session, so a lead already fetched once this
+    session is sitting in SQLAlchemy's identity map. Without this, a second locked fetch for
+    the same row returns that cached Python object as-is rather than refreshing it from the
+    row Postgres just (re-)locked — the lock is real, but the attributes read off it are
+    whatever they were the first time this session touched this id, which is exactly wrong
+    for a claim/lease check that exists to see what changed since then.
+    """
     stmt = (
         select(Lead)
         .where(Lead.id == lead_id, Lead.organization_id == org_id, Lead.deleted_at.is_(None))
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 
@@ -125,6 +135,7 @@ async def get_assignment_rule_for_update(
         select(AssignmentRule)
         .where(AssignmentRule.organization_id == org_id, AssignmentRule.deleted_at.is_(None))
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 

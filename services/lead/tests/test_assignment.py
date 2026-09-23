@@ -140,6 +140,75 @@ class TestAssignmentRule:
                 )
 
 
+class TestRoundRobinSkipsInactiveOwners:
+    """m4: a rep configured as active into the rotation, then deactivated later, must not
+    keep collecting leads forever — nothing revalidated the saved list again until this."""
+
+    async def test_an_owner_deactivated_after_configuration_is_skipped(
+        self, session, org_id, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        write = ctx_for(org_id, "crm.lead.lead.write", Scope.ORG)
+        good_a, gone_bad, good_b = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        async with session.begin():
+            await services.set_assignment_rule(
+                session, write, mode="round_robin", owner_ids=[good_a, gone_bad, good_b]
+            )
+
+        async def _one_now_inactive(cfg, organization_id, owner_ids):  # type: ignore[no-untyped-def]
+            return [gone_bad]
+
+        monkeypatch.setattr(clients, "invalid_owner_ids", _one_now_inactive)
+
+        assigned = []
+        for i in range(4):
+            async with session.begin():
+                lead = await _create(session, write, f"Lead {i}")
+            assigned.append(lead.owner_id)
+
+        assert gone_bad not in assigned
+        assert set(assigned) == {good_a, good_b}
+
+    async def test_every_owner_inactive_leaves_the_lead_unassigned(
+        self, session, org_id, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        write = ctx_for(org_id, "crm.lead.lead.write", Scope.ORG)
+        owners = [uuid.uuid4(), uuid.uuid4()]
+        async with session.begin():
+            await services.set_assignment_rule(session, write, mode="round_robin", owner_ids=owners)
+
+        async def _all_invalid(cfg, organization_id, owner_ids):  # type: ignore[no-untyped-def]
+            return list(owner_ids)
+
+        monkeypatch.setattr(clients, "invalid_owner_ids", _all_invalid)
+
+        async with session.begin():
+            lead = await _create(session, write, "Nobody left")
+        assert lead.owner_id is None
+
+    async def test_the_directory_is_not_asked_again_within_the_cache_window(
+        self, session, org_id, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        write = ctx_for(org_id, "crm.lead.lead.write", Scope.ORG)
+        owners = [uuid.uuid4(), uuid.uuid4()]
+        async with session.begin():
+            await services.set_assignment_rule(session, write, mode="round_robin", owner_ids=owners)
+
+        calls = 0
+
+        async def _counted(cfg, organization_id, owner_ids):  # type: ignore[no-untyped-def]
+            nonlocal calls
+            calls += 1
+            return []
+
+        monkeypatch.setattr(clients, "invalid_owner_ids", _counted)
+
+        for i in range(5):
+            async with session.begin():
+                await _create(session, write, f"Lead {i}")
+
+        assert calls == 1
+
+
 class TestRoundRobinConcurrency:
     """Two real sessions creating a lead against the same rotation at once — the row lock
     `_get_or_create_rule`/`get_assignment_rule_for_update` takes must serialize them, or two

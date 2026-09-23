@@ -48,6 +48,30 @@ class OwnerUnknown(ConversionRejected):
     retrying `:convert` will not fix it; the lead needs an owner known to the CRM book."""
 
 
+class CompanyDeleted(ConversionRejected):
+    """The company this lead would convert into has been deleted from customer's book since
+    an earlier attempt used its id. Permanent, and distinct from the generic rejection: the
+    caller needs to know *why* — this is not "check the lead's details", it is "that account
+    is gone, point this lead somewhere else"."""
+
+
+def _problem_type(response: httpx.Response) -> str | None:
+    """The RFC 7807 `type` field off a JSON error body, or `None` on anything that is not
+    one — never the body itself, and never raises. `type` is a small, fixed enum-like string
+    customer/deal each control (`.../company-deleted`, never a value built from request data),
+    so branching on it is not the "upstream body into an exception" mistake this module's own
+    docstring warns about; only a fixed string *we* wrote in response ever reaches a message.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    problem_type = body.get("type")
+    return problem_type if isinstance(problem_type, str) else None
+
+
 async def ensure_company_and_contact(
     settings: Settings,
     organization_id: uuid.UUID,
@@ -98,6 +122,9 @@ async def ensure_company_and_contact(
     if response.status_code == 404:
         log.warning("lead.clients.owner_unknown", status=response.status_code)
         raise OwnerUnknown("that owner is not an active rep in this organization's CRM book")
+    if response.status_code == 409 and (_problem_type(response) or "").endswith("/company-deleted"):
+        log.warning("lead.clients.company_deleted", status=response.status_code)
+        raise CompanyDeleted("that company has been deleted from the CRM book")
     if response.status_code >= 500:
         log.error("lead.clients.customer_upstream_error", status=response.status_code)
         raise ConversionUnavailable("customer-service is temporarily unavailable")
@@ -105,11 +132,19 @@ async def ensure_company_and_contact(
         log.error("lead.clients.customer_rejected", status=response.status_code)
         raise ConversionRejected("customer-service could not complete the conversion")
 
-    data = response.json()
-    log.info("lead.clients.company_ensured", company_id=data["company_id"])
-    return uuid.UUID(data["company_id"]), (
-        uuid.UUID(data["contact_id"]) if data["contact_id"] else None
-    )
+    try:
+        data = response.json()
+        company_id_out = uuid.UUID(data["company_id"])
+        contact_id_out = uuid.UUID(data["contact_id"]) if data["contact_id"] else None
+    except (ValueError, KeyError, TypeError):
+        # A 200 that does not parse into the shape this client expects is not a success —
+        # treated as transient (a bad deploy, a half-finished response) rather than crashing
+        # with a raw parse error the caller never asked for a stack trace on.
+        log.error("lead.clients.customer_malformed_response", status=response.status_code)
+        raise ConversionUnavailable("customer-service returned an unexpected response") from None
+
+    log.info("lead.clients.company_ensured", company_id=str(company_id_out))
+    return company_id_out, contact_id_out
 
 
 async def ensure_deal(
@@ -166,7 +201,11 @@ async def ensure_deal(
         log.error("lead.clients.deal_rejected", status=response.status_code)
         raise ConversionRejected("deal-service could not complete the conversion")
 
-    return uuid.UUID(response.json()["deal_id"])
+    try:
+        return uuid.UUID(response.json()["deal_id"])
+    except (ValueError, KeyError, TypeError):
+        log.error("lead.clients.deal_malformed_response", status=response.status_code)
+        raise ConversionUnavailable("deal-service returned an unexpected response") from None
 
 
 class OwnersValidateUnavailable(Exception):
@@ -213,4 +252,10 @@ async def invalid_owner_ids(
         log.error("lead.clients.owners_validate_rejected", status=response.status_code)
         raise OwnersValidateUnavailable("customer-service could not validate the owner list")
 
-    return [uuid.UUID(o) for o in response.json()["invalid_owner_ids"]]
+    try:
+        return [uuid.UUID(o) for o in response.json()["invalid_owner_ids"]]
+    except (ValueError, KeyError, TypeError):
+        log.error("lead.clients.owners_validate_malformed_response", status=response.status_code)
+        raise OwnersValidateUnavailable(
+            "customer-service returned an unexpected response"
+        ) from None

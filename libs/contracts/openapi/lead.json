@@ -766,6 +766,7 @@
         ]
       },
       "patch": {
+        "description": "`services.update_lead` does its own row-locked fetch, the not-found check and the\nobject-level scope check \u2014 it has to be the one holding the lock across all of it, so\nthere is no separate unlocked pre-fetch here the way most other routes do.",
         "operationId": "update_lead_api_v1_leads__lead_id__patch",
         "parameters": [
           {

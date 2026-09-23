@@ -134,8 +134,10 @@ async def data(session: AsyncSession, org_id: uuid.UUID) -> dict:
             notes="",
         )
         # Qualify lead_a so conversion tests have a lead that is legally convertible.
-        lead_a = await services.update_lead(session, write, lead_a, LeadPatch(status="working"))
-        lead_a = await services.update_lead(session, write, lead_a, LeadPatch(status="qualified"))
+        lead_a = await services.update_lead(session, write, lead_a.id, LeadPatch(status="working"))
+        lead_a = await services.update_lead(
+            session, write, lead_a.id, LeadPatch(status="qualified")
+        )
 
     return {
         "lead_a": lead_a,

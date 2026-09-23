@@ -136,6 +136,30 @@ def conversion_ids(lead_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]
     )
 
 
+# ------------------------------------------------------------------ deal naming
+
+
+#: deal-service's own `Deal.name` column is `String(200)` — a long company name and a long
+#: lead name together can exceed that, and an unbounded `f"{company} — {full_name}"` would
+#: reach deal-service's `/internal/v1` only to bounce off its own 422, turning a perfectly
+#: convertible lead into an upstream rejection over nothing but a name.
+DEAL_NAME_MAX_LENGTH = 200
+_TRUNCATION_MARK = "…"
+
+
+def deal_name(company: str, full_name: str, lead_id: uuid.UUID) -> str:
+    """The name `:convert` gives the deal it creates for `lead_id` — bounded to fit
+    deal-service's column, and suffixed with a short, fixed-width slice of the lead's own id
+    so two different leads naming the same company and the same person still produce two
+    distinguishable deal names instead of one that silently reads as a single duplicate."""
+    suffix = f" · {str(lead_id)[:8]}"
+    budget = DEAL_NAME_MAX_LENGTH - len(suffix)
+    base = f"{company} — {full_name}"
+    if len(base) > budget:
+        base = base[: budget - len(_TRUNCATION_MARK)].rstrip() + _TRUNCATION_MARK
+    return f"{base}{suffix}"
+
+
 def next_owner(owner_ids: Sequence[uuid.UUID], cursor: int) -> tuple[uuid.UUID | None, int]:
     """The owner a round-robin rule hands the next lead, and the cursor to store afterwards.
 

@@ -115,6 +115,98 @@ class TestEnsureCompanyAndContact:
                 ),
             )
 
+    async def test_a_company_deleted_problem_type_raises_company_deleted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Checked by the RFC 7807 `type` field, not by status code alone -- a plain 409
+        dedup conflict must not be confused with this specific, differently-worded case."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                409,
+                json={
+                    "type": "https://errors.opsgrids.dev/company-deleted",
+                    "title": "That company has been deleted",
+                    "status": 409,
+                    "detail": "gone",
+                },
+            )
+
+        with pytest.raises(clients.CompanyDeleted):
+            await _with_transport(
+                handler,
+                monkeypatch,
+                lambda: clients.ensure_company_and_contact(
+                    _settings(),
+                    uuid.uuid4(),
+                    company_id=uuid.uuid4(),
+                    contact_id=uuid.uuid4(),
+                    company_name="Stellar Robotics",
+                    owner_id=uuid.uuid4(),
+                    contact_full_name="Priya Sharma",
+                    contact_email=None,
+                    contact_raw_phone=None,
+                ),
+            )
+
+    async def test_an_ordinary_409_is_not_confused_with_company_deleted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                409,
+                json={
+                    "type": "https://errors.opsgrids.dev/conflict",
+                    "title": "Conflict",
+                    "status": 409,
+                    "detail": "some other conflict",
+                },
+            )
+
+        with pytest.raises(clients.ConversionRejected) as excinfo:
+            await _with_transport(
+                handler,
+                monkeypatch,
+                lambda: clients.ensure_company_and_contact(
+                    _settings(),
+                    uuid.uuid4(),
+                    company_id=uuid.uuid4(),
+                    contact_id=uuid.uuid4(),
+                    company_name="Stellar Robotics",
+                    owner_id=uuid.uuid4(),
+                    contact_full_name="Priya Sharma",
+                    contact_email=None,
+                    contact_raw_phone=None,
+                ),
+            )
+        assert not isinstance(excinfo.value, clients.CompanyDeleted)
+
+    async def test_a_malformed_200_is_treated_as_conversion_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 200 that does not parse into `{company_id, contact_id}` is not a success -- and
+        must not crash the caller with a raw `KeyError`/`ValueError` either."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"unexpected": "shape"})
+
+        with pytest.raises(clients.ConversionUnavailable):
+            await _with_transport(
+                handler,
+                monkeypatch,
+                lambda: clients.ensure_company_and_contact(
+                    _settings(),
+                    uuid.uuid4(),
+                    company_id=uuid.uuid4(),
+                    contact_id=uuid.uuid4(),
+                    company_name="Stellar Robotics",
+                    owner_id=uuid.uuid4(),
+                    contact_full_name="Priya Sharma",
+                    contact_email=None,
+                    contact_raw_phone=None,
+                ),
+            )
+
     async def test_a_5xx_raises_conversion_unavailable_not_owner_unknown(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -290,6 +382,29 @@ class TestEnsureDeal:
             ),
         )
         assert result == deal_id
+
+    async def test_a_malformed_200_is_treated_as_conversion_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"unexpected": "shape"})
+
+        with pytest.raises(clients.ConversionUnavailable):
+            await _with_transport(
+                handler,
+                monkeypatch,
+                lambda: clients.ensure_deal(
+                    _settings(),
+                    uuid.uuid4(),
+                    deal_id=uuid.uuid4(),
+                    company_id=uuid.uuid4(),
+                    contact_id=None,
+                    owner_id=uuid.uuid4(),
+                    name="x",
+                    close_date="2026-10-23",
+                    source="form",
+                ),
+            )
 
     async def test_a_5xx_raises_conversion_unavailable(
         self, monkeypatch: pytest.MonkeyPatch

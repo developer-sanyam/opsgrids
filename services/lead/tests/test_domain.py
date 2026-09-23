@@ -59,6 +59,35 @@ class TestConversionIds:
         assert len(set(ids)) == 3
 
 
+class TestDealName:
+    def test_a_short_name_is_returned_with_its_lead_id_suffix_untouched(self) -> None:
+        lead_id = uuid.uuid4()
+        name = domain.deal_name("Stellar Robotics", "Priya Sharma", lead_id)
+        assert name == f"Stellar Robotics — Priya Sharma · {str(lead_id)[:8]}"
+        assert len(name) <= domain.DEAL_NAME_MAX_LENGTH
+
+    def test_a_long_company_and_person_name_is_truncated_to_fit(self) -> None:
+        lead_id = uuid.uuid4()
+        company = "A" * 150
+        full_name = "B" * 150
+        name = domain.deal_name(company, full_name, lead_id)
+        assert len(name) <= domain.DEAL_NAME_MAX_LENGTH
+        assert name.endswith(f" · {str(lead_id)[:8]}")
+        assert "…" in name
+
+    def test_two_leads_naming_the_same_company_and_person_get_distinct_deal_names(self) -> None:
+        first = domain.deal_name("Stellar Robotics", "Priya Sharma", uuid.uuid4())
+        second = domain.deal_name("Stellar Robotics", "Priya Sharma", uuid.uuid4())
+        assert first != second
+
+    def test_the_result_never_exceeds_the_column_width_even_at_the_boundary(self) -> None:
+        lead_id = uuid.uuid4()
+        # Exactly at, and one past, the budget before truncation kicks in.
+        for length in (185, 186, 187, 200, 500):
+            name = domain.deal_name("C" * length, "P" * length, lead_id)
+            assert len(name) <= domain.DEAL_NAME_MAX_LENGTH
+
+
 class TestRoundRobin:
     def test_an_empty_rotation_assigns_nobody(self) -> None:
         owner, cursor = domain.next_owner([], 0)
