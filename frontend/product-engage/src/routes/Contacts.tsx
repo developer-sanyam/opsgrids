@@ -1,6 +1,6 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import { useAsync } from "@opsgrids/client";
+import { Can, useAsync } from "@opsgrids/client";
 import { FileTextIcon, UserPlusIcon, UsersIcon } from "@opsgrids/ui";
 
 import { deleteContact, listContacts } from "@/api/client";
@@ -55,16 +55,18 @@ function ContactRow({
       <td className="py-3 pr-4 text-sm text-muted">{formatInstant(contact.created_at)}</td>
       <td className="py-3 pr-4 text-sm text-muted">{formatInstant(contact.updated_at)}</td>
       <td className="py-3 whitespace-nowrap">
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={onEdit}>
-            Edit
-            <span className="sr-only"> {contact.name === "" ? contact.email : contact.name}</span>
-          </Button>
-          <Button variant="ghost" size="sm" className="text-negative" onClick={onDelete}>
-            Delete
-            <span className="sr-only"> {contact.name === "" ? contact.email : contact.name}</span>
-          </Button>
-        </div>
+        <Can permission="engage.audience.contact.write" scope="ORG">
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={onEdit}>
+              Edit
+              <span className="sr-only"> {contact.name === "" ? contact.email : contact.name}</span>
+            </Button>
+            <Button variant="ghost" size="sm" className="text-negative" onClick={onDelete}>
+              Delete
+              <span className="sr-only"> {contact.name === "" ? contact.email : contact.name}</span>
+            </Button>
+          </div>
+        </Can>
       </td>
     </tr>
   );
@@ -91,6 +93,15 @@ function Contacts() {
   );
   const state = useAsync(loader, [debouncedSearch, page, size]);
   const contacts = state.status === "success" ? state.data.items : NO_CONTACTS;
+
+  // Deleting the last row on a page beyond the first empties that page without emptying the
+  // list — stepping back is what a person would do by hand, and it's what keeps this from
+  // looking like "no contacts yet" when there are, in fact, contacts on the page before it.
+  useEffect(() => {
+    if (state.status === "success" && contacts.length === 0 && page > 1) {
+      setPage(page - 1);
+    }
+  }, [state.status, contacts.length, page]);
 
   function reload(message: string) {
     announce(message);
@@ -122,18 +133,23 @@ function Contacts() {
         title="Contacts"
         description="Who Engage may reach. Addresses are sealed at rest and only ever shown masked, exactly as the service returns them."
         actions={
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              onClick={() => setImporting(true)}
-              leadingIcon={<FileTextIcon className="size-4" />}
-            >
-              Import
-            </Button>
-            <Button onClick={() => setAdding(true)} leadingIcon={<UserPlusIcon className="size-4" />}>
-              Add a contact
-            </Button>
-          </div>
+          <Can permission="engage.audience.contact.write" scope="ORG">
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setImporting(true)}
+                leadingIcon={<FileTextIcon className="size-4" />}
+              >
+                Import
+              </Button>
+              <Button
+                onClick={() => setAdding(true)}
+                leadingIcon={<UserPlusIcon className="size-4" />}
+              >
+                Add a contact
+              </Button>
+            </div>
+          </Can>
         }
       />
 
@@ -165,11 +181,11 @@ function Contacts() {
         <Card className="p-6">
           <EmptyState
             icon={<UsersIcon className="size-6" />}
-            title={search.trim() === "" ? "No contacts yet" : "No contacts match that search"}
+            title={debouncedSearch.trim() === "" ? "No contacts yet" : "No contacts match that search"}
             description={
-              search.trim() === ""
+              debouncedSearch.trim() === ""
                 ? "Add a contact by hand, or import a spreadsheet of up to 1,000 at once."
-                : `Nothing matches “${search.trim()}”. Clear the search to see everyone.`
+                : `Nothing matches “${debouncedSearch.trim()}”. Clear the search to see everyone.`
             }
           />
         </Card>

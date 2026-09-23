@@ -3,7 +3,7 @@ import { useState } from "react";
 import { importContacts } from "@/api/client";
 import { CONTACT_IMPORT_MAX } from "@/api/types";
 import type { ContactImportOut } from "@/api/types";
-import { parseContactCsv } from "@/lib/csv";
+import { parseContactCsvRows } from "@/lib/csv";
 import { failureMessage } from "@/lib/errors";
 import { Button, Dialog, InlineAlert, Tag, TextArea } from "@/ui";
 import type { TagTone } from "@/ui";
@@ -14,9 +14,10 @@ import type { TagTone } from "@/ui";
  *
  * **The response never echoes a row's plaintext address back.** `ContactImportOut` is `created` /
  * `updated` / `invalid` counts plus one `ContactImportResult` per row (`index`, `status`, `id`,
- * `error`) — no `email` field anywhere in it. What this dialog shows for each row is the row
- * *number* it came in on, never the text that was pasted for it, so a screenshot of a failed
- * import carries no address either.
+ * `error`) — no `email` field anywhere in it. What this dialog shows for each row is the *line*
+ * it was pasted on — not `index`, which counts position in the batch the server received and
+ * silently drifts from the paste the moment a header row or a blank line is skipped — never the
+ * text that was pasted for it, so a screenshot of a failed import carries no address either.
  */
 
 const RESULT_TONE: Record<ContactImportOut["results"][number]["status"], TagTone> = {
@@ -45,26 +46,31 @@ export function ContactImportDialog({
   const [failure, setFailure] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<ContactImportOut | null>(null);
+  // The pasted line each submitted row came from, in submission order — so a result can be
+  // reported against the line someone would actually count to, not against its position in the
+  // batch (which drifts from the paste the moment a header or a blank line is skipped).
+  const [lines, setLines] = useState<number[]>([]);
 
   function close() {
     setText("");
     setError(null);
     setFailure(null);
     setResult(null);
+    setLines([]);
     onClose();
   }
 
   async function submit() {
     if (submitting) return;
-    const rows = parseContactCsv(text);
-    if (rows.length === 0) {
+    const parsed = parseContactCsvRows(text);
+    if (parsed.length === 0) {
       setError("Paste at least one row — one address per line, name optional after a comma.");
       setFailure(null);
       return;
     }
-    if (rows.length > CONTACT_IMPORT_MAX) {
+    if (parsed.length > CONTACT_IMPORT_MAX) {
       setError(
-        `That's ${rows.length} rows — split the paste into batches of ${CONTACT_IMPORT_MAX} or fewer.`,
+        `That's ${parsed.length} rows — split the paste into batches of ${CONTACT_IMPORT_MAX} or fewer.`,
       );
       setFailure(null);
       return;
@@ -74,8 +80,11 @@ export function ContactImportDialog({
     setFailure(null);
     setSubmitting(true);
     try {
-      const imported = await importContacts(rows);
+      const imported = await importContacts(
+        parsed.map(({ email, name }) => ({ email, name })),
+      );
       setResult(imported);
+      setLines(parsed.map((row) => row.line));
       onImported(imported);
     } catch (caught) {
       // The pasted text stays: a refused import (a permission gap, a plan limit) is not a reason
@@ -174,7 +183,9 @@ export function ContactImportDialog({
               <tbody>
                 {result.results.map((row) => (
                   <tr key={row.index} className="border-t border-line align-top">
-                    <td className="px-3 py-2 tabular-nums text-muted">{row.index + 1}</td>
+                    <td className="px-3 py-2 tabular-nums text-muted">
+                      {lines[row.index] ?? row.index + 1}
+                    </td>
                     <td className="px-3 py-2">
                       <Tag tone={RESULT_TONE[row.status]}>{RESULT_LABEL[row.status]}</Tag>
                     </td>

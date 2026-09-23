@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { addContact, editContact } from "@/api/client";
 import type { ContactOut } from "@/api/types";
@@ -10,13 +10,18 @@ import { Button, Dialog, InlineAlert, TextField } from "@/ui";
  *
  * `attributes` is not a field on this form: it is free-form JSON the service stores verbatim, and
  * this screen has no editor for arbitrary key/value data yet — the import path is what carries it
- * today. Editing an existing contact never touches it: `editContact` sends only `email` and
+ * today. Editing an existing contact never touches it: `editContact` only ever sends `email` and
  * `name`, and the service's `ContactPatch` leaves an absent field alone.
  *
  * **`values.email` is only ever what was typed here.** The dialog never seeds itself from
  * `contact.email` on the edit path, because that field is the mask (`p•••@domain.com`) and
  * submitting it back would try to set the address to its own mask — a contact should keep its
  * real address until someone types a new one on purpose.
+ *
+ * **`values.name` does seed from `contact.name` on the edit path**, because the name the service
+ * returns is the real value, not a mask. `name` is sent on submit only when it differs from the
+ * seeded value — the service treats a present `name` as "set it", including to empty, so sending
+ * it unconditionally would blank the name on every edit that only touched the address.
  */
 
 interface Values {
@@ -55,6 +60,18 @@ export function ContactFormDialog({
 
   const editing = contact !== null;
 
+  // The dialog instance for a row is reused across opens (`Contacts` swaps `contact`, not the
+  // component), so seeding has to happen here rather than in `useState`'s initializer. Email
+  // always starts blank — see the note above — but name starts as the contact's real value so an
+  // edit that never touches the name doesn't look, from the form's perspective, like a request to
+  // clear it.
+  useEffect(() => {
+    if (!open) return;
+    setValues({ email: "", name: contact === null ? "" : contact.name });
+    setErrors({});
+    setFailure(null);
+  }, [open, contact]);
+
   function close() {
     setValues(EMPTY);
     setErrors({});
@@ -91,7 +108,7 @@ export function ContactFormDialog({
           ? await addContact({ email, ...(name === "" ? {} : { name }) })
           : await editContact(contact.id, {
               ...(email === "" ? {} : { email }),
-              name,
+              ...(name === contact.name ? {} : { name }),
             });
       const verb = contact === null ? "added" : "saved";
       setValues(EMPTY);

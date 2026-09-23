@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 
-import { ApiError } from "@opsgrids/client";
+import { ApiError, PermissionProvider } from "@opsgrids/client";
 
 import * as client from "@/api/client";
 import type { Page, SuppressionOut } from "@/api/types";
@@ -22,6 +22,13 @@ const MANUAL: SuppressionOut = {
   created_at: "2026-09-19T10:05:19Z",
 };
 
+const MANUAL2: SuppressionOut = {
+  id: "f4d3a5b7-9e6c-4dad-bb0e-7c1f2a9d8e43",
+  email: "m•••@vaayu-logistics.example.com",
+  reason: "manual",
+  created_at: "2026-09-20T09:00:00Z",
+};
+
 const BOUNCED: SuppressionOut = {
   id: "e3c2f4a6-7d5f-4c9e-8a3b-4f8d1e6c7a32",
   email: "b•••@vaayu-logistics.example.com",
@@ -37,11 +44,18 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/**
+ * Every test below acts as someone holding the write grant, matching how the rest of the suite
+ * exercises write flows. The one exception is the "permission gating" block, which renders with
+ * no grants at all to prove the controls disappear for a read-only caller.
+ */
 function renderPage() {
   return render(
-    <MemoryRouter>
-      <SuppressionsPage />
-    </MemoryRouter>,
+    <PermissionProvider grants={["engage.audience.suppression.write:ORG"]}>
+      <MemoryRouter>
+        <SuppressionsPage />
+      </MemoryRouter>
+    </PermissionProvider>,
   );
 }
 
@@ -144,6 +158,53 @@ describe("suppressing an address", () => {
     // Never the typed plaintext, only the server's mask.
     expect(screen.queryByText(/someone\.real/)).toBeNull();
     expect(await screen.findByText("s•••@vaayu-logistics.example.com")).toBeTruthy();
+  });
+});
+
+describe("permission gating", () => {
+  it("hides Suppress and Remove for a viewer with no suppression.write grant", async () => {
+    vi.spyOn(client, "listSuppressions").mockResolvedValue(page([MANUAL, BOUNCED]));
+    render(
+      <PermissionProvider grants={["engage.audience.suppression.read:ORG"]}>
+        <MemoryRouter>
+          <SuppressionsPage />
+        </MemoryRouter>
+      </PermissionProvider>,
+    );
+
+    await screen.findByText("Added by hand");
+    expect(screen.queryByRole("button", { name: "Suppress an address" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Remove/ })).toBeNull();
+    // Still readable — hiding a write control never hides the data itself.
+    expect(screen.getByText("s•••@vaayu-logistics.example.com")).toBeTruthy();
+    expect(screen.getByText("b•••@vaayu-logistics.example.com")).toBeTruthy();
+  });
+});
+
+describe("pagination after a remove empties a page", () => {
+  it("steps back a page instead of showing the first-run empty state", async () => {
+    const spy = vi
+      .spyOn(client, "listSuppressions")
+      .mockResolvedValueOnce({ items: [MANUAL], total: 2, page: 1, size: 1, pages: 2 })
+      .mockResolvedValueOnce({ items: [MANUAL2], total: 2, page: 2, size: 1, pages: 2 })
+      .mockResolvedValueOnce({ items: [], total: 1, page: 2, size: 1, pages: 1 })
+      .mockResolvedValueOnce({ items: [MANUAL], total: 1, page: 1, size: 1, pages: 1 });
+    vi.spyOn(client, "removeSuppression").mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByText("s•••@vaayu-logistics.example.com");
+    await user.click(await screen.findByRole("button", { name: "Next page" }));
+    await screen.findByText("m•••@vaayu-logistics.example.com");
+
+    await user.click(screen.getByRole("button", { name: /Remove/ }));
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+
+    await screen.findByText("s•••@vaayu-logistics.example.com");
+    expect(screen.queryByText("No suppressions yet")).toBeNull();
+    await waitFor(() =>
+      expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1 })),
+    );
   });
 });
 

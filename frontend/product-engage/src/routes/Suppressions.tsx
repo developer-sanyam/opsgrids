@@ -1,6 +1,6 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import { useAsync } from "@opsgrids/client";
+import { Can, useAsync } from "@opsgrids/client";
 import { ShieldIcon } from "@opsgrids/ui";
 
 import { listSuppressions, removeSuppression } from "@/api/client";
@@ -59,10 +59,12 @@ function SuppressionRow({
       <td className="py-3 pr-4 text-sm text-muted">{formatInstant(suppression.created_at)}</td>
       <td className="py-3 whitespace-nowrap">
         {suppression.reason === "manual" ? (
-          <Button variant="ghost" size="sm" className="text-negative" onClick={onRemove}>
-            Remove
-            <span className="sr-only"> suppression on {suppression.email}</span>
-          </Button>
+          <Can permission="engage.audience.suppression.write" scope="ORG">
+            <Button variant="ghost" size="sm" className="text-negative" onClick={onRemove}>
+              Remove
+              <span className="sr-only"> suppression on {suppression.email}</span>
+            </Button>
+          </Can>
         ) : (
           <span className="text-xs text-faint">Reported automatically</span>
         )}
@@ -89,6 +91,15 @@ function Suppressions() {
   );
   const state = useAsync(loader, [reason, page, size]);
   const suppressions = state.status === "success" ? state.data.items : NO_SUPPRESSIONS;
+
+  // Removing the last row on a page beyond the first empties that page without emptying the
+  // list — stepping back is what a person would do by hand, and it's what keeps this from
+  // looking like "no suppressions yet" when there are, in fact, suppressions on the page before.
+  useEffect(() => {
+    if (state.status === "success" && suppressions.length === 0 && page > 1) {
+      setPage(page - 1);
+    }
+  }, [state.status, suppressions.length, page]);
 
   function reload(message: string) {
     announce(message);
@@ -118,7 +129,11 @@ function Suppressions() {
         eyebrow="Audience"
         title="Suppressions"
         description="Addresses Engage will never mail, whether they unsubscribed, bounced, complained, or were added by hand."
-        actions={<Button onClick={() => setAdding(true)}>Suppress an address</Button>}
+        actions={
+          <Can permission="engage.audience.suppression.write" scope="ORG">
+            <Button onClick={() => setAdding(true)}>Suppress an address</Button>
+          </Can>
+        }
       />
 
       <Card className="flex flex-col gap-4 p-4 sm:p-5">

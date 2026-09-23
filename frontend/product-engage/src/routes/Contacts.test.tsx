@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 
-import { ApiError } from "@opsgrids/client";
+import { ApiError, PermissionProvider } from "@opsgrids/client";
 
 import * as client from "@/api/client";
 import type { ContactImportOut, ContactOut, Page } from "@/api/types";
@@ -42,11 +42,18 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/**
+ * Every test below acts as someone holding the write grant, matching how the rest of the suite
+ * exercises write flows. The one exception is the "permission gating" block, which renders with
+ * no grants at all to prove the controls disappear for a read-only caller.
+ */
 function renderPage() {
   return render(
-    <MemoryRouter>
-      <ContactsPage />
-    </MemoryRouter>,
+    <PermissionProvider grants={["engage.audience.contact.write:ORG"]}>
+      <MemoryRouter>
+        <ContactsPage />
+      </MemoryRouter>
+    </PermissionProvider>,
   );
 }
 
@@ -163,6 +170,73 @@ describe("adding a contact", () => {
   });
 });
 
+describe("editing a contact", () => {
+  it("seeds the name field from the contact, and doesn't send it back when only the email changed", async () => {
+    vi.spyOn(client, "listContacts").mockResolvedValue(page([MASKED]));
+    const spy = vi.spyOn(client, "editContact").mockResolvedValue(MASKED);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Edit Priya Raghavan" }));
+    screen.getByRole("dialog");
+    // The name is real, not a mask, so unlike email it starts filled in rather than blank.
+    expect((screen.getByLabelText("Name (optional)") as HTMLInputElement).value).toBe(
+      "Priya Raghavan",
+    );
+    expect((screen.getByLabelText("Email (optional)") as HTMLInputElement).value).toBe("");
+
+    await user.type(
+      screen.getByLabelText("Email (optional)"),
+      "priya.new.address@vaayu-logistics.example.com",
+    );
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    // Only the field that actually changed goes over the wire — the untouched name is never
+    // resent, so the service's "a present field means set it" rule can't blank it.
+    expect(spy).toHaveBeenCalledWith(MASKED.id, {
+      email: "priya.new.address@vaayu-logistics.example.com",
+    });
+  });
+
+  it("sends the new name only when it was actually edited", async () => {
+    vi.spyOn(client, "listContacts").mockResolvedValue(page([MASKED]));
+    const spy = vi.spyOn(client, "editContact").mockResolvedValue(MASKED);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Edit Priya Raghavan" }));
+    const nameField = screen.getByLabelText("Name (optional)");
+    await user.clear(nameField);
+    await user.type(nameField, "Priya R. Raghavan");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    expect(spy).toHaveBeenCalledWith(MASKED.id, { name: "Priya R. Raghavan" });
+  });
+});
+
+describe("permission gating", () => {
+  it("hides Import, Add, Edit and Delete for a viewer with no contact.write grant", async () => {
+    vi.spyOn(client, "listContacts").mockResolvedValue(page([MASKED]));
+    render(
+      <PermissionProvider grants={["engage.audience.contact.read:ORG"]}>
+        <MemoryRouter>
+          <ContactsPage />
+        </MemoryRouter>
+      </PermissionProvider>,
+    );
+
+    await screen.findByRole("rowheader", { name: /^Priya Raghavan/ });
+    expect(screen.queryByRole("button", { name: "Import" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add a contact" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Edit/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Delete/ })).toBeNull();
+    // Still readable — hiding a write control never hides the data itself.
+    expect(screen.getByText("p•••@vaayu-logistics.example.com")).toBeTruthy();
+  });
+});
+
 describe("deleting a contact", () => {
   it("removes the row once the service confirms, and says so", async () => {
     vi.spyOn(client, "listContacts")
@@ -177,6 +251,36 @@ describe("deleting a contact", () => {
 
     await waitFor(() => expect(spy).toHaveBeenCalledWith(MASKED.id));
     expect(await screen.findByText("No contacts yet")).toBeTruthy();
+  });
+});
+
+describe("pagination after a delete empties a page", () => {
+  it("steps back a page instead of showing the first-run empty state", async () => {
+    const spy = vi
+      .spyOn(client, "listContacts")
+      // Initial load: page 1 of 2, one contact per page.
+      .mockResolvedValueOnce({ items: [MASKED], total: 2, page: 1, size: 1, pages: 2 })
+      // Navigate to page 2.
+      .mockResolvedValueOnce({ items: [SECOND], total: 2, page: 2, size: 1, pages: 2 })
+      // Delete the only contact on page 2 — the reload for page 2 now comes back empty.
+      .mockResolvedValueOnce({ items: [], total: 1, page: 2, size: 1, pages: 1 })
+      // Stepping back to page 1 finds the remaining contact.
+      .mockResolvedValueOnce({ items: [MASKED], total: 1, page: 1, size: 1, pages: 1 });
+    vi.spyOn(client, "deleteContact").mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("rowheader", { name: /^Priya Raghavan/ });
+    await user.click(await screen.findByRole("button", { name: "Next page" }));
+    await screen.findByRole("rowheader", { name: /^Arjun Mehta/ });
+
+    await user.click(screen.getByRole("button", { name: /Delete Arjun Mehta/ }));
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    // Lands back on page 1's contact rather than staying on an empty page 2.
+    await screen.findByRole("rowheader", { name: /^Priya Raghavan/ });
+    expect(screen.queryByText("No contacts yet")).toBeNull();
+    await waitFor(() => expect(spy).toHaveBeenLastCalledWith({ search: "", page: 1, size: 25 }));
   });
 });
 
