@@ -34,6 +34,8 @@ source lib/rebuild-decision.sh
 source lib/health-check.sh
 # shellcheck source=lib/role-reconcile.sh
 source lib/role-reconcile.sh
+# shellcheck source=lib/mfa-reseal.sh
+source lib/mfa-reseal.sh
 
 COMPOSE=(docker compose -f compose.prod.yml --env-file .env)
 
@@ -200,6 +202,7 @@ migrate() {
 		# service definition as a reason to touch postgres/redis/rabbitmq mid-migration.
 		"${COMPOSE[@]}" run --rm --no-deps -T "$svc" alembic upgrade head
 	done
+	reseal_mfa_factors_if_pending
 }
 
 up() {

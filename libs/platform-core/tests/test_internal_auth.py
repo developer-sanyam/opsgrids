@@ -20,6 +20,8 @@ from platform_core.auth import _principal_from_gateway, get_principal
 from platform_core.config import ServiceSettings
 from platform_core.errors import UnauthorizedProblem
 from platform_core.internal_auth import (
+    ADMIN_HOP_NONCE_TTL_SECONDS,
+    ADMIN_HOP_TTL_SECONDS,
     GATEWAY_AUDIENCE,
     canonical_query,
     mint_service_token,
@@ -223,3 +225,27 @@ class TestAdminGatewayHop:
         signed = sign_admin_hop("POST", path, key=self.KEY)
         nonce = verify_admin_hop(signed, "POST", path, key=self.KEY)
         assert nonce == signed.split(".")[1]
+
+    def test_a_unicode_digit_timestamp_is_refused_not_a_500(self) -> None:
+        """`'²'.isdigit()` is True and `int('²')` raises — the old check let it through to an
+        unhandled ValueError. The fullmatch on ASCII digits refuses it as malformed."""
+        path = "/api/v1/auth/operator/login"
+        signed = sign_admin_hop("POST", path, key=self.KEY)
+        _ts, nonce, mac = signed.split(".")
+        for forged_ts in ("²", "٣٣", "12²"):
+            forged = f"{forged_ts}.{nonce}.{mac}"
+            assert verify_admin_hop(forged, "POST", path, key=self.KEY) is None
+
+    def test_an_absurdly_long_timestamp_is_refused_not_an_overflow(self) -> None:
+        """Past Python's int-conversion limit a digit string raises ValueError; bounded to
+        twelve digits it never reaches `int()`."""
+        path = "/api/v1/auth/operator/login"
+        signed = sign_admin_hop("POST", path, key=self.KEY)
+        _ts, nonce, mac = signed.split(".")
+        assert verify_admin_hop(f"{'9' * 5000}.{nonce}.{mac}", "POST", path, key=self.KEY) is None
+        assert verify_admin_hop(f"{'1' * 13}.{nonce}.{mac}", "POST", path, key=self.KEY) is None
+
+    def test_the_nonce_outlives_the_whole_acceptance_window_with_margin(self) -> None:
+        """A timestamp up to TTL in the past or in the future still verifies, so a nonce must be
+        remembered for both windows plus a margin — or it could expire while still replayable."""
+        assert ADMIN_HOP_NONCE_TTL_SECONDS == 2 * ADMIN_HOP_TTL_SECONDS + 5

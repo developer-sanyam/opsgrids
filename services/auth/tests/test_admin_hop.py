@@ -18,10 +18,13 @@ answers 204 when the dependency lets it through — so the only thing a 401 can 
 from __future__ import annotations
 
 import pytest
+from fastapi.routing import APIRoute, iter_route_contexts
 from pydantic import SecretStr
 
 import app.deps as deps_module
 from app.config import Settings
+from app.deps import require_admin_hop
+from app.main import app
 from platform_core import cache
 from platform_core.internal_auth import canonical_query, sign_admin_hop
 
@@ -143,6 +146,23 @@ class TestSettingsRefuseTheUnsafeShapes:
         with pytest.raises(ValueError, match="admin_gateway_hop_key must be set"):
             self._settings(environment=environment, debug=False)
 
+    @pytest.mark.parametrize("environment", ["production", "staging", "uat"])
+    def test_an_empty_key_from_compose_refuses_to_start_like_a_missing_one(
+        self, environment: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`compose.prod.yml` passes `${ADMIN_GATEWAY_HOP_KEY:-}` — an empty string on a box
+        without the key. That must read as *unset* (so auth refuses for the right reason), not
+        as a zero-length key."""
+        monkeypatch.setenv("ADMIN_GATEWAY_HOP_KEY", "")
+        with pytest.raises(ValueError, match="admin_gateway_hop_key must be set"):
+            self._settings(environment=environment, debug=False)
+
+    def test_an_empty_key_in_development_is_unset_not_a_key_nothing_matches(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ADMIN_GATEWAY_HOP_KEY", "")
+        assert self._settings(environment="local").admin_gateway_hop_key is None
+
     @pytest.mark.parametrize("environment", ["local", "test", "ci"])
     def test_development_without_the_key_starts(self, environment: str) -> None:
         assert self._settings(environment=environment).admin_gateway_hop_key is None
@@ -167,3 +187,46 @@ class TestSettingsRefuseTheUnsafeShapes:
                 internal_service_token=SecretStr(shared),
                 admin_gateway_hop_key=SecretStr(shared),
             )
+
+
+class TestEveryOperatorRouteIsGuarded:
+    """Item 6 of the final review: the guard is attached route by route, so a new operator route
+    added without it would be reachable by anything that gets past the route table. Introspect
+    the real app rather than trusting a list."""
+
+    def _operator_routes(self) -> list[tuple[str, set[str], APIRoute]]:
+        """(client path, methods, route) — walked through FastAPI's own route-context iterator,
+        because included routers are wrappers carrying a prefix and are not flattened into
+        `app.routes` (a plain `app.routes` scan silently finds nothing; `test_tenancy.py`'s
+        route audit walks it the same way)."""
+        found: list[tuple[str, set[str], APIRoute]] = []
+        for context in iter_route_contexts(app.routes):
+            route = context.original_route
+            if not isinstance(route, APIRoute):
+                continue
+            path = context.path or route.path
+            if path.startswith("/api/v1/auth/operator"):
+                found.append((path, set(context.methods or route.methods), route))
+        return found
+
+    def test_the_scan_finds_the_operator_surface(self) -> None:
+        paths = {path for path, _methods, _route in self._operator_routes()}
+        assert {
+            "/api/v1/auth/operator/login",
+            "/api/v1/auth/operator/mfa/verify",
+            "/api/v1/auth/operator/mfa/enrol",
+            "/api/v1/auth/operator/mfa/enrol/confirm",
+            "/api/v1/auth/operator/refresh",
+            "/api/v1/auth/operator/logout",
+            "/api/v1/auth/operator/me",
+            "/api/v1/auth/operator/enrollment-codes",
+            "/api/v1/auth/operator/staff/{staff_id}/mfa:reset",
+        } <= paths, "guards the guard: an empty scan would pass every assertion below"
+
+    def test_every_operator_route_depends_on_require_admin_hop(self) -> None:
+        unguarded = [
+            f"{sorted(methods)} {path}"
+            for path, methods, route in self._operator_routes()
+            if not any(dep.call is require_admin_hop for dep in route.dependant.dependencies)
+        ]
+        assert unguarded == []

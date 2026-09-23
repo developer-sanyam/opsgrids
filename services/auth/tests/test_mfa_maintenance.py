@@ -5,7 +5,9 @@ MAJOR 3 and MINOR 10 of the 2026-09-24 security review.
 
 from __future__ import annotations
 
+import subprocess
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -17,6 +19,18 @@ from platform_core import pii
 from tests.test_operator import STAFF_EMAIL, _enrol_operator_mfa, _make_staff
 
 pytestmark = pytest.mark.integration
+
+
+def _deploy_count_sql() -> str:
+    """The statement `infrastructure/edge/lib/mfa-reseal.sh` gates the deploy on, read out of
+    that file by sourcing it — the real text, not a copy."""
+    lib = Path(__file__).resolve().parents[3] / "infrastructure/edge/lib/mfa-reseal.sh"
+    return subprocess.run(  # noqa: S603 - a repository script, no untrusted input
+        ["bash", "-c", f'source "{lib}"; printf %s "$MFA_PLAINTEXT_COUNT_SQL"'],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
 
 
 @pytest.fixture
@@ -41,8 +55,8 @@ class TestResealMfaFactors:
         session.add(factor)
         await session.commit()
 
-        count = await reseal_mfa_factors(legacy_cfg)
-        assert count == 1
+        result = await reseal_mfa_factors(legacy_cfg)
+        assert (result.resealed, result.remaining) == (1, 0)
 
         # `reseal_mfa_factors` writes through its own connection — refresh past this session's
         # identity map to see it, rather than the pre-reseal object `get` would hand back.
@@ -56,8 +70,8 @@ class TestResealMfaFactors:
         await _enrol_operator_mfa(session, cfg, pair)
         await session.commit()
 
-        count = await reseal_mfa_factors(cfg)
-        assert count == 0
+        result = await reseal_mfa_factors(cfg)
+        assert (result.resealed, result.remaining) == (0, 0)
 
     async def test_a_row_with_no_secret_is_skipped_without_error(self, session, cfg) -> None:
         staff = await _make_staff(session)
@@ -65,8 +79,8 @@ class TestResealMfaFactors:
         session.add(factor)
         await session.commit()
 
-        count = await reseal_mfa_factors(cfg)
-        assert count == 0
+        result = await reseal_mfa_factors(cfg)
+        assert (result.resealed, result.remaining) == (0, 0)
 
     async def test_running_it_twice_is_idempotent(self, session, cfg, legacy_cfg) -> None:
         staff = await _make_staff(session)
@@ -79,8 +93,9 @@ class TestResealMfaFactors:
 
         first = await reseal_mfa_factors(legacy_cfg)
         second = await reseal_mfa_factors(legacy_cfg)
-        assert first == 1
-        assert second == 0, "a row already sealed must not be counted again"
+        assert first.resealed == 1
+        assert second.resealed == 0, "a row already sealed must not be counted again"
+        assert second.remaining == 0
 
 
 class TestLegacyPlaintextIsOptIn:
@@ -109,7 +124,8 @@ class TestLegacyPlaintextIsOptIn:
         factor = await self._plaintext_factor(session, staff, secret)
         code = security._totp_at(secret, int(datetime.now(UTC).timestamp()) // 30)
 
-        assert await services._accept_second_factor(session, staff.id, code, cfg=cfg) is None
+        with pytest.raises(services.MfaResealPendingProblem):
+            await services._accept_second_factor(session, staff.id, code, cfg=cfg)
         await session.refresh(factor)
         assert factor.secret_enc == secret.encode("ascii"), "a refused row is left as it was"
 
@@ -149,7 +165,9 @@ class TestLegacyPlaintextIsOptIn:
         secret = security.generate_totp_secret()
         factor = await self._plaintext_factor(session, staff, secret)
 
-        assert await reseal_mfa_factors(cfg) == 0
+        result = await reseal_mfa_factors(cfg)
+        assert result.resealed == 0
+        assert result.remaining == 1, "a run that leaves plaintext behind must say so (R1(b))"
         await session.refresh(factor)
         assert factor.secret_enc == secret.encode("ascii")
 
@@ -210,6 +228,78 @@ class TestEnvelopesSealedBeforeTheAad:
 
         code = security._totp_at(secret, int(datetime.now(UTC).timestamp()) // 30)
         assert await services._accept_second_factor(session, staff.id, code, cfg=cfg) is None
+
+
+class TestTheResealCommandLine:
+    """R1(b): `reseal` reports what it left, and a run that leaves plaintext behind fails —
+    the old "resealed 0" was identical for a database with nothing to do and for one whose
+    every legacy factor was still unreadable."""
+
+    def _run(self, monkeypatch, result: services.ResealResult) -> None:
+        from app import mfa_maintenance
+
+        async def fake(_cfg):
+            return result
+
+        monkeypatch.setattr(mfa_maintenance, "reseal_mfa_factors", fake)
+        mfa_maintenance.reseal_main()
+
+    def test_it_prints_both_counts_and_succeeds_when_nothing_remains(
+        self, monkeypatch, capsys
+    ) -> None:
+        self._run(monkeypatch, services.ResealResult(resealed=3, remaining=0))
+        assert capsys.readouterr().out.splitlines() == ["resealed=3", "remaining=0"]
+
+    def test_it_exits_1_when_plaintext_remains(self, monkeypatch, capsys) -> None:
+        with pytest.raises(SystemExit) as raised:
+            self._run(monkeypatch, services.ResealResult(resealed=0, remaining=2))
+        assert raised.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.out.splitlines() == ["resealed=0", "remaining=2"]
+        assert "MFA_ACCEPT_LEGACY_PLAINTEXT" in captured.err
+
+    def test_the_module_form_the_deploy_runs_dispatches_to_reseal(
+        self, monkeypatch, capsys
+    ) -> None:
+        import sys
+
+        from app import mfa_maintenance
+
+        async def fake(_cfg):
+            return services.ResealResult(resealed=1, remaining=0)
+
+        monkeypatch.setattr(mfa_maintenance, "reseal_mfa_factors", fake)
+        monkeypatch.setattr(sys, "argv", ["app.mfa_maintenance", "reseal"])
+        mfa_maintenance.main()
+        assert "resealed=1" in capsys.readouterr().out
+
+    def test_an_unknown_subcommand_is_refused(self, monkeypatch) -> None:
+        import sys
+
+        from app import mfa_maintenance
+
+        monkeypatch.setattr(sys, "argv", ["app.mfa_maintenance", "explode"])
+        with pytest.raises(SystemExit, match="usage"):
+            mfa_maintenance.main()
+
+
+class TestTheDeploysCountSql:
+    async def test_it_finds_exactly_the_plaintext_rows(self, session, cfg) -> None:
+        """The statement `lib/mfa-reseal.sh` gates the deploy on, and the RUNBOOK hands operators,
+        run against the real column: a raw base32 secret matches; a sealed envelope, a value too
+        short to be a TOTP secret, and a row with no secret do not."""
+        from sqlalchemy import text
+
+        sql = _deploy_count_sql()
+
+        staff = await _make_staff(session)
+        secret = security.generate_totp_secret()
+        sealed, _mask = pii.seal(secret, kind="generic", settings=cfg)
+        for stored in (secret.encode("ascii"), sealed, b"ABCDEFG", None):
+            session.add(MfaFactor(user_id=staff.id, type="totp", label="x", secret_enc=stored))
+        await session.commit()
+
+        assert (await session.execute(text(sql))).scalar_one() == 1
 
 
 class TestResetAllStaffMfa:

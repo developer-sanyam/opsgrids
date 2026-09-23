@@ -60,8 +60,8 @@ class Settings(ServiceSettings):
     #: legitimate legacy row on a box that predates PII sealing; anywhere else it is a
     #: tampered or hand-inserted row, and silently accepting it would let whoever can write
     #: that column choose a factor's secret. `False` by default everywhere; set `True` on a
-    #: box only until `bin/reseal-mfa-factors` prints 0, then remove it (RUNBOOK, "Operator
-    #: MFA"). Tests and `local`/`test`/`ci` set it freely to exercise the legacy path.
+    #: box only until `bin/reseal-mfa-factors` reports `remaining=0`, then remove it (RUNBOOK,
+    #: "Operator MFA"). Tests and `local`/`test`/`ci` set it freely to exercise the legacy path.
     mfa_accept_legacy_plaintext: bool = False
 
     def model_post_init(self, _: object) -> None:

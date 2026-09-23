@@ -30,10 +30,13 @@ def _environment(service: str) -> dict[str, object]:
     return env
 
 
-def test_auth_is_given_the_hop_key_and_compose_refuses_to_start_without_it() -> None:
-    """`${KEY:?}` — compose aborts the whole `up` when the variable is unset or empty, the
-    deploy-time twin of auth's own refuse-to-start check."""
-    assert _environment("auth").get(KEY) == "${ADMIN_GATEWAY_HOP_KEY:?}"
+def test_auth_is_given_the_hop_key_but_a_missing_one_does_not_break_compose() -> None:
+    """`${KEY:-}`, not `${KEY:?}`: a `:?` aborts *every* compose command on a box without the
+    key — `backup.sh`'s `pg_dump` and a rollback included — and turns a missing secret into an
+    outage of the whole box. The empty value reaches auth, which refuses to start for the right
+    reason (`Settings`: no hop key in production/staging/uat), and preflight is where a missing
+    key is caught before anything changes (`test_preflight_secrets.py`)."""
+    assert _environment("auth").get(KEY) == "${ADMIN_GATEWAY_HOP_KEY:-}"
 
 
 def test_app_gateway_is_not_given_the_hop_key() -> None:

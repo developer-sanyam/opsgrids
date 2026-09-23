@@ -186,6 +186,18 @@ class ServiceSettings(BaseSettings):
             return [item.strip() for item in v.split(",") if item.strip()]
         return v
 
+    @field_validator("admin_gateway_hop_key", mode="before")
+    @classmethod
+    def _empty_hop_key_is_unset(cls, v: object) -> object:
+        """`compose.prod.yml` passes `${ADMIN_GATEWAY_HOP_KEY:-}` — an *empty* value when the
+        box has none, so a missing key does not break every compose command (backup.sh's
+        `pg_dump` included). An empty string is "unset", not a zero-length key: in a real
+        deployment auth then refuses to start for the right reason (no key), and in development
+        the signature check stays a no-op rather than rejecting every request against ""."""
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"

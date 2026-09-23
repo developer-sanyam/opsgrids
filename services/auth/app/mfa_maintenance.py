@@ -7,7 +7,8 @@ rather than waiting for each account's next sign-in to reseal it lazily. Safe to
 and safe to run against a database with nothing left to reseal — it prints only a count.
 Raw-plaintext rows (pre-PII-sealing) are only resealed when `MFA_ACCEPT_LEGACY_PLAINTEXT=true` is
 set for the run (m4 of the third-round review): nothing authenticates such a row, so honouring it
-is an explicit decision. Run with it set until this prints 0, then remove it.
+is an explicit decision. Run with it set until it prints `remaining=0` (and exits 0), then
+remove it.
 
 `bin/reset-staff-mfa --all` (MINOR 10): wipes every staff account's MFA factors and recovery
 codes outright. `local`/`test`/`ci` only, and `--all` is mandatory — there is no per-account form,
@@ -37,10 +38,10 @@ log = get_logger("auth.mfa_maintenance")
 _RESET_ALLOWED_ENVIRONMENTS = ("local", "test", "ci")
 
 
-async def reseal_mfa_factors(cfg: Settings) -> int:
+async def reseal_mfa_factors(cfg: Settings) -> services.ResealResult:
     """Run every factor with a stored secret through the tolerant read once, so legacy rows
-    are resealed now instead of at whatever sign-in happens to come next. Returns the count
-    resealed."""
+    are resealed now instead of at whatever sign-in happens to come next. Reports how many
+    were resealed and how many plaintext rows are *still* there."""
     init_engine(cfg)
     try:
         async with session_scope() as session:
@@ -50,8 +51,20 @@ async def reseal_mfa_factors(cfg: Settings) -> int:
 
 
 def reseal_main() -> None:
-    count = asyncio.run(reseal_mfa_factors(settings()))
-    print(f"resealed {count} legacy mfa factor row(s)")  # noqa: T201 - deploy script output
+    """Prints `resealed=N` and `remaining=N` (counts only, nothing else on stdout — the deploy
+    step parses it) and **exits 1 when `remaining` is above zero**: a run that leaves
+    plaintext behind has not done its job, and the previous "resealed 0" was indistinguishable
+    from a database with nothing to do (R1(b) of the final review)."""
+    result = asyncio.run(reseal_mfa_factors(settings()))
+    print(f"resealed={result.resealed}")  # noqa: T201 - deploy script output
+    print(f"remaining={result.remaining}")  # noqa: T201 - deploy script output
+    if result.remaining:
+        print(  # noqa: T201 - deploy script output
+            f"{result.remaining} MFA factor(s) are still plaintext: run with "
+            "MFA_ACCEPT_LEGACY_PLAINTEXT=true (RUNBOOK, 'Operator MFA').",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
 
 
 async def reset_all_staff_mfa(cfg: Settings) -> int:
@@ -89,5 +102,17 @@ def reset_main() -> None:
     print(f"wiped mfa factors and recovery codes for {count} staff account(s)")  # noqa: T201
 
 
+def main() -> None:
+    """`python -m app.mfa_maintenance reseal` | `... reset --all` — the module form the deploy
+    step uses; `bin/reseal-mfa-factors` and `bin/reset-staff-mfa` call the same functions."""
+    command = sys.argv[1] if len(sys.argv) > 1 else ""
+    if command == "reseal":
+        reseal_main()
+    elif command == "reset":
+        reset_main()
+    else:
+        raise SystemExit("usage: python -m app.mfa_maintenance {reseal|reset --all}")
+
+
 if __name__ == "__main__":
-    reset_main()
+    main()

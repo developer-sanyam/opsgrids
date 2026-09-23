@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import security, services
 from app.config import Settings
 from app.keys import KeyPair
-from app.models import Credential, RefreshToken, Session
+from app.models import Credential, MfaFactor, MfaRecoveryCode, RefreshToken, Session
 from platform_core.errors import (
     BusinessRuleProblem,
     ForbiddenProblem,
@@ -901,6 +901,111 @@ class TestMfa:
             session_id=str(auth_session.id),
         )
         assert uri.startswith("otpauth://totp/")
+
+
+class TestLegacyPlaintextFactorNeverLocksAMemberOut:
+    """R1 of the final security review. A box deployed from `main` stores every tenant TOTP
+    secret as plaintext, and auth refuses a plaintext row unless told otherwise. Without this,
+    every correct code from such a member was counted as a *failure*: five tries, then a
+    fifteen-minute lock with no admin unlock. A refusal caused by *our* state must count for
+    nothing, say so distinctly, and leave the recovery codes working."""
+
+    async def _legacy_member(self, session, secret: str) -> Credential:
+        session.add(
+            MfaFactor(
+                user_id=USER,
+                type="totp",
+                label="Authenticator app",
+                secret_enc=secret.encode("ascii"),
+                confirmed_at=datetime.now(UTC),
+            )
+        )
+        session.add(
+            MfaRecoveryCode(user_id=USER, code_hash=security.hash_recovery_code("abcd-efgh"))
+        )
+        credential = await session.get(Credential, USER)
+        assert credential is not None
+        credential.mfa_enforced = True
+        await session.commit()
+        return credential
+
+    async def _verify(self, session, cfg, pair, directory, token: str, code: str):
+        return await services.verify_mfa(
+            session,
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            entitlements=FakeEntitlements(),
+            pre_auth_token=token,
+            code=code,
+        )
+
+    async def test_a_correct_code_is_a_distinct_503_and_never_counts_or_locks(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        assert cfg.mfa_accept_legacy_plaintext is False
+        secret = security.generate_totp_secret()
+        credential = await self._legacy_member(session, secret)
+        outcome = await _login(session, cfg, pair, directory)
+        assert outcome.status == "mfa_required"
+        correct = security._totp_at(secret, int(datetime.now(UTC).timestamp()) // 30)
+
+        for _ in range(cfg.max_failed_attempts + 2):
+            with pytest.raises(services.MfaResealPendingProblem) as raised:
+                await self._verify(session, cfg, pair, directory, outcome.pre_auth_token, correct)
+            assert raised.value.status_code == 503
+            assert "recovery code" in raised.value.detail
+
+        await session.refresh(credential)
+        assert credential.mfa_failed_attempts == 0
+        assert credential.mfa_locked_until is None
+
+    async def test_a_recovery_code_still_signs_them_in(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        secret = security.generate_totp_secret()
+        await self._legacy_member(session, secret)
+        outcome = await _login(session, cfg, pair, directory)
+        correct = security._totp_at(secret, int(datetime.now(UTC).timestamp()) // 30)
+        with pytest.raises(services.MfaResealPendingProblem):
+            await self._verify(session, cfg, pair, directory, outcome.pre_auth_token, correct)
+
+        done = await self._verify(
+            session, cfg, pair, directory, outcome.pre_auth_token, "abcd-efgh"
+        )
+        assert done.status == "complete"
+
+    async def test_a_guess_that_is_not_a_six_digit_code_still_counts(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """Only a six-digit miss is ambiguous (it may have been right). Anything else can only
+        have been a recovery-code guess, and must not be free to grind."""
+        credential = await self._legacy_member(session, security.generate_totp_secret())
+        outcome = await _login(session, cfg, pair, directory)
+        with pytest.raises(UnauthorizedProblem, match="not valid"):
+            await self._verify(session, cfg, pair, directory, outcome.pre_auth_token, "wxyz-1234")
+        await session.refresh(credential)
+        assert credential.mfa_failed_attempts == 1
+
+    async def test_a_wrong_code_on_a_sealed_factor_still_counts(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        factor, secret, _ = await services.begin_mfa_enrolment(
+            session, USER, account_email="sam@example.com", cfg=cfg
+        )
+        step = int(datetime.now(UTC).timestamp()) // 30
+        await services.confirm_mfa_enrolment(
+            session,
+            factor_id=factor.id,
+            user_id=USER,
+            code=security._totp_at(secret, step),
+            cfg=cfg,
+        )
+        outcome = await _login(session, cfg, pair, directory)
+        with pytest.raises(UnauthorizedProblem, match="not valid"):
+            await self._verify(session, cfg, pair, directory, outcome.pre_auth_token, "000000")
+        credential = await session.get(Credential, USER)
+        assert credential is not None and credential.mfa_failed_attempts == 1
 
 
 class TestSessionsAndEvents:

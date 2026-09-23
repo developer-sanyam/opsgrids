@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# One-time deploy step, MAJOR 3 of the 2026-09-24 security review: force every MFA factor with a
-# stored secret through the tolerant legacy read and reseal it under the current envelope and
-# per-row AAD, rather than waiting for each staff account's next sign-in. Idempotent — safe to
-# run again, and safe to run against a database with nothing left to reseal.
-exec python -c "from app.mfa_maintenance import reseal_main; reseal_main()"
+# Deploy step (R1 of the final security review): reseal every MFA factor — tenant AND staff —
+# that a box deployed from main still holds as raw plaintext (or sealed before the per-row AAD).
+# Prints `resealed=N` and `remaining=N`; exits 1 when remaining is above zero. Run with
+# MFA_ACCEPT_LEGACY_PLAINTEXT=true, one-off, from the NEW image, after migrate and before `up` —
+# infrastructure/edge/lib/mfa-reseal.sh does exactly that on every deploy where the count is
+# not zero. Idempotent.
+exec python -m app.mfa_maintenance reseal

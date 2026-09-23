@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import secrets
 import time
 import uuid
@@ -154,8 +155,11 @@ ADMIN_HOP_TTL_SECONDS = 30
 #: How long the callee remembers a nonce it has accepted. Must exceed the signature's own
 #: validity window in *both* directions (a timestamp up to `ADMIN_HOP_TTL_SECONDS` in the past
 #: or the future still verifies), or a nonce could expire from the store while its signature is
-#: still good and be replayed inside the gap.
-ADMIN_HOP_NONCE_TTL_SECONDS = 2 * ADMIN_HOP_TTL_SECONDS
+#: still good and be replayed inside the gap. Five seconds of margin over the two windows, so
+#: clock skew between the callee and the store, or a request that verifies right at the edge,
+#: cannot land after the nonce has already expired.
+ADMIN_HOP_NONCE_TTL_SECONDS = 2 * ADMIN_HOP_TTL_SECONDS + 5
+_HOP_TS_RE = re.compile(r"[0-9]{1,12}")
 
 
 def canonical_query(pairs: Iterable[tuple[str, str]]) -> str:
@@ -213,7 +217,11 @@ def verify_admin_hop(
     if len(parts) != 3:
         return None
     ts_raw, nonce, mac = parts
-    if not ts_raw.isdigit() or not nonce:
+    # ASCII digits only, and bounded: `str.isdigit()` is true for '²' and other Unicode digits
+    # that `int()` then either rejects with a ValueError (an unhandled 500 here) or, for a
+    # 5000-digit string, refuses past Python's int-conversion limit. Twelve digits covers every
+    # timestamp until the year 33658.
+    if not _HOP_TS_RE.fullmatch(ts_raw) or not nonce:
         return None
     current = now if now is not None else time.time()
     if abs(current - int(ts_raw)) > ADMIN_HOP_TTL_SECONDS:

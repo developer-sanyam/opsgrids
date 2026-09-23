@@ -117,6 +117,16 @@ TOTP_DIGITS = 6
 TOTP_WINDOW = 1
 
 
+def looks_like_totp_code(code: str) -> bool:
+    """Could this submission be an authenticator-app code at all? Exactly `TOTP_DIGITS` ASCII
+    digits, spaces ignored — the same normalisation `verify_totp` applies. Anything else can
+    only have been an attempt at a recovery code, which matters to the caller in one place: a
+    factor it could not read (a legacy-plaintext row it refuses) makes a *six-digit* miss
+    ambiguous — it may have been right — but never a miss of any other shape."""
+    candidate = code.strip().replace(" ", "")
+    return len(candidate) == TOTP_DIGITS and candidate.isascii() and candidate.isdigit()
+
+
 def generate_totp_secret() -> str:
     """A base32 secret, the format every authenticator app expects."""
     return base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")

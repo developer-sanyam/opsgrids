@@ -1043,6 +1043,55 @@ class TestOperatorMfaVerify:
         assert staff.mfa_failed_attempts == 1, "one typo after expiry is one strike, not a re-lock"
         assert not services._staff_locked(staff)
 
+    async def test_a_refused_legacy_plaintext_factor_never_counts_against_the_operator(
+        self, session, cfg, pair
+    ) -> None:
+        """R1 of the final security review, operator side: a staff factor still stored as
+        plaintext (auth refuses it unless told otherwise) stops a correct six-digit code with a
+        distinct 503 that is not counted and never trips the MFA lock; a recovery code signs in."""
+        from app.models import MfaFactor, MfaRecoveryCode
+
+        assert cfg.mfa_accept_legacy_plaintext is False
+        staff = await _make_staff(session)
+        secret = security.generate_totp_secret()
+        session.add(
+            MfaFactor(
+                user_id=staff.id,
+                type="totp",
+                label="Authenticator app",
+                secret_enc=secret.encode("ascii"),
+                confirmed_at=datetime.now(UTC),
+            )
+        )
+        session.add(
+            MfaRecoveryCode(user_id=staff.id, code_hash=security.hash_recovery_code("abcd-efgh"))
+        )
+        await session.commit()
+        outcome = await services.operator_login(
+            session, cfg=cfg, pair=pair, email=STAFF_EMAIL, password=STAFF_PASSWORD
+        )
+        assert outcome.status == "mfa_required"
+        correct = security._totp_at(secret, int(datetime.now(UTC).timestamp()) // 30)
+
+        for _ in range(cfg.max_failed_attempts + 2):
+            with pytest.raises(services.MfaResealPendingProblem) as raised:
+                await services.operator_verify_mfa(
+                    session,
+                    cfg=cfg,
+                    pair=pair,
+                    pre_auth_token=outcome.pre_auth_token,
+                    code=correct,
+                )
+            assert raised.value.status_code == 503
+        await session.refresh(staff)
+        assert staff.mfa_failed_attempts == 0
+        assert staff.mfa_locked_until is None
+
+        issued = await services.operator_verify_mfa(
+            session, cfg=cfg, pair=pair, pre_auth_token=outcome.pre_auth_token, code="abcd-efgh"
+        )
+        assert issued.operator_roles
+
 
 class TestOperatorAuditTrail:
     async def test_password_verification_and_sign_in_are_both_audited(

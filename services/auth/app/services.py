@@ -66,6 +66,7 @@ from platform_core.errors import (
     BusinessRuleProblem,
     ForbiddenProblem,
     NotFoundProblem,
+    ProblemError,
     UnauthorizedProblem,
     UpstreamUnavailableProblem,
 )
@@ -1095,6 +1096,18 @@ def _legacy_totp_secret(raw: bytes) -> str | None:
     return raw.decode("ascii")
 
 
+def _is_refused_plaintext(factor: MfaFactor, cfg: Settings) -> bool:
+    """True when `_open_factor_secret` returned `None` for this factor *because* it is a raw
+    plaintext row and `cfg.mfa_accept_legacy_plaintext` is off. Exact, not a heuristic: a real
+    `pii.seal` envelope leads with a version byte outside the base32 charset, so it can never
+    match `_LEGACY_TOTP_SECRET_RE`."""
+    return (
+        not cfg.mfa_accept_legacy_plaintext
+        and factor.secret_enc is not None
+        and _legacy_totp_secret(factor.secret_enc) is not None
+    )
+
+
 async def _open_factor_secret(
     session: AsyncSession,
     factor: MfaFactor,
@@ -1116,8 +1129,10 @@ async def _open_factor_secret(
     3. **Raw base32 plaintext** (m4) — a row from before PII sealing existed. Unlike the other
        two, nothing authenticates it: anyone able to write `mfa_factors.secret_enc` could pick a
        factor's secret. So it is honoured only while `cfg.mfa_accept_legacy_plaintext` is set —
-       a box turns that on deliberately, until `bin/reseal-mfa-factors` prints 0, then removes it.
-       Otherwise it is refused and logged, like any other unreadable row.
+       a box turns that on deliberately (the deploy's one-off reseal does), until
+       `bin/reseal-mfa-factors` reports `remaining=0`. Otherwise it is refused and logged — and,
+       for a confirmed factor, `_accept_second_factor` answers `MfaResealPendingProblem` instead
+       of counting a failure, because the miss may not have been the member's.
 
     `pii.PiiError` is caught here, not propagated: one unopenable or malformed factor must skip
     *that* factor, never crash the sign-in outright and never skip the recovery-code fallback
@@ -1158,13 +1173,28 @@ async def _open_factor_secret(
     return secret
 
 
-async def reseal_legacy_mfa_factors(session: AsyncSession, *, cfg: Settings) -> int:
+@dataclass(frozen=True, slots=True)
+class ResealResult:
+    """What one `reseal_legacy_mfa_factors` pass did. `remaining` is the number of factors that
+    are *still* raw plaintext afterwards — what a deploy has to see reach zero before the new
+    containers serve — and is not the same as "rows that were not touched": a row that was
+    already sealed is neither resealed nor remaining."""
+
+    resealed: int
+    remaining: int
+
+
+async def reseal_legacy_mfa_factors(session: AsyncSession, *, cfg: Settings) -> ResealResult:
     """The one-off deploy step behind `bin/reseal-mfa-factors` (MAJOR 3): force every factor
     with a stored secret through `_open_factor_secret`'s tolerant read, so a row this
-    deployment happens to hold from before PII sealing existed is resealed now rather than
-    waiting for its account's next sign-in. Idempotent — a row that is already sealed just
-    opens and reseals to an equivalent envelope — and safe to run against a database with none:
-    it counts only what it actually touched.
+    deployment holds from before PII sealing (or sealed before the per-row AAD) is resealed now
+    rather than waiting for its account's next sign-in. Idempotent — an already-sealed row just
+    opens and is left alone — and safe to run against a database with none.
+
+    Reports what it *left* as well as what it did (R1(b) of the final review): with
+    `mfa_accept_legacy_plaintext` off, plaintext rows are refused, so a run without the flag
+    used to print "resealed 0" and look like success while every legacy factor was still
+    unreadable. `remaining` is the plaintext rows still there after the pass.
     """
     ids = (
         (await session.execute(select(MfaFactor.id).where(MfaFactor.secret_enc.isnot(None))))
@@ -1172,15 +1202,18 @@ async def reseal_legacy_mfa_factors(session: AsyncSession, *, cfg: Settings) -> 
         .all()
     )
     resealed = 0
+    remaining = 0
     for factor_id in ids:
         factor = await session.get(MfaFactor, factor_id)
-        if factor is None:
+        if factor is None or factor.secret_enc is None:
             continue
         before = factor.secret_enc
-        secret = await _open_factor_secret(session, factor, cfg=cfg)
-        if secret is not None and factor.secret_enc != before:
+        await _open_factor_secret(session, factor, cfg=cfg)
+        if factor.secret_enc != before:
             resealed += 1
-    return resealed
+        if factor.secret_enc is not None and _legacy_totp_secret(factor.secret_enc) is not None:
+            remaining += 1
+    return ResealResult(resealed=resealed, remaining=remaining)
 
 
 async def confirm_mfa_enrolment(
@@ -1335,6 +1368,20 @@ async def verify_mfa(
     return LoginOutcome(status="complete", issued=issued)
 
 
+class MfaResealPendingProblem(ProblemError):
+    """A factor this deployment refuses to read yet — a legacy-plaintext TOTP row awaiting
+    `bin/reseal-mfa-factors` — stopped a code that may well have been correct.
+
+    503-class on purpose: it is *our* state that is wrong, not the caller's code, and it must
+    not be counted against them (R1 of the final review — without this, every tenant member with
+    a pre-sealing factor was locked out on the first deploy, five correct codes and a fifteen
+    minute lock). A recovery code still signs them in."""
+
+    status_code = 503
+    problem_type = "mfa-reseal-pending"
+    title = "Multi-factor re-seal pending"
+
+
 async def _accept_second_factor(
     session: AsyncSession, user_id: uuid.UUID, code: str, *, cfg: Settings
 ) -> str | None:
@@ -1344,11 +1391,20 @@ async def _accept_second_factor(
     its own audited action (MINOR 11), because presenting the break-glass code is a materially
     different event from an ordinary authenticator check and an operator reading the audit trail
     needs to be able to tell them apart without decoding anything.
+
+    **Raises `MfaResealPendingProblem`, and does not return `None`, when a six-digit code missed
+    only because a confirmed factor was a legacy-plaintext row this deployment refuses**
+    (`mfa_accept_legacy_plaintext` off). The caller counts a `None` as a failed attempt and
+    eventually locks the account; here the code may have been right and *we* could not check it,
+    so it must count for nothing. Anything that is not six digits cannot have been a code for
+    that factor — it was a recovery-code guess — and still returns `None` and still counts.
     """
+    plaintext_refused = False
     stmt = select(MfaFactor).where(MfaFactor.user_id == user_id, MfaFactor.confirmed_at.isnot(None))
     for factor in (await session.execute(stmt)).scalars().all():
         secret = await _open_factor_secret(session, factor, cfg=cfg)
         if secret is None:
+            plaintext_refused = plaintext_refused or _is_refused_plaintext(factor, cfg)
             continue
         step = security.verify_totp(secret, code, last_used_step=factor.last_used_step)
         if step is not None:
@@ -1364,6 +1420,12 @@ async def _accept_second_factor(
         if security.verify_recovery_code(recovery.code_hash, code):
             recovery.used_at = datetime.now(UTC)
             return "recovery"
+
+    if plaintext_refused and security.looks_like_totp_code(code):
+        log.error("auth.mfa_reseal_pending", user_id=str(user_id))
+        raise MfaResealPendingProblem(
+            "Multi-factor re-seal pending — use a recovery code to sign in."
+        )
     return None
 
 
