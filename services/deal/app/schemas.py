@@ -19,6 +19,19 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+
+def _reject_explicit_null(instance: BaseModel, fields: tuple[str, ...]) -> None:
+    """A PATCH field typed `X | None` is optional two different ways: omitted (leave alone) or
+    explicitly `null` (the caller's own JSON says so). For a field the database column never
+    allows NULL, only the first meaning is valid — the second is a malformed request (422),
+    not a value that should reach an `IntegrityError` or a silent no-op write.
+    `primary_contact_id` is genuinely nullable (a deal may have no primary contact) and is
+    never passed here. Same helper `operations.app.schemas._reject_explicit_null` uses."""
+    for field in fields:
+        if field in instance.model_fields_set and getattr(instance, field) is None:
+            raise ValueError(f"{field} cannot be set to null")
+
+
 # ------------------------------------------------------------------ vocabularies (match the SPA)
 
 DealStage = Literal["lead", "qualified", "proposal", "negotiation", "closed_won", "closed_lost"]
@@ -70,6 +83,8 @@ class DealPatch(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
     company_id: uuid.UUID | None = None
+    #: Genuinely nullable in the domain (a deal may have no primary contact), so this one is
+    #: deliberately not passed to `_reject_explicit_null` below.
     primary_contact_id: uuid.UUID | None = None
     owner_id: uuid.UUID | None = None
     value_minor: int | None = Field(default=None, ge=0)
@@ -77,6 +92,23 @@ class DealPatch(BaseModel):
     close_date: date | None = None
     probability: int | None = Field(default=None, ge=0, le=100)
     source: str | None = Field(default=None, max_length=60)
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> Self:
+        _reject_explicit_null(
+            self,
+            (
+                "name",
+                "company_id",
+                "owner_id",
+                "value_minor",
+                "currency",
+                "close_date",
+                "probability",
+                "source",
+            ),
+        )
+        return self
 
 
 class StageMoveIn(BaseModel):
@@ -230,3 +262,25 @@ class SummaryOut(BaseModel):
     trend: list[TrendPointOut] = Field(default_factory=list)
     #: The by-stage funnel over the four open stages, in board order.
     funnel: list[StageRollupOut] = Field(default_factory=list)
+
+
+# ------------------------------------------------------------------ lead conversion (internal)
+
+
+class LeadConversionDealIn(BaseModel):
+    """What lead-service sends `:convert` — its own deterministic `deal_id`, so opening a
+    deal is idempotent by id (`app/api/internal.py`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    deal_id: uuid.UUID
+    company_id: uuid.UUID
+    contact_id: uuid.UUID | None = None
+    owner_id: uuid.UUID
+    name: str = Field(min_length=1, max_length=200)
+    close_date: date
+    source: str = Field(default="lead", max_length=60)
+
+
+class LeadConversionDealOut(BaseModel):
+    deal_id: str

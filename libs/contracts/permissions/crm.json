@@ -74,6 +74,33 @@
       "resource": "owner"
     },
     {
+      "action": "convert",
+      "default_scope": "OWN",
+      "description": "Convert a qualified lead into a company and deal",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "lead",
+      "resource": "lead"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See leads",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "lead",
+      "resource": "lead"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Create and update leads",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "lead",
+      "resource": "lead"
+    },
+    {
       "action": "read",
       "default_scope": "OWN",
       "description": "See the activity timeline",
@@ -244,10 +271,55 @@
       "is_admin": false,
       "is_default": true,
       "name": "Sales representative"
+    },
+    {
+      "code": "CRM_LEADS_ADMIN",
+      "cross_product": false,
+      "description": "Administers lead intake across the organization, including the assignment rule. Built from this service's own slice of the CRM catalogue alone \u2014 administering the CRM is not the same job as owning the account.",
+      "grants": [
+        {
+          "code": "crm.lead.lead.convert",
+          "scope": "ORG"
+        },
+        {
+          "code": "crm.lead.lead.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "crm.lead.lead.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": true,
+      "is_default": false,
+      "name": "CRM administrator (leads)"
+    },
+    {
+      "code": "CRM_LEAD_REP",
+      "cross_product": false,
+      "description": "Every person with a CRM seat. Reads the whole intake list \u2014 sales works from one shared book \u2014 works and converts the leads they own.",
+      "grants": [
+        {
+          "code": "crm.lead.lead.convert",
+          "scope": "OWN"
+        },
+        {
+          "code": "crm.lead.lead.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "crm.lead.lead.write",
+          "scope": "OWN"
+        }
+      ],
+      "is_admin": false,
+      "is_default": true,
+      "name": "Sales representative"
     }
   ],
   "sources": [
     "customer",
-    "deal"
+    "deal",
+    "lead"
   ]
 }

@@ -1464,3 +1464,85 @@ neither is the defect itself, not a formatting gap.
   (Consequences). When it lands, approval's consumers need no edit — but this ADR's claim that a
   cross-tenant id collision is "safe today" stops being load-bearing, and the paragraph should say so
   rather than linger as a warning about a fixed problem.
+
+---
+
+## Decisions on open questions (2026-09-24)
+
+Two items in this ADR were left undecided rather than deferred with a reason. Both are decided
+here. So is the screen specification's O2, which this ADR's "Revisit when" is the authority for.
+The other "Deferred" items (calendar-time SLA, notification delivery, amount limits,
+cancellation, dotted-line and matrix routing, re-routing tools) each already carry a reason they
+are safe to defer. They stay deferred and are tracked as backlog R20 and R6. The register of every
+ADR question is [open-questions-register.md](open-questions-register.md).
+
+### Q1. The fate of `account.memberships.manager_membership_id` — **DECIDED: keep it, as core's own TEAM rung; approval never reads it**
+
+**Decision.** The column stays. It is the **`core` product's** reading of the TEAM rung: "the
+members who report to you" for member administration (`account/app/selectors.py`,
+`team_col=Membership.manager_membership_id`). The dashboard's Members screen edits it
+(`frontend/opsgrids-dashboard/src/routes/admin/Members.tsx`). Approval routes on employee's
+hierarchy alone (§2) and **never** reads it. HRMS's reporting line and core's member manager are
+two different facts owned by two different products, and they are not synchronised. The column's
+model docstring and the Members screen must say that it does not route approvals.
+
+**Why.** It has live readers: core's TEAM scope resolver and the dashboard. Dropping it would
+remove TEAM scope for member administration in every tenant, including tenants that do not own
+HRMS and have no employee hierarchy at all. §2 refused it as a *routing input* ("a second,
+unsynchronised manager field") and that refusal stands. This decision keeps it only as core's own
+TEAM definition, which ADR-0000 §6 says each product defines for itself.
+
+**Rejected.** Dropping the column, which removes core's TEAM rung. Syncing it from employee's
+reporting manager, which is two writers and a reconciler for one fact (the shape ADR-0008 rejected
+for its own link). Letting approval fall back to it when the hierarchy copy has no node, which
+turns an unassigned request (§6, owned by `decide:ORG`) into a silently routed one.
+
+**Consequences.** A tenant with HRMS can have a member manager and an HRMS manager that disagree.
+That is visible, and it is harmless because they gate different things. For R20 the "drop
+decision" part is documentation only; no migration. **Revisit** if customers report confusion
+between the two. The answer then is to derive core's TEAM from the linked employee's reporting
+manager when both exist, not to route approvals on the member manager.
+
+### Q2. `processed_events` keyed on `event_id` alone — **DECIDED: key it on `(organization_id, event_id)`, platform-wide**
+
+**Decision.** `platform_core.ProcessedEventMixin` gains `organization_id` (NOT NULL), taken from
+the **envelope**, never the payload (ADR-0015 §5's rule). Its key becomes
+`(organization_id, event_id)`, and `already_processed` / `mark_processed` take that organization.
+Existing rows cannot be given an organization, because the ledger never recorded one. So the
+migration writes new rows in the new shape, keeps checking the legacy `event_id`-only rows for a
+bounded window (14 days, longer than any redelivery or DLQ replay the platform performs), and then
+drops them. The table **stays un-policied** in this change (ADR-0002 §5). Adding a policy is a
+separate, later step, and only once every consumer is shown to bind the tenant before it checks
+the ledger. A policy on a ledger checked before binding would find nothing, and every redelivery
+would be reprocessed.
+
+**Why.** It is the shape the Consequences above already name, and it turns "safe by luck" into
+"safe by construction". A collision would drop a tenant's event silently in another tenant's
+ledger.
+
+**Rejected.** Fixing it in approval alone: one service with a different ledger shape from the
+others is a worse problem. Policing the table with RLS: `already_processed` would find nothing
+before the GUC is bound, and every redelivery would be reprocessed.
+
+**Consequences.** It is a migration in every service that consumes events. **Implemented by
+backlog Q7.**
+
+### O2 of the screen specification: can HR see an assigned request without being able to decide it? — **DECIDED: yes, read-only; no HR take-over**
+
+**Decision.** §6 is unchanged. `decide:ORG` covers only an unassigned step, or a step whose
+approver has **exited**. A holder of `read:ORG` sees an assigned request **read-only**. The
+remedy for a stuck assigned request is one of: the approver delegates (§5); the product's own
+direct override (for attendance, editing the record under
+`hrms.time.attendance.write:ORG`); or SLA escalation (§8). The screen shows
+"Only {approver} can decide this." (`frontend/product-hrms/src/routes/RequestDetail.tsx`). It adds
+"To correct the day directly, use the attendance record." **only** when the caller's resolved
+grants include `hrms.time.attendance.write:ORG`, read from `GET /api/v1/members/me/grants`, the
+same source the storefront's `PermissionProvider` uses. The sentence is omitted today because
+`MeOut` carries roles, not grants. The server refuses a decide by a non-eligible caller either way.
+
+**Why.** "Revisit when" above already says HR taking over an assigned request would be a
+superseding decision on §6, not a quiet widening. Nobody has asked for it outside a product
+override, and every current route to a remedy is audited under its own permission.
+
+**Consequences.** One small UI change, gating the override sentence on grants. **Not covered by
+any ledger item.** It fits in HR-C (R6/R20) and is listed as a new item in the register.

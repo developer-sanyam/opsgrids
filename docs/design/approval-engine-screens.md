@@ -1675,3 +1675,16 @@ outside approval's ownership, and three questions the ADR deliberately leaves to
 | **O2** | **Can HR see, but not decide, an assigned request?** Left to the interface | Render read-only with **"Only Priya Nair can decide this. To correct the day directly, use the attendance record."** The amendment adds one real exception: §6 widens `decide:ORG` to cover a step whose approver has **exited**, so the decision panel *does* appear in exactly that case |
 | **O5** | **What does a requester see between a decision and the record changing?** | **Answered by §2.10 for every combination.** What stays a UI choice is the null window: no "applying…" state is invented for it, because `NULL` also means "this product does not report back yet" and the ADR is explicit that null never means something went wrong on its own |
 | **O6** | **What does an approver see when the worker is stopped?** The ADR names this quiet failure, not its user-facing form | **"Waiting to be routed — this usually takes a few seconds."**, hardening after 10 minutes to **"Still waiting to be routed. Contact HR if this doesn't clear."** The UI never invents an approver it wasn't given |
+
+### 9.3 Decisions on the questions in §9.2 (2026-09-24)
+
+Every row of §9.2 now has a decision. The server rules are recorded in
+[ADR-0006](../adr/0006-approval-engine.md) under "Decisions on open questions (2026-09-24)", and
+the register of every question is [open-questions-register.md](../adr/open-questions-register.md).
+
+| # | Status | Decision |
+|---|---|---|
+| **O2** | **DECIDED** | **Read-only, no HR take-over.** ADR-0006 §6 is unchanged: `decide:ORG` covers an unassigned step, or a step whose approver has exited, and nothing else. The screen renders "Only {approver} can decide this." (`frontend/product-hrms/src/routes/RequestDetail.tsx`, as built). The second sentence, "To correct the day directly, use the attendance record.", is shown **only** when `GET /api/v1/members/me/grants` resolves `hrms.time.attendance.write:ORG` for the caller. It is omitted today because `MeOut` carries roles, not grants. A UI gate hides a sentence; the server still refuses the decide. The grants-gated sentence is a small open UI change, listed in the register |
+| **C10** | **DECIDED — built** | `GET /requests?requester=me` exists (`services/approval/app/api/routes.py`, `selectors.requests_stmt(ctx, mine_only=...)`). It is layered on top of scope, so "My requests" returns the caller's own rows whatever their grant |
+| **C9** | **DECIDED — built** | `AttendanceOut.location_code` exists (`services/attendance/app/schemas.py`), and the regularisation object carries the punch's own `location_code`. A `null` falls back to organization time, labelled as such, never the browser's zone, as §2.1 requires |
+| **O5, O6** | **DECIDED** | As the table above already says. No change |

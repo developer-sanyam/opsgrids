@@ -1,16 +1,39 @@
 # Decisions
 
-An index of the architecture decision records, and the short version of each. The ADRs
+An index of the architecture decision records, and the short version of the first six. The ADRs
 themselves are the authority — this page exists so you can find the right one quickly.
 
-| ADR | Title | Status |
-|---|---|---|
-| [0000](adr/0000-phase-0-decisions.md) | Phase 0 — eleven irreversible decisions | Accepted |
-| [0001](adr/0001-frontend-topology.md) | One standalone app per surface | Accepted |
-| [0002](adr/0002-row-level-security.md) | Row-level security | **Accepted** 2026-08-22, not yet implemented |
-| [0003](adr/0003-surfaces-and-authorization-topology.md) | Surfaces and authorization topology | Accepted |
-| [0004](adr/0004-commercial-model.md) | Commercial model — plans, subscriptions, billing | **Accepted** 2026-08-24 (design), not yet implemented |
-| [0005](adr/0005-dunning-and-grace.md) | Dunning and the grace window | Accepted |
+**Every question an ADR left open is decided or recorded as waiting on demand** in
+[adr/open-questions-register.md](adr/open-questions-register.md). That page links each question
+to the ADR section that decides it and to the backlog item that builds it. Numbers are allocated in
+order and never reused. The next free number is **0020**.
+
+| ADR | Title | Header status | What exists today |
+|---|---|---|---|
+| [0000](adr/0000-phase-0-decisions.md) | Phase 0 — eleven irreversible decisions | Accepted | In force |
+| [0001](adr/0001-frontend-topology.md) | One standalone app per surface | Accepted | Built; the marketing site moved out (amendment) |
+| [0002](adr/0002-row-level-security.md) | Row-level security | Accepted 2026-08-22 | Built: forced RLS policies across every service's migrations; header's "not yet implemented" predates it |
+| [0003](adr/0003-surfaces-and-authorization-topology.md) | Surfaces and authorization topology | Accepted | In force; the operator-roles addendum is in flight with the staff console (Q1) |
+| [0004](adr/0004-commercial-model.md) | Commercial model — plans, subscriptions, billing | Accepted 2026-08-24 (design) | Built: catalog, subscription, billing, metering, payment; the billing run is in flight (R2); the tax direction is decided and waits on O6 |
+| [0005](adr/0005-dunning-and-grace.md) | Dunning and the grace window | Accepted | Built; the billing-run addendum is in flight (R2) |
+| [0006](adr/0006-approval-engine.md) | The approval engine | Proposed (header) | Built in slices (`services/approval`) |
+| [0007](adr/0007-permission-rollout-to-live-tenants.md) | Delivering a new permission to live tenants | Proposed (header) | Built: `tools/reconcile_permissions.py`, treated as accepted |
+| [0008](adr/0008-membership-employee-link.md) | Who writes `memberships.employee_id` | Proposed, implemented the same day | Built; the linking screen is not (register row 16) |
+| [0009](adr/0009-uploaded-images-and-object-storage.md) | Uploaded images and object storage | Proposed (header) | Built: document service, the edge MinIO, purge and orphan sweeps (addenda) |
+| [0010](adr/0010-delivery-serviceability-and-slots.md) | Delivery serviceability and slots | Proposed (header) | Slice 1 built (`services/storefront`); slice 2 is R16 |
+| [0011](adr/0011-store-identity-brand-domain-and-publishing.md) | Store identity, brand, publishing | Accepted | Built |
+| [0012](adr/0012-custom-domains.md) | Custom domains and the one-box edge | Proposed (header) | Slice 1 built and deployed; slice 3 is R14 and R15 |
+| [0013](adr/0013-self-serve-products-and-the-one-box-deployment.md) | Self-serve products and the one-box deployment | Accepted (design), building | Slices 1–3 built; 4 is R3, 5 is R4; the memory addendum is in flight (D4b) |
+| [0014](adr/0014-inventory-and-manufacturing.md) | Inventory and manufacturing | Accepted | Phases 0 and 1 built; 2–10 are R30 |
+| [0015](adr/0015-scheduler-and-not-before-delivery.md) | The scheduler and `not_before` delivery | Accepted | Built |
+| [0016](adr/0016-egress-guard.md) | The egress guard | Accepted | Built |
+| [0017](adr/0017-crm-lead-service-and-pipeline-scaffold-removal.md) | CRM: `lead` joins `crm`; `pipeline` and `activity` removed | Accepted | Built (Q3, merged 2026-09-24) |
+| [0018](adr/0018-domain-verification-lifecycle.md) | Email-domain verification lifecycle | Accepted | Built (P1) |
+| [0019](adr/0019-statutory-portal-credentials.md) | Statutory portal credentials live in finance | Accepted 2026-09-24 | Not built; B5 (5b) |
+
+Several header status lines (0002, 0004, 0006, 0007, 0009, 0010, 0012) were written before the
+work they describe shipped. The "What exists today" column is the current fact. Correcting the
+headers themselves belongs to the stale-docs sweep (R35).
 
 ---
 
@@ -50,7 +73,7 @@ apps. Shared code lives in `opsgrids-ui`, `opsgrids-client` and `opsgrids-config
 The cost is real — more build config, a risk of visual drift — and the mitigation is the shared
 packages. Both are recorded in the ADR.
 
-## ADR-0002 — row-level security (accepted, not implemented)
+## ADR-0002 — row-level security (accepted; since built)
 
 Documents that RLS is inert for three independent reasons: no policies exist, the application
 connects as a superuser (which bypasses RLS unconditionally), and the tenant GUC is never set
@@ -80,7 +103,7 @@ Refines ADR-0001: one SPA per **product** (not per service), shared `opsgrids-ui
 `opsgrids-config`, an entitlement-driven shell (`opsgrids-dashboard`), and mobile as one more client
 on the mobile audience over the same APIs.
 
-## ADR-0004 — commercial model (accepted design, not implemented)
+## ADR-0004 — commercial model (accepted design; the five services since built)
 
 Commerce is five services split by what each owns and how fast it changes: `catalog` (immutable
 plan versions, features, prices), `subscription` (the customer lifecycle state machine, where

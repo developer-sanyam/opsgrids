@@ -30,7 +30,7 @@ const USER: MeOut = {
   organizations: [],
 };
 
-const OWNER: Owner = { id: "own-1", full_name: "Grace Adeyemi", email: "grace@example.com", role: "AE" };
+const OWNER: Owner = { id: "own-1", full_name: "Grace Adeyemi", email: "grace@example.com", role: "AE", is_active: true };
 
 const AUTH_VALUE: AuthContextValue = {
   status: "authenticated",
@@ -83,6 +83,7 @@ describe("OwnerPicker — empty directory", () => {
       full_name: USER.full_name,
       email: USER.email,
       role: "",
+      is_active: true,
     });
     const onOwnerCreated = vi.fn();
     const user = open({ onOwnerCreated });

@@ -1,7 +1,7 @@
 # The production edge — one Linux VM, ADR-0012 §1.
 #
 # Every product this platform sells can run here, one compose profile per product (ADR-0013
-# §5). That is 44 containers with every profile on (down from 46: ADR-0013's memory-budget
+# §5). That is 45 containers with every profile on (down from 46: ADR-0013's memory-budget
 # erratum, 2026-09-23, folded subscription's and approval's `bin/cron` sweep into their
 # `bin/worker` the way `notification/app/worker.py` already combines two consumers), plus
 # Postgres, Redis, RabbitMQ and Caddy. This is not "five service containers" and not "~35
@@ -708,10 +708,119 @@ services:
     command: ['python', '-m', 'platform_core.edge_relay']
     environment:
       <<: *service-env
-      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,leave,customer,deal,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm}
+      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,leave,customer,deal,lead,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm}
     depends_on:
       product:
         condition: service_started
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  # C10: the box's own ops monitor (R7 hysteresis alerting, R12 metrics, R37's backup/cron
+  # visibility) — nothing here before this slice paged anybody (RUNBOOK.md used to say so in
+  # capitals; see "alerts and what each means" for what replaced that). Same trick as
+  # `edge-relay` above: no new image, `python -m platform_core.ops_monitor` in the always-built
+  # `product` image, importing no service's `app`.
+  #
+  # `mem_limit: 128m`, not `*background`'s 192m — `memory-budget.json`'s `ops_monitor` entry
+  # has the arithmetic: the full-profile budget was already at ~94% before this container
+  # existed, and 128m is what keeps it under the 100% hard line. Its own state is a JSON file
+  # under the bind mount below, never the database — it has to keep working when Postgres is
+  # the thing it is watching.
+  #
+  # `front` as well as `back`, the same shape `storefront-cron`'s certificate probe already
+  # uses and for the identical reason: the certificate-expiry check handshakes against Caddy on
+  # `front` with SNI set (see `checks.check_cert_expiry`). This is network *reachability*, not
+  # exposure — nothing publishes this container's port, and neither the Caddyfile nor either
+  # gateway's route table ever names it (`tests/infra/test_metrics_never_routed.py` is the
+  # lint). `/metrics` and `/status` stay reachable only to whatever else is already on `back`.
+  #
+  # No `user:` override (round 2's M2 decision) — this box's `deploy` user is not reliably
+  # uid 1000 the way a fresh Ubuntu box's first human user would be (Azure's own provisioning
+  # already takes uid 1000 for `azureuser`, so `deploy`, created after it, is likely 1001), so
+  # a fixed uid guess here would be as wrong as the image's own baked-in one. Instead this runs
+  # as the image's own `opsgrids` system user (uid 999, the same one the JWT signing key's
+  # setup already discovers dynamically — RUNBOOK.md, "standing up a new box" step 5), and
+  # `remote.sh up`'s `ensure_ops_monitor_state_dir` creates and chowns exactly one directory
+  # for it: `/srv/opsgrids/state/ops-monitor`, mounted `rw` below. The state directory's own
+  # root stays mounted `ro` — this process only ever needs to read `backup.last-ok` from it,
+  # never write there, and `deploy`'s own `last-good-ref`/`deploy-log` stay untouched by any of
+  # this. `preflight.sh` checks the subdirectory's ownership and warns (not refuses) if a
+  # deploy has not run yet to fix it. A state or heartbeat write that fails anyway (a full
+  # disk) is logged and does not crash the loop — see `main._dump_safely`/`_write_heartbeat_safely`.
+  #
+  # Deliberately NOT `<<: *service-env` (m11): this process touches no PII, mints no internal
+  # service token, and calls no other service's `/internal/*` route, so it is handed none of
+  # `INTERNAL_SERVICE_TOKEN`, `PII_ENCRYPTION_KEY`/`PII_DECRYPT_KEYS`, `JWT_*`,
+  # `APP_BASE_URL`/`CORS_ORIGINS` or either directory service URL — the smallest environment
+  # that can still open the outbox engine, reach the broker and send mail.
+  ops-monitor:
+    <<: *background
+    image: opsgrids-edge/product
+    command: ['python', '-m', 'platform_core.ops_monitor']
+    environment:
+      ENVIRONMENT: production
+      DEBUG: 'false'
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_JSON: 'true'
+      DATABASE_URL: postgresql+asyncpg://opsgrids_app:${OPSGRIDS_DB_PASSWORD}@postgres:5432/opsgrids
+      RABBITMQ_URL: amqp://opsgrids:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      MALLOC_ARENA_MAX: '2'
+      MALLOC_TRIM_THRESHOLD_: '131072'
+      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,leave,customer,deal,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm}
+      # B1 (round 2): the same variable docker compose itself already reads to decide which
+      # containers to start — one source of truth for "what does this box run", so
+      # OpsMonitorSettings can derive exactly which API containers/DLQ queues SHOULD exist
+      # (`config.expected_api_containers`/`expected_dlq_queues`) instead of guessing. A name
+      # that should exist and does not resolve is now a real failure, never skipped — Docker's
+      # embedded DNS drops a crashed or OOM-killed container the same way it drops one that was
+      # never started, so "does not resolve" cannot mean "not deployed" any more.
+      COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}
+      # Empty means "derive from COMPOSE_PROFILES above" — set explicitly only to narrow or add
+      # to that computed list; doing so REPLACES it entirely. See .env.example's own comment.
+      OPS_MONITOR_API_CONTAINERS: ${OPS_MONITOR_API_CONTAINERS:-}
+      OPS_MONITOR_DLQ_QUEUES: ${OPS_MONITOR_DLQ_QUEUES:-}
+      OPS_ALERT_EMAIL: ${OPS_ALERT_EMAIL:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      SMTP_USE_SSL: ${SMTP_USE_SSL:-false}
+      EDGE_HOST: ${EDGE_HOST}
+      OPS_MONITOR_CERT_HOST: caddy
+      OPS_MONITOR_CERT_PORT: '443'
+      OPS_MONITOR_PORT: '9110'
+      OPS_MONITOR_STATE_PATH: /srv/opsgrids/state/ops-monitor/ops-monitor.json
+      OPS_MONITOR_HEARTBEAT_PATH: /srv/opsgrids/state/ops-monitor/ops-monitor.heartbeat
+      OPS_MONITOR_BACKUP_MARKER_PATH: /srv/opsgrids/state/backup.last-ok
+    volumes:
+      # Root read-only (this process only ever reads backup.last-ok from it), the one
+      # subdirectory it owns mounted read-write on top — see the block comment above for why
+      # this is two mounts and who chowns the second one.
+      - ${EDGE_STATE_DIR:-/srv/opsgrids/state}:/srv/opsgrids/state:ro
+      - ${EDGE_STATE_DIR:-/srv/opsgrids/state}/ops-monitor:/srv/opsgrids/state/ops-monitor:rw
+    # Overrides `*background`'s disabled healthcheck: unlike a relay or a sweep, this process
+    # writes a heartbeat file every cycle specifically so `docker compose ps` can answer "is the
+    # loop still turning" without reading logs — three missed 60s cycles (`-mmin -3`) is a
+    # stuck loop, not a slow one.
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'find /srv/opsgrids/state/ops-monitor/ops-monitor.heartbeat -mmin -3 2>/dev/null | grep -q .',
+        ]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 128m
+    networks:
+      - front # the certificate probe handshakes against Caddy with SNI set (same as storefront-cron)
+      - back
+    depends_on:
       postgres:
         condition: service_healthy
       rabbitmq:
@@ -842,7 +951,8 @@ services:
       WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
       WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
-      # customer-service is not deployed; the phone lookup answers unavailable, not wrong.
+      # customer-service is deployed under the `crm` profile only; on a box without it enabled
+      # the phone lookup answers unavailable, not wrong.
       CUSTOMER_INTERNAL_URL: http://customer:8000
       # Engage (services/notification/app/services.py's `request_send`/`_check_public_base`):
       # both must be real before a campaign can be sent at all outside `local`/`test`/`ci` — an
@@ -1003,9 +1113,11 @@ services:
   # COMPOSE_PROFILES reads as the list of products this box sells. Every product service runs
   # its API (`edge-relay` drains its outbox); a worker runs only where it consumes other services'
   # events (attendance follows approvals, finance follows filings) — an idle worker is 30 MB of
-  # RAM holding a broker channel for nothing. Helper services that are still scaffolds (lead,
-  # pipeline, activity, quotation) are deliberately absent: a prefix that is not routed is an
-  # honest 404, a service that answers only /info is a 404 dressed as a product.
+  # RAM holding a broker channel for nothing. Helper services still just the generated scaffold
+  # (quotation) are deliberately absent: a prefix that is not routed is an honest 404, a service
+  # that answers only /info is a 404 dressed as a product. `pipeline` and `activity` are not
+  # scaffolds pending a build — ADR-0017 deletes them outright, since `deal` already owns
+  # `crm.pipeline.*` end to end; `lead` graduated out of this list and runs below, under `crm`.
   # ---------------------------------------------------------------- OpsGrids People (profile `hrms`)
   # The approval engine is core, not an HRMS feature — but People is the only product on this
   # box that routes requests through it (attendance regularisation, and the app's approvals
@@ -1093,6 +1205,17 @@ services:
     networks:
       - back
 
+  # Binds `crm.pipeline.activity.logged` (deal-service) to advance `contacts.last_activity_at`
+  # (app/consumers.py). The consumer has existed since deal started publishing that event, but
+  # this container was never added — ADR-0017 closes that gap. No relay of its own: it consumes,
+  # it does not publish, so it runs NOBYPASSRLS on the per-message tenant GUC like every consumer.
+  customer-worker:
+    <<: *background
+    profiles: ['crm']
+    image: opsgrids-edge/customer
+    command: ['./bin/worker']
+    environment: *service-env
+
   deal:
     <<: *service-common
     profiles: ['crm']
@@ -1101,6 +1224,25 @@ services:
       context: ../..
       dockerfile: services/deal/Dockerfile
     environment: *service-env
+    networks:
+      - back
+
+  # The lead half of the `crm` product (ADR-0017). Publishes only — `crm.lead.converted` — and
+  # consumes nothing, so no dedicated worker: `edge-relay` drains its outbox like every other
+  # service that has no consumer of its own. Calls customer's and deal's `/internal/v1` on
+  # `:convert`, under a short-lived service token, the same shape notification uses to call
+  # customer today.
+  lead:
+    <<: *service-common
+    profiles: ['crm']
+    image: opsgrids-edge/lead
+    build:
+      context: ../..
+      dockerfile: services/lead/Dockerfile
+    environment:
+      <<: *service-env
+      CUSTOMER_INTERNAL_URL: http://customer:8000
+      DEAL_INTERNAL_URL: http://deal:8000
     networks:
       - back
 
