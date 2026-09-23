@@ -32,9 +32,11 @@ from sqlalchemy.ext.asyncio import (
 
 from app import selectors, services
 from app.config import settings
-from app.models import SCHEMA, Customer, ImsDocument, Invoice, ItcLedgerEntry
+from app.models import SCHEMA, Customer, GstReturn, ImsDocument, Invoice, ItcLedgerEntry
 from app.schemas import (
     CustomerCreate,
+    FileReturnIn,
+    GenerateReturnIn,
     GstRegistrationUpsert,
     ImsDecisionCreate,
     InvoiceCreate,
@@ -466,4 +468,100 @@ class TestConcurrentImsDecisions:
             balance = await selectors.itc_document_net_accrued(session, org_id, document_id)
         reversals = [r for r in rows if r.kind == "reversal"]
         assert len(reversals) == 1, rows
+        assert balance.total_minor == 0
+
+
+class TestConcurrentDecisionAndFiling:
+    """Repro from review round 3, BLOCKER 1. `record_ims_decision` used to resolve the
+    registration with a plain, unlocked read before asking `selectors.claim_period_for` (née
+    `services._claim_period_for`) whether the document's own period was already filed. A decision
+    racing a filing for that exact period could read "not filed yet" a moment before the filing
+    committed, post its reversal straight into the period the filing was about to freeze, and take
+    that period's IGST balance to -81,000 — after the fact, in a return already gone to the
+    government.
+
+    `record_ims_decision` now locks the same registration row `FOR UPDATE` before computing the
+    claim period, the same row `file_return` locks before it recomputes and posts. Two-way race,
+    two safe outcomes depending only on which transaction reaches the lock first — never a third:
+
+    * The filing wins the lock: it commits first, so by the time the decision's claim period is
+      computed, the period is genuinely filed and the reversal is correctly redirected to the next
+      one open.
+    * The decision wins the lock: it posts into the still-open period first, so the filing's own
+      recompute-against-the-ledger check (guard 4 of `file_return`) sees a ledger that has moved
+      since generation and refuses with a 409 — the return is never actually filed with a
+      reversal landing inside it.
+
+    Never: a reversal recorded inside a period this test also observes as `filed`.
+    """
+
+    async def test_a_decision_racing_a_filing_never_reverses_into_the_filed_period(
+        self, client, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _ims_register(session, ctx)
+        document_id = await _ims_seed_and_sync(client, org_id, session, ctx)
+        async with session.begin():
+            await services.record_ims_decision(
+                session, ctx, document_id, ImsDecisionCreate(action="accept")
+            )
+            ret = await services.generate_return(
+                session, ctx, GenerateReturnIn(period="2026-08", return_type="gstr3b")
+            )
+        ret_id = ret.id
+
+        async def _file(session: AsyncSession):
+            ctx = admin_ctx(org_id)
+            async with session.begin():
+                return await services.file_return(
+                    session, ctx, ret_id, FileReturnIn(arn="AA0708000000900")
+                )
+
+        async def _reject(session: AsyncSession):
+            ctx = admin_ctx(org_id)
+            async with session.begin():
+                return await services.record_ims_decision(
+                    session, ctx, document_id, ImsDecisionCreate(action="reject")
+                )
+
+        s1, e1 = await _org_session(org_id)
+        s2, e2 = await _org_session(org_id)
+        try:
+            results = await asyncio.gather(_file(s1), _reject(s2), return_exceptions=True)
+        finally:
+            await s1.close()
+            await s2.close()
+            await e1.dispose()
+            await e2.dispose()
+
+        file_result, decision_result = results
+        # The decision itself is never refused by this race — only the filing can be, and only
+        # with the specific conflict `file_return`'s own ledger-drift guard raises.
+        if isinstance(decision_result, BaseException):
+            raise decision_result
+        if isinstance(file_result, BaseException) and not isinstance(file_result, ConflictProblem):
+            raise file_result
+
+        # `ret` and the ledger rows this session already knows about were loaded before the race —
+        # `expire_all` forces a real reload rather than the identity map's stale, pre-race copies.
+        session.expire_all()
+        async with session.begin():
+            rows = await _itc_rows(session, org_id)
+            refreshed = (
+                await session.execute(select(GstReturn).where(GstReturn.id == ret_id))
+            ).scalar_one()
+        reversal = next(r for r in rows if r.kind == "reversal")
+        if refreshed.status == "filed":
+            # The filing won the race: the decision's claim period must have been computed
+            # *after* seeing the filing as done, and redirected forward past it.
+            assert reversal.period != "2026-08"
+        else:
+            # The decision won the race and posted into the still-open period; the filing then
+            # correctly refused rather than freezing a period whose ledger had just moved.
+            assert isinstance(file_result, ConflictProblem)
+            assert reversal.period == "2026-08"
+        # Whichever branch ran, an accept fully reversed nets the document back to zero — never
+        # negative, which is exactly the shape `-81,000` would have taken.
+        balance = await selectors.itc_document_net_accrued(session, org_id, document_id)
         assert balance.total_minor == 0

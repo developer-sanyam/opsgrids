@@ -926,6 +926,10 @@ class Gstr3bPaymentOut(BaseModel):
     #: The magnitude of any negative liability handed in — a heavy-credit-note period. Informational
     #: only: never netted into `cash_payable` and never spendable as credit.
     excess_liability: TaxHeadAmountsOut
+    #: The magnitude of any negative *available credit* handed in — a credit note's own negative
+    #: accrual outrunning what a head had otherwise accrued. Informational only: never treated as
+    #: a liability and never added to `cash_payable`.
+    credit_deficit: TaxHeadAmountsOut
 
 
 class Gstr3bSections(BaseModel):

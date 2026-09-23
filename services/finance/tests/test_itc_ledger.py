@@ -653,6 +653,82 @@ class TestFilingAGstr3bReturn:
         assert balance.total_balance_minor == 0
 
 
+class TestFilingRefusesWhenTheWholeLedgerWouldGoNegative:
+    """Repro from review round 3, MEDIUM 4: the pre-posting check meant to refuse a filing that
+    would take a head's ITC balance negative never actually fired. It negated an already-positive
+    `amount_minor` (so the comparison ran backwards), kept only the *last* of a head's several
+    utilisation lines via a dict comprehension that silently overwrote the earlier ones (IGST
+    commonly has three), and read the balance for `ret.period` alone, blind to anything already
+    posted to a different period. Provoked here by inserting a ledger row directly at the database
+    — the same "something already spent this credit" shape a real drift would leave, without
+    needing a second filing or a second registration to produce it."""
+
+    async def _generated(self, client, session, org_id):
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _register(session, ctx)
+            await _seed_purchase_book(session, ctx)
+            await _book_with_output_liability(session, ctx)
+        await _sync(client, org_id)
+        async with session.begin():
+            documents = await _by_ref(session, org_id)
+        document = documents[f"{PERIOD}/0001"]
+        await client.post(f"{QUEUE}/{document.id}/decisions", json={"action": "accept"})
+        async with session.begin():
+            ret = await services.generate_return(
+                session, ctx, GenerateReturnIn(period=PERIOD, return_type="gstr3b")
+            )
+        return ret, document
+
+    async def test_a_stray_posting_that_drains_the_ledger_refuses_the_filing(
+        self, client, session, org_id
+    ) -> None:
+        ret, document = await self._generated(client, session, org_id)
+        ctx = admin_ctx(org_id)
+        rogue_id = uuid.uuid4()
+        async with session.begin():
+            session.add(
+                ItcLedgerEntry(
+                    organization_id=org_id,
+                    created_by=str(ctx.principal.sub),
+                    gst_registration_id=ret.gst_registration_id,
+                    period=PERIOD,
+                    source_period=PERIOD,
+                    tax_head="igst",
+                    kind="utilisation",
+                    amount_minor=-document.igst_minor,
+                    source_type="gst_return",
+                    source_id=rogue_id,
+                    source_ref=f"gst_return:{rogue_id}:igst",
+                    posted_by=str(ctx.principal.sub),
+                )
+            )
+
+        with pytest.raises(BusinessRuleProblem, match="IGST"):
+            async with session.begin():
+                await services.file_return(
+                    session, ctx, ret.id, FileReturnIn(arn="AA0708000000010")
+                )
+
+        async with session.begin():
+            rows = await _ledger_rows(session, org_id)
+        # Refused before posting: the rogue row is the only `utilisation` row on the ledger.
+        assert [r.kind for r in rows if r.kind == "utilisation"] == ["utilisation"]
+
+    async def test_without_the_stray_posting_the_same_filing_succeeds(
+        self, client, session, org_id
+    ) -> None:
+        """The control: nothing about this scenario is refused on its own merits — only the stray
+        posting trips the guard."""
+        ret, _ = await self._generated(client, session, org_id)
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            filed = await services.file_return(
+                session, ctx, ret.id, FileReturnIn(arn="AA0708000000011")
+            )
+        assert filed.status == "filed"
+
+
 class TestSequentialFilingOrder:
     """Repro B from review: generating September while August sits generated-but-unfiled let both
     periods utilise the same brought-forward credit. Both generate and file now refuse to move
@@ -733,6 +809,103 @@ class TestSequentialFilingOrder:
                 session, ctx, GenerateReturnIn(period="2026-09", return_type="gstr3b")
             )
         assert second.period == "2026-09"
+
+
+class TestFilingPeriodsBackwardsDoubleUtilises:
+    """Repro from review round 3, BLOCKER 2. August is never generated: an organization is allowed
+    to onboard mid-period with no earlier rows at all, so `gstr3b_pending_periods_before` sees
+    nothing to block September on. September is generated and filed first, spending August's
+    brought-forward credit against a real liability — brought-forward is read straight off the
+    ledger, not off any particular return, so August having no return of its own yet does not stop
+    September from seeing its credit. Generating August's own return *afterward* must now be
+    refused, because doing so would let August's return utilise that same credit a second time."""
+
+    async def _filed_september_on_augusts_credit(self, client, session, org_id):
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _register(session, ctx)
+            await _seed_purchase_book(session, ctx)
+        await _sync(client, org_id)
+        async with session.begin():
+            documents = await _by_ref(session, org_id)
+        document = documents[f"{PERIOD}/0001"]
+        await client.post(f"{QUEUE}/{document.id}/decisions", json={"action": "accept"})
+
+        async with session.begin():
+            customer = await services.create_customer(session, ctx, _customer_payload())
+            await services.create_invoice(
+                session,
+                ctx,
+                InvoiceCreate(
+                    number="INV-SEP-1",
+                    customer_id=customer.id,
+                    issued_date=date(2026, 9, 12),
+                    due_date=date(2026, 10, 11),
+                    tax_rate_pct=18,
+                    lines=[
+                        InvoiceLineCreate(
+                            description="Hot-rolled coil",
+                            quantity=1,
+                            unit_price_minor=10_00_000,
+                            hsn_sac="72085110",
+                        )
+                    ],
+                ),
+            )
+        async with session.begin():
+            september = await services.generate_return(
+                session, ctx, GenerateReturnIn(period="2026-09", return_type="gstr3b")
+            )
+        async with session.begin():
+            filed = await services.file_return(
+                session, ctx, september.id, FileReturnIn(arn="AA0709000000099")
+            )
+        return document, filed
+
+    async def test_generating_august_after_september_is_filed_is_refused(
+        self, client, session, org_id
+    ) -> None:
+        await self._filed_september_on_augusts_credit(client, session, org_id)
+        ctx = admin_ctx(org_id)
+        with pytest.raises(BusinessRuleProblem, match="2026-09"):
+            async with session.begin():
+                await services.generate_return(
+                    session, ctx, GenerateReturnIn(period=PERIOD, return_type="gstr3b")
+                )
+
+    async def test_filing_august_after_september_is_filed_is_refused(
+        self, client, session, org_id
+    ) -> None:
+        """Forces the state the generate-time guard would normally prevent (an August row already
+        generated before September existed) directly at the database, so the *file*-time guard is
+        what is on trial here, as defence in depth rather than the only line of defence."""
+        _, september = await self._filed_september_on_augusts_credit(client, session, org_id)
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            august = GstReturn(
+                organization_id=org_id,
+                created_by=str(ctx.principal.sub),
+                gst_registration_id=september.gst_registration_id,
+                gstin=september.gstin,
+                state_code=september.state_code,
+                period=PERIOD,
+                return_type="gstr3b",
+                status="generated",
+                sections=september.sections,
+                total_taxable_minor=0,
+                total_cgst_minor=0,
+                total_sgst_minor=0,
+                total_igst_minor=0,
+            )
+            session.add(august)
+            await session.flush()
+            august_id = august.id
+
+        with pytest.raises(BusinessRuleProblem, match="2026-09"):
+            async with session.begin():
+                await services.file_return(
+                    session, ctx, august_id, FileReturnIn(arn="AA0708000000099")
+                )
 
 
 class TestExpenseCategoryChangeOnAnAlreadyAcceptedDocument:
@@ -830,6 +1003,61 @@ class TestClaimPeriodRedirection:
         reversal = next(r for r in rows if r.kind == "reversal")
         assert reversal.source_period == PERIOD
         assert reversal.period == "2026-09"
+
+
+class TestClaimPeriodJumpsPastAnyFiledPeriodNotJustTheDocumentsOwn:
+    async def test_a_late_decision_on_a_document_from_before_the_latest_filed_period_lands_after_it(
+        self, client, session, org_id
+    ) -> None:
+        """Repro from review round 3, HIGH 3: the old claim-period walk started at the document's
+        *own* period and stepped forward one period at a time asking "is this filed yet", stopping
+        the moment it found one that was not. A document reported for July, decided on only after
+        *August* has already been filed, is itself never filed — so the old walk stopped at July
+        and never advanced past it, and that posting would never appear in any GSTR-3B's Table 4A:
+        August is filed and behind it, and September's own Table 4A never asks about July. Claim
+        period is now `max(source_period, next_period(latest filed period for the registration))`,
+        so this jumps straight to the first period actually still open, in one query rather than a
+        walk."""
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _register(session, ctx)
+            await _book_with_output_liability(session, ctx)
+            ret = await services.generate_return(
+                session, ctx, GenerateReturnIn(period=PERIOD, return_type="gstr3b")
+            )
+            await services.file_return(session, ctx, ret.id, FileReturnIn(arn="AA0708000000012"))
+
+        # August is filed with nothing yet accepted. A July document — reported for a period
+        # *before* August — is decided on only now, after August has already gone out.
+        async with session.begin():
+            document = ImsDocument(
+                organization_id=org_id,
+                created_by=str(ctx.principal.sub),
+                source_ref="2026-07/late-0001",
+                supplier_gstin=MERIDIAN,
+                supplier_name="Meridian",
+                document_number="MT-JUL-1",
+                document_type="invoice",
+                document_date=date(2026, 7, 15),
+                period="2026-07",
+                taxable_minor=4_50_000,
+                igst_minor=81_000,
+                total_minor=5_31_000,
+            )
+            session.add(document)
+            await session.flush()
+            document_id = document.id
+
+        async with session.begin():
+            await services.record_ims_decision(
+                session, ctx, document_id, ImsDecisionCreate(action="accept")
+            )
+
+        async with session.begin():
+            rows = await _ledger_rows(session, org_id)
+        accrual = next(r for r in rows if r.kind == "accrual")
+        assert accrual.source_period == "2026-07"
+        assert accrual.period == "2026-09"
 
 
 class TestCreditNoteReducesCredit:

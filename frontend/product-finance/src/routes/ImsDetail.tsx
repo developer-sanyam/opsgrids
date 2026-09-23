@@ -224,7 +224,12 @@ function DecideForm({
   const { user } = useAuth();
   const suggested = document.suggestion?.suggested_action ?? null;
   const [action, setAction] = useState<ImsAction>(suggested ?? "pending_action");
-  const [expenseCategory, setExpenseCategory] = useState<ImsExpenseCategory>("general");
+  // A re-decision (rejecting an earlier acceptance, or the reverse) starts from what was already
+  // decided, not a hardcoded default — a second look at a document should not silently reset the
+  // category a person already chose. Only a document with no decision yet falls back to `general`.
+  const [expenseCategory, setExpenseCategory] = useState<ImsExpenseCategory>(
+    document.decision?.expense_category ?? "general",
+  );
   const [note, setNote] = useState("");
   const [state, setState] = useState<"idle" | "saving">("idle");
   const [error, setError] = useState<string | null>(null);

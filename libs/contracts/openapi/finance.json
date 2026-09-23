@@ -1512,6 +1512,9 @@
           "cash_payable": {
             "$ref": "#/components/schemas/TaxHeadAmountsOut"
           },
+          "credit_deficit": {
+            "$ref": "#/components/schemas/TaxHeadAmountsOut"
+          },
           "credit_remaining": {
             "$ref": "#/components/schemas/TaxHeadAmountsOut"
           },
@@ -1534,7 +1537,8 @@
           "utilisation",
           "credit_remaining",
           "cash_payable",
-          "excess_liability"
+          "excess_liability",
+          "credit_deficit"
         ],
         "title": "Gstr3bPaymentOut",
         "type": "object"

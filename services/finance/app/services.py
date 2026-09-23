@@ -2241,30 +2241,6 @@ async def _post_itc_entries(
     return entries
 
 
-async def _claim_period_for(
-    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, source_period: str
-) -> str:
-    """The period a posting actually lands in: `source_period` itself, advanced past any period
-    whose `gstr3b` this registration has already filed.
-
-    A decision taken after a period's return has gone out cannot amend that return's Table 4 — it
-    lands in the next open period instead, the same "amendment in a later period" shape a credit
-    note against a filed invoice already has. Capped at five years so a data problem raises rather
-    than loops forever.
-    """
-    period = source_period
-    for _ in range(60):
-        if not await selectors.gstr3b_filed_for_period(
-            session, org_id, gst_registration_id, period
-        ):
-            return period
-        period = domain.next_period(period)
-    raise BusinessRuleProblem(
-        f"No open GSTR-3B period was found for a posting against {source_period} within five "
-        "years — check this registration's filing history"
-    )
-
-
 def _publish_itc_posting(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -2383,7 +2359,12 @@ async def record_ims_decision(
     was_accepted = before_status == "accepted"
     now_accepted = document.status == "accepted"
     if was_accepted or now_accepted:
-        registration = await registration_for(session, ctx, None)
+        # Locked before `claim_period_for` reads which periods are filed: a filing racing this
+        # decision holds this same lock while it moves a return to `filed`, so this either waits
+        # for that commit and then correctly sees the period as filed (landing one period later),
+        # or the filing is still in flight and blocks behind *this* transaction instead — never
+        # both reading "not filed yet" and both proceeding as if the other had not happened.
+        registration = await registration_for(session, ctx, None, for_update=True)
         outstanding = (
             await selectors.itc_document_net_accrued(session, ctx.organization_id, document.id)
             if was_accepted
@@ -2406,7 +2387,7 @@ async def record_ims_decision(
         accrual_part, reversal_part = domain.split_positive_negative(delta)
 
         if accrual_part.total_minor or reversal_part.total_minor:
-            claim_period = await _claim_period_for(
+            claim_period = await selectors.claim_period_for(
                 session, ctx.organization_id, registration.id, document.period
             )
             if was_accepted and now_accepted:
@@ -2559,6 +2540,16 @@ async def generate_return(
                 f"generating {payload.period}'s — filing out of order can utilise the same "
                 "brought-forward credit against two periods"
             )
+        later = await selectors.gstr3b_periods_after(
+            session, ctx.organization_id, registration.id, payload.period
+        )
+        if later:
+            raise BusinessRuleProblem(
+                f"{later[0]}'s GSTR-3B already exists for this registration; generating "
+                f"{payload.period}'s now would let it be filed after {later[0]}'s and utilise "
+                f"{later[0]}'s brought-forward credit a second time — GSTR-3B must be generated "
+                "and filed in period order, forwards only"
+            )
         gstr3b = await assemble_gstr3b_for(
             session, ctx, registration=registration, period=payload.period
         )
@@ -2710,7 +2701,7 @@ async def file_return(
     self-contained — reading it never depends on the header still saying the same thing.
 
     **Filing a `gstr3b` also posts its utilisation to the ITC ledger**, in this same transaction,
-    behind three guards, in this order:
+    behind four guards, in this order:
 
     1. The registration is locked `FOR UPDATE` before anything else, so a concurrent generate or
        file for the same registration serialises on it rather than each acting on a stale read of
@@ -2718,7 +2709,11 @@ async def file_return(
     2. Every earlier period's `gstr3b` for this registration must already be filed — the same
        check `generate_return` runs, repeated here because a period can be generated in order and
        still raced to be *filed* out of order.
-    3. The ITC side of the frozen snapshot is recomputed against the ledger **as it now stands**
+    3. No later period's `gstr3b` may already exist (filed or merely generated) — filing
+       backwards after a later period has already drawn on this ledger's brought-forward balance
+       would let both periods spend the same credit, since brought-forward is read off the ledger
+       directly rather than off any particular return.
+    4. The ITC side of the frozen snapshot is recomputed against the ledger **as it now stands**
        and compared to what was generated. If a decision landed on the ledger between generation
        and filing — the exact shape of "accept, generate, reject, file" leaving a negative
        balance — the two disagree and filing is refused: regenerate first, so what gets filed is
@@ -2750,6 +2745,16 @@ async def file_return(
                 f"filing {ret.period}'s — filing out of order can utilise the same "
                 "brought-forward credit against two periods"
             )
+        later = await selectors.gstr3b_periods_after(
+            session, ctx.organization_id, registration.id, ret.period
+        )
+        if later:
+            raise BusinessRuleProblem(
+                f"{later[0]}'s GSTR-3B already exists for this registration; filing "
+                f"{ret.period}'s now would utilise brought-forward credit {later[0]}'s return "
+                "already used — GSTR-3B must be generated and filed in period order, forwards "
+                "only"
+            )
 
     if not domain.may_transition_return(ret.status, "filed"):
         if ret.status == "filed":
@@ -2771,14 +2776,20 @@ async def file_return(
                 f"The ITC ledger has moved since {ret.period}'s GSTR-3B was generated — "
                 "regenerate it so what is filed matches the ledger as it now stands"
             )
-        balance = await selectors.itc_balance(
-            session, ctx.organization_id, registration.id, ret.period
-        )
-        consumed = {line.head: -line.amount_minor for line in stored.payment.utilisation}
-        for head_balance in balance.heads:
-            if head_balance.balance_minor - consumed.get(head_balance.tax_head, 0) < 0:
+        # `line.amount_minor` is a positive "amount applied" figure and a head can carry more than
+        # one line (IGST commonly has three: against itself, against CGST, against SGST) — summed
+        # per head, not overwritten, and never negated: it is subtracted from the balance below,
+        # not added to it. Checked against the registration's *whole* ledger balance, not this
+        # period's alone, so a later period's own postings — already on the ledger by the time this
+        # runs — are not invisible to a check that exists to catch exactly that kind of drift.
+        consumed: dict[str, int] = {}
+        for line in stored.payment.utilisation:
+            consumed[line.head] = consumed.get(line.head, 0) + line.amount_minor
+        balance = await selectors.itc_total_balance(session, ctx.organization_id, registration.id)
+        for head in domain.ITC_TAX_HEAD_ORDER:
+            if balance.for_head(head) - consumed.get(head, 0) < 0:
                 raise BusinessRuleProblem(
-                    f"Filing {ret.period}'s GSTR-3B would take the {head_balance.tax_head.upper()} "
+                    f"Filing {ret.period}'s GSTR-3B would take the {head.upper()} "
                     "ITC balance negative — regenerate the return before filing it"
                 )
 
@@ -2910,7 +2921,9 @@ async def assemble_gstr3b_for(
     accrued, reversed_ = await selectors.itc_period_movement(
         session, ctx.organization_id, registration.id, period
     )
-    blocked = await selectors.itc_blocked_amounts_for_period(session, ctx.organization_id, period)
+    blocked = await selectors.itc_blocked_amounts_for_period(
+        session, ctx.organization_id, registration.id, period
+    )
 
     gstr3b = domain.assemble_gstr3b(
         documents,
@@ -2961,7 +2974,9 @@ async def _recompute_gstr3b_payment(
     accrued, reversed_ = await selectors.itc_period_movement(
         session, org_id, gst_registration_id, period
     )
-    blocked = await selectors.itc_blocked_amounts_for_period(session, org_id, period)
+    blocked = await selectors.itc_blocked_amounts_for_period(
+        session, org_id, gst_registration_id, period
+    )
     itc = domain.Gstr3bItc(
         available=accrued + blocked,
         reversed_section_17_5=blocked,

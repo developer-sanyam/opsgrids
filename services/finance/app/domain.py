@@ -427,7 +427,7 @@ def next_period(period: str) -> str:
     """The calendar period immediately after `period` — December rolls into next January.
 
     Used to find the next *open* period for a posting that arrives after its own period's return
-    has already been filed: `services._claim_period_for` walks this forward until it finds one
+    has already been filed: `selectors.claim_period_for` finds it directly
     with no filed `gstr3b`, the same "amendment in a later period" shape a credit note against a
     filed invoice already has.
     """
@@ -1631,6 +1631,12 @@ class UtilisationResult:
     #: because GSTR-3B's own refund/carry-forward workflow for it is out of scope for this slice —
     #: see the module note on `utilise_itc`.
     excess_liability: TaxHeadAmounts
+    #: The magnitude of any *negative* available credit handed in — a credit note's own negative
+    #: accrual (see `services.record_ims_decision`) outrunning what a head had otherwise accrued.
+    #: Always `>= 0` per head. Never treated as a liability and never added to `cash_payable`;
+    #: carried here, visibly, for the same reason `excess_liability` is — dropping it silently
+    #: would understate how deep a head has gone negative rather than merely reporting it as zero.
+    credit_deficit: TaxHeadAmounts
 
 
 def _apply(credit: int, liability: int) -> tuple[int, int, int]:
@@ -1699,6 +1705,12 @@ def utilise_itc(available: TaxHeadAmounts, liability: TaxHeadAmounts) -> Utilisa
         cgst_minor=max(0, -liability.cgst_minor),
         sgst_minor=max(0, -liability.sgst_minor),
         cess_minor=max(0, -liability.cess_minor),
+    )
+    credit_deficit = TaxHeadAmounts(
+        igst_minor=max(0, -available.igst_minor),
+        cgst_minor=max(0, -available.cgst_minor),
+        sgst_minor=max(0, -available.sgst_minor),
+        cess_minor=max(0, -available.cess_minor),
     )
     liability = _clamp_non_negative(liability)
     available = _clamp_non_negative(available)
@@ -1775,6 +1787,7 @@ def utilise_itc(available: TaxHeadAmounts, liability: TaxHeadAmounts) -> Utilisa
             igst_minor=igst_liab, cgst_minor=cgst_liab, sgst_minor=sgst_liab, cess_minor=cess_liab
         ),
         excess_liability=excess_liability,
+        credit_deficit=credit_deficit,
     )
 
 

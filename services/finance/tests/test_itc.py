@@ -323,6 +323,33 @@ class TestUtilisationWithNegativeInputs:
         assert result.excess_liability.sgst_minor == max(0, -sgst_liab)
         assert result.credit_remaining == domain.ZERO_ITC
         assert result.lines == ()
+        assert result.credit_deficit == domain.ZERO_ITC
+
+    @pytest.mark.parametrize(
+        "igst_credit,cgst_credit,sgst_credit",
+        list(itertools.product([-500, -1, 0, 1, 500], repeat=3)),
+    )
+    def test_negative_available_credit_is_clamped_and_reported_as_deficit_never_dropped(
+        self, igst_credit, cgst_credit, sgst_credit
+    ) -> None:
+        """A negative credit balance is not spendable, but it must not vanish either — the same
+        contract `excess_liability` already keeps for a negative liability. Before this field
+        existed, a negative available credit was clamped to zero with nothing on the result to
+        show it had ever been negative."""
+        available = domain.TaxHeadAmounts(
+            igst_minor=igst_credit, cgst_minor=cgst_credit, sgst_minor=sgst_credit
+        )
+        liability = domain.TaxHeadAmounts()
+        result = domain.utilise_itc(available, liability)
+        assert result.credit_deficit.igst_minor == max(0, -igst_credit)
+        assert result.credit_deficit.cgst_minor == max(0, -cgst_credit)
+        assert result.credit_deficit.sgst_minor == max(0, -sgst_credit)
+        assert result.credit_remaining == domain.TaxHeadAmounts(
+            igst_minor=max(0, igst_credit),
+            cgst_minor=max(0, cgst_credit),
+            sgst_minor=max(0, sgst_credit),
+        )
+        assert result.lines == ()
 
     def test_negative_available_credit_spends_nothing(self) -> None:
         available = domain.TaxHeadAmounts(igst_minor=-1_000)
@@ -331,6 +358,7 @@ class TestUtilisationWithNegativeInputs:
         assert result.lines == ()
         assert result.cash_payable == domain.TaxHeadAmounts(igst_minor=500)
         assert result.credit_remaining == domain.ZERO_ITC
+        assert result.credit_deficit == domain.TaxHeadAmounts(igst_minor=1_000)
 
     def test_the_counterexample_from_review_produces_no_utilisation_row(self) -> None:
         """avail igst=100, liab cgst=-50, sgst=-50 used to leave igst credit at 200 (having

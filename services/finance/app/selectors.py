@@ -1347,24 +1347,66 @@ async def find_return(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def gstr3b_filed_for_period(
-    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, period: str
-) -> bool:
-    """Whether this registration's `gstr3b` for `period` has been filed.
-
-    `services._claim_period_for` walks this forward one period at a time to find the next period
-    a late posting may still land in — a decision taken after a period's return has gone out
-    cannot amend that return's Table 4.
-    """
-    stmt = select(GstReturn.id).where(
+async def latest_filed_gstr3b_period(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID
+) -> str | None:
+    """The latest period this registration has a **filed** `gstr3b` for, or `None` if it has never
+    filed one. `YYYY-MM` strings compare lexicographically the same as chronologically, so `MAX`
+    is exactly "latest"."""
+    stmt = select(func.max(GstReturn.period)).where(
         GstReturn.organization_id == org_id,
         GstReturn.gst_registration_id == gst_registration_id,
         GstReturn.return_type == "gstr3b",
-        GstReturn.period == period,
         GstReturn.status == "filed",
         GstReturn.deleted_at.is_(None),
     )
-    return (await session.execute(stmt)).scalar_one_or_none() is not None
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def claim_period_for(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, source_period: str
+) -> str:
+    """The period a posting against `source_period` actually lands in: `source_period` itself, or
+    the period right after whichever `gstr3b` this registration most recently filed — whichever is
+    later.
+
+    Not "the period right after `source_period`'s own filed return" — a decision can arrive long
+    after several periods have been filed (a document reported for July decided on only after
+    August has already gone out), and a walk that only asks "is `source_period` itself filed"
+    would leave the posting sitting in a period no future GSTR-3B could ever pick up again. The
+    latest filed period is a single fact about the whole registration, not about any one document,
+    so one `MAX` query answers it regardless of how far behind the source period is.
+    """
+    latest_filed = await latest_filed_gstr3b_period(session, org_id, gst_registration_id)
+    if latest_filed is None:
+        return source_period
+    return max(source_period, domain.next_period(latest_filed))
+
+
+async def gstr3b_periods_after(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, period: str
+) -> list[str]:
+    """Every `gstr3b` period for this registration, later than `period`, that already exists —
+    filed or merely generated.
+
+    A non-empty result means generating or filing `period` now would let it utilise brought-forward
+    credit a later period has already drawn on (or is mid-way through drawing on), spending the
+    same credit twice — brought-forward is read straight off the ledger, not off any particular
+    return, so a later period's return existing at all is enough for this to be live even before
+    that return itself is filed.
+    """
+    stmt = (
+        select(GstReturn.period)
+        .where(
+            GstReturn.organization_id == org_id,
+            GstReturn.gst_registration_id == gst_registration_id,
+            GstReturn.return_type == "gstr3b",
+            GstReturn.period > period,
+            GstReturn.deleted_at.is_(None),
+        )
+        .order_by(GstReturn.period)
+    )
+    return list((await session.execute(stmt)).scalars().all())
 
 
 async def gstr3b_pending_periods_before(
@@ -1764,30 +1806,45 @@ async def itc_document_net_accrued(
 
 
 async def itc_blocked_amounts_for_period(
-    session: AsyncSession, org_id: uuid.UUID, period: str
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, period: str
 ) -> domain.TaxHeadAmounts:
-    """Table 4D(1), informational: the tax on documents accepted this period whose declared
-    category is blocked under s. 17(5), and which therefore posted **no** accrual at all.
+    """Table 4D(1), informational: the tax on accepted documents whose declared category is
+    blocked under s. 17(5), and which therefore posted **no** accrual at all, landing in `period`.
 
     Not read off the ledger — a blocked document leaves no row there by design — but off
     `ims_documents` joined to each one's newest decision, which is where the category the person
-    asserted actually lives.
+    asserted actually lives. Keyed on the **claim period** the same way a real accrual would be,
+    not the document's own reported period: a blocked document decided after its own period's
+    return has already been filed would, had it been eligible, have accrued into the next open
+    period — so its blocked figure belongs there too, for the same reason. Every accepted document
+    up to and including `period` is a candidate, since a late decision can redirect forward past
+    several already-filed periods.
     """
-    documents = await all_ims_documents(session, org_id, period=period)
-    accepted = [d for d in documents if d.status == "accepted"]
-    if not accepted:
+    candidates = [
+        d
+        for d in await all_ims_documents(session, org_id)
+        if d.status == "accepted" and d.period <= period
+    ]
+    if not candidates:
         return domain.ZERO_ITC
-    decisions = await latest_decisions(session, org_id, [d.id for d in accepted])
+    decisions = await latest_decisions(session, org_id, [d.id for d in candidates])
     total = domain.ZERO_ITC
-    for document in accepted:
+    for document in candidates:
         decision = decisions.get(document.id)
         category = decision.expense_category if decision is not None else "general"
         if domain.is_itc_eligible(category):
             continue
+        claim_period = await claim_period_for(session, org_id, gst_registration_id, document.period)
+        if claim_period != period:
+            continue
+        # A credit note reduces what a supplier billed, so a blocked one would have reduced
+        # credit, not added to it — the same sign convention `services.record_ims_decision`
+        # applies to a real accrual.
+        sign = -1 if document.document_type == "credit_note" else 1
         total = total + domain.TaxHeadAmounts(
-            igst_minor=document.igst_minor,
-            cgst_minor=document.cgst_minor,
-            sgst_minor=document.sgst_minor,
+            igst_minor=sign * document.igst_minor,
+            cgst_minor=sign * document.cgst_minor,
+            sgst_minor=sign * document.sgst_minor,
         )
     return total
 
@@ -1837,6 +1894,7 @@ def to_gstr3b_sections(ret: domain.Gstr3bReturn) -> Gstr3bSections:
             credit_remaining=to_tax_head_amounts_out(ret.payment.utilisation.credit_remaining),
             cash_payable=to_tax_head_amounts_out(ret.payment.cash_payable),
             excess_liability=to_tax_head_amounts_out(ret.payment.utilisation.excess_liability),
+            credit_deficit=to_tax_head_amounts_out(ret.payment.utilisation.credit_deficit),
         ),
     )
 
@@ -1874,6 +1932,20 @@ async def itc_balance(
         heads=heads,
         total_balance_minor=total,
     )
+
+
+async def itc_total_balance(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID
+) -> domain.TaxHeadAmounts:
+    """The registration's whole ledger balance, right now — every accrual, reversal and
+    utilisation ever posted, with no period boundary at all.
+
+    The simplest statement of "is there enough credit to spend" there is, and deliberately not
+    scoped to any period: `file_return`'s pre-posting safety net uses this rather than a
+    period-scoped balance, so it stays correct even if the period-scoped bookkeeping elsewhere
+    ever disagrees with it — the two are independent checks on purpose.
+    """
+    return await _itc_amounts_by_head(session, org_id, gst_registration_id)
 
 
 # --------------------------------------------------------------------- e-Way bills

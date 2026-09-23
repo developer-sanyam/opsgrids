@@ -745,7 +745,7 @@ class ItcLedgerEntry(Base, TenantBase):
         nullable=False,
     )
     #: The return period this posting is **attributed to** for GSTR-3B purposes, `YYYY-MM` — the
-    #: *claim* period, which `services._claim_period_for` may advance past `source_period` when a
+    #: *claim* period, which `selectors.claim_period_for` may advance past `source_period` when a
     #: decision arrives after its own period's `gstr3b` has already been filed (the same
     #: "amendment in a later period" shape a credit note against a filed invoice already has).
     #: `selectors.itc_period_movement`/`itc_brought_forward` filter on this column, because it is
