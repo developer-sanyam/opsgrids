@@ -46,18 +46,20 @@ function Harness({
   signedIn = true,
   grants = ["crm.book.owner.write:ORG"],
   onOwnerCreated = vi.fn(),
+  me = USER,
 }: {
   owners?: Owner[];
   signedIn?: boolean;
   grants?: string[];
   onOwnerCreated?: (owner: Owner) => void;
+  me?: MeOut;
 }) {
   const body = (
     <PermissionProvider grants={grants}>
       <OwnerPicker owners={owners} value="" onChange={vi.fn()} onOwnerCreated={onOwnerCreated} />
     </PermissionProvider>
   );
-  return signedIn ? <AuthContext value={AUTH_VALUE}>{body}</AuthContext> : body;
+  return signedIn ? <AuthContext value={{ ...AUTH_VALUE, user: me }}>{body}</AuthContext> : body;
 }
 
 function open(props: Parameters<typeof Harness>[0] = {}) {
@@ -146,6 +148,12 @@ describe("OwnerPicker — empty directory", () => {
     expect(screen.queryByRole("button", { name: /make .* the owner/i })).toBeNull();
     expect(screen.queryByRole("button", { name: "Add a different team member" })).toBeNull();
     expect(screen.getByText(/ask an administrator to add the team/i)).toBeTruthy();
+  });
+
+  it("offers the full form instead of a claim when the session has no name to claim with", () => {
+    open({ me: { ...USER, full_name: "  " } });
+    expect(screen.queryByRole("button", { name: /make .* the owner/i })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add a different team member" })).toBeTruthy();
   });
 
   it("offers no one-click claim when rendered with no signed-in session", () => {

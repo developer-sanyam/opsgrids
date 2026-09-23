@@ -39,12 +39,15 @@ export function OwnerPicker({ owners, value, onChange, error, onOwnerCreated, di
   // product's `<AuthProvider>`, but a picker rendered in isolation (a story, a narrower test)
   // should degrade to "no one-click claim on offer" rather than crash.
   const user = useContext(AuthContext)?.user ?? null;
+  // The service requires a non-empty name, so a session without one gets the full form instead
+  // of a button that reads "Make  the owner" and can only be refused.
+  const claimant = user !== null && user.full_name.trim() !== "" ? user : null;
 
   const claimOwner = useMutation(
     () =>
       createOwner({
-        full_name: user?.full_name ?? "",
-        email: user?.email ?? "",
+        full_name: claimant?.full_name.trim() ?? "",
+        email: claimant?.email ?? "",
       }),
     { onSuccess: (owner) => onOwnerCreated(owner) },
   );
@@ -74,14 +77,15 @@ export function OwnerPicker({ owners, value, onChange, error, onOwnerCreated, di
             {problemMessage(claimOwner.error)}
           </InlineAlert>
         ) : null}
-        {user ? (
+        {claimant ? (
+          // Outline, not primary: the dialog this sits in already has its own primary submit.
           <Button
             type="button"
-            variant="primary"
+            variant="outline"
             loading={claimOwner.pending}
             onClick={() => void claimOwner.mutate(undefined)}
           >
-            Make {user.full_name} the owner
+            Make {claimant.full_name.trim()} the owner
           </Button>
         ) : null}
         <button
