@@ -38,7 +38,7 @@ from app.billing_run import CatalogPrice, CatalogVersion
 from app.config import settings
 from app.main import app
 from app.models import SCHEMA, Invoice, InvoiceLine, OutboxEvent, TaxRate
-from platform_core.db import TENANT_GUC
+from platform_core.db import TENANT_GUC, dispose_outbox_engine, init_outbox_engine
 from platform_core.internal_auth import mint_service_token
 from platform_core.money import Money
 from tests.helpers import customer_principal
@@ -616,6 +616,72 @@ class TestIsolationAndRaces:
             await _count(admin_session, OutboxEvent, event_type="commerce.invoice.finalized") == 0
         )
 
+    async def test_two_racing_finalizes_finalize_once_and_the_second_is_idempotent(
+        self, session: AsyncSession, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """Two replicas finalize the same draft together (review round 3, m4). The second must
+        wait on the row, see it finalized, and answer `(invoice, False)` — not read a stale
+        draft, stage a second `commerce.invoice.finalized` (a second charge), or trip the freeze
+        trigger into a 500."""
+        cfg = settings()
+        subscription_id = uuid.uuid4()
+        period = domain.Period(PERIOD_START, PERIOD_END)
+        key = domain.subscription_invoice_key(subscription_id, period.start)
+        async with session.begin():
+            await services.record_subscription_invoice(
+                session,
+                organization_id=org_id,
+                subscription_id=subscription_id,
+                product_key="hrms",
+                currency="INR",
+                key=key,
+                period=period,
+                lines=[
+                    domain.LineDraft(
+                        description="Subscription",
+                        quantity=Decimal(1),
+                        amount_minor=5000,
+                        currency="INR",
+                    )
+                ],
+            )
+        engine = create_async_engine(
+            cfg.app_dsn, connect_args={"server_settings": {"search_path": f"{SCHEMA},public"}}
+        )
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        a_finalized = asyncio.Event()
+        b_read = asyncio.Event()
+
+        async def finalize(first: bool) -> tuple[str, bool]:
+            async with maker() as s, s.begin():
+                await s.execute(
+                    text(f"SELECT set_config('{TENANT_GUC}', :o, true)"), {"o": str(org_id)}
+                )
+                if not first:
+                    await a_finalized.wait()
+                    b_read.set()
+                invoice, changed = await services.finalize_subscription_invoice(
+                    s, organization_id=org_id, key=key, product_key="hrms", kind="period"
+                )
+                if first:
+                    a_finalized.set()
+                    # Hold the transaction so the second finalize reads while this is uncommitted.
+                    await b_read.wait()
+                    await asyncio.sleep(0.3)
+                return invoice.state, changed
+
+        try:
+            (a_state, a_changed), (b_state, b_changed) = await asyncio.gather(
+                finalize(True), finalize(False)
+            )
+        finally:
+            await engine.dispose()
+        assert (a_state, a_changed) == ("finalized", True)
+        assert (b_state, b_changed) == ("finalized", False)
+        assert (
+            await _count(admin_session, OutboxEvent, event_type="commerce.invoice.finalized") == 1
+        )
+
     async def test_the_customer_reads_the_run_invoice(
         self, wired: AsyncClient, catalog: FakeCatalog, org_id: uuid.UUID
     ) -> None:
@@ -1078,3 +1144,43 @@ class TestFinalizeAfterRecord:
         assert r.status_code == 200, r.text
         assert r.json() == {"created": False, "invoice": None}
         assert await _count(admin_session, Invoice) == 0
+
+
+# --------------------------------------------------------------------- drafts probe (round 3, m6)
+
+
+async def test_the_drafts_probe_counts_stale_drafts_and_names_nobody(
+    wired: AsyncClient,
+    catalog: FakeCatalog,
+    admin_session: AsyncSession,
+    org_id: uuid.UUID,
+) -> None:
+    """A run draft the run never finalized is a period nobody is charged for, and nothing
+    errors. `/health/billing-drafts` counts it once it is older than an hour — cross-tenant, on
+    the outbox role's column grant, with no id in the answer."""
+    version, items = _version()
+    catalog.versions[version.id] = version
+    for _ in range(2):
+        r = await wired.post(
+            "/internal/v1/subscription-invoices",
+            json=_body(org_id, version, items),
+            headers=_headers(),
+        )
+        assert r.status_code == 201, r.text
+    async with admin_session.begin():
+        oldest = (
+            await admin_session.execute(select(Invoice).where(Invoice.state == "draft").limit(1))
+        ).scalar_one()
+        oldest.created_at = datetime.now(UTC) - timedelta(hours=2)
+
+    init_outbox_engine(settings())
+    try:
+        r = await wired.get("/health/billing-drafts")
+    finally:
+        await dispose_outbox_engine()
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert set(body) == {"drafts", "drafts_stale", "oldest_draft_seconds"}
+    assert body["drafts"] == 2
+    assert body["drafts_stale"] == 1
+    assert body["oldest_draft_seconds"] >= 2 * 3600 - 60

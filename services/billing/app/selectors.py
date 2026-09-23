@@ -13,7 +13,7 @@ with nothing having run to update a status column.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -120,23 +120,33 @@ async def get_reversal_of(session: AsyncSession, entry_id: uuid.UUID) -> CreditL
 
 
 async def get_invoice_by_key(
-    session: AsyncSession, organization_id: uuid.UUID, idempotency_key: str
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    idempotency_key: str,
+    *,
+    for_update: bool = False,
 ) -> Invoice | None:
     """The billing run's invoice for one claim, if it has been raised.
 
     The key is only unique per organization, so the organization is filtered explicitly — and
     row-level security scopes the read to the bound tenant as the net under that filter.
+
+    `for_update` locks the invoice row for a state transition (finalize, void): two concurrent
+    finalizes serialise on it, and the second — reading the row fresh after the first commits,
+    hence `populate_existing` — sees `finalized` and answers idempotently instead of racing the
+    freeze trigger into a 500 (review round 3, m4).
     """
-    return (
-        await session.execute(
-            select(Invoice)
-            .options(selectinload(Invoice.lines))
-            .where(
-                Invoice.organization_id == organization_id,
-                Invoice.idempotency_key == idempotency_key,
-            )
+    query = (
+        select(Invoice)
+        .options(selectinload(Invoice.lines))
+        .where(
+            Invoice.organization_id == organization_id,
+            Invoice.idempotency_key == idempotency_key,
         )
-    ).scalar_one_or_none()
+    )
+    if for_update:
+        query = query.with_for_update(of=Invoice).execution_options(populate_existing=True)
+    return (await session.execute(query)).scalar_one_or_none()
 
 
 async def invoice_numbers_like(
@@ -175,7 +185,38 @@ async def effective_tax_rate(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def billing_drafts_health(
+    session: AsyncSession, *, now: datetime, stale_after: timedelta
+) -> dict[str, int | None]:
+    """Cross-tenant counts of the billing run's un-finalized drafts, for `/health/billing-drafts`.
+
+    A run invoice is a draft from the record step until the run finalizes it (review round 2,
+    M5); it should be minutes. A draft older than `stale_after` means a finalize that never came
+    — the subscription side's record committed and its finalize retry is stuck or gone — and a
+    period its customer is not being charged for (review round 3, m6). Counts and an age only:
+    nothing here names a tenant, an invoice or an amount. Runs on the outbox engine, whose role
+    may read `invoices(id, organization_id, state, created_at)` and nothing else.
+    """
+    stale = now - stale_after
+    row = (
+        await session.execute(
+            select(
+                func.count(),
+                func.count().filter(Invoice.created_at < stale),
+                func.min(Invoice.created_at),
+            ).where(Invoice.state == INVOICE_DRAFT)
+        )
+    ).one()
+    total, stale_count, oldest = row
+    return {
+        "drafts": int(total),
+        "drafts_stale": int(stale_count),
+        "oldest_draft_seconds": int((now - oldest).total_seconds()) if oldest else None,
+    }
+
+
 __all__ = [
+    "billing_drafts_health",
     "credit_balance",
     "effective_tax_rate",
     "get_credit_entry",

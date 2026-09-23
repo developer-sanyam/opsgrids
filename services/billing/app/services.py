@@ -344,7 +344,7 @@ async def finalize_subscription_invoice(
     run's record of it re-asks and changes nothing. A void invoice is refused — the run voids only
     a period it has superseded, which it never then finalizes.
     """
-    invoice = await selectors.get_invoice_by_key(session, organization_id, key)
+    invoice = await selectors.get_invoice_by_key(session, organization_id, key, for_update=True)
     if invoice is None:
         raise NotFoundProblem("No billing-run invoice under that key")
     if invoice.state == INVOICE_FINALIZED:
@@ -380,7 +380,7 @@ async def void_subscription_invoice(
     never a delete, and it stages `commerce.invoice.voided`. Idempotent: an already void invoice
     answers `(True, id)`; no invoice under the key answers `(False, None)`.
     """
-    invoice = await selectors.get_invoice_by_key(session, organization_id, key)
+    invoice = await selectors.get_invoice_by_key(session, organization_id, key, for_update=True)
     if invoice is None:
         return False, None
     if invoice.state == INVOICE_VOID:

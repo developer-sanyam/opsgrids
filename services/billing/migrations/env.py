@@ -72,6 +72,42 @@ def do_run_migrations(connection: Connection) -> None:
     # without them -- which is exactly what happened the first time this was left out.
     apply_schema_grants(connection, SCHEMA, cfg.db_app_role, outbox_role=cfg.db_outbox_role)
     _enforce_append_only(connection)
+    _grant_drafts_probe(connection)
+
+
+#: What `/health/billing-drafts` counts on the outbox role (review round 3, m6): SELECT on these
+#: columns of `invoices` only — never an amount, a number or a subscription.
+DRAFTS_PROBE_COLUMNS = ("id", "organization_id", "state", "created_at")
+
+
+def _grant_drafts_probe(connection: Connection) -> None:
+    """Column-level SELECT on `invoices` for the cross-tenant drafts probe. Guarded by role and
+    table existence, and limited to the columns this revision has, so it is a no-op after a
+    downgrade rather than an error."""
+    reader = cfg.db_outbox_role
+    if (
+        not reader
+        or not connection.execute(
+            text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": reader}
+        ).scalar()
+    ):
+        return
+    present = set(
+        connection.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = :s AND table_name = 'invoices'"
+            ),
+            {"s": SCHEMA},
+        ).scalars()
+    )
+    columns = [c for c in DRAFTS_PROBE_COLUMNS if c in present]
+    if not columns:
+        return
+    # Identifiers from the constant above and the configured role — never input.
+    cols = ", ".join(f'"{c}"' for c in columns)
+    connection.execute(text(f'GRANT SELECT ({cols}) ON "{SCHEMA}"."invoices" TO "{reader}"'))
+    connection.commit()
 
 
 def _enforce_append_only(connection: Connection) -> None:
