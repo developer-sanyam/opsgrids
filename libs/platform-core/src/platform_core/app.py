@@ -13,6 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from sqlalchemy import func, select, text
 
 from platform_core.cache import close_redis, get_redis, init_redis
@@ -30,6 +31,28 @@ from platform_core.db import (
 )
 from platform_core.errors import register_error_handlers
 from platform_core.logging import RequestContextMiddleware, configure_logging, get_logger
+from platform_core.metrics import Sample, render
+
+_METRICS_HELP = {
+    "outbox_pending": "Unpublished rows in this service's outbox.",
+    "outbox_oldest_seconds": "Age of the oldest unpublished outbox row, in seconds.",
+    "outbox_exhausted": "Unpublished outbox rows the relay has given up retrying.",
+    "db_pool_in_use": "Checked-out connections on this process's application engine pool.",
+}
+_METRICS_TYPES = {
+    "outbox_pending": "gauge",
+    "outbox_oldest_seconds": "gauge",
+    "outbox_exhausted": "gauge",
+    "db_pool_in_use": "gauge",
+}
+
+
+def _pool_checked_out(engine: Any) -> int:
+    """Checked-out connections on `engine`'s pool — 0 for a pool class that carries no
+    concept of it (`NullPool`, used by some throwaway test engines), rather than an
+    AttributeError on a metrics endpoint scraped every few seconds."""
+    checkedout = getattr(engine.pool, "checkedout", None)
+    return int(checkedout()) if checkedout is not None else 0
 
 
 def build_health_router(
@@ -38,6 +61,7 @@ def build_health_router(
     database: bool = True,
     redis: bool = False,
     outbox_model: type[Any] | None = None,
+    outbox_max_attempts: int = 50,
 ) -> APIRouter:
     router = APIRouter(tags=["health"])
 
@@ -122,6 +146,41 @@ def build_health_router(
                 "pending": int(pending or 0),
                 "oldest_seconds": float(oldest) if oldest is not None else 0.0,
             }
+
+    @router.get("/metrics", response_class=PlainTextResponse, summary="Prometheus text exposition")
+    async def metrics() -> str:
+        """Reachable only on the compose `back` network (`tests/infra`'s
+        `test_metrics_never_routed.py` is the lint that keeps it that way) — never behind
+        Caddy or a gateway, the same rule `ops_monitor`'s own `/metrics` follows.
+
+        `db_pool_in_use` is always reported when this service has a database; the three
+        outbox gauges only when `outbox_model` is configured — same gate as `/health/outbox`,
+        and the same reason: an app-role connection with no tenant bound sees zero rows.
+        """
+        samples: list[Sample] = []
+        if database:
+            samples.append(Sample("db_pool_in_use", float(_pool_checked_out(get_engine()))))
+        if outbox_model is not None:
+            table = outbox_model.__table__
+            stmt = select(
+                func.count().filter(table.c.published_at.is_(None)),
+                func.extract(
+                    "epoch",
+                    func.now()
+                    - func.min(table.c.created_at).filter(table.c.published_at.is_(None)),
+                ),
+                func.count().filter(
+                    table.c.published_at.is_(None), table.c.attempts >= outbox_max_attempts
+                ),
+            ).select_from(table)
+            async with get_outbox_engine().connect() as conn:
+                pending, oldest, exhausted = (await conn.execute(stmt)).one()
+            samples.append(Sample("outbox_pending", float(pending or 0)))
+            samples.append(
+                Sample("outbox_oldest_seconds", float(oldest) if oldest is not None else 0.0)
+            )
+            samples.append(Sample("outbox_exhausted", float(exhausted or 0)))
+        return render(samples, help_text=_METRICS_HELP, metric_types=_METRICS_TYPES)
 
     return router
 

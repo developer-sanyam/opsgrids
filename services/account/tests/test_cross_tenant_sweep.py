@@ -47,7 +47,15 @@ from app.catalogue import CORE
 from app.config import settings
 from app.main import app
 from app.models import SCHEMA, Base, Membership, Organization
-from app.schemas import GrantIn, InvitationIn, LocationIn, OrganizationIn, OrgUnitIn, RoleIn
+from app.schemas import (
+    DomainIn,
+    GrantIn,
+    InvitationIn,
+    LocationIn,
+    OrganizationIn,
+    OrgUnitIn,
+    RoleIn,
+)
 from platform_core.auth import Principal, Scope, get_principal
 from platform_core.db import get_session
 from tests.helpers import ctx_for, principal_for
@@ -66,6 +74,7 @@ A_UNIT_CODE = "A-ENGINEERING"
 A_LOCATION_CODE = "A-MUMBAI"
 A_ROLE_CODE = "A-AUDITOR"
 A_INVITEE = "invitee-a@example.com"
+A_DOMAIN = "a-tenant-domain.example.com"
 
 Route = tuple[str, str]
 
@@ -100,6 +109,7 @@ class TenantA:
     role_id: uuid.UUID
     invitation_id: uuid.UUID
     invitation_token: str
+    domain_id: uuid.UUID
     markers: frozenset[str]
 
 
@@ -121,6 +131,12 @@ PATH_PARAMS: dict[str, Callable[[TenantA], uuid.UUID]] = {
     "location_id": lambda a: a.location_id,
     "role_id": lambda a: a.role_id,
     "invitation_id": lambda a: a.invitation_id,
+    # `GET /admin/directory/organizations/{organization_id}` — a `staff_only` route, not a
+    # tenant one (ADR-0003 §2). B's tenant principal carries no operator audience, so it is
+    # refused with the boundary's own 404 regardless of which organization id is named; the
+    # sweep exercises exactly that rather than needing an exemption.
+    "organization_id": lambda a: a.org_id,
+    "domain_id": lambda a: a.domain_id,
 }
 
 #: A minimal valid request for every non-GET route. Bodies name A's rows wherever the schema
@@ -157,6 +173,18 @@ BODIES: dict[Route, Write] = {
         names_a=True,
     ),
     ("DELETE", f"{PREFIX}/invitations/{{invitation_id}}"): NO_BODY,
+    # A brand-new string, not A's: claiming a domain never needs to name another tenant's
+    # row, so this lands in B's own organization. A pending claim is scoped per-organization
+    # now (`uq_org_domains_org_domain`), so B claiming A's own pending domain would not even
+    # collide; only a domain A has *verified* is globally exclusive. That takeover path —
+    # 409, not 404, once the domain is verified elsewhere — is covered on its own in
+    # `test_domains.py::TestTakeoverSafety`; the generic NAMING_A/OWN_ORG split here only has
+    # a slot for "not found", which a pending or unclaimed domain is.
+    ("POST", f"{PREFIX}/domains"): Write(
+        json=lambda _a: {"domain": "beta-tenant-domain.example.com"}
+    ),
+    ("POST", f"{PREFIX}/domains/{{domain_id}}/verify"): NO_BODY,
+    ("DELETE", f"{PREFIX}/domains/{{domain_id}}"): NO_BODY,
 }
 
 #: Routes the sweep does not call as B, with the reason each is safe to leave out. Two of them
@@ -178,6 +206,17 @@ ALLOW_LIST: dict[Route, str] = {
         "Public sign-up names no organization: it creates one, bound to an id generated "
         "before the row exists (ADR-0013 §3). Swept by asserting that a sign-up made through "
         "a B-bound request writes nothing into A or B and lands in a third organization."
+    ),
+    ("GET", f"{PREFIX}/admin/directory/organizations/{{organization_id}}"): (
+        "Reachable only from console, not through get_principal at all (MINOR 7 and m6 of "
+        "the security review): it requires console's service token AND verifies an "
+        "operator's own access token carried in X-Operator-Token via JWKS, so overriding "
+        "get_principal to 'be tenant B' has no effect on it and it answers 401 "
+        "unconditionally without those headers — structurally "
+        "unreachable by any ordinary tenant bearer token presented the normal way (as "
+        "Authorization), which is the property this sweep exists to prove for every other "
+        "route rather than something this one leaves untested. Covered directly instead in "
+        "test_admin_directory.py."
     ),
 }
 
@@ -254,6 +293,9 @@ async def tenant_a(
         invitation, token = await services.invite(
             session, ctx("core.identity.membership.write"), InvitationIn(email=A_INVITEE)
         )
+        domain_row = await services.claim_domain(
+            session, ctx("core.identity.domain.write"), DomainIn(domain=A_DOMAIN)
+        )
 
     # The people's emails and names, read back rather than repeated from conftest so the
     # leak check keeps up if the fixture people change.
@@ -273,13 +315,14 @@ async def tenant_a(
         location.id,
         role.id,
         invitation.id,
+        domain_row.id,
         *(m.id for m in people.values()),
         *(m.user_id for m in people.values()),
     ]
     markers = (
         {str(identifier) for identifier in identifiers}
         | person_markers
-        | {org.slug, org.name, A_UNIT_CODE, A_LOCATION_CODE, A_ROLE_CODE, A_INVITEE}
+        | {org.slug, org.name, A_UNIT_CODE, A_LOCATION_CODE, A_ROLE_CODE, A_INVITEE, A_DOMAIN}
     )
     return TenantA(
         org_id=org.id,
@@ -289,6 +332,7 @@ async def tenant_a(
         role_id=role.id,
         invitation_id=invitation.id,
         invitation_token=token,
+        domain_id=domain_row.id,
         markers=frozenset(markers),
     )
 

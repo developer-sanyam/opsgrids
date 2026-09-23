@@ -4,7 +4,7 @@ import type { Company, Contact, Owner } from "@/api/types";
 import { companyById, companyName, contactById, contactName, contactsForCompany, ownerById, ownerName } from "./lookups";
 
 const OWNERS: Owner[] = [
-  { id: "own-1", full_name: "Sofia Marchetti", email: "sofia@example.com", role: "AE" },
+  { id: "own-1", full_name: "Sofia Marchetti", email: "sofia@example.com", role: "AE", is_active: true },
 ];
 
 const COMPANIES: Company[] = [

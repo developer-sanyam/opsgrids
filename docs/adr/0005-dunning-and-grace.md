@@ -285,7 +285,119 @@ One key per attempt is what makes the ladder actually debit.
   same way `subscriptions.state` is. The permanent record of what happened is where it already was:
   the append-only transition stream, the audit log and the outbox.
 
-## Open, for later
+## Decisions on open questions (2026-09-24)
+
+The four items in "Open, for later" below are decided here. The list is left as written so the
+history reads. The billing-run addendum at the end of this document (backlog R2) is in flight and
+settles other questions: trial end, cadence, plan changes, the interim tax rule, and a narrower
+recovery rule for an open window. Nothing below contradicts it. The register of every ADR question
+is [open-questions-register.md](open-questions-register.md).
+
+### Q1. Per-plan grace windows — **DECIDED: none; one platform ladder**
+
+**Decision.** The ladder stays one platform constant (`DunningPolicy` in
+`subscription/app/domain.py`). No plan version, subscription or customer carries a grace window.
+If a signed contract ever needs a different window, it becomes a catalog **plan-version feature**,
+`dunning_grace_days`, restricted to 7–14 days. The subscription reads it from the pinned version
+**when a cycle opens** and stores the result in `grace_ends_at`, as today. It never goes above
+half the billing period, which is what keeps cycles from overlapping (§1). The ladder's retry
+offsets stay platform-wide.
+
+**Why.** §1 already rejected a column on the subscription. A contract term is a commercial promise,
+and ADR-0004 §2 puts those in plan versions. Until a contract asks, one constant is one thing to
+reason about.
+
+**Rejected.** A `grace_days` column on subscriptions or organizations: the side-door shortcut §1
+names. A window longer than half a period: two cycles could then be open at once.
+
+**Consequences.** Nothing is built. The trigger is a signed contract clause. When it arrives, the
+work is one catalog feature key and one read at cycle open.
+
+### Q2. Immediate de-entitlement on suspension — **DECIDED: stays eventual**
+
+**Decision.** De-entitlement driven by a subscription (dunning suspension, cancellation, an
+operator's suspend override) stays **eventual**. The gateway gates on the `ent` claim in the access
+token (`platform_core/gateway.py`, the 402 check), so a suspension takes effect at the next refresh,
+within 900 seconds. `product-service`'s projection does not bump `pv`, and this decision keeps it
+that way.
+
+**Why.** A dunning suspension comes after fourteen days of notices, and a cancellation is the
+customer's own request. Fifteen more minutes costs nothing in either case. A `pv` bump is
+per-organization (ADR-0007 §5, ADR-0008 §7), so bumping on every de-entitlement would force every
+member of the tenant to refresh their token. It would also give product's consumer a Redis
+dependency that fails loudly, on a path that works today without one. ADR-0000 §4's asymmetry
+(revocations must be immediate) is about *authorization*. Being refused a product you stopped
+paying for is commercial, and the data behind it is still the tenant's.
+
+**Rejected.** Bumping `pv` on every entitling → non-entitling projection. Keeping a live
+entitlement lookup at the gateway: that is a network hop on every request to save fifteen minutes.
+
+**Consequences.** A stop that must take effect *now* — abuse, or a compromised tenant — uses the
+authorization levers in account, not commerce: revoking the membership bumps `pv` and the refresh
+then fails (`account/app/services.py`, `revoke_member`); the user-level kill is ADR-0008's Q2
+decision. **Trigger to revisit:** an incident in which a subscription suspension had to take effect
+within minutes. The fix then is a `pv` bump in `project_subscription` for reason `operator_suspend`
+only. Nothing is built now.
+
+### Q3. Long-suspended subscriptions — **DECIDED: an operator view plus a human, audited cancel; never automatic**
+
+**Decision.** §4 stands: no timer ever cancels. The operator console lists subscriptions that
+have been `suspended` for **30 days or more**. R2 adds `subscriptions.suspended_at`; the console's
+projection keeps it per subscription, and `/admin/subscriptions` gains a
+`suspended_for_days_gte` filter. An operator with the `owner` or `billing_ops` role (ADR-0003's
+operator matrix) cancels **one subscription at a time** through a new `cancel` override kind. The
+override is delegated to subscription-service's operator routes, like the existing `suspend`, and
+writes a reason and an audit row. If a bulk clean-up is ever needed, it is a reviewed one-off
+script with an explicit id list, in the same spirit as ADR-0007 §1's revocation rule. It is never
+a scheduled job.
+
+**Why.** Cancellation is terminal (§4). A wrongly cancelled subscription means recreating it and
+explaining a gap in the customer's history; a subscription left suspended too long costs a row.
+Thirty days is roughly one further billing period beyond the fourteen-day window, which is when a
+human decision is actually warranted.
+
+**Rejected.** Automatic cancellation after N days (§4). A bulk "cancel all long-suspended" button:
+that is a machine decision with a human click on top.
+
+**Consequences.** It needs a console filter, the `cancel` override kind and an operator cancel
+route in subscription, which does not exist today. The billing-run addendum notes "there is no
+operator cancel route to special-case". R2's 409 while billing lags applies to this route as it
+does to a customer's cancel. **Not covered by any ledger item. New backlog item needed** (after R2
+and Q1 merge).
+
+### Q4. Retrying against a different payment instrument — **DECIDED: every debit uses the organization's current usable mandate**
+
+**Decision.** A cycle's schedule never changes (§"What this rejects": no rescheduling). But the
+**instrument is resolved when each debit is made, not pinned when the cycle opens.** Every charge
+payment raises — a first attempt from `commerce.invoice.finalized`, a trial conversion, or a
+`payment_retry_due` rung — debits the organization's **current usable mandate**. That is the most
+recently activated mandate that meets the four conditions payment's charge guard and the billing
+run's mandate question already use:
+- its state is `active`;
+- it is bank-confirmed (`activated_at` is set);
+- it is in the charge's currency;
+- its cap (`max_amount_minor`) covers the amount.
+
+If a customer sets up a new mandate during a cycle, the next rung debits it with no other change.
+With no usable mandate, the charge fails as `no_mandate` **without a provider call**, so no bank
+fee is paid for an attempt that cannot succeed. A customer who wants to pay immediately uses a
+payment link or checkout, and any captured payment for the window's invoice recovers the
+subscription (§4, as narrowed by the billing-run addendum's review fix 3).
+
+**Why.** Today `charge_on_dunning_retry` (`payment/app/consumers.py`) raises a charge that names no
+mandate, and the billing-run addendum defers "attach the mandate to the charge". Resolving the
+instrument at debit time is the smallest rule that makes "fix your card" work without moving the
+schedule, and it keeps the choice of instrument inside payment, which owns the provider (§6).
+
+**Rejected.** Pinning the mandate when the cycle opens: a customer who fixed their payment method
+would still be retried against the broken one. Adding a rung or restarting the ladder when a new
+mandate arrives: the window would stretch by exactly the failures it is meant to cover.
+
+**Consequences.** Payment needs a "current usable mandate" selector, and every charge path must
+record the mandate it used. This is covered by **R3** (mandates route and trial→active charge) and
+**B5 (5g)** (live Razorpay recurring debit, which needs the mandate token on the charge).
+
+## Open, for later (as written 2026-08-25; every item is decided in the section above)
 
 - **Per-plan grace windows**, if a plan is ever sold with a contractual grace different from the
   platform default. The mechanism is settled (a plan version, §1); only the demand is missing.

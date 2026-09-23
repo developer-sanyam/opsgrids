@@ -67,6 +67,8 @@ ALL_PERMISSIONS = [
         "core.identity.role.read",
         "core.identity.role.write",
         "core.identity.audit.read",
+        "core.identity.domain.read",
+        "core.identity.domain.write",
         "core.profile.self.read",
         "core.profile.self.write",
     )
@@ -174,6 +176,7 @@ class TestNoRouteLeaksAnotherTenant:
                     .replace("{role_id}", str(uuid.uuid4()))
                     .replace("{invitation_id}", str(uuid.uuid4()))
                     .replace("{unit_id}", str(uuid.uuid4()))
+                    .replace("{domain_id}", str(uuid.uuid4()))
                 )
                 if "{" in concrete:
                     continue  # a parameter this sweep does not know how to fill

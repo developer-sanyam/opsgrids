@@ -887,3 +887,111 @@ once `document-cron` is deployed — its failure mode (a soft-deleted object sta
 little longer) is bounded and already-accepted by §7; the orphan pass's failure mode (deleting
 an object a request-in-flight might still need) is the one this addendum's caution is about,
 even though the 24-hour margin makes it very unlikely in practice.
+
+---
+
+## Decisions on open questions (2026-09-24)
+
+This ADR named four things and built none of them. Each is decided below. One prerequisite has
+since been resolved: **the gateway body cap in §5 has landed**. `DEFAULT_MAX_BODY_BYTES` is 2 MiB,
+enforced before a body is read (`platform_core/gateway.py`), and `/api/v1/documents` raises its
+own ceiling to 6 MiB in both route tables. The other "Revisit when" items (re-encoding in a
+worker, GIF, a delete-only permission, conditional `PutObject`) stay demand triggers. The
+register of every ADR question is [open-questions-register.md](open-questions-register.md).
+
+### Q1. The private half (§2): payslips, contracts, ID scans — **DECIDED: a private bucket, the owning product authorizes, the document service presigns**
+
+**Decision.** `S3_PRIVATE_BUCKET` has **no anonymous policy at all**. Private objects get their own
+table in `document`, `private_objects` (RLS, `organization_id`, `owner_service`,
+`owner_aggregate_id`, `content_type`, `size_bytes`, `checksum_sha256`), under keys
+`{organization_id}/{owner_service}/{object_id}`. They are never in `assets` and never in the
+public bucket.
+
+**The product that owns the document authorizes reads, never the document service.** Payroll
+decides who may read a payslip; the scope is payroll's own, for example OWN = the employee's own
+payslip. The flow:
+1. The product's API checks scope.
+2. It writes the sensitive-read audit row. A payslip is PII, so every unmasking read is audited
+   (CLAUDE.md).
+3. It asks document's internal route for a presigned GET:
+   `POST /internal/v1/private-objects/{id}:presign`, with a service token carrying the `org`
+   claim and a per-route caller allowlist (the ADR-0008 §8 posture).
+
+The presigned URL lives for **60 seconds** and carries
+`response-content-disposition=attachment`. It is fetched through a **dedicated Caddy route on
+`EDGE_HOST`** (`/opsgrids-private/*`). Unlike the public route, it **preserves the query
+string**, because the SigV4 signature lives there, and preserves `Host`, because the presigner
+signs for that public URL. Any added `response-*` override breaks the signature rather than being
+honoured. The route sends `Cache-Control: private, no-store`,
+`Content-Security-Policy: default-src 'none'; sandbox` and `nosniff`. Uploads come from the product
+server-side, for example payroll rendering a PDF, over an internal route with the same posture.
+There is no browser upload path to the private bucket in this decision.
+
+**Why.** §2 named the bucket and a short-lived presigned GET. The only open question was who
+decides access, and only the product knows what a payslip's scope means. Every objection in §"What
+this rejects" to authorizing per request is about anonymous `<img>` fetches, and none of them
+applies to a click from a signed-in page.
+
+**Rejected.** Private objects as a `visibility` flag in the public bucket: that is §2's
+prefix-policy incident with a column instead of a prefix. A generic `document.file.read`
+permission: it cannot express "my own payslip". Streaming the bytes through the gateway: it
+buffers whole response bodies, and nothing needs it once presigning exists.
+
+**Consequences.** It is one table, two internal routes, one bucket, one Caddy route and one
+`minio-init` user that can put and get objects in the private bucket and never list them.
+**Implemented by R19** (private bucket and presigned GET), which D1's payslips depend on.
+
+### Q2. Per-organization quota and storage metering (§7) — **DECIDED: a catalog feature and a daily usage snapshot, once storage is priced**
+
+**Decision.** The configured ceilings stay (2 GiB and 5,000 assets) until storage is priced. When
+it is, the limit becomes the catalog plan feature `document.storage_bytes` (declared through C6's
+plan feature declarations). Document reads it from the organization's entitlement snapshot, and
+going over it returns **402** with an upgrade offer (ADR-0004 §5). Metering then receives a
+**daily** `document.storage.byte_days` usage event per organization, computed from `assets`
+(counting soft-deleted assets that have not been purged, because their bytes still exist). The
+history before that day is backfilled from the same table, which is possible only because the
+sweep keeps rows (§7, §8).
+
+**Rejected.** An override column per organization in document: a commercial promise belongs in a
+plan version (ADR-0004 §2). Metering on every upload and delete: a daily snapshot is exact to the
+day and is what a price per GB-month needs.
+
+**Consequences.** **Implemented by R19** (per-organization quota and storage metering) together
+with **C6**. The default numbers are **DECIDED (default; owner may revise)**.
+
+### Q3. The reference warning (§8) — **DECIDED: computed in the editor from the theme document; one batch read here**
+
+**Decision.** No reference table and no events. Only `resolveImageSrc` turns a setting into an
+`<img src>` (§6), and every uploaded value is a parseable `/a/{org}/{asset}` path. So the store
+editor already holds every asset reference in the theme document it has loaded (the storefront now
+persists `theme_documents`). On a delete, the editor counts the sections that reference the asset.
+On opening, it calls a new batch **`GET /api/v1/documents/assets?ids=…`** (at most 100 ids,
+tenant-scoped, returning `deleted_at` and `purged_at`) and flags sections whose image has been
+removed or purged.
+
+**Rejected.** A storefront-side references table maintained on every save: it is derivable from the
+document it would be derived from. A `referenced`/`dereferenced` event pair: already rejected in
+§"What this rejects".
+
+**Consequences.** One route here and two editor checks. **Implemented by R19** (batch
+`GET /assets?ids=`).
+
+### Q4. A cookieless asset domain (addendum 1's "longer-term plan") — **DECIDED (default; owner may revise): move off `opsgrids.com` when a CDN arrives or a second writer shares the bucket**
+
+**Decision.** `PUBLIC_ASSET_BASE_URL` moves to a **dedicated registrable domain outside
+`opsgrids.com` on which nothing ever sets a cookie**. It happens the first time either of two
+things occurs:
+- a CDN is put in front of the public bucket;
+- a second service writes to the public bucket.
+
+The owner registers and names the domain; the name is a commercial choice and is not made here.
+The move is a configuration change and one Caddy site block, with **no data migration**, which is
+§6's payoff. Until then, assets stay on `EDGE_HOST` behind addendum 1's hardening: host-only
+route, query strip, CSP sandbox, `nosniff`.
+
+**Why.** Addendum 1 found that a public bucket served under the platform's cookie domain is one
+MinIO feature away from stored XSS. The durable fix is a host with nothing to steal, and it costs
+nothing to decide now.
+
+**Consequences.** **Owner action**: register the domain when the trigger fires. No ledger item is
+needed until then.

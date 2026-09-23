@@ -11,6 +11,7 @@ import {
   Card,
   ConversationStatusTag,
   EmptyState,
+  InlineAlert,
   LoadFailure,
   PageHeader,
   Select,
@@ -137,6 +138,13 @@ function Inbox() {
             onChange={(event) => setStatus(event.target.value)}
             options={STATUS_OPTIONS}
           />
+
+          {state.status === "success" && state.stopped ? (
+            <InlineAlert tone="warning" title="Live updates stopped">
+              The service refused the last refresh, so this list is no longer being kept current.
+              Reload the page to check again.
+            </InlineAlert>
+          ) : null}
 
           {state.status === "loading" ? (
             <div className="flex flex-col gap-2">

@@ -33,6 +33,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -76,6 +77,12 @@ class Owner(Base, TenantBase):
     email: Mapped[str] = mapped_column(String(254), nullable=False)
     #: Display role, e.g. "Enterprise AE" — a label, not a permission.
     role: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    #: False once a rep leaves. `services.deactivate_owner` is the only writer, and it
+    #: refuses while the rep still owns a live company or contact — reassign first
+    #: (`services.update_company`/`update_contact`'s existing `owner_id` path), deactivate
+    #: second. A deactivated owner is kept, never deleted: every row that already carries
+    #: their id as `owner_id` must keep resolving to a name.
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     __table_args__ = (
         # Every index leads with `organization_id`: the RLS policy qual is ANDed into every
@@ -115,11 +122,31 @@ class Company(Base, TenantBase):
 
     __table_args__ = (
         # Unique among LIVE rows only: a soft-deleted record must not hold its name hostage.
+        # Case-*sensitive* on purpose, and deliberately left that way (see
+        # `uq_companies_org_name_ci`'s own comment below for why a case-insensitive version of
+        # this same constraint was tried and reverted): the original constraint a database
+        # already carries, and a migration that replaced it with a unique index on `lower(name)`
+        # would fail outright on any organization that already holds two names differing only
+        # by case ("Acme Ltd" and "ACME LTD") — a real, silent possibility this constraint's own
+        # case-sensitivity has allowed since the day it was created.
         Index(
             "uq_companies_org_name",
             "organization_id",
             "name",
             unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        # Non-unique: "Acme Ltd" and "ACME LTD" are the same account to anyone reading the
+        # book, and `get_company_by_name`'s lookup needs to find either one written in either
+        # case — but this index cannot *enforce* that they are the same row without a data
+        # migration nobody has reviewed or consented to (existing organizations may already
+        # hold both). New case-insensitive duplicates are refused going forward by
+        # `services.create_company`'s own per-name `pg_advisory_xact_lock`, not by a
+        # constraint that would break on data that already exists.
+        Index(
+            "ix_companies_org_name_ci",
+            "organization_id",
+            text("lower(btrim(name))"),
             postgresql_where=text("deleted_at IS NULL"),
         ),
         Index("ix_companies_org_status", "organization_id", "status"),

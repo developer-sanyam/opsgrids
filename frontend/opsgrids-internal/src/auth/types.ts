@@ -1,8 +1,16 @@
 /**
- * Operator auth wire types. These will mirror `services/auth/app/schemas.py` for the **staff**
- * registry (ADR-0004 P6a): a dedicated staff table, entirely separate from the tenant user
- * directory, whose accounts authenticate to the **operator** audience and receive an `stf` claim
- * plus their operator-roles. Kept minimal until that endpoint lands.
+ * Operator auth wire types. Backed by a real, shipped endpoint now (`services/auth/app/schemas.py`
+ * — `OperatorTokenOut`, `OperatorMfaRequired`, `OperatorMfaEnrollmentRequired`, `OperatorMeOut`): a
+ * dedicated staff table, entirely separate from the tenant user directory, whose accounts
+ * authenticate to the **operator** audience and receive an `stf` claim plus their operator-roles.
+ *
+ * **Not yet reconciled field-for-field with the live schemas** — that is the follow-up slice that
+ * wires this app onto `opsgrids-client` and builds the MFA enrolment/verify screens the backend
+ * now requires unconditionally (ADR-0003 addendum: a staff account with no confirmed factor can
+ * reach only enrolment, never a token). In particular the live backend's roles are
+ * `owner` / `billing_ops` / `support` (not the four listed below), its identity field is
+ * `staff_id` (not `operator_id`), and login can resolve to `mfa_enrollment_required` in addition
+ * to `mfa_required` — none of which is represented here yet.
  */
 
 /** One operator-role a staff account holds (e.g. revenue-ops, support, billing-admin). */
@@ -21,7 +29,8 @@ export interface OperatorLoginComplete {
   operator_id: string;
 }
 
-/** `MfaRequired` — a second factor is needed (staff MFA is out of this slice). */
+/** `OperatorMfaRequired` — a second factor is needed. Staff MFA enrolment/verify screens are the
+ *  follow-up slice; see the module docstring. */
 export interface OperatorLoginMfaRequired {
   status: "mfa_required";
   pre_auth_token: string;

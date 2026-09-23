@@ -348,7 +348,9 @@ async def get_whatsapp_connection(
 
 def domains_stmt(ctx: ScopeContext, *, status: str | None = None) -> Select[Any]:
     """Scope-filtered sending-domain list, oldest first — a setup list is read in the order it
-    was built, not newest-first like a log."""
+    was built, not newest-first like a log. `id` breaks a tie on `created_at`: rows written in one
+    transaction share a timestamp, and an `OFFSET` page over an order with ties can skip or repeat
+    a row between two requests."""
     stmt = select(EmailDomain).where(
         EmailDomain.organization_id == ctx.organization_id,
         EmailDomain.deleted_at.is_(None),
@@ -356,7 +358,7 @@ def domains_stmt(ctx: ScopeContext, *, status: str | None = None) -> Select[Any]
     stmt = ctx.apply(stmt, owner_col=EmailDomain.created_by)
     if status:
         stmt = stmt.where(EmailDomain.status == status)
-    return stmt.order_by(EmailDomain.created_at.asc())
+    return stmt.order_by(EmailDomain.created_at.asc(), EmailDomain.id.asc())
 
 
 async def get_domain(
@@ -384,7 +386,9 @@ async def get_domain_by_name(
 
 
 def senders_stmt(ctx: ScopeContext, *, domain_id: uuid.UUID | None = None) -> Select[Any]:
-    """Scope-filtered sender list."""
+    """Scope-filtered sender list, by name. `id` breaks a tie: two senders may share a display name
+    ("Support" on two domains), and an `OFFSET` page over an order with ties can skip or repeat a
+    row between two requests — a reader paging the whole list would lose one."""
     stmt = select(Sender).where(
         Sender.organization_id == ctx.organization_id,
         Sender.deleted_at.is_(None),
@@ -392,7 +396,7 @@ def senders_stmt(ctx: ScopeContext, *, domain_id: uuid.UUID | None = None) -> Se
     stmt = ctx.apply(stmt, owner_col=Sender.created_by)
     if domain_id:
         stmt = stmt.where(Sender.domain_id == domain_id)
-    return stmt.order_by(Sender.name.asc())
+    return stmt.order_by(Sender.name.asc(), Sender.id.asc())
 
 
 async def get_sender(

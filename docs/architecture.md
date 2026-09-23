@@ -116,8 +116,8 @@ EDGE        ┌─────────────────────�
  product :8112                    marketing:8134  standup   :8142   metering     :8162
                                   support  :8180  quotation :8143   catalog      :8164
                                   lead     :8135  projects  :8170   payment    (no route)
-                                  pipeline :8136  finance   :8171
-                                  activity :8137  operations:8172
+                                                  finance   :8171
+                                                  operations:8172
                                                   itsm      :8173
                                      │
  PLATFORM   document :8150 · notification :8151 · approval :8152 · eventbridge :8163 (admin only)
@@ -364,7 +364,7 @@ Every service also carries `OutboxEvent`, `ProcessedEvent` and `AuditLog` on its
 |---|---|---|
 | Identity & org | `auth`, `account`, `product` | `config` |
 | People (HRMS) | `employee`, `attendance` | — |
-| Revenue (CRM) | `customer`, `deal`, `marketing`, `support` | `lead`, `pipeline`, `activity` |
+| Revenue (CRM) | `customer`, `deal`, `marketing`, `support`, `lead` | — |
 | Work (PulseBoard) | `project`, `timesheet`, `standup`, `projects` | `quotation` |
 | Money (commerce) | `catalog`, `subscription`, `metering`, `billing`, `payment`, `console` | — |
 | Finance, ops, ITSM | `finance`, `operations`, `itsm` | — |
@@ -374,9 +374,12 @@ Every service also carries `OutboxEvent`, `ProcessedEvent` and `AuditLog` on its
 By size, the five largest: **`finance`** (20 models, 29 routes, ~8,400 test lines), **`account`**
 (14 models, 25 routes), **`auth`** (13 models, 20 routes), **`subscription`**, **`attendance`**.
 
-The three CRM skeletons matter: the gateway already routes `/api/v1/leads`, `/api/v1/pipelines`
-and `/api/v1/activities` under `"product": "salescrm"`, but none of the three has a catalogue, so
-**no `salescrm.json` manifest exists** and that product's entitlement gate has nothing behind it.
+`lead` (ADR-0017) is the third process in the `crm` product, alongside `customer` and `deal`:
+the gateway routes `/api/v1/leads` under `"product": "crm"`, and `lead`'s own catalogue
+contributes `crm.lead.*` to the same manifest `customer` and `deal` already fill in. `pipeline`
+and `activity`, the other two CRM skeletons this section used to name, were deleted rather than
+built — `deal` already owns `crm.pipeline.*` end to end, and a second service for the same
+bounded context is how a second source of truth is born.
 
 ---
 

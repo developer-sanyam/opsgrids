@@ -8,7 +8,7 @@ import * as client from "@/api/client";
 import type { Company, Deal, Owner } from "@/api/types";
 import { DealFormDialog } from "./DealFormDialog";
 
-const OWNER: Owner = { id: "own-1", full_name: "Sofia Marchetti", email: "sofia@example.com", role: "AE" };
+const OWNER: Owner = { id: "own-1", full_name: "Sofia Marchetti", email: "sofia@example.com", role: "AE", is_active: true };
 const COMPANY: Company = {
   id: "comp-1",
   name: "Northwind Logistics",

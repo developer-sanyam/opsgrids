@@ -1,16 +1,16 @@
 # The edge VM — runbook
 
 One Linux VM serves every merchant's storefront and every other product this platform sells:
-Caddy, Postgres+PostGIS, Redis, RabbitMQ, and one compose profile per product (44 containers
+Caddy, Postgres+PostGIS, Redis, RabbitMQ, and one compose profile per product (45 containers
 with every profile on — see [the memory budget](#the-memory-budget) and ADR-0013's memory-budget
 erratum, not "five service containers plus one sweep", which was true only of slice 1). ADR-0012
 §1 is the decision and its reasoning; this file is what you do about it at 3am.
 
 **Read this first, once, before the box exists.** The parts you will actually need in an
-incident are [roll back a bad deploy](#roll-back-a-bad-deploy), [the box is out of
-disk](#the-box-is-out-of-disk), [the memory budget](#the-memory-budget), [restore from
-backup](#restore-from-backup) and [is it the app, the database, Caddy or
-DNS](#is-it-the-app-the-database-caddy-or-dns).
+incident are [alerts and what each means](#alerts-and-what-each-means), [roll back a bad
+deploy](#roll-back-a-bad-deploy), [the box is out of disk](#the-box-is-out-of-disk), [the memory
+budget](#the-memory-budget), [restore from backup](#restore-from-backup) and [is it the app, the
+database, Caddy or DNS](#is-it-the-app-the-database-caddy-or-dns).
 
 ---
 
@@ -24,8 +24,13 @@ DNS](#is-it-the-app-the-database-caddy-or-dns).
   site exactly as it was. The recreate that follows is a few seconds of downtime per changed
   container, and longer if Caddy itself changed. **This is not zero downtime and slice 1 does
   not pretend to be.** Blue/green is slice 2's problem and needs a second box.
-- **Nobody is paged.** There is no alerting. If certificate issuance fails at 3am, nothing
-  wakes anybody; see [certificates](#certificates-and-how-a-human-ever-finds-out).
+- **A human is paged, by email, within a few minutes of most things going wrong.**
+  `ops-monitor` (C10) polls outbox lag, DLQ depth, API readiness, disk, backup freshness and
+  certificate expiry every 60s and emails `OPS_ALERT_EMAIL` when one fires — see
+  [alerts and what each means](#alerts-and-what-each-means). What it does **not** cover:
+  Caddy's own TLS handshake failing on a name nothing else is watching (still Let's Encrypt's
+  expiry email, the same as before) and anything that needs a human's judgment rather than a
+  threshold.
 - **No secret is in the repository.** Everything secret lives in `infrastructure/edge/.env` on
   this box and in the key file it points at, both mode 600, neither ever committed, printed in
   CI, or pasted into a ticket.
@@ -41,7 +46,7 @@ All of these run from a clone on your laptop, and **all of them require you to n
 | `make deploy HOST=… CONFIRM=… [REF=origin/main]` | preflight → build → `caddy validate` → migrate → recreate → health |
 | `make edge-preflight HOST=… CONFIRM=…` | Every check the deploy would run, changing nothing |
 | `make edge-validate HOST=… CONFIRM=… [REF=…]` | Puts a ref on the box and loads the Caddyfile with the pinned Caddy. Restarts nothing |
-| `make edge-status HOST=… CONFIRM=…` | What is running, which ref, how much disk is left |
+| `make edge-status HOST=… CONFIRM=…` | What is running, which ref, how much disk is left, and `ops-monitor`'s own `/status` (every check's current state) |
 | `make edge-logs HOST=… CONFIRM=… [SERVICE=caddy] [TAIL=500]` | Tail logs |
 | `make edge-rollback HOST=… CONFIRM=… [TO=<sha>]` | Redeploy the previous ref that actually served |
 | `make edge-web HOST=… CONFIRM=… [PLACEHOLDER=1]` | Build the buyer bundle here, ship it, swap the symlink |
@@ -159,6 +164,7 @@ chmod 600 .env
 openssl rand -hex 32     # POSTGRES_PASSWORD
 openssl rand -hex 32     # OPSGRIDS_DB_PASSWORD   (alphanumeric only — it goes into a URL)
 openssl rand -hex 32     # INTERNAL_SERVICE_TOKEN
+openssl rand -hex 32     # ADMIN_GATEWAY_HOP_KEY  (a different value from INTERNAL_SERVICE_TOKEN)
 openssl rand -hex 32     # PII_ENCRYPTION_KEY
 openssl rand -hex 32     # BACKUP_S3_SECRET_ACCESS_KEY, if your provider does not issue one
 openssl rand -hex 16     # MINIO_ROOT_USER
@@ -171,8 +177,11 @@ chmod 600 /srv/opsgrids/secrets/jwt-ed25519.pem
 
 Then edit `.env`: fill every empty value, set `EDGE_HOST` to this box's name, `EDGE_RESERVED_IP`
 to the real address, `TLS_PLATFORM_HOSTS` to every platform name from the DNS table above
-(comma-separated, no wildcard), and `ACME_EMAIL` to **an inbox a human reads** — in slice 1
-Let's Encrypt's expiry warning is the only unsolicited notification that exists.
+(comma-separated, no wildcard), `ACME_EMAIL` to **an inbox a human reads** (Let's Encrypt's
+expiry warning is still the only channel for a *merchant* domain's renewal trouble — see
+[alerts and what each means](#alerts-and-what-each-means)), and `OPS_ALERT_EMAIL` to the same
+kind of inbox — that is where `ops-monitor` sends everything else. Neither is a secret; both go
+unread at the platform's expense.
 
 `BACKUP_S3_ACCESS_KEY_ID` and `BACKUP_S3_SECRET_ACCESS_KEY` may both be left empty to stand the
 box up before a bucket exists. Preflight warns in capitals and `backup.sh` exits non-zero every
@@ -185,6 +194,7 @@ real store is published.
 |---|---|
 | `POSTGRES_PASSWORD`, `OPSGRIDS_DB_PASSWORD` | Generated on this box. Never the development `opsgrids`, which is what `tools/dev-bootstrap/init-db.sql` creates every role with before `postgres-init/30-role-passwords.sh` replaces it |
 | `INTERNAL_SERVICE_TOKEN` | Generated fresh, ≥32 bytes. It signs the tokens one service presents to another; the development value is public in `.env.example` and `platform_core` refuses to start production with any `dev-only-` value |
+| `ADMIN_GATEWAY_HOP_KEY` | Generated fresh, ≥32 bytes, **different from `INTERNAL_SERVICE_TOKEN`**. Signs admin-gateway's operator hop header (BLOCKER 2 of the 2026-09-24 security review); only admin-gateway and auth read it |
 | `PII_ENCRYPTION_KEY` | Generated fresh, ≥32 bytes, **and backed up off this box before any data exists**. Lose it and encrypted PII is unreadable; there is no recovery |
 | `jwt-ed25519.pem` | Generated on this box. Never `make devkeys`' key — that one is on every developer's laptop, and anyone holding it can mint a token for any tenant |
 | `BACKUP_S3_*` | Scoped to write into the backup bucket and nothing else |
@@ -244,6 +254,11 @@ curl -si https://edge.opsgrids.com/api/v1/auth/health # through Caddy to the gat
 Then a real store: create one, publish it, and open
 `https://<slug>.stores.opsgrids.com`. The first request for a new name waits two to five
 seconds while Caddy obtains a certificate; that is on-demand TLS working, not a fault.
+
+Then `make edge-status HOST=… CONFIRM=…` and read the `ops-monitor` block at the bottom. On a
+box this fresh, expect `backup: "no marker yet"` (step 8 has not run yet) and everything else
+either `ok` or still `pending` (fewer than 3 polls old) — `firing` this early usually means a
+profile is enabled in `COMPOSE_PROFILES` whose API isn't actually up yet.
 
 ### 8. The nightly backup
 
@@ -456,6 +471,14 @@ name for a container this compose file defines with no budget entry.
 make deploy HOST=deploy@<ip> CONFIRM=edge.opsgrids.com REF=origin/main
 ```
 
+**Before you deploy a release that adds `.env` keys, add them to the box's `.env` first.**
+Preflight (step 3) treats every key in `.env.example` as required *to be present* — an empty
+value is fine for the ones marked optional, a missing line is not — and it refuses the deploy,
+before anything changes, when one is absent. The release that introduced `ops-monitor` (C10)
+adds four; see [alerts and what each means](#alerts-and-what-each-means) for the exact lines to
+paste. Any future release that adds a key to `.env.example` is a deploy prerequisite in exactly
+the same way, and its release notes must list the keys.
+
 What happens, in order, and what each step protects:
 
 1. **assert-host** — the box states its own `EDGE_HOST`. A mismatch aborts before anything is
@@ -475,7 +498,10 @@ What happens, in order, and what each step protects:
    containers serve. For the length of the deploy the old code runs against the new schema, so
    **every migration must be backward compatible with the version currently running**: add a
    nullable column, backfill, and only drop the old one in a later deploy. `make
-   migration-roundtrip` locally is what proves the `downgrade()` actually reverts.
+   migration-roundtrip` locally is what proves the `downgrade()` actually reverts. `migrate`
+   ends with the **MFA reseal** — a no-op unless some `auth.mfa_factors` row still holds a
+   plaintext secret, in which case it runs once from the new image and aborts the deploy unless
+   it leaves none (see "Operator MFA" below).
 7. **up** — containers are recreated. Brief downtime. Not zero.
 8. **health** — every container running and healthy within 120 s, or the deploy reports a
    failure and leaves the decision to you.
@@ -535,6 +561,135 @@ this fail, so run it after that too.
 Bundles are sold only through subscription's operator routes (`POST /internal/v1/subscriptions`,
 `…/{id}/change-plan`, service token); the customer route answers 403. A trial's length is the
 plan version's `trial_days` feature (14 when absent), never the customer's.
+
+### Operator MFA: mandatory rollout, the MFA reseal, and the one-off codes
+
+The security review of the operator-MFA slice made a second factor mandatory for every staff
+account (ADR-0003 addendum) and closed several holes in how it is enforced. It ships `auth`
+migrations through the merge revision `f8e432a62a84` (the join of the operator-MFA chain ending
+`5ba575e36b1a` and the domain-verification chain ending `0c1a721d4214`; it changes no table).
+
+#### The reseal — every MFA factor, tenant and staff, and the deploy does it for you
+
+A box deployed from `main` stores **every** TOTP secret — every tenant member's and every staff
+account's — as raw base32 plaintext in `auth.mfa_factors.secret_enc`. The new auth code seals new
+secrets under the PII key with a per-row AAD and **refuses** a plaintext row unless
+`MFA_ACCEPT_LEGACY_PLAINTEXT=true` is set, because nothing authenticates such a row: anyone able to
+write that column could choose a factor's secret. Left alone, that refusal would lock out every
+member who has MFA, so the deploy reseals first. The order is:
+
+```
+build → migrate → RESEAL → up → health
+```
+
+`remote.sh migrate` ends by calling `reseal_mfa_factors_if_pending` (`lib/mfa-reseal.sh`). It counts
+the rows still holding a raw secret with the statement below and **does nothing — not even start a
+container — when that is 0**, which is every deploy after the first. When it is not 0, it runs a
+one-off container **from the new image**, before any new container serves:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T \
+  -e MFA_ACCEPT_LEGACY_PLAINTEXT=true auth python -m app.mfa_maintenance reseal
+```
+
+then counts again and **aborts the deploy unless the count is 0**. `reseal` prints `resealed=N`
+and `remaining=N` (counts only) and exits 1 if `remaining` is above zero, so a run without the
+flag can no longer read as success. Each row it touches is sealed under the current key with the
+per-row AAD and audited (`auth.mfa_factor_resealed`). Envelopes sealed before the AAD existed are
+resealed too; those need no flag, because GCM already authenticated them.
+
+The pre- and post-check, which you can run by hand on the box at any time and which must end at
+`0`:
+
+```sql
+select count(*) from auth.mfa_factors where secret_enc is not null and encode(secret_enc,'escape') ~ '^[A-Z2-7]{16,32}$'
+```
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec -T postgres \
+  psql -U opsgrids -d opsgrids -Atc "select count(*) from auth.mfa_factors where secret_enc is not null and encode(secret_enc,'escape') ~ '^[A-Z2-7]{16,32}\$'"
+```
+
+**The live auth container never gets `MFA_ACCEPT_LEGACY_PLAINTEXT`.** It is not in
+`compose.prod.yml`, not in the shared service environment and not in `.env`; it exists only as a
+`-e` on the one-off run above, and there is no tooling here that could put it on a running
+container. If a count is ever above 0 on a live box (a row written by an old container during a
+rollback, say), the next deploy reseals it; to do it now, run the one-off command above by hand.
+
+*The window, stated plainly.* Between the reseal finishing and `up` recreating auth, the **old**
+auth container is still serving and cannot read a sealed envelope: `main`'s
+`_accept_second_factor` decodes `factor.secret_enc` as UTF-8 *before* it looks at recovery codes,
+and a sealed envelope is never valid UTF-8. So for those seconds **every** MFA sign-in — an
+authenticator code **and** a recovery code — for a member whose factor was just sealed ends in a
+**500** (the old code has no MFA lockout, so nothing is counted against them). That is accepted:
+it is seconds long, and the alternative order — `up`, then reseal — is a lockout. The deploy runs
+the reseal a **second time after `health`**: a plaintext factor enrolled through the old container
+inside that window would otherwise stay refused until the next deploy (it is idempotent, and only
+warns if it fails, since the site is already up).
+
+*If a plaintext row is ever met while the flag is off* — a restore from an old backup, a manual
+insert — auth answers a distinct **503 "Multi-factor re-seal pending — use a recovery code"** and
+logs `auth.mfa_factor_plaintext_refused`. That refusal is **not** counted against the person's MFA
+failure counter and never locks the account: the code may well have been right, and it is our state
+that is wrong. A recovery code still signs them in; a wrong code, or anything that is not six
+digits, still counts as usual. Run the reseal to clear it.
+
+#### The staff enrolment codes
+
+**`bin/issue-enrollment-codes`** — every staff account that predates mandatory MFA has no
+confirmed factor and needs an out-of-band enrolment code before it can enrol one (a password alone
+is not enough to reach enrolment, by design). Run once, after the migration that revokes every live
+operator session (`c731a475333d`) lands:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm -T auth \
+  python -c "from app.bootstrap import issue_codes_main; issue_codes_main()"
+```
+
+Prints `email code` pairs to stdout, once — hand each one to its owner out of band (chat, a phone
+call — anything that is not this box's own logs). Skips any account that already has a confirmed
+factor, so re-running after some staff have enrolled issues codes only for the rest.
+
+#### Not a deploy step: `bin/reset-staff-mfa --all`
+
+This exists only for a development, test or CI environment that ran the pre-fix version of this
+slice (before `5ba575e36b1a` separated the MFA lockout counter from the password one) and should
+not trust the factors and recovery codes it enrolled under that bug. It wipes every staff
+account's MFA and clears their MFA locks. It accepts exactly the environment names `local`, `test`
+and `ci` and **refuses in every other one — `staging`, `uat` and `production` included** — so there
+is nothing to run on this box. A production account recovered from that bug, or one whose owner
+lost their device, goes through the audited `POST /auth/operator/staff/{id}/mfa:reset` owner
+route instead, one account at a time; that route also clears the account's MFA lock.
+
+#### `ADMIN_GATEWAY_HOP_KEY` — auth refuses to start without it
+
+In `production`, `staging` and `uat` auth's settings refuse to load — the service does not start —
+if it is unset or empty, and also if it equals `INTERNAL_SERVICE_TOKEN` (in any environment): the
+hop signature auth's operator routes verify is the second lock behind the route table's own block
+of `/api/v1/auth/operator`, and an unset key would silently switch it off. `compose.prod.yml`
+passes it to the `auth` service only, as `${ADMIN_GATEWAY_HOP_KEY:-}` — **an empty default, on
+purpose**: a `:?` there would abort *every* compose command on a box without the key, `backup.sh`'s
+`pg_dump` and a rollback included. The key is **not** in the shared service environment, so no
+other container — app-gateway included — receives it.
+
+**Where a missing key is caught is `preflight.sh`**, before a build or a migration: it fails on an
+empty `ADMIN_GATEWAY_HOP_KEY` (every key in `.env.example` must be set), on any of
+`INTERNAL_SERVICE_TOKEN`, `PII_ENCRYPTION_KEY` and `ADMIN_GATEWAY_HOP_KEY` shorter than 32 bytes,
+and on a hop key equal to the internal token — the same rules the services enforce at startup, so
+the deploy stops instead of shipping an auth container that will not start. Generate it as
+`INTERNAL_SERVICE_TOKEN` is in "Secrets — generate them here, now, and never anywhere else"
+above: a fresh, separate 32+ byte value, never reused. (admin-gateway, the only signer, is not in
+this compose file, so operator sign-in is unreachable on this box — which is the intent; the key
+is here so that stays true if a signer is ever added.)
+
+#### A locked-out MFA is unlocked by waiting, or by an owner
+
+After `LOCKOUT_MINUTES` (default 15) of a lock the failure count starts from zero, so one typo
+afterwards is one strike, not an immediate re-lock. A staff account can be unlocked sooner by an
+owner through `POST /auth/operator/staff/{id}/mfa:reset` (which also wipes the factors). A tenant
+member's MFA lock has no admin endpoint by design — it would need a new permission and a
+cross-service membership check to guard a fifteen-minute wait — so expiry *is* the unlock. The lock
+refuses recovery codes as well as authenticator codes, so there is nothing to do but wait.
 
 ### Deploying from the pipeline
 
@@ -607,6 +762,14 @@ same validate, same recreate. It takes as long as a deploy did, because it is on
 faster path in slice 1: images are built on the box, so there is no previous image tag to point
 at. If that is too slow to live with, that is slice 2's registry, and this is its trigger.
 
+**Do not roll back past the release that introduced the MFA reseal** (Operator MFA, above). Every
+MFA factor on the box is sealed after that deploy, and a ref from before it cannot read a sealed
+envelope: its `_accept_second_factor` decodes `secret_enc` as UTF-8 before it looks at recovery
+codes, so **every MFA sign-in — authenticator code and recovery code alike — is a 500 until you
+roll forward again.** There is no unseal tool. If the release itself is what broke, roll
+*forward* with a fix; if you must go back, expect MFA sign-in to be down for the duration and say
+so.
+
 **The bundle** (a broken storefront page, but the API is fine) is much faster — one symlink:
 
 ```bash
@@ -630,17 +793,121 @@ call.
 
 ---
 
+## Alerts and what each means
+
+`ops-monitor` (C10) is one always-on container, `python -m platform_core.ops_monitor` in the
+same `product` image `edge-relay` reuses. Every 60s it runs six checks, feeds the results
+through a small state machine (`libs/platform-core/src/platform_core/ops_monitor/state.py`) and
+emails `OPS_ALERT_EMAIL` — direct SMTP, reusing the box's own `EMAIL_FROM`/`SMTP_*`,
+**deliberately not through notification-service**, which is one of the things being watched.
+
+**Deploy prerequisite — four new `.env` keys (release notes).** `preflight.sh` requires every
+key in `.env.example` to be *present* in the box's `.env` (it reads the key names from the
+example, so adding one there is what makes it required), so **a box that does not have these
+four lines will have its deploy refused at preflight, before anything changes.** Add them to
+`infrastructure/edge/.env` **before** deploying this release — empty values are accepted for
+all four:
+
+```
+OPS_ALERT_EMAIL=
+OPS_MONITOR_API_CONTAINERS=
+OPS_MONITOR_DLQ_QUEUES=
+SMTP_USE_SSL=false
+```
+
+What each means (`.env.example` has the full comment for each): `OPS_ALERT_EMAIL` (where alerts
+go — empty means alerts are logged only), `OPS_MONITOR_API_CONTAINERS` and
+`OPS_MONITOR_DLQ_QUEUES` (empty means derive from `COMPOSE_PROFILES`, which already exists;
+`COMPOSE_PROFILES=*` is understood too), and `SMTP_USE_SSL` (defaults `false` — implicit TLS on
+465 instead of STARTTLS on 587, for a provider that only offers SMTPS). Their *values* are
+optional, their *presence* is not: a box with all four empty still runs every check and still
+logs `ops.alert.firing`, it just pages nobody until `OPS_ALERT_EMAIL`/`SMTP_HOST` are filled in.
+
+**Hysteresis, so a single blip does not page anyone:** a check needs 3 consecutive failing
+polls (about 3 minutes) before it *opens* and sends one email; once open it *reminds* every 6
+hours for as long as it keeps failing; 3 consecutive good polls *resolves* it and sends one more
+email. Every check that changes state in the same poll goes out in **one** email, not one each.
+A check that never fails 3 *in a row* but fails often enough — 3 of its last 5 polls, by
+default — still opens: pure consecutive counting would never catch a flapper that fails,
+passes, fails, passes, fails.
+
+**Delivery is retried, capped, and never claimed before it happens.** A failed send (SMTP
+down) does not consume the state machine's "notified" bookkeeping — the next poll retries
+immediately, for up to 5 consecutive cycles, before falling back to the normal cadence so a
+long SMTP outage is not hammered forever. A rolling cap (12 emails/hour by default) throttles
+the other direction: a box genuinely falling apart pages once per email, not once per check per
+minute. What the cap holds back is queued and goes out, named check by check, in the next email
+that fits under it.
+
+The rules live in one pure function (`ops_monitor/delivery.py`, `plan_delivery`), and are worth
+knowing at 3am: (1) a check not reported firing in the last hour, and the daily digest, are
+**exempt from the cap** — a *new* problem is never held back because reminders used the budget;
+a check that re-fires within the hour of its last report is throttled like any reminder — and so
+is its "resolved" — so one flapping check cannot page you every few minutes, nor starve a
+brand-new check of its first alert. (2) Exempt notices have their own ceiling of twice the cap
+per hour, so they are generous, not unlimited. (3) A newer notice for a check replaces an older
+queued one — a queued "resolved" is dropped the moment its check fires again, so you are never
+told "all clear" about something that is failing right now. A "resolved" that replaces an
+opening which was **never emailed** (held back by the cap or a failed send) says so, in so many
+words, and carries the opening's own detail; a first alert whose send failed still reads OPENED,
+not "still firing", when it finally goes out. (4) A reminder for
+a check nobody has ever successfully been told about is treated as a first alert. (5) The queue
+is **in memory only** (200 entries, oldest dropped): restarting `ops-monitor` empties it. A
+queued firing/reminder comes back by itself — its "notified" bookkeeping was never committed, so
+the next cycle sees it as due again — but a queued *resolved* is simply lost (the check is OK
+again and `/status` says so; nothing regenerates the email). That is a deliberate trade against
+persisting a second file that could itself go stale.
+
+| Check | Fires when | Where to look |
+|---|---|---|
+| `outbox.<schema>` | oldest unpublished row ≥ 900s (warns at 300s, in `/status` but not emailed), or any row has exhausted its attempts | `make edge-logs SERVICE=edge-relay`; `tools/outbox.py --service <schema> --reset` **after** fixing the cause, not instead of it |
+| `dlq.<queue>` | one or more messages parked on `{queue}.dlq` | `tools/dlq.py peek --queue <queue>`; `tools/dlq.py replay ...` after fixing the cause |
+| `api.<name>` | `GET /health/ready` failed on 3 consecutive polls | `make edge-logs SERVICE=<name>` — usually its database or Redis is unreachable, which `/health/ready`'s own body already names |
+| `disk` | less than 15% free on `/` | [the box is out of disk](#the-box-is-out-of-disk) |
+| `backup` | no successful `backup.sh` run in the last 26h. **"no marker yet" is its own state, not this alarm** — a box that has never backed up successfully (or predates this check) says so plainly in `/status` without emailing anyone | run `make edge-backup` by hand and read its output; RUNBOOK's [restore from backup](#restore-from-backup) |
+| `cert` | the TLS handshake to `EDGE_HOST` itself (not a merchant domain — see below) expires in under 14 days | see "Certificates" below |
+| a daily digest, `check: "*"` | once a day at a fixed hour, **only when nothing is firing** | not a problem — it is the dead-man's switch: a day with no digest and no other mail is a stopped monitor, not a quiet one |
+
+**How to check it yourself, any time:** `make edge-status HOST=… CONFIRM=…` prints `ops-monitor`'s
+own `/status` — every check's current state, detail and how long it has been that way — alongside
+everything else that command already showed. `make edge-logs HOST=… CONFIRM=… SERVICE=ops-monitor`
+is its own log; `ops_monitor.notification` is the line for every email actually sent.
+
+**If nothing is delivered at all:** `/status`'s `email` field says `"disabled — SMTP_HOST/
+OPS_ALERT_EMAIL/EMAIL_FROM not set"` in so many words, and `preflight.sh` warns about the same
+gap in capitals before every deploy. Every firing check is still logged at error
+(`ops.alert.firing`) even with email off — `make edge-logs SERVICE=ops-monitor | grep alert.firing`
+finds them.
+
+**What this does not cover**, named so nobody assumes otherwise: a merchant's *own* custom
+domain's certificate (that is the claim row and the sweep, next section), and anything that
+needs a human's judgment rather than a threshold — this pages on symptoms, not root causes.
+
+**If `ops-monitor` restart-loops instead of running:** it runs as the `product` image's own
+non-root user (never the `deploy` user's uid — those are not guaranteed to match on this box;
+Azure's own provisioning already takes uid 1000 for `azureuser`), and needs
+`/srv/opsgrids/state/ops-monitor` to exist and be owned by that same uid before it can write its
+state file and heartbeat. `remote.sh up`'s `ensure_ops_monitor_state_dir` creates and chowns it
+(recursively, to the image's real `uid:gid` — both asked of the image, both checked to be plain
+digits by `lib/numeric-id.sh` before anything runs as root, and the deploy aborts if either is
+not) automatically on every deploy — `make edge-preflight` also checks and warns if it is out of
+sync. If you ever need to fix it by hand outside a deploy: `ssh` to the box and run
+`infrastructure/edge/remote.sh up` (safe to run alone; it recreates only what changed).
+
 ## Certificates, and how a human ever finds out
 
-Nothing is paged. These are the only instruments that exist in slice 1:
+`ops-monitor`'s `cert` check (above) covers `EDGE_HOST`'s own certificate. A **merchant's**
+custom domain is different — nobody configured its expiry into a check, because on-demand TLS
+means each one is issued and renewed independently, on the first handshake, by Caddy itself.
+These are the instruments for *that*:
 
 1. **The merchant's own domain screen.** Every failed probe writes a reason and a
    `next_check_at` onto the claim row, and the merchant sees exactly what we looked for and
    what we found. This is the fastest path to discovery and it is a customer doing the
-   noticing, which is not good enough and is why slice 2 is the pager.
+   noticing, which is not as good as a check that pages someone here directly.
 2. **Let's Encrypt's expiry email** to `ACME_EMAIL`, roughly 20 and 7 days before a
    certificate expires, but only when renewal has already been failing. **If that address is
-   not read by a human, this design has no alerting at all.**
+   not read by a human, a merchant domain's renewal failure has no other alert.**
 3. **Caddy's log**, which is the only place a refusal is written in full:
 
 ```bash
@@ -893,7 +1160,11 @@ Expect 60–90 minutes, most of it the first build.
 
 Named here so nobody discovers them during an incident:
 
-- **No alerting and no pager.** Slice 2.
+- **Resolved 2026-09-23 (C10): `ops-monitor` alerts by email.** See
+  [alerts and what each means](#alerts-and-what-each-means). What is still true: no pager
+  rotation, no SMS/Slack/PagerDuty integration — one mailbox, checked by a human. And it covers
+  the paths named in that table only; a symptom nowhere on that list still needs someone to
+  notice it the old way.
 - **No zero-downtime deploy.** Every deploy that changes a container restarts it.
 - **The box does not resize to fit the container count (2026-09-23, ADR-0013's memory-budget
   erratum).** §5's own sizing said this box moves to 4 vCPU / 8-16 GB before slice 1 goes live;
@@ -930,6 +1201,17 @@ Named here so nobody discovers them during an incident:
   a non-zero count with the `scheduler` container up means the sweep itself is stuck (`make
   edge-logs SERVICE=scheduler`); a non-zero count with it down or restarting is the container.
   `scheduler.outbox` fills exactly like any other service's if `edge-relay` is not draining it.
+- **A verified SSO domain can be automatically demoted (2026-09-23, ADR-0018).** `account`'s
+  worker re-checks every verified email domain's DNS on a schedule; if a domain has been
+  failing for at least 14 days *and* failed at least 3 checks in a row, the sweep clears its
+  `verified_at` itself, stamps `demoted_at`, writes an audit row, and publishes
+  `core.identity.domain.demoted`. There is no pager for this in slice 1 — the only ways an
+  operator finds out are the audit row (`account.audit_log`, action `domain.demoted`), the
+  structured log line `account.domain.demoted` (`make edge-logs SERVICE=account-worker | grep
+  domain.demoted`), or the organization noticing sign-in for that domain has stopped. Once
+  demoted, the domain stops routing SSO immediately — the internal lookup only ever returns a
+  domain with `verified_at IS NOT NULL` — and nothing re-verifies it automatically: the
+  organization has to re-claim and re-verify it, the same as a brand-new domain.
 - *(historical)* **No RabbitMQ, no relay and no consumers — and this breaks product activation.** An earlier
   version of this paragraph said slice 1 publishes no event that anything consumes. That was
   wrong. `product.activate()` publishes `core.product.activated`, and the **only** thing that
@@ -983,8 +1265,49 @@ Named here so nobody discovers them during an incident:
 
 | When | What |
 |---|---|
-| After every deploy | `make edge-status` — everything up, disk sane |
+| After every deploy | `make edge-status` — everything up, disk sane, `ops-monitor`'s own `/status` |
+| Daily | The `ops-monitor` all-quiet digest arrives (dead-man's switch) — if a day goes by with neither a digest nor an alert, the monitor itself may be stuck |
 | Weekly | Caddy log for ACME errors; `storefront-cron` alive; disk |
 | Monthly | `apt-get update && apt-get upgrade` and **a planned reboot window** — kernel updates are a full outage, so choose when rather than having it chosen for you |
 | Quarterly | The restore drill above. A backup nobody has restored is a hypothesis |
 | When a merchant asks about uptime in writing | Stop. That is ADR-0012's stated trigger to move off one box |
+
+## Development databases (not the box)
+
+Nothing here touches production; it is recorded in this file only because it is the one runbook
+the repository has.
+
+**CRM branch databases that ran an earlier `slice/crm-leads` migration must be recreated.** Two
+migrations were rewritten in place while that branch was still unmerged and never deployed
+(ADR-0017): customer's `e230c025337e` (first a unique index on `lower(name)`, then a plain
+non-unique index on `lower(name)`, now a plain non-unique index on `lower(btrim(name))` that
+leaves `uq_companies_org_name` alone — so a database from *any* earlier point on the branch is
+stale) and lead's whole chain (the deleted `e6b3c5bf7755` is gone from the tree, so a database
+stamped with it cannot even resolve its own revision). Alembic goes by the revision id in
+`alembic_version`, not by what the migration used to do, so a database that applied the old
+versions is silently wrong (customer) or refuses to migrate at all (lead). The fix is to throw
+the two schemas away and migrate again.
+
+`DROP SCHEMA ... CASCADE` is not undoable, so name the database explicitly and prove which one
+you are connected to *before* the drop — there is deliberately no environment variable to lean
+on here:
+
+```bash
+# 1. The DSN of the branch database you mean to wipe. `psql` wants the plain `postgresql://`
+#    form (the services' own settings use `postgresql+asyncpg://`). Never `opsgrids`, never
+#    anything shared or anything you did not create for this branch.
+BRANCH_DSN='postgresql://<admin-role>:<password>@<host>:<port>/<branch-database-name>'
+
+# 2. Prove it. This must print exactly the branch database's name — stop if it prints anything
+#    else, or if the connection fails.
+psql "$BRANCH_DSN" -Atc 'SELECT current_database()'
+
+# 3. Only then: drop the two schemas and migrate again, pointing the services at the same
+#    database (`DATABASE_URL` in the `postgresql+asyncpg://` form of the DSN above).
+psql "$BRANCH_DSN" -c 'DROP SCHEMA customer CASCADE' -c 'DROP SCHEMA lead CASCADE'
+make migrate
+```
+
+`DROP SCHEMA ... CASCADE` deletes that service's `alembic_version` table with everything else,
+which is what makes the re-migrate start from nothing. Development data only — seed it again
+afterwards. A database created fresh from the branch as it stands needs none of this.

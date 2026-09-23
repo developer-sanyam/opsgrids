@@ -1,3 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec python -m app.relay
+# The periodic domain re-verification sweep, standalone. Production runs it merged into
+# `bin/worker` (`app/worker.py`, ADR-0013's memory-budget erratum) alongside the event
+# consumer, to save a container; this stays directly runnable for debugging the sweep alone on
+# a laptop, the same split `services/subscription/bin/cron` and `bin/worker` keep.
+#
+# This used to point at `app.relay`, which is this service's own outbox drain and already runs
+# as `bin/relay` — pointing `bin/cron` at it too just ran a second, redundant relay while no
+# verified domain was ever re-checked, the same silent-nothing failure shape
+# `services/storefront/bin/cron`'s own comment describes for its service. So this entrypoint
+# checks that the sweep actually exists before it starts, and refuses loudly when it does not.
+if ! python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('app.cron') else 1)"; then
+	echo "account bin/cron: app/cron.py is not in this image — refusing to start." >&2
+	echo "  This entrypoint runs the periodic domain re-verification sweep: it re-checks" >&2
+	echo "  every verified domain's TXT record on a schedule and flags one that stopped" >&2
+	echo "  answering. Starting anything else here — the relay, a sleep — would look" >&2
+	echo "  healthy while no domain was ever re-checked and nothing errored." >&2
+	exit 78 # EX_CONFIG
+fi
+exec python -m app.cron

@@ -19,6 +19,7 @@ never a mutation, and the balance is a query, not a column (ADR-0004 §3).
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -47,6 +48,7 @@ from app.schemas import (
     VoidInvoiceIn,
 )
 from platform_core.audit import record_audit
+from platform_core.db import set_tenant
 from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
 from platform_core.events import publish_event
 from platform_core.money import CurrencyMismatch, Money
@@ -463,3 +465,35 @@ async def reverse_credit(
     )
     _publish_credit(session, entry, EVT_CREDIT_REVERSED)
     return entry
+
+
+async def record_operator_credit_ledger_read(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    request: Request | None = None,
+) -> None:
+    """The audit row for a staff credit-ledger read narrowed to one organization
+    (`GET /admin/credit-ledger?organization_id=...`) — MINOR 11 of the security review.
+
+    Only written when the caller filtered to a single organization: the platform-wide,
+    unfiltered list is a different kind of act (an overview, not "look at this customer's
+    ledger") and auditing every page of it would be noise rather than a trail. Opens its own
+    transaction on the app-role session and binds the tenant GUC itself — the "then narrow"
+    half of a bypass-then-narrow read (ADR-0002, path 4), mirroring console's
+    `record_organization_read`: the ledger rows themselves were already read cross-tenant, on
+    the BYPASSRLS directory session, so this is billing's own local, tenant-bound write.
+    """
+    async with session.begin():
+        await set_tenant(session, organization_id)
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=organization_id,
+            actor_id=actor_id,
+            acting_as=f"operator:{actor_id}",
+            action="credit_ledger.viewed",
+            entity="credit_ledger",
+            request=request,
+        )

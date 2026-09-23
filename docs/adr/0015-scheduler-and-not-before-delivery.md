@@ -255,6 +255,68 @@ to keep it visible.
   — a one-line compose change, not a redesign, but a real one, not a hypothetical.
 * **Retention for `parked` rows.** No automatic cleanup path yet — see §7.
 
+## Decisions on open questions (2026-09-24)
+
+Two items above were left open rather than deferred with a trigger. Both are decided here.
+Cancelling a scheduled job and an HTTP surface for scheduled jobs keep their "when something asks"
+triggers. The register of every ADR question is
+[open-questions-register.md](open-questions-register.md).
+
+### Q1. What happens to `parked` rows — **DECIDED: kept until a person acts; alerted on; unparked or discarded by a command**
+
+**Decision.** A parked row is **never deleted automatically**. It is the only evidence that a
+delivery which should have happened did not. Three things apply to it:
+1. **It alerts.** A count of `parked` rows above zero is an ops-monitor alert (**R7**, through
+   C10), counted on the outbox role's existing column grant.
+2. **A person resolves it** with a tool:
+   `uv run python tools/scheduler_jobs.py {list-parked | unpark <id> | discard <id> --reason …}`.
+   - `unpark` resets `attempts`, clears `last_error` and sets `status = 'pending'` with
+     `due_at = now()`.
+   - `discard` sets a new terminal status, `discarded`, with the reason. It never deletes the row.
+
+   The tool runs on the app role under `session_scope(organization_id=…)`, one transaction per
+   row, with an audit row each time. It follows ADR-0007 §3's CLI discipline.
+3. **Retention treats `discarded` like `fired`.** It ages out after
+   `scheduled_job_retention_days`, measured from the discard. `pending` rows are still never
+   touched.
+
+**Why.** Deleting a parked row silently loses a delivery nobody knows about. It might be a filing
+retry, and a missed one ends in a portal deadline. But a row that stays parked for ever with no
+alarm is the same loss, only slower.
+
+**Rejected.** Auto-purging parked rows after N days. Auto-unparking on a timer: a row that raised
+ten times in a row will very likely raise an eleventh, so a person should look first.
+
+**Consequences.** One status value, one CLI and one alert. **Implemented by PLAT-E**: sweep
+finding S18 ("parked after ~10 immediate retries, no backoff/unpark"), which also adds backoff
+between fire attempts. The alert is **R7**.
+
+### Q2. When `scheduler` leaves the `finance` profile — **DECIDED: in the same change that adds its first producer outside finance**
+
+**Decision.** `scheduler` stays under the `finance` profile until a service outside that profile
+calls `schedule_event`. **The change that adds that producer moves `scheduler` (worker and relay
+drain) to the core profile in the same commit.** It also adds a `preflight.sh` check that refuses
+a deploy in which an enabled profile's service calls `schedule_event` while `scheduler` is not
+running.
+
+The first candidates are:
+- **L2**, the leave accrual cron, if it is built on `schedule_event`;
+- **D4b**'s idea of moving per-service sweeps onto the scheduler. The D4b addendum left this
+  undone for the same reason.
+
+C4, the automatic e-Way retry, is a finance producer and does not trigger the move.
+
+**Why.** Today the coupling is harmless, because turning finance off also turns off the only
+producer. The failure it hides is quiet. A producer in another profile would stage
+`platform.schedule.requested`. The guaranteed-routing channel (§6) would then refuse it, since
+nothing is bound, so the event would sit retrying in that producer's outbox, and the outbox-lag
+alert would be the first sign.
+
+**Consequences.** Moving to core costs one background container (priced in `memory-budget.json`).
+That is why the move waits for a real producer. No ledger item exists for the move itself. It is
+scope for whichever of L2 or D4b introduces the second producer, and both are named in the
+register.
+
 ## Addendum (2026-09-24) — portal calls leave the transaction (D3)
 
 Every compliance-portal call in finance now runs as **claim / call / record**: a short

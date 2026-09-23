@@ -1700,3 +1700,177 @@ exercises the sweep or the HTTP client calls `init_redis` itself, which hides ex
 regression. `app/cron.py`'s `main()` now calls `init_redis(cfg.redis_url)` before starting the
 sweep and `close_redis()` once it stops; `tests/test_cron.py::TestMainInitialisesRedis` drives
 `main()` itself rather than the fixture that would hide the bug.
+
+---
+
+## Decisions on open questions (2026-09-24)
+
+§17 listed eight things this ADR was not sure of. Errata 15–17 settled four. The other four are
+decided below, together with the owner of every slice this ADR left without one. Slices 4 and 5
+wait deliberately on demand and are recorded as **NOT-TRIGGERED**, each with its exact trigger
+and what to build. The register of every ADR question is
+[open-questions-register.md](open-questions-register.md).
+
+### Q1. §17.1: does Caddy re-consult `ask` when *renewing* an on-demand certificate? — **DECIDED (verified): yes**
+
+**Verified against source, not memory.** The edge pins `caddy:2.10.0-alpine`. Caddy v2.10.0's
+`go.mod` requires `github.com/caddyserver/certmagic v0.23.0`. In that tag, `handshake.go`'s
+`renewDynamicCertificate` calls `cfg.checkIfCertShouldBeObtained(ctx, name, true)` before renewing
+an on-demand certificate. On refusal it **removes the certificate from the cache** ("it will be
+deleted from storage later") and does not renew.
+
+**Decision.** Once a domain is released, suspended or unpublished, `tls-authorize` refuses it and
+its certificate is not renewed, so it lapses on its own. Gate 2 (the origin's state check, §7)
+**stays unconditional**: it is the security boundary and it must not depend on any Caddy
+behaviour. R15's "delete the certificate on domain removal" is therefore storage hygiene, not a
+security fix, and keeps its place in R15.
+
+**Consequences.** §7's worry about a certificate "renewing indefinitely" is withdrawn. Re-verify
+this whenever the Caddy pin moves, by reading the same function in the new certmagic tag.
+
+### Q2. §17.2 (`on_demand_tls` options) and §17.3 (SNI-overridden handshake) — **DECIDED (resolved by errata 16 and 15)**
+
+The Caddyfile passes `caddy validate` on the pinned image (erratum 16), and `ask` is the only
+on-demand control. The certificate probe uses a raw `ssl.SSLContext` with SNI set to the host
+(erratum 15, `app/probes.py`), which was §17.3's named fallback. Nothing is open.
+
+### Q3. §17.4: Let's Encrypt's current rate limits — **DECIDED (re-read 2026-09-24; one limit binds)**
+
+**The limits, from letsencrypt.org/docs/rate-limits on 2026-09-24:**
+
+| Limit | Value |
+|---|---|
+| New orders per account | 300 every 3 hours, refilling at 1 every 36 seconds |
+| New certificates per registered domain | **50 every 7 days** |
+| New certificates per exact set of identifiers | 5 every 7 days |
+| Authorization failures per identifier per account | 5 an hour |
+| Renewals | ARI renewals are exempt from all limits. Other renewals of the same identifier set are exempt from the orders limit and the per-domain limit |
+
+**What that means here.**
+1. **The binding limit is 50 new certificates per week under `opsgrids.com`.** Every
+   `<slug>.stores.opsgrids.com` is a new certificate under that registered domain. That caps new
+   platform-hosted stores at roughly 50 a week, less any new platform hostnames. Merchant domains
+   are each their own registered domain and are unaffected. Past the cap, Caddy falls back to
+   ZeroSSL on its own: the Caddyfile's global `email` is set, which is what its ZeroSSL issuer
+   needs.
+2. **Losing `caddy_data` entirely is milder than §12 feared.** Re-issuing a name we held before is
+   a renewal of that exact identifier set, so it is exempt from the orders and per-domain limits.
+   Only the 5-per-week duplicate limit applies, and a re-issue is needed once. §12's "~250 domains"
+   trigger for moving certificate storage stays as a resilience trigger, not a rate-limit one.
+
+**Decision.** Accept on-demand HTTP-01 as designed.
+
+**Trigger for a wildcard:** sustained onboarding above 40 new stores a week, or Let's Encrypt
+refusals appearing in Caddy's logs. **What to build then:** delegate `stores.opsgrids.com` to its
+own DNS zone, with an API token scoped to **that one zone**, and use DNS-01 for a wildcard
+`*.stores.opsgrids.com` only. Merchant domains stay on HTTP-01 on demand. That is §5's
+no-DNS-credential principle narrowed to one delegated zone, not abandoned. Nothing is built now.
+
+### Q4. §17.5: registrars that mangle underscore labels — **DECIDED: keep `_opsgrids-challenge`; an apex fallback only on evidence**
+
+**Decision.** Verification stays at `_opsgrids-challenge.<host>`. Account's email-domain
+verification uses the same underscore convention (`_opsgrids-verify.`, ADR-0018 §4).
+
+**Trigger:** two merchants within 30 days whose registrar cannot publish an underscore label.
+**What to build then:** the ownership probe **also** accepts
+`opsgrids-domain-verification=<token>` as a TXT record at the claimed name itself. It is checked
+second, never instead. The merchant's record table shows it as the alternative. No schema change.
+
+### Q5. §17.7: whether one VM survives a high-traffic merchant — **DECIDED: measure on a trigger; the answer is slice 4, not a bigger box**
+
+**Decision.** No work in advance. The buyer bundle is static and fingerprinted, and each session
+makes two anonymous API calls (§2).
+
+**Trigger:** one merchant sustaining more than **20 requests a second** on the buyer API, which is
+ADR-0010 §12's whole-fleet peak on one host, or a p95 for `store-context` above 500 ms. Seeing
+either needs R12's metrics.
+
+**What to do then:** run a load test from off-box against the edge in a quiet window. If Caddy or
+the gateway is the bottleneck, the answer is slice 4 (move the edge), because the owner has
+refused a resize (ADR-0013 erratum).
+
+### Q6. Erratum 11: is the edge's public IP really reserved? — **DECIDED (owner action)**
+
+**Decision.** Before **any** merchant publishes an apex A record, the owner confirms in the Azure
+portal that the edge's public IP is **Standard SKU with static allocation**. This cannot be
+verified from the box. Until then, the domain screen's first recommendation (ALIAS, or a
+subdomain CNAME to `edge.opsgrids.com`, §4) protects every merchant who follows it, and the
+A-record fallback is the only exposure.
+
+**Consequences.** It is an owner step in the deploy checklist, and no code.
+
+### Q7. Slice 2's deploy pipeline and pager — **DECIDED**
+
+**Decision.**
+- **Pager.** The first two alerts named in slice 2 — a domain `failing` for 24 hours, and a
+  certificate inside 14 days with a failed renewal — are **R7**. They are routed through
+  ops-monitor (**C10**) to `OPS_ALERT_EMAIL`.
+- **Deploys** stay **manual over SSH** through `infrastructure/edge/remote.sh`. The owner decided
+  this on 2026-09-24 while GitHub Actions is blocked by account billing. CI-built images pulled on
+  the box (ADR-0013 erratum, "Levers") remain the target once Actions runs again, alongside
+  **E5**'s CI e2e job.
+
+The trigger to revisit is Actions being unblocked.
+
+### Q8. Slice 3 "blocked on an owner" — **DECIDED: owners assigned**
+
+**Decision.**
+- **R14** owns the entitlement-lapse consumer, designed in ADR-0010's decisions section Q1: it
+  listens to the activation flip, not to subscription events.
+- **R15** owns the rest: certificate deletion via Caddy's admin API, the 308 from the slug host to
+  the canonical host, domain state-change notifications, probes outside the row lock (erratum 21's
+  named fix), and the 410 catch-all at the edge (§7, erratum 17).
+
+**Consequences.** Slice 3 is no longer blocked.
+
+### Q9. The `CLAUDE.md` line about `infrastructure/` (§1, Consequences) — **DECIDED (resolved)**
+
+`CLAUDE.md` now describes `infrastructure/` as the production edge (compose, Caddy, runbook) and
+says why it is not Helm or kustomize. Nothing is open.
+
+### Slice 4: move the edge — **NOT-TRIGGERED**
+
+**Trigger (whichever comes first):**
+- a merchant contract with an **uptime commitment in writing**;
+- **more than ~200 custom domains** `live` or `failing` (`SELECT count(*) FROM
+  storefront.storefronts WHERE custom_domain_status IN ('live','failing')`);
+- **`caddy_data` lost once** (§12, "Revisit when").
+
+**What to build when it fires.** Decide between the two options below with the numbers at the
+time. The default is Cloudflare for SaaS **first**: the edge is the single point of failure a
+buyer sees, and it is the part that can be bought.
+- **Cloudflare for SaaS.**
+  - The claim flow creates a Cloudflare custom hostname **after** our own TXT ownership check
+    passes. Our TXT stays the ownership proof, and Cloudflare's validation only issues the
+    certificate.
+  - `tls-authorize`'s abuse role, on-demand issuance, renewal and certificate storage are retired
+    from Caddy.
+  - Apex merchants move from our reserved IP to Cloudflare's apex target, which means a
+    communicated DNS change for each of them.
+  - Caddy stays as the origin for `/api/*` and the bundle.
+- **A second application box behind a load balancer.** Certificate storage moves off local disk
+  (a storage module, evaluated as third-party code). The state machine, the probes and the origin
+  check are unchanged.
+
+In both options, gate 2, the state machine and the probes do not change. That is §7's two-gate
+split paying off.
+
+### Slice 5: more than one domain per store — **NOT-TRIGGERED**
+
+**Trigger:** one merchant states in writing that it needs **two live domains on one store**, such
+as a country domain or a rebrand with both addresses live. The `www` partner is already served
+and is not the trigger.
+
+**What to build when it fires.** It ships with its own ADR, superseding ADR-0011 §5's single
+column:
+- A table `storefront.storefront_domains(organization_id, storefront_id, host, role
+  primary|redirect, status, verified_at, …)`, with a unique host where status is
+  verified/live/failing (verified-only exclusivity, the ADR-0018 pattern). It carries the claim
+  columns of `custom_domain_claims`, which becomes one row per host.
+- The `www` partner becomes a real row.
+- `resolve_public_store_by_host` becomes a plain `WHERE host = :host` on the new table. That
+  **widens `opsgrids_storefront_directory` to a second table**, with column-level SELECT on
+  `(host, storefront_id, status)` only. It is a deliberate change to ADR-0010 §4's one-table
+  chokepoint and must be named as such.
+- A `redirect` row 308s to the primary through R15's edge redirect map.
+- `storefronts.custom_domain` is migrated into one row per existing claim, then dropped.

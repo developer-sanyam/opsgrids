@@ -24,19 +24,21 @@ from sqlalchemy import Select, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import contains_eager, selectinload
 
+from app import domain as domain_rules
 from app.models import (
     Invitation,
     Location,
     Membership,
     MembershipRole,
     Organization,
+    OrgDomain,
     OrgUnit,
     Permission,
     Role,
     RolePermission,
     User,
 )
-from app.schemas import GrantOut, MemberOut, OrgUnitNode, RoleOut
+from app.schemas import DomainOut, GrantOut, MemberOut, OrgUnitNode, RoleOut
 from platform_core.auth import Scope, ScopeContext
 
 # --------------------------------------------------------------------- organizations
@@ -409,6 +411,78 @@ async def get_location(
         Location.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+# --------------------------------------------------------------------- domains
+
+
+async def list_domains(session: AsyncSession, org_id: uuid.UUID) -> list[OrgDomain]:
+    stmt = (
+        select(OrgDomain).where(OrgDomain.organization_id == org_id).order_by(OrgDomain.created_at)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def get_domain(
+    session: AsyncSession, org_id: uuid.UUID, domain_id: uuid.UUID
+) -> OrgDomain | None:
+    stmt = select(OrgDomain).where(OrgDomain.id == domain_id, OrgDomain.organization_id == org_id)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_domain_by_name(
+    session: AsyncSession, org_id: uuid.UUID, domain: str
+) -> OrgDomain | None:
+    """This organization's own row for `domain`, if it has already claimed it.
+
+    Tenant-scoped like every other selector here, and filtered by `organization_id` in the
+    `WHERE` clause besides — `(organization_id, domain)` is unique
+    (`uq_org_domains_org_domain`), not `domain` alone, so this answers "have I already claimed
+    this", never "who else has": another organization's row for the same domain is a real,
+    separate row this query does not reach.
+    """
+    stmt = select(OrgDomain).where(OrgDomain.organization_id == org_id, OrgDomain.domain == domain)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def to_domain_out(row: OrgDomain) -> DomainOut:
+    still_pending = row.verified_at is None
+    return DomainOut(
+        id=row.id,
+        domain=row.domain,
+        is_primary=row.is_primary,
+        auto_join=row.auto_join,
+        verified_at=row.verified_at,
+        created_at=row.created_at,
+        expires_at=domain_rules.claim_expires_at(row.created_at) if still_pending else None,
+        verification_host=domain_rules.verification_txt_host(row.domain),
+        verification_value=domain_rules.verification_txt_value(row.verification_token),
+        last_checked_at=row.last_checked_at,
+        last_check_ok=row.last_check_ok,
+        failing_since=row.failing_since,
+    )
+
+
+async def due_for_recheck(session: AsyncSession, *, before: Any, limit: int) -> list[OrgDomain]:
+    """Verified domains a periodic sweep should re-check: `last_checked_at` older than
+    `before` (or never checked at all), oldest first.
+
+    Runs on the BYPASSRLS directory reader — cross-tenant discovery of *which* domains are
+    due, the same shape `app/cron.py`'s module docstring explains for the sweep as a whole —
+    and costs no new grant: `opsgrids_directory` already reads `org_domains` for the internal
+    SSO lookup (`api/internal.py`). Every write that follows runs per-domain on the ordinary,
+    tenant-bound application role.
+    """
+    stmt = (
+        select(OrgDomain)
+        .where(
+            OrgDomain.verified_at.is_not(None),
+            or_(OrgDomain.last_checked_at.is_(None), OrgDomain.last_checked_at < before),
+        )
+        .order_by(OrgDomain.last_checked_at.asc().nulls_first())
+        .limit(limit)
+    )
+    return list((await session.execute(stmt)).scalars().all())
 
 
 # --------------------------------------------------------------------- roles

@@ -115,7 +115,29 @@ async def get_reversal_of(session: AsyncSession, entry_id: uuid.UUID) -> CreditL
     ).scalar_one_or_none()
 
 
+def admin_credit_ledger_query(
+    *,
+    organization_id: uuid.UUID | None = None,
+    currency: str | None = None,
+    entry_type: str | None = None,
+) -> Select[tuple[CreditLedgerEntry]]:
+    """The staff credit-ledger query, filtered but **not** scoped — there is no tenant to scope
+    to. Run on the directory session (BYPASSRLS, SELECT-only): the operator reads across every
+    organization by design (ADR-0003 §2), so this is deliberately not `_scoped_invoices`'s
+    shape. Paginated by the caller with `platform_core.pagination.paginate`, newest first.
+    """
+    stmt = select(CreditLedgerEntry).order_by(CreditLedgerEntry.created_at.desc())
+    if organization_id is not None:
+        stmt = stmt.where(CreditLedgerEntry.organization_id == organization_id)
+    if currency is not None:
+        stmt = stmt.where(CreditLedgerEntry.currency == currency.upper())
+    if entry_type is not None:
+        stmt = stmt.where(CreditLedgerEntry.entry_type == entry_type)
+    return stmt
+
+
 __all__ = [
+    "admin_credit_ledger_query",
     "credit_balance",
     "get_credit_entry",
     "get_invoice",

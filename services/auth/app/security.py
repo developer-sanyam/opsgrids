@@ -117,6 +117,16 @@ TOTP_DIGITS = 6
 TOTP_WINDOW = 1
 
 
+def looks_like_totp_code(code: str) -> bool:
+    """Could this submission be an authenticator-app code at all? Exactly `TOTP_DIGITS` ASCII
+    digits, spaces ignored — the same normalisation `verify_totp` applies. Anything else can
+    only have been an attempt at a recovery code, which matters to the caller in one place: a
+    factor it could not read (a legacy-plaintext row it refuses) makes a *six-digit* miss
+    ambiguous — it may have been right — but never a miss of any other shape."""
+    candidate = code.strip().replace(" ", "")
+    return len(candidate) == TOTP_DIGITS and candidate.isascii() and candidate.isdigit()
+
+
 def generate_totp_secret() -> str:
     """A base32 secret, the format every authenticator app expects."""
     return base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
@@ -148,9 +158,12 @@ def verify_totp(secret: str, code: str, *, last_used_step: int | None = None) ->
     refuse a replay: without that, a code shoulder-surfed from a screen stays valid for
     the rest of its window.
     """
-    candidate = code.strip().replace(" ", "")
-    if not candidate.isdigit() or len(candidate) != TOTP_DIGITS:
+    # `looks_like_totp_code` insists on ASCII: `str.isdigit()` is true for fullwidth and other
+    # Unicode digits, and `hmac.compare_digest` raises TypeError comparing a non-ASCII `str` —
+    # a 500 on a submitted code instead of an ordinary counted miss.
+    if not looks_like_totp_code(code):
         return None
+    candidate = code.strip().replace(" ", "")
 
     now_step = int(time.time()) // TOTP_STEP
     for offset in range(-TOTP_WINDOW, TOTP_WINDOW + 1):

@@ -402,6 +402,16 @@ class TestOperatorAudienceBoundary:
         assert resp.status_code == 201
         assert resp.json()["code"] == "authored"
 
+    async def test_an_operator_token_that_never_completed_mfa_gets_403(self, client) -> None:
+        """m8 of the third-round security review: right audience, right role (`owner`), but
+        `amr` is `["pwd"]` — no second factor — so the route refuses it."""
+        with as_principal(operator_principal(staff=True, roles=["owner"], amr=["pwd"])):
+            resp = await client.post(
+                "/api/v1/admin/catalog/plans",
+                json={"product_key": "hrms", "code": "no-mfa", "name": "No MFA"},
+            )
+        assert resp.status_code == 403
+
     async def test_a_product_audience_token_gets_404_not_403(self, client) -> None:
         """404, deliberately: a customer token learns nothing about whether this surface
         exists — the same rule the operator gateway enforces at the edge."""
@@ -412,12 +422,44 @@ class TestOperatorAudienceBoundary:
             )
         assert resp.status_code == 404
 
+    async def test_an_operator_without_the_owner_role_gets_403_not_404(self, client) -> None:
+        """The audience is right — the surface's existence is already conceded — so a staff
+        member missing the `owner` role gets an ordinary Forbidden, per the ADR-0003 addendum's
+        role matrix: catalog writes are `owner`-only."""
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            resp = await client.post(
+                "/api/v1/admin/catalog/plans",
+                json={"product_key": "hrms", "code": "not-allowed", "name": "Not allowed"},
+            )
+        assert resp.status_code == 403
+
     async def test_an_unauthenticated_caller_is_rejected(self, client) -> None:
         resp = await client.post(
             "/api/v1/admin/catalog/plans",
             json={"product_key": "hrms", "code": "nope", "name": "Nope"},
         )
         assert resp.status_code == 401
+
+    async def test_every_catalog_write_route_refuses_a_non_owner_role(self, client) -> None:
+        """MINOR 10 of the security review: the owner-only test above covered `POST /plans`
+        alone. Every other write on this router is `owner`-only too, per the ADR-0003
+        addendum's role matrix — the role check runs in the route's dependency, before the
+        path id is ever looked up, so a placeholder id is enough to exercise it."""
+        random_id = uuid.uuid4()
+        cases = (
+            ("PATCH", f"/api/v1/admin/catalog/plans/{random_id}", {"name": "Renamed"}),
+            ("POST", f"/api/v1/admin/catalog/plans/{random_id}/retire", None),
+            (
+                "POST",
+                f"/api/v1/admin/catalog/plans/{random_id}/versions",
+                {"prices": [], "features": []},
+            ),
+            ("POST", f"/api/v1/admin/catalog/versions/{random_id}/publish", None),
+        )
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            for method, path, body in cases:
+                resp = await client.request(method, path, json=body)
+                assert resp.status_code == 403, path
 
 
 # --------------------------------------------------------------------- events

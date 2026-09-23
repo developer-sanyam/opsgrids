@@ -267,3 +267,34 @@ async def record_override(
             reason=reason,
             request=request,
         )
+
+
+async def record_organization_read(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID | None,
+    operator_label: str,
+    request: Request | None,
+) -> None:
+    """Record that an operator read one organization's detail, bound to that organization.
+
+    Same bypass-then-narrow shape as `record_override`: the read itself ran on the directory
+    session, cross-tenant; this is the "then narrow" half — a real tenant write under the app
+    role, GUC bound to the organization the read was *about*, so the row lands where an
+    administrator of that organization could in principle be shown it. `acting_as` names the
+    operator, per ADR-0003's "every staff read of an org's detail writes an audit row".
+    """
+    async with session.begin():
+        await set_tenant(session, organization_id)
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=organization_id,
+            actor_id=actor_id,
+            acting_as=operator_label,
+            action="organization.viewed",
+            entity="organization",
+            entity_id=organization_id,
+            request=request,
+        )

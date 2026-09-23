@@ -19,9 +19,17 @@
     "and an inert guard that looks like a guard is worse than none. Splitting the entry makes",
     "that a fact in this table instead of a consequence of statement ordering in the gateway.",
     "The public path itself is exact-matched from `STOREFRONT_PUBLIC_PATHS` in the gateway's",
-    "own `app/main.py`; a prefix here does not make anything public."
+    "own `app/main.py`; a prefix here does not make anything public.",
+    "",
+    "`/api/v1/auth/operator` is `blocked`: longer than the `/api/v1/auth` entry below, so it",
+    "wins the match for every operator sign-in path and is refused with 404 before any token is",
+    "even decoded. Operator sign-in belongs to admin-gateway alone (ADR-0003 §2) — the route",
+    "itself takes no principal (staff credentials travel in the request body), so an ordinary",
+    "tenant's own valid bearer token would otherwise have been enough to reach it here. Fixes",
+    "the security review's MAJOR 3."
   ],
   "routes": [
+    { "prefix": "/api/v1/auth/operator", "upstream": "http://localhost:8110", "blocked": true },
     { "prefix": "/api/v1/auth", "upstream": "http://localhost:8110" },
 
     { "prefix": "/api/v1/organization", "upstream": "http://localhost:8111" },
@@ -49,13 +57,10 @@
     { "prefix": "/api/v1/deals", "upstream": "http://localhost:8131", "product": "crm" },
     { "prefix": "/api/v1/campaigns", "upstream": "http://localhost:8132", "product": "crm" },
     { "prefix": "/api/v1/tickets", "upstream": "http://localhost:8133", "product": "crm" },
+    { "prefix": "/api/v1/leads", "upstream": "http://localhost:8135", "product": "crm" },
 
     { "prefix": "/api/v1/marketing", "upstream": "http://localhost:8134", "product": "marketing" },
     { "prefix": "/api/v1/support", "upstream": "http://localhost:8180", "product": "support" },
-
-    { "prefix": "/api/v1/leads", "upstream": "http://localhost:8135", "product": "salescrm" },
-    { "prefix": "/api/v1/pipelines", "upstream": "http://localhost:8136", "product": "salescrm" },
-    { "prefix": "/api/v1/activities", "upstream": "http://localhost:8137", "product": "salescrm" },
 
     { "prefix": "/api/v1/projects", "upstream": "http://localhost:8140", "product": "pulseboard" },
     { "prefix": "/api/v1/timesheets", "upstream": "http://localhost:8141", "product": "pulseboard" },

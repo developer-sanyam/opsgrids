@@ -19,9 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import services
 from app.config import Settings, settings
-from app.deps import DirectoryDep, EntitlementsDep, IdpDep, KeyDep, SsoStateDep
+from app.deps import DirectoryDep, EntitlementsDep, IdpDep, KeyDep, SsoStateDep, require_admin_hop
 from app.keys import jwks as build_jwks
-from app.models import SCHEMA, OrgIdpConfig
+from app.models import SCHEMA, OrgIdpConfig, StaffAccount
 from app.schemas import (
     LoginIn,
     LoginResult,
@@ -31,7 +31,17 @@ from app.schemas import (
     MfaEnrolStart,
     MfaRequired,
     MfaVerifyIn,
+    OperatorEnrollmentCodeIn,
+    OperatorEnrollmentCodeOut,
     OperatorLoginIn,
+    OperatorLoginResult,
+    OperatorMeOut,
+    OperatorMfaEnrolConfirmIn,
+    OperatorMfaEnrolIn,
+    OperatorMfaEnrolled,
+    OperatorMfaEnrollmentRequired,
+    OperatorMfaRequired,
+    OperatorMfaVerifyIn,
     OperatorTokenOut,
     OrganizationChoice,
     OrgSelectionRequired,
@@ -46,7 +56,14 @@ from app.schemas import (
     SwitchOrgIn,
     TokenOut,
 )
-from platform_core.auth import CurrentPrincipal, Scope, ScopeContext, require
+from platform_core.auth import (
+    CurrentPrincipal,
+    Principal,
+    Scope,
+    ScopeContext,
+    require,
+    require_operator,
+)
 from platform_core.db import get_session, get_tenant_session
 from platform_core.errors import NotFoundProblem, UnauthorizedProblem, ValidationProblem
 
@@ -60,6 +77,9 @@ wellknown = APIRouter(tags=["discovery"])
 # and binds it to the caller's organization first (ADR-0002 §1); none of them opens its own.
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 TenantSessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
+#: Any authenticated operator, no role filter — `/auth/operator/me` answers "who am I", which
+#: every operator role may ask.
+OperatorPrincipalDep = Annotated[Principal, Depends(require_operator())]
 
 
 def _set_refresh_cookie(response: Response, cfg: Settings, token: str) -> None:
@@ -318,7 +338,11 @@ async def mfa_enrol(
     if user is None:
         raise UnauthorizedProblem("That session is no longer valid.")
     factor, secret, uri = await services.begin_mfa_enrolment(
-        session, principal.sub, account_email=user.email
+        session,
+        principal.sub,
+        account_email=user.email,
+        cfg=settings(),
+        session_id=principal.session_id,
     )
     return MfaEnrolStart(factor_id=factor.id, secret=secret, otpauth_uri=uri)
 
@@ -332,7 +356,12 @@ async def mfa_confirm(
     payload: MfaEnrolConfirmIn, session: TenantSessionDep, principal: CurrentPrincipal
 ) -> MfaEnrolled:
     codes = await services.confirm_mfa_enrolment(
-        session, factor_id=payload.factor_id, user_id=principal.sub, code=payload.code
+        session,
+        factor_id=payload.factor_id,
+        user_id=principal.sub,
+        code=payload.code,
+        cfg=settings(),
+        session_id=principal.session_id,
     )
     # Shown once. Stored hashed, and never retrievable again.
     return MfaEnrolled(recovery_codes=codes)
@@ -532,28 +561,7 @@ async def change_password(
 # returns is only accepted on `admin-gateway`, by audience.
 
 
-@router.post(
-    "/auth/operator/login",
-    response_model=OperatorTokenOut,
-    summary="Operator (OpsGrids staff) sign in",
-)
-async def operator_login(
-    payload: OperatorLoginIn,
-    request: Request,
-    response: Response,
-    session: SessionDep,
-    pair: KeyDep,
-) -> OperatorTokenOut:
-    """Authenticate a staff account and return an `operator`-audience token with `stf`.
-
-    A wrong credential answers 401 with the same generic message the tenant login uses, so
-    this endpoint is not an operator-account enumeration oracle.
-    """
-    cfg = settings()
-    issued = await services.operator_login(
-        session, cfg=cfg, pair=pair, email=payload.email, password=payload.password, request=request
-    )
-    _set_refresh_cookie(response, cfg, issued.refresh_token)
+def _operator_token_out(issued: services.OperatorIssued) -> OperatorTokenOut:
     return OperatorTokenOut(
         access_token=issued.access_token,
         expires_in=issued.expires_in,
@@ -562,9 +570,203 @@ async def operator_login(
 
 
 @router.post(
+    "/auth/operator/login",
+    response_model=OperatorLoginResult,
+    summary="Operator (OpsGrids staff) sign in — always stops for a second factor",
+    dependencies=[Depends(require_admin_hop)],
+)
+async def operator_login(
+    payload: OperatorLoginIn,
+    request: Request,
+    session: SessionDep,
+    pair: KeyDep,
+) -> OperatorMfaRequired | OperatorMfaEnrollmentRequired:
+    """Authenticate a staff account. Never returns a token from a password alone.
+
+    A wrong credential answers 401 with the same generic message the tenant login uses, so
+    this endpoint is not an operator-account enumeration oracle. A correct one always
+    returns one of two "keep going" answers — MFA is mandatory for staff (ADR-0003
+    addendum) — never a completed sign-in.
+    """
+    cfg = settings()
+    outcome = await services.operator_login(
+        session, cfg=cfg, pair=pair, email=payload.email, password=payload.password, request=request
+    )
+    if outcome.status == "mfa_enrollment_required":
+        return OperatorMfaEnrollmentRequired(pre_auth_token=outcome.pre_auth_token or "")
+    return OperatorMfaRequired(pre_auth_token=outcome.pre_auth_token or "")
+
+
+@router.post(
+    "/auth/operator/mfa/enrol",
+    response_model=MfaEnrolStart,
+    status_code=status.HTTP_201_CREATED,
+    summary="Start setting up an operator's authenticator app — the only reachable step "
+    "until one is enrolled",
+    dependencies=[Depends(require_admin_hop)],
+)
+async def operator_mfa_enrol(
+    payload: OperatorMfaEnrolIn, request: Request, session: SessionDep, pair: KeyDep
+) -> MfaEnrolStart:
+    cfg = settings()
+    factor, secret, uri = await services.operator_begin_mfa_enrolment(
+        session,
+        cfg=cfg,
+        pair=pair,
+        pre_auth_token=payload.pre_auth_token,
+        enrollment_code=payload.enrollment_code,
+        request=request,
+    )
+    return MfaEnrolStart(factor_id=factor.id, secret=secret, otpauth_uri=uri)
+
+
+@router.post(
+    "/auth/operator/mfa/enrol/confirm",
+    response_model=OperatorMfaEnrolled,
+    summary="Prove the app works — completes the sign-in that started enrolment",
+    dependencies=[Depends(require_admin_hop)],
+)
+async def operator_mfa_enrol_confirm(
+    payload: OperatorMfaEnrolConfirmIn,
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    pair: KeyDep,
+) -> OperatorMfaEnrolled:
+    cfg = settings()
+    issued, codes = await services.confirm_operator_mfa_enrolment(
+        session,
+        cfg=cfg,
+        pair=pair,
+        pre_auth_token=payload.pre_auth_token,
+        factor_id=payload.factor_id,
+        code=payload.code,
+        request=request,
+    )
+    _set_refresh_cookie(response, cfg, issued.refresh_token)
+    return OperatorMfaEnrolled(
+        access_token=issued.access_token,
+        expires_in=issued.expires_in,
+        operator_roles=issued.operator_roles,
+        recovery_codes=codes,
+    )
+
+
+@router.post(
+    "/auth/operator/mfa/verify",
+    response_model=OperatorTokenOut,
+    summary="Present an operator's second factor",
+    dependencies=[Depends(require_admin_hop)],
+)
+async def operator_mfa_verify(
+    payload: OperatorMfaVerifyIn,
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    pair: KeyDep,
+) -> OperatorTokenOut:
+    cfg = settings()
+    issued = await services.operator_verify_mfa(
+        session,
+        cfg=cfg,
+        pair=pair,
+        pre_auth_token=payload.pre_auth_token,
+        code=payload.code,
+        request=request,
+    )
+    _set_refresh_cookie(response, cfg, issued.refresh_token)
+    return _operator_token_out(issued)
+
+
+@router.get(
+    "/auth/operator/me",
+    response_model=OperatorMeOut,
+    summary="Who this operator is",
+    dependencies=[Depends(require_admin_hop)],
+)
+async def operator_me(session: TenantSessionDep, operator: OperatorPrincipalDep) -> OperatorMeOut:
+    """Goes through the same tenancy chokepoint as every other principal-bearing route.
+
+    Harmless rather than meaningful for an operator: `get_tenant_session` binds the
+    transaction to `principal.organization_id`, which for an operator token is the platform
+    sentinel (`services.PLATFORM_ORG`) — there is no tenant row here to protect, `auth`
+    carries no row-level security at all, but going through the one chokepoint every
+    principal-bearing route uses is one fewer shape for this module to special-case.
+    """
+    staff = await session.get(StaffAccount, operator.sub)
+    if staff is None:
+        raise UnauthorizedProblem("That session is no longer valid.")
+    return OperatorMeOut(
+        staff_id=staff.id,
+        email=staff.email,
+        display_name=staff.display_name,
+        operator_roles=list(staff.operator_roles),
+        amr=operator.amr,
+    )
+
+
+#: The operator bootstrap: only an `owner` may hand another staff account its enrolment code.
+OperatorOwnerDep = Annotated[Principal, Depends(require_operator(roles={"owner"}))]
+
+
+@router.post(
+    "/auth/operator/enrollment-codes",
+    response_model=OperatorEnrollmentCodeOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Issue a staff account's out-of-band MFA enrolment code (owner only)",
+    dependencies=[Depends(require_admin_hop)],
+)
+async def issue_operator_enrollment_code(
+    payload: OperatorEnrollmentCodeIn,
+    request: Request,
+    session: TenantSessionDep,
+    operator: OperatorOwnerDep,
+) -> OperatorEnrollmentCodeOut:
+    """A password alone must never be enough to reach MFA enrolment (ADR-0003 addendum): this
+    is the audited, in-product way an `owner` hands a colleague — or a newly provisioned staff
+    account — the out-of-band code `POST /auth/operator/mfa/enrol` also requires. For the very
+    first owner, with nobody yet to issue one, `bin/seed-staff` prints one instead; for staff
+    accounts that predate this rule, `bin/issue-enrollment-codes` is the one-off deploy step.
+    """
+    code = await services.issue_staff_enrollment_code(
+        session, staff_id=payload.staff_id, actor_id=operator.sub, request=request
+    )
+    return OperatorEnrollmentCodeOut(
+        staff_id=payload.staff_id,
+        enrollment_code=code,
+        expires_in_minutes=services.ENROLLMENT_CODE_TTL_MINUTES,
+    )
+
+
+@router.post(
+    "/auth/operator/staff/{staff_id}/mfa:reset",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Wipe a colleague's MFA after a lost device (owner only)",
+    dependencies=[Depends(require_admin_hop)],
+)
+async def reset_operator_staff_mfa(
+    staff_id: uuid.UUID,
+    request: Request,
+    session: TenantSessionDep,
+    operator: OperatorOwnerDep,
+) -> Response:
+    """The lost-device path (MINOR 5 of the 2026-09-24 security review): deletes the target's
+    factors and recovery codes, revokes their live sessions and refresh tokens, and audits the
+    act. Refuses to target the caller — resetting one's own MFA is not what this route is for.
+    Once this has run, `POST /auth/operator/enrollment-codes` issues the fresh out-of-band code
+    the account's next enrolment needs.
+    """
+    await services.reset_staff_mfa(
+        session, target_staff_id=staff_id, actor_id=operator.sub, request=request
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
     "/auth/operator/refresh",
     response_model=OperatorTokenOut,
     summary="Renew an operator access token",
+    dependencies=[Depends(require_admin_hop)],
 )
 async def operator_refresh(
     request: Request, response: Response, session: SessionDep, pair: KeyDep
@@ -575,17 +777,14 @@ async def operator_refresh(
         raise UnauthorizedProblem("No session to refresh")
     issued = await services.operator_rotate_refresh(session, cfg=cfg, pair=pair, raw_token=raw)
     _set_refresh_cookie(response, cfg, issued.refresh_token)
-    return OperatorTokenOut(
-        access_token=issued.access_token,
-        expires_in=issued.expires_in,
-        operator_roles=issued.operator_roles,
-    )
+    return _operator_token_out(issued)
 
 
 @router.post(
     "/auth/operator/logout",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Operator sign out",
+    dependencies=[Depends(require_admin_hop)],
 )
 async def operator_logout(request: Request, session: SessionDep, pair: KeyDep) -> Response:
     """Idempotent. Shares `services.logout`, which touches only the session and refresh

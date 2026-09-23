@@ -617,6 +617,10 @@
             "title": "Id",
             "type": "string"
           },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
           "role": {
             "title": "Role",
             "type": "string"
@@ -626,9 +630,67 @@
           "id",
           "full_name",
           "email",
-          "role"
+          "role",
+          "is_active"
         ],
         "title": "OwnerOut",
+        "type": "object"
+      },
+      "OwnerPatch": {
+        "additionalProperties": false,
+        "description": "Edit a rep, or deactivate one. Absent means \"leave alone\". Setting `is_active` to\n`False` is the deactivation path (`services.deactivate_owner`) and refuses while the rep\nstill owns a live company or contact \u2014 reassign those first.",
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "format": "email",
+                "maxLength": 254,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Name"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          }
+        },
+        "title": "OwnerPatch",
         "type": "object"
       },
       "Page_CompanyOut_": {
@@ -1360,6 +1422,60 @@
         ]
       }
     },
+    "/api/v1/customers/owners/{owner_id}": {
+      "patch": {
+        "description": "One route for both edits and deactivation, distinguished by whether `is_active` is\npresent. Deactivating refuses (409) while the rep still owns a live company or contact \u2014\nreassign first. Reactivating has no such guard: a returning rep starts with an empty\nbook.",
+        "operationId": "update_owner_api_v1_customers_owners__owner_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "owner_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Owner Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnerPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a rep, or deactivate one",
+        "tags": [
+          "customer"
+        ]
+      }
+    },
     "/api/v1/customers/{company_id}": {
       "delete": {
         "operationId": "delete_company_api_v1_customers__company_id__delete",
@@ -1532,6 +1648,28 @@
           }
         },
         "summary": "Readiness \u2014 can it serve traffic?",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "description": "Reachable only on the compose `back` network (`tests/infra`'s\n`test_metrics_never_routed.py` is the lint that keeps it that way) \u2014 never behind\nCaddy or a gateway, the same rule `ops_monitor`'s own `/metrics` follows.\n\n`db_pool_in_use` is always reported when this service has a database; the three\noutbox gauges only when `outbox_model` is configured \u2014 same gate as `/health/outbox`,\nand the same reason: an app-role connection with no tenant bound sees zero rows.",
+        "operationId": "metrics_metrics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Prometheus text exposition",
         "tags": [
           "health"
         ]

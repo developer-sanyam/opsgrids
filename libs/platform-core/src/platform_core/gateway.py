@@ -56,7 +56,13 @@ from platform_core.errors import (
     UnauthorizedProblem,
     UpstreamUnavailableProblem,
 )
-from platform_core.internal_auth import GATEWAY_AUDIENCE, mint_service_token
+from platform_core.internal_auth import (
+    ADMIN_HOP_HEADER,
+    GATEWAY_AUDIENCE,
+    canonical_query,
+    mint_service_token,
+    sign_admin_hop,
+)
 from platform_core.logging import get_logger
 
 log = get_logger("gateway")
@@ -81,6 +87,12 @@ HOP_BY_HOP = frozenset(
 #: Identity headers a client must never be able to set. They are stripped from every
 #: inbound request before the gateway writes its own — otherwise a caller could simply
 #: claim to be somebody else and the internal token would vouch for it.
+#:
+#: `ADMIN_HOP_HEADER` belongs here too, for the same reason: a caller presenting one it made
+#: up itself must not be indistinguishable from the one admin-gateway signs and writes below
+#: (BLOCKER 2 of the 2026-09-24 security review). Stripping it on *every* gateway — not only
+#: app-gateway — is what makes "app-gateway strips it inbound" true without a second,
+#: gateway-specific list to keep in sync with this one.
 SPOOFABLE = frozenset(
     {
         "x-internal-token",
@@ -97,6 +109,7 @@ SPOOFABLE = frozenset(
         "x-session-id",
         "x-audience",
         "x-org-slug",
+        ADMIN_HOP_HEADER,
     }
 )
 
@@ -161,6 +174,20 @@ class Route:
     product: str | None = None
     #: Only reachable by OpsGrids staff. Used by the operator console.
     staff_only: bool = False
+    #: Refused with the same 404 an unmatched path gets — never proxied, regardless of any
+    #: bearer token. For a sub-path that a broader prefix on the *same* gateway would
+    #: otherwise happily forward, and that this gateway specifically must not: app-gateway's
+    #: `/api/v1/auth/operator` entry over the shorter `/api/v1/auth` one is the case this
+    #: exists for (MAJOR 3 of the security review — operator sign-in was reachable from the
+    #: public product gateway with any ordinary tenant bearer token, because nothing about
+    #: `/api/v1/auth/operator/login` requires the caller's *own* token to be staff-shaped; it
+    #: reads staff credentials from the request body). `RouteTable.resolve` picks the longest
+    #: matching prefix, so a `blocked` entry here wins over the shorter one and is checked
+    #: before the token is even decoded — the same "refuse before doing any other work" shape
+    #: `_has_internal_segment` already uses for `/internal/` paths, just per-route instead of
+    #: platform-wide, because *which* paths must be blocked is a per-gateway decision
+    #: (admin-gateway wants exactly these reachable).
+    blocked: bool = False
     #: Per-route request-body ceiling in bytes. `None` means the gateway's default. An
     #: upload route legitimately needs more than a JSON POST; nothing else should.
     max_body_bytes: int | None = None
@@ -209,6 +236,7 @@ class RouteTable:
                     upstream=item["upstream"].rstrip("/"),
                     product=item.get("product"),
                     staff_only=bool(item.get("staff_only", False)),
+                    blocked=bool(item.get("blocked", False)),
                     max_body_bytes=_parse_max_body_bytes(item),
                 )
                 for item in raw["routes"]
@@ -262,6 +290,13 @@ class GatewayPolicy:
     #: Request bodies larger than this are refused with 413 before being read into memory.
     #: A route may raise its own ceiling; see `Route.max_body_bytes`.
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
+    #: Sign every proxied request with the admin-gateway hop signature (`sign_admin_hop`).
+    #: M1(b) of the third-round security review: this used to key off "`ADMIN_GATEWAY_HOP_KEY`
+    #: is set in this process's settings", which made *any* gateway that happened to see the
+    #: key — every service reads the same `.env` in development — a signer. Now a property of
+    #: the gateway's own policy, set `True` in exactly one place (admin-gateway's `main.py`),
+    #: so holding the key is necessary but no longer sufficient.
+    sign_admin_hop: bool = False
 
     def __post_init__(self) -> None:
         # A prefix without a trailing slash is a bug waiting to widen: refused at construction
@@ -422,6 +457,12 @@ def build_gateway(
         route = routes.resolve(full_path)
         if route is None:
             raise NotFoundProblem(f"No route for {full_path}")
+        if route.blocked:
+            # Refused before the token is even decoded — a blocked route carries no bearer
+            # token that would make it acceptable, so there is nothing to check. The same 404
+            # an unmatched path gives, for the same reason `staff_only` answers 404: this
+            # gateway is not confirming which paths it deliberately does not serve.
+            raise NotFoundProblem(f"No route for {full_path}")
 
         # Start from the client's headers minus anything hop-by-hop or spoofable, then
         # write our own identity headers on top.
@@ -450,7 +491,7 @@ def build_gateway(
             await enforce_rate_limit(f"anon:{client_ip}", limit=policy.anonymous_rate_limit)
             if (slug := _slug_from_host(request)) is not None:
                 headers["x-org-slug"] = slug
-            return await _forward(request, route, headers, policy, full_path)
+            return await _forward(request, route, headers, policy, full_path, settings)
 
         authorization = request.headers.get("Authorization", "")
         if not authorization.startswith("Bearer "):
@@ -560,7 +601,7 @@ def build_gateway(
 
             headers["x-perms"] = ",".join(grants)
 
-        return await _forward(request, route, headers, policy, full_path)
+        return await _forward(request, route, headers, policy, full_path, settings)
 
 
 def _normalize_path(raw: str) -> str:
@@ -657,9 +698,15 @@ async def _read_capped_body(request: Request, limit: int) -> bytes:
 
 
 async def _forward(
-    request: Request, route: Route, headers: dict[str, str], policy: GatewayPolicy, full_path: str
+    request: Request,
+    route: Route,
+    headers: dict[str, str],
+    policy: GatewayPolicy,
+    full_path: str,
+    settings: ServiceSettings,
 ) -> Response:
     client: httpx.AsyncClient = request.app.state.http
+
     # The *normalised* path `proxy` already routed and authorized on — never `request.url.path`
     # again here. httpx's own URL parsing would resolve a raw `..`/`//` the same way on its way
     # to the wire regardless, but building the request from the same string the routing
@@ -686,11 +733,27 @@ async def _forward(
         )
         raise
 
+    params = dict(request.query_params)
+    if policy.sign_admin_hop and settings.admin_gateway_hop_key is not None:
+        # Signed here, after the body is buffered, because the signature binds the method, the
+        # normalised path, the canonical query and the body's digest (m2 of the third-round
+        # review) — a captured header cannot be replayed with a different body or query. Only a
+        # gateway whose *policy* says so signs: holding the key is not enough. Any copy of the
+        # header a client attached to its inbound request was already stripped with the rest of
+        # `SPOOFABLE`, so a non-signing gateway forwards none at all.
+        headers[ADMIN_HOP_HEADER] = sign_admin_hop(
+            request.method,
+            full_path,
+            key=settings.admin_gateway_hop_key.get_secret_value(),
+            query=canonical_query(params.items()),
+            body=body,
+        )
+
     upstream_request = client.build_request(
         request.method,
         url,
         headers=headers,
-        params=dict(request.query_params),
+        params=params,
         content=body,
     )
     try:

@@ -27,9 +27,16 @@
     "",
     "When a service is added to compose.prod.yml, it is added here. When a route is added to",
     "the committed table for a service that is deployed, it must be added here too — nothing",
-    "checks that for you, and the symptom is a 404 on a route that works locally."
+    "checks that for you, and the symptom is a 404 on a route that works locally.",
+    "",
+    "`/api/v1/auth/operator` is `blocked`, mirroring services/app-gateway/routes.json exactly —",
+    "longer than the `/api/v1/auth` entry below, so it wins the match for every operator",
+    "sign-in path here too and is refused with 404 before any token is decoded. Operator",
+    "traffic reaches auth only through admin-gateway; tests/infra checks every blocked entry",
+    "in the dev table has an identical one here."
   ],
   "routes": [
+    { "prefix": "/api/v1/auth/operator", "upstream": "http://auth:8000", "blocked": true },
     { "prefix": "/api/v1/auth", "upstream": "http://auth:8000" },
 
     { "prefix": "/api/v1/organization", "upstream": "http://account:8000" },
@@ -69,6 +76,7 @@
     { "prefix": "/api/v1/customers", "upstream": "http://customer:8000", "product": "crm" },
     { "prefix": "/api/v1/contacts", "upstream": "http://customer:8000", "product": "crm" },
     { "prefix": "/api/v1/deals", "upstream": "http://deal:8000", "product": "crm" },
+    { "prefix": "/api/v1/leads", "upstream": "http://lead:8000", "product": "crm" },
 
     { "prefix": "/api/v1/projects", "upstream": "http://project:8000", "product": "pulseboard" },
     { "prefix": "/api/v1/timesheets", "upstream": "http://timesheet:8000", "product": "pulseboard" },
