@@ -57,6 +57,17 @@ optional_empty="$optional_empty DOCUMENT_S3_ORPHAN_ACCESS_KEY DOCUMENT_S3_ORPHAN
 # EDGE_PROFILES is an explicit, optional override for COMPOSE_PROFILES (see the note below) —
 # most boxes never set it; COMPOSE_PROFILES alone is the common case.
 optional_empty="$optional_empty EDGE_PROFILES"
+# EDGE_BUDGET_ACCEPTED_MB (B2, review round 2) — the owner's explicit memory-overcommit ceiling;
+# most boxes never need one at all (see the memory budget section, below).
+optional_empty="$optional_empty EDGE_BUDGET_ACCEPTED_MB"
+# M5 (review round 2): these two keys may be entirely ABSENT from an existing box's .env, not
+# merely empty — `EDGE_PROFILES`/`EDGE_BUDGET_ACCEPTED_MB` did not exist when older boxes were
+# first stood up, and re-copying the whole of `.env.example` onto a live box just to add two
+# lines is exactly the kind of manual step this file exists to make unnecessary. Every other key
+# in `.env.example` staying required-present is deliberate: an absent key silently reverting to
+# whatever default `platform_core.config.ServiceSettings` happens to ship is the same class of
+# bug COMPOSE_PROFILES being merely empty already guards against, one layer further back.
+optional_absent="EDGE_PROFILES EDGE_BUDGET_ACCEPTED_MB"
 
 set -a
 # shellcheck disable=SC1091 # .env is data, generated on the box from .env.example
@@ -94,8 +105,13 @@ placeholder=""
 for key in $required; do
 	value="${!key-__unset__}"
 	if [ "$value" = "__unset__" ]; then
-		missing="$missing $key"
-		continue
+		case " $optional_absent " in
+		*" $key "*) continue ;;
+		*)
+			missing="$missing $key"
+			continue
+			;;
+		esac
 	fi
 	if [ -z "$value" ]; then
 		case " $optional_empty " in
@@ -211,39 +227,64 @@ if [ ! -f "$budget_file" ]; then
 elif ! command -v python3 >/dev/null 2>&1; then
 	echo "  warn  no python3 on this box — memory budget check skipped" >&2
 else
-	# Price by what is ACTUALLY running, not by `declared_profiles` (H2, the memory-headroom
-	# slice's 2026-09-23 fix round): `docker compose up` does not stop a container whose profile
-	# was removed from COMPOSE_PROFILES — it only starts what a newly-enabled profile brings,
-	# never tears down what a shrunk one no longer lists. Pricing by the *declared* profile list
-	# would then silently understate a box carrying orphaned containers from a profile someone
-	# believes they turned off. The Docker daemon's own compose-project label is ground truth,
-	# independent of this box's env file — `compose.prod.yml`'s own `name:` is the fixed project
-	# name to filter on, so this does not depend on the directory this repository is checked out
-	# into.
+	# B1 (review round 2): price the box this deploy is about to leave behind, not the one it
+	# found. `docker compose up` starts what a newly-enabled profile adds; it never tears down
+	# what a shrunk one no longer lists (H2). Pricing only what is *running* today would miss a
+	# profile this deploy is about to turn on; pricing only the *declared* profile list would
+	# miss an orphan a previous, incomplete change left behind. `post_deploy_container_names`
+	# (lib/memory_budget_totals.py) is the union of both: containers running today that the new
+	# compose file still defines, plus whatever the declared profiles configure — see that
+	# function's own docstring for the full argument, and `tests/infra/
+	# test_memory_budget_totals_containers.py::TestPostDeployContainerNames` for the cases.
+	#
+	# The Docker daemon's own compose-project label is ground truth for "running", independent
+	# of this box's env file — `compose.prod.yml`'s own `name:` is the fixed project name to
+	# filter on, so this does not depend on the directory this repository is checked out into.
 	running_container_names=$(docker ps --filter "label=com.docker.compose.project=opsgrids-edge" \
 		--filter "status=running" --format '{{.Label "com.docker.compose.service"}}' 2>/dev/null || echo "")
-	if [ -n "$running_container_names" ]; then
-		containers_csv=$(echo "$running_container_names" | tr '\n' ',' | sed 's/,$//')
-		expected_mb=$(python3 lib/memory_budget_totals.py "$budget_file" --containers "$containers_csv") || {
-			bad "could not compute the expected memory budget from $budget_file for the running containers"
-			expected_mb=""
-		}
-		priced_as="containers actually running"
-	else
-		# Nothing is up yet (the first deploy on a fresh box): the closest available estimate is
-		# what this deploy is configured to bring up.
-		expected_mb=$(python3 lib/memory_budget_totals.py "$budget_file" --profiles "$declared_profiles") || {
-			bad "could not compute the expected memory budget from $budget_file for COMPOSE_PROFILES=$declared_profiles"
-			expected_mb=""
-		}
-		priced_as="declared COMPOSE_PROFILES — nothing is running yet"
+	# `declared_service_names`: what the box's own declared profiles configure — the exported
+	# COMPOSE_PROFILES set earlier in this script (== declared_profiles) is what `docker compose
+	# config` resolves against here. `all_service_names`: every service the new compose FILE can
+	# define, any profile at all (a one-off override of COMPOSE_PROFILES for this single command
+	# only — it is not re-exported), exactly the set memory-budget.json's own `profiles` key
+	# names. This second query is what lets a running container survive being priced when its
+	# profile was disabled (H2) while still correctly dropping one whose *service* was deleted
+	# outright (which `--remove-orphans` on `up` really does tear down).
+	all_profiles=$(python3 -c "import json,sys; print(','.join(json.load(open(sys.argv[1]))['profiles']))" "$budget_file")
+	declared_service_names=$(docker compose -f compose.prod.yml --env-file .env config --services 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+	all_service_names=$(COMPOSE_PROFILES="$all_profiles" docker compose -f compose.prod.yml --env-file .env config --services 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+	running_csv=$(echo "$running_container_names" | tr '\n' ',' | sed 's/,$//')
+	expected_mb=$(python3 lib/memory_budget_totals.py "$budget_file" --post-deploy \
+		--running "$running_csv" --all-services "$all_service_names" \
+		--declared-services "$declared_service_names") || {
+		bad "could not compute the post-deploy expected memory budget from $budget_file"
+		expected_mb=""
+	}
+	priced_as="post-deploy (running that the new compose still defines, union declared profiles)"
+
+	# M7: an unpriced but definitely-ours container (the label filter already scopes `docker ps`
+	# to this compose project) is a gap in memory-budget.json, not a foreign container to ignore
+	# — named here so it gets fixed, priced conservatively above rather than as free.
+	unpriced=$(python3 -c "
+import json, sys
+sys.path.insert(0, 'lib')
+from memory_budget_totals import load_budget, post_deploy_container_names, unpriced_container_names
+budget = load_budget(sys.argv[1])
+names = post_deploy_container_names(
+	running={n for n in sys.argv[2].split(',') if n},
+	all_services={n for n in sys.argv[3].split(',') if n},
+	declared_services={n for n in sys.argv[4].split(',') if n},
+)
+print(' '.join(sorted(unpriced_container_names(budget, names))))
+" "$budget_file" "$running_csv" "$all_service_names" "$declared_service_names" 2>/dev/null) || unpriced=""
+	if [ -n "$unpriced" ]; then
+		echo "  warn  container(s) running with no memory-budget.json entry, priced as an estimate (kinds.background):$unpriced — add them to memory-budget.json's 'containers'." >&2
 	fi
+
 	# Read from the budget file itself rather than hardcoded here — this file's own
 	# `host.soft_budget_percent`/`hard_budget_percent` is what `tests/infra/
 	# test_compose_memory_budget.py` pins, and a hardcoded copy here would silently drift from
-	# it the next time either threshold changes (as happened when this line still said 80 after
-	# the memory-headroom slice raised the JSON's own soft line to 85 — this box would have kept
-	# warning a whole 5 points later than the file it claims to be reading from).
+	# it the next time either threshold changes.
 	soft_percent=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['host']['soft_budget_percent'])" "$budget_file")
 	hard_percent=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['host']['hard_budget_percent'])" "$budget_file")
 	if [ -n "$expected_mb" ]; then
@@ -256,22 +297,14 @@ else
 			percent=${verdict_line#* }
 			mem_total_mb=$((mem_total_kb / 1024))
 
-			# B1(a), the same fix round: production sells every product it catalogues (ten
-			# profiles), and the re-measured `kinds.background` price alone puts that over the
-			# hard line before a single planned service is added — refusing every future deploy
-			# over a fact that was already true yesterday helps nobody. `grandfathered_verdict`
-			# (lib/memory-budget.sh) downgrades an over-hard-line verdict to a loud warning when
-			# this deploy is not worse than the last one that actually went healthy; a fresh box
-			# (no recorded last-ok) keeps today's behaviour and still refuses. `remote.sh`'s
-			# `record_ref` writes the state file this reads, after health passes, using the same
-			# running-containers pricing as above.
-			last_ok_file="${EDGE_STATE_DIR:-/srv/opsgrids/state}/edge-budget.last-ok"
-			last_ok_mb=""
-			if [ -f "$last_ok_file" ]; then
-				last_ok_mb=$(tr -d '[:space:]' <"$last_ok_file" 2>/dev/null || echo "")
-				case "$last_ok_mb" in '' | *[!0-9]*) last_ok_mb="" ;; esac
-			fi
-			final_line=$(grandfathered_verdict "$verdict" "$percent" "$expected_mb" "$last_ok_mb")
+			# B2/H3/H4 (review round 2): an explicit owner ceiling replaces the previous
+			# grandfather-vs-last-ok ratchet. `EDGE_BUDGET_ACCEPTED_MB` in `.env`, if set, is the
+			# total (MB) the owner has actually looked at the projection and agreed to run at —
+			# `apply_accepted_ceiling` (lib/memory-budget.sh) downgrades an over-hard-line verdict
+			# to a loud warning only when this deploy is at or under that number. No ceiling set:
+			# today's behaviour, unchanged — refuse. See RUNBOOK.md, 'the memory budget' for the
+			# decision this asks the owner to make before the first deploy that needs it.
+			final_line=$(apply_accepted_ceiling "$verdict" "$percent" "$expected_mb" "${EDGE_BUDGET_ACCEPTED_MB:-}")
 			final_verdict=${final_line%% *}
 
 			case "$final_verdict" in
@@ -279,22 +312,31 @@ else
 			warn)
 				echo "  warn  memory budget ($priced_as): ${expected_mb}M of ${mem_total_mb}M MemTotal (${percent}%)" >&2
 				if [ "$verdict" = "refuse" ]; then
-					echo "        — OVER THE HARD BUDGET (${hard_percent}%), grandfathered: not worse than the last" >&2
-					echo "        successful deploy (${last_ok_mb}M). This box is overcommitted and needs either" >&2
-					echo "        more RAM (owner decision — a VM resize) or de-listing a product. Still deploying" >&2
-					echo "        — see RUNBOOK.md, 'the memory budget'." >&2
+					echo "        — OVER THE HARD BUDGET (${hard_percent}%), accepted: EDGE_BUDGET_ACCEPTED_MB=${EDGE_BUDGET_ACCEPTED_MB} covers it." >&2
+					echo "        This box is overcommitted by owner decision — more RAM (a VM resize) or de-listing" >&2
+					echo "        a product would bring it back under the hard line. Still deploying — see" >&2
+					echo "        RUNBOOK.md, 'the memory budget'." >&2
 				else
 					echo "        — over the ${soft_percent}% soft line. Still deploying; see RUNBOOK.md, 'the memory budget'." >&2
 				fi
 				;;
 			refuse)
-				if [ -n "$last_ok_mb" ]; then
-					bad "memory budget ($priced_as): ${expected_mb}M of ${mem_total_mb}M MemTotal (${percent}%) — over the hard budget AND worse than the last successful deploy (${last_ok_mb}M). This deploy makes the overcommit worse; refusing. Trim COMPOSE_PROFILES/EDGE_PROFILES or consolidate a service."
+				if [ -n "${EDGE_BUDGET_ACCEPTED_MB:-}" ]; then
+					bad "memory budget ($priced_as): ${expected_mb}M of ${mem_total_mb}M MemTotal (${percent}%) — over the hard budget AND over the owner-accepted ceiling (EDGE_BUDGET_ACCEPTED_MB=${EDGE_BUDGET_ACCEPTED_MB}M). Raise the accepted ceiling (a deliberate decision, not a default) or trim COMPOSE_PROFILES/EDGE_PROFILES or consolidate a service."
 				else
-					bad "memory budget ($priced_as): ${expected_mb}M of ${mem_total_mb}M MemTotal (${percent}%) — over the hard budget, and no prior successful deploy is recorded to grandfather against (a fresh box). Trim COMPOSE_PROFILES/EDGE_PROFILES or consolidate a service before deploying."
+					bad "memory budget ($priced_as): ${expected_mb}M of ${mem_total_mb}M MemTotal (${percent}%) — over the hard budget, and no EDGE_BUDGET_ACCEPTED_MB is set in .env. Set it after reading the projection (RUNBOOK.md, 'the memory budget'), trim COMPOSE_PROFILES/EDGE_PROFILES, or consolidate a service."
 				fi
 				;;
 			esac
+
+			# Informational only, from here on — L8: `record_budget` (remote.sh) writes this
+			# after every healthy deploy; printed for reference, never read by the verdict above.
+			last_ok_file="${EDGE_STATE_DIR:-/srv/opsgrids/state}/edge-budget.last-ok"
+			if [ -f "$last_ok_file" ]; then
+				last_ok_mb=$(tr -d '[:space:]' <"$last_ok_file" 2>/dev/null || echo "")
+				case "$last_ok_mb" in '' | *[!0-9]*) ;; *) echo "  info  last successful deploy priced at: ${last_ok_mb}M (informational only — not used in the verdict above)" ;; esac
+			fi
+
 			# Informational only — never gates a deploy, and never mixed into $expected_mb above:
 			# a backlog placeholder in memory-budget.json's `planned` key must not be able to fail
 			# a real deploy. This is what tells whoever is watching a deploy whether the box is

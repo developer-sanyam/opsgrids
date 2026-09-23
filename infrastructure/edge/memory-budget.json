@@ -155,13 +155,22 @@
 
     "minio": { "kind": "datastore", "datastore": "minio", "profile": "storefront" },
     "minio-init": { "kind": "datastore", "datastore": "minio-init", "profile": "storefront" },
-    "storefront": { "kind": "api", "profile": "storefront" },
-    "storefront-cron": { "kind": "background", "profile": "storefront" },
-    "document": { "kind": "api", "profile": "storefront" },
-    "document-cron": { "kind": "background", "profile": "storefront" },
+    "storefront": {
+      "kind": "api",
+      "profile": "storefront",
+      "note": "runs the custom-domain sweep (DomainSweep) as a supervised background task since the memory-headroom slice's fix round 2 (2026-09-24) folded storefront-cron into it — RUN_SWEEPS_IN_API. No mem_limit change: a background sweep's own cost is already priced at the same 85 MB as an api container (kinds.background's own note), so absorbing one into an api container that was already going to cost 85 MB on its own does not, on these numbers, need a bigger ceiling — watch it in practice before assuming that holds forever."
+    },
+    "document": {
+      "kind": "api",
+      "profile": "storefront",
+      "note": "runs the purge sweep (PurgeSweep, retention only — never the orphan scan, which stays a manual, credentialed-by-hand operation for tenancy reasons — see app/main.py's own docstring) as a supervised background task since the memory-headroom slice's fix round 2 (2026-09-24) folded document-cron into it — RUN_SWEEPS_IN_API."
+    },
 
-    "operations": { "kind": "api", "profile": "inventory" },
-    "operations-cron": { "kind": "background", "profile": "inventory" },
+    "operations": {
+      "kind": "api",
+      "profile": "inventory",
+      "note": "runs the nightly stock reconciliation (ReconcileSweep) as a supervised background task since the memory-headroom slice's fix round 2 (2026-09-24) folded operations-cron into it — RUN_SWEEPS_IN_API."
+    },
 
     "approval": { "kind": "api", "profile": "hrms" },
     "approval-worker": {

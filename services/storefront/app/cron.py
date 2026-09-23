@@ -123,12 +123,14 @@ class DomainSweep:
         probes: ProbeSet | None = None,
         batch_size: int = 20,
         poll_interval: float = 60.0,
+        max_backoff: float = 3600.0,
     ) -> None:
         self._discovery_factory = discovery_factory
         self._work_scope = work_scope
         self._probes = probes or default_probe_set()
         self._batch_size = batch_size
         self._poll_interval = poll_interval
+        self._max_backoff = max_backoff
         # An `Event` rather than a plain flag: `run()`'s sleep between ticks is a `wait()` on
         # this, so `stop()` interrupts it immediately instead of waiting out the rest of a
         # (possibly 60 s) poll interval before the loop condition is re-checked — the "clean
@@ -145,8 +147,27 @@ class DomainSweep:
             poll_interval=self._poll_interval,
             batch_size=self._batch_size,
         )
+        # Whole-tick guard (the memory-headroom slice's fix round 2): `tick()`'s own per-
+        # organization loop already isolates one organization's failure from the rest of its
+        # pass (the module docstring's "a check that cannot run never takes a domain off the
+        # air"), but discovery itself — the `SELECT DISTINCT organization_id` above it — was
+        # never guarded, and this sweep now also runs as a supervised background task inside
+        # the `storefront` API process itself, not only its own `storefront-cron` container: an
+        # unguarded discovery failure here would take the storefront API down with it, not just
+        # this sweep.
+        backoff = self._poll_interval
         while not self._stop_event.is_set():
-            report = await self.tick()
+            try:
+                report = await self.tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("storefront.domain.sweep.tick_failed")
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=backoff)
+                backoff = min(backoff * 2, self._max_backoff)
+                continue
+            backoff = self._poll_interval
             if report.acted or report.failed:
                 log.info(
                     "storefront.domain.sweep.pass",

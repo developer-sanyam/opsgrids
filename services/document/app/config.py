@@ -102,6 +102,12 @@ class Settings(ServiceSettings):
     #: A circuit breaker independent of the age check and the row lookup: however wrong
     #: discovery is on some future day, one tick can never remove more than this many objects.
     orphan_sweep_max_deletes_per_tick: int = 100
+    #: Runs the purge sweep as a supervised background task inside the API process itself
+    #: instead of `document-cron`'s own container (the memory-headroom slice's fix round 2 —
+    #: see `operations.app.config.Settings.run_sweeps_in_api`'s own comment for the full
+    #: argument). Off by default everywhere except the edge box's own `.env`; `bin/cron` still
+    #: runs the sweep standalone for local debugging either way.
+    run_sweeps_in_api: bool = False
 
 
 def settings() -> Settings:

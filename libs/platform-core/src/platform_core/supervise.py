@@ -25,6 +25,9 @@ caught here: a supervisor asking a loop to stop must always be able to.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +86,31 @@ async def run_supervised(**named_coroutines: Any) -> None:
     raise LoopExited(finished_name)
 
 
+def start_background_sweep(coro: Any) -> asyncio.Task[None]:
+    """Starts a `GuardedSweep.run()` (or any other forever-running coroutine) as a background
+    task and returns it, for a caller that is not itself a supervised loop — an ASGI app's own
+    `lifespan`, chiefly (the memory-headroom slice's fix round 2: `operations`, `storefront` and
+    `document`'s own sweeps now run inside their API process, not a separate `*-cron` container).
+
+    Deliberately **not** `run_supervised`: that primitive's whole point is "any one loop ending
+    takes every other one down with it," which is exactly wrong here — a sweep dying must never
+    be allowed to end the API process itself, only to stop that one sweep (and `GuardedSweep`'s
+    own guard means it should never end on its own at all, short of cancellation). Pair with
+    `stop_background_sweep` in the same lifespan's shutdown.
+    """
+    return asyncio.ensure_future(coro)
+
+
+async def stop_background_sweep(task: asyncio.Task[None] | None) -> None:
+    """Cancels a task `start_background_sweep` returned and awaits its clean shutdown. `None`
+    (the sweep was never started — the setting that gates it was off) is a no-op."""
+    if task is None:
+        return
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
 class GuardedSweep:
     """A base for the claim-and-drain sweep shape this platform repeats (dunning, SLA
     escalation, campaign sends, the scheduler's own due-job sweep): discover, then act on each
@@ -90,10 +118,13 @@ class GuardedSweep:
 
     Subclasses implement `tick()` (discover and act, once) and may override `on_tick_success` to
     log or react to a tick's own result — `run()` itself is not meant to be overridden. The guard
-    this class exists to add is around the **whole tick**, not around each individual candidate a
-    tick acts on (a subclass's own `tick()` is still responsible for isolating one candidate's
-    failure from the rest of its own pass, the way `EscalationSweep._escalate` and
-    `CampaignDriver._drain` already do): a discovery failure — a DB restart, a deadlock — is
+    this class exists to add is around **the whole tick, `on_tick_success` included** (review
+    finding: a first version of this guard called `on_tick_success` *outside* the guarded block,
+    so a bug in a subclass's own logging — a bad format string, an unexpected `None` — killed the
+    loop exactly as an unguarded discovery query would have), not around each individual
+    candidate a tick acts on (a subclass's own `tick()` is still responsible for isolating one
+    candidate's failure from the rest of its own pass, the way `EscalationSweep._escalate` and
+    `CampaignDriver._drain` already do). A discovery failure — a DB restart, a deadlock — is
     logged and backed off exponentially, capped at `max_backoff`, and reset to `poll_interval` on
     the next clean tick, without ever propagating out of `run()`. `asyncio.CancelledError` is
     never caught — a supervisor's cancellation must always reach this loop.
@@ -110,6 +141,13 @@ class GuardedSweep:
         self._max_backoff = max_backoff
         self._heartbeat_path = heartbeat_path
         self._stop = False
+        #: Consecutive failed ticks — reset to 0 the moment one succeeds. This is the number an
+        #: eventual ops-monitor probe reading the heartbeat file cares about far more than any
+        #: single failure: one bad tick backing off is normal operation; a climbing streak is
+        #: the thing worth paging on. Exposed on the instance (`sweep.consecutive_failures`) for
+        #: a caller with a direct reference, and written into the heartbeat file's own JSON for
+        #: one without.
+        self.consecutive_failures = 0
 
     def stop(self) -> None:
         self._stop = True
@@ -119,7 +157,8 @@ class GuardedSweep:
 
     async def on_tick_success(self, result: Any) -> None:
         """Override to log or act on a successful tick's own result. Default: nothing — a
-        subclass that already logs inside its own `tick()` needs no override here."""
+        subclass that already logs inside its own `tick()` needs no override here. Runs inside
+        the same guarded block `tick()` itself does — see the class docstring."""
 
     async def run(self) -> None:
         log.info(
@@ -131,30 +170,49 @@ class GuardedSweep:
         while not self._stop:
             try:
                 result = await self.tick()
+                await self.on_tick_success(result)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.exception(f"{self._log_name}.tick_failed")
-                self._write_heartbeat()
+                self.consecutive_failures += 1
+                log.exception(
+                    f"{self._log_name}.tick_failed",
+                    consecutive_failures=self.consecutive_failures,
+                )
+                self._write_heartbeat(ok=False)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, self._max_backoff)
                 continue
             backoff = self._poll_interval
-            self._write_heartbeat()
-            await self.on_tick_success(result)
+            self.consecutive_failures = 0
+            self._write_heartbeat(ok=True)
             await asyncio.sleep(self._poll_interval)
 
     @property
     def _log_name(self) -> str:
         return self.__class__.__name__.lower()
 
-    def _write_heartbeat(self) -> None:
+    def _write_heartbeat(self, *, ok: bool) -> None:
         """Best-effort. A heartbeat file existing to be read by something outside this process
-        (an eventual health-key mechanism) must never itself be the reason this loop stops —
-        a disk error here is logged once and otherwise ignored."""
+        (an eventual ops-monitor health key) must never itself be the reason this loop stops —
+        a disk error here is logged once and otherwise ignored. `ts` is wall-clock
+        (`time.time()`), not `asyncio`'s own monotonic loop clock, because it is only ever
+        meaningful compared against another process's wall clock (or across this one's own
+        restarts, when the loop clock resets to zero). Not wired to any real path by any service
+        yet — `heartbeat_path` stays an opt-in constructor argument until an ops-monitor probe
+        actually exists to read it; no service should pay for a file write nobody consumes.
+        """
         if self._heartbeat_path is None:
             return
+        payload = json.dumps(
+            {
+                "service": self._log_name,
+                "ts": time.time(),
+                "ok": ok,
+                "consecutive_failures": self.consecutive_failures,
+            }
+        )
         try:
-            Path(self._heartbeat_path).write_text(str(asyncio.get_running_loop().time()))
+            Path(self._heartbeat_path).write_text(payload)
         except OSError:
             log.warning("supervise.heartbeat_write_failed", path=self._heartbeat_path)

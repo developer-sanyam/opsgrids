@@ -14,17 +14,40 @@ from app.api.internal import router as internal_router
 from app.api.public import router as public_router
 from app.api.routes import router
 from app.config import assert_directory_role_configured, settings
+from app.cron import DomainSweep
 from app.models import OutboxEvent
 from platform_core.app import create_app
+from platform_core.db import get_directory_sessionmaker, session_scope
+from platform_core.supervise import start_background_sweep, stop_background_sweep
 
 
-async def _startup(_: FastAPI) -> None:
-    """Refuse to serve without the bypass reader the anonymous route depends on.
+async def _startup(app: FastAPI) -> None:
+    """Refuse to serve without the bypass reader the anonymous route depends on, then — if
+    `Settings.run_sweeps_in_api` is on (the edge box: `storefront-cron` no longer exists as its
+    own container, the memory-headroom slice's fix round 2) — start the custom-domain sweep as a
+    supervised background task in this same process.
 
-    Runs after the lifespan has opened the engines, so by the time a request can arrive the
-    process has either the role or no process at all.
+    Runs after the lifespan has opened the engines (including the directory one this sweep's
+    own discovery reads through — `create_app` initialises it unconditionally, the same reader
+    `resolve_public_store_by_host` and `tls-authorize` already use), so by the time a request
+    can arrive the process has either the directory role or no process at all.
     """
-    assert_directory_role_configured(settings())
+    cfg = settings()
+    assert_directory_role_configured(cfg)
+    app.state.domain_sweep_task = None
+    if not cfg.run_sweeps_in_api:
+        return
+    sweep = DomainSweep(
+        discovery_factory=get_directory_sessionmaker(),
+        work_scope=lambda organization_id: session_scope(organization_id=organization_id),
+        batch_size=cfg.domain_sweep_batch_size,
+        poll_interval=cfg.domain_sweep_poll_interval_seconds,
+    )
+    app.state.domain_sweep_task = start_background_sweep(sweep.run())
+
+
+async def _shutdown(app: FastAPI) -> None:
+    await stop_background_sweep(getattr(app.state, "domain_sweep_task", None))
 
 
 app = create_app(
@@ -44,6 +67,7 @@ app = create_app(
     ),
     routers=[router, public_router, internal_router],
     on_startup=_startup,
+    on_shutdown=_shutdown,
     # Redis is a declared dependency because the store-slug lookup is cached in it (ADR-0010
     # §12) — the cache degrades to a query and is never fatal — and because the gateway's
     # anonymous rate limiter in front of the public route fails closed by design.

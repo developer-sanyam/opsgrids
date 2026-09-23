@@ -41,6 +41,7 @@ from app import consumers, dispatcher
 from app.config import settings
 from app.cron import CampaignDriver
 from app.targets import make_resolver as make_target_resolver
+from app.transports import CAMPAIGN_SMTP_EXECUTOR
 from app.transports import build as build_transports
 from platform_core.db import (
     assert_app_role,
@@ -89,14 +90,28 @@ async def main() -> None:
         queues=["notification.events", "notification.dispatch"],
         sweep="campaign_driver",
     )
-    # Any one of these returning or raising ends the group; `run_supervised` cancels the other
-    # two before this raises, so the orchestrator restarts a process with no orphaned loop still
-    # running against it (platform_core.supervise's own docstring has the full argument).
-    await run_supervised(
-        events=consumers.consumer.run(),
-        dispatch=dispatcher.consumer.run(),
-        campaign_driver=driver.run(),
-    )
+    try:
+        # Any one of these returning or raising ends the group; `run_supervised` cancels the
+        # other two before this raises, so the orchestrator restarts a process with no orphaned
+        # loop still running against it (platform_core.supervise's own docstring has the full
+        # argument).
+        await run_supervised(
+            events=consumers.consumer.run(),
+            dispatch=dispatcher.consumer.run(),
+            campaign_driver=driver.run(),
+        )
+    finally:
+        # `cancel_futures=True` drops anything still queued (nothing should be, since
+        # `run_supervised` already cancelled `campaign_driver` above); `wait=False` does not
+        # block process exit on an SMTP call already in flight on one of the pool's two
+        # threads — the orchestrator is about to restart this container regardless, and a
+        # send genuinely mid-flight when that happens is exactly the "crash mid-batch"
+        # window `app/cron.py`'s own module docstring already describes: the claim's lease
+        # expires, the next tick reclaims the batch, and a message whose provider call had
+        # actually completed just before the cut gets sent again. That duplicate-send window
+        # is not new here — it existed for `notification-cron` as its own container before
+        # this slice folded it into this process — this executor does not widen it.
+        CAMPAIGN_SMTP_EXECUTOR.shutdown(wait=False, cancel_futures=True)
 
 
 if __name__ == "__main__":

@@ -77,24 +77,63 @@ def expected_total_mb(budget: dict[str, Any], enabled_profiles: set[str]) -> int
     return total
 
 
+def unpriced_container_names(budget: dict[str, Any], container_names: set[str]) -> set[str]:
+    """Which of `container_names` have no entry in `memory-budget.json`'s own `containers`
+    mapping — the exact gap `test_every_compose_service_is_in_the_budget` exists to close before
+    a deploy ever gets here, surfaced again at deploy time in case that gate was ever bypassed
+    (a hotfix on the box itself, a compose file edited by hand). Never raises: a caller decides
+    what to do about an unpriced name (M7 — price it conservatively and warn, rather than either
+    silently skip it or crash a check that exists to keep the box up)."""
+    return {name for name in container_names if name not in budget["containers"]}
+
+
 def expected_total_for_names(budget: dict[str, Any], container_names: set[str]) -> int:
     """Sum `expected_rss_mb` for an explicit set of container names — no profile involved.
 
-    A name this budget does not price is skipped rather than raising: `docker ps` is asked about
-    the *compose project*, not this file, so a container from a stray, unrelated project sharing
-    the same host would otherwise crash a preflight check that exists to keep the box up, over
-    something that is not even this platform's own container. `tests/infra/
-    test_compose_memory_budget.py::test_every_compose_service_is_in_the_budget` is what actually
-    guarantees every real container of *this* project has a price; this function does not need
-    to repeat that guarantee to stay safe.
+    A name this budget does not price is **not** skipped (M7, review round 2 — reversing the
+    original version of this function): the caller (`docker ps`, filtered by this compose
+    project's own label) has already scoped `container_names` to containers that are definitely
+    ours, so an unpriced one is not a stray container from an unrelated project sharing the
+    host — it is one of ours that `memory-budget.json` has fallen behind on. Pricing it at zero
+    would understate the box by exactly the amount that gap costs; pricing it at `kinds.
+    background`'s rate (a real, measured process cost, used as this file's fallback for "some
+    kind of process, unknown which") keeps the total honest, while `unpriced_container_names` is
+    what a caller uses to also warn about the gap by name, so it gets fixed rather than quietly
+    tolerated forever.
     """
     total = 0
+    background_mb = int(budget["kinds"]["background"]["expected_rss_mb"])
     for name in container_names:
         if name not in budget["containers"]:
+            total += background_mb
             continue
         if is_steady_state(budget, name):
             total += expected_rss_mb(budget, name)
     return total
+
+
+def post_deploy_container_names(
+    *, running: set[str], all_services: set[str], declared_services: set[str]
+) -> set[str]:
+    """The set of containers that will actually be resident once this deploy finishes (B1,
+    review round 2): whatever is running today that the *new* compose file still defines, union
+    whatever the box's declared `COMPOSE_PROFILES`/`EDGE_PROFILES` will bring up.
+
+    Neither half alone is honest. `running` on its own prices the *past* — a deploy that adds a
+    profile has not started that profile's containers yet, so they would not be counted, and a
+    deploy refusing itself over its own arithmetic could never happen because the arithmetic
+    never sees what it is about to add. `declared_services` on its own drops orphans: a
+    container still running from a profile a previous, incomplete change removed from
+    `COMPOSE_PROFILES` (H2 — compose does not stop those on its own) would go uncounted the
+    moment the declared list no longer mentions it, understating the box exactly the way pricing
+    by configured profiles alone always did.
+
+    `running ∩ all_services` is the "survives the deploy" half: a container running today that
+    the new compose file has removed as a *service* entirely (a real rename or deletion, not a
+    profile toggle) is excluded, because compose's own `--remove-orphans` on `up` actually does
+    tear those down — unlike the profile-filtered case this function exists to catch.
+    """
+    return (running & all_services) | declared_services
 
 
 def planned_entries(budget: dict[str, Any]) -> dict[str, Any]:
@@ -132,6 +171,31 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="CSV",
         help="comma-separated actual running container names (e.g. from `docker ps`)",
     )
+    mode.add_argument(
+        "--post-deploy",
+        action="store_true",
+        help="union mode (B1): needs --running, --all-services and --declared-services together",
+    )
+    parser.add_argument(
+        "--running",
+        default=None,
+        metavar="CSV",
+        help="--post-deploy: comma-separated container names actually running now (`docker ps`)",
+    )
+    parser.add_argument(
+        "--all-services",
+        default=None,
+        metavar="CSV",
+        help="--post-deploy: every service the new compose file defines, any profile "
+        "(`docker compose config --services` with every profile enabled)",
+    )
+    parser.add_argument(
+        "--declared-services",
+        default=None,
+        metavar="CSV",
+        help="--post-deploy: services the new compose file configures for the box's declared "
+        "profiles (`docker compose config --services`)",
+    )
     parser.add_argument(
         "--with-planned",
         action="store_true",
@@ -139,6 +203,10 @@ def _build_parser() -> argparse.ArgumentParser:
         " enforced)",
     )
     return parser
+
+
+def _csv_set(value: str | None) -> set[str]:
+    return {v for v in (value or "").split(",") if v}
 
 
 def _main(argv: list[str]) -> int:
@@ -149,12 +217,24 @@ def _main(argv: list[str]) -> int:
     except (OSError, json.JSONDecodeError) as exc:
         print(f"memory_budget_totals: could not read {args.budget_file}: {exc}", file=sys.stderr)
         return 1
-    if args.containers is not None:
-        names = {c for c in args.containers.split(",") if c}
+    if args.post_deploy:
+        if args.running is None or args.all_services is None or args.declared_services is None:
+            print(
+                "memory_budget_totals: --post-deploy needs --running, --all-services and "
+                "--declared-services",
+                file=sys.stderr,
+            )
+            return 2
+        names = post_deploy_container_names(
+            running=_csv_set(args.running),
+            all_services=_csv_set(args.all_services),
+            declared_services=_csv_set(args.declared_services),
+        )
         total = expected_total_for_names(budget, names)
+    elif args.containers is not None:
+        total = expected_total_for_names(budget, _csv_set(args.containers))
     else:
-        enabled = {p for p in (args.profiles or "").split(",") if p}
-        total = expected_total_mb(budget, enabled)
+        total = expected_total_mb(budget, _csv_set(args.profiles))
     if args.with_planned:
         total += planned_total_mb(budget)
     print(total)
