@@ -1,8 +1,16 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
-import { deleteInventoryItem, getInventoryItem, listMovements } from "@/api/client";
-import type { StockMovementKind, StockMovementOut } from "@/api/types";
+import {
+  deleteInventoryItem,
+  deleteItemAttribute,
+  deleteItemVariant,
+  getInventoryItem,
+  listItemAttributes,
+  listItemVariants,
+  listMovements,
+} from "@/api/client";
+import type { ItemAttributeOut, ItemVariantOut, StockMovementKind, StockMovementOut } from "@/api/types";
 import { CATEGORY_LABEL } from "@/data/derive";
 import { Can, problemMessage, useAsync, useMutation } from "@opsgrids/client";
 import { formatDate, formatMoney, formatNumber } from "@/lib/format";
@@ -17,14 +25,17 @@ import {
   PageHeader,
   Pagination,
   Pill,
+  RowActions,
   SectionHeader,
   Skeleton,
   StockPill,
   Tag,
 } from "@/ui";
 import type { Column, StockLevel } from "@/ui";
-import { ArrowRightIcon, LayersIcon, useToast } from "@opsgrids/ui";
+import { ArrowRightIcon, BoxIcon, LayersIcon, PlusIcon, TagIcon, useToast } from "@opsgrids/ui";
 import { InventoryItemFormDialog } from "@/forms/InventoryItemFormDialog";
+import { ItemAttributeFormDialog } from "@/forms/ItemAttributeFormDialog";
+import { ItemVariantFormDialog } from "@/forms/ItemVariantFormDialog";
 import { StockAdjustmentDialog } from "@/forms/StockAdjustmentDialog";
 
 const KIND_FILTERS: { value: StockMovementKind | "all"; label: string }[] = [
@@ -52,6 +63,19 @@ function levelOf(onHandQty: string, reorderPoint: number): StockLevel {
   return "ok";
 }
 
+function formatAttributeValue(attribute: ItemAttributeOut): string {
+  switch (attribute.value_type) {
+    case "text":
+      return attribute.value_text ?? "";
+    case "number":
+      return attribute.value_number !== null ? formatNumber(attribute.value_number) : "";
+    case "boolean":
+      return attribute.value_boolean ? "Yes" : "No";
+    case "date":
+      return attribute.value_date ? formatDate(attribute.value_date) : "";
+  }
+}
+
 export function InventoryItemDetailPage() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
@@ -61,16 +85,45 @@ export function InventoryItemDetailPage() {
   const [deleting, setDeleting] = useState(false);
   const [kind, setKind] = useState<StockMovementKind | "all">("all");
   const [page, setPage] = useState(1);
+  const [addingAttribute, setAddingAttribute] = useState(false);
+  const [editingAttribute, setEditingAttribute] = useState<ItemAttributeOut | null>(null);
+  const [deletingAttribute, setDeletingAttribute] = useState<ItemAttributeOut | null>(null);
+  const [addingVariant, setAddingVariant] = useState(false);
+  const [editingVariant, setEditingVariant] = useState<ItemVariantOut | null>(null);
+  const [deletingVariant, setDeletingVariant] = useState<ItemVariantOut | null>(null);
 
   const itemLoader = () => getInventoryItem(id);
   const itemState = useAsync(itemLoader, [id]);
   const movementsLoader = () => listMovements(id, { kind, page, size: 25 });
   const movementsState = useAsync(movementsLoader, [id, kind, page]);
+  const attributesLoader = () => listItemAttributes(id);
+  const attributesState = useAsync(attributesLoader, [id]);
+  const variantsLoader = () => listItemVariants(id);
+  const variantsState = useAsync(variantsLoader, [id]);
 
   const remove = useMutation(() => deleteInventoryItem(id), {
     onSuccess: () => {
       toast.success(`${itemState.status === "success" ? itemState.data.name : "Item"} deleted.`);
       navigate("/inventory");
+    },
+  });
+
+  const removeAttribute = useMutation(
+    (attribute: ItemAttributeOut) => deleteItemAttribute(id, attribute.key),
+    {
+      onSuccess: (_result, attribute) => {
+        setDeletingAttribute(null);
+        toast.success(`${attribute.key} removed.`);
+        attributesState.reload();
+      },
+    },
+  );
+
+  const removeVariant = useMutation((variant: ItemVariantOut) => deleteItemVariant(id, variant.id), {
+    onSuccess: (_result, variant) => {
+      setDeletingVariant(null);
+      toast.success(`${variant.sku} removed.`);
+      variantsState.reload();
     },
   });
 
@@ -158,6 +211,64 @@ export function InventoryItemDetailPage() {
       cellClassName: "hidden lg:table-cell",
       headerClassName: "hidden lg:table-cell",
       render: (m) => <span className="text-ink-soft">{m.note || "—"}</span>,
+    },
+  ];
+
+  const attributeColumns: Column<ItemAttributeOut>[] = [
+    { key: "key", header: "Key", render: (a) => <span className="font-semibold text-ink">{a.key}</span> },
+    {
+      key: "value",
+      header: "Value",
+      render: (a) => <span className="tnum text-ink-soft">{formatAttributeValue(a)}</span>,
+    },
+    {
+      key: "type",
+      header: "Type",
+      cellClassName: "hidden sm:table-cell",
+      headerClassName: "hidden sm:table-cell",
+      render: (a) => <Tag>{a.value_type}</Tag>,
+    },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      render: (a) => (
+        <RowActions
+          label={a.key}
+          actions={[
+            { label: "Edit", onSelect: () => setEditingAttribute(a) },
+            { label: "Remove", tone: "danger", onSelect: () => setDeletingAttribute(a) },
+          ]}
+        />
+      ),
+    },
+  ];
+
+  const variantColumns: Column<ItemVariantOut>[] = [
+    { key: "sku", header: "SKU", render: (v) => <span className="tnum font-semibold text-ink">{v.sku}</span> },
+    { key: "name", header: "Name", render: (v) => <span className="text-ink-soft">{v.name}</span> },
+    {
+      key: "status",
+      header: "Status",
+      render: (v) => (
+        <span className={v.is_active ? "text-present font-semibold" : "text-muted"}>
+          {v.is_active ? "Active" : "Inactive"}
+        </span>
+      ),
+    },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      render: (v) => (
+        <RowActions
+          label={v.sku}
+          actions={[
+            { label: "Edit", onSelect: () => setEditingVariant(v) },
+            { label: "Remove", tone: "danger", onSelect: () => setDeletingVariant(v) },
+          ]}
+        />
+      ),
     },
   ];
 
@@ -271,6 +382,105 @@ export function InventoryItemDetailPage() {
         ) : null}
       </Card>
 
+      <Card className="p-2 sm:p-4">
+        <div className="px-3 pt-2 pb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <SectionHeader
+            title="Attributes"
+            subtitle="Typed facts about this item — GSM, width, shade, composition…"
+          />
+          <Can permission="operations.inventory.item.write" scope="ORG">
+            <Button
+              size="sm"
+              variant="outline"
+              leadingIcon={<PlusIcon className="size-4" />}
+              onClick={() => setAddingAttribute(true)}
+            >
+              Add attribute
+            </Button>
+          </Can>
+        </div>
+        {attributesState.status === "loading" ? (
+          <div className="flex flex-col gap-3 p-3">
+            {Array.from({ length: 2 }).map((_, i) => (
+              <Skeleton key={i} className="h-12 w-full rounded-tile" />
+            ))}
+          </div>
+        ) : null}
+        {attributesState.status === "error" ? (
+          <ErrorState message={problemMessage(attributesState.error)} onRetry={attributesState.reload} />
+        ) : null}
+        {attributesState.status === "success" ? (
+          <DataTable
+            columns={attributeColumns}
+            rows={attributesState.data}
+            rowKey={(a) => a.id}
+            caption={`Attributes for ${item.name}`}
+            emptyState={
+              <EmptyState
+                icon={<TagIcon className="size-6" />}
+                title="No attributes yet"
+                description="Record GSM, width, shade or any other fact this item's category needs."
+                action={
+                  <Can permission="operations.inventory.item.write" scope="ORG">
+                    <Button size="sm" onClick={() => setAddingAttribute(true)}>
+                      Add attribute
+                    </Button>
+                  </Can>
+                }
+              />
+            }
+          />
+        ) : null}
+      </Card>
+
+      <Card className="p-2 sm:p-4">
+        <div className="px-3 pt-2 pb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <SectionHeader title="Variants" subtitle="Purchasable/stockable variants of this item." />
+          <Can permission="operations.inventory.item.write" scope="ORG">
+            <Button
+              size="sm"
+              variant="outline"
+              leadingIcon={<PlusIcon className="size-4" />}
+              onClick={() => setAddingVariant(true)}
+            >
+              Add variant
+            </Button>
+          </Can>
+        </div>
+        {variantsState.status === "loading" ? (
+          <div className="flex flex-col gap-3 p-3">
+            {Array.from({ length: 2 }).map((_, i) => (
+              <Skeleton key={i} className="h-12 w-full rounded-tile" />
+            ))}
+          </div>
+        ) : null}
+        {variantsState.status === "error" ? (
+          <ErrorState message={problemMessage(variantsState.error)} onRetry={variantsState.reload} />
+        ) : null}
+        {variantsState.status === "success" ? (
+          <DataTable
+            columns={variantColumns}
+            rows={variantsState.data}
+            rowKey={(v) => v.id}
+            caption={`Variants of ${item.name}`}
+            emptyState={
+              <EmptyState
+                icon={<BoxIcon className="size-6" />}
+                title="No variants yet"
+                description="Add a size, shade or length cut with its own SKU."
+                action={
+                  <Can permission="operations.inventory.item.write" scope="ORG">
+                    <Button size="sm" onClick={() => setAddingVariant(true)}>
+                      Add variant
+                    </Button>
+                  </Can>
+                }
+              />
+            }
+          />
+        ) : null}
+      </Card>
+
       {editing ? (
         <InventoryItemFormDialog
           item={item}
@@ -309,6 +519,88 @@ export function InventoryItemDetailPage() {
         pendingLabel="Deleting…"
         pending={remove.pending}
         {...(remove.error ? { error: problemMessage(remove.error) } : {})}
+      />
+
+      {addingAttribute ? (
+        <ItemAttributeFormDialog
+          itemId={id}
+          attribute={null}
+          onClose={() => setAddingAttribute(false)}
+          onSaved={(saved) => {
+            setAddingAttribute(false);
+            toast.success(`${saved.key} added.`);
+            attributesState.reload();
+          }}
+        />
+      ) : null}
+
+      {editingAttribute ? (
+        <ItemAttributeFormDialog
+          itemId={id}
+          attribute={editingAttribute}
+          onClose={() => setEditingAttribute(null)}
+          onSaved={(saved) => {
+            setEditingAttribute(null);
+            toast.success(`${saved.key} saved.`);
+            attributesState.reload();
+          }}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        open={deletingAttribute !== null}
+        onClose={() => {
+          setDeletingAttribute(null);
+          removeAttribute.reset();
+        }}
+        onConfirm={() => deletingAttribute && void removeAttribute.mutate(deletingAttribute)}
+        title="Remove this attribute?"
+        body={`${deletingAttribute?.key} is removed from ${item.sku}. This can't be undone.`}
+        confirmLabel="Remove"
+        pendingLabel="Removing…"
+        pending={removeAttribute.pending}
+        {...(removeAttribute.error ? { error: problemMessage(removeAttribute.error) } : {})}
+      />
+
+      {addingVariant ? (
+        <ItemVariantFormDialog
+          itemId={id}
+          variant={null}
+          onClose={() => setAddingVariant(false)}
+          onSaved={(saved) => {
+            setAddingVariant(false);
+            toast.success(`${saved.sku} added.`);
+            variantsState.reload();
+          }}
+        />
+      ) : null}
+
+      {editingVariant ? (
+        <ItemVariantFormDialog
+          itemId={id}
+          variant={editingVariant}
+          onClose={() => setEditingVariant(null)}
+          onSaved={(saved) => {
+            setEditingVariant(null);
+            toast.success(`${saved.sku} saved.`);
+            variantsState.reload();
+          }}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        open={deletingVariant !== null}
+        onClose={() => {
+          setDeletingVariant(null);
+          removeVariant.reset();
+        }}
+        onConfirm={() => deletingVariant && void removeVariant.mutate(deletingVariant)}
+        title="Remove this variant?"
+        body={`${deletingVariant?.sku} is removed from ${item.sku}. This can't be undone.`}
+        confirmLabel="Remove"
+        pendingLabel="Removing…"
+        pending={removeVariant.pending}
+        {...(removeVariant.error ? { error: problemMessage(removeVariant.error) } : {})}
       />
     </div>
   );

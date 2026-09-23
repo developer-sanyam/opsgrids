@@ -50,6 +50,19 @@ def _validate_email_or_empty(value: str) -> str:
     return value
 
 
+def _reject_explicit_null(instance: BaseModel, fields: tuple[str, ...]) -> None:
+    """A PATCH field typed `X | None` is optional two different ways: omitted (leave alone) or
+    explicitly `null` (the caller's own JSON says so). For a domain field the database column
+    never allows NULL — a name, a flag, a code — only the first meaning is valid; the second is
+    a malformed request (422), not a value to carry through to an `IntegrityError` (or, worse, a
+    silent `setattr(..., None)` if the column happened to tolerate it). Fields that are
+    genuinely nullable in the domain (`parent_id`, `item_category_id`, `secondary_uom_id` — "no
+    category" is a real state) are simply not passed here."""
+    for field in fields:
+        if field in instance.model_fields_set and getattr(instance, field) is None:
+            raise ValueError(f"{field} cannot be set to null")
+
+
 # ------------------------------------------------------------------ vocabularies (match the SPA)
 
 Category = Literal["raw_materials", "packaging", "components", "mro", "logistics", "services"]
@@ -72,6 +85,9 @@ StockStatus = Literal[
 #: An exact quantity on the wire: a decimal string with at most three decimals (ADR-0014 §2).
 #: Never a JSON number — a float cannot carry 0.1 exactly, and stock must be exact.
 Qty = Annotated[str, Field(pattern=r"^-?\d+(\.\d{1,3})?$", examples=["82.5"])]
+#: India's Harmonized System Nomenclature code — 4, 6 or 8 digits (the granularity a GST filer
+#: chooses), or empty (not every item carries one). Never partial-length digit strings.
+_HSN_PATTERN = r"^(\d{4}(\d{2}(\d{2})?)?)?$"
 StockMovementReason = Literal["damaged", "lost", "found", "consumed", "returned", "other"]
 
 
@@ -273,6 +289,60 @@ class CancelIn(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
+# ------------------------------------------------------------------ units of measure
+
+
+class UomOut(BaseModel):
+    """One entry in the organization's UOM directory (ADR-0014 Phase 1). `is_system` marks a
+    unit seeded from the fixed registry; a caller cannot tell the two apart except by this flag —
+    both are equally usable as an item's `uom`."""
+
+    id: str
+    code: str
+    name: str
+    dimension: str
+    is_discrete: bool
+    is_system: bool
+
+
+# ------------------------------------------------------------------ item categories
+
+
+class ItemCategoryOut(BaseModel):
+    """A node in the item master's own category tree (ADR-0014 Phase 1) — additive to, and
+    distinct from, the fixed procurement `category` enum every item already carries."""
+
+    id: str
+    code: str
+    name: str
+    parent_id: str | None
+
+
+class ItemCategoryIn(BaseModel):
+    """`POST /inventory/categories`. `parent_id`, when given, must name an existing category in
+    the org."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9._-]+$")
+    name: str = Field(min_length=1, max_length=120)
+    parent_id: str | None = None
+
+
+class ItemCategoryPatch(BaseModel):
+    """`PATCH /inventory/categories/{id}`. `code` is immutable once created, like a warehouse's."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    parent_id: str | None = None
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> Self:
+        _reject_explicit_null(self, ("name",))
+        return self
+
+
 # ------------------------------------------------------------------ inventory
 
 
@@ -300,6 +370,16 @@ class InventoryItemOut(BaseModel):
     unit_value_minor: int
     currency: str
     updated_at: date
+    #: Item master (ADR-0014 Phase 1) — every field optional at the domain level; `null`/absent
+    #: means "not classified this way", not "unknown".
+    item_category_id: str | None
+    secondary_uom_id: str | None
+    hsn_code: str
+    track_lot: bool
+    track_roll: bool
+    track_expiry: bool
+    track_quality: bool
+    is_active: bool
 
 
 class InventoryItemIn(BaseModel):
@@ -320,6 +400,16 @@ class InventoryItemIn(BaseModel):
     unit_value_minor: int = Field(default=0, ge=0)
     currency: str = Field(default="INR", min_length=3, max_length=3)
     opening_on_hand: int = Field(default=0, ge=0, le=_MAX_WHOLE_QTY)
+    #: Must name an existing category in the org, when given.
+    item_category_id: str | None = None
+    #: Must name an existing UOM in the org, when given — an alternate reporting/purchase unit.
+    secondary_uom_id: str | None = None
+    hsn_code: str = Field(default="", pattern=_HSN_PATTERN)
+    track_lot: bool = False
+    track_roll: bool = False
+    track_expiry: bool = False
+    track_quality: bool = False
+    is_active: bool = True
 
 
 class InventoryItemPatch(BaseModel):
@@ -336,6 +426,117 @@ class InventoryItemPatch(BaseModel):
     uom: str | None = Field(default=None, min_length=1, max_length=20)
     reorder_point: int | None = Field(default=None, ge=0)
     unit_value_minor: int | None = Field(default=None, ge=0)
+    item_category_id: str | None = None
+    secondary_uom_id: str | None = None
+    hsn_code: str | None = Field(default=None, pattern=_HSN_PATTERN)
+    track_lot: bool | None = None
+    track_roll: bool | None = None
+    track_expiry: bool | None = None
+    track_quality: bool | None = None
+    is_active: bool | None = None
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> Self:
+        # `item_category_id` and `secondary_uom_id` are deliberately excluded — `null` on either
+        # is a real, meaningful state ("no category" / "no secondary unit"), not a malformed one.
+        _reject_explicit_null(
+            self,
+            (
+                "name",
+                "category",
+                "warehouse",
+                "uom",
+                "reorder_point",
+                "unit_value_minor",
+                "hsn_code",
+                "track_lot",
+                "track_roll",
+                "track_expiry",
+                "track_quality",
+                "is_active",
+            ),
+        )
+        return self
+
+
+ItemAttributeType = Literal["text", "number", "boolean", "date"]
+
+
+class ItemAttributeOut(BaseModel):
+    """One typed key/value fact about an item (ADR-0014 Phase 1). Exactly one of the four
+    `value_*` fields is non-null, matching `value_type`."""
+
+    id: str
+    key: str
+    value_type: ItemAttributeType
+    value_text: str | None
+    value_number: int | None
+    value_boolean: bool | None
+    value_date: date | None
+
+
+class ItemAttributeIn(BaseModel):
+    """`PUT /inventory/{id}/attributes/{key}`. **Typed values only**: `value_type` names which
+    single `value_*` field is set — the others must be absent — so there is no untyped `value`
+    a caller could mass-assign into. `value_number` is an integer (GSM, mm): attributes are not
+    stock, but the platform's no-float rule still applies to them (ADR-0014 §2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value_type: ItemAttributeType
+    value_text: str | None = Field(default=None, min_length=1, max_length=500)
+    value_number: int | None = Field(default=None, ge=-(2**53), le=2**53)
+    value_boolean: bool | None = None
+    value_date: date | None = None
+
+    @model_validator(mode="after")
+    def _exactly_the_named_value(self) -> Self:
+        by_type: dict[ItemAttributeType, object | None] = {
+            "text": self.value_text,
+            "number": self.value_number,
+            "boolean": self.value_boolean,
+            "date": self.value_date,
+        }
+        given = {t for t, v in by_type.items() if v is not None}
+        if given != {self.value_type}:
+            raise ValueError(
+                f"value_type={self.value_type!r} requires exactly value_{self.value_type} "
+                "and no other value field"
+            )
+        return self
+
+
+class ItemVariantOut(BaseModel):
+    """A purchasable/stockable variant of an item master row — its own SKU (ADR-0014 Phase 1)."""
+
+    id: str
+    inventory_item_id: str
+    sku: str
+    name: str
+    is_active: bool
+
+
+class ItemVariantIn(BaseModel):
+    """`POST /inventory/{id}/variants`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sku: str = Field(min_length=1, max_length=60, pattern=r"^[A-Za-z0-9._-]+$")
+    name: str = Field(min_length=1, max_length=200)
+
+
+class ItemVariantPatch(BaseModel):
+    """`PATCH /inventory/{id}/variants/{variant_id}`. `sku` is immutable once created."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    is_active: bool | None = None
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> Self:
+        _reject_explicit_null(self, ("name", "is_active"))
+        return self
 
 
 class StockAdjustmentIn(BaseModel):
@@ -437,6 +638,32 @@ class InventoryDiscrepancyOut(BaseModel):
     resolved_at: datetime | None
     resolved_by: str | None
     resolution_note: str
+
+
+class InventoryReservationOut(BaseModel):
+    """Stock promised to a demand without moving it (ADR-0014 §11). `quantity` is the original
+    promise, unchanged by a partial release; `consumed` is what an outbound move has drawn
+    against it; `released` is what has been explicitly given back; `remaining` is what is still
+    open — the three sum to `quantity`."""
+
+    id: str
+    inventory_item_id: str
+    quantity: Qty
+    consumed: Qty
+    released: Qty
+    remaining: Qty
+    status: Literal["active", "released", "consumed"]
+    reference_type: str | None
+    reference_id: str | None
+
+
+class ReservationReleaseIn(BaseModel):
+    """`POST /inventory/reservations/{id}:release`. An empty body releases the whole open
+    remainder; `quantity` releases only that much, leaving the rest active."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    quantity: Qty | None = None
 
 
 class ReconcileOut(BaseModel):

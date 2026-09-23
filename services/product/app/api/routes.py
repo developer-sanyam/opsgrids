@@ -19,7 +19,7 @@ router = APIRouter(tags=["product"])
 
 #: **The tenancy chokepoint.** Opens the transaction and binds it to the caller's organization
 #: before the route body runs, so no route can read or write without one.
-SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 
 CatalogueRead = Annotated[ScopeContext, Depends(require("core.product.catalogue.read"))]
 ActivationRead = Annotated[ScopeContext, Depends(require("core.product.activation.read"))]

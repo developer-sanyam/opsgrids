@@ -27,7 +27,7 @@ router = APIRouter(tags=["catalog"])
 
 #: The tenancy chokepoint. The definitional tables are un-policied, so this does not gate the
 #: read; it binds the transaction and gives the route the caller's organization for the filter.
-SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 
 #: Browsing plans is the same act as browsing the marketplace, so it reuses the marketplace's
 #: permission — held by the roles that pick and pay for a plan (owner, administrator).

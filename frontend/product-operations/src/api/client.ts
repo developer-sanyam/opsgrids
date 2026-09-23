@@ -17,9 +17,13 @@ import { milliToQty } from "@/lib/quantity";
 import {
   FIXTURE_TODAY,
   INVENTORY,
+  ITEM_ATTRIBUTES,
+  ITEM_CATEGORIES,
+  ITEM_VARIANTS,
   MOVEMENTS,
   PURCHASE_ORDERS,
   SUPPLIERS,
+  UOMS,
   WAREHOUSES,
 } from "./fixtures";
 import type {
@@ -28,6 +32,14 @@ import type {
   InventoryItemIn,
   InventoryItemOut,
   InventoryItemPatch,
+  ItemAttributeIn,
+  ItemAttributeOut,
+  ItemCategoryIn,
+  ItemCategoryOut,
+  ItemCategoryPatch,
+  ItemVariantIn,
+  ItemVariantOut,
+  ItemVariantPatch,
   Page,
   PoStatus,
   PurchaseOrderIn,
@@ -41,6 +53,7 @@ import type {
   SupplierOut,
   SupplierPatch,
   SupplierStatus,
+  UomOut,
   WarehouseIn,
   WarehouseOut,
   WarehousePatch,
@@ -556,6 +569,7 @@ export async function cancelPurchaseOrder(id: string, input: CancelIn): Promise<
 export interface ListInventoryParams {
   q?: string;
   category?: Category | "all";
+  item_category_id?: string | "all";
   warehouse?: string | "all";
   low_stock?: boolean;
   sort?: "on_hand" | "value" | "sku";
@@ -572,10 +586,14 @@ function matchesInventoryFilters(it: InventoryItemOut, params: ListInventoryPara
     it.warehouse.toLowerCase().includes(q);
   const matchesCategory =
     !params.category || params.category === "all" || it.category === params.category;
+  const matchesItemCategory =
+    !params.item_category_id ||
+    params.item_category_id === "all" ||
+    it.item_category_id === params.item_category_id;
   const matchesWarehouse =
     !params.warehouse || params.warehouse === "all" || it.warehouse === params.warehouse;
   const matchesLowStock = !params.low_stock || it.on_hand <= it.reorder_point;
-  return matchesQuery && matchesCategory && matchesWarehouse && matchesLowStock;
+  return matchesQuery && matchesCategory && matchesItemCategory && matchesWarehouse && matchesLowStock;
 }
 
 function sortInventory(items: InventoryItemOut[], sort: ListInventoryParams["sort"]): InventoryItemOut[] {
@@ -603,6 +621,7 @@ export async function listInventory(params: ListInventoryParams = {}): Promise<P
     size,
     q: params.q,
     category: params.category === "all" ? undefined : params.category,
+    item_category_id: params.item_category_id === "all" ? undefined : params.item_category_id,
     warehouse: params.warehouse === "all" ? undefined : params.warehouse,
     low_stock: params.low_stock,
     sort: params.sort,
@@ -641,6 +660,14 @@ export async function createInventoryItem(input: InventoryItemIn): Promise<Inven
       unit_value_minor: input.unit_value_minor ?? 0,
       currency: (input.currency ?? "INR").toUpperCase(),
       updated_at: FIXTURE_TODAY,
+      item_category_id: input.item_category_id ?? null,
+      secondary_uom_id: input.secondary_uom_id ?? null,
+      hsn_code: input.hsn_code ?? "",
+      track_lot: input.track_lot ?? false,
+      track_roll: input.track_roll ?? false,
+      track_expiry: input.track_expiry ?? false,
+      track_quality: input.track_quality ?? false,
+      is_active: input.is_active ?? true,
     };
     INVENTORY.unshift(item);
     MOVEMENTS[item.id] = [
@@ -683,6 +710,14 @@ export async function updateInventoryItem(
       ...(patch.uom !== undefined ? { uom: patch.uom } : {}),
       ...(patch.reorder_point !== undefined ? { reorder_point: patch.reorder_point } : {}),
       ...(patch.unit_value_minor !== undefined ? { unit_value_minor: patch.unit_value_minor } : {}),
+      ...(patch.item_category_id !== undefined ? { item_category_id: patch.item_category_id } : {}),
+      ...(patch.secondary_uom_id !== undefined ? { secondary_uom_id: patch.secondary_uom_id } : {}),
+      ...(patch.hsn_code !== undefined ? { hsn_code: patch.hsn_code } : {}),
+      ...(patch.track_lot !== undefined ? { track_lot: patch.track_lot } : {}),
+      ...(patch.track_roll !== undefined ? { track_roll: patch.track_roll } : {}),
+      ...(patch.track_expiry !== undefined ? { track_expiry: patch.track_expiry } : {}),
+      ...(patch.track_quality !== undefined ? { track_quality: patch.track_quality } : {}),
+      ...(patch.is_active !== undefined ? { is_active: patch.is_active } : {}),
     };
     INVENTORY[index] = updated;
     return settle(updated);
@@ -774,6 +809,235 @@ export async function listMovements(
   const query = buildQuery({ page, size, kind: params.kind === "all" ? undefined : params.kind });
   return apiRequest<Page<StockMovementOut>>(
     `/operations/inventory/${encodeURIComponent(itemId)}/movements${query}`,
+  );
+}
+
+/* ---------------------------- units of measure ----------------------------- */
+
+/** `GET /operations/inventory/uoms` — the org's UOM directory, registry units first. */
+export async function listUoms(
+  params: { page?: number; size?: number } = {},
+): Promise<Page<UomOut>> {
+  const page = params.page ?? 1;
+  const size = params.size ?? 200;
+  if (USE_FIXTURES) {
+    return settle(paginateFixture(UOMS, page, size));
+  }
+  const query = buildQuery({ page, size });
+  return apiRequest<Page<UomOut>>(`/operations/inventory/uoms${query}`);
+}
+
+/* ---------------------------- item categories ------------------------------ */
+
+export async function listItemCategories(
+  params: { page?: number; size?: number } = {},
+): Promise<Page<ItemCategoryOut>> {
+  const page = params.page ?? 1;
+  const size = params.size ?? 200;
+  if (USE_FIXTURES) {
+    return settle(paginateFixture(ITEM_CATEGORIES, page, size));
+  }
+  const query = buildQuery({ page, size });
+  return apiRequest<Page<ItemCategoryOut>>(`/operations/inventory/categories${query}`);
+}
+
+/** `POST /operations/inventory/categories` — `operations.inventory.item.write`. 409 duplicate
+ *  code, 422 an unknown parent. */
+export async function createItemCategory(input: ItemCategoryIn): Promise<ItemCategoryOut> {
+  if (USE_FIXTURES) {
+    if (ITEM_CATEGORIES.some((c) => c.code.toLowerCase() === input.code.toLowerCase())) {
+      throw new Error("A category with that code already exists.");
+    }
+    const category: ItemCategoryOut = {
+      id: fixtureId("cat"),
+      code: input.code,
+      name: input.name,
+      parent_id: input.parent_id ?? null,
+    };
+    ITEM_CATEGORIES.push(category);
+    return settle(category);
+  }
+  return apiRequest<ItemCategoryOut>("/operations/inventory/categories", {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** `PATCH /operations/inventory/categories/{id}` — `operations.inventory.item.write`. */
+export async function updateItemCategory(
+  id: string,
+  patch: ItemCategoryPatch,
+): Promise<ItemCategoryOut> {
+  if (USE_FIXTURES) {
+    const index = ITEM_CATEGORIES.findIndex((c) => c.id === id);
+    if (index === -1) throw new NotFoundError("That category could not be found.");
+    const current = ITEM_CATEGORIES[index];
+    if (!current) throw new NotFoundError("That category could not be found.");
+    const updated: ItemCategoryOut = {
+      ...current,
+      ...(patch.name !== undefined ? { name: patch.name } : {}),
+      ...(patch.parent_id !== undefined ? { parent_id: patch.parent_id } : {}),
+    };
+    ITEM_CATEGORIES[index] = updated;
+    return settle(updated);
+  }
+  return apiRequest<ItemCategoryOut>(`/operations/inventory/categories/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: patch,
+  });
+}
+
+/** `DELETE /operations/inventory/categories/{id}` — 409 while children or items still use it. */
+export async function deleteItemCategory(id: string): Promise<void> {
+  if (USE_FIXTURES) {
+    const index = ITEM_CATEGORIES.findIndex((c) => c.id === id);
+    if (index === -1) throw new NotFoundError("That category could not be found.");
+    if (ITEM_CATEGORIES.some((c) => c.parent_id === id)) {
+      throw new Error("This category still has sub-categories. Move or delete them first.");
+    }
+    if (INVENTORY.some((i) => i.item_category_id === id)) {
+      throw new Error("This category still classifies items. Move or clear them first.");
+    }
+    ITEM_CATEGORIES.splice(index, 1);
+    return settle(undefined);
+  }
+  await apiRequest<undefined>(`/operations/inventory/categories/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+/* ---------------------------- item attributes ------------------------------ */
+
+export async function listItemAttributes(itemId: string): Promise<ItemAttributeOut[]> {
+  if (USE_FIXTURES) {
+    return settle(ITEM_ATTRIBUTES[itemId] ?? []);
+  }
+  return apiRequest<ItemAttributeOut[]>(
+    `/operations/inventory/${encodeURIComponent(itemId)}/attributes`,
+  );
+}
+
+/** `PUT /operations/inventory/{id}/attributes/{key}` — creates or overwrites. */
+export async function setItemAttribute(
+  itemId: string,
+  key: string,
+  input: ItemAttributeIn,
+): Promise<ItemAttributeOut> {
+  if (USE_FIXTURES) {
+    const list = ITEM_ATTRIBUTES[itemId] ?? [];
+    const attribute: ItemAttributeOut = {
+      id: fixtureId("attr"),
+      key,
+      value_type: input.value_type,
+      value_text: input.value_text ?? null,
+      value_number: input.value_number ?? null,
+      value_boolean: input.value_boolean ?? null,
+      value_date: input.value_date ?? null,
+    };
+    const index = list.findIndex((a) => a.key === key);
+    if (index === -1) list.push(attribute);
+    else list[index] = { ...attribute, id: list[index]?.id ?? attribute.id };
+    ITEM_ATTRIBUTES[itemId] = list;
+    return settle(attribute);
+  }
+  return apiRequest<ItemAttributeOut>(
+    `/operations/inventory/${encodeURIComponent(itemId)}/attributes/${encodeURIComponent(key)}`,
+    { method: "PUT", body: input },
+  );
+}
+
+export async function deleteItemAttribute(itemId: string, key: string): Promise<void> {
+  if (USE_FIXTURES) {
+    const list = ITEM_ATTRIBUTES[itemId] ?? [];
+    const index = list.findIndex((a) => a.key === key);
+    if (index === -1) throw new NotFoundError("That attribute could not be found.");
+    list.splice(index, 1);
+    ITEM_ATTRIBUTES[itemId] = list;
+    return settle(undefined);
+  }
+  await apiRequest<undefined>(
+    `/operations/inventory/${encodeURIComponent(itemId)}/attributes/${encodeURIComponent(key)}`,
+    { method: "DELETE" },
+  );
+}
+
+/* ------------------------------ item variants ------------------------------ */
+
+export async function listItemVariants(itemId: string): Promise<ItemVariantOut[]> {
+  if (USE_FIXTURES) {
+    return settle(ITEM_VARIANTS[itemId] ?? []);
+  }
+  return apiRequest<ItemVariantOut[]>(
+    `/operations/inventory/${encodeURIComponent(itemId)}/variants`,
+  );
+}
+
+/** `POST /operations/inventory/{id}/variants` — 409 duplicate SKU. */
+export async function createItemVariant(
+  itemId: string,
+  input: ItemVariantIn,
+): Promise<ItemVariantOut> {
+  if (USE_FIXTURES) {
+    const allVariants = Object.values(ITEM_VARIANTS).flat();
+    if (allVariants.some((v) => v.sku.toLowerCase() === input.sku.toLowerCase())) {
+      throw new Error("A variant with that SKU already exists.");
+    }
+    const variant: ItemVariantOut = {
+      id: fixtureId("var"),
+      inventory_item_id: itemId,
+      sku: input.sku,
+      name: input.name,
+      is_active: true,
+    };
+    const list = ITEM_VARIANTS[itemId] ?? [];
+    list.push(variant);
+    ITEM_VARIANTS[itemId] = list;
+    return settle(variant);
+  }
+  return apiRequest<ItemVariantOut>(`/operations/inventory/${encodeURIComponent(itemId)}/variants`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+export async function updateItemVariant(
+  itemId: string,
+  variantId: string,
+  patch: ItemVariantPatch,
+): Promise<ItemVariantOut> {
+  if (USE_FIXTURES) {
+    const list = ITEM_VARIANTS[itemId] ?? [];
+    const index = list.findIndex((v) => v.id === variantId);
+    if (index === -1) throw new NotFoundError("That variant could not be found.");
+    const current = list[index];
+    if (!current) throw new NotFoundError("That variant could not be found.");
+    const updated: ItemVariantOut = {
+      ...current,
+      ...(patch.name !== undefined ? { name: patch.name } : {}),
+      ...(patch.is_active !== undefined ? { is_active: patch.is_active } : {}),
+    };
+    list[index] = updated;
+    ITEM_VARIANTS[itemId] = list;
+    return settle(updated);
+  }
+  return apiRequest<ItemVariantOut>(
+    `/operations/inventory/${encodeURIComponent(itemId)}/variants/${encodeURIComponent(variantId)}`,
+    { method: "PATCH", body: patch },
+  );
+}
+
+export async function deleteItemVariant(itemId: string, variantId: string): Promise<void> {
+  if (USE_FIXTURES) {
+    const list = ITEM_VARIANTS[itemId] ?? [];
+    const index = list.findIndex((v) => v.id === variantId);
+    if (index === -1) throw new NotFoundError("That variant could not be found.");
+    list.splice(index, 1);
+    ITEM_VARIANTS[itemId] = list;
+    return settle(undefined);
+  }
+  await apiRequest<undefined>(
+    `/operations/inventory/${encodeURIComponent(itemId)}/variants/${encodeURIComponent(variantId)}`,
+    { method: "DELETE" },
   );
 }
 

@@ -58,7 +58,7 @@ log = get_logger("document.routes")
 
 router = APIRouter(tags=["document"])
 
-SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 StoreDep = Annotated[ObjectStore, Depends(get_object_store)]
 
 #: Both permissions are ceilinged **and** defaulted at ORG in `app/catalogue.py`, so OWN, TEAM

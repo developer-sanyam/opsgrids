@@ -76,7 +76,7 @@ wellknown = APIRouter(tags=["discovery"])
 # `CurrentPrincipal` takes `TenantSessionDep`, which opens the request's one transaction
 # and binds it to the caller's organization first (ADR-0002 §1); none of them opens its own.
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
-TenantSessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+TenantSessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 #: Any authenticated operator, no role filter — `/auth/operator/me` answers "who am I", which
 #: every operator role may ask.
 OperatorPrincipalDep = Annotated[Principal, Depends(require_operator())]
