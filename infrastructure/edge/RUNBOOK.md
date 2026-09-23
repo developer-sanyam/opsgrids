@@ -583,8 +583,7 @@ pass; a single `make deploy` does that, and a pass that runs early only backs of
 **The cutover — `BILLING_RUN_NOT_BEFORE`.** Until now nothing ever converted a trial or rolled
 a period, so without a cutover the first passes would invoice every period and conversion a box
 has owed since before billing existed. The cutover is the moment billing goes live, set once, to
-the moment you turn the run on, with a UTC offset (`2026-10-01T09:00:00+05:30`), and **never moved
-later** (rows already billed are not revisited). From it:
+the moment you turn the run on, and **never moved later** (see *Moving the cutover* below). From it:
 
 * **Recurring money for a period that began before it is never invoiced.** Such a period rolls
   `skipped` with outcome `pre_cutover` (a renewal, a proration, an opening). An existing
@@ -597,6 +596,14 @@ later** (rows already billed are not revisited). From it:
   cutover; a closing window that straddles it is billed from the cutover on; one that ended before
   it is skipped `pre_cutover`.
 
+**The accepted syntax, exactly:** `YYYY-MM-DDTHH:MM:SS±HH:MM` or `YYYY-MM-DDTHH:MM:SSZ` — e.g.
+`2026-10-01T09:00:00+05:30` or `2026-10-01T03:30:00Z` (seconds and a fraction of them are
+optional). **Nothing else**: no space for the `T`, no bare date, no naive time, no epoch number
+(pydantic would read `2026` as a second past 1970 and back-bill everything). A value the worker
+refuses does **not** crash it — the payment consumer and dunning keep running — but the run does
+not start (`billing_run.refused` in the log names the value and why), so check it before
+recreating the worker, as below.
+
 Stage it:
 
 ```bash
@@ -606,10 +613,26 @@ make deploy HOST=… CONFIRM=…
 #    line per due subscription, then a summary. Writes nothing.
 docker compose -f compose.prod.yml --env-file .env run --rm -T subscription-worker \
   python -m app.billing_run --dry-run --not-before 2026-10-01T09:00:00+05:30
-# 3. Decide. Then set both, and recreate the worker.
+# 3. Decide. Set both.
 printf 'BILLING_RUN_ENABLED=true\nBILLING_RUN_NOT_BEFORE=2026-10-01T09:00:00+05:30\n' >> .env
+# 4. Check them BEFORE recreating the worker — both must pass:
+./preflight.sh        # FAIL on a missing, malformed or impossible cutover; warn if it is future
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T subscription-worker \
+  python -c 'from app.config import settings; s = settings(); print(s.billing_run_not_before, s.billing_run_not_before_invalid)'
+#    Expect the instant, then None. `None <reason>` means the worker would refuse the run.
+# 5. Only then recreate the worker.
 docker compose -f compose.prod.yml --env-file .env up -d subscription-worker
 ```
+
+A cutover in the future is legal (preflight warns): the run rolls periods that began before it
+without invoicing them and invoices nothing until periods begin after it.
+
+**Moving the cutover** — don't move it later. Known limitation, not detected by any probe: the run
+decides each row by the cutover in force when it first handles that row, and never revisits one
+it has settled or already sent to billing (a retry sends exactly what billing priced). Moved
+**later**, rows not yet handled that begin between the old and the new cutover become free, while
+the same kind of row handled earlier was invoiced — inconsistent, and nothing alarms. Moved
+**earlier**, nothing already skipped `pre_cutover` is re-billed.
 
 Per subscription the dry run prints `periods_owed`, split into `periods_pre_cutover` (rolled with
 no invoice), `periods_invoiced` and `periods_suspended_roll` (suspended, rolled with no invoice),
@@ -640,12 +663,40 @@ trial was never charged its first period. From this revision every new such subs
 charged an **opening** charge (the first period, at the pin in force) on the run's next pass —
 unless it began before the cutover, when it is skipped `pre_cutover` like any other early period.
 
-**A payment is not a key to every suspension.** A suspension by dunning (the window ran out) is
-lifted only by a capture of **the invoice that window was about**; the run's closing-usage invoice
-and any other capture are recorded by payment and move nothing (`dunning.capture.no_resume` in the
-log). An **operator's** suspension is never lifted by a payment at all — a person lifts it. There
-is no internal resume route yet, so lifting an operator suspension is a reviewed data change
-(the subscription's state, and its `suspended -> active` transition row) until one exists.
+**A payment is not a key to every suspension.** A suspension by dunning (the window ran out —
+written by the sweep's service actor) is lifted only by a capture of **the invoice that window was
+about**; the run's closing-usage invoice and any other capture are recorded by payment and move
+nothing (`dunning.capture.no_resume` in the log). An **operator's** suspension is never lifted by a
+payment at all — a person lifts it. Which one is in force is read from the transition's actor,
+never its reason, and an operator may not use a reason the machinery writes (`dunning_exhausted`,
+`grace_expired`, `payment_failed`, … — refused with 422).
+
+`suspended -> suspended` is not a legal move, so an operator cannot put a fraud hold **on top of**
+a dunning suspension: if the customer then pays the owed invoice, the dunning suspension lifts and
+the subscription is active. To hold such a customer, suspend again as soon as it resumes (watch
+`dunning.capture` in the log), or cancel.
+
+**Lifting an operator's suspension by hand.** There is no internal resume route yet (a follow-up is
+recorded). Until one exists, lifting it is a reviewed one-off that must write **all** of the
+following in **one tenant-bound transaction** — partial is worse than none:
+
+1. `subscription.subscriptions`: `state = 'active'`, `suspended_at = NULL`.
+2. `subscription.subscription_transitions`: one row `from_state = 'suspended'`,
+   `to_state = 'active'`, the plan version as both pins, a reason in words (not a reserved one),
+   and `actor = {"type": "operator", "id": "<the person>"}`. The table is append-only.
+3. `subscription.audit_logs`: the matching `commerce.subscription.activated` row.
+4. `subscription.outbox`: a `commerce.subscription.activated` event carrying the subscription's
+   lifecycle payload (`services._lifecycle_payload`). **Without it product-service never
+   re-entitles the customer and every request stays a 402.**
+5. `subscription.billing_periods`: an `opening` row for `[now, current_period_end)` at the pin in
+   force — unless a live recurring charge already covers now, or the current period began before
+   the billing cutover (it is free). Without it the rest of the period is never billed.
+
+Do it with the service's own code, not hand-written SQL — `services._transition(...)` (which writes
+1–4 and the state) followed by `services.charge_uncovered_remainder(...)` (5), exactly as
+`record_payment_captured` does when a dunning suspension lifts, run inside
+`session_scope(organization_id=…)` in a `docker compose run --rm subscription-worker python`
+session, with the subscription locked first (`selectors.lock_subscription(..., skip_locked=False)`).
 
 **Watching it.**
 
