@@ -61,7 +61,12 @@ services:
     restart: unless-stopped
 
   minio:
-    image: minio/minio:latest
+    # Docker Hub no longer serves MinIO's server image — `minio/minio` 404s there now
+    # (verified against the registry, not assumed). quay.io is MinIO's own published mirror
+    # for the same tags, and this is the tag `infrastructure/edge/compose.prod.yml` pins for
+    # the same reason. Pinned rather than `:latest`: a moved tag on this image now means "the
+    # image is gone", not "a new version arrived".
+    image: quay.io/minio/minio:RELEASE.2024-01-16T16-07-38Z
     command: ['server', '/data', '--console-address', ':9001']
     environment:
       MINIO_ROOT_USER: opsgrids
@@ -92,12 +97,12 @@ services:
   # Idempotent on purpose: `mb --ignore-existing` and a policy set are both safe to re-run, so
   # `make infra` on an existing stack is a no-op rather than an error.
   #
-  # Runs the `minio/minio` image rather than `minio/mc`, which is the more obvious choice: `mc`
-  # already ships inside the server image — it is what the healthcheck above calls — so reusing
-  # it costs `make infra` no second image pull, and keeps the client and the server on one
-  # version instead of two that drift independently.
+  # Runs the same `minio/minio` image rather than `minio/mc`, which is the more obvious choice:
+  # `mc` already ships inside the server image — it is what the healthcheck above calls — so
+  # reusing it costs `make infra` no second image pull, and keeps the client and the server on
+  # one version instead of two that drift independently.
   minio-bootstrap:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:RELEASE.2024-01-16T16-07-38Z
     depends_on:
       minio:
         condition: service_healthy
