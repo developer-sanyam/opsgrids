@@ -6,6 +6,7 @@ import type { StockMovementKind, StockMovementOut } from "@/api/types";
 import { CATEGORY_LABEL } from "@/data/derive";
 import { Can, problemMessage, useAsync, useMutation } from "@opsgrids/client";
 import { formatDate, formatMoney, formatNumber } from "@/lib/format";
+import { formatQty, qtyToMilli, stockValueMinor } from "@/lib/quantity";
 import {
   Button,
   Card,
@@ -32,6 +33,7 @@ const KIND_FILTERS: { value: StockMovementKind | "all"; label: string }[] = [
   { value: "receipt", label: "Receipts" },
   { value: "adjustment", label: "Adjustments" },
   { value: "count", label: "Counts" },
+  { value: "relocation", label: "Relocations" },
 ];
 
 const KIND_LABEL: Record<StockMovementKind, string> = {
@@ -39,11 +41,14 @@ const KIND_LABEL: Record<StockMovementKind, string> = {
   receipt: "Receipt",
   adjustment: "Adjustment",
   count: "Count",
+  relocation: "Moved between warehouses",
+  issue: "Issue",
 };
 
-function levelOf(onHand: number, reorderPoint: number): StockLevel {
+function levelOf(onHandQty: string, reorderPoint: number): StockLevel {
+  const onHand = qtyToMilli(onHandQty);
   if (onHand === 0) return "out";
-  if (onHand <= reorderPoint) return "low";
+  if (onHand <= reorderPoint * 1000) return "low";
   return "ok";
 }
 
@@ -101,7 +106,7 @@ export function InventoryItemDetailPage() {
     );
   }
 
-  const level = levelOf(item.on_hand, item.reorder_point);
+  const level = levelOf(item.on_hand_qty, item.reorder_point);
 
   const columns: Column<StockMovementOut>[] = [
     {
@@ -127,9 +132,9 @@ export function InventoryItemDetailPage() {
       header: "Change",
       align: "right",
       render: (m) => (
-        <span className={`tnum font-semibold ${m.quantity_delta < 0 ? "text-negative" : "text-present"}`}>
-          {m.quantity_delta > 0 ? "+" : ""}
-          {formatNumber(m.quantity_delta)}
+        <span className={`tnum font-semibold ${qtyToMilli(m.quantity) < 0 ? "text-negative" : "text-present"}`}>
+          {qtyToMilli(m.quantity) > 0 ? "+" : ""}
+          {formatQty(m.quantity)}
         </span>
       ),
     },
@@ -137,7 +142,7 @@ export function InventoryItemDetailPage() {
       key: "after",
       header: "On hand after",
       align: "right",
-      render: (m) => <span className="tnum text-ink-soft">{formatNumber(m.on_hand_after)}</span>,
+      render: (m) => <span className="tnum text-ink-soft">{formatQty(m.balance_after)}</span>,
     },
     {
       key: "occurred",
@@ -184,7 +189,7 @@ export function InventoryItemDetailPage() {
         <div className="flex flex-col gap-1 rounded-tile bg-ground px-4 py-3">
           <span className="text-xs font-medium text-muted">On hand</span>
           <span className="tnum text-lg font-extrabold text-ink">
-            {formatNumber(item.on_hand)} {item.uom}
+            {formatQty(item.on_hand_qty)} {item.uom}
           </span>
         </div>
         <div className="flex flex-col gap-1 rounded-tile bg-ground px-4 py-3">
@@ -194,7 +199,7 @@ export function InventoryItemDetailPage() {
         <div className="flex flex-col gap-1 rounded-tile bg-ground px-4 py-3">
           <span className="text-xs font-medium text-muted">Stock value</span>
           <span className="tnum text-lg font-extrabold text-ink">
-            {formatMoney(item.on_hand * item.unit_value_minor, item.currency)}
+            {formatMoney(stockValueMinor(item.on_hand_qty, item.unit_value_minor), item.currency)}
           </span>
         </div>
         <div className="flex flex-col gap-1.5 rounded-tile bg-ground px-4 py-3">
@@ -284,7 +289,7 @@ export function InventoryItemDetailPage() {
           onClose={() => setAdjusting(false)}
           onSaved={(saved) => {
             setAdjusting(false);
-            toast.success(`Stock adjusted — ${saved.on_hand} ${saved.uom} on hand.`);
+            toast.success(`Stock adjusted — ${formatQty(saved.on_hand_qty)} ${saved.uom} on hand.`);
             itemState.reload();
             movementsState.reload();
           }}

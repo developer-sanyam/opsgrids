@@ -18,6 +18,8 @@
 #   schemas | config
 #   domain                      pure functions; nothing from the app except model types
 #   models
+#   inventory.quantity          operations only: exact quantity arithmetic, which even the
+#                               models import — so it may import nothing above it
 #
 # Reaching further down than the next layer is allowed (a route may name a model type);
 # reaching *up* is the import that turns a layer into a cycle, and the layers contract
@@ -37,6 +39,18 @@ source_modules =
 forbidden_modules =
     app
 
+# A service that outgrows one `services.py` splits by domain into a package with the same
+# anatomy inside it (ADR-0014 §1: operations' `app/inventory`). The ledger kernel, the
+# reconciler and the reads are independent of one another; only the domain writes sit above
+# them, and `quantity` — imported even by `app.models` — stays pure.
+[importlinter:contract:inventory-layers]
+name = operations inventory package: the same anatomy inside the package
+type = layers
+layers =
+    (app.inventory.services)
+    (app.inventory.ledger) | (app.inventory.reconcile) | (app.inventory.selectors)
+    (app.inventory.quantity)
+
 [importlinter:contract:service-layers]
 name = the service anatomy, enforced: nothing imports upward, no cycles
 type = layers
@@ -48,3 +62,4 @@ layers =
     (app.schemas) | (app.config)
     (app.domain)
     (app.models)
+    (app.inventory.quantity)

@@ -48,6 +48,9 @@ export interface RequestOptions {
   auth?: boolean | undefined;
   /** Fire the global unauthorized handler on a 401 (default true). Login/logout opt out. */
   signalUnauthorized?: boolean | undefined;
+  /** Extra request headers — e.g. an `Idempotency-Key` that makes a retried write a replay.
+   *  Cannot override `Accept`, `Content-Type` or `Authorization`, which this function owns. */
+  headers?: Record<string, string> | undefined;
 }
 
 async function readProblem(res: Response): Promise<ProblemJson | null> {
@@ -67,7 +70,7 @@ function messageFor(problem: ProblemJson | null, status: number): string {
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = "GET", body, auth = true, signalUnauthorized = true } = options;
 
-  const headers: Record<string, string> = { Accept: "application/json" };
+  const headers: Record<string, string> = { ...options.headers, Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (auth) {
     const token = getAccessToken();

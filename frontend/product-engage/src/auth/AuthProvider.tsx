@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { AuthProvider as BaseAuthProvider } from "@opsgrids/client";
+import { AuthProvider as BaseAuthProvider, PermissionProvider } from "@opsgrids/client";
 import type { MeOut } from "@opsgrids/client";
 
 import { USE_FIXTURES } from "@/api/client";
@@ -30,9 +30,33 @@ const FIXTURE_USER: MeOut = {
   organizations: [FIXTURE_ORG],
 };
 
+/**
+ * The fixture identity's grants: an org admin holding every write this product defines, so
+ * fixture mode demonstrates the whole CRUD surface offline. A real build passes nothing —
+ * `PermissionProvider` then fetches `GET /members/me/grants` itself.
+ */
+const FIXTURE_GRANTS = [
+  "engage.audience.contact.read:ORG",
+  "engage.audience.contact.write:ORG",
+  "engage.audience.suppression.read:ORG",
+  "engage.audience.suppression.write:ORG",
+  "engage.setup.connection.read:ORG",
+  "engage.setup.connection.write:ORG",
+  "engage.setup.domain.read:ORG",
+  "engage.setup.domain.write:ORG",
+  "engage.setup.sender.read:ORG",
+  "engage.setup.sender.write:ORG",
+  "engage.setup.whatsapp.read:ORG",
+  "engage.setup.whatsapp.write:ORG",
+];
+
 /** The session, wired to this product's fixture identity. The logic lives in `@opsgrids/client`. */
 export function AuthProvider({ children }: { children: ReactNode }) {
   return (
-    <BaseAuthProvider fixtureUser={USE_FIXTURES ? FIXTURE_USER : null}>{children}</BaseAuthProvider>
+    <BaseAuthProvider fixtureUser={USE_FIXTURES ? FIXTURE_USER : null}>
+      <PermissionProvider grants={USE_FIXTURES ? FIXTURE_GRANTS : null}>
+        {children}
+      </PermissionProvider>
+    </BaseAuthProvider>
   );
 }

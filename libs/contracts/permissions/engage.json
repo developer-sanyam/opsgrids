@@ -22,6 +22,24 @@
     {
       "action": "read",
       "default_scope": "ORG",
+      "description": "See contact lists and who is on them",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "audience",
+      "resource": "list"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Create, rename and delete contact lists, and add or remove members",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "audience",
+      "resource": "list"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
       "description": "See which addresses may not be mailed, and why",
       "is_dangerous": false,
       "max_scope": "ORG",
@@ -36,6 +54,33 @@
       "max_scope": "ORG",
       "module": "audience",
       "resource": "suppression"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See campaigns, their recipients and their delivery stats",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "campaign",
+      "resource": "campaign"
+    },
+    {
+      "action": "send",
+      "default_scope": "ORG",
+      "description": "Send a campaign to its audience",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "campaign",
+      "resource": "campaign"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Draft, edit and delete campaigns, and cancel one in flight",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "campaign",
+      "resource": "campaign"
     },
     {
       "action": "read",
@@ -126,11 +171,31 @@
           "scope": "ORG"
         },
         {
+          "code": "engage.audience.list.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.audience.list.write",
+          "scope": "ORG"
+        },
+        {
           "code": "engage.audience.suppression.read",
           "scope": "ORG"
         },
         {
           "code": "engage.audience.suppression.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.campaign.campaign.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.campaign.campaign.send",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.campaign.campaign.write",
           "scope": "ORG"
         },
         {
@@ -180,7 +245,15 @@
           "scope": "ORG"
         },
         {
+          "code": "engage.audience.list.read",
+          "scope": "ORG"
+        },
+        {
           "code": "engage.audience.suppression.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.campaign.campaign.read",
           "scope": "ORG"
         },
         {

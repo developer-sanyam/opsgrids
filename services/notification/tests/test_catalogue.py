@@ -102,7 +102,21 @@ def test_engage_catalogue_declares_setup_and_audience_permissions() -> None:
         "engage.audience.contact.write",
         "engage.audience.suppression.read",
         "engage.audience.suppression.write",
+        "engage.audience.list.read",
+        "engage.audience.list.write",
+        "engage.campaign.campaign.read",
+        "engage.campaign.campaign.write",
+        "engage.campaign.campaign.send",
     }
+
+
+def test_sending_a_campaign_is_dangerous_and_not_the_viewers() -> None:
+    """Drafting reaches nobody; sending reaches the whole audience. Only the second is flagged,
+    and the default seat holds neither."""
+    send = next(s for s in ENGAGE.specs if s.code("engage") == "engage.campaign.campaign.send")
+    assert send.is_dangerous
+    viewer = next(t for t in ENGAGE_ROLE_TEMPLATES if t.code == "ENGAGE_VIEWER")
+    assert not any(g.code.endswith((".write", ".send")) for g in viewer.grants)
 
 
 def test_engage_admin_gets_every_engage_permission() -> None:

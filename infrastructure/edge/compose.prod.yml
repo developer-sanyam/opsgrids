@@ -643,6 +643,13 @@ services:
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
       # customer-service is not deployed; the phone lookup answers unavailable, not wrong.
       CUSTOMER_INTERNAL_URL: http://customer:8000
+      # Engage (services/notification/app/services.py's `request_send`/`_check_public_base`):
+      # both must be real before a campaign can be sent at all outside `local`/`test`/`ci` — an
+      # unsigned or `http://`/`localhost` link is refused at the send gate, not just warned
+      # about. Generate ENGAGE_UNSUBSCRIBE_SECRET fresh; rotating it invalidates every
+      # unsubscribe link already sent, so treat it like any other signing secret.
+      ENGAGE_UNSUBSCRIBE_SECRET: ${ENGAGE_UNSUBSCRIBE_SECRET}
+      ENGAGE_PUBLIC_API_BASE: ${ENGAGE_PUBLIC_API_BASE}
     networks:
       - back
 
@@ -652,6 +659,15 @@ services:
     <<: *background
     image: opsgrids-edge/notification
     command: ['./bin/worker']
+    environment: *notification-env
+
+  # The campaign send driver (app/cron.py). Its own process for the same reason every other
+  # sweep here is: a poll loop must not share a pool with request traffic, and `docker compose
+  # ps` should answer "is anything sending campaigns" without reading code.
+  notification-cron:
+    <<: *background
+    image: opsgrids-edge/notification
+    command: ['./bin/cron']
     environment: *notification-env
 
   # ---------------------------------------------------------------- document (platform asset store; ADR-0009)
@@ -718,6 +734,17 @@ services:
     environment: *service-env
     networks:
       - back
+
+  # The nightly stock ledger ↔ balance reconciliation (ADR-0014 §3). Records and alerts on
+  # drift (`inventory.reconcile.drift` at error level, an `inventory_discrepancies` row, an
+  # `operations.inventory.inconsistency_detected` event); never repairs it. Discovery runs on
+  # the outbox role, which holds `SELECT (organization_id)` on the ledger tables and nothing more.
+  operations-cron:
+    <<: *background
+    profiles: ['inventory']
+    image: opsgrids-edge/operations
+    command: ['./bin/cron']
+    environment: *service-env
 
   # ---------------------------------------------------------------- the other products
   # One compose profile per product, named after the product's catalogue key (ADR-0013 §5), so

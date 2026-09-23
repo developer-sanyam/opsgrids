@@ -135,6 +135,17 @@ else
 	ok "payment provider keys present"
 fi
 
+# The send gate itself refuses a campaign outside local/test/ci while this is still
+# localhost/127.0.0.1 or plain http:// (services/notification/app/services.py's
+# `_check_public_base`) — this just catches it before a deploy instead of at the first send.
+case "${ENGAGE_PUBLIC_API_BASE:-}" in
+https://*localhost* | https://*127.0.0.1*)
+	bad "ENGAGE_PUBLIC_API_BASE ($ENGAGE_PUBLIC_API_BASE) is not reachable outside this box — every campaign send will be refused"
+	;;
+https://*) ok "engage public API base: $ENGAGE_PUBLIC_API_BASE" ;;
+*) bad "ENGAGE_PUBLIC_API_BASE ($ENGAGE_PUBLIC_API_BASE) must be https — every campaign send will be refused" ;;
+esac
+
 # Every hostname the Caddyfile serves needs a certificate, and the issuance gate
 # (storefront's tls-authorize) admits a platform name only if TLS_PLATFORM_HOSTS lists it. A
 # site added to the Caddyfile and not to the box's .env serves a TLS error, not a page.

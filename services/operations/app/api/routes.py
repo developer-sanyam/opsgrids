@@ -21,14 +21,18 @@ import uuid
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, scope, selectors, services
 from app.config import settings
+from app.inventory import selectors as inv_selectors
+from app.inventory import services as inv_services
 from app.models import SCHEMA, PurchaseOrderLine
 from app.schemas import (
     CancelIn,
+    DiscrepancyResolveIn,
+    InventoryDiscrepancyOut,
     InventoryItemIn,
     InventoryItemOut,
     InventoryItemPatch,
@@ -38,8 +42,10 @@ from app.schemas import (
     PurchaseOrderPatch,
     PurchaseOrderReceiptOut,
     ReceiveIn,
+    ReconcileOut,
     ServiceInfo,
     StockAdjustmentIn,
+    StockBalanceOut,
     StockMovementOut,
     SupplierIn,
     SupplierOut,
@@ -82,6 +88,22 @@ SupplierWrite = Annotated[ScopeContext, Depends(require("operations.procurement.
 InventoryRead = Annotated[ScopeContext, Depends(require("operations.inventory.item.read"))]
 InventoryWrite = Annotated[ScopeContext, Depends(require("operations.inventory.item.write"))]
 StockAdjust = Annotated[ScopeContext, Depends(require("operations.inventory.stock.adjust"))]
+#: Seeing and resolving ledger/balance drift is an org-wide control function, never OWN.
+StockReconcile = Annotated[
+    ScopeContext,
+    Depends(require("operations.inventory.stock.reconcile", minimum=Scope.ORG)),
+]
+#: A client-chosen key that makes a retried stock write a replay instead of a second posting.
+IdempotencyKey = Annotated[
+    str | None,
+    Header(
+        alias="Idempotency-Key",
+        min_length=1,
+        max_length=128,
+        description="Retrying with the same key replays the first result instead of posting "
+        "again; reusing it for a different request is a 409.",
+    ),
+]
 WarehouseRead = Annotated[ScopeContext, Depends(require("operations.inventory.warehouse.read"))]
 WarehouseWrite = Annotated[ScopeContext, Depends(require("operations.inventory.warehouse.write"))]
 
@@ -410,11 +432,11 @@ async def list_inventory(
     ] = None,
     sort: Annotated[str | None, Query(description="on_hand | value | sku")] = None,
 ) -> Page[InventoryItemOut]:
-    stmt = selectors.inventory_stmt(
+    stmt = inv_selectors.inventory_stmt(
         ctx, q=q, category=category, warehouse=warehouse, low_stock=low_stock, sort=sort
     )
     rows, total = await paginate(session, stmt, params)
-    return Page.build([selectors.inventory_out(i) for i in rows], total=total, params=params)
+    return Page.build([inv_selectors.inventory_out(i) for i in rows], total=total, params=params)
 
 
 @router.post(
@@ -428,11 +450,11 @@ async def create_inventory_item(
     payload: InventoryItemIn, session: SessionDep, ctx: InventoryWrite, request: Request
 ) -> InventoryItemOut:
     if (
-        await selectors.get_warehouse_by_name(session, ctx.organization_id, payload.warehouse)
+        await inv_selectors.get_warehouse_by_name(session, ctx.organization_id, payload.warehouse)
         is None
     ):
         raise ValidationProblem(f"{payload.warehouse!r} does not match an existing warehouse")
-    item = await services.create_inventory_item(
+    item = await inv_services.create_inventory_item(
         session,
         ctx,
         sku=payload.sku,
@@ -446,7 +468,72 @@ async def create_inventory_item(
         currency=payload.currency,
         request=request,
     )
-    return selectors.inventory_out(item)
+    return inv_selectors.inventory_out(item)
+
+
+# Registered before `/operations/inventory/{item_id}`: a literal segment must win over the
+# UUID-typed parameter, or `discrepancies` is parsed as an item id and answered with a 422.
+
+
+@router.post(
+    "/operations/inventory/reconcile",
+    response_model=ReconcileOut,
+    summary="Check this organization's stock ledger against its balances now",
+    dependencies=[Entitled],
+)
+async def reconcile_inventory(
+    session: SessionDep, ctx: StockReconcile, request: Request
+) -> ReconcileOut:
+    report = await inv_services.reconcile_now(session, ctx, request=request)
+    rows = await inv_selectors.discrepancies_for_run(session, ctx.organization_id, report.run_id)
+    return ReconcileOut(
+        run_id=str(report.run_id),
+        buckets_checked=report.buckets_checked,
+        findings=len(report.findings),
+        new_findings=len(report.new),
+        discrepancies=[inv_selectors.discrepancy_out(row) for row in rows],
+    )
+
+
+@router.get(
+    "/operations/inventory/discrepancies",
+    response_model=Page[InventoryDiscrepancyOut],
+    summary="Ledger/balance drift the reconciler found, newest first",
+    dependencies=[Entitled],
+)
+async def list_discrepancies(
+    session: SessionDep,
+    ctx: StockReconcile,
+    params: PageQuery,
+    include_resolved: Annotated[bool, Query()] = False,
+) -> Page[InventoryDiscrepancyOut]:
+    stmt = inv_selectors.discrepancies_stmt(ctx, open_only=not include_resolved)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build(
+        [inv_selectors.discrepancy_out(row) for row in rows], total=total, params=params
+    )
+
+
+@router.post(
+    "/operations/inventory/discrepancies/{discrepancy_id}/resolve",
+    response_model=InventoryDiscrepancyOut,
+    summary="Record what was done about a discrepancy (changes no stock)",
+    dependencies=[Entitled],
+)
+async def resolve_discrepancy(
+    discrepancy_id: uuid.UUID,
+    payload: DiscrepancyResolveIn,
+    session: SessionDep,
+    ctx: StockReconcile,
+    request: Request,
+) -> InventoryDiscrepancyOut:
+    row = await inv_selectors.get_discrepancy(session, ctx.organization_id, discrepancy_id)
+    if row is None:
+        raise NotFoundProblem("That discrepancy is not part of this organization")
+    resolved = await inv_services.resolve_discrepancy(
+        session, ctx, row, note=payload.note, request=request
+    )
+    return inv_selectors.discrepancy_out(resolved)
 
 
 @router.get(
@@ -458,10 +545,10 @@ async def create_inventory_item(
 async def read_inventory_item(
     item_id: uuid.UUID, session: SessionDep, ctx: InventoryRead
 ) -> InventoryItemOut:
-    item = await selectors.get_inventory_item(session, ctx.organization_id, item_id)
+    item = await inv_selectors.get_inventory_item(session, ctx.organization_id, item_id)
     if item is None:
         raise NotFoundProblem("That inventory item is not part of this organization")
-    return selectors.inventory_out(item)
+    return inv_selectors.inventory_out(item)
 
 
 @router.patch(
@@ -477,11 +564,14 @@ async def update_inventory_item(
     ctx: InventoryWrite,
     request: Request,
 ) -> InventoryItemOut:
-    item = await selectors.get_inventory_item(session, ctx.organization_id, item_id)
+    # Locked: a warehouse change moves the item's stock, and must not race an adjustment.
+    item = await inv_selectors.get_inventory_item(
+        session, ctx.organization_id, item_id, for_update=True
+    )
     if item is None:
         raise NotFoundProblem("That inventory item is not part of this organization")
-    updated = await services.update_inventory_item(session, ctx, item, payload, request=request)
-    return selectors.inventory_out(updated)
+    updated = await inv_services.update_inventory_item(session, ctx, item, payload, request=request)
+    return inv_selectors.inventory_out(updated)
 
 
 @router.delete(
@@ -493,10 +583,10 @@ async def update_inventory_item(
 async def delete_inventory_item(
     item_id: uuid.UUID, session: SessionDep, ctx: InventoryWrite, request: Request
 ) -> Response:
-    item = await selectors.get_inventory_item(session, ctx.organization_id, item_id)
+    item = await inv_selectors.get_inventory_item(session, ctx.organization_id, item_id)
     if item is None:
         raise NotFoundProblem("That inventory item is not part of this organization")
-    await services.delete_inventory_item(session, ctx, item, request=request)
+    await inv_services.delete_inventory_item(session, ctx, item, request=request)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -513,13 +603,14 @@ async def adjust_stock(
     session: SessionDep,
     ctx: StockAdjust,
     request: Request,
+    idempotency_key: IdempotencyKey = None,
 ) -> InventoryItemOut:
-    item = await selectors.get_inventory_item(
+    item = await inv_selectors.get_inventory_item(
         session, ctx.organization_id, item_id, for_update=True
     )
     if item is None:
         raise NotFoundProblem("That inventory item is not part of this organization")
-    updated = await services.adjust_stock(
+    updated = await inv_services.adjust_stock(
         session,
         ctx,
         item,
@@ -528,9 +619,30 @@ async def adjust_stock(
         reason=payload.reason,
         note=payload.note,
         occurred_on=payload.occurred_on,
+        # `occurred_on` defaults to today at parse time when the client omits it; keeping a
+        # defaulted value out of the idempotency hash means a retry that lands on the other side
+        # of midnight is still recognised as the same request rather than a false 409.
+        occurred_on_explicit="occurred_on" in payload.model_fields_set,
+        idempotency_key=idempotency_key,
         request=request,
     )
-    return selectors.inventory_out(updated)
+    return inv_selectors.inventory_out(updated)
+
+
+@router.get(
+    "/operations/inventory/{item_id}/balances",
+    response_model=list[StockBalanceOut],
+    summary="Where an item's stock is, and in what state (one row per bucket)",
+    dependencies=[Entitled],
+)
+async def list_balances(
+    item_id: uuid.UUID, session: SessionDep, ctx: InventoryRead
+) -> list[StockBalanceOut]:
+    item = await inv_selectors.get_inventory_item(session, ctx.organization_id, item_id)
+    if item is None:
+        raise NotFoundProblem("That inventory item is not part of this organization")
+    rows = await inv_selectors.balances_for_item(session, ctx.organization_id, item_id)
+    return [inv_selectors.balance_out(*row) for row in rows]
 
 
 @router.get(
@@ -546,12 +658,12 @@ async def list_movements(
     params: PageQuery,
     kind: Annotated[str | None, Query(description="opening | receipt | adjustment | count")] = None,
 ) -> Page[StockMovementOut]:
-    item = await selectors.get_inventory_item(session, ctx.organization_id, item_id)
+    item = await inv_selectors.get_inventory_item(session, ctx.organization_id, item_id)
     if item is None:
         raise NotFoundProblem("That inventory item is not part of this organization")
-    stmt = selectors.movements_stmt(ctx, item_id, kind=kind)
+    stmt = inv_selectors.movements_stmt(ctx, item_id, kind=kind)
     rows, total = await paginate(session, stmt, params)
-    return Page.build([selectors.movement_out(m) for m in rows], total=total, params=params)
+    return Page.build([inv_selectors.movement_out(m) for m in rows], total=total, params=params)
 
 
 # ------------------------------------------------------------------ warehouses (reference)
@@ -566,9 +678,9 @@ async def list_movements(
 async def list_warehouses(
     session: SessionDep, ctx: WarehouseRead, params: PageQuery
 ) -> Page[WarehouseOut]:
-    stmt = selectors.warehouses_stmt(ctx.organization_id)
+    stmt = inv_selectors.warehouses_stmt(ctx.organization_id)
     rows, total = await paginate(session, stmt, params)
-    return Page.build([selectors.warehouse_out(w) for w in rows], total=total, params=params)
+    return Page.build([inv_selectors.warehouse_out(w) for w in rows], total=total, params=params)
 
 
 @router.post(
@@ -581,7 +693,7 @@ async def list_warehouses(
 async def create_warehouse(
     payload: WarehouseIn, session: SessionDep, ctx: WarehouseWrite, request: Request
 ) -> WarehouseOut:
-    warehouse = await services.create_warehouse(
+    warehouse = await inv_services.create_warehouse(
         session,
         ctx,
         code=payload.code,
@@ -589,7 +701,7 @@ async def create_warehouse(
         location=payload.location,
         request=request,
     )
-    return selectors.warehouse_out(warehouse)
+    return inv_selectors.warehouse_out(warehouse)
 
 
 @router.patch(
@@ -605,11 +717,11 @@ async def update_warehouse(
     ctx: WarehouseWrite,
     request: Request,
 ) -> WarehouseOut:
-    warehouse = await selectors.get_warehouse(session, ctx.organization_id, warehouse_id)
+    warehouse = await inv_selectors.get_warehouse(session, ctx.organization_id, warehouse_id)
     if warehouse is None:
         raise NotFoundProblem("That warehouse is not part of this organization")
-    updated = await services.update_warehouse(session, ctx, warehouse, payload, request=request)
-    return selectors.warehouse_out(updated)
+    updated = await inv_services.update_warehouse(session, ctx, warehouse, payload, request=request)
+    return inv_selectors.warehouse_out(updated)
 
 
 @router.delete(
@@ -621,10 +733,10 @@ async def update_warehouse(
 async def delete_warehouse(
     warehouse_id: uuid.UUID, session: SessionDep, ctx: WarehouseWrite, request: Request
 ) -> Response:
-    warehouse = await selectors.get_warehouse(session, ctx.organization_id, warehouse_id)
+    warehouse = await inv_selectors.get_warehouse(session, ctx.organization_id, warehouse_id)
     if warehouse is None:
         raise NotFoundProblem("That warehouse is not part of this organization")
-    await services.delete_warehouse(session, ctx, warehouse, request=request)
+    await inv_services.delete_warehouse(session, ctx, warehouse, request=request)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -639,7 +751,7 @@ async def delete_warehouse(
 )
 async def overview(session: SessionDep, ctx: PoRead) -> OverviewOut:
     pos = await selectors.all_purchase_orders(session, ctx)
-    inventory = await selectors.all_inventory(session, ctx.organization_id)
+    inventory = await inv_selectors.all_inventory(session, ctx.organization_id)
     suppliers = await selectors.all_suppliers(session, ctx.organization_id)
     lines = await selectors.all_lines(session, ctx.organization_id)
 

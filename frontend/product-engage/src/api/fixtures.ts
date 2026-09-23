@@ -13,10 +13,12 @@
 
 import type {
   ConnectionOut,
+  ContactOut,
   DnsRecordOut,
   DomainOut,
   ProviderTemplateOut,
   SenderOut,
+  SuppressionOut,
   WhatsAppConnectionOut,
 } from "./types";
 
@@ -203,6 +205,57 @@ export const WHATSAPP_CONNECTION: WhatsAppConnectionOut = {
  * pending one stays pending here, exactly as it would while a fixture-mode reviewer waited on
  * Meta.
  */
+/**
+ * Contacts, masked exactly as `_contact_out` masks them — a local part's first character, then
+ * `•••`, then the domain. **Nothing here is a real address with the middle chopped out**: each
+ * mask is invented independently of any string a browser would otherwise need to hold, which is
+ * the same reason `CONNECTION` carries no `secret_hint` above.
+ */
+export const CONTACTS: ContactOut[] = [
+  {
+    id: "c1a0f2e4-9b3d-4a7c-8e1f-2d6b9c4a5e10",
+    email: "p•••@vaayu-logistics.example.com",
+    name: "Priya Raghavan",
+    attributes: { plan: "enterprise", region: "west" },
+    created_at: "2026-08-29T09:18:02Z",
+    updated_at: "2026-08-29T09:18:02Z",
+  },
+  {
+    id: "d2b1e3f5-8c4e-4b8d-9f2a-3e7c0d5b6f21",
+    email: "a•••@vaayu-freight.example.com",
+    name: "Arjun Mehta",
+    attributes: { plan: "growth" },
+    created_at: "2026-09-10T14:02:11Z",
+    updated_at: "2026-09-18T08:44:59Z",
+  },
+];
+
+/**
+ * Suppressions in three of the four reasons the vocabulary carries — `manual` twice, since it is
+ * the only one this screen ever writes or lifts, and one from each automatic source so the reason
+ * filter has something real to filter on.
+ */
+export const SUPPRESSIONS: SuppressionOut[] = [
+  {
+    id: "e3c2f4a6-7d5f-4c9e-8a3b-4f8d1e6c7a32",
+    email: "b•••@vaayu-logistics.example.com",
+    reason: "bounced",
+    created_at: "2026-09-05T11:30:00Z",
+  },
+  {
+    id: "f4d3a5b7-6e6a-4dae-9b4c-5a9e2f7d8b43",
+    email: "u•••@vaayu-freight.example.com",
+    reason: "unsubscribed",
+    created_at: "2026-09-12T16:20:44Z",
+  },
+  {
+    id: "a5e4b6c8-5f7b-4ebf-ac5d-6b0f3a8e9c54",
+    email: "s•••@vaayu-logistics.example.com",
+    reason: "manual",
+    created_at: "2026-09-19T10:05:19Z",
+  },
+];
+
 export const WHATSAPP_TEMPLATES: ProviderTemplateOut[] = [
   {
     id: "delivery_confirmed",

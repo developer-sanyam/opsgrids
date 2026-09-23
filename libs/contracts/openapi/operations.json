@@ -103,6 +103,23 @@
         "title": "CategorySpend",
         "type": "object"
       },
+      "DiscrepancyResolveIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/discrepancies/{id}/resolve` \u2014 what was done about it, in words.",
+        "properties": {
+          "note": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note"
+        ],
+        "title": "DiscrepancyResolveIn",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -114,6 +131,128 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "InventoryDiscrepancyOut": {
+        "description": "A stored stock figure the reconciler found disagreeing with its source of truth.\n`kind=balance`: the bucket's balance vs the sum of its ledger. `kind=reserved`: its reserved\nfigure vs its open reservations. Nothing repairs these automatically.",
+        "properties": {
+          "detected_at": {
+            "format": "date-time",
+            "title": "Detected At",
+            "type": "string"
+          },
+          "expected_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Expected Qty",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "balance",
+              "reserved"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "resolution_note": {
+            "title": "Resolution Note",
+            "type": "string"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved By"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "stored_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Stored Qty",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "inventory_item_id",
+          "location_id",
+          "status",
+          "lot_id",
+          "roll_id",
+          "stored_qty",
+          "expected_qty",
+          "detected_at",
+          "last_seen_at",
+          "resolved_at",
+          "resolved_by",
+          "resolution_note"
+        ],
+        "title": "InventoryDiscrepancyOut",
         "type": "object"
       },
       "InventoryItemIn": {
@@ -147,6 +286,7 @@
           },
           "opening_on_hand": {
             "default": 0,
+            "maximum": 1000000000000.0,
             "minimum": 0.0,
             "title": "Opening On Hand",
             "type": "integer"
@@ -194,8 +334,16 @@
         "type": "object"
       },
       "InventoryItemOut": {
-        "description": "Mirrors the SPA's `InventoryItemOut`. Stock value = `on_hand * unit_value_minor`;\nlow-stock is derived by the client (and the overview) as `on_hand <= reorder_point`.",
+        "description": "Mirrors the SPA's `InventoryItemOut`. Stock value = `on_hand * unit_value_minor`;\nlow-stock is derived by the client (and the overview) as `on_hand <= reorder_point`.\n\nStock is read from the ledger's balances (ADR-0014 \u00a710). `on_hand` is the whole-unit figure\nthe API has always returned \u2014 exact while stock is a whole number of units, which is all\nthe item-level API can create \u2014 and `on_hand_qty` / `reserved_qty` / `available_qty` are the\nexact decimal strings every new client should read.",
         "properties": {
+          "available_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Available Qty",
+            "type": "string"
+          },
           "category": {
             "enum": [
               "raw_materials",
@@ -224,9 +372,25 @@
             "title": "On Hand",
             "type": "integer"
           },
+          "on_hand_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "On Hand Qty",
+            "type": "string"
+          },
           "reorder_point": {
             "title": "Reorder Point",
             "type": "integer"
+          },
+          "reserved_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Reserved Qty",
+            "type": "string"
           },
           "sku": {
             "title": "Sku",
@@ -257,6 +421,9 @@
           "category",
           "warehouse",
           "on_hand",
+          "on_hand_qty",
+          "reserved_qty",
+          "available_qty",
           "reorder_point",
           "uom",
           "unit_value_minor",
@@ -423,6 +590,42 @@
           "currency"
         ],
         "title": "OverviewOut",
+        "type": "object"
+      },
+      "Page_InventoryDiscrepancyOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InventoryDiscrepancyOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[InventoryDiscrepancyOut]",
         "type": "object"
       },
       "Page_InventoryItemOut_": {
@@ -1099,6 +1302,43 @@
         "title": "ReceiveIn",
         "type": "object"
       },
+      "ReconcileOut": {
+        "description": "What an on-demand reconciliation of the caller's organization found.",
+        "properties": {
+          "buckets_checked": {
+            "title": "Buckets Checked",
+            "type": "integer"
+          },
+          "discrepancies": {
+            "items": {
+              "$ref": "#/components/schemas/InventoryDiscrepancyOut"
+            },
+            "title": "Discrepancies",
+            "type": "array"
+          },
+          "findings": {
+            "title": "Findings",
+            "type": "integer"
+          },
+          "new_findings": {
+            "title": "New Findings",
+            "type": "integer"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "buckets_checked",
+          "findings",
+          "new_findings",
+          "discrepancies"
+        ],
+        "title": "ReconcileOut",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -1179,6 +1419,7 @@
           "counted_on_hand": {
             "anyOf": [
               {
+                "maximum": 1000000000000.0,
                 "minimum": 0.0,
                 "type": "integer"
               },
@@ -1202,6 +1443,8 @@
           "quantity_delta": {
             "anyOf": [
               {
+                "maximum": 1000000000000.0,
+                "minimum": -1000000000000.0,
                 "type": "integer"
               },
               {
@@ -1233,9 +1476,113 @@
         "title": "StockAdjustmentIn",
         "type": "object"
       },
-      "StockMovementOut": {
-        "description": "One row of an item's movement history. Append-only, newest first \u2014 the ledger\n`on_hand` is the running sum of.",
+      "StockBalanceOut": {
+        "description": "One bucket of an item's stock: where it is, in what state, and how much of it is\npromised. Exact decimal strings in the item's UOM.",
         "properties": {
+          "available_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Available Qty",
+            "type": "string"
+          },
+          "location_code": {
+            "title": "Location Code",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "on_hand_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "On Hand Qty",
+            "type": "string"
+          },
+          "reserved_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Reserved Qty",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "status": {
+            "enum": [
+              "AVAILABLE",
+              "QUALITY_HOLD",
+              "QUARANTINE",
+              "DAMAGED",
+              "REJECTED",
+              "WIP",
+              "IN_TRANSIT",
+              "AT_JOB_WORKER",
+              "BLOCKED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "warehouse": {
+            "title": "Warehouse",
+            "type": "string"
+          },
+          "warehouse_code": {
+            "title": "Warehouse Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "location_id",
+          "warehouse_code",
+          "warehouse",
+          "location_code",
+          "status",
+          "lot_id",
+          "roll_id",
+          "on_hand_qty",
+          "reserved_qty",
+          "available_qty"
+        ],
+        "title": "StockBalanceOut",
+        "type": "object"
+      },
+      "StockMovementOut": {
+        "description": "One row of an item's ledger, with its move's kind/reason/reference. Append-only, newest\nfirst. `quantity_delta` / `on_hand_after` are the whole-unit figures the API always returned;\n`quantity` / `balance_after` are exact. `balance_after` is the balance of the row's own\nbucket (`location_id` + `status`), which for a single-location item is its on-hand.",
+        "properties": {
+          "balance_after": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Balance After",
+            "type": "string"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -1261,9 +1608,15 @@
               "opening",
               "receipt",
               "adjustment",
-              "count"
+              "count",
+              "relocation",
+              "issue"
             ],
             "title": "Kind",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
             "type": "string"
           },
           "note": {
@@ -1278,6 +1631,14 @@
           "on_hand_after": {
             "title": "On Hand After",
             "type": "integer"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
           },
           "quantity_delta": {
             "title": "Quantity Delta",
@@ -1324,6 +1685,21 @@
               }
             ],
             "title": "Reference Type"
+          },
+          "status": {
+            "enum": [
+              "AVAILABLE",
+              "QUALITY_HOLD",
+              "QUARANTINE",
+              "DAMAGED",
+              "REJECTED",
+              "WIP",
+              "IN_TRANSIT",
+              "AT_JOB_WORKER",
+              "BLOCKED"
+            ],
+            "title": "Status",
+            "type": "string"
           }
         },
         "required": [
@@ -1332,6 +1708,10 @@
           "reason",
           "quantity_delta",
           "on_hand_after",
+          "quantity",
+          "balance_after",
+          "location_id",
+          "status",
           "reference_type",
           "reference_id",
           "note",
@@ -2023,6 +2403,146 @@
         ]
       }
     },
+    "/api/v1/operations/inventory/discrepancies": {
+      "get": {
+        "operationId": "list_discrepancies_api_v1_operations_inventory_discrepancies_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "include_resolved",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Resolved",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_InventoryDiscrepancyOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ledger/balance drift the reconciler found, newest first",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/discrepancies/{discrepancy_id}/resolve": {
+      "post": {
+        "operationId": "resolve_discrepancy_api_v1_operations_inventory_discrepancies__discrepancy_id__resolve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "discrepancy_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Discrepancy Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscrepancyResolveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InventoryDiscrepancyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record what was done about a discrepancy (changes no stock)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/reconcile": {
+      "post": {
+        "operationId": "reconcile_inventory_api_v1_operations_inventory_reconcile_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconcileOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Check this organization's stock ledger against its balances now",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
     "/api/v1/operations/inventory/{item_id}": {
       "delete": {
         "operationId": "delete_inventory_item_api_v1_operations_inventory__item_id__delete",
@@ -2164,6 +2684,26 @@
               "title": "Item Id",
               "type": "string"
             }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "requestBody": {
@@ -2199,6 +2739,53 @@
           }
         },
         "summary": "Adjust or count an item's stock on hand",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/{item_id}/balances": {
+      "get": {
+        "operationId": "list_balances_api_v1_operations_inventory__item_id__balances_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/StockBalanceOut"
+                  },
+                  "title": "Response List Balances Api V1 Operations Inventory  Item Id  Balances Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Where an item's stock is, and in what state (one row per bucket)",
         "tags": [
           "operations"
         ]

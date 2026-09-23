@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from app import domain, selectors
+from app.inventory import selectors as inv_selectors
 from platform_core.auth import Scope
 from tests.helpers import ctx_for
 
@@ -67,8 +68,8 @@ class TestDemoSeed:
         async with session.begin():
             await seed_operations.seed(session, ctx)
         # RM-ALU-7075: on_hand 6, reorder 12 → low; RM-STL-4501: 82 on 40 → healthy.
-        low = await selectors.get_inventory_by_sku(session, org_id, "RM-ALU-7075")
-        healthy = await selectors.get_inventory_by_sku(session, org_id, "RM-STL-4501")
+        low = await inv_selectors.get_inventory_by_sku(session, org_id, "RM-ALU-7075")
+        healthy = await inv_selectors.get_inventory_by_sku(session, org_id, "RM-STL-4501")
         assert low is not None and healthy is not None
         assert domain.is_low_stock(low) is True
         assert domain.is_low_stock(healthy) is False
@@ -90,7 +91,7 @@ class TestDemoSeed:
             await seed_operations.seed(session, write)
 
         pos = await selectors.all_purchase_orders(session, ctx)
-        inventory = await selectors.all_inventory(session, org_id)
+        inventory = await inv_selectors.all_inventory(session, org_id)
         # 15 POs seeded; open = draft(2) + approved(5) = 7.
         assert len(pos) == 15
         assert domain.open_po_count(pos) == 7

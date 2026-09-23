@@ -71,3 +71,4 @@ Two pages are worth reading even if you think you know this codebase:
 [discoveries.md](discoveries.md), because every defect found here passed a green test suite, and
 [production-readiness.md](production-readiness.md), because the honest answer to "can we deploy
 this" is currently no and the reasons are specific.
+- [Inventory & manufacturing plan](inventory/plan.md) · [ADR-0014](adr/0014-inventory-and-manufacturing.md)

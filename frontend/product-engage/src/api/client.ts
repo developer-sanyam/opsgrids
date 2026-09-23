@@ -15,10 +15,23 @@
 
 import { apiRequest } from "@opsgrids/client";
 
-import { CONNECTION, DOMAINS, SENDERS, WHATSAPP_CONNECTION, WHATSAPP_TEMPLATES } from "./fixtures";
+import {
+  CONNECTION,
+  CONTACTS,
+  DOMAINS,
+  SENDERS,
+  SUPPRESSIONS,
+  WHATSAPP_CONNECTION,
+  WHATSAPP_TEMPLATES,
+} from "./fixtures";
 import type {
   ConnectionIn,
   ConnectionOut,
+  ContactImportOut,
+  ContactImportRow,
+  ContactIn,
+  ContactOut,
+  ContactPatch,
   DomainIn,
   DomainOut,
   DomainStatus,
@@ -27,6 +40,9 @@ import type {
   ProviderTemplateOut,
   SenderIn,
   SenderOut,
+  SuppressionIn,
+  SuppressionOut,
+  SuppressionReason,
   TestSendIn,
   WhatsAppConnectionIn,
   WhatsAppConnectionOut,
@@ -286,5 +302,117 @@ export async function submitWhatsAppTemplate(
   return apiRequest<ProviderTemplateOut>("/notifications/provider-templates", {
     method: "PUT",
     body: input,
+  });
+}
+
+/* --------------------------------- contacts -------------------------------- */
+
+/**
+ * The organization's contacts, addresses masked — `GET /engage/contacts`, server-paged.
+ *
+ * `search` is the service's own filter, spelled as the query parameter the route aliases it to:
+ * a name substring, or an exact email address. Partial email search is not offered anywhere in
+ * this screen because it cannot be — addresses are sealed at rest, and `email_masked` is the only
+ * form of one this app ever holds.
+ */
+export async function listContacts(
+  options: { search?: string; page?: number; size?: number } = {},
+): Promise<Page<ContactOut>> {
+  const { search, page = 1, size = 25 } = options;
+  if (USE_FIXTURES) {
+    const q = (search ?? "").trim().toLowerCase();
+    const rows =
+      q === ""
+        ? CONTACTS
+        : CONTACTS.filter(
+            (c) => c.name.toLowerCase().includes(q) || c.email.toLowerCase() === q,
+          );
+    return settle({
+      items: rows,
+      total: rows.length,
+      page: 1,
+      size: rows.length || size,
+      pages: rows.length ? 1 : 0,
+    });
+  }
+  const query = new URLSearchParams({ page: String(page), size: String(size) });
+  if (search !== undefined && search.trim() !== "") query.set("search", search.trim());
+  return apiRequest<Page<ContactOut>>(`/engage/contacts?${query.toString()}`);
+}
+
+/** Add a contact — `POST /engage/contacts`. */
+export async function addContact(input: ContactIn): Promise<ContactOut> {
+  if (USE_FIXTURES) refuseWithoutService("Adding a contact");
+  return apiRequest<ContactOut>("/engage/contacts", { method: "POST", body: input });
+}
+
+/** Edit a contact — `PATCH /engage/contacts/{contact_id}`. */
+export async function editContact(contactId: string, input: ContactPatch): Promise<ContactOut> {
+  if (USE_FIXTURES) refuseWithoutService("Editing a contact");
+  return apiRequest<ContactOut>(`/engage/contacts/${encodeURIComponent(contactId)}`, {
+    method: "PATCH",
+    body: input,
+  });
+}
+
+/** Delete a contact — `DELETE /engage/contacts/{contact_id}`. Any suppression of the address
+ *  stays: deleting the contact is not the same fact as the address being safe to mail again. */
+export async function deleteContact(contactId: string): Promise<void> {
+  if (USE_FIXTURES) refuseWithoutService("Deleting a contact");
+  await apiRequest<void>(`/engage/contacts/${encodeURIComponent(contactId)}`, {
+    method: "DELETE",
+  });
+}
+
+/**
+ * Upsert up to `CONTACT_IMPORT_MAX` contacts by address, reporting each row —
+ * `POST /engage/contacts/import`.
+ *
+ * Answers `200` even when some rows are invalid: the per-row `status` in `ContactImportOut` is
+ * the answer, and one bad address in a pasted spreadsheet does not throw away the other 999.
+ */
+export async function importContacts(rows: ContactImportRow[]): Promise<ContactImportOut> {
+  if (USE_FIXTURES) refuseWithoutService("Importing contacts");
+  return apiRequest<ContactImportOut>("/engage/contacts/import", {
+    method: "POST",
+    body: rows,
+  });
+}
+
+/* -------------------------------- suppressions ------------------------------- */
+
+/** Addresses that may not be mailed, and why — `GET /engage/suppressions`, server-paged. */
+export async function listSuppressions(
+  options: { reason?: SuppressionReason; page?: number; size?: number } = {},
+): Promise<Page<SuppressionOut>> {
+  const { reason, page = 1, size = 25 } = options;
+  if (USE_FIXTURES) {
+    const rows = reason === undefined ? SUPPRESSIONS : SUPPRESSIONS.filter((s) => s.reason === reason);
+    return settle({
+      items: rows,
+      total: rows.length,
+      page: 1,
+      size: rows.length || size,
+      pages: rows.length ? 1 : 0,
+    });
+  }
+  const query = new URLSearchParams({ page: String(page), size: String(size) });
+  if (reason !== undefined) query.set("reason", reason);
+  return apiRequest<Page<SuppressionOut>>(`/engage/suppressions?${query.toString()}`);
+}
+
+/** Suppress an address by hand — `POST /engage/suppressions`. Always lands as `reason: "manual"`;
+ *  the other reasons are reported by the recipient or their mailbox provider. */
+export async function addSuppression(input: SuppressionIn): Promise<SuppressionOut> {
+  if (USE_FIXTURES) refuseWithoutService("Suppressing an address");
+  return apiRequest<SuppressionOut>("/engage/suppressions", { method: "POST", body: input });
+}
+
+/** Lift a manual suppression — `DELETE /engage/suppressions/{suppression_id}`. The service
+ *  refuses this for any reason but `manual`, so the screen never offers it for the rest. */
+export async function removeSuppression(suppressionId: string): Promise<void> {
+  if (USE_FIXTURES) refuseWithoutService("Lifting a suppression");
+  await apiRequest<void>(`/engage/suppressions/${encodeURIComponent(suppressionId)}`, {
+    method: "DELETE",
   });
 }

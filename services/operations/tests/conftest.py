@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app import services
 from app.config import settings
+from app.inventory import services as inv_services
 from app.main import app
 from app.models import SCHEMA
 from platform_core.auth import Scope
@@ -43,7 +44,13 @@ from tests.helpers import ctx_for
 TENANT_TABLES = (
     "purchase_order_lines",
     "purchase_orders",
+    "inventory_discrepancies",
+    "inventory_reservations",
+    "inventory_balances",
+    "inventory_ledger",
+    "inventory_moves",
     "inventory_items",
+    "locations",
     "warehouses",
     "suppliers",
     "audit_logs",
@@ -104,10 +111,10 @@ async def data(session: AsyncSession, org_id: uuid.UUID) -> dict:
     write = ctx_for(org_id, "operations.procurement.purchase_order.write", Scope.ORG)
 
     async with session.begin():
-        await services.create_warehouse(
+        await inv_services.create_warehouse(
             session, write, code="WH-PUN", name="Pune Plant", location="Pune"
         )
-        await services.create_warehouse(
+        await inv_services.create_warehouse(
             session, write, code="WH-BLR", name="Bengaluru Store", location="Bengaluru"
         )
 
@@ -208,7 +215,7 @@ async def data(session: AsyncSession, org_id: uuid.UUID) -> dict:
         )
 
         # One low-stock item (below reorder point) and one healthy one.
-        low_stock_item = await services.create_inventory_item(
+        low_stock_item = await inv_services.create_inventory_item(
             session,
             write,
             sku="RM-ALU-7075",
@@ -222,7 +229,7 @@ async def data(session: AsyncSession, org_id: uuid.UUID) -> dict:
             currency="INR",
             stocked_at=date(2026, 8, 22),
         )
-        healthy_item = await services.create_inventory_item(
+        healthy_item = await inv_services.create_inventory_item(
             session,
             write,
             sku="CMP-REL-014",

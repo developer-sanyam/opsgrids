@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Channel = Literal["email", "whatsapp"]
 TemplateCategory = Literal["utility", "marketing", "authentication"]
@@ -489,3 +489,142 @@ class SuppressionOut(BaseModel):
 
 class UnsubscribeOut(BaseModel):
     unsubscribed: bool
+
+
+# --------------------------------------------------------------------- engage lists
+
+LIST_MEMBERS_MAX = 1000
+
+
+class ContactListIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2000)
+
+
+class ContactListPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=2000)
+
+
+class ContactListOut(BaseModel):
+    id: str
+    name: str
+    description: str
+    member_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ListMembersIn(BaseModel):
+    """Contact ids to add or remove. Ids that are not this organization's contacts are reported
+    back rather than failing the batch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    contact_ids: list[uuid.UUID] = Field(min_length=1, max_length=LIST_MEMBERS_MAX)
+
+
+class ListMembersOut(BaseModel):
+    changed: int
+    unknown: list[str]
+
+
+# --------------------------------------------------------------------- engage campaigns
+
+CampaignStatus = Literal["draft", "scheduled", "sending", "paused", "sent", "cancelled"]
+CampaignAudience = Literal["list", "all_sendable"]
+RecipientStatus = Literal["queued", "sent", "failed", "suppressed"]
+
+
+def _reject_header_injection(value: str) -> str:
+    """A `\\r` or `\\n` in a subject is not a longer subject — it is the start of a second mail
+    header an attacker controls (bcc, another `Subject`, a `Content-Type`). Refused at the
+    boundary rather than stripped, so the caller sees why rather than silently getting a
+    different subject than the one they asked for; every recipient of a campaign carries the
+    same subject line, so letting one through would poison the whole send."""
+    if "\r" in value or "\n" in value:
+        raise ValueError("must not contain a carriage return or line feed")
+    return value
+
+
+class CampaignIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    sender_id: uuid.UUID
+    subject: str = Field(default="", max_length=255)
+    html_body: str = Field(default="", max_length=500_000)
+    text_body: str = Field(default="", max_length=500_000)
+    audience: CampaignAudience = "all_sendable"
+    list_id: uuid.UUID | None = None
+    scheduled_at: datetime | None = None
+
+    @field_validator("subject")
+    @classmethod
+    def _subject_no_crlf(cls, value: str) -> str:
+        return _reject_header_injection(value)
+
+
+class CampaignPatch(BaseModel):
+    """Partial edit of a draft. An absent field is left alone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    sender_id: uuid.UUID | None = None
+    subject: str | None = Field(default=None, max_length=255)
+    html_body: str | None = Field(default=None, max_length=500_000)
+    text_body: str | None = Field(default=None, max_length=500_000)
+    audience: CampaignAudience | None = None
+    list_id: uuid.UUID | None = None
+    scheduled_at: datetime | None = None
+
+    @field_validator("subject")
+    @classmethod
+    def _subject_no_crlf(cls, value: str | None) -> str | None:
+        return value if value is None else _reject_header_injection(value)
+
+
+class CampaignStats(BaseModel):
+    recipients: int
+    queued: int
+    sent: int
+    failed: int
+    suppressed: int
+
+
+class CampaignOut(BaseModel):
+    id: str
+    name: str
+    sender_id: str
+    subject: str
+    html_body: str
+    text_body: str
+    audience: CampaignAudience
+    list_id: str | None
+    status: CampaignStatus
+    scheduled_at: datetime | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    cancelled_at: datetime | None
+    #: Why the send driver paused this campaign (no connected provider, no usable sender).
+    #: Empty unless `status == "paused"`.
+    pause_reason: str
+    stats: CampaignStats
+    created_at: datetime
+    updated_at: datetime
+
+
+class CampaignRecipientOut(BaseModel):
+    id: str
+    contact_id: str
+    #: Masked. Copied sealed at expansion; no read route opens it.
+    email: str
+    status: RecipientStatus
+    provider_message_id: str | None
+    error: str
+    sent_at: datetime | None
