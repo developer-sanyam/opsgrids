@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Index, String, UniqueConstraint
+from sqlalchemy import DateTime, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -29,13 +29,17 @@ from platform_core.models import TenantBase
 
 SCHEMA = "scheduler"
 
-#: The two states a job passes through. No `cancelled` in this slice — nothing asks to withdraw a
-#: schedule yet (ADR-0015, "Deliberately out of scope"); adding one is a column and a new query
-#: branch, not a redesign.
+#: The states a job passes through. `parked` is where a job that keeps failing to fire ends up
+#: once `services.MAX_FIRE_ATTEMPTS` is spent (ADR-0015 §3) — excluded from `due_jobs` the same
+#: way `fired` is, so a poisoned row stops being retried every tick and starts being an operator's
+#: problem instead. No `cancelled` in this slice — nothing asks to withdraw a schedule yet
+#: (ADR-0015, "Deliberately out of scope"); adding one is a column and a new query branch, not a
+#: redesign.
 STATUS_PENDING = "pending"
 STATUS_FIRED = "fired"
+STATUS_PARKED = "parked"
 
-STATUSES = (STATUS_PENDING, STATUS_FIRED)
+STATUSES = (STATUS_PENDING, STATUS_FIRED, STATUS_PARKED)
 
 
 class Base(_Base):
@@ -87,6 +91,13 @@ class ScheduledJob(Base, TenantBase):
     fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: The id of the outbox row this job produced when it fired — the audit trail's other half.
     fired_event_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
+    #: How many times *firing* this row has raised (never incremented for the ordinary, expected
+    #: "another driver already holds it" skip — only for an actual exception). `app/cron.py`'s
+    #: `_fire` records one here, in its own transaction, whenever `services.fire_job` raises;
+    #: `services.MAX_FIRE_ATTEMPTS` is the ceiling that flips `status` to `parked`.
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
         UniqueConstraint(

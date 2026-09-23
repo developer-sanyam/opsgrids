@@ -6,15 +6,19 @@ request's one transaction and binds it to the caller's organization first (ADR-0
 so the state change, its audit entry and any event it emits all commit or all roll back
 together.
 
-Three writes (ADR-0015):
+Four writes (ADR-0015):
 
 * **`ingest_schedule_request`** — the consumer's own write, turning one
   `platform.schedule.requested` event into (at most) one `scheduled_jobs` row.
 * **`fire_job`** — the sweep's own write, turning one due row into an outbox event addressed
   at its target and marking the row fired. Never called outside a lock already held by the
   caller (`app/selectors.py:get_job_for_firing`).
+* **`record_fire_failure`** — the sweep's own write when `fire_job` raised: bumps `attempts`
+  and `last_error` in a fresh transaction (the one `fire_job` itself was in has already rolled
+  back), parking the row once `MAX_FIRE_ATTEMPTS` is spent so a poisoned job stops being
+  retried every tick and starts being an operator's problem.
 * **`purge_stale_fired_jobs`** — the retention pass, deleting one organization's own `fired`
-  rows past `SCHEDULED_JOB_RETENTION`.
+  rows past its retention window.
 """
 
 from __future__ import annotations
@@ -29,16 +33,24 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors
-from app.models import STATUS_FIRED, OutboxEvent, ScheduledJob
+from app.models import STATUS_FIRED, STATUS_PARKED, OutboxEvent, ScheduledJob
 from platform_core.events import publish_event
 from platform_core.logging import correlation_id_ctx, get_logger
 
 log = get_logger("scheduler.services")
 
-#: How long a fired row is kept before the retention pass deletes it (ADR-0015 §7). A `pending`
-#: row is never touched by retention regardless of age — only a job's own audit trail ages out
-#: once it has done its job.
+#: The default retention window — how long a fired row is kept before the retention pass
+#: deletes it (ADR-0015 §7). A `pending` row is never touched by retention regardless of age —
+#: only a job's own audit trail ages out once it has done its job. `app/cron.py`'s `main()`
+#: reads `Settings.scheduled_job_retention_days` and passes the real window to `Sweep`; this is
+#: the fallback a caller that constructs `Sweep` directly (a test, `make cron`) gets for free.
 SCHEDULED_JOB_RETENTION = timedelta(days=7)
+
+#: How many times firing a row may raise before it is parked rather than retried forever
+#: (ADR-0015 §3). Deliberately generous — most transient failures (a deadlock, a brief DB
+#: blip) resolve within a tick or two — but finite, because a row that only ever raises is
+#: indistinguishable from an infinite loop dressed up as a healthy, busy sweep.
+MAX_FIRE_ATTEMPTS = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +157,45 @@ async def fire_job(
     return FireResult(fired=True)
 
 
+async def record_fire_failure(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    job_id: uuid.UUID,
+    error: str,
+    max_attempts: int = MAX_FIRE_ATTEMPTS,
+) -> bool:
+    """Record that firing this row raised, and park it once `max_attempts` is spent.
+
+    Called from `app/cron.py`'s `_fire`, in a **fresh** transaction: the one `fire_job` ran in
+    already rolled back when it raised, taking any attribute change on `job` with it, so there
+    is nothing left on that object to persist — this re-selects the row from scratch. Still
+    under `SELECT ... FOR UPDATE SKIP LOCKED` (`app/selectors.py:get_job_for_firing`): a `None`
+    here means another driver already claimed the row (fired it, or is itself recording a
+    failure) in the gap since discovery, and this call is a no-op rather than a race.
+
+    Returns whether this call is what parked it, so the caller can count it without a second
+    query.
+    """
+    job = await selectors.get_job_for_firing(session, organization_id, job_id)
+    if job is None:
+        return False
+    job.attempts += 1
+    job.last_error = error[:2000]
+    if job.attempts >= max_attempts:
+        job.status = STATUS_PARKED
+        log.error(
+            "scheduler.job.parked",
+            organization_id=str(organization_id),
+            job_id=str(job_id),
+            attempts=job.attempts,
+            target_event_type=job.target_event_type,
+            last_error=job.last_error,
+        )
+        return True
+    return False
+
+
 async def purge_stale_fired_jobs(
     session: AsyncSession,
     *,
@@ -176,5 +227,12 @@ async def purge_stale_fired_jobs(
     )
     if not ids:
         return 0
-    await session.execute(delete(ScheduledJob).where(ScheduledJob.id.in_(ids)))
+    # `organization_id` repeated here even though row-level security already enforces it (CLAUDE.md:
+    # "RLS enforces it as a net; do not treat RLS as permission to skip the filter") — belt over
+    # the net, and it costs the planner nothing since `ids` already came from this organization.
+    await session.execute(
+        delete(ScheduledJob).where(
+            ScheduledJob.id.in_(ids), ScheduledJob.organization_id == organization_id
+        )
+    )
     return len(ids)

@@ -44,6 +44,8 @@ def upgrade() -> None:
         sa.Column('correlation_id', sa.String(length=64), nullable=True),
         sa.Column('fired_at', sa.DateTime(timezone=True), nullable=True),
         sa.Column('fired_event_id', sa.UUID(), nullable=True),
+        sa.Column('attempts', sa.Integer(), nullable=False),
+        sa.Column('last_error', sa.Text(), nullable=True),
         sa.PrimaryKeyConstraint('id', name=op.f('pk_scheduled_jobs')),
         sa.UniqueConstraint(
             'organization_id', 'idempotency_key', name='uq_scheduled_jobs_org_idempotency'

@@ -32,8 +32,10 @@ def _envelope(
     organization_id: uuid.UUID,
     *,
     event_id: uuid.UUID | None = None,
+    producer: str = "finance",
     idempotency_key: str = "job-1",
     due_at: datetime | None = None,
+    target_event_type: str = "finance.compliance.invoice.filing_requested",
     target_aggregate_id: uuid.UUID | None = None,
     target_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -41,12 +43,13 @@ def _envelope(
         "event_id": str(event_id or uuid.uuid4()),
         "event_type": "platform.schedule.requested",
         "organization_id": str(organization_id),
+        "producer": producer,
         "correlation_id": "corr-1",
         "payload": {
             "idempotency_key": idempotency_key,
             "due_at": (due_at or datetime.now(UTC) + timedelta(hours=1)).isoformat(),
             "target": {
-                "event_type": "finance.compliance.invoice.filing_requested",
+                "event_type": target_event_type,
                 "aggregate_type": "invoice",
                 "aggregate_id": str(target_aggregate_id or uuid.uuid4()),
                 "payload": target_payload or {"attempt": 2, "trigger": "retry"},
@@ -149,3 +152,65 @@ class TestTenantIsolation:
         async with bind_session(other_org) as other_session:
             visible = (await other_session.execute(select(ScheduledJob))).scalars().all()
         assert visible == []
+
+
+class TestOwnershipIsEnforced:
+    """A producer may only ask the scheduler to hold an event that is its own (ADR-0015 §2,
+    review fix): `target_event_type` must be namespaced under the envelope's own `producer`,
+    and an embedded `target_payload.organization_id` must agree with the envelope's."""
+
+    async def test_a_target_event_type_outside_the_producers_namespace_is_rejected(
+        self, session: Any, org_id: uuid.UUID
+    ) -> None:
+        envelope = _envelope(
+            org_id, producer="finance", target_event_type="approval.request.decided"
+        )
+
+        await handle_schedule_requested(envelope)  # must not raise
+
+        assert await _rows(session, org_id) == []
+
+    async def test_a_missing_producer_is_rejected(self, session: Any, org_id: uuid.UUID) -> None:
+        envelope = _envelope(org_id)
+        del envelope["producer"]
+
+        await handle_schedule_requested(envelope)
+
+        assert await _rows(session, org_id) == []
+
+    async def test_a_mismatched_target_payload_organization_is_rejected(
+        self, session: Any, org_id: uuid.UUID, other_org: uuid.UUID
+    ) -> None:
+        envelope = _envelope(
+            org_id,
+            target_payload={"attempt": 2, "trigger": "retry", "organization_id": str(other_org)},
+        )
+
+        await handle_schedule_requested(envelope)
+
+        assert await _rows(session, org_id) == []
+
+    async def test_a_matching_target_payload_organization_is_accepted(
+        self, session: Any, org_id: uuid.UUID
+    ) -> None:
+        envelope = _envelope(
+            org_id,
+            target_payload={"attempt": 2, "trigger": "retry", "organization_id": str(org_id)},
+        )
+
+        await handle_schedule_requested(envelope)
+
+        assert len(await _rows(session, org_id)) == 1
+
+    async def test_a_rejected_request_is_still_marked_processed(
+        self, session: Any, org_id: uuid.UUID
+    ) -> None:
+        """A rejection does not become processable by redelivering it — same discipline as a
+        malformed payload."""
+        envelope = _envelope(org_id, producer="approval")
+
+        await handle_schedule_requested(envelope)
+
+        async with session.begin():
+            processed = await session.get(ProcessedEvent, uuid.UUID(envelope["event_id"]))
+        assert processed is not None

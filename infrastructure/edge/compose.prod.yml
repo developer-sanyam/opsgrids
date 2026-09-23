@@ -787,6 +787,22 @@ services:
     image: opsgrids-edge/finance
     command: ['./bin/worker']
     environment: *service-env
+    # `service_started`, not `service_healthy`: `scheduler` has no HTTP healthcheck to report
+    # one (`*background`'s is disabled). This only orders container *creation* — it does not
+    # wait for `scheduler`'s own `assert_app_role`/`assert_outbox_role` startup checks to pass
+    # — so a `not_before` retry staged before `scheduler`'s consumer has actually finished
+    # booting still queues normally on finance's own outbox (ADR-0015 §6: the guaranteed-
+    # routing channel is what protects that gap, not this ordering); this only avoids the
+    # avoidable case of `finance-worker` starting before `scheduler`'s image even exists.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      scheduler:
+        condition: service_started
 
   # ADR-0015: the delayed-delivery primitive, and finance's e-Invoice retry backoff is its first
   # (and today, only) producer of `platform.schedule.requested` — so it ships behind the same

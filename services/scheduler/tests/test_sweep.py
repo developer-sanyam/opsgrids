@@ -248,3 +248,48 @@ class TestTenantIsolation:
             organization_id, status = refreshed.organization_id, refreshed.status
         assert organization_id == other_org
         assert status == "fired"
+
+
+class TestParkingAPermanentlyFailingJob:
+    async def test_a_job_that_keeps_failing_to_fire_is_parked_after_the_attempt_budget(
+        self, session: AsyncSession, org_id: uuid.UUID, sweep: Any, monkeypatch: Any
+    ) -> None:
+        """A row that raises on every firing attempt must stop being retried every tick once
+        `services.MAX_FIRE_ATTEMPTS` is spent — parked, not looped on forever."""
+        from app import services
+
+        async with session.begin():
+            job = await _seed_job(session, org_id, due_at=datetime.now(UTC) - timedelta(minutes=1))
+            job_id = job.id
+
+        async def _raising_fire_job(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("the portal this job targets is not the point of this test")
+
+        monkeypatch.setattr(services, "fire_job", _raising_fire_job)
+
+        for _ in range(services.MAX_FIRE_ATTEMPTS - 1):
+            report = await sweep.tick()
+            assert report.failed == 1
+            assert report.parked == 0
+            async with session.begin():
+                session.expire(job)
+                refreshed = await session.get(ScheduledJob, job_id)
+                assert refreshed is not None
+                assert refreshed.status == "pending"
+
+        # The budget's last attempt: this tick is the one that parks it.
+        report = await sweep.tick()
+        assert report.failed == 1
+        assert report.parked == 1
+
+        async with session.begin():
+            session.expire(job)
+            refreshed = await session.get(ScheduledJob, job_id)
+            assert refreshed is not None
+            assert refreshed.status == "parked"
+            assert refreshed.attempts == services.MAX_FIRE_ATTEMPTS
+            assert refreshed.last_error
+
+        # Parked means discovery stops finding it — the whole point.
+        report = await sweep.tick()
+        assert report.considered == 0

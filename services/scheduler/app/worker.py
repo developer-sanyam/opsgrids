@@ -17,6 +17,7 @@ loop starts.
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 
 from app.config import settings
 from app.consumers import consumer
@@ -45,6 +46,7 @@ async def main() -> None:
     sweep = Sweep(
         discovery_factory=get_outbox_sessionmaker(),
         work_scope=lambda organization_id: session_scope(organization_id=organization_id),
+        retention=timedelta(days=cfg.scheduled_job_retention_days),
     )
     log.info("scheduler.worker.started")
     await asyncio.gather(consumer.run(), sweep.run())

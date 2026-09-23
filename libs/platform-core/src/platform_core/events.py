@@ -208,6 +208,18 @@ class OutboxRelay:
     queries a second.
     """
 
+    #: Event types that must never be silently dropped for want of a bound queue (ADR-0015
+    #: §6). A topic exchange publish with nobody bound to the routing key is, by default, a
+    #: message the broker still confirms and the relay still marks `published_at` — it is
+    #: gone, and nothing anywhere noticed. That is an acceptable, long-standing trade for
+    #: ordinary events (a consumer that has not deployed yet loses events it was never going
+    #: to see anyway, until it does deploy and the queue exists). It is not acceptable for
+    #: `platform.schedule.requested`: the whole point of asking the scheduler to hold
+    #: something is that it must actually arrive there.
+    _GUARANTEED_ROUTING_EVENT_TYPES: Final[frozenset[str]] = frozenset(
+        {PLATFORM_SCHEDULE_REQUESTED}
+    )
+
     def __init__(
         self,
         *,
@@ -220,6 +232,7 @@ class OutboxRelay:
         max_attempts: int = 50,
         max_backoff: float = 60.0,
         max_idle_interval: float = 5.0,
+        guaranteed_routing_event_types: frozenset[str] | None = None,
     ) -> None:
         self._amqp_url = amqp_url
         self._outbox_cls = outbox_cls
@@ -230,6 +243,11 @@ class OutboxRelay:
         self._max_attempts = max_attempts
         self._max_backoff = max_backoff
         self._max_idle_interval = max_idle_interval
+        self._guaranteed_routing_event_types = (
+            guaranteed_routing_event_types
+            if guaranteed_routing_event_types is not None
+            else self._GUARANTEED_ROUTING_EVENT_TYPES
+        )
         self._stop = False
 
     def stop(self) -> None:
@@ -244,6 +262,20 @@ class OutboxRelay:
             exchange = await channel.declare_exchange(
                 EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True
             )
+            # A second channel, used only for `_guaranteed_routing_event_types`.
+            # `on_return_raises=True` turns an unroutable publish on *this* channel into an
+            # exception `_drain` already treats as a failed publish (attempts bumped,
+            # retried next pass) instead of the ordinary channel's silent confirm-and-drop.
+            # Scoped to its own channel and a small, named set of event types on purpose:
+            # every other event keeps today's behaviour, completely unexamined here — this
+            # is not a platform-wide policy change, just a guarantee for the one event type
+            # that needs one.
+            guaranteed_channel = await connection.channel(
+                publisher_confirms=True, on_return_raises=True
+            )
+            guaranteed_exchange = await guaranteed_channel.declare_exchange(
+                EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True
+            )
             log.info("outbox.relay.started", producer=self._producer)
             backoff = self._poll_interval
             # Below poll_interval, max() clamps this to poll_interval every pass — i.e. no
@@ -251,7 +283,7 @@ class OutboxRelay:
             idle_cap = max(self._max_idle_interval, self._poll_interval)
             idle = self._poll_interval
             while not self._stop:
-                published, failed = await self._drain(exchange)
+                published, failed = await self._drain(exchange, guaranteed_exchange)
                 if failed:
                     # A struggling broker must not be retried in a tight loop. Each pass
                     # burns one of every failing row's attempts, so without spacing a
@@ -272,13 +304,24 @@ class OutboxRelay:
                 else:
                     idle = self._poll_interval
 
-    async def _drain(self, exchange: aio_pika.abc.AbstractExchange) -> tuple[int, int]:
+    async def _drain(
+        self,
+        exchange: aio_pika.abc.AbstractExchange,
+        guaranteed_exchange: aio_pika.abc.AbstractExchange | None = None,
+    ) -> tuple[int, int]:
         """One pass over the claimable backlog. Returns ``(published, failed)``.
 
         Failures are counted rather than folded into the batch size, because the run loop
         must know the difference: a full batch of failed publishes used to come back as
         "progress" and drive a sleepless retry loop.
+
+        ``guaranteed_exchange`` defaults to ``exchange`` — every existing single-exchange
+        caller (a service's own `bin/relay`, and every test that calls this directly) keeps
+        publishing everything through the one exchange it passed, unchanged. `run()` is the
+        only caller that ever passes two: a row whose `event_type` is one of
+        `_guaranteed_routing_event_types` goes out on the strict one instead.
         """
+        target_exchange = guaranteed_exchange if guaranteed_exchange is not None else exchange
         cls: Any = self._outbox_cls
         published = failed = 0
         async with self._session_factory() as session, session.begin():
@@ -297,8 +340,13 @@ class OutboxRelay:
             )
             for row in rows:
                 envelope = build_envelope(row, producer=self._producer)
+                publish_via = (
+                    target_exchange
+                    if row.event_type in self._guaranteed_routing_event_types
+                    else exchange
+                )
                 try:
-                    await exchange.publish(
+                    await publish_via.publish(
                         aio_pika.Message(
                             body=json.dumps(envelope, default=str).encode(),
                             content_type="application/json",

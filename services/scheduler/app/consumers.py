@@ -11,6 +11,19 @@ covers).
 A payload that fails to parse is logged and dropped, never raised: `EventConsumer` redelivers
 once and then dead-letters, and a malformed payload does not become processable by retrying it
 (the same discipline `approval/app/consumers.py`'s `_hierarchy_state` documents).
+
+Scheduler is deliberately blind to what an event *means* (ADR-0015 §2) — it never inspects
+`target_payload` beyond carrying it — but not blind to who may ask for one delivered. Two checks
+stand between "the consumer parsed this" and "the row gets created", both logged as
+`scheduler.schedule_requested.rejected` rather than raised, for the same reason a malformed
+payload is dropped rather than raised: a request that fails an ownership check does not pass it
+on retry. **Ownership**: `target_event_type` must start with `envelope["producer"] + "."` — the
+same routing-key convention every queue binding in this platform already trusts, so a producer
+may only ask the scheduler to hold an event that is its own, never one addressed as another
+service's. **Tenant consistency**: if `target_payload` carries its own `organization_id`, it must
+agree with the envelope's — the envelope's is a column the *producer's* row-level security
+enforced when it staged this request, and a payload that disagrees with it is either a bug or
+something worse, either way not safe to schedule.
 """
 
 from __future__ import annotations
@@ -67,11 +80,44 @@ def _parse(envelope: dict[str, Any]) -> services.ScheduleRequest | None:
         return None
 
 
+def _rejection_reason(envelope: dict[str, Any], request: services.ScheduleRequest) -> str | None:
+    """Why this schedule request should be refused, or `None` if it may proceed.
+
+    See the module docstring for what each check guards against. Both are cheap, both trust the
+    envelope over the payload — the envelope is what the producer's own row-level security wrote,
+    the payload is JSON along for the ride — and neither requires touching the database to answer.
+    """
+    producer = str(envelope.get("producer") or "")
+    if not producer or not request.target_event_type.startswith(f"{producer}."):
+        return (
+            f"target_event_type {request.target_event_type!r} is not owned by producer {producer!r}"
+        )
+    payload_organization_id = request.target_payload.get("organization_id")
+    if payload_organization_id is not None and str(payload_organization_id) != str(
+        envelope["organization_id"]
+    ):
+        return (
+            f"target_payload.organization_id {payload_organization_id!r} does not match "
+            f"the envelope's organization {envelope['organization_id']!r}"
+        )
+    return None
+
+
 async def handle_schedule_requested(envelope: dict[str, Any]) -> None:
     event_id = uuid.UUID(str(envelope["event_id"]))
     organization_id = uuid.UUID(str(envelope["organization_id"]))
 
     request = _parse(envelope)
+    if request is not None:
+        reason = _rejection_reason(envelope, request)
+        if reason is not None:
+            log.error(
+                "scheduler.schedule_requested.rejected",
+                event_id=str(event_id),
+                organization_id=str(organization_id),
+                reason=reason,
+            )
+            request = None
 
     # The GUC is set here, per message: `scheduled_jobs` is a NOBYPASSRLS write against a forced
     # tenant policy and only passes because of this binding (ADR-0002 §2).

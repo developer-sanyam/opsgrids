@@ -795,6 +795,66 @@ class TestNotBeforeScheduling:
             scheduled = await _scheduled_requests(session, org_id)
         assert len(scheduled) == 1
 
+    async def test_a_not_before_within_the_clock_tolerance_is_not_early_arrival(
+        self, session, org_id, monkeypatch
+    ) -> None:
+        """A `not_before` a few seconds in the future is ordinary scheduling latency, not an
+        early arrival — the guard forgives `domain.FILING_EARLY_ARRIVAL_TOLERANCE` of clock
+        skew between the scheduler's clock and this pod's."""
+        ctx = admin_ctx(org_id)
+        await _finalize(session, ctx, "INV-AUTO-SKEW-1")
+        portal = CountingPortal()
+        monkeypatch.setattr("app.consumers.get_irp_client", lambda: portal)
+
+        async with session.begin():
+            rows = await _requests(session, org_id)
+        finalize_envelope = _envelope(rows[0])
+        barely_future = (datetime.now(UTC) + domain.FILING_EARLY_ARRIVAL_TOLERANCE / 2).isoformat()
+        envelope = {
+            **finalize_envelope,
+            "event_id": str(uuid.uuid4()),
+            "payload": {**finalize_envelope["payload"], "attempt": 2, "not_before": barely_future},
+        }
+
+        await file_requested_invoice(envelope)
+
+        assert len(portal.calls) == 1
+        async with session.begin():
+            scheduled = await _scheduled_requests(session, org_id)
+        assert scheduled == []
+
+
+class TestEnvelopeOrganizationIsTrustedOverThePayload:
+    """The tenant is bound from the envelope's own `organization_id`, never the payload's
+    (ADR-0015 review fix): the envelope's is a column the producer's row-level security
+    enforced, the payload is JSON along for the ride."""
+
+    async def test_a_payload_naming_a_different_organization_is_refused(
+        self, session, org_id, monkeypatch
+    ) -> None:
+        other_org = uuid.uuid4()
+        ctx = admin_ctx(org_id)
+        await _finalize(session, ctx, "INV-AUTO-ORGMISMATCH-1")
+        portal = CountingPortal()
+        monkeypatch.setattr("app.consumers.get_irp_client", lambda: portal)
+
+        async with session.begin():
+            rows = await _requests(session, org_id)
+        envelope = _envelope(rows[0])
+        tampered_event_id = str(uuid.uuid4())
+        tampered_envelope = {
+            **envelope,
+            "event_id": tampered_event_id,
+            "payload": {**envelope["payload"], "organization_id": str(other_org)},
+        }
+
+        await file_requested_invoice(tampered_envelope)  # must not raise
+
+        assert portal.calls == []
+        async with session.begin():
+            processed = await session.get(ProcessedEvent, uuid.UUID(tampered_event_id))
+        assert processed is not None
+
 
 # --------------------------------------------------------------------- terminal rejection
 
