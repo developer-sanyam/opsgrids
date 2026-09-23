@@ -29,12 +29,20 @@ The invariants, all over what billing actually **finalized** (announced, and so 
 4. **Nothing charged on a voided or skipped parent**, no finalized invoice ever voided, no charge
    on a row that is not `finalized`, no two charges for one upgrade, and every claim settled.
 5. **Totals are integers.**
+
+**Across a billing cutover** (`test_money_invariants_hold_across_a_cutover`, the reviewer's
+randomised variant, second post-review fixup): the same lives with `BILLING_RUN_NOT_BEFORE` at a
+random offset of 0-60 days, the run either on throughout or off until the cutover. There, nothing
+recurring that began before the cutover is charged, no usage window starts before it, recurring
+time is covered from the first lifecycle boundary at or after it, usage from the cutover on — and
+the rest of the invariants above hold as they are.
 """
 
 from __future__ import annotations
 
 import bisect
 import contextlib
+import dataclasses
 import itertools
 import os
 import random
@@ -49,6 +57,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import billing_run as billing_run_module
 from app import domain, services
 from app.billing_run import BillingRunSweep
+from app.config import settings
 from app.models import (
     PERIOD_FINALIZED,
     STATE_ACTIVE,
@@ -61,7 +70,7 @@ from app.models import (
 )
 from app.schemas import PaymentOutcome
 from platform_core.errors import BusinessRuleProblem, ConflictProblem, ForbiddenProblem
-from tests.billing_fakes import Crash, FakeBilling, FakePayment
+from tests.billing_fakes import Crash, FakeBilling, FakePayment, _make_sweep
 from tests.helpers import FakeCatalog
 from tests.test_billing_run import _periods, _subscription
 from tests.test_billing_run_round2 import _ctx, _subscribe, _version
@@ -125,6 +134,16 @@ class History:
         return [t for t, _ in self.pins[1:] if start < t < end]
 
 
+@dataclasses.dataclass
+class Lived:
+    """One seed's life: what the test did and saw, and every billing row it left."""
+
+    history: History
+    rows: list[BillingPeriod]
+    paid_start: datetime
+    cancelled_at: datetime | None
+
+
 async def _run(
     seed: int,
     run: BillingRunSweep,
@@ -133,7 +152,11 @@ async def _run(
     session: AsyncSession,
     catalog: FakeCatalog,
     org_id: uuid.UUID,
-) -> list[Any]:
+    *,
+    run_from: datetime | None = None,
+) -> Lived:
+    """Live one seed. `run_from` holds the billing run off until that instant, as a box with the
+    run disabled until its cutover does."""
     rng = random.Random(seed)  # noqa: S311 — deterministic test data, not secrets
     CLOCK[0] = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(days=seed % 97, minutes=seed)
     trial = rng.random() < 0.35
@@ -174,8 +197,9 @@ async def _run(
         return sub
 
     async def tick() -> None:
-        with contextlib.suppress(Crash):
-            await run.tick(now=CLOCK[0])
+        if run_from is None or CLOCK[0] >= run_from:
+            with contextlib.suppress(Crash):
+                await run.tick(now=CLOCK[0])
         await observe()
 
     async def latest_charged_invoice() -> uuid.UUID | None:
@@ -357,11 +381,18 @@ async def _run(
     for _ in range(10):
         CLOCK[0] += timedelta(hours=7)
         await tick()
+    if run_from is not None and CLOCK[0] < run_from:
+        # The run comes on at its cutover and catches up.
+        CLOCK[0] = run_from + timedelta(hours=1)
+        for _ in range(4):
+            CLOCK[0] += timedelta(hours=7)
+            await tick()
 
     sub = await _subscription(session, subscription_id)
     cancelled_at = sub.cancel_at or cancelled_at
     rows = await _periods(session, subscription_id)
-    return _check(history, rows, billing, paid_start, cancelled_at, trial)
+    _ = trial
+    return Lived(history, rows, paid_start, cancelled_at)
 
 
 async def _lock_cycle(session: AsyncSession, cycle_id: uuid.UUID) -> DunningCycle:
@@ -411,14 +442,9 @@ def _overlaps(spans: list[tuple[datetime, datetime, str]]) -> list[Any]:
     return [(a, b) for a, b in itertools.pairwise(spans) if b[0] < a[1]]
 
 
-def _check(
-    history: History,
-    rows: list[BillingPeriod],
-    billing: FakeBilling,
-    paid_start: datetime,
-    cancelled_at: datetime | None,
-    trial: bool,
-) -> list[Any]:
+def _check(lived: Lived, billing: FakeBilling) -> list[Any]:
+    history, rows = lived.history, lived.rows
+    paid_start, cancelled_at = lived.paid_start, lived.cancelled_at
     problems: list[Any] = list(history.violations)
     finalized = set(billing.finalized)
     charged = [r for r in rows if r.invoice_id is not None and r.invoice_id in finalized]
@@ -496,7 +522,79 @@ def _check(
                 problems.append(
                     ("pin_changed_inside_usage", r.kind, [t.isoformat() for t in inside])
                 )
-    _ = trial
+    return problems
+
+
+def _check_across_cutover(lived: Lived, billing: FakeBilling, cut: datetime) -> list[Any]:
+    """The invariants with a billing cutover in the history (the reviewer's variant)."""
+    history, rows = lived.history, lived.rows
+    paid_start, cancelled_at = lived.paid_start, lived.cancelled_at
+    problems: list[Any] = list(history.violations)
+    finalized = set(billing.finalized)
+    charged = [r for r in rows if r.invoice_id is not None and r.invoice_id in finalized]
+    for r in rows:
+        if r.state in ("pending", "finalize_pending", "void_pending"):
+            problems.append(("unsettled", r.kind, r.state, r.last_error))
+    for r in charged:
+        if r.invoice_id in billing.voided:
+            problems.append(("finalized_then_voided", r.kind))
+        if r.kind == domain.KIND_CLOSE:
+            if r.usage_start is not None and r.usage_start < cut:
+                problems.append(("close_usage_before_cutover", r.usage_start.isoformat()))
+        elif r.period_start < cut:
+            problems.append(("charged_before_cutover", r.kind, r.period_start.isoformat()))
+        if r.kind == domain.KIND_RENEWAL and r.usage_start is not None and r.usage_start < cut:
+            problems.append(("renewal_usage_before_cutover", r.usage_start.isoformat()))
+
+    stop = cancelled_at or max(t for t, _ in history.states)
+    served = _served(history, paid_start, stop)
+    base_kinds = (domain.KIND_RENEWAL, domain.KIND_TRIAL_CONVERSION, domain.KIND_OPENING)
+    base = [
+        (r.period_start, r.period_end, r.kind)
+        for r in charged
+        if r.kind in base_kinds and r.period_end is not None
+    ]
+    problems += [("recurring_charged_twice", a, b) for a, b in _overlaps(base)]
+    for s, _e, kind in base:
+        if cancelled_at is not None and s >= cancelled_at:
+            problems.append(("charged_after_cancel", kind, s.isoformat()))
+    # Recurring time is owed from the first period that begins at or after the cutover.
+    boundaries = [
+        r.period_start
+        for r in rows
+        if r.kind in (domain.KIND_RENEWAL, domain.KIND_TRIAL_CONVERSION) and r.period_start >= cut
+    ]
+    owed_from = min(boundaries) if boundaries else stop
+    owed = [(max(s, owed_from), e) for s, e in served if e > owed_from]
+    problems += [("recurring_uncharged", g) for g in _uncovered(owed, [(s, e) for s, e, _ in base])]
+
+    usage = [
+        (r.usage_start, r.usage_end, r.kind)
+        for r in charged
+        if r.usage_start is not None and r.usage_end is not None
+    ]
+    problems += [("usage_billed_twice", a, b) for a, b in _overlaps(usage)]
+    for s, e, kind in usage:
+        if s < paid_start or (cancelled_at is not None and e > cancelled_at):
+            problems.append(("usage_outside_paid_time", kind, s.isoformat(), e.isoformat()))
+    live = [(max(s, cut), e) for s, e in served if e > cut]
+    problems += [("usage_unbilled", g) for g in _uncovered(live, [(s, e) for s, e, _ in usage])]
+
+    for r in charged:
+        if r.kind in (domain.KIND_RENEWAL, domain.KIND_CLOSE, domain.KIND_OPENING):
+            at = r.usage_start if r.kind == domain.KIND_CLOSE and r.usage_start else r.period_start
+            if r.plan_version_id != history.pin_at(at):
+                problems.append(("priced_at_wrong_pin", r.kind, at.isoformat()))
+        if r.kind == domain.KIND_PRORATION:
+            before = history.pin_at(r.period_start - timedelta(microseconds=1))
+            if r.from_plan_version_id != before:
+                problems.append(("prorated_from_wrong_pin", r.period_start.isoformat()))
+        if r.usage_start is not None and r.usage_end is not None:
+            inside = history.changes_inside(r.usage_start, r.usage_end)
+            if inside:
+                problems.append(
+                    ("pin_changed_inside_usage", r.kind, [t.isoformat() for t in inside])
+                )
     return problems
 
 
@@ -514,5 +612,47 @@ async def test_money_invariants_hold(
     monkeypatch.setattr(services, "datetime", _Clock)
     monkeypatch.setattr(billing_run_module, "datetime", _Clock)
     billing.check_transactions = False  # the clock is fake; the tripwire is proven elsewhere
-    problems = await _run(seed, run, billing, payment, session, catalog, org_id)
+    lived = await _run(seed, run, billing, payment, session, catalog, org_id)
+    problems = _check(lived, billing)
     assert not problems, f"seed {seed}: {problems[:6]}"
+
+
+@pytest.mark.parametrize("seed", range(SEEDS))
+async def test_money_invariants_hold_across_a_cutover(
+    seed: int,
+    sweep_engines: tuple[Any, Any],
+    billing: FakeBilling,
+    payment: FakePayment,
+    session: AsyncSession,
+    catalog: FakeCatalog,
+    org_id: uuid.UUID,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reviewer's randomised cutover variant: the cutover lands 0-60 days into the life, and
+    the run is on throughout (even seeds) or off until the cutover (odd seeds)."""
+    monkeypatch.setattr(services, "datetime", _Clock)
+    monkeypatch.setattr(billing_run_module, "datetime", _Clock)
+    billing.check_transactions = False
+    start = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(days=seed % 97, minutes=seed)
+    pick = random.Random(seed * 7919)  # noqa: S311 — deterministic test data, not secrets
+    cut = start + timedelta(
+        days=pick.choice([0, 3, 10, 17, 29, 31, 45, 60]), hours=pick.randint(0, 23)
+    )
+    # The worker reads the same setting the run does (a resumption inside the straddle is free).
+    monkeypatch.setattr(settings(), "billing_run_not_before", cut)
+    run = _make_sweep(*sweep_engines, billing, payment, not_before=cut)
+    off_until_cutover = seed % 2 == 1
+    lived = await _run(
+        seed,
+        run,
+        billing,
+        payment,
+        session,
+        catalog,
+        org_id,
+        run_from=cut if off_until_cutover else None,
+    )
+    problems = _check_across_cutover(lived, billing, cut)
+    assert not problems, (
+        f"seed {seed} cut {cut.isoformat()} off_until_cutover={off_until_cutover}: {problems[:6]}"
+    )
