@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -225,3 +225,306 @@ def test_the_same_status_on_different_messages_are_different_events() -> None:
     a = webhooks.parse_statuses(_status_payload(wamid="wamid.A"))[0]
     b = webhooks.parse_statuses(_status_payload(wamid="wamid.B"))[0]
     assert a.dedupe_id != b.dedupe_id
+
+
+# --------------------------------------------------------------------- inbound messages
+
+
+def _message_payload(
+    *,
+    body: str | None = "Hi, is my order ready?",
+    message_type: str = "text",
+    sender: str = "16505551234",
+    wamid: str = "wamid.IN1",
+    profile_name: str | None = "Jane Customer",
+) -> dict:
+    """The shape Meta publishes for an inbound-message webhook."""
+    message: dict = {
+        "from": sender,
+        "id": wamid,
+        "timestamp": "1750263773",
+        "type": message_type,
+    }
+    if message_type == "text":
+        message["text"] = {"body": body}
+    else:
+        message["image"] = {"id": "media-1", "mime_type": "image/jpeg"}
+
+    value: dict = {
+        "messaging_product": "whatsapp",
+        "metadata": {
+            "display_phone_number": "15550783881",
+            "phone_number_id": "106540352242922",
+        },
+        "messages": [message],
+    }
+    if profile_name is not None:
+        value["contacts"] = [{"wa_id": sender, "profile": {"name": profile_name}}]
+
+    return {
+        "object": "whatsapp_business_account",
+        "entry": [{"id": "102290129340398", "changes": [{"value": value, "field": "messages"}]}],
+    }
+
+
+def test_a_text_message_is_parsed() -> None:
+    inbound = webhooks.parse_inbound(_message_payload())[0]
+    assert inbound.provider_message_id == "wamid.IN1"
+    assert inbound.from_address == "16505551234"
+    assert inbound.message_type == "text"
+    assert inbound.body == "Hi, is my order ready?"
+    assert inbound.profile_name == "Jane Customer"
+    assert inbound.occurred_at == datetime.fromtimestamp(1750263773, tz=UTC)
+
+
+def test_a_non_text_message_is_stored_with_no_body() -> None:
+    """Media and interactive shapes are not published on any page consulted, so they are kept
+    whole in `raw` and never parsed on a guess."""
+    inbound = webhooks.parse_inbound(_message_payload(message_type="image"))[0]
+    assert inbound.message_type == "image"
+    assert inbound.body is None
+    assert inbound.raw["image"]["id"] == "media-1"
+
+
+def test_an_unknown_type_keeps_its_own_name() -> None:
+    inbound = webhooks.parse_inbound(_message_payload(message_type="sticker"))[0]
+    assert inbound.message_type == "sticker"
+
+
+def test_a_message_missing_its_id_or_sender_is_skipped() -> None:
+    payload = _message_payload()
+    del payload["entry"][0]["changes"][0]["value"]["messages"][0]["id"]
+    assert webhooks.parse_inbound(payload) == []
+
+
+def test_several_messages_in_one_body_are_all_parsed() -> None:
+    payload = _message_payload()
+    payload["entry"][0]["changes"][0]["value"]["messages"].append(
+        {
+            "from": "16505551234",
+            "id": "wamid.IN2",
+            "timestamp": "1750263800",
+            "type": "text",
+            "text": {"body": "Still there?"},
+        }
+    )
+    assert [m.provider_message_id for m in webhooks.parse_inbound(payload)] == [
+        "wamid.IN1",
+        "wamid.IN2",
+    ]
+
+
+def test_no_profile_name_leaves_it_none() -> None:
+    inbound = webhooks.parse_inbound(_message_payload(profile_name=None))[0]
+    assert inbound.profile_name is None
+
+
+def test_inbound_dedupe_id_is_stable_and_distinct_from_a_status() -> None:
+    a = webhooks.parse_inbound(_message_payload())[0]
+    b = webhooks.parse_inbound(_message_payload())[0]
+    assert a.dedupe_id == b.dedupe_id
+
+    status = webhooks.parse_statuses(_status_payload(wamid="wamid.IN1"))[0]
+    assert a.dedupe_id != status.dedupe_id
+
+
+# --------------------------------------------------------------------- sender canonicalisation
+
+
+def test_a_bare_meta_sender_becomes_e164() -> None:
+    assert webhooks.sender_e164("16505551234") == "+16505551234"
+
+
+def test_an_implausible_sender_does_not_parse() -> None:
+    assert webhooks.sender_e164("not-a-number") is None
+
+
+def test_an_empty_sender_does_not_parse() -> None:
+    assert webhooks.sender_e164("") is None
+
+
+# --------------------------------------------------------------------- STOP keywords
+
+
+@pytest.mark.parametrize(
+    "body", ["STOP", "stop", "  Stop  ", "Unsubscribe", "cancel", "END", "QUIT"]
+)
+def test_a_stop_keyword_is_recognised_case_and_whitespace_insensitively(body: str) -> None:
+    assert webhooks.is_stop_keyword(body)
+
+
+@pytest.mark.parametrize(
+    "body", [None, "", "please stop sending me things", "STOPPED", "cancelled my order"]
+)
+def test_a_sentence_using_the_word_is_not_a_stop_request(body: str | None) -> None:
+    """A substring match would silently unsubscribe someone for using the word in a sentence."""
+    assert not webhooks.is_stop_keyword(body)
+
+
+# --------------------------------------------------------------------- the service window
+
+
+def test_a_conversation_with_no_customer_message_has_no_open_window() -> None:
+    assert not webhooks.within_service_window(None)
+
+
+def test_the_window_is_open_just_before_24_hours() -> None:
+    last = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
+    now = last + timedelta(hours=23, minutes=59, seconds=59)
+    assert webhooks.within_service_window(last, now=now)
+
+
+def test_the_window_is_closed_at_exactly_24_hours() -> None:
+    last = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
+    now = last + timedelta(hours=24)
+    assert not webhooks.within_service_window(last, now=now)
+
+
+def test_the_window_is_closed_just_after_24_hours() -> None:
+    last = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
+    now = last + timedelta(hours=24, seconds=1)
+    assert not webhooks.within_service_window(last, now=now)
+
+
+# --------------------------------------------------------------------- START keywords
+
+
+@pytest.mark.parametrize("body", ["START", "start", "  Start  ", "Unstop", "subscribe", "START."])
+def test_a_start_keyword_is_recognised_case_and_whitespace_insensitively(body: str) -> None:
+    assert webhooks.is_start_keyword(body)
+
+
+@pytest.mark.parametrize("body", [None, "", "let's start the meeting", "STARTED"])
+def test_a_sentence_using_start_is_not_a_resubscribe_request(body: str | None) -> None:
+    assert not webhooks.is_start_keyword(body)
+
+
+def test_stop_and_start_are_never_both_true() -> None:
+    for word in ("STOP", "START", "hello", ""):
+        assert not (webhooks.is_stop_keyword(word) and webhooks.is_start_keyword(word))
+
+
+@pytest.mark.parametrize("body", ["STOP.", "Stop!", "stop,", "STOP;", "stop:"])
+def test_stop_survives_trailing_punctuation(body: str) -> None:
+    assert webhooks.is_stop_keyword(body)
+
+
+# --------------------------------------------------------------------- cross-tenant batching
+
+
+def _batched_payload(entries: list[tuple[str, dict]]) -> dict:
+    """Two (or more) WABAs' changes in one body — exactly the shape Meta's own batching produces
+    and the shape a payload-wide `phone_number_id` lookup used to misroute."""
+    return {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": f"waba-{i}",
+                "changes": [
+                    {
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "metadata": {
+                                "display_phone_number": phone_number_id,
+                                "phone_number_id": phone_number_id,
+                            },
+                            **value,
+                        },
+                        "field": "messages",
+                    }
+                ],
+            }
+            for i, (phone_number_id, value) in enumerate(entries)
+        ],
+    }
+
+
+def test_statuses_are_grouped_by_their_own_changes_number_not_the_bodys_first() -> None:
+    payload = _batched_payload(
+        [
+            ("111", {"statuses": [{"id": "wamid.A", "status": "sent", "timestamp": "1"}]}),
+            ("222", {"statuses": [{"id": "wamid.B", "status": "delivered", "timestamp": "1"}]}),
+        ]
+    )
+    grouped = webhooks.group_statuses_by_phone(payload)
+    assert {p.provider_message_id for p in grouped["111"]} == {"wamid.A"}
+    assert {p.provider_message_id for p in grouped["222"]} == {"wamid.B"}
+    # The old, unsafe reading: everything flattened under one number.
+    assert webhooks.phone_number_id(payload) == "111"
+
+
+def test_inbound_messages_are_grouped_by_their_own_changes_number() -> None:
+    payload = _batched_payload(
+        [
+            (
+                "111",
+                {
+                    "messages": [
+                        {
+                            "from": "1",
+                            "id": "wamid.IN.A",
+                            "timestamp": "1",
+                            "type": "text",
+                            "text": {"body": "hi"},
+                        }
+                    ]
+                },
+            ),
+            (
+                "222",
+                {
+                    "messages": [
+                        {
+                            "from": "2",
+                            "id": "wamid.IN.B",
+                            "timestamp": "1",
+                            "type": "text",
+                            "text": {"body": "hi"},
+                        }
+                    ]
+                },
+            ),
+        ]
+    )
+    grouped = webhooks.group_inbound_by_phone(payload)
+    assert {m.provider_message_id for m in grouped["111"]} == {"wamid.IN.A"}
+    assert {m.provider_message_id for m in grouped["222"]} == {"wamid.IN.B"}
+
+
+def test_a_change_with_no_phone_number_id_is_dropped_not_misrouted() -> None:
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "waba-0",
+                "changes": [
+                    {
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "metadata": {"display_phone_number": "x"},
+                            "statuses": [
+                                {"id": "wamid.ORPHAN", "status": "sent", "timestamp": "1"}
+                            ],
+                        },
+                        "field": "messages",
+                    }
+                ],
+            }
+        ],
+    }
+    assert webhooks.group_statuses_by_phone(payload) == {}
+
+
+def test_parse_statuses_still_flattens_across_numbers_for_single_org_callers() -> None:
+    """The convenience function tests use — never the webhook route itself — still sees
+    everything, which is the point of keeping it around."""
+    payload = _batched_payload(
+        [
+            ("111", {"statuses": [{"id": "wamid.A", "status": "sent", "timestamp": "1"}]}),
+            ("222", {"statuses": [{"id": "wamid.B", "status": "sent", "timestamp": "1"}]}),
+        ]
+    )
+    assert {u.provider_message_id for u in webhooks.parse_statuses(payload)} == {
+        "wamid.A",
+        "wamid.B",
+    }

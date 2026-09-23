@@ -82,19 +82,19 @@ a product area, not an integration detail.
 | C2 | ~~API version is stale~~ | **Fixed in this change.** Pinned `v21.0`; v25.0 is current (released 2026-02-18). Left overridable per environment |
 | C3 | ~~Template registry~~ | **Done.** `provider_templates`, channel-agnostic, with approval status checked before staging |
 | C4 | ~~Variable mapping~~ | **Done** for positional, with the contiguity check that stops a gap shifting values into the wrong placeholder. Named still open |
-| C5 | **24-hour window tracking** | Nothing records `last_customer_message_at`, because nothing records inbound messages at all |
-| C6 | **Inbound webhook** | No endpoint. Needs `hub.challenge` verification and `X-Hub-Signature-256` HMAC-SHA256 over the **raw** body keyed by App Secret |
+| C5 | ~~24-hour window tracking~~ | **Done.** `conversations.last_customer_message_at`, advanced with `GREATEST` as messages fold in; `webhooks.within_service_window` is the one place the rule is evaluated, at both read and write time |
+| C6 | ~~Inbound webhook~~ | **Done** for text. `POST /webhooks/whatsapp` folds `messages` alongside `statuses` in the same signed body; media and interactive replies are stored raw and not parsed — see `webhooks.md` |
 | C7 | **Webhook deduplication** | Meta redelivers. `processed_events` is the existing pattern to reuse |
 | C8 | **Delivery/read receipts** | Lifecycle stops at `sent`. Needs `delivered`, `read`, and `queued`/`scheduled`/`cancelled` |
-| C9 | **Conversations** | No conversation or inbound-message model |
+| C9 | ~~Conversations~~ | **Done.** `conversations` and `inbound_messages`, sealed address and body, blind-indexed for the webhook's own lookup. Contact attribution is a separate idempotent consumer fold against `customer`'s `contacts:resolve`, degrading to an unknown sender rather than blocking when the CRM cannot answer |
 | C10 | **Media** | Needs `document-service`, still a 187-line scaffold |
 | C11 | **Interactive messages** | No buttons, no lists, no reply mapping |
 | C12 | **Scheduling and delays** | `scheduler-service` is a 187-line scaffold. **This is why "invoice due in 3 days" is impossible today** — rules react to events, and no event describes time passing |
 | C13 | **Per-attempt backoff** | Retry is bounded but flat; the brief wants 30s → 2m → 10m → 30m |
-| C14 | **Loop protection** | Nothing prevents inbound → automation → outbound → event → automation |
-| C15 | **Human handoff** | No assignment, no automation pause |
+| C14 | ~~Loop protection~~ | **Done, structurally.** `notification.whatsapp.inbound_received` is not in `domain.SUBSCRIBABLE_EVENTS`, so the generic rule consumer never binds to it; opting an organization's automation into reacting to its own customers' messages is a deliberate code change, not a `Rule` row |
+| C15 | **Human handoff** | Partial. `conversations.assignee_membership_id` and `:assign`/`:close` exist; no automation pause, and the inbox UI has no assignment picker yet — only the close action |
 | C16 | **Conditions in rules** | A rule fires on an event type. No `amount > 5000` |
-| C17 | **All UI** | No settings, template management, automation builder, inbox or analytics |
+| C17 | **All UI** | Inbox shipped in `frontend/product-engage` (list, thread, composer, template picker on window close). Settings, template management, automation builder and analytics remain unbuilt |
 
 Also scaffolds, and needed: `activity` (timeline), `config` (per-tenant settings), `eventbridge`.
 Five of the brief's dependencies are unbuilt services.
@@ -144,11 +144,18 @@ already marked dangerous because a rendered body carries the invoice total.
 
 ## 6. Frontend changes
 
-New surface in `frontend/opsgrids-internal` (the operator console), reusing `@opsgrids/ui`:
-settings + connection test, template management, automation builder, inbox, analytics, logs.
+**Erratum to this section as originally written:** it placed the inbox in
+`frontend/opsgrids-internal` (the operator console). Built, it lives in
+`frontend/product-engage` instead — the API it reads (`/api/v1/engage/conversations`) is gated on
+the `engage` entitlement and its own catalogue (`engage.inbox.*`), the same product surface as the
+rest of that app, and an operator console screen would have had to reach across a product boundary
+to read it. Settings, template management, automation builder and analytics are unbuilt and the
+question of which app they belong in is still open — the inbox's answer does not necessarily
+generalise to them, since a WhatsApp connection is arguably platform configuration in a way a
+conversation is not.
 
-The inbox is the largest single piece of UI in the brief and needs realtime; there is no realtime
-transport today (`eventbridge` is a scaffold), so v1 polls.
+The inbox needs realtime; there is no realtime transport today (`eventbridge` is a scaffold), so
+it polls — the conversation list on a slower cadence than an open thread, both client-side.
 
 ## 7. Job/queue changes
 
@@ -225,14 +232,16 @@ Each phase ends shippable, and nothing depends on a later one.
 |---|---|---|
 | **0** | Raw customer phone (B1): `phone_enc`/`phone_masked`, write surface, migration | Everything |
 | **1** | Template messages (C1–C4) + API version bump (C2) + registry + validation | Proactive sending |
-| **2** | Webhook (C6–C8): verification, signature, inbound, receipts, dedupe | Window tracking, real delivery truth |
-| **3** | Conversations (C9) + window enforcement (C5) + STOP handling | Two-way messaging |
-| **4** | Scheduler (C12) + conditions (C16) + backoff (C13) + loop guard (C14) | Time-based automation |
-| **5** | Operator UI (C17): settings, templates, inbox | Non-developer operation |
-| **6** | Media (C10), interactive (C11), handoff (C15), analytics | Completeness |
+| **2** | ~~Webhook (C6–C8): verification, signature, inbound, receipts, dedupe~~ — receipts done earlier; inbound text done this slice | Window tracking, real delivery truth |
+| **3** | ~~Conversations (C9) + window enforcement (C5) + STOP handling~~ — **done**, plus loop protection (C14) and the inbox UI (part of C17), ahead of schedule since they share the same rows | Two-way messaging |
+| **4** | Scheduler (C12) + conditions (C16) + backoff (C13) | Time-based automation |
+| **5** | Remaining operator UI (C17): settings, template management, automation builder, analytics | Non-developer operation |
+| **6** | Media (C10), interactive (C11), the rest of handoff (C15), sealing `messages.to_address`, inbound-body retention | Completeness |
 
-**Phase 0 and Phase 1 are the difference between a demo and a product.** Everything from Phase 3
-on is a larger build than the notification service itself.
+**Phase 0 and Phase 1 are the difference between a demo and a product.** Phase 3 landed with this
+slice, pulling loop protection and a first UI forward with it because both were cheap once the
+conversation model existed. Everything from Phase 4 on is still a larger build than the
+notification service itself.
 
 ## Sources
 
