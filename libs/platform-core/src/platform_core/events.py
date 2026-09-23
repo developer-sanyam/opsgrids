@@ -34,6 +34,14 @@ EXCHANGE: Final[str] = "opsgrids.events"
 DLX: Final[str] = "opsgrids.events.dlx"
 ENVELOPE_VERSION: Final[int] = 1
 
+#: The delayed-delivery primitive (ADR-0015). A producer stages this on its **own** outbox
+#: instead of the event it actually wants delivered; `scheduler-service` consumes it, holds it in
+#: `scheduled_jobs`, and republishes the *target* event — unchanged, on its own outbox, with the
+#: target's own `event_type` as the routing key — the moment `due_at` arrives. The producer's own
+#: queue binding (already bound to that routing key, because the event is its own) receives it
+#: exactly as if the producer had published it directly. See `schedule_event` below.
+PLATFORM_SCHEDULE_REQUESTED: Final[str] = "platform.schedule.requested"
+
 
 class OutboxMixin:
     """Mix into a service's Base:  ``class OutboxEvent(Base, OutboxMixin): ...``"""
@@ -84,8 +92,16 @@ def publish_event(
     causation_id: uuid.UUID | None = None,
     actor: dict[str, Any] | None = None,
 ) -> uuid.UUID:
-    """Stage an event **inside the caller's transaction**. Does not commit."""
+    """Stage an event **inside the caller's transaction**. Does not commit.
+
+    `id` is generated here rather than left to `OutboxMixin`'s own column default: that default
+    is a flush-time default, so the id it would eventually get is not yet on the Python object
+    when this function returns it to the caller — every existing caller has discarded the return
+    value, which is exactly how that went unnoticed, but `scheduler`'s `fire_job` (ADR-0015)
+    needs a real id immediately, to carry as the fired event's own `causation_id`.
+    """
     row = outbox_cls(
+        id=uuid.uuid4(),
         organization_id=organization_id,
         event_type=event_type,
         event_version=ENVELOPE_VERSION,
@@ -98,6 +114,59 @@ def publish_event(
     )
     session.add(row)
     return row.id  # type: ignore[no-any-return]
+
+
+def schedule_event(
+    session: AsyncSession,
+    outbox_cls: type[Any],
+    *,
+    organization_id: uuid.UUID,
+    due_at: datetime,
+    idempotency_key: str,
+    target_event_type: str,
+    target_aggregate_type: str,
+    target_aggregate_id: uuid.UUID,
+    target_payload: dict[str, Any],
+    target_actor: dict[str, Any] | None = None,
+    causation_id: uuid.UUID | None = None,
+) -> uuid.UUID:
+    """Ask the scheduler to deliver an event later instead of publishing it now (ADR-0015).
+
+    Stages **`PLATFORM_SCHEDULE_REQUESTED`** on the caller's own outbox — never a call to the
+    scheduler service, which has no HTTP surface for this at all. Whether "later" is warranted at
+    all is the caller's own policy, not this function's: it always schedules, on whatever `due_at`
+    it is given. Finance's `request_filing` is the first caller, and it only reaches here once it
+    has already decided `not_before` is in the future; a `due_at` in the past is still honoured
+    correctly (the scheduler fires anything already due on its very next sweep), just pointlessly
+    slower than calling `publish_event` directly would have been.
+
+    `idempotency_key` is the domain-level guard, checked again by the scheduler's own consumer
+    against a unique `(organization_id, idempotency_key)` constraint — event-id idempotency alone
+    is not enough once two distinct events can reasonably ask for the same delayed delivery (a
+    redelivered request, or a caller that computes the same key twice by design, as the early-
+    arrival defence in `finance/app/consumers.py` deliberately does not).
+    """
+    return publish_event(
+        session,
+        outbox_cls,
+        organization_id=organization_id,
+        event_type=PLATFORM_SCHEDULE_REQUESTED,
+        aggregate_type=target_aggregate_type,
+        aggregate_id=target_aggregate_id,
+        payload={
+            "idempotency_key": idempotency_key,
+            "due_at": due_at.astimezone(UTC).isoformat(),
+            "target": {
+                "event_type": target_event_type,
+                "aggregate_type": target_aggregate_type,
+                "aggregate_id": str(target_aggregate_id),
+                "payload": target_payload,
+                "actor": target_actor,
+            },
+        },
+        causation_id=causation_id,
+        actor=target_actor,
+    )
 
 
 def build_envelope(row: Any, *, producer: str) -> dict[str, Any]:
