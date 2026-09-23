@@ -1,3 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec python -m app.relay
+# The campaign send driver (see app/cron.py's module docstring for why sending lives here and
+# not on the shared event consumer). Previously this pointed at `app.relay` — the scaffold's
+# default for a service with no scheduled work yet — which for this service would have started a
+# second, redundant outbox relay while never sending a single campaign batch.
+exec python -m app.cron

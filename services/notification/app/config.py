@@ -87,6 +87,27 @@ class Settings(ServiceSettings):
     #: Rotating it invalidates every link already sent — rotate only with that accepted.
     engage_unsubscribe_secret: SecretStr = SecretStr("dev-only-engage-unsubscribe-secret")
 
+    #: Where the unsubscribe link in campaign mail points: the public API base the gateway serves
+    #: `/engage/unsubscribe/{token}` under. The link is the one URL a recipient must be able to
+    #: open without signing in, so it is configuration rather than derived from a request.
+    engage_public_api_base: str = "http://localhost:8080/api/v1"
+
+    # ----------------------------------------------------------------- engage campaigns
+    #: Recipients expanded per transaction when a send is requested, and claimed per batch by
+    #: the send driver (`app/cron.py`) afterwards.
+    engage_campaign_batch_size: int = 200
+    #: How often the send driver polls for campaigns to work. Not a busy loop: a tick that finds
+    #: nothing to do just sleeps this long before the next one.
+    engage_campaign_poll_interval_seconds: float = 15.0
+    #: How long a claimed batch (`CampaignRecipient.status == 'sending'`) may stay claimed
+    #: before another tick treats it as abandoned and reclaims it. Longer than any batch should
+    #: plausibly take to send, so a process that is merely slow is never raced with itself.
+    engage_campaign_claim_lease_seconds: int = 300
+    #: How long a `paused` campaign (no connected provider, no usable sender) sits before the
+    #: driver tries it again on its own — the backoff that keeps a still-broken route from being
+    #: hammered every poll. An explicit resume (`POST .../resume`) ignores this and retries now.
+    engage_campaign_pause_retry_seconds: float = 900.0
+
     # ----------------------------------------------------------------- dispatcher
     #: Rows claimed per dispatcher pass.
     dispatch_batch_size: int = 50

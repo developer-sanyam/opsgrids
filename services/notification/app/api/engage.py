@@ -27,7 +27,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import selectors, services
 from app.domain import verify_unsubscribe_token
 from app.models import (
+    Campaign,
     Contact,
+    ContactList,
     EmailConnection,
     EmailDomain,
     ProviderAccount,
@@ -35,17 +37,29 @@ from app.models import (
     Suppression,
 )
 from app.schemas import (
+    CampaignIn,
+    CampaignOut,
+    CampaignPatch,
+    CampaignRecipientOut,
+    CampaignStats,
+    CampaignStatus,
     ConnectionIn,
     ConnectionOut,
     ContactImportIn,
     ContactImportOut,
     ContactImportResult,
     ContactIn,
+    ContactListIn,
+    ContactListOut,
+    ContactListPatch,
     ContactOut,
     ContactPatch,
     DnsRecordOut,
     DomainIn,
     DomainOut,
+    ListMembersIn,
+    ListMembersOut,
+    RecipientStatus,
     SenderIn,
     SenderOut,
     SuppressionIn,
@@ -634,6 +648,405 @@ async def remove_suppression(
 ) -> Response:
     await services.remove_suppression(session, ctx, suppression_id=suppression_id, request=request)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --------------------------------------------------------------------- lists & campaigns
+
+ListRead = Annotated[ScopeContext, Depends(require("engage.audience.list.read", minimum=Scope.ORG))]
+ListWrite = Annotated[
+    ScopeContext, Depends(require("engage.audience.list.write", minimum=Scope.ORG))
+]
+CampaignRead = Annotated[
+    ScopeContext, Depends(require("engage.campaign.campaign.read", minimum=Scope.ORG))
+]
+CampaignWrite = Annotated[
+    ScopeContext, Depends(require("engage.campaign.campaign.write", minimum=Scope.ORG))
+]
+#: Separate from write: a drafter is not thereby someone who can mail the whole audience.
+CampaignSend = Annotated[
+    ScopeContext, Depends(require("engage.campaign.campaign.send", minimum=Scope.ORG))
+]
+
+
+# --------------------------------------------------------------------- lists
+
+
+def _list_out(row: ContactList, members: int) -> ContactListOut:
+    return ContactListOut(
+        id=str(row.id),
+        name=row.name,
+        description=row.description,
+        member_count=members,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+async def _one_list_out(session: AsyncSession, row: ContactList) -> ContactListOut:
+    counts = await selectors.list_member_counts(session, row.organization_id, [row.id])
+    return _list_out(row, counts.get(row.id, 0))
+
+
+@router.get(
+    "/engage/lists",
+    response_model=Page[ContactListOut],
+    summary="Contact lists, by name",
+    dependencies=[Entitled],
+)
+async def list_lists(session: SessionDep, ctx: ListRead, params: PageQuery) -> Page[ContactListOut]:
+    rows, total = await paginate(session, selectors.lists_stmt(ctx), params)
+    counts = await selectors.list_member_counts(session, ctx.organization_id, [r.id for r in rows])
+    return Page.build([_list_out(r, counts.get(r.id, 0)) for r in rows], total=total, params=params)
+
+
+@router.post(
+    "/engage/lists",
+    response_model=ContactListOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a contact list",
+    dependencies=[Entitled],
+)
+async def create_list(
+    body: ContactListIn, session: SessionDep, ctx: ListWrite, request: Request
+) -> ContactListOut:
+    row = await services.create_list(
+        session, ctx, name=body.name, description=body.description, request=request
+    )
+    return _list_out(row, 0)
+
+
+@router.get(
+    "/engage/lists/{list_id}",
+    response_model=ContactListOut,
+    summary="One contact list",
+    dependencies=[Entitled],
+)
+async def get_list(list_id: uuid.UUID, session: SessionDep, ctx: ListRead) -> ContactListOut:
+    row = await selectors.get_list(session, ctx.organization_id, list_id)
+    if row is None:
+        raise NotFoundProblem("No such list")
+    return await _one_list_out(session, row)
+
+
+@router.patch(
+    "/engage/lists/{list_id}",
+    response_model=ContactListOut,
+    summary="Rename or describe a contact list",
+    dependencies=[Entitled],
+)
+async def edit_list(
+    list_id: uuid.UUID,
+    body: ContactListPatch,
+    session: SessionDep,
+    ctx: ListWrite,
+    request: Request,
+) -> ContactListOut:
+    row = await services.update_list(
+        session,
+        ctx,
+        list_id=list_id,
+        name=body.name,
+        description=body.description,
+        request=request,
+    )
+    return await _one_list_out(session, row)
+
+
+@router.delete(
+    "/engage/lists/{list_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Delete a contact list (its contacts stay)",
+    dependencies=[Entitled],
+)
+async def remove_list(
+    list_id: uuid.UUID, session: SessionDep, ctx: ListWrite, request: Request
+) -> Response:
+    await services.delete_list(session, ctx, list_id=list_id, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/engage/lists/{list_id}/members",
+    response_model=Page[ContactOut],
+    summary="The contacts on a list, addresses masked",
+    dependencies=[Entitled],
+)
+async def list_members(
+    list_id: uuid.UUID, session: SessionDep, ctx: ListRead, params: PageQuery
+) -> Page[ContactOut]:
+    if await selectors.get_list(session, ctx.organization_id, list_id) is None:
+        raise NotFoundProblem("No such list")
+    rows, total = await paginate(session, selectors.list_members_stmt(ctx, list_id), params)
+    return Page.build([_contact_out(r) for r in rows], total=total, params=params)
+
+
+@router.post(
+    "/engage/lists/{list_id}/members",
+    response_model=ListMembersOut,
+    summary="Add contacts to a list (idempotent)",
+    dependencies=[Entitled],
+)
+async def add_list_members(
+    list_id: uuid.UUID,
+    body: ListMembersIn,
+    session: SessionDep,
+    ctx: ListWrite,
+    request: Request,
+) -> ListMembersOut:
+    changed, unknown = await services.change_list_members(
+        session, ctx, list_id=list_id, contact_ids=body.contact_ids, add=True, request=request
+    )
+    return ListMembersOut(changed=changed, unknown=[str(u) for u in unknown])
+
+
+@router.post(
+    "/engage/lists/{list_id}/members/remove",
+    response_model=ListMembersOut,
+    summary="Remove contacts from a list (idempotent)",
+    dependencies=[Entitled],
+)
+async def remove_list_members(
+    list_id: uuid.UUID,
+    body: ListMembersIn,
+    session: SessionDep,
+    ctx: ListWrite,
+    request: Request,
+) -> ListMembersOut:
+    changed, unknown = await services.change_list_members(
+        session, ctx, list_id=list_id, contact_ids=body.contact_ids, add=False, request=request
+    )
+    return ListMembersOut(changed=changed, unknown=[str(u) for u in unknown])
+
+
+# --------------------------------------------------------------------- campaigns
+
+
+def _campaign_out(row: Campaign, counts: dict[str, int]) -> CampaignOut:
+    return CampaignOut(
+        id=str(row.id),
+        name=row.name,
+        sender_id=str(row.sender_id),
+        subject=row.subject,
+        html_body=row.html_body,
+        text_body=row.text_body,
+        audience=row.audience,
+        list_id=str(row.list_id) if row.list_id else None,
+        status=row.status,
+        scheduled_at=row.scheduled_at,
+        started_at=row.started_at,
+        completed_at=row.completed_at,
+        cancelled_at=row.cancelled_at,
+        pause_reason=row.pause_reason,
+        stats=CampaignStats(
+            recipients=sum(counts.values()),
+            # `sending` is the driver's in-flight claim lease (app/models.py's
+            # `CampaignRecipient` docstring) — not a status a caller outside this service should
+            # need to know about, so it is folded into `queued` here, same as a row still
+            # waiting for its first attempt.
+            queued=counts.get("queued", 0) + counts.get("sending", 0),
+            sent=counts.get("sent", 0),
+            failed=counts.get("failed", 0),
+            suppressed=counts.get("suppressed", 0),
+        ),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+async def _one_campaign_out(session: AsyncSession, row: Campaign) -> CampaignOut:
+    counts = await selectors.recipient_status_counts(session, row.organization_id, [row.id])
+    return _campaign_out(row, counts.get(row.id, {}))
+
+
+async def _campaign_or_404(
+    session: AsyncSession, ctx: ScopeContext, campaign_id: uuid.UUID
+) -> Campaign:
+    row = await selectors.get_campaign(session, ctx.organization_id, campaign_id)
+    if row is None:
+        raise NotFoundProblem("No such campaign")
+    return row
+
+
+@router.get(
+    "/engage/campaigns",
+    response_model=Page[CampaignOut],
+    summary="Campaigns, newest first",
+    dependencies=[Entitled],
+)
+async def list_campaigns(
+    session: SessionDep,
+    ctx: CampaignRead,
+    params: PageQuery,
+    status_filter: Annotated[CampaignStatus | None, Query(alias="status")] = None,
+) -> Page[CampaignOut]:
+    rows, total = await paginate(
+        session, selectors.campaigns_stmt(ctx, status=status_filter), params
+    )
+    counts = await selectors.recipient_status_counts(
+        session, ctx.organization_id, [r.id for r in rows]
+    )
+    return Page.build(
+        [_campaign_out(r, counts.get(r.id, {})) for r in rows], total=total, params=params
+    )
+
+
+@router.post(
+    "/engage/campaigns",
+    response_model=CampaignOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Draft a campaign",
+    dependencies=[Entitled],
+)
+async def create_campaign(
+    body: CampaignIn, session: SessionDep, ctx: CampaignWrite, request: Request
+) -> CampaignOut:
+    row = await services.create_campaign(session, ctx, fields=body.model_dump(), request=request)
+    return _campaign_out(row, {})
+
+
+@router.get(
+    "/engage/campaigns/{campaign_id}",
+    response_model=CampaignOut,
+    summary="One campaign, with its delivery stats",
+    dependencies=[Entitled],
+)
+async def get_campaign(
+    campaign_id: uuid.UUID, session: SessionDep, ctx: CampaignRead
+) -> CampaignOut:
+    return await _one_campaign_out(session, await _campaign_or_404(session, ctx, campaign_id))
+
+
+@router.patch(
+    "/engage/campaigns/{campaign_id}",
+    response_model=CampaignOut,
+    summary="Edit a draft campaign",
+    dependencies=[Entitled],
+)
+async def edit_campaign(
+    campaign_id: uuid.UUID,
+    body: CampaignPatch,
+    session: SessionDep,
+    ctx: CampaignWrite,
+    request: Request,
+) -> CampaignOut:
+    row = await services.update_campaign(
+        session,
+        ctx,
+        campaign_id=campaign_id,
+        changes=body.model_dump(exclude_unset=True),
+        request=request,
+    )
+    return await _one_campaign_out(session, row)
+
+
+@router.delete(
+    "/engage/campaigns/{campaign_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Delete a draft campaign",
+    dependencies=[Entitled],
+)
+async def remove_campaign(
+    campaign_id: uuid.UUID, session: SessionDep, ctx: CampaignWrite, request: Request
+) -> Response:
+    await services.delete_campaign(session, ctx, campaign_id=campaign_id, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/engage/campaigns/{campaign_id}/send",
+    response_model=CampaignOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Send a draft campaign to its audience",
+    dependencies=[Entitled],
+)
+async def send_campaign(
+    campaign_id: uuid.UUID, session: SessionDep, ctx: CampaignSend, request: Request
+) -> CampaignOut:
+    """202: the gate passed and the fan-out is staged. Sending happens after the commit, in the
+    worker; progress is read back from the campaign's stats and recipients."""
+    row = await services.request_send(session, ctx, campaign_id=campaign_id, request=request)
+    return await _one_campaign_out(session, row)
+
+
+@router.post(
+    "/engage/campaigns/{campaign_id}/cancel",
+    response_model=CampaignOut,
+    summary="Cancel a campaign; recipients not yet sent are never sent",
+    dependencies=[Entitled],
+)
+async def cancel_campaign(
+    campaign_id: uuid.UUID, session: SessionDep, ctx: CampaignWrite, request: Request
+) -> CampaignOut:
+    row = await services.cancel_campaign(session, ctx, campaign_id=campaign_id, request=request)
+    return await _one_campaign_out(session, row)
+
+
+@router.post(
+    "/engage/campaigns/{campaign_id}/resume",
+    response_model=CampaignOut,
+    summary="Retry a paused campaign now, ignoring the driver's own backoff",
+    dependencies=[Entitled],
+)
+async def resume_campaign(
+    campaign_id: uuid.UUID, session: SessionDep, ctx: CampaignSend, request: Request
+) -> CampaignOut:
+    """409 unless the campaign is `paused` — the send driver (`app/cron.py`) pauses a campaign
+    when it finds no connected provider or no usable sender, and would otherwise retry it on its
+    own after `Settings.engage_campaign_pause_retry_seconds`. This is the operator's "now"."""
+    row = await services.resume_campaign(session, ctx, campaign_id=campaign_id, request=request)
+    return await _one_campaign_out(session, row)
+
+
+@router.get(
+    "/engage/campaigns/{campaign_id}/stats",
+    response_model=CampaignStats,
+    summary="A campaign's delivery counts",
+    dependencies=[Entitled],
+)
+async def campaign_stats(
+    campaign_id: uuid.UUID, session: SessionDep, ctx: CampaignRead
+) -> CampaignStats:
+    row = await _campaign_or_404(session, ctx, campaign_id)
+    return (await _one_campaign_out(session, row)).stats
+
+
+@router.get(
+    "/engage/campaigns/{campaign_id}/recipients",
+    response_model=Page[CampaignRecipientOut],
+    summary="A campaign's recipients and what happened to each, addresses masked",
+    dependencies=[Entitled],
+)
+async def campaign_recipients(
+    campaign_id: uuid.UUID,
+    session: SessionDep,
+    ctx: CampaignRead,
+    params: PageQuery,
+    status_filter: Annotated[RecipientStatus | None, Query(alias="status")] = None,
+) -> Page[CampaignRecipientOut]:
+    await _campaign_or_404(session, ctx, campaign_id)
+    stmt = selectors.recipients_stmt(ctx, campaign_id, status=status_filter)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build(
+        [
+            CampaignRecipientOut(
+                id=str(r.id),
+                contact_id=str(r.contact_id),
+                email=r.email_masked,
+                # `sending` is the driver's claim lease (see CampaignRecipient's docstring),
+                # never a status this API promises — a caller mid-batch sees `queued`, same as
+                # before the driver picked the row up.
+                status="queued" if r.status == "sending" else r.status,
+                provider_message_id=r.provider_message_id,
+                error=r.error,
+                sent_at=r.sent_at,
+            )
+            for r in rows
+        ],
+        total=total,
+        params=params,
+    )
 
 
 # --------------------------------------------------------------------- public unsubscribe

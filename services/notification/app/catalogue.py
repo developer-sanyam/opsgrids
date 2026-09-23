@@ -309,6 +309,49 @@ ENGAGE = PermissionCatalogue(
             "ORG",
             is_dangerous=True,
         ),
+        PermissionSpec(
+            "audience",
+            "list",
+            "read",
+            "See contact lists and who is on them",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "audience",
+            "list",
+            "write",
+            "Create, rename and delete contact lists, and add or remove members",
+            "ORG",
+            "ORG",
+        ),
+        # Campaigns. Drafting and sending are separate grants: writing a draft reaches nobody,
+        # sending one puts mail in front of the whole audience under the organization's name.
+        PermissionSpec(
+            "campaign",
+            "campaign",
+            "read",
+            "See campaigns, their recipients and their delivery stats",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "campaign",
+            "campaign",
+            "write",
+            "Draft, edit and delete campaigns, and cancel one in flight",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "campaign",
+            "campaign",
+            "send",
+            "Send a campaign to its audience",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
     ],
 )
 
@@ -340,6 +383,8 @@ ENGAGE_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("engage.setup.whatsapp.read", "ORG"),
             ("engage.audience.contact.read", "ORG"),
             ("engage.audience.suppression.read", "ORG"),
+            ("engage.audience.list.read", "ORG"),
+            ("engage.campaign.campaign.read", "ORG"),
         ),
     ),
 ]
