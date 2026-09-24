@@ -112,11 +112,17 @@ resolve_profiles
 # the route table at this ref. Exported so every compose call below renders the same value.
 ROUTES_SHA=$(sha256sum routes.prod.json | cut -c1-16)
 export ROUTES_SHA
+# admin-gateway's own route table, same reason and same shape — a bind-mounted file compose
+# cannot see change on its own, so a table edit with no other compose change would otherwise
+# deploy nothing (ADMIN_ROUTES_SHA in compose.prod.yml). Harmless to compute even when the
+# `admin` profile is off: an unused env var on a container that will not start.
+ADMIN_ROUTES_SHA=$(sha256sum routes.admin.prod.json | cut -c1-16)
+export ADMIN_ROUTES_SHA
 STATE_DIR="${EDGE_STATE_DIR:-/srv/opsgrids/state}"
 # Every service that owns a schema. Migrated in this order, but only the ones compose will
 # actually run — a product behind a disabled profile (ADR-0013 §5) is skipped, and picked up
 # on the deploy that enables it.
-SERVICES_WITH_SCHEMA=(auth account product catalog subscription billing metering payment notification storefront document operations approval employee attendance leave customer deal lead project timesheet standup projects support marketing finance scheduler itsm)
+SERVICES_WITH_SCHEMA=(auth account product catalog subscription billing metering payment notification storefront document operations approval employee attendance leave customer deal lead project timesheet standup projects support marketing finance scheduler itsm console)
 
 # The services compose will run for this box: honours COMPOSE_PROFILES from .env.
 configured_services() {

@@ -10,11 +10,12 @@ format matches the storage, so no float ever appears between the database and th
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ServiceInfo(BaseModel):
@@ -204,6 +205,48 @@ class PlanPatchIn(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=160)
     sort_order: int | None = None
+
+
+class BespokePriceIn(BaseModel):
+    """Console's request to clone-and-publish an audience-of-one flat price for one organization.
+
+    Deliberately narrower than `VersionCreateIn`: this is the one shape console's
+    `/admin/internal/catalog` endpoint accepts, so the operator console cannot author anything
+    beyond "this org, this product, this flat price" through it — a bundle, a per-seat plan or an
+    arbitrary feature sheet still goes through the full authoring API on `/admin/catalog`.
+    `extra="forbid"` so a caller cannot smuggle a field this endpoint does not account for.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    amount_minor: int = Field(gt=0)
+    currency: str = Field(min_length=3, max_length=3)
+    billing_interval: str = Field(pattern="^(month|year)$")
+
+    @field_validator("currency")
+    @classmethod
+    def _iso_currency(cls, value: str) -> str:
+        upper = value.upper()
+        if not re.fullmatch(r"[A-Z]{3}", upper):
+            raise ValueError("currency must be a 3-letter ISO-4217 code")
+        return upper
+
+
+class PublicFlatPlanOut(BaseModel):
+    """One product's public flat plan, as the console pricing screen reads it: what a product
+    costs before any client-specific negotiation."""
+
+    product_key: str
+    product_name: str
+    plan_id: uuid.UUID
+    plan_version_id: uuid.UUID
+    amount_minor: int
+    currency: str
+    billing_interval: str
+
+
+class PublicFlatPlansOut(BaseModel):
+    plans: list[PublicFlatPlanOut] = Field(default_factory=list)
 
 
 class VersionCreateIn(BaseModel):

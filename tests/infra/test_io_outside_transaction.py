@@ -105,6 +105,16 @@ TRANSACTION_MARKERS: tuple[str, ...] = (".begin(", "session_scope(", "_work_scop
 #: the report this test's own module docstring points at; an entry that no longer reproduces
 #: (the function was fixed, renamed, or removed) fails `test_the_allowlist_has_no_stale_entries`.
 ALLOWLIST: dict[tuple[str, str], str] = {
+    ("services/catalog/app/api/console_internal.py", "ensure_bespoke_price"): (
+        "D3, admin-client-pricing slice: calls services.create_version, which has the same "
+        "reachable registry.products() branch #10 (below) names in app/api/admin.py — the "
+        "scanner cannot see that this call site always passes registry=None (a bespoke flat "
+        "price never declares bundled_products), which makes the branch unreachable in "
+        "practice: _validate_bundle raises BusinessRuleProblem rather than dereferencing a None "
+        "registry the one time the feature key is present. No fix needed unless this endpoint "
+        "is ever asked to author a bundle, which its own narrow BespokePriceIn schema cannot "
+        "express."
+    ),
     ("services/catalog/app/api/admin.py", "create_version"): (
         "D3 #10: calls services.create_version, which calls registry.products() (an httpx "
         "request to product-service) inside get_operator_session's request-long transaction. "

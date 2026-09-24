@@ -631,6 +631,16 @@ while read -r upstream; do
 	esac
 done < <(grep -o '"upstream": *"http://[a-z-]*' routes.prod.json | sed 's#.*http://##' | sort -u)
 
+# Same check, for admin-gateway's own route table — off entirely unless the `admin` profile is
+# on, so this only ever fires for a box that declared `admin` and still points a route at
+# something its profiles do not run.
+while read -r upstream; do
+	case "$running_services" in
+	*" $upstream "*) ;;
+	*) echo "  warn  routes.admin.prod.json sends traffic to '$upstream', which this box's profiles do not run (callers get 504)" >&2 ;;
+	esac
+done < <(grep -o '"upstream": *"http://[a-z-]*' routes.admin.prod.json | sed 's#.*http://##' | sort -u)
+
 # Same check for the Caddyfile's own reverse proxies (the gateway aside, `minio` is the one
 # that is profile-gated today): a store's uploaded images 502 through Caddy rather than 404
 # from the gateway, which is a worse symptom to debug cold, so it gets named here too.

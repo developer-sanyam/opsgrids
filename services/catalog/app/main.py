@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app.api.admin import router as admin_router
+from app.api.console_internal import router as console_internal_router
 from app.api.internal import router as internal_router
 from app.api.routes import router
 from app.config import settings
@@ -41,3 +42,6 @@ app = create_app(
 # Root-mounted and excluded from the public schema: subscription resolves a plan version through
 # this over a service token when it pins one, before any tenant context of a person's own exists.
 app.include_router(internal_router)
+# Root-mounted and excluded from the public schema, like `internal_router` — console's narrow
+# clone-and-publish endpoint for a staff-set bespoke price (app/api/console_internal.py).
+app.include_router(console_internal_router)

@@ -25,7 +25,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors
-from app.schemas import FeatureOut, InternalPlanVersionOut, InternalPriceOut, SeatClassOut
+from app.schemas import (
+    FeatureOut,
+    InternalPlanVersionOut,
+    InternalPriceOut,
+    PublicFlatPlanOut,
+    PublicFlatPlansOut,
+    SeatClassOut,
+)
 from platform_core.auth import require_service_token
 from platform_core.db import get_session
 from platform_core.errors import NotFoundProblem
@@ -78,4 +85,33 @@ async def get_plan_version(version_id: uuid.UUID, session: SessionDep) -> Intern
         prices=[InternalPriceOut.model_validate(p) for p in version.prices],
         features=[FeatureOut.model_validate(f) for f in version.features],
         seat_classes=[SeatClassOut.model_validate(sc) for sc in version.seat_classes],
+    )
+
+
+@router.get(
+    "/public-flat-plans",
+    response_model=PublicFlatPlansOut,
+    summary="Every product's public flat plan — the console pricing screen's baseline",
+)
+async def list_public_flat_plans(session: SessionDep) -> PublicFlatPlansOut:
+    """One row per product that sells a public flat plan (ADR-0013 §2). Read by console to render
+    "what this product publicly costs" beside whatever an organization is bespoke-priced at; open
+    to any service holding a valid service token, like the pin lookup above — it discloses nothing
+    an unauthenticated customer browse would not already show."""
+    rows = await selectors.all_public_flat_plans(session)
+    return PublicFlatPlansOut(
+        plans=[
+            PublicFlatPlanOut(
+                product_key=plan.product_key,
+                product_name=plan.name,
+                plan_id=plan.id,
+                plan_version_id=version.id,
+                amount_minor=next(
+                    (p.amount_minor or 0 for p in version.prices if p.kind == "flat"), 0
+                ),
+                currency=version.currency,
+                billing_interval=version.billing_interval,
+            )
+            for plan, version in rows
+        ]
     )

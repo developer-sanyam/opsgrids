@@ -143,8 +143,17 @@ engage)
 	dist_dir="dist"
 	entry="index.html"
 	;;
+internal)
+	# The operator/staff console: admin.opsgrids.com. Its own audience and its own gateway
+	# (admin-gateway, never app-gateway — ADR-0003 §2); everything else about publishing it is
+	# the same shape as every other named product app.
+	app_dir="$repo_root/frontend/opsgrids-internal"
+	build_script="build"
+	dist_dir="dist"
+	entry="index.html"
+	;;
 *)
-	echo "unknown APP '$app' — one of: buyer, dashboard, operations, hrms, crm, pulseboard, projects, support, marketing, finance, itsm, storefront, engage" >&2
+	echo "unknown APP '$app' — one of: buyer, dashboard, operations, hrms, crm, pulseboard, projects, support, marketing, finance, itsm, storefront, engage, internal" >&2
 	exit 64
 	;;
 esac

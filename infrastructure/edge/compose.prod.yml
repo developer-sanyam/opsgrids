@@ -686,6 +686,34 @@ services:
       - front
       - back
 
+  # The operator gateway (ADR-0003 §2, profile `admin`): a separate audience and route table
+  # from app-gateway above, so a customer token cannot reach it even if the network path exists.
+  # Off by default, like `console`/`console-worker` — see that comment. `routes.admin.prod.json`
+  # is admin-gateway's own production route table (never `routes.prod.json`, which is
+  # app-gateway's): the operator surface routes to auth's operator endpoints, console's admin
+  # API and catalog's admin API, and nothing tenant-facing.
+  admin-gateway:
+    <<: *service-common
+    profiles: ['admin']
+    image: opsgrids-edge/admin-gateway
+    build:
+      context: ../..
+      dockerfile: services/admin-gateway/Dockerfile
+    environment:
+      <<: *service-env
+      ROUTES_FILE: /opt/opsgrids/routes.admin.prod.json
+      ROUTES_SHA: ${ADMIN_ROUTES_SHA:-unset}
+      # The separate secret this gateway signs every proxied operator request with (BLOCKER 2 of
+      # the 2026-09-24 security review) — auth's own block already reads the same variable to
+      # verify it. Never INTERNAL_SERVICE_TOKEN's value; `Settings.model_post_init` refuses to
+      # start in production if the two ever match.
+      ADMIN_GATEWAY_HOP_KEY: ${ADMIN_GATEWAY_HOP_KEY:-}
+    volumes:
+      - ./routes.admin.prod.json:/opt/opsgrids/routes.admin.prod.json:ro
+    networks:
+      - front
+      - back
+
   # ---------------------------------------------------------------- core: workers and the relay
   # ADR-0013 §5. A worker only where the service has event handlers (auth, catalog, billing,
   # metering, operations, storefront and document have none today); every outbox is drained, so nothing
@@ -705,7 +733,7 @@ services:
     command: ['python', '-m', 'platform_core.edge_relay']
     environment:
       <<: *service-env
-      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,leave,customer,deal,lead,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm}
+      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,leave,customer,deal,lead,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm,console}
     depends_on:
       product:
         condition: service_started
@@ -765,7 +793,7 @@ services:
       RABBITMQ_URL: amqp://opsgrids:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       MALLOC_ARENA_MAX: '2'
       MALLOC_TRIM_THRESHOLD_: '131072'
-      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,leave,customer,deal,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm}
+      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,leave,customer,deal,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm,console}
       # B1 (round 2): the same variable docker compose itself already reads to decide which
       # containers to start — one source of truth for "what does this box run", so
       # OpsMonitorSettings can derive exactly which API containers/DLQ queues SHOULD exist
@@ -948,6 +976,46 @@ services:
     image: opsgrids-edge/payment
     command: ['./bin/worker']
     environment: *payment-env
+
+  # ---------------------------------------------------------------- admin console (profile `admin`)
+  # The operator/staff console backend (ADR-0003 §2): cross-tenant reads for OpsGrids staff, and
+  # the client-pricing write (ADR-0004 §2). Off by default — not one of the ten sellable-product
+  # profiles above, so it costs nothing until an operator adds `admin` to COMPOSE_PROFILES/
+  # EDGE_PROFILES (RUNBOOK, "Turning on the admin console"). Reaches catalog, subscription and
+  # billing over their internal APIs, and account-service's own staff-only directory route
+  # (never a gateway) — the same service-to-service shape every internal caller on this box uses.
+  console:
+    <<: *service-common
+    profiles: ['admin']
+    image: opsgrids-edge/console
+    build:
+      context: ../..
+      dockerfile: services/console/Dockerfile
+    environment:
+      <<: *service-env
+      CATALOG_INTERNAL_URL: http://catalog:8000
+      SUBSCRIPTION_INTERNAL_URL: http://subscription:8000
+      BILLING_INTERNAL_URL: http://billing:8000
+      ACCOUNT_PUBLIC_URL: http://account:8000
+    networks:
+      - back
+
+  # Folds the commerce transition stream (subscription/billing/metering events) into the
+  # projections `GET /admin/organizations`, the metrics overview and the audit view read
+  # (app/consumers.py, queue `console.events`). No `console-relay`: console currently publishes
+  # nothing of its own (app/relay.py is kept from the scaffold for `/health/outbox` parity only),
+  # so a relay here would have an empty table to drain forever.
+  console-worker:
+    <<: *background
+    profiles: ['admin']
+    image: opsgrids-edge/console
+    command: ['./bin/worker']
+    environment:
+      <<: *service-env
+      CATALOG_INTERNAL_URL: http://catalog:8000
+      SUBSCRIPTION_INTERNAL_URL: http://subscription:8000
+      BILLING_INTERNAL_URL: http://billing:8000
+      ACCOUNT_PUBLIC_URL: http://account:8000
 
   # ---------------------------------------------------------------- notification (platform)
   # Email is what turns a signup into a password (ADR-0013 §3) and a trial's end into a
