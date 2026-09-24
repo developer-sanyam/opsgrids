@@ -118,25 +118,25 @@
     "region": 2
   },
   "page/internal/overview|dark|1280": {
-    "color-contrast": 10
+    "color-contrast": 12
   },
   "page/internal/overview|dark|375": {
-    "color-contrast": 6,
+    "color-contrast": 8,
     "region": 2
   },
   "page/internal/overview|dark|768": {
-    "color-contrast": 6,
+    "color-contrast": 8,
     "region": 2
   },
   "page/internal/overview|light|1280": {
-    "color-contrast": 10
+    "color-contrast": 12
   },
   "page/internal/overview|light|375": {
-    "color-contrast": 7,
+    "color-contrast": 9,
     "region": 2
   },
   "page/internal/overview|light|768": {
-    "color-contrast": 7,
+    "color-contrast": 9,
     "region": 2
   },
   "story/actions-button--loading|dark|1280": {
