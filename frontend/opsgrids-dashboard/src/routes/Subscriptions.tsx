@@ -18,9 +18,9 @@ import {
 import type { TagTone } from "@opsgrids/ui";
 
 import { cancelSubscription, changeSubscriptionPlan, listPlans, listProducts, listSubscriptions } from "@/api";
-import type { Plan, PlanVersion, Product, Subscription } from "@/api/types";
+import type { Product, Subscription } from "@/api/types";
 import { bundlesIncluding, joinNames, productNames } from "@/lib/bundles";
-import { daysUntil, formatDate, formatMoney, intervalLabel } from "@/lib/money";
+import { daysUntil, formatDate } from "@/lib/money";
 import { PageHeader } from "@/ui";
 import { shortProductName } from "../lib/productName";
 
@@ -231,12 +231,6 @@ export function SubscriptionsPage() {
   );
 }
 
-function planLabel(plan: Plan, version: PlanVersion): string {
-  const flat = version.prices.find((p) => p.kind === "flat" && p.amount_minor !== null);
-  const price = flat ? `${formatMoney(flat.amount_minor ?? 0, flat.currency)} ${intervalLabel(version.billing_interval)}` : "Price on request";
-  return `${plan.name} — ${price}`;
-}
-
 function ChangePlanDialog({
   row,
   onClose,
@@ -256,7 +250,7 @@ function ChangePlanDialog({
       for (const version of plan.versions) {
         if (version.state !== "published") continue;
         if (version.id === row.subscription.plan_version_id) continue;
-        out.push({ value: version.id, label: planLabel(plan, version) });
+        out.push({ value: version.id, label: plan.name });
       }
     }
     return out;

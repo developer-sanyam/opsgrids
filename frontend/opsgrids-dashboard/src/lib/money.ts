@@ -25,18 +25,6 @@ function minorUnitDigits(currency: string, locale: string): number {
   }
 }
 
-/** "per month" / "per year" from the catalogue's `billing_interval`. */
-export function intervalLabel(interval: string): string {
-  switch (interval) {
-    case "month":
-      return "per month";
-    case "year":
-      return "per year";
-    default:
-      return `per ${interval}`;
-  }
-}
-
 /** A date from the wire, for people. */
 export function formatDate(iso: string | null, locale = "en-IN"): string {
   if (!iso) return "—";
