@@ -1,8 +1,8 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, Navigate, useLocation } from "react-router-dom";
 
-import { ApiError, problemMessage, useAuth } from "@opsgrids/client";
+import { ApiError, isAllowedRedirectTarget, problemMessage, useAuth } from "@opsgrids/client";
 import type { LoginStep, OrganizationChoice } from "@opsgrids/client";
 import { EyeIcon, EyeOffIcon } from "@opsgrids/ui";
 
@@ -13,6 +13,23 @@ const CREDENTIAL_ERROR = "That email or password is incorrect.";
 
 interface LocationState {
   from?: string;
+}
+
+/**
+ * A product SPA's `/login` redirects here with `?next=<its own URL>` (ADR-0003 addendum): the
+ * dashboard is where sign-in actually happens, and once it completes the browser needs to go
+ * back to whichever app sent it. `next` is attacker-controlled input — it rides in on a URL a
+ * script on some other page can set — so it is trusted only after `isAllowedRedirectTarget`
+ * confirms it names one of the platform's own app hosts; anything else (another host entirely, a
+ * storefront subdomain, a custom domain, `javascript:`, a protocol-relative value, a userinfo
+ * trick) is silently ignored and sign-in falls back to the ordinary in-app destination.
+ *
+ * A full navigation (`window.location.assign`), not `<Navigate>`: the target is a different
+ * origin, which React Router's client-side router cannot and must not try to reach.
+ */
+function externalDestination(search: string): string | null {
+  const next = new URLSearchParams(search).get("next");
+  return next && isAllowedRedirectTarget(next) ? next : null;
 }
 
 /** What this screen renders. Distinct from `LoginStep`: it also carries the org list to show. */
@@ -45,8 +62,27 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null);
 
   const destination = (location.state as LocationState | null)?.from ?? "/";
+  const external = externalDestination(location.search);
 
-  if (status === "authenticated") return <Navigate to={destination} replace />;
+  useEffect(() => {
+    if (status === "authenticated" && external) window.location.assign(external);
+  }, [status, external]);
+
+  if (status === "authenticated") {
+    // A hand-off back to another product app: hold here, with a real page navigation, while
+    // the effect above sends the browser there. `<Navigate>` only knows this app's own routes
+    // and cannot reach a different origin.
+    if (external) {
+      return (
+        <AuthCard title="Signing you in…">
+          <p role="status" aria-live="polite" className="text-sm text-muted">
+            Taking you back to where you started…
+          </p>
+        </AuthCard>
+      );
+    }
+    return <Navigate to={destination} replace />;
+  }
 
   /** Land on the step a `login`/`verifyMfa` call answered with. `complete` needs nothing here. */
   function afterStep(next: LoginStep) {
