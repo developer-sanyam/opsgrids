@@ -22,7 +22,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { ApiError, problemMessage, useCan, useMutation } from "@opsgrids/client";
+import { ApiError, problemMessage, useCan, useMutation, usePermissions } from "@opsgrids/client";
 import { Avatar, Button, Card, ConfirmDialog, ErrorState, InlineAlert, SectionHeader, Skeleton, useToast } from "@opsgrids/ui";
 import type { ComboboxOption } from "@opsgrids/ui";
 
@@ -48,9 +48,22 @@ function readFailure(err: unknown): string {
   return "Couldn't load the linked member.";
 }
 
-/** The server's own sentence for a 409 or a 404 says what to do ("That employee is already linked
- *  to another member…"); a 403 is rewritten because the raw one names a permission code. */
+/** The server refuses to let anybody change their *own* employee link — a 403 with this code. */
+const OWN_LINK_REFUSAL = "cannot_change_own_employee_link";
+
+function isOwnLinkRefusal(err: Error): boolean {
+  return (
+    err instanceof ApiError &&
+    err.status === 403 &&
+    (err.problem?.errors ?? []).some((e) => e.code === OWN_LINK_REFUSAL)
+  );
+}
+
+/** The server's own sentence for a 409, a 404 or the own-link refusal says what to do ("That
+ *  employee is already linked to another member…", "Ask another administrator…"); any other 403 is
+ *  rewritten because the raw one names a permission code. */
 function writeFailure(err: Error, verb: "link" | "unlink"): string {
+  if (isOwnLinkRefusal(err)) return problemMessage(err);
   if (err instanceof ApiError && err.status === 403) {
     return `You don't have permission to ${verb} members.`;
   }
@@ -66,6 +79,9 @@ export function LinkedMemberSection({ employee }: { employee: EmployeeOut }) {
 
 function LinkedMemberCard({ employee }: { employee: EmployeeOut }) {
   const toast = useToast();
+  // The caller's own membership, from `GET /members/me/grants`. Nobody assigns their own identity:
+  // the server refuses it (403), so this screen never offers the control on the caller's own row.
+  const { membershipId: myMembershipId } = usePermissions();
   const [state, setState] = useState<LinkState>({ kind: "loading" });
   const [attempt, setAttempt] = useState(0);
   const [picked, setPicked] = useState<ComboboxOption | null>(null);
@@ -151,6 +167,7 @@ function LinkedMemberCard({ employee }: { employee: EmployeeOut }) {
                     setPicked(option);
                     link.reset();
                   }}
+                  excludeMembershipId={myMembershipId}
                   disabled={link.pending}
                 />
               </div>
@@ -187,10 +204,19 @@ function LinkedMemberCard({ employee }: { employee: EmployeeOut }) {
                 </span>
               </div>
             </div>
-            <Button variant="outline" size="sm" onClick={() => setConfirming(true)}>
-              Unlink
-            </Button>
+            {state.member.id === myMembershipId ? null : (
+              <Button variant="outline" size="sm" onClick={() => setConfirming(true)}>
+                Unlink
+              </Button>
+            )}
           </div>
+        ) : null}
+
+        {state.kind === "linked" && state.member.id === myMembershipId ? (
+          <p className="text-sm text-muted">
+            This is your own membership. You can&apos;t change your own link — another administrator
+            has to.
+          </p>
         ) : null}
       </div>
 

@@ -11,7 +11,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ApiError, PermissionProvider } from "@opsgrids/client";
+import { ApiError, PermissionContext, PermissionProvider } from "@opsgrids/client";
 
 import type { EmployeeOut, MemberOut } from "@/api/types";
 import { LinkedMemberSection } from "./LinkedMemberSection";
@@ -68,6 +68,26 @@ function renderField(grants: readonly string[] = WRITE_ORG) {
     <PermissionProvider grants={grants}>
       <LinkedMemberSection employee={EMPLOYEE} />
     </PermissionProvider>,
+  );
+}
+
+/** The field as it renders for a caller whose own membership is `myMembershipId` — the id
+ *  `GET /members/me/grants` reports, which `PermissionProvider`'s grants override does not carry. */
+function renderFieldAs(myMembershipId: string) {
+  return render(
+    <PermissionContext.Provider
+      value={{
+        grants: WRITE_ORG,
+        entitlements: null,
+        status: "ready",
+        membershipId: myMembershipId,
+        pv: null,
+        error: null,
+        reloadGrants: () => undefined,
+      }}
+    >
+      <LinkedMemberSection employee={EMPLOYEE} />
+    </PermissionContext.Provider>,
   );
 }
 
@@ -290,6 +310,77 @@ describe("LinkedMemberSection", () => {
       await userEvent.click(screen.getByLabelText(/Remove Asha Verma/));
 
       expect(screen.queryByText("That person is not a member of this organization")).toBeNull();
+    });
+  });
+
+  describe("nobody assigns their own identity", () => {
+    const OWN_REFUSAL = new ApiError(403, "forbidden", {
+      detail: "You cannot change your own employee link. Ask another administrator to do it.",
+      errors: [
+        {
+          field: "employee_id",
+          code: "cannot_change_own_employee_link",
+          message: "Your own employee link can only be changed by a different administrator.",
+        },
+      ],
+    });
+
+    it("offers no Unlink on the caller's own membership, and says why", async () => {
+      getMemberLinkedTo.mockResolvedValue(LINKED);
+      renderFieldAs("mem-asha");
+
+      await screen.findByText("Asha Verma");
+
+      expect(screen.queryByRole("button", { name: "Unlink" })).toBeNull();
+      expect(screen.getByText(/This is your own membership/)).toBeDefined();
+      expect(screen.getByText(/another administrator/)).toBeDefined();
+    });
+
+    it("still offers Unlink for somebody else's membership", async () => {
+      getMemberLinkedTo.mockResolvedValue(LINKED);
+      renderFieldAs("mem-somebody-else");
+
+      expect(await screen.findByRole("button", { name: "Unlink" })).toBeDefined();
+      expect(screen.queryByText(/This is your own membership/)).toBeNull();
+    });
+
+    it("never offers the caller's own membership in the picker", async () => {
+      listUnlinkedMembers.mockResolvedValue(
+        page([
+          member({ id: "mem-me", email: "me.admin@acme.example", full_name: "Maya Admin" }),
+          member({ id: "mem-asha" }),
+        ]),
+      );
+      renderFieldAs("mem-me");
+      await screen.findByRole("combobox", { name: "Member to link" });
+
+      await userEvent.type(screen.getByRole("combobox", { name: "Member to link" }), "ma");
+      await screen.findByRole("option", { name: /Asha Verma/ });
+
+      expect(screen.queryByRole("option", { name: /Maya Admin/ })).toBeNull();
+    });
+
+    it("tells the administrator up front that they cannot link themselves", async () => {
+      renderFieldAs("mem-me");
+      expect(
+        await screen.findByText("You can't link yourself. Another administrator has to do that."),
+      ).toBeDefined();
+    });
+
+    it("shows the server's own sentence when it refuses a self-link, not a permission message", async () => {
+      linkMember.mockRejectedValue(OWN_REFUSAL);
+      renderFieldAs("mem-somebody-else"); // a stale screen: the server is the control
+      await screen.findByRole("combobox", { name: "Member to link" });
+      await pickMember("as", /Asha Verma/);
+
+      await userEvent.click(screen.getByRole("button", { name: "Link member" }));
+
+      expect(
+        await screen.findByText(
+          "You cannot change your own employee link. Ask another administrator to do it.",
+        ),
+      ).toBeDefined();
+      expect(screen.queryByText("You don't have permission to link members.")).toBeNull();
     });
   });
 

@@ -6,7 +6,9 @@
  *
  * Each option is the person's name over their **masked** sign-in email (`@/lib/mask`) — enough to
  * tell two people with the same name apart, and not something to leave printed whole on a screen an
- * HR administrator walks away from.
+ * HR administrator walks away from. **The mask is cosmetic, not a control:** `GET /members` returns
+ * the full address to anyone holding `core.identity.membership.read`, so this hides nothing from a
+ * caller who looks at the network tab. It keeps the address off a screen, and that is all it claims.
  */
 
 import { Combobox } from "@opsgrids/ui";
@@ -24,11 +26,22 @@ const MEMBER_COPY = {
 interface MemberPickerProps {
   value: ComboboxOption | null;
   onChange: (option: ComboboxOption | null) => void;
+  /**
+   * The caller's own membership: never offered, because nobody assigns their own identity. The
+   * server refuses it with a 403 either way; this only stops the screen offering what it will refuse.
+   */
+  excludeMembershipId?: string | null | undefined;
   disabled?: boolean | undefined;
   error?: string | undefined;
 }
 
-export function MemberPicker({ value, onChange, disabled, error }: MemberPickerProps) {
+export function MemberPicker({
+  value,
+  onChange,
+  excludeMembershipId,
+  disabled,
+  error,
+}: MemberPickerProps) {
   return (
     <Combobox
       label="Member to link"
@@ -36,12 +49,15 @@ export function MemberPicker({ value, onChange, disabled, error }: MemberPickerP
       onChange={onChange}
       loadOptions={async (q) => {
         const result = await listUnlinkedMembers({ q, size: MEMBER_PICKER_SIZE });
-        return result.items.map((m) => ({
-          id: m.id,
-          label: m.display_name ?? m.full_name,
-          sublabel: maskEmail(m.email),
-        }));
+        return result.items
+          .filter((m) => m.id !== excludeMembershipId)
+          .map((m) => ({
+            id: m.id,
+            label: m.display_name ?? m.full_name,
+            sublabel: maskEmail(m.email),
+          }));
       }}
+      helper="You can't link yourself. Another administrator has to do that."
       placeholder="Search for a member…"
       cap={MEMBER_PICKER_SIZE}
       copy={MEMBER_COPY}

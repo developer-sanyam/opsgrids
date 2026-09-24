@@ -801,6 +801,33 @@ async def update_member(
     previous_employee_id = membership.employee_id
     employee_link_changes = employee_id_requested and new_employee_id != previous_employee_id
 
+    if employee_link_changes and (
+        membership.id == ctx.principal.membership_id or membership.user_id == ctx.principal.sub
+    ):
+        # **Nobody assigns their own identity.** `employee_id` is the sole origin of the `sref`
+        # claim, so an administrator who could set it on their own membership could become any
+        # employee: OWN scope over that person's records, TEAM scope over their reports, and
+        # approval decisions the audit trail credits to them (ADR-0008 "a wrong link is an
+        # authorization defect"). Self is the caller's own membership id **or** their own user: a
+        # user has one membership per organization, so the second test still holds for a token
+        # that carries no `mem` claim. Refused for every direction — a link, a re-link and an
+        # unlink — and before anything is read, so the refusal reveals nothing about who holds
+        # what. Another administrator makes the change; that is the second pair of eyes this is
+        # for. A PATCH that re-sends the value already held changes no identity and is not
+        # caught here.
+        raise ForbiddenProblem(
+            "You cannot change your own employee link. Ask another administrator to do it.",
+            errors=[
+                {
+                    "field": "employee_id",
+                    "code": "cannot_change_own_employee_link",
+                    "message": (
+                        "Your own employee link can only be changed by a different administrator."
+                    ),
+                }
+            ],
+        )
+
     if employee_link_changes and new_employee_id is not None:
         # Opportunistic, not the enforcement (`_write_employee_link` is): reads before the
         # write so the ordinary, non-racing case gets a 409 that names the holder.

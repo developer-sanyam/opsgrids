@@ -486,6 +486,322 @@ class TestLinkedFilterAndsWithScope:
         assert [i["email"] for i in linked.json()["items"]] == ["report@example.com"]
 
 
+class TestNobodyAssignsTheirOwnIdentity:
+    """`employee_id` is the sole origin of `sref`. An administrator who could PATCH it on their
+    own membership could become any employee — OWN scope over that person's records, TEAM scope
+    over their reports, approval decisions credited to them (ADR-0008: a wrong link is an
+    authorization defect). It is refused in **every** direction — link, re-link, unlink — for the
+    caller's own membership, and only for that: the second administrator is the control."""
+
+    URL = "/api/v1/members/{}"
+
+    async def _patch_over_http(
+        self,
+        client: AsyncClient,
+        principal: object,
+        membership_id: uuid.UUID,
+        body: dict[str, object],
+    ):
+        from app.main import app
+        from platform_core.auth import get_principal
+
+        app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            return await client.patch(self.URL.format(membership_id), json=body)
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+
+    async def _events_and_audits(self, session: AsyncSession) -> tuple[int, int]:
+        from sqlalchemy import func
+
+        from app.models import OutboxEvent
+
+        async with session.begin():
+            audits = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(AuditLog)
+                    .where(AuditLog.action == "membership.updated")
+                )
+            ).scalar_one()
+            events = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(OutboxEvent)
+                    .where(OutboxEvent.event_type == services.EVT_MEMBERSHIP_UPDATED)
+                )
+            ).scalar_one()
+        return audits, events
+
+    async def test_an_administrator_cannot_link_their_own_membership_to_an_employee(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        client: AsyncClient,
+    ) -> None:
+        ids = {name: member.id for name, member in people.items()}
+        victim = uuid.uuid4()
+        principal = principal_for(org.id, people["manager"], [f"{MEMBER_WRITE}:ORG"])
+
+        response = await self._patch_over_http(
+            client, principal, ids["manager"], {"employee_id": str(victim)}
+        )
+
+        assert response.status_code == 403
+        assert response.headers["content-type"].startswith("application/problem+json")
+        problem = response.json()
+        assert "your own employee link" in problem["detail"]
+        assert problem["errors"][0]["code"] == "cannot_change_own_employee_link"
+        assert problem["errors"][0]["field"] == "employee_id"
+        assert await _employee_id_of(session, ids["manager"]) is None
+
+    async def test_the_refusal_is_the_same_whether_or_not_somebody_holds_the_employee(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        client: AsyncClient,
+    ) -> None:
+        """A 409 here would say who holds the employee; the refusal must come first and say
+        nothing about it."""
+        ids = {name: member.id for name, member in people.items()}
+        held = uuid.uuid4()
+        await _patch(session, org, people["manager"], people["report"], employee_id=held)
+        principal = principal_for(org.id, people["manager"], [f"{MEMBER_WRITE}:ORG"])
+
+        response = await self._patch_over_http(
+            client, principal, ids["manager"], {"employee_id": str(held)}
+        )
+
+        assert response.status_code == 403
+        assert str(ids["report"]) not in response.text
+
+    async def test_it_is_refused_when_the_target_is_the_callers_own_employee_record(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> None:
+        """The token's `sref` is the employee the caller already *is*. Linking their own membership
+        to that record is still a change of identity, made by the person it changes."""
+        ids = {name: member.id for name, member in people.items()}
+        from platform_core.auth import Principal, ScopeContext
+
+        mine = uuid.uuid4()
+        principal = Principal(
+            sub=people["manager"].user_id,
+            organization_id=org.id,
+            membership_id=ids["manager"],
+            subject_ref=mine,
+            perms=[f"{MEMBER_WRITE}:ORG"],
+        )
+        ctx = ScopeContext(principal=principal, scope=Scope.ORG, permission=MEMBER_WRITE)
+
+        from platform_core.errors import ForbiddenProblem
+
+        with pytest.raises(ForbiddenProblem):
+            async with session.begin():
+                await services.update_member(
+                    session, ctx, people["manager"], MemberPatch(employee_id=mine)
+                )
+        assert await _employee_id_of(session, ids["manager"]) is None
+
+    async def test_an_administrator_cannot_unlink_themselves(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        client: AsyncClient,
+    ) -> None:
+        """Unlinking is a change of identity too, and the one that bumps the tenant's
+        permission version — not something a caller does to their own token."""
+        ids = {name: member.id for name, member in people.items()}
+        mine = uuid.uuid4()
+        await _patch(session, org, people["other_manager"], people["manager"], employee_id=mine)
+        principal = principal_for(org.id, people["manager"], [f"{MEMBER_WRITE}:ORG"])
+
+        response = await self._patch_over_http(
+            client, principal, ids["manager"], {"employee_id": None}
+        )
+
+        assert response.status_code == 403
+        assert await _employee_id_of(session, ids["manager"]) == mine
+
+    async def test_an_administrator_cannot_swap_their_own_link(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        client: AsyncClient,
+    ) -> None:
+        ids = {name: member.id for name, member in people.items()}
+        mine = uuid.uuid4()
+        await _patch(session, org, people["other_manager"], people["manager"], employee_id=mine)
+        principal = principal_for(org.id, people["manager"], [f"{MEMBER_WRITE}:ORG"])
+
+        response = await self._patch_over_http(
+            client, principal, ids["manager"], {"employee_id": str(uuid.uuid4())}
+        )
+
+        assert response.status_code == 403
+        assert await _employee_id_of(session, ids["manager"]) == mine
+
+    async def test_a_token_with_no_membership_claim_is_still_recognised_as_the_same_person(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> None:
+        """A user has one membership per organization, so `sub` identifies the caller even when the
+        token carries no `mem`."""
+        ids = {name: member.id for name, member in people.items()}
+        from platform_core.auth import Principal, ScopeContext
+        from platform_core.errors import ForbiddenProblem
+
+        principal = Principal(
+            sub=people["manager"].user_id,
+            organization_id=org.id,
+            membership_id=None,
+            perms=[f"{MEMBER_WRITE}:ORG"],
+        )
+        ctx = ScopeContext(principal=principal, scope=Scope.ORG, permission=MEMBER_WRITE)
+        with pytest.raises(ForbiddenProblem):
+            async with session.begin():
+                await services.update_member(
+                    session, ctx, people["manager"], MemberPatch(employee_id=uuid.uuid4())
+                )
+        assert await _employee_id_of(session, ids["manager"]) is None
+
+    async def test_a_refused_attempt_writes_no_audit_row_and_no_event(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        client: AsyncClient,
+    ) -> None:
+        ids = {name: member.id for name, member in people.items()}
+        before = await self._events_and_audits(session)
+        principal = principal_for(org.id, people["manager"], [f"{MEMBER_WRITE}:ORG"])
+        response = await self._patch_over_http(
+            client, principal, ids["manager"], {"employee_id": str(uuid.uuid4())}
+        )
+        assert response.status_code == 403
+        assert await self._events_and_audits(session) == before
+
+    async def test_a_second_administrator_can_still_link_and_unlink_the_first(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        client: AsyncClient,
+    ) -> None:
+        """The control is a second pair of eyes, not a ban: another member with the permission
+        makes exactly the change the first was refused."""
+        ids = {name: member.id for name, member in people.items()}
+        target_employee = uuid.uuid4()
+        other_admin = principal_for(org.id, people["other_manager"], [f"{MEMBER_WRITE}:ORG"])
+
+        linked = await self._patch_over_http(
+            client, other_admin, ids["manager"], {"employee_id": str(target_employee)}
+        )
+        assert linked.status_code == 200
+        assert linked.json()["employee_id"] == str(target_employee)
+        assert await _employee_id_of(session, ids["manager"]) == target_employee
+
+        unlinked = await self._patch_over_http(
+            client, other_admin, ids["manager"], {"employee_id": None}
+        )
+        assert unlinked.status_code == 200
+        assert await _employee_id_of(session, ids["manager"]) is None
+
+    async def test_linking_somebody_else_is_unchanged(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        client: AsyncClient,
+    ) -> None:
+        ids = {name: member.id for name, member in people.items()}
+        employee_id = uuid.uuid4()
+        principal = principal_for(org.id, people["manager"], [f"{MEMBER_WRITE}:ORG"])
+        response = await self._patch_over_http(
+            client, principal, ids["report"], {"employee_id": str(employee_id)}
+        )
+        assert response.status_code == 200
+        assert await _employee_id_of(session, ids["report"]) == employee_id
+
+    async def test_an_administrator_may_still_edit_everything_else_on_their_own_membership(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        client: AsyncClient,
+    ) -> None:
+        ids = {name: member.id for name, member in people.items()}
+        principal = principal_for(org.id, people["manager"], [f"{MEMBER_WRITE}:ORG"])
+        response = await self._patch_over_http(
+            client, principal, ids["manager"], {"job_title": "Head of People"}
+        )
+        assert response.status_code == 200
+        assert response.json()["job_title"] == "Head of People"
+
+    async def test_re_sending_the_link_one_already_holds_changes_no_identity(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        client: AsyncClient,
+    ) -> None:
+        ids = {name: member.id for name, member in people.items()}
+        mine = uuid.uuid4()
+        await _patch(session, org, people["other_manager"], people["manager"], employee_id=mine)
+        principal = principal_for(org.id, people["manager"], [f"{MEMBER_WRITE}:ORG"])
+        response = await self._patch_over_http(
+            client,
+            principal,
+            ids["manager"],
+            {"employee_id": str(mine), "job_title": "Head of People"},
+        )
+        assert response.status_code == 200
+        assert await _employee_id_of(session, ids["manager"]) == mine
+
+    async def test_a_membership_in_another_tenant_is_still_a_404(
+        self,
+        session: AsyncSession,
+        admin_session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        client: AsyncClient,
+    ) -> None:
+        """Unchanged, and ahead of the self check: another tenant's membership id says nothing."""
+        async with admin_session.begin():
+            other_org = await services.create_organization(
+                admin_session, OrganizationIn(name="Other Co", slug="other-co"), actor_user_id=None
+            )
+            theirs = await services.add_member(
+                admin_session,
+                org_id=other_org.id,
+                email="theirs@other.example",
+                full_name="Thea Theirs",
+                actor_user_id=None,
+                role_codes=["MEMBER"],
+            )
+        principal = principal_for(org.id, people["manager"], [f"{MEMBER_WRITE}:ORG"])
+        response = await self._patch_over_http(
+            client, principal, theirs.id, {"employee_id": str(uuid.uuid4())}
+        )
+        assert response.status_code == 404
+
+    async def test_a_caller_without_the_permission_is_refused_before_any_of_this(
+        self,
+        org: Organization,
+        people: dict[str, Membership],
+        client: AsyncClient,
+    ) -> None:
+        ids = {name: member.id for name, member in people.items()}
+        principal = principal_for(org.id, people["report"], ["core.identity.membership.read:ORG"])
+        response = await self._patch_over_http(
+            client, principal, ids["report"], {"employee_id": str(uuid.uuid4())}
+        )
+        assert response.status_code == 403
+        assert "Missing permission" in response.json()["detail"]
+
+
 class TestEmployeeIdFilter:
     """`?employee_id=` answers "which member is this employee?" — what the HRMS employee page
     asks to show its "Linked member" field (ADR-0008 Q1, NEW-5). It is an authorization surface
