@@ -82,7 +82,14 @@ function stubFetch() {
       const raw = typeof init?.body === "string" ? init.body : "{}";
       calls.push({ url, body: JSON.parse(raw) as Record<string, unknown> });
       const route = routes[url];
-      if (!route) throw new Error(`No stub for ${url}`);
+      if (!route) {
+        // The provider now tries a silent refresh on boot, before any test's own stubs are
+        // relevant (no token exists yet in any of these tests) — the same "no session cookie"
+        // 401 a real gateway answers with. A test that cares can still override this by
+        // stubbing `/api/v1/auth/refresh` itself.
+        if (url === "/api/v1/auth/refresh") return Promise.resolve(json({}, 401));
+        throw new Error(`No stub for ${url}`);
+      }
       return Promise.resolve(route());
     }),
   );
@@ -184,13 +191,21 @@ describe("password-only sign-in", () => {
     };
     renderSignIn();
 
+    // The provider's own boot-time refresh attempt finds no session and settles first, so the
+    // click below is the one that starts the sign-in this test is actually about.
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("unauthenticated"));
+
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("authenticated"));
     expect(screen.getByTestId("step").textContent).toBe("complete");
     expect(screen.getByTestId("user").textContent).toBe("priya@acme.example.com");
     expect(getAccessToken()).toBe(ACCESS);
-    expect(calls.map((call) => call.url)).toEqual(["/api/v1/auth/login", "/api/v1/auth/me"]);
+    expect(calls.map((call) => call.url)).toEqual([
+      "/api/v1/auth/refresh",
+      "/api/v1/auth/login",
+      "/api/v1/auth/me",
+    ]);
   });
 
   it("still auto-selects the only organization a user belongs to", async () => {
@@ -343,12 +358,14 @@ describe("MFA sign-in", () => {
     const user = userEvent.setup();
     routes = {};
     renderSignIn();
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("unauthenticated"));
 
     await user.click(screen.getByRole("button", { name: "Right code" }));
 
     await waitFor(() =>
       expect(screen.getByTestId("error").textContent).toBe("Something went wrong. Try again."),
     );
-    expect(calls).toHaveLength(0);
+    // Nothing beyond the provider's own boot-time refresh attempt — `verifyMfa` never called out.
+    expect(calls.map((call) => call.url)).toEqual(["/api/v1/auth/refresh"]);
   });
 });

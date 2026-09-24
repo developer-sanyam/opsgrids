@@ -44,7 +44,14 @@ def hop_configured(monkeypatch: pytest.MonkeyPatch, cfg: Settings) -> None:
 def _signed(
     method: str = "POST", path: str = LOGOUT, *, query: str = "", body: bytes = b""
 ) -> dict[str, str]:
-    return {HEADER: sign_admin_hop(method, path, key=HOP_KEY, query=query, body=body)}
+    # `X-Requested-With` alongside the hop signature: MINOR 1 of the 2026-09-24 SSO review put
+    # the same CSRF header every tenant cookie-authenticated auth route requires onto the
+    # operator refresh/logout routes too, so a real signed request — what this helper stands in
+    # for — carries both.
+    return {
+        HEADER: sign_admin_hop(method, path, key=HOP_KEY, query=query, body=body),
+        "X-Requested-With": "opsgrids",
+    }
 
 
 class TestWithTheKeyConfigured:
@@ -126,8 +133,9 @@ class TestWithoutTheKey:
     async def test_the_defence_is_off_and_sign_in_still_works_in_development(self, client) -> None:
         """No key configured (only permitted outside production/staging/uat, below) — the
         dependency is a no-op, exactly as before, so a dev box that never provisioned one is
-        not locked out."""
-        response = await client.post(LOGOUT)
+        not locked out. The CSRF header is unaffected by the hop key either way, and still
+        required."""
+        response = await client.post(LOGOUT, headers={"X-Requested-With": "opsgrids"})
         assert response.status_code == 204
 
 

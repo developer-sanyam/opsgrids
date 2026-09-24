@@ -669,6 +669,11 @@ services:
       dockerfile: services/app-gateway/Dockerfile
     environment:
       <<: *service-env
+      # ADR-0003 addendum: the narrow, second CORS allowance for `/api/v1/auth/refresh` and
+      # `/api/v1/auth/logout` only — every product SPA's origin except app.opsgrids.com's own
+      # (already in CORS_ORIGINS). Set only here, not in `x-service-env`: no other service is
+      # ever reached cross-origin by a browser, so no other service needs it.
+      AUTH_REFRESH_CORS_ORIGINS: ${AUTH_REFRESH_CORS_ORIGINS}
       # The committed `services/app-gateway/routes.json` points every upstream at localhost,
       # which is correct for development and wrong in a container. `routes.prod.json` names
       # the five services that are actually deployed and nothing else, so a request for an

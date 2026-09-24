@@ -16,6 +16,8 @@ export { AuthProvider } from "./auth/AuthProvider";
 export { AuthContext, useAuth } from "./auth/context";
 export type { AuthContextValue, AuthStatus } from "./auth/context";
 export { RequireAuth } from "./auth/RequireAuth";
+export { RedirectToCentralLogin } from "./auth/RedirectToCentralLogin";
+export type { RedirectToCentralLoginProps } from "./auth/RedirectToCentralLogin";
 export * as authApi from "./auth/api";
 export type {
   LoginComplete,
@@ -29,6 +31,12 @@ export type {
 
 export { decodeAccessToken } from "./auth/token";
 export type { AccessClaims } from "./auth/token";
+
+export { configureAuthOrigin, getAuthOrigin } from "./auth/origin";
+export { refreshAccessToken } from "./auth/refresh";
+export type { RefreshResult } from "./auth/refresh";
+
+export { PLATFORM_APP_HOSTS, isAllowedRedirectTarget } from "./sso/platformHosts";
 
 export { API_BASE, ApiError, apiRequest } from "./http";
 export type { ProblemJson, RequestOptions } from "./http";

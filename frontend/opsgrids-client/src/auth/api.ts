@@ -5,6 +5,7 @@
  */
 
 import { apiRequest } from "../http";
+import { getAuthOrigin } from "./origin";
 import type { LoginResult, MeOut } from "./types";
 
 /** `POST /auth/login`. Returns a discriminated result on `status`. */
@@ -59,7 +60,33 @@ export function me(): Promise<MeOut> {
   return apiRequest<MeOut>("/auth/me");
 }
 
-/** `POST /auth/logout`. Best-effort — clears the refresh cookie server-side. */
+/**
+ * `POST /auth/logout`. Best-effort — clears the refresh cookie server-side.
+ *
+ * Goes to the auth origin (`configureAuthOrigin`), same as `auth/refresh.ts` — same-origin by
+ * default, cross-origin to `app.opsgrids.com` for every product SPA that centralises its
+ * refresh there (ADR-0003 addendum). Ending the session on the host that actually holds the
+ * cookie is what makes every other open tab and app fail its next refresh and land back on
+ * `/login`; logging out only against this app's own (same-)origin would leave that cookie
+ * live everywhere else.
+ *
+ * `auth: false` (security review, fix round 1, B2): this call is cookie-authenticated, and the
+ * gateway's scoped CORS for `/api/v1/auth/logout` allows exactly `Content-Type` and
+ * `X-Requested-With` — never `Authorization` (`platform_core.app._PathScopedCorsMiddleware`).
+ * `apiRequest`'s default `auth: true` would attach `Authorization: Bearer …` alongside the CSRF
+ * header on every cross-origin logout, which is a header the preflight never allow-listed: the
+ * browser refuses the preflight outright (400, before the request ever reaches the server), and
+ * the `try { await authApi.logout() } catch {}` in `AuthProvider.logout` swallowed that silently
+ * — the server-side session, and the cookie, were never actually cleared. Logout does not need a
+ * bearer token to identify who is signing out; the cookie already says.
+ */
 export function logout(): Promise<void> {
-  return apiRequest<void>("/auth/logout", { method: "POST", signalUnauthorized: false });
+  const origin = getAuthOrigin();
+  return apiRequest<void>("/auth/logout", {
+    method: "POST",
+    auth: false,
+    signalUnauthorized: false,
+    headers: { "X-Requested-With": "opsgrids" },
+    ...(origin ? { baseUrl: origin, credentials: "include" } : {}),
+  });
 }

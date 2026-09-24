@@ -2,10 +2,20 @@
  * The one place a request leaves an app. Everything goes to the same-origin `/api/v1` prefix,
  * which Vite proxies to the gateway in dev (see each app's `vite.config.ts`) — so the browser
  * never makes a cross-origin call and CORS never enters the picture. The access token is attached
- * from the in-memory session, and a `401` trips the global "signed out" handler so a stale token
- * bounces the user back to the login screen. Gateway errors arrive as RFC 7807 `problem+json`.
+ * from the in-memory session.
+ *
+ * A `401` no longer bounces straight to the login screen. It first tries exactly one silent
+ * refresh (`auth/refresh.ts`, single-flight and shared with the proactive timer and the boot
+ * restore in `AuthProvider`) and retries the original request once with whatever token that
+ * produced — this is what stops a session dying every ~15 minutes on the access token's own
+ * TTL, and what heals a `token-stale` 401 (a permission change) without a forced re-login. Only
+ * when the refresh itself cannot produce a token does the global "signed out" handler fire.
+ * `auth: false` and `signalUnauthorized: false` calls (login, MFA, select-org, logout) opt out
+ * of all of this — there is no session to refresh, or refreshing one to log out of it would be
+ * its own kind of loop. Gateway errors arrive as RFC 7807 `problem+json`.
  */
 
+import { refreshAccessToken } from "./auth/refresh";
 import { getAccessToken, notifyUnauthorized } from "./session";
 
 /** Same-origin base. The Vite dev proxy forwards this to the gateway. */
@@ -44,13 +54,25 @@ export class ApiError extends Error {
 export interface RequestOptions {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | undefined;
   body?: unknown | undefined;
-  /** Attach the bearer token (default true). Login and select-org opt out — they carry their own. */
+  /** Attach the bearer token (default true). Login and select-org opt out — they carry their own.
+   *  Also gates the 401-refresh-and-retry below: a call with no token to begin with has no
+   *  session for a refresh to save. */
   auth?: boolean | undefined;
-  /** Fire the global unauthorized handler on a 401 (default true). Login/logout opt out. */
+  /** Fire the global unauthorized handler on a 401 (default true), after a silent refresh has
+   *  had its one chance to fix it. Login/MFA/select-org/logout opt out — none of them has a
+   *  session to refresh, or (logout) refreshing one just to end it would be its own loop. */
   signalUnauthorized?: boolean | undefined;
   /** Extra request headers — e.g. an `Idempotency-Key` that makes a retried write a replay.
    *  Cannot override `Accept`, `Content-Type` or `Authorization`, which this function owns. */
   headers?: Record<string, string> | undefined;
+  /** An absolute origin prepended ahead of the ordinary `API_BASE` prefix, no trailing slash
+   *  (`https://app.opsgrids.com`) — only a cross-origin `/auth/logout` call ever sets this
+   *  (`auth/api.ts`, ADR-0003 addendum). `undefined` keeps the ordinary same-origin path every
+   *  other call uses. */
+  baseUrl?: string | undefined;
+  /** `fetch`'s credentials mode. Only needed alongside `baseUrl`: a cross-origin call needs
+   *  `"include"` or the browser withholds the cookie the call exists to use. */
+  credentials?: RequestCredentials | undefined;
 }
 
 async function readProblem(res: Response): Promise<ProblemJson | null> {
@@ -68,7 +90,16 @@ function messageFor(problem: ProblemJson | null, status: number): string {
 
 /** Issue a request to the gateway and decode the JSON body (or `undefined` for a 204). */
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = "GET", body, auth = true, signalUnauthorized = true } = options;
+  return performRequest<T>(path, options, /* allowRefresh */ true);
+}
+
+async function performRequest<T>(
+  path: string,
+  options: RequestOptions,
+  allowRefresh: boolean,
+): Promise<T> {
+  const { method = "GET", body, auth = true, signalUnauthorized = true, baseUrl, credentials } =
+    options;
 
   const headers: Record<string, string> = { ...options.headers, Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -77,13 +108,26 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     if (token) headers.Authorization = `Bearer ${token}`;
   }
 
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(`${baseUrl ?? ""}${API_BASE}${path}`, {
     method,
     headers,
+    ...(credentials ? { credentials } : {}),
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
 
-  if (res.status === 401 && signalUnauthorized) notifyUnauthorized();
+  if (res.status === 401 && signalUnauthorized && auth) {
+    // One single-flight silent refresh, shared with the proactive timer and the boot restore,
+    // and one retry — never a loop, because the retry passes `allowRefresh: false`, so a 401 on
+    // the retry itself falls straight through to `notifyUnauthorized` below instead of trying
+    // a second refresh.
+    if (allowRefresh) {
+      const result = await refreshAccessToken();
+      if (result.outcome === "ok") return performRequest<T>(path, options, false);
+    }
+    notifyUnauthorized();
+  } else if (res.status === 401 && signalUnauthorized) {
+    notifyUnauthorized();
+  }
 
   if (!res.ok) {
     const problem = await readProblem(res);
