@@ -17,6 +17,7 @@ Every test that asserts "exactly once" counts sends on the transport, not rows.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -526,7 +527,9 @@ async def test_two_queued_events_for_one_message_cannot_both_claim_it(
         won = await claim(first)
         # `first` has not committed; `second` meets the lock while it is held.
         async with second.begin():
-            lost = await claim(second)
+            # Bounded, so a claim that does not skip the held row fails here instead of hanging
+            # the suite waiting on the lock.
+            lost = await asyncio.wait_for(claim(second), timeout=10)
     await first.close()
     await second.close()
 
