@@ -279,6 +279,19 @@ body {
 }
 
 /*
+ * Tailwind v4's `outline-none` also sets `--tw-outline-style: none`, and `outline-2` draws with
+ * `outline-style: var(--tw-outline-style)`. So the pairing this suite uses on ~25 fields —
+ * `focus:outline-none focus-visible:outline-2`, no ring for a pointer and a ring for a keyboard —
+ * drew nothing on keyboard focus; the unlayered rule above used to paint over the gap. This puts
+ * back only the variable, unlayered so it outranks the utility's: the pairing now means what it
+ * says, and an element that asks for `focus:outline-none` alone (a heading that takes focus on
+ * open) still gets no ring, because nothing re-applies the style to it.
+ */
+:focus-visible {
+  --tw-outline-style: solid;
+}
+
+/*
  * One page-load orchestration: a soft staggered rise, honoured only when motion is welcome.
  *
  * The end state is `transform: none`, not `translateY(0)` — the two look identical, but any

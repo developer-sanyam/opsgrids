@@ -152,6 +152,16 @@ describe("the token file", () => {
     expect(inherited).toEqual([]);
   });
 
+  it("draws the global focus ring from the base layer, so a component's own focus style wins", () => {
+    const base = css.slice(css.indexOf("@layer base {"));
+    expect(base).toMatch(/^@layer base \{\s*:where\(a, button, input, select, textarea, \[tabindex\]\):focus-visible/);
+  });
+
+  it("keeps Tailwind's focus:outline-none + focus-visible:outline-2 pairing drawing a ring", () => {
+    // Unlayered, and only the variable: see the comment on the rule in console.css.
+    expect(css).toMatch(/\n:focus-visible \{\s*--tw-outline-style: solid;\s*\}/);
+  });
+
   it("caps font weight at 700", () => {
     expect(css).toMatch(/--font-weight-extrabold:\s*700;/);
     expect(css).toMatch(/--font-weight-black:\s*700;/);
