@@ -319,6 +319,85 @@ class TestOrgSwitching:
             )
 
 
+class TestSessionAbsoluteCap:
+    """Owner decision, 2026-09-24: signed in for 7 days, then a new sign-in — however active a
+    person was in between. `session_ttl_days` is the absolute cap; `_refresh_ttl_seconds` is
+    what actually enforces it against a refresh token's own sliding window."""
+
+    async def test_a_refresh_late_in_the_session_gets_a_correspondingly_short_successor(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        outcome = await _login(session, cfg, pair, directory)
+        assert outcome.issued is not None
+        auth_session = await session.get(Session, outcome.issued.session_id)
+        assert auth_session is not None
+        # One hour left of the session's 7-day cap, well short of refresh_token_ttl_seconds.
+        auth_session.expires_at = datetime.now(UTC) + timedelta(hours=1)
+        await session.commit()
+
+        rotated = await services.rotate_refresh(
+            session,
+            entitlements=FakeEntitlements(),
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            raw_token=outcome.issued.refresh_token,
+        )
+
+        assert rotated.refresh_expires_at <= auth_session.expires_at
+        # Comfortably close to the hour, not the full refresh_token_ttl_seconds (7 days).
+        assert rotated.refresh_expires_at > datetime.now(UTC) + timedelta(minutes=55)
+
+    async def test_a_refresh_past_the_sessions_absolute_cap_ends_it(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        outcome = await _login(session, cfg, pair, directory)
+        assert outcome.issued is not None
+        auth_session = await session.get(Session, outcome.issued.session_id)
+        assert auth_session is not None
+        auth_session.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+
+        with pytest.raises(UnauthorizedProblem, match="expired"):
+            await services.rotate_refresh(
+                session,
+                entitlements=FakeEntitlements(),
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                raw_token=outcome.issued.refresh_token,
+            )
+
+    async def test_the_operator_path_shares_the_same_cap(
+        self, session, cfg, pair, registered
+    ) -> None:
+        """Not a change unique to the tenant path: `start_session` is the one function every
+        session is created through, so the same `session_ttl_days` and the same
+        `_refresh_ttl_seconds` clamp apply to a staff session too."""
+        from tests.test_operator import (
+            STAFF_EMAIL,
+            STAFF_PASSWORD,
+            _enrol_operator_mfa,
+            _make_staff,
+        )
+
+        await _make_staff(session)
+        issued, _codes, _secret, _step = await _enrol_operator_mfa(
+            session, cfg, pair, email=STAFF_EMAIL, password=STAFF_PASSWORD
+        )
+        await session.commit()
+        auth_session = await session.get(Session, issued.session_id)
+        assert auth_session is not None
+        auth_session.expires_at = datetime.now(UTC) + timedelta(hours=1)
+        await session.commit()
+
+        rotated = await services.operator_rotate_refresh(
+            session, cfg=cfg, pair=pair, raw_token=issued.refresh_token
+        )
+        assert isinstance(rotated, services.OperatorIssued)
+        assert rotated.refresh_expires_at <= auth_session.expires_at
+
+
 class TestRefreshRotation:
     async def test_refreshing_returns_a_new_pair(
         self, session, cfg, pair, directory, registered
@@ -381,12 +460,14 @@ class TestRefreshRotation:
                 raw_token=fresh.refresh_token,
             )
 
-    async def test_replaying_a_just_rotated_token_within_the_grace_window_gets_the_same_pair(
+    async def test_replaying_a_just_rotated_token_within_the_grace_window_gets_an_access_token_only(
         self, session, cfg, pair, directory, registered, redis
     ) -> None:
         """Two tabs sharing one refresh cookie can both present the token an instant apart —
-        a proactive refresh in one racing a 401 retry in another. That must not read as
-        theft: both walk away with the same successor pair, not a forced re-login."""
+        a proactive refresh in one racing a 401 retry in another. That must not read as theft:
+        the second one gets a working access token of its own (M1 of the 2026-09-24 SSO
+        review: never the *same* pair — nothing about the winning rotation's own tokens is
+        cached anywhere for a second presenter to be handed back)."""
         outcome = await _login(session, cfg, pair, directory)
         assert outcome.issued is not None
         captured = outcome.issued.refresh_token
@@ -399,6 +480,7 @@ class TestRefreshRotation:
             directory=directory,
             raw_token=captured,
         )
+        assert isinstance(first, services.Issued)
 
         # The second tab, a moment later, presents the same now-spent token.
         second = await services.rotate_refresh(
@@ -410,10 +492,13 @@ class TestRefreshRotation:
             raw_token=captured,
         )
 
-        assert second.access_token == first.access_token
-        assert second.refresh_token == first.refresh_token
+        assert isinstance(second, services.AccessOnlyIssued)
+        assert second.access_token != first.access_token
+        assert second.organization_id == first.organization_id
+        assert second.membership_id == first.membership_id
+        assert not hasattr(second, "refresh_token")
 
-        # The family is intact — the successor still rotates normally, once.
+        # The family is intact — the real successor still rotates normally, once.
         third = await services.rotate_refresh(
             session,
             entitlements=FakeEntitlements(),
@@ -422,7 +507,49 @@ class TestRefreshRotation:
             directory=directory,
             raw_token=first.refresh_token,
         )
+        assert isinstance(third, services.Issued)
         assert third.refresh_token != first.refresh_token
+
+    async def test_a_third_presenter_inside_the_window_also_just_gets_an_access_token(
+        self, session, cfg, pair, directory, registered, redis
+    ) -> None:
+        """The marker survives more than one grace hit within its own window — the realistic
+        shape of the race (a proactive timer *and* a 401 retry both racing the winning tab)."""
+        outcome = await _login(session, cfg, pair, directory)
+        assert outcome.issued is not None
+        captured = outcome.issued.refresh_token
+
+        winner = await services.rotate_refresh(
+            session,
+            entitlements=FakeEntitlements(),
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            raw_token=captured,
+        )
+        assert isinstance(winner, services.Issued)
+
+        for _ in range(2):
+            grace = await services.rotate_refresh(
+                session,
+                entitlements=FakeEntitlements(),
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                raw_token=captured,
+            )
+            assert isinstance(grace, services.AccessOnlyIssued)
+
+        # The winner's own refresh token is still exactly one hop from here.
+        again = await services.rotate_refresh(
+            session,
+            entitlements=FakeEntitlements(),
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            raw_token=winner.refresh_token,
+        )
+        assert isinstance(again, services.Issued)
 
     async def test_replaying_a_token_older_than_the_grace_window_still_reads_as_theft(
         self, session, cfg, pair, directory, registered, redis

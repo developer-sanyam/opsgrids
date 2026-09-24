@@ -122,7 +122,7 @@ def _set_refresh_cookie(response: Response, cfg: Settings, token: str) -> None:
     )
 
 
-def _token_out(issued: services.Issued) -> TokenOut:
+def _token_out(issued: services.Issued | services.AccessOnlyIssued) -> TokenOut:
     return TokenOut(
         access_token=issued.access_token,
         expires_in=issued.expires_in,
@@ -267,8 +267,10 @@ async def refresh(
 ) -> TokenOut:
     """Rotate the refresh token and mint a new access token.
 
-    Presenting a token that was already rotated ends the whole family — see
-    `services.rotate_refresh` for why that trade is the right one.
+    Presenting a token that was already rotated ends the whole family, unless it was spent
+    moments ago by rotation rather than theft — see `services.rotate_refresh`. A grace hit
+    answers with an access token only, and sets no cookie: the browser already holds the one
+    the *winning* rotation's response set, from this same host.
     """
     _assert_not_cross_site(request)
     cfg = settings()
@@ -283,7 +285,8 @@ async def refresh(
         entitlements=entitlements,
         raw_token=raw,
     )
-    _set_refresh_cookie(response, cfg, issued.refresh_token)
+    if isinstance(issued, services.Issued):
+        _set_refresh_cookie(response, cfg, issued.refresh_token)
     return _token_out(issued)
 
 
@@ -585,7 +588,9 @@ async def change_password(
 # returns is only accepted on `admin-gateway`, by audience.
 
 
-def _operator_token_out(issued: services.OperatorIssued) -> OperatorTokenOut:
+def _operator_token_out(
+    issued: services.OperatorIssued | services.OperatorAccessOnlyIssued,
+) -> OperatorTokenOut:
     return OperatorTokenOut(
         access_token=issued.access_token,
         expires_in=issued.expires_in,
@@ -795,12 +800,19 @@ async def reset_operator_staff_mfa(
 async def operator_refresh(
     request: Request, response: Response, session: SessionDep, pair: KeyDep
 ) -> OperatorTokenOut:
+    """`require_admin_hop` already refuses anything that did not arrive through
+    admin-gateway's signed hop, which a forged cross-site request cannot produce — but the
+    same CSRF header every tenant cookie-authenticated route requires is checked here too
+    (MINOR 1 of the 2026-09-24 SSO review), so the two routes stay consistent rather than one
+    silently relying on a defence the other does not also carry."""
+    _assert_not_cross_site(request)
     cfg = settings()
     raw = request.cookies.get(cfg.refresh_cookie_name)
     if not raw:
         raise UnauthorizedProblem("No session to refresh")
     issued = await services.operator_rotate_refresh(session, cfg=cfg, pair=pair, raw_token=raw)
-    _set_refresh_cookie(response, cfg, issued.refresh_token)
+    if isinstance(issued, services.OperatorIssued):
+        _set_refresh_cookie(response, cfg, issued.refresh_token)
     return _operator_token_out(issued)
 
 
@@ -813,6 +825,7 @@ async def operator_refresh(
 async def operator_logout(request: Request, session: SessionDep, pair: KeyDep) -> Response:
     """Idempotent. Shares `services.logout`, which touches only the session and refresh
     tables — no directory, so it ends an operator session as cleanly as a tenant one."""
+    _assert_not_cross_site(request)
     cfg = settings()
     raw = request.cookies.get(cfg.refresh_cookie_name)
     if raw:

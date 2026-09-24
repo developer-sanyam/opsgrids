@@ -27,7 +27,6 @@ transaction bound to the caller's organization, and it is the one that ends it
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import secrets
 import uuid
@@ -61,7 +60,7 @@ from app.models import (
 )
 from platform_core import pii
 from platform_core.audit import record_audit
-from platform_core.cache import cache_get, cache_set
+from platform_core.cache import cache_delete, cache_get, cache_set
 from platform_core.db import set_tenant
 from platform_core.errors import (
     BusinessRuleProblem,
@@ -94,6 +93,23 @@ class Issued:
     expires_in: int
     refresh_token: str
     refresh_expires_at: datetime
+    session_id: uuid.UUID
+    organization_id: uuid.UUID
+    membership_id: uuid.UUID
+
+
+@dataclass(frozen=True, slots=True)
+class AccessOnlyIssued:
+    """What a grace-window hit on `rotate_refresh` answers with (M1 of the 2026-09-24 SSO
+    review): a fresh access token, and nothing else. No refresh token is minted, no
+    `RefreshToken` row is written, and the route layer sets no cookie for it — the browser that
+    is racing to land here already holds the cookie the *winning* rotation's response set, from
+    the same host every app refreshes against. Minting a second refresh token here would fork
+    the family for no reason the grace window exists to serve, and is exactly the plaintext
+    Redis previously held to be able to answer with one."""
+
+    access_token: str
+    expires_in: int
     session_id: uuid.UUID
     organization_id: uuid.UUID
     membership_id: uuid.UUID
@@ -242,6 +258,24 @@ async def start_session(
     return row
 
 
+def _refresh_ttl_seconds(cfg: Settings, auth_session: Session) -> int:
+    """The refresh token's own lifetime, clamped to whatever is left of the *session's*
+    absolute cap (owner decision, 2026-09-24: 7 days, then a new sign-in, however active the
+    person was).
+
+    `refresh_token_ttl_seconds` is a sliding window — it renews on every rotation — and left
+    unclamped it would keep doing that forever, past the day `session.expires_at` was minted
+    for. This is the one place every token-issuing path funnels through (`issue_for`'s own
+    docstring), so it is also the one place that cap actually bites: a refresh on day 6 of 7
+    gets a successor good for about a day, not another full `refresh_token_ttl_seconds`. Never
+    negative — `_live_session` already refuses a session whose `expires_at` has passed before
+    any caller reaches this — but clamped at zero anyway rather than trusting that invariant to
+    never move.
+    """
+    remaining = (auth_session.expires_at - datetime.now(UTC)).total_seconds()
+    return max(min(cfg.refresh_token_ttl_seconds, int(remaining)), 0)
+
+
 async def issue_for(
     session: AsyncSession,
     *,
@@ -298,7 +332,7 @@ async def issue_for(
         family=family or secrets.token_urlsafe(24),
         session_id=auth_session.id,
         organization_id=membership.organization_id,
-        ttl_seconds=cfg.refresh_token_ttl_seconds,
+        ttl_seconds=_refresh_ttl_seconds(cfg, auth_session),
     )
     session.add(
         RefreshToken(
@@ -327,6 +361,45 @@ def _family_of(minted: tk.MintedToken) -> str:
 
     claims = _jwt.decode(minted.token, options={"verify_signature": False})
     return str(claims["fam"])
+
+
+async def _mint_access_only(
+    *,
+    pair: KeyPair,
+    cfg: Settings,
+    auth_session: Session,
+    membership: DirectoryMembership,
+    entitlements: Entitlements,
+    audience: str,
+) -> AccessOnlyIssued:
+    """The access-only half of `issue_for`, for a grace-window hit on `rotate_refresh`: the
+    same claims and the same entitlement resolution, but no refresh token and no `RefreshToken`
+    row — see `AccessOnlyIssued`."""
+    _assert_organization_unpinned_or_matches(auth_session, membership.organization_id)
+    granted = await entitlements.for_organization(membership.organization_id)
+    access = tk.mint_access(
+        pair,
+        issuer=cfg.jwt_issuer,
+        user_id=auth_session.user_id,
+        organization_id=membership.organization_id,
+        membership_id=membership.membership_id,
+        audience=audience,
+        session_id=auth_session.id,
+        entitlements=granted,
+        roles=membership.roles,
+        locations=membership.locations,
+        amr=_dedupe_amr(auth_session.amr),
+        permission_version=membership.permission_version,
+        subject_ref=membership.employee_id,
+        ttl_seconds=cfg.access_token_ttl_seconds,
+    )
+    return AccessOnlyIssued(
+        access_token=access.token,
+        expires_in=access.expires_in,
+        session_id=auth_session.id,
+        organization_id=membership.organization_id,
+        membership_id=membership.membership_id,
+    )
 
 
 async def login(
@@ -533,102 +606,41 @@ async def switch_organization(
 # --------------------------------------------------------------------- refresh
 
 
-def _grace_cache_key(jti: str) -> str:
-    return f"auth:refresh_grace:{jti}"
-
-
-async def _remember_grace_replay(cfg: Settings, *, jti: str, issued: Issued) -> None:
-    """Let a concurrent presenter of the token `jti` names get back the pair `issued` names,
-    instead of tripping theft detection — see `refresh_reuse_grace_seconds`.
-
-    Keyed by the *spent* token's own jti, not the successor's: that is exactly what a second
-    racing request still holds when it shows up a moment later. `cache_set` degrades to a
-    no-op on a Redis outage, same as every other soft cache here — the worst case is simply
-    that the grace window does not apply and the older behaviour (revoke on replay) stands.
+def _grace_marker_key(jti: str) -> str:
+    """`sha256(jti)`, not `jti` itself (M1 of the 2026-09-24 SSO review): Redis on this box has
+    no password and is reachable from every one of the ~34 service containers on the same
+    compose network, and AOF persists whatever it holds to disk. The jti is not the secret the
+    refresh token itself is, but there is no reason for a value that exists purely as a marker
+    to be a literal, greppable session identifier either — hashing it costs nothing and the
+    lookup only ever needs to ask "is *this* jti's own marker present", never to enumerate them.
     """
-    payload = json.dumps(
-        {
-            "access_token": issued.access_token,
-            "expires_in": issued.expires_in,
-            "refresh_token": issued.refresh_token,
-            "refresh_expires_at": issued.refresh_expires_at.isoformat(),
-            "session_id": str(issued.session_id),
-            "organization_id": str(issued.organization_id),
-            "membership_id": str(issued.membership_id),
-        }
-    )
-    await cache_set(_grace_cache_key(jti), payload, ttl=cfg.refresh_reuse_grace_seconds)
+    return f"auth:refresh_grace:{hashlib.sha256(jti.encode()).hexdigest()}"
 
 
-async def _replay_within_grace(
-    cfg: Settings, *, jti: str, rotated_at: datetime | None
-) -> Issued | None:
-    """`None` unless `jti` was rotated within the grace window *and* its successor is still
-    cached — anything else falls through to the ordinary reuse response."""
+async def _remember_grace_marker(cfg: Settings, *, jti: str) -> None:
+    """A marker, and nothing else: no token, no user id, no session id — none of the token
+    material the grace cache used to hold live in Redis, in plaintext, for
+    `refresh_reuse_grace_seconds` (M1 of the 2026-09-24 SSO review). A grace hit re-derives and
+    re-validates the session, the user and the membership from `stored`'s own row — the same
+    checks a fresh rotation runs — and mints a brand new access token from them; the marker's
+    only job is answering "was this jti legitimately rotated a moment ago", which a bare
+    presence check answers as well as a payload would. `cache_set` degrades to a no-op on a
+    Redis outage, same as every other soft cache here — the worst case is that the grace window
+    does not apply and the older, stricter behaviour (revoke on replay) stands.
+    """
+    await cache_set(_grace_marker_key(jti), "1", ttl=cfg.refresh_reuse_grace_seconds)
+
+
+async def _grace_marker_present(cfg: Settings, *, jti: str, rotated_at: datetime | None) -> bool:
+    """`True` only if `jti` was rotated within the grace window *and* its marker is still
+    cached — anything else falls through to the ordinary reuse response. `rotated_at` is
+    `stored`'s own column, read by the caller before this is asked — a family already revoked
+    is never passed here at all (grace does not apply to it, marker or not)."""
     if rotated_at is None:
-        return None
+        return False
     if datetime.now(UTC) - rotated_at > timedelta(seconds=cfg.refresh_reuse_grace_seconds):
-        return None
-    cached = await cache_get(_grace_cache_key(jti))
-    if cached is None:
-        return None
-    try:
-        data = json.loads(cached)
-        return Issued(
-            access_token=data["access_token"],
-            expires_in=data["expires_in"],
-            refresh_token=data["refresh_token"],
-            refresh_expires_at=datetime.fromisoformat(data["refresh_expires_at"]),
-            session_id=uuid.UUID(data["session_id"]),
-            organization_id=uuid.UUID(data["organization_id"]),
-            membership_id=uuid.UUID(data["membership_id"]),
-        )
-    except (KeyError, TypeError, ValueError):
-        # A cache entry that does not parse is the same as no cache entry — fail into the
-        # ordinary, stricter path rather than trusting a malformed value.
-        return None
-
-
-async def _remember_operator_grace_replay(
-    cfg: Settings, *, jti: str, issued: OperatorIssued
-) -> None:
-    payload = json.dumps(
-        {
-            "access_token": issued.access_token,
-            "expires_in": issued.expires_in,
-            "refresh_token": issued.refresh_token,
-            "refresh_expires_at": issued.refresh_expires_at.isoformat(),
-            "session_id": str(issued.session_id),
-            "staff_id": str(issued.staff_id),
-            "operator_roles": list(issued.operator_roles),
-        }
-    )
-    await cache_set(_grace_cache_key(jti), payload, ttl=cfg.refresh_reuse_grace_seconds)
-
-
-async def _replay_operator_within_grace(
-    cfg: Settings, *, jti: str, rotated_at: datetime | None
-) -> OperatorIssued | None:
-    if rotated_at is None:
-        return None
-    if datetime.now(UTC) - rotated_at > timedelta(seconds=cfg.refresh_reuse_grace_seconds):
-        return None
-    cached = await cache_get(_grace_cache_key(jti))
-    if cached is None:
-        return None
-    try:
-        data = json.loads(cached)
-        return OperatorIssued(
-            access_token=data["access_token"],
-            expires_in=data["expires_in"],
-            refresh_token=data["refresh_token"],
-            refresh_expires_at=datetime.fromisoformat(data["refresh_expires_at"]),
-            session_id=uuid.UUID(data["session_id"]),
-            staff_id=uuid.UUID(data["staff_id"]),
-            operator_roles=list(data["operator_roles"]),
-        )
-    except (KeyError, TypeError, ValueError):
-        return None
+        return False
+    return await cache_get(_grace_marker_key(jti)) is not None
 
 
 async def rotate_refresh(
@@ -640,7 +652,7 @@ async def rotate_refresh(
     raw_token: str,
     audience: str = "app",
     entitlements: Entitlements,
-) -> Issued:
+) -> Issued | AccessOnlyIssued:
     """Exchange a refresh token for a new pair, detecting theft.
 
     Presenting a **spent** token means it was captured — the legitimate holder already
@@ -651,11 +663,18 @@ async def rotate_refresh(
     **Unless it was spent moments ago by rotation, not revocation.** A browser holds one
     refresh cookie shared by every tab and every product SPA (ADR-0003 addendum), and two of
     them racing — a proactive refresh in one landing mid-flight of a 401 retry in another —
-    present the identical token within milliseconds of each other. The second one in is
-    indistinguishable, on its own, from a thief who captured the first response; `_replay_
-    within_grace` is what tells them apart, by whether the rotation is recent enough and its
-    successor still cached. A token whose family is already revoked skips this entirely —
-    that is a family theft already responded to, or a logout, and grace never applies to it.
+    present the identical token within milliseconds of each other. `_grace_marker_present` is
+    what tells them apart from a thief, by whether the rotation is recent enough and its own
+    marker is still cached. A token whose family is already revoked skips this entirely — that
+    is a family theft already responded to, or a logout, and grace never applies to it.
+
+    A grace hit does **not** reuse the successor's own tokens (there is no cached copy of them
+    to reuse — see `AccessOnlyIssued`, M1 of the 2026-09-24 SSO review). It re-validates the
+    session, the user and the membership from `stored`'s own row — every check a fresh rotation
+    below also runs — and returns a brand new access token and nothing else: no refresh token,
+    no `RefreshToken` row, no `Set-Cookie` from the route layer. The browser racing to land here
+    already holds the cookie the winning rotation's response set, since every app refreshes
+    against the same host.
     """
     try:
         claims = tk.decode_local(pair, raw_token, issuer=cfg.jwt_issuer, expected_type=tk.REFRESH)
@@ -663,32 +682,41 @@ async def rotate_refresh(
         raise UnauthorizedProblem("That session has expired. Please sign in again.") from exc
 
     jti = str(claims["jti"])
-    stored = await session.get(RefreshToken, jti)
+    # `with_for_update`: two truly concurrent *first* rotations of the same still-live token
+    # (MINOR 3 of the 2026-09-24 SSO review) would otherwise both read `is_spent = False`,
+    # both mint a successor, and fork the family into two live chains — a race no `is_spent`
+    # check can see, because neither transaction has committed yet when the other reads. The
+    # lock serialises them: the second transaction's `SELECT … FOR UPDATE` blocks until the
+    # first commits, then reads the row *with* `rotated_at` already set, and takes the grace or
+    # reuse path like any other second presenter would.
+    stored = await session.get(RefreshToken, jti, with_for_update=True)
     if stored is None:
         raise UnauthorizedProblem("That session has expired. Please sign in again.")
 
+    grace_hit = False
     if stored.is_spent:
-        if stored.revoked_at is None:
-            replay = await _replay_within_grace(cfg, jti=jti, rotated_at=stored.rotated_at)
-            if replay is not None:
-                return replay
-        await _revoke_family(session, stored.family, reason="token_reuse")
-        log.warning(
-            "auth.refresh_reuse_detected", family=stored.family, user_id=str(stored.user_id)
-        )
-        publish_event(
-            session,
-            OutboxEvent,
-            organization_id=stored.organization_id or uuid.UUID(int=0),
-            event_type=EVT_TOKEN_REUSE,
-            aggregate_type="session",
-            aggregate_id=stored.session_id,
-            payload={"user_id": str(stored.user_id), "family": stored.family},
-        )
-        await session.commit()
-        raise UnauthorizedProblem(
-            "That session has been ended for security reasons. Please sign in again."
-        )
+        if stored.revoked_at is None and await _grace_marker_present(
+            cfg, jti=jti, rotated_at=stored.rotated_at
+        ):
+            grace_hit = True
+        else:
+            await _revoke_family(session, stored.family, reason="token_reuse")
+            log.warning(
+                "auth.refresh_reuse_detected", family=stored.family, user_id=str(stored.user_id)
+            )
+            publish_event(
+                session,
+                OutboxEvent,
+                organization_id=stored.organization_id or uuid.UUID(int=0),
+                event_type=EVT_TOKEN_REUSE,
+                aggregate_type="session",
+                aggregate_id=stored.session_id,
+                payload={"user_id": str(stored.user_id), "family": stored.family},
+            )
+            await session.commit()
+            raise UnauthorizedProblem(
+                "That session has been ended for security reasons. Please sign in again."
+            )
 
     if stored.expires_at <= datetime.now(UTC):
         raise UnauthorizedProblem("That session has expired. Please sign in again.")
@@ -748,6 +776,21 @@ async def rotate_refresh(
         await session.commit()
         raise UnauthorizedProblem("Your access to that organization has ended.")
 
+    if grace_hit:
+        # Every check above just re-ran against `stored`'s own row — nothing left to write:
+        # the rotation that actually spent this token already recorded `rotated_at`, and this
+        # presenter mints its own access token rather than reusing anything from that one.
+        access_only = await _mint_access_only(
+            pair=pair,
+            cfg=cfg,
+            auth_session=auth_session,
+            membership=membership,
+            entitlements=entitlements,
+            audience=audience,
+        )
+        await session.commit()
+        return access_only
+
     stored.rotated_at = datetime.now(UTC)
     auth_session.last_seen_at = datetime.now(UTC)
 
@@ -761,8 +804,22 @@ async def rotate_refresh(
         audience=audience,
         family=stored.family,
     )
-    await _remember_grace_replay(cfg, jti=jti, issued=issued)
-    await session.commit()
+    # Written *before* the commit, deliberately, and cleaned up if the commit then fails
+    # (MINOR 3 of the 2026-09-24 SSO review asked for the opposite order; this is the one place
+    # this review's fix deviates from the letter of a finding to keep its intent — see the
+    # module-level note above `_remember_grace_marker` for the race that ordering opens up: the
+    # `SELECT … FOR UPDATE` lock above releases the instant this transaction commits, and a
+    # second presenter blocked on it can resume, reach `_grace_marker_present` and find no
+    # marker yet — an event-loop race between "read the marker" and "this coroutine gets back
+    # to writing it" — before this coroutine's own next line runs. Writing it first closes that
+    # window; the `try`/`except` is what keeps a failed commit from leaving a marker that
+    # describes a rotation Postgres never actually recorded.
+    await _remember_grace_marker(cfg, jti=jti)
+    try:
+        await session.commit()
+    except Exception:
+        await cache_delete(_grace_marker_key(jti))
+        raise
     return issued
 
 
@@ -1659,6 +1716,18 @@ class OperatorIssued:
     operator_roles: list[str]
 
 
+@dataclass(frozen=True, slots=True)
+class OperatorAccessOnlyIssued:
+    """The operator-side `AccessOnlyIssued` — see its doc comment. A grace-window hit on
+    `operator_rotate_refresh` mints only this, never a second refresh token."""
+
+    access_token: str
+    expires_in: int
+    session_id: uuid.UUID
+    staff_id: uuid.UUID
+    operator_roles: list[str]
+
+
 async def _verify_staff(
     session: AsyncSession, cfg: Settings, email: str, password: str
 ) -> StaffAccount:
@@ -1767,7 +1836,7 @@ def _issue_operator(
         family=family or secrets.token_urlsafe(24),
         session_id=auth_session.id,
         organization_id=None,
-        ttl_seconds=cfg.refresh_token_ttl_seconds,
+        ttl_seconds=_refresh_ttl_seconds(cfg, auth_session),
     )
     session.add(
         RefreshToken(
@@ -1784,6 +1853,38 @@ def _issue_operator(
         expires_in=access.expires_in,
         refresh_token=refresh.token,
         refresh_expires_at=refresh.expires_at,
+        session_id=auth_session.id,
+        staff_id=staff.id,
+        operator_roles=roles,
+    )
+
+
+def _mint_operator_access_only(
+    *, pair: KeyPair, cfg: Settings, auth_session: Session, staff: StaffAccount
+) -> OperatorAccessOnlyIssued:
+    """The access-only half of `_issue_operator`, for a grace-window hit on
+    `operator_rotate_refresh` — see `AccessOnlyIssued`."""
+    roles = list(staff.operator_roles)
+    access = tk.mint_access(
+        pair,
+        issuer=cfg.jwt_issuer,
+        user_id=staff.id,
+        organization_id=PLATFORM_ORG,
+        membership_id=None,
+        audience=OPERATOR_AUDIENCE,
+        session_id=auth_session.id,
+        entitlements=[],
+        roles=roles,
+        locations=[],
+        amr=_dedupe_amr(auth_session.amr),
+        permission_version=0,
+        subject_ref=None,
+        ttl_seconds=cfg.access_token_ttl_seconds,
+        staff=True,
+    )
+    return OperatorAccessOnlyIssued(
+        access_token=access.token,
+        expires_in=access.expires_in,
         session_id=auth_session.id,
         staff_id=staff.id,
         operator_roles=roles,
@@ -2426,11 +2527,13 @@ async def operator_verify_mfa(
 
 async def operator_rotate_refresh(
     session: AsyncSession, *, cfg: Settings, pair: KeyPair, raw_token: str
-) -> OperatorIssued:
+) -> OperatorIssued | OperatorAccessOnlyIssued:
     """Rotate an operator refresh token, resolving the staff account rather than the directory.
 
-    The same theft detection as the tenant path: a spent token ends the whole family. A
-    *tenant* refresh token presented here resolves to no `staff_accounts` row and is
+    The same theft detection as the tenant path: a spent token ends the whole family, unless
+    it was spent moments ago by rotation rather than revocation — the same grace window
+    `rotate_refresh` documents, marker-only, mint-access-only (M1 of the 2026-09-24 SSO
+    review). A *tenant* refresh token presented here resolves to no `staff_accounts` row and is
     refused — and a staff token presented to the tenant `rotate_refresh` resolves to no
     directory user and is refused there. Neither crosses into the other.
 
@@ -2447,25 +2550,29 @@ async def operator_rotate_refresh(
         raise UnauthorizedProblem("That session has expired. Please sign in again.") from exc
 
     jti = str(claims["jti"])
-    stored = await session.get(RefreshToken, jti)
+    # `with_for_update`: see `rotate_refresh` — the identical race, forking an operator's
+    # session family instead of a tenant's.
+    stored = await session.get(RefreshToken, jti, with_for_update=True)
     if stored is None:
         raise UnauthorizedProblem("That session has expired. Please sign in again.")
 
+    grace_hit = False
     if stored.is_spent:
-        if stored.revoked_at is None:
-            replay = await _replay_operator_within_grace(cfg, jti=jti, rotated_at=stored.rotated_at)
-            if replay is not None:
-                return replay
-        await _revoke_family(session, stored.family, reason="token_reuse")
-        log.warning(
-            "auth.operator_refresh_reuse_detected",
-            family=stored.family,
-            staff_id=str(stored.user_id),
-        )
-        await session.commit()
-        raise UnauthorizedProblem(
-            "That session has been ended for security reasons. Please sign in again."
-        )
+        if stored.revoked_at is None and await _grace_marker_present(
+            cfg, jti=jti, rotated_at=stored.rotated_at
+        ):
+            grace_hit = True
+        else:
+            await _revoke_family(session, stored.family, reason="token_reuse")
+            log.warning(
+                "auth.operator_refresh_reuse_detected",
+                family=stored.family,
+                staff_id=str(stored.user_id),
+            )
+            await session.commit()
+            raise UnauthorizedProblem(
+                "That session has been ended for security reasons. Please sign in again."
+            )
 
     if stored.expires_at <= datetime.now(UTC):
         raise UnauthorizedProblem("That session has expired. Please sign in again.")
@@ -2477,13 +2584,26 @@ async def operator_rotate_refresh(
     if staff is None or not staff.is_active:
         raise UnauthorizedProblem("That session is no longer valid.")
 
+    if grace_hit:
+        access_only = _mint_operator_access_only(
+            pair=pair, cfg=cfg, auth_session=auth_session, staff=staff
+        )
+        await session.commit()
+        return access_only
+
     stored.rotated_at = datetime.now(UTC)
     auth_session.last_seen_at = datetime.now(UTC)
     issued = _issue_operator(
         session, pair=pair, cfg=cfg, auth_session=auth_session, staff=staff, family=stored.family
     )
-    await _remember_operator_grace_replay(cfg, jti=jti, issued=issued)
-    await session.commit()
+    # Before the commit, with cleanup on failure — see `rotate_refresh`'s identical ordering
+    # for why (the row-lock release race a commit-first order would open).
+    await _remember_grace_marker(cfg, jti=jti)
+    try:
+        await session.commit()
+    except Exception:
+        await cache_delete(_grace_marker_key(jti))
+        raise
     return issued
 
 
