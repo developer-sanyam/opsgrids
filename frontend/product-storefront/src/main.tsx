@@ -2,7 +2,7 @@ import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
-import { configureSession } from "@opsgrids/client";
+import { RedirectToCentralLogin, configureAuthOrigin, configureSession } from "@opsgrids/client";
 import { ThemeProvider, Toaster } from "@opsgrids/ui";
 
 import "./index.css";
@@ -18,6 +18,14 @@ import { LoginPage } from "./routes/Login";
 import { NotFoundPage } from "./routes/NotFound";
 import { SettingsPage } from "./routes/Settings";
 import { StorefrontPage } from "./routes/Storefront";
+import { LogoMark } from "./ui/LogoMark";
+
+// ADR-0003 addendum: sign-in only ever happens on the dashboard, the one host the refresh
+// cookie lives on. Set in production builds only (`publish-web.sh`), and never for the buyer
+// bundle (`main.buyer.tsx`, a wholly separate entry with no auth code at all). Unset in dev,
+// where this console's own `/login` form still works the same as it always has, same-origin.
+const AUTH_ORIGIN = import.meta.env.VITE_AUTH_ORIGIN as string | undefined;
+if (AUTH_ORIGIN) configureAuthOrigin(AUTH_ORIGIN);
 
 /**
  * The editor is the app's heaviest route and the only one nothing else imports — a merchant who
@@ -112,7 +120,14 @@ const router = createBrowserRouter([
       </AuthProvider>
     ),
     children: [
-      { path: "/login", element: <LoginPage /> },
+      {
+        path: "/login",
+        element: AUTH_ORIGIN ? (
+          <RedirectToCentralLogin authOrigin={AUTH_ORIGIN} logo={<LogoMark className="size-11" />} />
+        ) : (
+          <LoginPage />
+        ),
+      },
       {
         /**
          * The buyer's store, outside the shell on purpose.
