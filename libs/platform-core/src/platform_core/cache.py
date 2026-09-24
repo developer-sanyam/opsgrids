@@ -103,8 +103,18 @@ async def reserve_once(key: str, *, ttl: int) -> bool:
 # --------------------------------------------------------------------- rate limiting
 
 
-async def enforce_rate_limit(key: str, *, limit: int, window_seconds: int = 60) -> None:
+async def enforce_rate_limit(
+    key: str,
+    *,
+    limit: int,
+    window_seconds: int = 60,
+    detail: str = "Too many requests. Please slow down.",
+) -> None:
     """Fixed-window counter. Raises 429 when the window is spent.
+
+    `detail` is what the 429 says. A bucket that is not the caller's own — the gateway's
+    global ceiling on anonymous traffic — should not read as though the caller did something,
+    so it says what actually happened instead.
 
     A fixed window lets a caller spend two windows' worth across a boundary; a sliding
     window costs more state for a bound nobody is relying on this layer to enforce
@@ -127,7 +137,7 @@ async def enforce_rate_limit(key: str, *, limit: int, window_seconds: int = 60) 
         ) from exc
 
     if count > limit:
-        problem = RateLimitedProblem("Too many requests. Please slow down.")
+        problem = RateLimitedProblem(detail)
         problem.headers = {"Retry-After": str(window_seconds)}
         raise problem
 

@@ -16,7 +16,10 @@ The order of checks is deliberate, cheapest and most-conclusive first:
 
 Rate limiting comes *after* authentication so it counts against a person rather than an
 address, which is what makes a shared office NAT usable. The unauthenticated paths are
-limited by IP instead.
+limited by IP instead — the *caller's* IP (`client_limiter_key`: `X-Forwarded-For`, believed only
+from a configured proxy and read from the right), with a ceiling over all of them combined. Provider
+webhooks (`GatewayPolicy.webhook_paths`) take a third route: no token, but exact path and method,
+their own buckets, and no cookie or CORS surface.
 
 The proxy step caps the request body (`DEFAULT_MAX_BODY_BYTES`, or a route's own override)
 and enforces it against the bytes actually read. The gateway buffers a body whole before
@@ -29,11 +32,12 @@ downstream service — whose own limit protects only itself — is ever asked it
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import posixpath
 import re
-from collections.abc import Iterator
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
@@ -113,6 +117,11 @@ SPOOFABLE = frozenset(
     }
 )
 
+#: Request headers dropped from a forwarded provider webhook (`GatewayPolicy.webhook_paths`):
+#: everything that only a browser session carries. `access-control-request-*` is matched by
+#: prefix in `_is_browser_credential`.
+_WEBHOOK_STRIPPED_REQUEST_HEADERS = frozenset({"cookie", "authorization", "origin", "referer"})
+
 #: What `_normalize_path` collapses a run of slashes with. Anchors nowhere on its own — a
 #: *leading* doubled slash is POSIX-reserved and `posixpath.normpath` deliberately leaves it
 #: alone, so this collapse has to happen before that call, not instead of it.
@@ -136,6 +145,113 @@ DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024
 #: not be able to hand back the unbounded buffer this cap exists to remove, so an override
 #: past this refuses at boot rather than at request time.
 MAX_ROUTE_BODY_BYTES = 32 * 1024 * 1024
+
+
+#: What a trusted-proxy entry parses to.
+IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+def parse_trusted_proxies(raw: Iterable[str]) -> tuple[IPNetwork, ...]:
+    """Parse a list of addresses/CIDRs the gateway will believe `X-Forwarded-For` from.
+
+    Refuses at boot — a deployment artefact, the same class as `_parse_max_body_bytes` — rather
+    than at request time, in both directions: a typo'd entry that silently trusted nothing would
+    leave every anonymous caller sharing one bucket again (the bug this list exists to fix), and
+    an entry that matches *everything* (`0.0.0.0/0`, `::/0`) would let any client name its own
+    address. Neither is a configuration anyone meant.
+    """
+    networks: list[IPNetwork] = []
+    for item in raw:
+        text = item.strip()
+        if not text:
+            continue
+        try:
+            network = ipaddress.ip_network(text, strict=False)
+        except ValueError as exc:
+            raise ValueError(
+                f"trusted proxy {text!r} is not an IP address or a CIDR range"
+            ) from exc
+        if network.prefixlen == 0:
+            raise ValueError(
+                f"trusted proxy {text!r} matches every address, which lets any client choose the "
+                "address it is rate limited under"
+            )
+        networks.append(network)
+    return tuple(networks)
+
+
+def _parse_ip(raw: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """One address, or `None` for anything that is not one. IPv4-mapped IPv6 (`::ffff:1.2.3.4`,
+    what a dual-stack listener reports for an IPv4 peer) is unmapped, so the same host is never
+    two different callers."""
+    try:
+        address = ipaddress.ip_address(raw.strip())
+    except ValueError:
+        return None
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    return address
+
+
+def _limiter_key(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
+    """What one caller is counted under.
+
+    An IPv4 address is one caller. An IPv6 *address* is not: an ISP hands a subscriber a /64 (or
+    wider), so a client that limits by the full address can rotate through 2^64 of them and never
+    meet its own bucket. The /64 is the unit an IPv6 caller cannot cheaply multiply.
+    """
+    if isinstance(address, ipaddress.IPv6Address):
+        return f"{ipaddress.ip_network(f'{address}/64', strict=False).network_address}/64"
+    return str(address)
+
+
+def client_limiter_key(request: Request, trusted_proxies: tuple[IPNetwork, ...] = ()) -> str:
+    """The address an unauthenticated request is rate limited under.
+
+    Behind a reverse proxy the socket peer is the *proxy* — Caddy's container address on the
+    compose network — not the caller, and limiting on it collapses every anonymous caller in
+    the world into one bucket: the per-address limit is then a global one, and it is the only
+    brake there is on password and one-time-code guessing before a per-account lockout has
+    anything to count.
+
+    So `X-Forwarded-For` is believed, but **only when the peer that delivered the request is a
+    proxy this deployment named** (`trusted_proxies`). From anyone else it is an attacker-chosen
+    string and is ignored: a client that could set it could pick a fresh bucket per request.
+    Once the peer is trusted the header is read **from the right**. Each proxy appends the
+    address of whoever it received the request from, so the rightmost entries were written by our
+    own infrastructure and everything to the left of the first address that is *not* ours is
+    whatever the client claimed. The first untrusted address from the right is the caller.
+
+    Every ambiguous case falls back to the peer, which is the conservative bucket (shared, so
+    stricter, never spoofable): no header, an entry that is not an address (a proxy that appends
+    writes one; garbage on the right means something did not), or a chain made only of trusted
+    proxies. The empty default trusts nobody, which is the right posture for development and for
+    any deployment that has not said where its proxy is.
+    """
+    peer = request.client.host if request.client else None
+    if peer is None:
+        return "anonymous"
+    peer_address = _parse_ip(peer)
+    if peer_address is None:
+        # Not an address at all (an in-process test client reports "testclient"). Nothing to
+        # normalise and nothing that can be a trusted proxy.
+        return peer
+    fallback = _limiter_key(peer_address)
+    if not trusted_proxies or not any(peer_address in network for network in trusted_proxies):
+        return fallback
+
+    entries = [
+        entry.strip()
+        for header in request.headers.getlist("x-forwarded-for")
+        for entry in header.split(",")
+    ]
+    for entry in reversed(entries):
+        address = _parse_ip(entry)
+        if address is None:
+            return fallback
+        if not any(address in network for network in trusted_proxies):
+            return _limiter_key(address)
+    return fallback
 
 
 #: How long a *fresh* re-resolution (see `PermissionResolver.resolve`'s `fresh` branch) is
@@ -297,6 +413,39 @@ class GatewayPolicy:
     #: the gateway's own policy, set `True` in exactly one place (admin-gateway's `main.py`),
     #: so holding the key is necessary but no longer sufficient.
     sign_admin_hop: bool = False
+    #: Provider webhooks: exact path -> the HTTP methods that are public on it.
+    #:
+    #: A separate list from `public_paths`, not a subset of it, because a webhook is a different
+    #: kind of anonymous. It carries no bearer token — the provider signs the body and the
+    #: owning service verifies that signature over the raw bytes — so it is not a person, has
+    #: none of a browser's credentials (see `_WEBHOOK_STRIPPED_REQUEST_HEADERS`), is counted in
+    #: its own buckets (`webhook_rate_limit`, `webhook_global_rate_limit`) so a sign-in flood
+    #: cannot starve a payment callback and the other way round, and is public **per method**:
+    #: Meta's WhatsApp handshake is a GET and its deliveries are POSTs, Razorpay only POSTs, and
+    #: a DELETE to either falls through to the bearer check like any other unlisted request.
+    #: Exact-matched against the normalised path, so `/api/v1/webhooks/whatsapp/../employees`
+    #: is judged as `/api/v1/employees`, which is not here.
+    #:
+    #: The fields from here down are keyword-only in practice and last on purpose: they were
+    #: added after the ones above, and an existing positional construction must keep meaning what
+    #: it meant.
+    webhook_paths: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    #: A ceiling on **all** unauthenticated requests together, per minute, on top of the
+    #: per-address limit (`anonymous_rate_limit`); `0` means none. The per-address limit stops one
+    #: address; it does nothing about a thousand of them, each politely under its own limit,
+    #: guessing passwords at the one anonymous surface the whole world can reach. Checked *after*
+    #: the per-address one, so a single address hammering the gateway spends at most its own
+    #: allowance of this and cannot exhaust it alone. Authenticated traffic never touches it.
+    anonymous_global_rate_limit: int = 0
+    #: Per-address requests per minute on one webhook path. Generous: a provider delivers from a
+    #: small set of addresses and legitimately bursts (a batch of receipts), and it retries on a
+    #: 429, so a limit set too low turns into redelivery rather than loss.
+    webhook_rate_limit: int = 600
+    #: All addresses together, per webhook path, per minute; `0` means none.
+    webhook_global_rate_limit: int = 0
+    #: Proxies whose `X-Forwarded-For` this gateway believes; see `client_limiter_key`. Empty
+    #: (the default) believes nobody, so the rate limit keys on the socket peer.
+    trusted_proxies: tuple[IPNetwork, ...] = ()
 
     def __post_init__(self) -> None:
         # A prefix without a trailing slash is a bug waiting to widen: refused at construction
@@ -305,6 +454,17 @@ class GatewayPolicy:
         for prefix in self.public_path_prefixes:
             if not prefix.endswith("/"):
                 raise ValueError(f"public path prefix {prefix!r} must end with '/'")
+        # A webhook entry is matched against a normalised path, which never ends in `/` and
+        # never carries a query, so an entry that does either could never match — and one with
+        # no methods, or a lower-case one, would be public for nothing or fail to match GET.
+        for path, methods in self.webhook_paths.items():
+            if not path.startswith("/api/") or path.endswith("/") or "?" in path:
+                raise ValueError(
+                    f"webhook path {path!r} must be an exact /api/... path with no trailing "
+                    "slash and no query"
+                )
+            if not methods or any(m != m.upper() or not m.isalpha() for m in methods):
+                raise ValueError(f"webhook path {path!r} needs upper-case HTTP method names")
 
 
 DEFAULT_PUBLIC_PATHS = frozenset(
@@ -328,10 +488,12 @@ DEFAULT_PUBLIC_PATHS = frozenset(
         "/api/v1/auth/sso/callback",
         "/api/v1/auth/password/forgot",
         "/api/v1/auth/password/reset",
-        # Meta's WhatsApp webhooks. Public by necessity — the provider cannot hold one of our
-        # tokens — and authenticated instead by an HMAC-SHA256 signature over the raw body,
-        # verified in notification-service. The GET is Meta's subscription handshake.
-        "/webhooks/whatsapp",
+        # Provider webhooks (Meta's WhatsApp, Razorpay) are deliberately **not** here: they are
+        # `GatewayPolicy.webhook_paths`, declared by the gateway that fronts them. An entry
+        # `/webhooks/whatsapp` used to live in this set and could never match — this proxy only
+        # serves `/api/{path}`, so a path without the `/api/` prefix never reaches a public-path
+        # check — which made the WhatsApp webhook look public while the real one, at
+        # `/api/v1/webhooks/whatsapp`, was refused with a 401 for want of a bearer token.
         "/api/v1/invitations/accept",
     }
 )
@@ -480,6 +642,34 @@ def build_gateway(
         headers["x-request-id"] = request.state.request_id
         headers["x-correlation-id"] = request.state.correlation_id
 
+        webhook_methods = policy.webhook_paths.get(full_path)
+        if webhook_methods is not None and request.method in webhook_methods:
+            # A provider webhook: no bearer token, by design — the provider signs the body and
+            # the owning service verifies that signature over the raw bytes we forward
+            # untouched. Judged on the same normalised `full_path` as everything above, exactly
+            # and per method (see `GatewayPolicy.webhook_paths`), and counted in its own
+            # buckets: one per address, and one for the path as a whole, so neither a sign-in
+            # flood nor a webhook flood can spend the other's allowance.
+            caller = client_limiter_key(request, policy.trusted_proxies)
+            await enforce_rate_limit(f"hook:{full_path}:{caller}", limit=policy.webhook_rate_limit)
+            if policy.webhook_global_rate_limit:
+                await enforce_rate_limit(
+                    f"hook:{full_path}",
+                    limit=policy.webhook_global_rate_limit,
+                    detail="This endpoint is receiving too many requests. Retry shortly.",
+                )
+            # A provider is a server, not a browser. None of these mean anything to it and none
+            # should reach the service that verifies its signature: a session cookie or bearer
+            # token that rode along would be a credential handed to a route that ignores it, and
+            # an `Origin` would invite the upstream's CORS middleware to answer as though this
+            # were a page. No `x-org-slug` either — the host says nothing about which tenant a
+            # provider is calling for, and the body's own routing key does.
+            for name in [n for n in headers if _is_browser_credential(n)]:
+                del headers[name]
+            return await _forward(
+                request, route, headers, policy, full_path, settings, webhook=True
+            )
+
         if full_path in policy.public_paths or any(
             full_path.startswith(prefix) for prefix in policy.public_path_prefixes
         ):
@@ -487,8 +677,22 @@ def build_gateway(
             # resolve the organization from the subdomain. No identity header is ever written
             # on this branch — those all live below, past the token this branch never asks
             # for — so a public route is forwarded exactly as anonymous as the caller was.
-            client_ip = request.client.host if request.client else "anonymous"
+            #
+            # The address is the *caller's* (`client_limiter_key`), not the socket peer's: behind
+            # Caddy the peer is always Caddy, and one bucket for the whole internet is not a
+            # per-address limit. Per address first, then the ceiling over all of them, so a
+            # single address cannot spend more than its own allowance of the shared one.
+            client_ip = client_limiter_key(request, policy.trusted_proxies)
             await enforce_rate_limit(f"anon:{client_ip}", limit=policy.anonymous_rate_limit)
+            if policy.anonymous_global_rate_limit:
+                await enforce_rate_limit(
+                    "anon-global",
+                    limit=policy.anonymous_global_rate_limit,
+                    detail=(
+                        "Too many unauthenticated requests are arriving right now. "
+                        "Please retry shortly."
+                    ),
+                )
             if (slug := _slug_from_host(request)) is not None:
                 headers["x-org-slug"] = slug
             return await _forward(request, route, headers, policy, full_path, settings)
@@ -697,6 +901,18 @@ async def _read_capped_body(request: Request, limit: int) -> bytes:
     return b"".join(chunks)
 
 
+def _is_browser_credential(header: str) -> bool:
+    """A request header that only a browser session has any use for."""
+    name = header.lower()
+    return name in _WEBHOOK_STRIPPED_REQUEST_HEADERS or name.startswith("access-control-")
+
+
+def _is_cross_origin_response_header(header: str) -> bool:
+    """A response header that would set a cookie or open the response to another origin."""
+    name = header.lower()
+    return name == "set-cookie" or name.startswith("access-control-")
+
+
 async def _forward(
     request: Request,
     route: Route,
@@ -704,6 +920,8 @@ async def _forward(
     policy: GatewayPolicy,
     full_path: str,
     settings: ServiceSettings,
+    *,
+    webhook: bool = False,
 ) -> Response:
     client: httpx.AsyncClient = request.app.state.http
 
@@ -766,6 +984,13 @@ async def _forward(
         raise UpstreamUnavailableProblem("That service took too long to respond") from exc
 
     response_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in HOP_BY_HOP}
+    if webhook:
+        # The other half of "no cookie/CORS surface": whatever the owning service (or its own
+        # CORS middleware) attached, a provider's reply carries neither a cookie nor an
+        # allowance for a browser origin.
+        response_headers = {
+            k: v for k, v in response_headers.items() if not _is_cross_origin_response_header(k)
+        }
     body = await upstream.aread()
     return Response(
         content=body,
@@ -812,10 +1037,13 @@ __all__ = [
     "GRANT_PROPAGATION_RETRY_TTL",
     "MAX_ROUTE_BODY_BYTES",
     "GatewayPolicy",
+    "IPNetwork",
     "PermissionResolver",
     "Route",
     "RouteTable",
     "TokenStaleProblem",
     "build_gateway",
+    "client_limiter_key",
     "http_client",
+    "parse_trusted_proxies",
 ]
