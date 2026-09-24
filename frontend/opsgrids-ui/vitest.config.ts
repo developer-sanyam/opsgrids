@@ -12,5 +12,8 @@ export default defineConfig({
     include: ["src/**/*.test.{ts,tsx}"],
     setupFiles: ["./src/test-setup.ts"],
     restoreMocks: true,
+    // Vitest hands every CSS import to a test as an empty string unless it is listed here. The
+    // token file is read as text by `styles/tokens.test.ts`, which checks its contrast pairs.
+    css: { include: [/console\.css/] },
   },
 });
