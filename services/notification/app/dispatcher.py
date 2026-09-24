@@ -30,9 +30,9 @@ That is **at-least-once**: if the process died after the provider accepted the m
 before the outcome was recorded, the customer gets it twice. Earlier versions left such a row
 `sending` for a person to look at, on the grounds that "did the customer receive this?" has no
 safe default. It has no safe default, but a row that stays `sending` for ever is a password reset
-that never arrives and nothing that says so — and a duplicate is visible to the customer and
-harmless, where a silent drop is neither. Attempts stay bounded, so a message that crashes the
-process every time cannot loop.
+that never arrives and nothing that says so — and a duplicate is a nuisance the customer can
+see, where a silent drop is neither visible nor recoverable. Attempts stay bounded, so a message
+that crashes the process every time cannot loop.
 """
 
 from __future__ import annotations

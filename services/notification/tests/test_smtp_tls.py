@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import errno
 import smtplib
+import ssl
 import uuid
 
 import pytest
@@ -117,6 +118,31 @@ async def test_an_untrusted_certificate_gets_no_credential_and_no_message() -> N
     assert str(failure.value).startswith("TLS certificate verification failed (code ")
     # A fixed shape with a numeric reason: nothing the handshake said about the host.
     assert "smtp.customer.test" not in str(failure.value)
+
+
+async def test_the_context_handed_to_starttls_is_the_verifying_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Asserted on what `starttls()` is actually given, because the stdlib's own default when it
+    is given nothing is the unverified context this whole fix exists to replace."""
+    seen: list[object] = []
+    original = smtplib.SMTP.starttls
+
+    def spy(self: smtplib.SMTP, *args: object, **kwargs: object) -> object:
+        seen.append(kwargs.get("context"))
+        return original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(smtplib.SMTP, "starttls", spy)
+    with (
+        fake_smtp.running("starttls", names=[NAME], self_signed=True) as (server, _),
+        pytest.raises(transports.TransportTlsError),
+    ):
+        await _transport(server, "starttls").send(_message())
+
+    (context,) = seen
+    assert isinstance(context, ssl.SSLContext)
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
 
 
 async def test_a_certificate_for_another_name_is_refused_even_when_a_pinned_address_is_dialled(
