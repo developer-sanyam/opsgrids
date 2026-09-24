@@ -209,6 +209,28 @@ def test_multiple_spf_records_are_refused_and_merged() -> None:
     assert "include:_spf.google.com" in result.suggested_value
 
 
+def test_a_known_dead_include_is_dropped_from_a_merged_suggestion() -> None:
+    """The owner's own live DNS: `_spf.opsgrids.com` never had an SPF record of its own —
+    platform-managed sending was never built — so an include naming it is a guaranteed permerror
+    for every receiver, and the merge must not carry it forward."""
+    result = domain.evaluate_spf(
+        ["v=spf1 include:_spf.opsgrids.com ~all", "v=spf1 mx ~all"],
+        required_include="_spf.google.com",
+    )
+    assert result.status == "multiple"
+    assert result.suggested_value == "v=spf1 mx include:_spf.google.com ~all"
+    assert "_spf.opsgrids.com" not in result.suggested_value
+
+
+def test_a_single_record_with_only_the_dead_include_is_replaced_outright() -> None:
+    result = domain.evaluate_spf(
+        ["v=spf1 include:_spf.opsgrids.com ~all"], required_include="_spf.google.com"
+    )
+    assert result.status == "mismatch"
+    assert result.suggested_value == "v=spf1 include:_spf.google.com ~all"
+    assert "Remove include:_spf.opsgrids.com" in result.message
+
+
 def test_suggested_value_is_always_present() -> None:
     """Every branch returns something to publish or edit — there is no state where the customer
     is told a record is wrong with nothing to fix it with."""

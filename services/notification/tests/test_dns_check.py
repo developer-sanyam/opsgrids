@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 import dns.exception
+import dns.name
 import dns.resolver
 import pytest
 
@@ -291,6 +292,16 @@ async def test_a_name_that_will_not_resolve_answers_nothing(failure: Exception) 
     resolver = dns_check.DnsPythonResolver(_StubDnsResolver(failure))
 
     assert await resolver.resolve("bounce.company.com", "CNAME") == []
+
+
+async def test_a_malformed_qname_answers_nothing_rather_than_raising() -> None:
+    """A customer-supplied DKIM selector shaped like `a..b` produces a qname `dns.name` itself
+    refuses to parse (`EmptyLabel`) the moment the lookup runs — before a socket is ever opened.
+    That is still a `dns.exception.DNSException`, and it must read as "not published" like every
+    other lookup failure, not surface as a 500 on a verify request."""
+    resolver = dns_check.DnsPythonResolver(_StubDnsResolver(dns.name.EmptyLabel()))
+
+    assert await resolver.resolve("a..b._domainkey.company.com", "TXT") == []
 
 
 # --------------------------------------------------------------------- the outbound dial guard

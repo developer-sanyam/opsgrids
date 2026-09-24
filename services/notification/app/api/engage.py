@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import html
 import uuid
-from typing import Annotated
+from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Body, Depends, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -209,19 +209,51 @@ def _whatsapp_connection_out(row: ProviderAccount) -> WhatsAppConnectionOut:
     )
 
 
+#: The kinds `domain.expected_records` ever emits. A stored record naming anything else — or
+#: missing a field the current shape requires — is not this shape, whatever else it looks like.
+_VALID_RECORD_KINDS: Final = frozenset({"spf", "dkim", "dmarc"})
+
+
+def _has_current_shape(records: list[dict[str, Any]]) -> bool:
+    """Whether `records` is a set this version of the service could have written, rather than a
+    pre-fix snapshot (`host`/`verified` keys, `return_path`/`tracking` kinds) a domain added
+    before the provider-aware rewrite could still be holding.
+
+    Checked here as well as reset once, for every existing row, by the migration
+    (`d8f3a52c9e14`'s data reset) — belt and suspenders: `DnsRecordOut(**record)` raises on the
+    old shape, and one row holding it must never take a whole organization's domain list down
+    with a 500, whether or not the migration's own `WHERE` clause reached it.
+    """
+    if not records:
+        return False
+    for record in records:
+        # The column's declared type says every entry is already a dict; JSONB loaded from a row
+        # nobody has touched since before this shape existed makes no such promise, so this is
+        # checked through `object` rather than trusted from the annotation.
+        candidate: object = record
+        if not isinstance(candidate, dict):
+            return False
+        if candidate.get("kind") not in _VALID_RECORD_KINDS:
+            return False
+        if "status" not in candidate or "fqdn" not in candidate:
+            return False
+    return True
+
+
 def _domain_out(row: EmailDomain, connection: EmailConnection | None) -> DomainOut:
     """`connection` names the organization's *current* provider, fetched once per request by the
     caller (a list of domains shares one connection read) — never the domain's own history: the
     record set shown is what this domain needs **now**, not what it needed under a provider this
     organization may have already switched away from.
 
-    A domain that has never been checked (`records` empty) still has to show the customer
-    something to publish before they can even press *verify* — so with a connection in hand this
-    previews `domain.expected_records` as all `missing`, the honest "nothing found yet" state for
-    records nobody has looked up. With no connection at all there is nothing to preview, and the
-    empty list is exactly the "connect your email provider first" signal the setup screen shows.
+    A domain that has never been checked (`records` empty, or holding the pre-fix shape —
+    `_has_current_shape` below) still has to show the customer something to publish before they
+    can even press *verify* — so with a connection in hand this previews
+    `domain.expected_records` as all `missing`, the honest "nothing found yet" state for records
+    nobody has looked up. With no connection at all there is nothing to preview, and the empty
+    list is exactly the "connect your email provider first" signal the setup screen shows.
     """
-    if row.records:
+    if _has_current_shape(row.records):
         records = row.records
     elif connection is not None:
         records = [

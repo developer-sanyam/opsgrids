@@ -15,6 +15,7 @@ point: a direct send cannot reach someone a rule-driven send would have skipped.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -1847,6 +1848,15 @@ _HOST_NOT_ALLOWED = (
     "25, 465, 587, or 2525."
 )
 
+#: One or more DNS labels — the shape a DKIM selector actually has to be, since it becomes
+#: `<selector>._domainkey.<domain>`. Checked here, at the boundary, so a selector shaped like
+#: `a..b` or `.x` is refused with a sentence naming the field rather than reaching
+#: `dns.name.from_text` inside the resolver at verify time, where dnspython's own
+#: `EmptyLabel`/`BadEscape` would otherwise surface as a 500.
+_DKIM_SELECTOR: Final = re.compile(
+    r"^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?)*$"
+)
+
 #: What a test message says. Fixed text, because its only job is to prove the path: a customer
 #: reading it needs to know which address it came from and that nothing else is expected of them.
 TEST_SEND_SUBJECT = "OpsGrids test message"
@@ -2127,14 +2137,16 @@ async def replace_connection(
         # provider's requirements, and a `verified` from that check says nothing about this one.
         # Reset to `pending` so the next `verify` re-derives and re-checks against what `kind`
         # actually requires now, the same reasoning as the sender reset just above and in the
-        # same transaction as the credential swap that makes it true.
+        # same transaction as the credential swap that makes it true. `records` is cleared too —
+        # not just `status` — so a read between now and the next verify shows the fresh preview
+        # for the new provider rather than the old provider's records still marked `verified`.
         await session.execute(
             update(EmailDomain)
             .where(
                 EmailDomain.organization_id == ctx.organization_id,
                 EmailDomain.deleted_at.is_(None),
             )
-            .values(status="pending", updated_by=str(ctx.principal.sub))
+            .values(status="pending", records=[], updated_by=str(ctx.principal.sub))
             .execution_options(synchronize_session="fetch")
         )
 
@@ -2571,10 +2583,20 @@ async def update_domain_settings(
     if spf_include is not None and not dns_check.is_public_fqdn(spf_include.strip().lower()):
         raise ValidationProblem("The SPF include must be a plain hostname, like amazonses.com")
 
+    normalized_selector = dkim_selector.strip().lower() if dkim_selector is not None else None
+    if normalized_selector is not None and not _DKIM_SELECTOR.match(normalized_selector):
+        # A selector this loose reaches `dns.name.from_text` inside the resolver at verify time,
+        # where dnspython's own `EmptyLabel`/`BadEscape` would otherwise surface as a 500 rather
+        # than a sentence about the field that caused it.
+        raise ValidationProblem(
+            "The DKIM selector must look like a DNS label — letters, digits, hyphens and "
+            "underscores, like google or sg1."
+        )
+
     changed: dict[str, Any] = {}
-    if dkim_selector is not None and dkim_selector != row.dkim_selector:
-        changed["dkim_selector"] = (row.dkim_selector, dkim_selector)
-        row.dkim_selector = dkim_selector
+    if normalized_selector is not None and normalized_selector != row.dkim_selector:
+        changed["dkim_selector"] = (row.dkim_selector, normalized_selector)
+        row.dkim_selector = normalized_selector
     if spf_include is not None:
         normalized_include = spf_include.strip().lower()
         if normalized_include != (row.spf_include or ""):
@@ -2586,6 +2608,11 @@ async def update_domain_settings(
 
     was = row.status
     row.status = "pending"
+    # Cleared for the same reason `replace_connection` clears it on a provider switch: the
+    # records shown must never be answered against a selector or include this domain no longer
+    # asks DNS about — a stale `verified` DKIM row here would be the same class of failure this
+    # whole rewrite exists to close.
+    row.records = []
     row.updated_by = str(ctx.principal.sub)
     await session.flush()
 

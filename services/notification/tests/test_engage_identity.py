@@ -718,6 +718,61 @@ async def test_deleting_another_organizations_domain_is_not_found(
     assert response.status_code == 404
 
 
+#: A domain row exactly as the pre-fix service wrote it: `host`/`verified` keys, `return_path`/
+#: `tracking` kinds, no `fqdn`/`status` anywhere. Production holds a row shaped like this today.
+_LEGACY_RECORDS = [
+    {
+        "kind": "spf",
+        "type": "TXT",
+        "host": "opsgrids.com",
+        "value": "v=spf1 include:_spf.opsgrids.com ~all",
+        "required": True,
+        "verified": False,
+    },
+    {
+        "kind": "return_path",
+        "type": "CNAME",
+        "host": "bounce.opsgrids.com",
+        "value": "bounce.opsgrids.com",
+        "required": True,
+        "verified": False,
+    },
+]
+
+
+async def test_a_legacy_shaped_domain_row_does_not_break_the_list(client, session, org_id) -> None:
+    """`DnsRecordOut(**record)` raises on the pre-fix shape — this is the guard that keeps one
+    such row from turning `GET /engage/domains` into a 500 for the whole organization."""
+    async with session.begin():
+        session.add(
+            models.EmailDomain(
+                organization_id=org_id,
+                domain="opsgrids.com",
+                status="verified",
+                records=_LEGACY_RECORDS,
+            )
+        )
+    with as_principal(engage_caller(org_id, [f"{D_READ}:ORG"])):
+        response = await client.get(DOMAINS)
+    assert response.status_code == 200, response.text
+
+
+async def test_a_legacy_shaped_domain_row_can_still_be_deleted(client, session, org_id) -> None:
+    async with session.begin():
+        row = models.EmailDomain(
+            organization_id=org_id,
+            domain="opsgrids.com",
+            status="verified",
+            records=_LEGACY_RECORDS,
+        )
+        session.add(row)
+        await session.flush()
+        domain_id = row.id
+    with as_principal(engage_caller(org_id, [f"{D_WRITE}:ORG"])):
+        response = await client.delete(f"{DOMAINS}/{domain_id}")
+    assert response.status_code == 204
+
+
 # --------------------------------------------------------------------- editing a domain
 
 
@@ -748,6 +803,23 @@ async def test_an_smtp_spf_include_must_be_a_plain_hostname(
                 domain_id=verified_domain.id,
                 dkim_selector=None,
                 spf_include="not a hostname",
+            )
+
+
+@pytest.mark.parametrize("selector", ["a..b", ".x", "x\\", "-bad", "bad-"])
+async def test_a_malformed_dkim_selector_is_refused_before_it_reaches_the_resolver(
+    session, org_id, verified_domain, selector
+) -> None:
+    """A selector shaped like this reaches `dns.name.from_text` inside the resolver at verify
+    time, where dnspython's own `EmptyLabel`/`BadEscape` would otherwise surface as a 500."""
+    with pytest.raises(ValidationProblem):
+        async with session.begin():
+            await services.update_domain_settings(
+                session,
+                _ctx(org_id, "engage.setup.domain.write"),
+                domain_id=verified_domain.id,
+                dkim_selector=selector,
+                spf_include=None,
             )
 
 

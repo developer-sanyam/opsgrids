@@ -938,6 +938,39 @@ _ALL_MECHANISM: Final = re.compile(r"^[-~?+]?all$", re.IGNORECASE)
 #: bare or with a domain-spec suffix (`a:example.com`, `mx/24`); the others always carry one.
 _LOOKUP_PREFIXES: Final = ("include:", "exists:", "redirect=")
 
+#: `_spf.opsgrids.com` never had an SPF record of its own — platform-managed sending was never
+#: built (see this module's sending-identity section above) — so an `include:` naming it is not
+#: a mechanism that will ever resolve, it is a guaranteed SPF permerror for every receiver that
+#: evaluates it. Every domain this service generated a record for before the provider-aware
+#: rewrite named it, so it is dropped by name rather than by a lookup this pure module has no way
+#: to make.
+_KNOWN_DEAD_INCLUDES: Final[frozenset[str]] = frozenset({"_spf.opsgrids.com"})
+
+
+def _include_target(mechanism: str) -> str | None:
+    if mechanism.lower().startswith("include:"):
+        return mechanism.split(":", 1)[1]
+    return None
+
+
+def _dead_include_in(mechanisms: list[str]) -> str | None:
+    """The first known-dead `include:` target among `mechanisms`, or None."""
+    for part in mechanisms:
+        target = _include_target(part)
+        if target is not None and target.lower() in _KNOWN_DEAD_INCLUDES:
+            return target
+    return None
+
+
+def _drop_dead_includes(mechanisms: list[str]) -> list[str]:
+    return [
+        part
+        for part in mechanisms
+        if not (
+            (target := _include_target(part)) is not None and target.lower() in _KNOWN_DEAD_INCLUDES
+        )
+    ]
+
 
 @dataclass(frozen=True, slots=True)
 class SpfResult:
@@ -976,12 +1009,19 @@ def _insert_before_all(record: str, token: str) -> str:
 def _merge_spf(records: list[str], token: str) -> str:
     """One record built from the union of every mechanism across `records`, plus `token` if none
     of them already carry it, with a single trailing `~all` — the shape a customer publishes to
-    replace every one of several competing records with the one SPF allows."""
+    replace every one of several competing records with the one SPF allows.
+
+    A known-dead `include:` (`_KNOWN_DEAD_INCLUDES`) is dropped rather than carried into the
+    merge — publishing it again would keep the permerror the merge exists to fix.
+    """
     mechanisms: list[str] = []
     seen: set[str] = set()
     for record in records:
         for part in record.split()[1:]:
             if _ALL_MECHANISM.match(part):
+                continue
+            target = _include_target(part)
+            if target is not None and target.lower() in _KNOWN_DEAD_INCLUDES:
                 continue
             if part.lower() not in seen:
                 seen.add(part.lower())
@@ -1022,7 +1062,23 @@ def evaluate_spf(txt_records: list[str], *, required_include: str) -> SpfResult:
         )
 
     record = candidates[0]
-    mechanisms = {p.lower() for p in record.split()[1:]}
+    parts = record.split()[1:]
+    dead_target = _dead_include_in(parts)
+    if dead_target is not None:
+        # A known-dead include is a permerror for every receiver regardless of whether the
+        # record also contains the include we actually need — so this is checked, and refused,
+        # before the ordinary verified/mismatch question is even asked.
+        cleaned = _drop_dead_includes([p for p in parts if not _ALL_MECHANISM.match(p)])
+        if token.lower() not in {p.lower() for p in cleaned}:
+            cleaned.append(token)
+        qualifier = next((p for p in parts if _ALL_MECHANISM.match(p)), "~all")
+        return SpfResult(
+            status="mismatch",
+            message=f"Remove include:{dead_target} — it points at a domain with no SPF record.",
+            suggested_value=" ".join(["v=spf1", *cleaned, qualifier]),
+        )
+
+    mechanisms = {p.lower() for p in parts}
     if token.lower() in mechanisms:
         message = "Verified."
         count = _spf_lookup_count(record)

@@ -32,17 +32,10 @@ from platform_core.logging import get_logger
 
 log = get_logger("notification.dns_check")
 
+
 #: Every way a lookup ends with nothing to compare against. `NXDOMAIN` and `NoAnswer` are the
 #: ordinary "not published yet"; `NoNameservers` and `Timeout` are the zone's or our own network's
 #: problem. All four mean the same thing to a caller asking whether the record is live: no.
-_NO_ANSWER = (
-    dns.resolver.NXDOMAIN,
-    dns.resolver.NoAnswer,
-    dns.resolver.NoNameservers,
-    dns.exception.Timeout,
-)
-
-
 class Resolver(Protocol):
     """The port. One name and one record type in, whatever is published out."""
 
@@ -68,8 +61,14 @@ class DnsPythonResolver:
     async def resolve(self, host: str, rtype: str) -> list[str]:
         try:
             answer = await self._lookup.resolve(host, rtype)
-        except _NO_ANSWER as exc:
-            log.info("dns.no_answer", host=host, rtype=rtype, reason=type(exc).__name__)
+        except dns.exception.DNSException as exc:
+            # Deliberately the broad base class, not just `_NO_ANSWER`'s four: it also covers
+            # `dns.name`'s own parsing errors (`EmptyLabel`, `BadEscape`, ...), which a
+            # customer-supplied DKIM selector shaped like `a..b` raises the moment dnspython
+            # tries to build a qname from it — before a socket is ever opened. Every one of
+            # these reads as "nothing published" rather than a 500; only the exception's type
+            # name is logged, never its message, which can echo the input back.
+            log.info("dns.lookup_failed", host=host, rtype=rtype, reason=type(exc).__name__)
             return []
         return [_answer_text(rdata) for rdata in answer]
 
