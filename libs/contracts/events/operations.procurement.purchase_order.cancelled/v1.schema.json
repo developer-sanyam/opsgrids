@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.procurement.purchase_order.cancelled/v1",
+  "title": "operations.procurement.purchase_order.cancelled",
+  "description": "A purchase order was cancelled. `reason` is free text: a projection must not copy it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "purchase_order_id", "number", "reason"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "purchase_order_id": { "type": "string", "format": "uuid" },
+    "number": { "type": "string", "minLength": 1 },
+    "reason": { "type": "string" }
+  }
+}

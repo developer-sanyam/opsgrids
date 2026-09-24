@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/projects.board.task.updated/v1",
+  "title": "projects.board.task.updated",
+  "description": "A card was edited or moved. Every field is the card's state after the change. `completed_at` is set when the card enters `done` and cleared when it leaves.",
+  "$comment": "Ahead of the producer (ADR-0020 slice I6): services/projects/app/services.py:update_task does not emit title, assignee_id, priority, due_date, points, completed_at yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "task_id",
+    "project_id",
+    "stage",
+    "title",
+    "assignee_id",
+    "priority",
+    "due_date",
+    "points",
+    "completed_at"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "task_id": { "type": "string", "format": "uuid" },
+    "project_id": { "type": "string", "format": "uuid" },
+    "stage": { "enum": ["backlog", "in_progress", "review", "done"] },
+    "title": { "type": "string", "minLength": 1 },
+    "assignee_id": { "type": ["string", "null"], "format": "uuid" },
+    "priority": { "enum": ["low", "medium", "high", "urgent"] },
+    "due_date": { "type": ["string", "null"], "format": "date" },
+    "points": { "type": "integer", "minimum": 0 },
+    "completed_at": { "type": ["string", "null"], "format": "date-time" }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.procurement.purchase_order.updated/v1",
+  "title": "operations.procurement.purchase_order.updated",
+  "description": "A purchase order's fields or lines were edited. `changed` names them (`lines` when the lines were replaced); the rest is the PO's state after the edit.",
+  "$comment": "Ahead of the producer (ADR-0020 slice I5): services/operations/app/services.py:update_purchase_order does not emit number, status, supplier_id, supplier_name, raised_by_id, created_date, expected_date, currency, total_minor yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "purchase_order_id",
+    "changed",
+    "number",
+    "status",
+    "supplier_id",
+    "supplier_name",
+    "raised_by_id",
+    "created_date",
+    "expected_date",
+    "currency",
+    "total_minor"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "purchase_order_id": { "type": "string", "format": "uuid" },
+    "changed": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "number": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["draft", "approved", "received", "closed", "cancelled"] },
+    "supplier_id": { "type": "string", "format": "uuid" },
+    "supplier_name": { "type": "string" },
+    "raised_by_id": { "type": ["string", "null"], "format": "uuid" },
+    "created_date": { "type": "string", "format": "date" },
+    "expected_date": { "type": "string", "format": "date" },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "total_minor": { "type": "integer", "minimum": 0 }
+  }
+}

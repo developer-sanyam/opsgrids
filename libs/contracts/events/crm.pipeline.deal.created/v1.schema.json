@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/crm.pipeline.deal.created/v1",
+  "title": "crm.pipeline.deal.created",
+  "description": "A deal was opened, by a person or by lead conversion. `owner_id` is the column deal's OWN scope compares with the caller's subject reference. `created_at` is the row's own creation time; an import may backdate it, so it can differ from the envelope's `occurred_at`. `closed_at` is non-null only for a deal created directly in a closed stage.",
+  "$comment": "Ahead of the producer (ADR-0020 slice I3): services/deal/app/services.py:create_deal does not emit company_id, close_date, probability, closed_at, created_at yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "deal_id",
+    "name",
+    "stage",
+    "value_minor",
+    "currency",
+    "owner_id",
+    "company_id",
+    "close_date",
+    "probability",
+    "closed_at",
+    "created_at"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "deal_id": { "type": "string", "format": "uuid" },
+    "name": { "type": "string", "minLength": 1 },
+    "stage": {
+      "enum": ["lead", "qualified", "proposal", "negotiation", "closed_won", "closed_lost"]
+    },
+    "value_minor": { "type": "integer", "minimum": 0 },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "owner_id": { "type": "string", "format": "uuid" },
+    "company_id": { "type": "string", "format": "uuid" },
+    "close_date": { "type": "string", "format": "date" },
+    "probability": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "closed_at": { "type": ["string", "null"], "format": "date-time" },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

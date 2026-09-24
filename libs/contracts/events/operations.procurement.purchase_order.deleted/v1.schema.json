@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.procurement.purchase_order.deleted/v1",
+  "title": "operations.procurement.purchase_order.deleted",
+  "description": "A purchase order was soft-deleted.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "purchase_order_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "purchase_order_id": { "type": "string", "format": "uuid" }
+  }
+}

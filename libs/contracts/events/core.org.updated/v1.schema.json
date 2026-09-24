@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/core.org.updated/v1",
+  "title": "core.org.updated",
+  "description": "An organization's settings changed. `changed` names the columns the update touched. `timezone`, `currency` and `fiscal_year_start_month` are the values *after* the change and are always present, so a projection that buckets by the organization's local day converges on the next event without reading account back.",
+  "$comment": "Ahead of the producer (ADR-0020 slice I1): services/account/app/services.py:update_organization does not emit timezone, currency, fiscal_year_start_month yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "changed", "timezone", "currency", "fiscal_year_start_month"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "changed": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "timezone": { "type": "string", "minLength": 1 },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "fiscal_year_start_month": { "type": "integer", "minimum": 1, "maximum": 12 }
+  }
+}

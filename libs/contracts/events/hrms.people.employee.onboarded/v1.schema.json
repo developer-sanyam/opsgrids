@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/hrms.people.employee.onboarded/v1",
+  "title": "hrms.people.employee.onboarded",
+  "description": "An employee record was created. The hierarchy fields are the employee's full state after the change (ADR-0006 §2), never a diff. `display_name` is a person's name: a consumer that does not need it (the insights projection does not) must not store it. `pii_fields` names which sealed fields were set, never their contents.",
+  "$comment": "Ahead of the producer (ADR-0020 slice I9): services/employee/app/services.py:create_employee does not emit date_of_joining, date_of_exit yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "membership_id",
+    "pii_fields",
+    "employee_id",
+    "reporting_manager_id",
+    "dotted_line_manager_id",
+    "status",
+    "location_code",
+    "display_name",
+    "employee_no",
+    "hierarchy_version",
+    "date_of_joining",
+    "date_of_exit"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "membership_id": { "type": ["string", "null"], "format": "uuid" },
+    "pii_fields": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "employee_id": { "type": "string", "format": "uuid" },
+    "reporting_manager_id": { "type": ["string", "null"], "format": "uuid" },
+    "dotted_line_manager_id": { "type": ["string", "null"], "format": "uuid" },
+    "status": { "enum": ["probation", "active", "on_notice", "exited"] },
+    "location_code": { "type": ["string", "null"] },
+    "display_name": { "type": "string", "minLength": 1 },
+    "employee_no": { "type": "string", "minLength": 1 },
+    "hierarchy_version": { "type": "integer", "minimum": 0 },
+    "date_of_joining": { "type": ["string", "null"], "format": "date" },
+    "date_of_exit": { "type": ["string", "null"], "format": "date" }
+  }
+}

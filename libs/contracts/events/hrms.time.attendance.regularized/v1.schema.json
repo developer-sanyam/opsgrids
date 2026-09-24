@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/hrms.time.attendance.regularized/v1",
+  "title": "hrms.time.attendance.regularized",
+  "description": "A day's attendance status was corrected, either directly by an authorised caller or by an approved regularization request. `regularized` is terminal.",
+  "$comment": "Ahead of the producer (ADR-0020 slice I9): services/attendance/app/services.py:regularize_attendance and apply_regularization_decision does not emit work_date yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "attendance_id", "employee_id", "work_date", "from", "to"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "attendance_id": { "type": "string", "format": "uuid" },
+    "employee_id": { "type": "string", "format": "uuid" },
+    "work_date": { "type": "string", "format": "date" },
+    "from": { "enum": ["present", "half_day", "absent", "regularized"] },
+    "to": { "enum": ["present", "half_day", "absent", "regularized"] }
+  }
+}
