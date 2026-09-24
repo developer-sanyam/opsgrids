@@ -11,22 +11,19 @@
  * and `/admin/catalog` (catalog-service). The two code paths return the same shapes, so switching
  * to live is a flag, not a rewrite — though the *response* shapes below have not yet been checked
  * field-for-field against the live schemas, which is part of that same later slice.
+ *
+ * `admin.opsgrids.com` serves this console publicly, so `./fixtures` is loaded only through a
+ * dynamic `import()` inside each `if (USE_FIXTURES)` branch below, never a static top-of-file
+ * import. `USE_FIXTURES` is always `false` in a production build (see below), which makes every
+ * one of those imports provably unreachable there — and unlike a static import, Rollup drops a
+ * dynamic import it can prove is never called, chunk and all, rather than shipping it unused. A
+ * static `import { ORGANIZATIONS, ... } from "./fixtures"` was tried first and measured to *not*
+ * do this: the fixture data (fake org names, a stand-in staff member) still turned up in
+ * `dist/assets/*.js` even though the code that reads it could never run — a static import always
+ * evaluates the whole module, live-or-not, so nothing about the surrounding `if` matters to it.
  */
 
 import { apiRequest } from "./http";
-import {
-  AUDIT_LOG,
-  CREDIT_LEDGER,
-  PLANS,
-  PLAN_VERSIONS,
-  PRODUCTS,
-  ORGANIZATIONS,
-  SUBSCRIPTIONS,
-  applyFixturePrice,
-  buildOverviewMetrics,
-  organizationDetail,
-  pricingForOrg,
-} from "./fixtures";
 import type {
   AccountStatus,
   AuditEntry,
@@ -55,6 +52,11 @@ export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXT
 /** True when the console is talking to the real admin-gateway. */
 export const LIVE = !USE_FIXTURES;
 
+/** The only path to `./fixtures` — see the module docstring for why this is a dynamic import. */
+function loadFixtures() {
+  return import("./fixtures");
+}
+
 /** Small artificial delay so loading states are exercised in fixtures mode. */
 function settle<T>(value: T, ms = 240): Promise<T> {
   return new Promise((resolve) => setTimeout(() => resolve(value), ms));
@@ -67,7 +69,10 @@ function matches(haystack: string, needle: string): boolean {
 /* ----------------------------- overview ----------------------------- */
 
 export async function getOverview(): Promise<OverviewMetrics> {
-  if (USE_FIXTURES) return settle(buildOverviewMetrics());
+  if (USE_FIXTURES) {
+    const { buildOverviewMetrics } = await loadFixtures();
+    return settle(buildOverviewMetrics());
+  }
   return apiRequest<OverviewMetrics>("/admin/metrics/overview");
 }
 
@@ -83,6 +88,7 @@ export async function listOrganizations(
   params: ListOrganizationsParams = {},
 ): Promise<Page<OrganizationRow>> {
   if (USE_FIXTURES) {
+    const { ORGANIZATIONS } = await loadFixtures();
     const q = params.search?.trim() ?? "";
     const items = ORGANIZATIONS.filter((o) => {
       const matchQuery =
@@ -107,6 +113,7 @@ export async function listOrganizations(
 
 export async function getOrganization(id: string): Promise<OrganizationDetail> {
   if (USE_FIXTURES) {
+    const { organizationDetail } = await loadFixtures();
     const detail = organizationDetail(id);
     if (!detail) throw new Error(`No organization ${id}`);
     return settle(detail);
@@ -125,6 +132,7 @@ export async function listSubscriptions(
   params: ListSubscriptionsParams = {},
 ): Promise<Page<Subscription>> {
   if (USE_FIXTURES) {
+    const { SUBSCRIPTIONS } = await loadFixtures();
     const q = params.search?.trim() ?? "";
     const items = SUBSCRIPTIONS.filter((s) => {
       const matchQuery =
@@ -151,6 +159,7 @@ export interface CatalogBundle {
 
 export async function getCatalog(): Promise<CatalogBundle> {
   if (USE_FIXTURES) {
+    const { PRODUCTS, PLANS, PLAN_VERSIONS } = await loadFixtures();
     return settle({ products: PRODUCTS, plans: PLANS, versions: PLAN_VERSIONS });
   }
   return apiRequest<CatalogBundle>("/admin/catalog");
@@ -165,6 +174,7 @@ export interface ListLedgerParams {
 
 export async function listLedger(params: ListLedgerParams = {}): Promise<Page<CreditLedgerEntry>> {
   if (USE_FIXTURES) {
+    const { CREDIT_LEDGER } = await loadFixtures();
     const q = params.search?.trim() ?? "";
     const items = CREDIT_LEDGER.filter((e) => {
       const matchQuery = q === "" || matches(e.organization_name, q) || matches(e.reason, q);
@@ -189,6 +199,7 @@ export interface ListAuditParams {
 
 export async function listAudit(params: ListAuditParams = {}): Promise<Page<AuditEntry>> {
   if (USE_FIXTURES) {
+    const { AUDIT_LOG } = await loadFixtures();
     const q = params.search?.trim() ?? "";
     const items = AUDIT_LOG.filter((a) => {
       const matchQuery =
@@ -216,6 +227,7 @@ export async function listAudit(params: ListAuditParams = {}): Promise<Page<Audi
  */
 export async function getOrganizationPricing(organizationId: string): Promise<OrganizationPricing> {
   if (USE_FIXTURES) {
+    const { pricingForOrg } = await loadFixtures();
     const pricing = pricingForOrg(organizationId);
     if (!pricing) throw new Error(`No organization ${organizationId}`);
     return settle(pricing);
@@ -238,6 +250,7 @@ export async function setOrganizationPrice(
   idempotencyKey: string,
 ): Promise<SetPriceResult> {
   if (USE_FIXTURES) {
+    const { applyFixturePrice } = await loadFixtures();
     return settle(applyFixturePrice(organizationId, request), 500);
   }
   return apiRequest<SetPriceResult>(`/admin/organizations/${encodeURIComponent(organizationId)}/pricing`, {
@@ -257,23 +270,8 @@ export async function setOrganizationPrice(
  */
 export async function postOverride(request: OverrideRequest): Promise<OverrideResult> {
   if (USE_FIXTURES) {
-    const result: OverrideResult = {
-      override_id: `ovr_${Math.random().toString(16).slice(2, 10)}`,
-      status: "accepted",
-      audit: {
-        audit_id: `aud_${Math.random().toString(16).slice(2, 8)}`,
-        occurred_at: new Date().toISOString(),
-        actor: "Priya Venkatesan",
-        actor_email: "priya.venkatesan@opsgrids.com",
-        action: `override.${request.kind}`,
-        organization_id: request.organization_id,
-        organization_name: null,
-        summary: `Simulated ${request.kind} override (fixtures mode — not sent to a live service)`,
-        result: "success",
-        target_ref: null,
-      },
-    };
-    return settle(result, 500);
+    const { simulateOverride } = await loadFixtures();
+    return settle(simulateOverride(request), 500);
   }
   return apiRequest<OverrideResult>("/admin/overrides", { method: "POST", body: request });
 }

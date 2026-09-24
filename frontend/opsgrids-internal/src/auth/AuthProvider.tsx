@@ -8,22 +8,11 @@ import type { AuthStatus } from "./context";
 import { getAccessToken, setAccessToken, setUnauthorizedHandler } from "./session";
 import type { LoginStep, OperatorMe, OperatorRole } from "./types";
 
-/**
- * A stand-in operator identity for fixtures mode (`VITE_USE_FIXTURES` defaults on), so the whole
- * console renders with no admin-gateway and no live staff registry — used while the console
- * backend is built. Never reached against a live gateway.
- */
-const FIXTURE_OPERATOR: OperatorMe = {
-  operator_id: "op-8f21a0c4",
-  email: "priya.venkatesan@opsgrids.com",
-  full_name: "Priya Venkatesan",
-  operator_roles: ["revenue_ops", "support", "billing_admin"],
-  amr: ["pwd"],
-  mfa_enabled: false,
-};
-
-/** A synthetic token used only in fixtures mode so the session shape is exercised end to end. */
-const FIXTURE_TOKEN = "fixtures.operator.token";
+/** Loaded only when `USE_FIXTURES` is true — see `fixtureOperator.ts` for why this is a dynamic
+ *  import rather than a static one. */
+function loadFixtureOperator() {
+  return import("./fixtureOperator");
+}
 
 /**
  * Owns the operator session: verifies a stored token on boot, drives login / logout, and exposes
@@ -45,10 +34,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let active = true;
     // Fixtures mode renders the console with a stand-in operator and no gateway call.
     if (USE_FIXTURES) {
-      setAccessToken(FIXTURE_TOKEN);
-      setOperator(FIXTURE_OPERATOR);
-      setStatus("authenticated");
-      return;
+      void loadFixtureOperator().then(({ FIXTURE_OPERATOR, FIXTURE_TOKEN }) => {
+        if (!active) return;
+        setAccessToken(FIXTURE_TOKEN);
+        setOperator(FIXTURE_OPERATOR);
+        setStatus("authenticated");
+      });
+      return () => {
+        active = false;
+      };
     }
     const token = getAccessToken();
     if (!token) {
@@ -83,6 +77,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (email: string, password: string): Promise<LoginStep> => {
     // Fixtures mode: accept the credential and route straight in with the stand-in operator.
     if (USE_FIXTURES) {
+      const { FIXTURE_OPERATOR, FIXTURE_TOKEN } = await loadFixtureOperator();
       setAccessToken(FIXTURE_TOKEN);
       setOperator({ ...FIXTURE_OPERATOR, email: email.trim() || FIXTURE_OPERATOR.email });
       setStatus("authenticated");

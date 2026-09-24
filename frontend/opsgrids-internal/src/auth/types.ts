@@ -7,18 +7,16 @@
  * **Not yet reconciled field-for-field with the live schemas** — that is the follow-up slice that
  * wires this app onto `opsgrids-client` and builds the MFA enrolment/verify screens the backend
  * now requires unconditionally (ADR-0003 addendum: a staff account with no confirmed factor can
- * reach only enrolment, never a token). In particular the live backend's roles are
- * `owner` / `billing_ops` / `support` (not the four listed below), its identity field is
- * `staff_id` (not `operator_id`), and login can resolve to `mfa_enrollment_required` in addition
- * to `mfa_required` — none of which is represented here yet.
+ * reach only enrolment, never a token). `OperatorRole` itself is reconciled (the live roles really
+ * are `owner` / `billing_ops` / `support`, confirmed against `services/console/app/api/routes.py`'s
+ * `require_operator(roles={...})` guards); what's left is that the identity field is `staff_id`
+ * (not `operator_id`), and login can resolve to `mfa_enrollment_required` in addition to
+ * `mfa_required` — neither of which is represented here yet.
  */
 
-/** One operator-role a staff account holds (e.g. revenue-ops, support, billing-admin). */
-export type OperatorRole =
-  | "revenue_ops"
-  | "support"
-  | "billing_admin"
-  | "read_only";
+/** One operator-role a staff account holds. `owner` holds everything; `billing_ops` and `support`
+ *  are narrower (ADR-0003 addendum's role matrix). */
+export type OperatorRole = "owner" | "billing_ops" | "support";
 
 /** `OperatorTokenOut` — a completed staff sign-in. The refresh token is an httpOnly cookie. */
 export interface OperatorLoginComplete {

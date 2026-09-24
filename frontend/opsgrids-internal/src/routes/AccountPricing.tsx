@@ -404,11 +404,10 @@ export function ClientPricingCard({ org }: { org: OrganizationRow }) {
   const [reloadKey, setReloadKey] = useState(0);
   const [dialogProduct, setDialogProduct] = useState<ProductPricing | null>(null);
   const { hasRole } = useAuth();
-  // A UI hint only — the server refuses `console.pricing.write` regardless of what this shows.
-  // This app's own operator roles are already known to trail the live staff registry's
-  // (`owner` / `billing_ops` / `support`); `billing_admin` is kept here as the closest analog
-  // pending that reconciliation (see docs/backlog.md and src/auth/types.ts).
-  const canWritePricing = hasRole("billing_admin");
+  // A UI hint only — the server is what actually refuses the write, to a caller who isn't `owner`
+  // or `billing_ops` (`services/console/app/api/routes.py`'s `OperatorBilling` guard). `support`
+  // can read pricing but not set it, same as live.
+  const canWritePricing = hasRole("owner") || hasRole("billing_ops");
 
   const loader = useCallback(() => getOrganizationPricing(org.organization_id), [org.organization_id]);
   const pricing = useAsync(loader, [org.organization_id, reloadKey]);

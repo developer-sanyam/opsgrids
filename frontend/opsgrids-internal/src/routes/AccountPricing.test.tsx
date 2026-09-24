@@ -7,6 +7,7 @@ import { ApiError } from "@/api/http";
 import type { OrganizationPricing, OrganizationRow, ProductPricing } from "@/api/types";
 import * as authContext from "@/auth/context";
 import type { AuthContextValue } from "@/auth/context";
+import type { OperatorRole } from "@/auth/types";
 import { ClientPricingCard } from "./AccountPricing";
 
 /**
@@ -71,13 +72,16 @@ function pricing(products: ProductPricing[]): OrganizationPricing {
   return { organization_id: "org_test", products };
 }
 
-function mockAuth(canWrite: boolean) {
+/** `roles` mirrors what `GET /auth/operator/me` would report - the live shapes are
+ *  `owner` / `billing_ops` / `support` (`services/auth`), and pricing-write is `owner` or
+ *  `billing_ops` only (`services/console/app/api/routes.py`'s `OperatorBilling` guard). */
+function mockAuth(roles: OperatorRole[]) {
   const value: AuthContextValue = {
     status: "authenticated",
     operator: null,
     login: vi.fn(),
     logout: vi.fn(),
-    hasRole: (role) => (canWrite ? role === "billing_admin" : false),
+    hasRole: (role) => roles.includes(role),
   };
   vi.spyOn(authContext, "useAuth").mockReturnValue(value);
 }
@@ -88,7 +92,7 @@ afterEach(() => {
 
 describe("table states", () => {
   it("shows a loading skeleton, then the populated table, with no empty flash between", async () => {
-    mockAuth(true);
+    mockAuth(["owner"]);
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(pricing([product()]));
     render(<ClientPricingCard org={org()} />);
     expect(screen.getByText("Client pricing")).toBeTruthy();
@@ -96,7 +100,7 @@ describe("table states", () => {
   });
 
   it("renders the error state with the message verbatim, and retries on demand", async () => {
-    mockAuth(true);
+    mockAuth(["owner"]);
     const spy = vi
       .spyOn(client, "getOrganizationPricing")
       .mockRejectedValueOnce(new Error("The pricing service is unreachable."))
@@ -110,7 +114,7 @@ describe("table states", () => {
   });
 
   it("shows 'Not subscribed' for a product with no subscription", async () => {
-    mockAuth(true);
+    mockAuth(["owner"]);
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(
       pricing([product({ subscription: null, current_price: null })]),
     );
@@ -120,7 +124,7 @@ describe("table states", () => {
   });
 
   it("shows the trial state with days left", async () => {
-    mockAuth(true);
+    mockAuth(["owner"]);
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(
       pricing([
         product({
@@ -140,14 +144,14 @@ describe("table states", () => {
   });
 
   it("shows active state plainly", async () => {
-    mockAuth(true);
+    mockAuth(["owner"]);
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(pricing([product()]));
     render(<ClientPricingCard org={org()} />);
     await waitFor(() => expect(screen.getByText("Active")).toBeTruthy());
   });
 
   it("badges a bespoke current price as Custom, and a plan-priced one as List price", async () => {
-    mockAuth(true);
+    mockAuth(["owner"]);
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(
       pricing([
         product({ product_key: "crm", product_name: "OpsGrids CRM" }),
@@ -174,7 +178,7 @@ describe("table states", () => {
 
 describe("price history", () => {
   it("lists changes newest first regardless of the order the API returned them in", async () => {
-    mockAuth(true);
+    mockAuth(["owner"]);
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(
       pricing([
         product({
@@ -209,7 +213,7 @@ describe("price history", () => {
   });
 
   it("says so when a product has never had its price touched", async () => {
-    mockAuth(true);
+    mockAuth(["owner"]);
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(pricing([product({ history: [] })]));
     render(<ClientPricingCard org={org()} />);
     const summary = await screen.findByText(/Price history — OpsGrids CRM/);
@@ -219,15 +223,30 @@ describe("price history", () => {
 });
 
 describe("permission gating (a hint only)", () => {
-  it("shows Set price for a caller who holds the role", async () => {
-    mockAuth(true);
+  it("shows Set price for an owner", async () => {
+    mockAuth(["owner"]);
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(pricing([product()]));
     render(<ClientPricingCard org={org()} />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Set price" })).toBeTruthy());
   });
 
-  it("hides Set price for a caller who does not — the row still shows the price itself", async () => {
-    mockAuth(false);
+  it("shows Set price for billing_ops too — the write guard is owner OR billing_ops", async () => {
+    mockAuth(["billing_ops"]);
+    vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(pricing([product()]));
+    render(<ClientPricingCard org={org()} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Set price" })).toBeTruthy());
+  });
+
+  it("hides Set price for support-only — the row still shows the price itself", async () => {
+    mockAuth(["support"]);
+    vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(pricing([product()]));
+    render(<ClientPricingCard org={org()} />);
+    await waitFor(() => expect(screen.getByText("OpsGrids CRM")).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Set price" })).toBeNull();
+  });
+
+  it("hides Set price for a caller with no roles at all", async () => {
+    mockAuth([]);
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(pricing([product()]));
     render(<ClientPricingCard org={org()} />);
     await waitFor(() => expect(screen.getByText("OpsGrids CRM")).toBeTruthy());
@@ -237,7 +256,7 @@ describe("permission gating (a hint only)", () => {
 
 describe("the Set price dialog", () => {
   async function openDialog() {
-    mockAuth(true);
+    mockAuth(["owner"]);
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(pricing([product()]));
     render(<ClientPricingCard org={org({ name: "Zenith Polymers" })} />);
     await userEvent.click(await screen.findByRole("button", { name: "Set price" }));
@@ -266,7 +285,7 @@ describe("the Set price dialog", () => {
   });
 
   it("preserves entered data across a failed submit", async () => {
-    mockAuth(true);
+    mockAuth(["owner"]);
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(pricing([product()]));
     vi.spyOn(client, "setOrganizationPrice").mockRejectedValue(new ApiError(422, "amount_minor must be positive", null));
     render(<ClientPricingCard org={org()} />);
@@ -290,7 +309,7 @@ describe("the Set price dialog", () => {
     [409, "trading has no public flat plan to clone"],
     [422, "reason must be between 1 and 500 characters"],
   ])("shows a %i verbatim", async (status, message) => {
-    mockAuth(true);
+    mockAuth(["owner"]);
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(pricing([product()]));
     vi.spyOn(client, "setOrganizationPrice").mockRejectedValue(new ApiError(status, message, null));
     render(<ClientPricingCard org={org()} />);
@@ -303,7 +322,7 @@ describe("the Set price dialog", () => {
   });
 
   it("walks form -> confirm -> result, sends the exact request, and reports the response's own effective", async () => {
-    mockAuth(true);
+    mockAuth(["owner"]);
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(pricing([product()]));
     const setPrice = vi.spyOn(client, "setOrganizationPrice").mockResolvedValue({
       plan_version_id: "pv_bespoke_new",
@@ -348,7 +367,7 @@ describe("the Set price dialog", () => {
   });
 
   it("disables the apply-to-subscription checkbox, unchecked, when there is no subscription", async () => {
-    mockAuth(true);
+    mockAuth(["owner"]);
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(
       pricing([product({ subscription: null, current_price: null })]),
     );
@@ -361,7 +380,7 @@ describe("the Set price dialog", () => {
   });
 
   it("reuses the same idempotency key on a retried submit, and issues a new one on reopen", async () => {
-    mockAuth(true);
+    mockAuth(["owner"]);
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(pricing([product()]));
     const setPrice = vi
       .spyOn(client, "setOrganizationPrice")
@@ -399,7 +418,7 @@ describe("the Set price dialog", () => {
   });
 
   it("never double-submits on a rapid double click", async () => {
-    mockAuth(true);
+    mockAuth(["owner"]);
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(pricing([product()]));
     let resolveRequest: (value: { plan_version_id: string; applied_to_subscription_id: string | null; effective: "now" }) => void = () => {};
     const setPrice = vi.spyOn(client, "setOrganizationPrice").mockImplementation(
@@ -424,7 +443,7 @@ describe("the Set price dialog", () => {
   });
 
   it("closes on Escape and returns focus to the button that opened it", async () => {
-    mockAuth(true);
+    mockAuth(["owner"]);
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(pricing([product()]));
     render(<ClientPricingCard org={org()} />);
     const trigger = await screen.findByRole("button", { name: "Set price" });

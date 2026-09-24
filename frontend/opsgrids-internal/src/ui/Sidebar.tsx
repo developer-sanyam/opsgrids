@@ -52,10 +52,9 @@ const GROUPS: { title: string; items: NavEntry[] }[] = [
 ];
 
 const ROLE_LABEL: Record<string, string> = {
-  revenue_ops: "Revenue Ops",
+  owner: "Owner",
+  billing_ops: "Billing Ops",
   support: "Support",
-  billing_admin: "Billing Admin",
-  read_only: "Read only",
 };
 
 function NavRow({ item, onNavigate }: { item: NavEntry; onNavigate?: (() => void) | undefined }) {
