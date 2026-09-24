@@ -1,5 +1,31 @@
 # Edge environment reference
 
+> **Superseded in part (2026-09-24).** Use [`ENV_SOURCE_MATRIX.md`](ENV_SOURCE_MATRIX.md) for the per-variable facts and
+> [`ENV_SETUP_CHECKLIST.md`](ENV_SETUP_CHECKLIST.md) for the order to do things in. This file was written against older
+> heads (its section 0) and is kept for its history. Where the two disagree, the matrix is right; it re-reads the heads
+> (integration `5320848`, which contains every slice named below) and resolves every citation against it. What changed:
+>
+> 1. **Memory-headroom is merged** into integration (`ce35c77`, tree identical to the slice's `0ff2954`) and
+>    so is io-outside-txn (`5320848`), which adds no key. "Pending: MH, OC, BR, IO, ECU" below is out of date: nothing is pending.
+> 2. **The two preflight defects are fixed** by that merge: the Caddyfile catch-all row (so "no sensible `.env` makes
+>    preflight pass" no longer holds) and the exit 127 on an unquoted space. They remain on `193b529` and earlier. The `.env`
+>    pre-check now also refuses an unquoted shell metacharacter, text after a closing quote and CRLF; preflight and
+>    `remote.sh` now both take the last assignment of a key (`remote.sh` still takes the first for `OPSGRIDS_DB_PASSWORD`
+>    and `OPS_MONITOR_PORT`); an undefined profile name is a named FAIL.
+> 3. **The ten-profile price is 4581 MB** (118.6% of 3862 MB, cap 4827), not 4112 MB. The RUNBOOK now also gives a
+>    rule for reading the real box (`docker stats`, `vmstat`, scale `4581 x measured / 4044`) before writing a ceiling.
+> 4. **The MFA reseal is fail-closed** (a count it cannot read aborts the deploy), runs once more after `health`, and during
+>    the reseal-to-`up` window recovery codes fail too, not only authenticator codes.
+> 5. **`COMPOSE_PROFILES=*` is valid** (expanded by preflight and `remote.sh`).
+> 6. **Only preflight guards `RAZORPAY_WEBHOOK_SECRET`**: the payment service itself does not refuse the public dev default.
+> 7. **`BILLING_TAX_JURISDICTION` is optional** and matched exactly (empty matches only NULL-jurisdiction rows), not "both or none".
+> 8. **Inert settings:** `SENTRY_DSN`, `JWT_KID`, `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` are read by nothing that acts on them.
+> 9. **The provider webhooks probably do not reach their services** through the edge (matrix section 9.1); settle it with the two
+>    unauthenticated probes before configuring a callback URL.
+> 10. **The RUNBOOK's key counts** ("19 new keys", "20 (18)") were corrected by `0ff2954` to 22 new keys, 20 of which must be present.
+> 11. **Process-only variables** the deploy tooling reads (for example `FORCE_PULL`, `PLACEHOLDER`, `OPS_MONITOR_PORT`)
+>     are listed in the matrix's own table; `document-cron`, `storefront-cron` and `operations-cron` no longer exist.
+
 What every variable the edge deploy reads is, where its value comes from, how to make it, and
 what is still undecided. It describes the **final release**: `release/backlog-complete` plus the
 slices that are still pending. Nothing in it is a guess; where the repository does not say, the
