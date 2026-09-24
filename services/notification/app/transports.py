@@ -40,10 +40,14 @@ _ADDRESS_RE = re.compile(r"[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+")
 def scrub_addresses(text: str) -> str:
     """A provider's error message, with every address-shaped substring redacted.
 
-    Applied at the transport boundary — inside `SmtpTransport`/`WhatsAppCloudTransport` before
-    the error is wrapped in `TransportRefused`/`TransportUnavailable` — so every caller
+    Applied inside `SmtpTransport`, and by `send_batch` to an exception it did not classify,
+    before the error is wrapped in `TransportRefused`/`TransportUnavailable` — so every caller
     downstream (the dispatcher's log line, the campaign driver's, the recipient-facing message)
     is safe by construction rather than by remembering to scrub at each call site.
+
+    Email-shaped text only. It is **not** what keeps `WhatsAppCloudTransport`'s errors clean: a
+    phone number or a template parameter would pass straight through it. That transport never
+    carries provider text at all — see `_meta_error`.
     """
     return _ADDRESS_RE.sub("<redacted>", text)
 
@@ -330,16 +334,61 @@ class WhatsAppCloudTransport:
                     headers={"Authorization": f"Bearer {self._token}"},
                 )
         except httpx.HTTPError as exc:
-            raise TransportUnavailable(str(exc)) from exc
+            # The exception's type says what happened (a timeout, a refused connection). Its
+            # text is not carried: this string lands in `Delivery.detail`, `Message.last_error`,
+            # the `message.failed` event on the bus and a log line, and nothing an HTTP client
+            # wrote about a failed request belongs in any of them.
+            raise TransportUnavailable(f"whatsapp request failed: {type(exc).__name__}") from exc
 
         if response.status_code == 429 or response.status_code >= 500:
-            raise TransportUnavailable(f"{response.status_code}: {response.text[:200]}")
+            raise TransportUnavailable(_meta_error(response))
         if response.status_code >= 400:
-            raise TransportRefused(f"{response.status_code}: {response.text[:200]}")
+            raise TransportRefused(_meta_error(response))
 
         body = response.json()
         messages = body.get("messages") or [{}]
         return Receipt(provider=self.name, provider_message_id=messages[0].get("id"))
+
+
+#: Meta's own error `type`s are identifiers (`OAuthException`, `GraphMethodException`); anything
+#: that is not one is not repeated.
+_META_ERROR_TYPE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,39}")
+
+#: A body larger than this is not an error envelope; it is not parsed.
+_META_ERROR_MAX_BYTES = 64 * 1024
+
+
+def _meta_error(response: httpx.Response) -> str:
+    """One line describing a failed Graph API call — from three stable fields and nothing else.
+
+    Meta's error envelope is `{"error": {"message", "type", "code", "error_subcode",
+    "error_data": {"details"}, "fbtrace_id"}}`. `message` and `error_data.details` are free text
+    Meta writes about *this* request and can name the recipient or a template parameter value —
+    a phone number, a customer's name — and this line is stored on the message, published on the
+    event bus and logged. So the line carries the status and `code`, `type` and `error_subcode`,
+    which are what an operator looks up in Meta's error reference, and never the body: not the
+    text, not a truncation of it, and not what could not be parsed.
+
+    Each value is checked before it is repeated — the codes must be integers and the type an
+    identifier — so a body that puts something else in those slots still cannot get text through.
+    """
+    parts = [f"HTTP {response.status_code}"]
+    error: object = None
+    if len(response.content) <= _META_ERROR_MAX_BYTES:
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, dict):
+        code, subcode, kind = error.get("code"), error.get("error_subcode"), error.get("type")
+        if isinstance(code, int) and not isinstance(code, bool):
+            parts.append(f"code={code}")
+        if isinstance(kind, str) and _META_ERROR_TYPE_RE.fullmatch(kind):
+            parts.append(f"type={kind}")
+        if isinstance(subcode, int) and not isinstance(subcode, bool):
+            parts.append(f"error_subcode={subcode}")
+    return " ".join(parts)
 
 
 async def send_batch(

@@ -144,6 +144,123 @@ async def test_whatsapp_network_error_is_transient(monkeypatch: pytest.MonkeyPat
         await _send_against(handler, monkeypatch)
 
 
+#: A Graph API error as Meta writes it: `message` and `error_data.details` are free text about
+#: this request, and here they do what they can in production — name the recipient and a
+#: template parameter value.
+_META_ERROR_WITH_PII = {
+    "error": {
+        "message": "(#131030) Recipient phone number not in allowed list: +917976603446",
+        "type": "OAuthException",
+        "code": 131030,
+        "error_subcode": 2494055,
+        "error_data": {
+            "messaging_product": "whatsapp",
+            "details": "Param body[1] value 'Helena Vogel' is invalid",
+        },
+        "fbtrace_id": "AbCdEfGhIjK",
+    }
+}
+_PII_FRAGMENTS = ("917976603446", "Helena", "Vogel", "not in allowed list", "AbCdEf", "details")
+
+
+async def test_whatsapp_refusal_keeps_only_the_stable_error_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The text lands on the message, on the event bus and in a log line, so it is built from
+    the status and Meta's `code`, `type` and `error_subcode` — never the body."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json=_META_ERROR_WITH_PII)
+
+    with pytest.raises(transports.TransportRefused) as excinfo:
+        await _send_against(handler, monkeypatch)
+    assert str(excinfo.value) == "HTTP 400 code=131030 type=OAuthException error_subcode=2494055"
+    for fragment in _PII_FRAGMENTS:
+        assert fragment not in str(excinfo.value)
+
+
+async def test_whatsapp_transient_failure_keeps_only_the_stable_error_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json=_META_ERROR_WITH_PII)
+
+    with pytest.raises(transports.TransportUnavailable) as excinfo:
+        await _send_against(handler, monkeypatch)
+    assert str(excinfo.value).startswith("HTTP 429 code=131030")
+    for fragment in _PII_FRAGMENTS:
+        assert fragment not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"<html>502 Bad Gateway for +917976603446 (Helena Vogel)</html>",  # a proxy's error page
+        b"",
+        b'{"error": "Helena Vogel +917976603446"}',  # `error` present but not an envelope
+        b'{"error": ["Helena Vogel"]}',
+        b"[1, 2, 3]",
+    ],
+)
+async def test_whatsapp_failure_without_an_envelope_carries_the_status_only(
+    body: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A body that is not Meta's envelope is not repeated in whole, in part or truncated —
+    the status is all there is to say."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, content=body)
+
+    with pytest.raises(transports.TransportUnavailable) as excinfo:
+        await _send_against(handler, monkeypatch)
+    assert str(excinfo.value) == "HTTP 503"
+
+
+async def test_whatsapp_error_fields_are_repeated_only_when_they_are_what_they_claim_to_be(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A body that puts text in the slots for `code`, `type` and `error_subcode` still cannot
+    get it through: the codes must be integers and the type an identifier."""
+    hostile = {
+        "error": {
+            "code": "131030 +917976603446",
+            "type": "Helena Vogel +917976603446",
+            "error_subcode": True,
+        }
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json=hostile)
+
+    with pytest.raises(transports.TransportRefused) as excinfo:
+        await _send_against(handler, monkeypatch)
+    assert str(excinfo.value) == "HTTP 400"
+
+
+async def test_whatsapp_oversized_body_is_not_parsed(monkeypatch: pytest.MonkeyPatch) -> None:
+    padding = "x" * (transports._META_ERROR_MAX_BYTES + 1)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={**_META_ERROR_WITH_PII, "padding": padding})
+
+    with pytest.raises(transports.TransportRefused) as excinfo:
+        await _send_against(handler, monkeypatch)
+    assert str(excinfo.value) == "HTTP 400"
+
+
+async def test_whatsapp_network_error_text_is_not_carried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The client's own message can name whatever it was talking to; the type says enough."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("could not connect to graph for +917976603446")
+
+    with pytest.raises(transports.TransportUnavailable) as excinfo:
+        await _send_against(handler, monkeypatch)
+    assert str(excinfo.value) == "whatsapp request failed: ConnectError"
+
+
 async def test_whatsapp_sends_a_template_when_one_is_supplied(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
