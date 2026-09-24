@@ -1,17 +1,20 @@
 import { useCallback, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
+import { useAsync } from "@opsgrids/client";
+import { LayersIcon } from "@opsgrids/ui";
+
 import { listSubscriptions } from "@/api/client";
 import type { AccountStatus, Subscription } from "@/api/types";
 import { formatDate, formatInt, relativeDays } from "@/lib/format";
-import { useAsync } from "@/lib/useAsync";
 import {
   AccountStatusPill,
+  BespokeTag,
   Card,
   DataTable,
   EmptyState,
   EnvBadge,
-  ErrorState,
+  LoadFailure,
   Money,
   PageHeader,
   Pill,
@@ -19,7 +22,6 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { LayersIcon, TagIcon } from "@/ui/icons";
 
 type StateFilter = AccountStatus | "all";
 
@@ -42,10 +44,7 @@ export function SubscriptionsPage() {
   const loader = useCallback(() => listSubscriptions({ search, state }), [search, state]);
   const subs = useAsync(loader, [search, state]);
 
-  const rows = useMemo(
-    () => (subs.status === "success" ? subs.data.items : NO_ROWS),
-    [subs],
-  );
+  const rows = useMemo(() => (subs.status === "success" ? subs.data.items : NO_ROWS), [subs]);
 
   const columns: Column<Subscription>[] = [
     {
@@ -54,7 +53,7 @@ export function SubscriptionsPage() {
       render: (s) => (
         <Link
           to={`/accounts/${s.organization_id}`}
-          className="font-bold text-ink hover:text-accent transition-colors"
+          className="font-bold text-ink transition-colors hover:text-accent"
           onClick={(e) => e.stopPropagation()}
         >
           {s.organization_name}
@@ -72,15 +71,11 @@ export function SubscriptionsPage() {
               <span className="font-semibold text-ink">{s.product_name}</span>
               <span className="text-muted">·</span>
               <span className="text-muted">{s.plan_name}</span>
-              {s.is_bespoke ? (
-                <span className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-1.5 py-0.5 text-[0.65rem] font-semibold text-accent-ink">
-                  <TagIcon className="size-3" /> Bespoke
-                </span>
-              ) : null}
+              {s.is_bespoke ? <BespokeTag /> : null}
             </div>
             {members.length > 0 ? (
               <span className="text-xs text-muted">
-                Entitles <span className="mono">{members.join(", ")}</span>
+                Entitles <span className="money">{members.join(", ")}</span>
               </span>
             ) : null}
           </div>
@@ -115,7 +110,7 @@ export function SubscriptionsPage() {
       headerClassName: "hidden lg:table-cell",
       render: (s) =>
         s.state === "trial" ? (
-          <span className="text-pastdue">trial · {relativeDays(s.trial_ends_at)}</span>
+          <span className="text-late">trial · {relativeDays(s.trial_ends_at)}</span>
         ) : s.next_renewal_at ? (
           <span className="tnum text-muted">{formatDate(s.next_renewal_at)}</span>
         ) : (
@@ -142,7 +137,7 @@ export function SubscriptionsPage() {
             onChange={(e) => setSearch(e.target.value)}
             containerClassName="lg:max-w-sm"
           />
-          <div className="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1">
+          <div className="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1" role="group" aria-label="Lifecycle state">
             {STATE_FILTERS.map((f) => (
               <Pill key={f.value} active={state === f.value} onClick={() => setState(f.value)}>
                 {f.label}
@@ -154,13 +149,13 @@ export function SubscriptionsPage() {
 
       <Card className="p-4 sm:p-5">
         {subs.status === "loading" ? (
-          <div className="flex flex-col gap-2 py-2">
+          <div className="flex flex-col gap-2 py-2" aria-busy>
             {Array.from({ length: 8 }).map((_, i) => (
-              <Skeleton key={i} className="h-12 w-full" />
+              <Skeleton key={i} className="h-12 w-full rounded-tile" />
             ))}
           </div>
         ) : subs.status === "error" ? (
-          <ErrorState message={subs.error.message} />
+          <LoadFailure error={subs.error} title="Couldn't load subscriptions" onRetry={subs.reload} />
         ) : (
           <DataTable
             columns={columns}

@@ -1,36 +1,29 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
+import { useAsync } from "@opsgrids/client";
+import { ShieldIcon } from "@opsgrids/ui";
+
 import { listAudit } from "@/api/client";
 import type { AuditEntry } from "@/api/types";
 import { formatDateTime } from "@/lib/format";
-import { useAsync } from "@/lib/useAsync";
 import {
   Card,
   DataTable,
   EmptyState,
   EnvBadge,
-  ErrorState,
+  LoadFailure,
   PageHeader,
   Pill,
   SearchInput,
   Skeleton,
+  StatusPill,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { ShieldIcon } from "@/ui/icons";
 
 function ResultBadge({ result }: { result: AuditEntry["result"] }) {
   const ok = result === "success";
-  return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold ${
-        ok ? "bg-active-soft text-active" : "bg-suspended-soft text-suspended"
-      }`}
-    >
-      <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      {ok ? "Success" : "Failed"}
-    </span>
-  );
+  return <StatusPill tone={ok ? "active" : "suspended"}>{ok ? "Success" : "Failed"}</StatusPill>;
 }
 
 const NO_ROWS: AuditEntry[] = [];
@@ -71,14 +64,14 @@ export function AuditPage() {
       render: (a) => (
         <div className="flex flex-col leading-tight">
           <span className="font-semibold text-ink">{a.actor}</span>
-          <span className="mono text-xs text-faint">{a.actor_email}</span>
+          <span className="money text-xs text-faint">{a.actor_email}</span>
         </div>
       ),
     },
     {
       key: "action",
       header: "Action",
-      render: (a) => <span className="mono text-xs font-semibold text-accent-ink">{a.action}</span>,
+      render: (a) => <span className="money text-xs font-semibold text-accent-ink">{a.action}</span>,
     },
     {
       key: "org",
@@ -87,7 +80,10 @@ export function AuditPage() {
       headerClassName: "hidden lg:table-cell",
       render: (a) =>
         a.organization_id ? (
-          <Link to={`/accounts/${a.organization_id}`} className="font-semibold text-ink hover:text-accent transition-colors">
+          <Link
+            to={`/accounts/${a.organization_id}`}
+            className="font-semibold text-ink transition-colors hover:text-accent"
+          >
             {a.organization_name}
           </Link>
         ) : (
@@ -121,7 +117,7 @@ export function AuditPage() {
             onChange={(e) => setSearch(e.target.value)}
             containerClassName="lg:max-w-sm"
           />
-          <div className="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1">
+          <div className="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1" role="group" aria-label="Action">
             <Pill active={action === "all"} onClick={() => setAction("all")}>
               All actions
             </Pill>
@@ -136,13 +132,13 @@ export function AuditPage() {
 
       <Card className="p-4 sm:p-5">
         {audit.status === "loading" ? (
-          <div className="flex flex-col gap-2 py-2">
+          <div className="flex flex-col gap-2 py-2" aria-busy>
             {Array.from({ length: 8 }).map((_, i) => (
-              <Skeleton key={i} className="h-12 w-full" />
+              <Skeleton key={i} className="h-12 w-full rounded-tile" />
             ))}
           </div>
         ) : audit.status === "error" ? (
-          <ErrorState message={audit.error.message} />
+          <LoadFailure error={audit.error} title="Couldn't load the audit log" onRetry={audit.reload} />
         ) : (
           <DataTable
             columns={columns}

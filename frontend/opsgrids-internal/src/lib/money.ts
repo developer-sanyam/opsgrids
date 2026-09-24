@@ -64,3 +64,21 @@ export function formatMoney(
 export function formatMonthly(minor: number, currency: string): string {
   return `${formatMoney(minor, currency)} / mo`;
 }
+
+/**
+ * What an operator typed into an amount field, as **integer minor units** — or `null` when it is
+ * not an amount: no digits, a sign, a thousands separator, or more decimal places than the
+ * currency has. It does the sum on digit strings rather than `Number(text) * 100`, because a float
+ * gets `1.005 * 100` wrong and money is never a float (ADR-0000 §7).
+ *
+ * Zero is a number, so it parses; whether zero is a valid *grant* is the caller's rule.
+ */
+export function parseMinorUnits(text: string, currency: string): number | null {
+  const exponent = exponentFor(currency);
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(text.trim());
+  if (match === null) return null;
+  const [, whole, fraction = ""] = match;
+  if (whole === undefined || fraction.length > exponent) return null;
+  const minor = Number(whole) * 10 ** exponent + Number(fraction.padEnd(exponent, "0") || "0");
+  return Number.isSafeInteger(minor) ? minor : null;
+}

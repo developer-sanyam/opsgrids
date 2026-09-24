@@ -19,6 +19,12 @@ interface FormDialogProps {
   cancelLabel?: string | undefined;
   /** What the submit button says while it works — "Saving…". */
   pendingLabel?: string | undefined;
+  /**
+   * `danger` for a form whose submit is itself the destructive act — suspending an account,
+   * reversing a grant — where the reason is typed into the same dialog that does it. Default
+   * `primary`. A plain confirmation with nothing to type is `ConfirmDialog`'s job.
+   */
+  submitTone?: "primary" | "danger" | undefined;
   /** From `useMutation`'s `pending`. */
   pending?: boolean | undefined;
   /**
@@ -63,6 +69,7 @@ export function FormDialog({
   submitLabel,
   cancelLabel = "Cancel",
   pendingLabel,
+  submitTone = "primary",
   pending = false,
   error,
   reference,
@@ -116,7 +123,7 @@ export function FormDialog({
           <Button type="button" variant="ghost" onClick={close} disabled={pending}>
             {cancelLabel}
           </Button>
-          <Button type="submit" variant="primary" loading={pending}>
+          <Button type="submit" variant={submitTone} loading={pending}>
             {pending ? (pendingLabel ?? submitLabel) : submitLabel}
           </Button>
         </div>

@@ -314,9 +314,45 @@ export type OverrideRequest =
       reason: string;
     };
 
-/** What the override endpoint returns — an id and the audit row it wrote in the owning service. */
+/**
+ * What the console needs to say about an accepted override: that it was, in a sentence, and which
+ * audit row records it when the owning service names one. Deliberately not the wire body — the
+ * shape `POST /admin/overrides` answers with is `OverrideOut`, and the screens read only this.
+ */
 export interface OverrideResult {
-  override_id: string;
   status: "accepted";
-  audit: AuditEntry;
+  summary: string;
+  audit_id: string | null;
+}
+
+/** What the accounts list may be narrowed by. */
+export interface ListOrganizationsParams {
+  search?: string;
+  status?: AccountStatus | "all";
+  bespoke?: boolean;
+}
+
+/** What the subscriptions list may be narrowed by. */
+export interface ListSubscriptionsParams {
+  search?: string;
+  state?: AccountStatus | "all";
+}
+
+/** What the credit ledger may be narrowed by. */
+export interface ListLedgerParams {
+  search?: string;
+  compOnly?: boolean;
+}
+
+/** What the audit log may be narrowed by. */
+export interface ListAuditParams {
+  search?: string;
+  action?: string | "all";
+}
+
+/** The catalog as one read: what is sold, the plans under it, and every version of each. */
+export interface CatalogBundle {
+  products: Product[];
+  plans: Plan[];
+  versions: PlanVersion[];
 }

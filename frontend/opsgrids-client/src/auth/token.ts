@@ -10,10 +10,18 @@
 
 import { getAccessToken } from "../session";
 
-/** The claims `mint_access` puts in a product token (`services/auth/app/tokens.py`). */
+/** The claims `mint_access` puts in an access token (`services/auth/app/tokens.py`). */
 export interface AccessClaims {
-  /** The product this token addresses. */
+  /** The audience this token addresses: a product's key, or `operator` on the staff surface. */
   aud?: string | undefined;
+  /**
+   * `true` on an operator token and on nothing else — the one place `mint_access` sets it. The
+   * operator console reads it to refuse a token of any other audience before putting it on the
+   * wire; the gateway is what actually enforces it.
+   */
+  stf?: boolean | undefined;
+  /** How the session was authenticated: `pwd`, `otp`, `sso`. An operator's carries `otp`. */
+  amr?: string[] | undefined;
   /** Activated products — what `useEntitlement` reads. */
   ent?: string[] | undefined;
   /** Role codes. Deliberately *not* used to derive permissions: see `PermissionProvider`. */

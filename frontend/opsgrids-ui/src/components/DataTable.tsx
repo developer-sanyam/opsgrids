@@ -55,6 +55,12 @@ interface DataTableProps<T> {
   onSort?: ((key: string) => void) | undefined;
   /** Tick boxes for bulk actions. Omit it and no selection column is rendered at all. */
   selection?: TableSelection<T> | undefined;
+  /**
+   * Tighter rows, for a screen that is read as a register rather than skimmed: the operator
+   * console's cross-tenant tables, where forty rows a screen is the point. Same columns, same
+   * keyboard behaviour; only the vertical padding changes.
+   */
+  dense?: boolean | undefined;
 }
 
 /**
@@ -104,6 +110,7 @@ export function DataTable<T>({
   sort,
   onSort,
   selection,
+  dense = false,
 }: DataTableProps<T>) {
   if (rows.length === 0 && emptyState) {
     return (
@@ -115,6 +122,8 @@ export function DataTable<T>({
   }
 
   const clickable = onRowClick !== undefined;
+  const headPad = dense ? "py-2.5" : "py-3";
+  const cellPad = dense ? "py-2.5" : "py-3.5";
   const selectedCount = selection
     ? rows.filter((row) => selection.selected.has(rowKey(row))).length
     : 0;
@@ -140,7 +149,7 @@ export function DataTable<T>({
           <thead>
             <tr className="border-b border-line">
               {selection ? (
-                <th scope="col" className="w-10 py-3 pl-3 pr-0 text-left">
+                <th scope="col" className={cn("w-10 pl-3 pr-0 text-left", headPad)}>
                   <TriStateCheckbox
                     checked={allSelected}
                     indeterminate={selectedCount > 0 && !allSelected}
@@ -171,7 +180,8 @@ export function DataTable<T>({
                           : undefined
                     }
                     className={cn(
-                      "py-3 px-3 text-xs font-semibold uppercase tracking-wide text-faint whitespace-nowrap",
+                      headPad,
+                      "px-3 text-xs font-semibold uppercase tracking-wide text-faint whitespace-nowrap",
                       col.align === "right" ? "text-right" : "text-left",
                       col.headerClassName,
                     )}
@@ -226,7 +236,7 @@ export function DataTable<T>({
                 >
                   {selection ? (
                     <td
-                      className="w-10 py-3.5 pl-3 pr-0 align-middle"
+                      className={cn("w-10 pl-3 pr-0 align-middle", cellPad)}
                       // The tick box is its own control inside a row that may itself be one.
                       // Without this, selecting a row for a bulk delete also opens it.
                       onClick={(event) => event.stopPropagation()}
@@ -245,7 +255,8 @@ export function DataTable<T>({
                     <td
                       key={col.key}
                       className={cn(
-                        "py-3.5 px-3 align-middle",
+                        cellPad,
+                        "px-3 align-middle",
                         col.align === "right" ? "text-right" : "text-left",
                         col.cellClassName,
                       )}

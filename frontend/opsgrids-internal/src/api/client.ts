@@ -1,235 +1,221 @@
 /**
  * Typed operator-console client.
  *
- * **Fixtures-first**: `VITE_USE_FIXTURES` defaults on, so the whole console renders from
- * `fixtures/` with no admin-gateway — this app is not yet wired onto `opsgrids-client` (that is
- * a separate slice; see `docs/backlog.md`). Set `VITE_USE_FIXTURES=false` to talk to the live
- * gateway; every function below then calls a real, shipped `/api/v1/admin/*` staff route
- * (ADR-0003 §2 and its addendum) with the operator token from the session — `/admin/organizations`,
- * `/admin/organizations/{id}`, `/admin/metrics/overview`, `/admin/subscriptions`, `/admin/usage`,
- * `/admin/audit`, `/admin/overrides` (console-service), `/admin/credit-ledger` (billing-service)
- * and `/admin/catalog` (catalog-service). The two code paths return the same shapes, so switching
- * to live is a flag, not a rewrite — though the *response* shapes below have not yet been checked
- * field-for-field against the live schemas, which is part of that same later slice.
+ * **Fixtures-first**: `VITE_USE_FIXTURES` defaults on in a dev build, so the whole console renders
+ * from `fixtures/` with no admin-gateway. Set `VITE_USE_FIXTURES=false` to talk to the live
+ * gateway; every function below then calls a `/api/v1/admin/*` staff route on the operator
+ * audience (ADR-0003 §2 and its addendum) through `operatorRequest`, which is what keeps a tenant
+ * token out of these calls and an operator token out of tenant routes.
+ *
+ * The two code paths return the same view models. `api/contract.test.ts` holds each live path to
+ * the committed OpenAPI documents and names, with its reason, every one that does not exist yet.
  */
 
-import { apiRequest } from "./http";
-import {
-  AUDIT_LOG,
-  CREDIT_LEDGER,
-  PLANS,
-  PLAN_VERSIONS,
-  PRODUCTS,
-  ORGANIZATIONS,
-  SUBSCRIPTIONS,
-  buildOverviewMetrics,
-  organizationDetail,
-} from "./fixtures";
+import { operatorRequest } from "@/auth/operatorRequest";
+import { USE_FIXTURES } from "@/config";
+import { expectMembers, expectPage } from "./shape";
 import type {
-  AccountStatus,
   AuditEntry,
+  CatalogBundle,
   CreditLedgerEntry,
+  ListAuditParams,
+  ListLedgerParams,
+  ListOrganizationsParams,
+  ListSubscriptionsParams,
   OrganizationDetail,
   OrganizationRow,
   OverrideRequest,
   OverrideResult,
   OverviewMetrics,
   Page,
-  Plan,
-  PlanVersion,
-  Product,
   Subscription,
 } from "./types";
 
-/** Default source. Fixtures unless `VITE_USE_FIXTURES=false` pins the console to the live gateway.
- *  Dev builds only: `import.meta.env.DEV` compiles to `false` in production, so a stray
- *  CI/production env var can never ship fixture mode — an app rendering fabricated data
- *  with the "Sample data" markers suppressed. */
-export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES !== "false";
+export type {
+  CatalogBundle,
+  ListAuditParams,
+  ListLedgerParams,
+  ListOrganizationsParams,
+  ListSubscriptionsParams,
+} from "./types";
 
-/** True when the console is talking to the real admin-gateway. */
-export const LIVE = !USE_FIXTURES;
+/**
+ * The fixture answers, loaded on demand. Only a dev build with fixtures on ever calls this: in a
+ * production build `USE_FIXTURES` is `false`, the branches that call it are removed, and so are the
+ * fixtures (see `fixtureClient.ts` for why that has to be a dynamic import).
+ */
+const fixtures = () => import("./fixtureClient");
 
-/** Small artificial delay so loading states are exercised in fixtures mode. */
-function settle<T>(value: T, ms = 240): Promise<T> {
-  return new Promise((resolve) => setTimeout(() => resolve(value), ms));
-}
+/** The members each screen reads of a whole-page answer; see `shape.ts` for why they are checked. */
+const OVERVIEW_MEMBERS = [
+  "currency",
+  "period_label",
+  "mrr_minor",
+  "mrr_delta_pct",
+  "mrr_sparkline",
+  "mrr_series",
+  "active_accounts",
+  "trials_in_progress",
+  "trial_conversion_pct",
+  "churn_pct",
+  "locked_accounts",
+  "suspended_accounts",
+  "revenue_period_minor",
+  "trial_funnel",
+  "churn_breakdown",
+] as const;
+const DETAIL_MEMBERS = [
+  "organization",
+  "subscriptions",
+  "entitlements",
+  "usage",
+  "invoices",
+  "ledger",
+  "comp_balance_minor",
+] as const;
+const LEDGER_ENTRY_MEMBERS = [
+  "entry_id",
+  "organization_id",
+  "organization_name",
+  "amount_minor",
+  "currency",
+  "kind",
+  "reason",
+  "valid_from",
+  "created_at",
+  "is_comp",
+] as const;
 
-function matches(haystack: string, needle: string): boolean {
-  return haystack.toLowerCase().includes(needle.toLowerCase());
+/** `path` with its query string, or bare when there is nothing to ask — never a dangling `?`. */
+function withQuery(path: string, query: URLSearchParams): string {
+  const text = query.toString();
+  return text === "" ? path : `${path}?${text}`;
 }
 
 /* ----------------------------- overview ----------------------------- */
 
 export async function getOverview(): Promise<OverviewMetrics> {
-  if (USE_FIXTURES) return settle(buildOverviewMetrics());
-  return apiRequest<OverviewMetrics>("/admin/metrics/overview");
+  if (USE_FIXTURES) return (await fixtures()).overview();
+  return expectMembers<OverviewMetrics>(
+    "/admin/metrics/overview",
+    await operatorRequest<unknown>("/admin/metrics/overview"),
+    OVERVIEW_MEMBERS,
+  );
 }
 
 /* ----------------------------- accounts ----------------------------- */
 
-export interface ListOrganizationsParams {
-  search?: string;
-  status?: AccountStatus | "all";
-  bespoke?: boolean;
-}
-
 export async function listOrganizations(
   params: ListOrganizationsParams = {},
 ): Promise<Page<OrganizationRow>> {
-  if (USE_FIXTURES) {
-    const q = params.search?.trim() ?? "";
-    const items = ORGANIZATIONS.filter((o) => {
-      const matchQuery =
-        q === "" ||
-        matches(o.name, q) ||
-        matches(o.slug, q) ||
-        matches(o.primary_product_name, q) ||
-        matches(o.region, q);
-      const matchStatus = !params.status || params.status === "all" || o.status === params.status;
-      const matchBespoke = params.bespoke === undefined || o.is_bespoke === params.bespoke;
-      return matchQuery && matchStatus && matchBespoke;
-    });
-    return settle({ items, total: items.length });
-  }
+  if (USE_FIXTURES) return (await fixtures()).organizations(params);
 
   const query = new URLSearchParams();
   if (params.search?.trim()) query.set("q", params.search.trim());
   if (params.status && params.status !== "all") query.set("status", params.status);
   if (params.bespoke !== undefined) query.set("bespoke", String(params.bespoke));
-  return apiRequest<Page<OrganizationRow>>(`/admin/organizations?${query.toString()}`);
+  return expectPage<OrganizationRow>(
+    "/admin/organizations",
+    await operatorRequest<unknown>(withQuery("/admin/organizations", query)),
+  );
 }
 
 export async function getOrganization(id: string): Promise<OrganizationDetail> {
-  if (USE_FIXTURES) {
-    const detail = organizationDetail(id);
-    if (!detail) throw new Error(`No organization ${id}`);
-    return settle(detail);
-  }
-  return apiRequest<OrganizationDetail>(`/admin/organizations/${encodeURIComponent(id)}`);
+  if (USE_FIXTURES) return (await fixtures()).organization(id);
+  return expectMembers<OrganizationDetail>(
+    "/admin/organizations/{id}",
+    await operatorRequest<unknown>(`/admin/organizations/${encodeURIComponent(id)}`),
+    DETAIL_MEMBERS,
+  );
 }
 
 /* --------------------------- subscriptions -------------------------- */
 
-export interface ListSubscriptionsParams {
-  search?: string;
-  state?: AccountStatus | "all";
-}
-
 export async function listSubscriptions(
   params: ListSubscriptionsParams = {},
 ): Promise<Page<Subscription>> {
-  if (USE_FIXTURES) {
-    const q = params.search?.trim() ?? "";
-    const items = SUBSCRIPTIONS.filter((s) => {
-      const matchQuery =
-        q === "" || matches(s.organization_name, q) || matches(s.product_name, q) || matches(s.plan_name, q);
-      const matchState = !params.state || params.state === "all" || s.state === params.state;
-      return matchQuery && matchState;
-    });
-    return settle({ items, total: items.length });
-  }
+  if (USE_FIXTURES) return (await fixtures()).subscriptions(params);
 
   const query = new URLSearchParams();
   if (params.search?.trim()) query.set("q", params.search.trim());
   if (params.state && params.state !== "all") query.set("state", params.state);
-  return apiRequest<Page<Subscription>>(`/admin/subscriptions?${query.toString()}`);
+  return expectPage<Subscription>(
+    "/admin/subscriptions",
+    await operatorRequest<unknown>(withQuery("/admin/subscriptions", query)),
+  );
 }
 
 /* ------------------------------ catalog ----------------------------- */
 
-export interface CatalogBundle {
-  products: Product[];
-  plans: Plan[];
-  versions: PlanVersion[];
-}
-
 export async function getCatalog(): Promise<CatalogBundle> {
-  if (USE_FIXTURES) {
-    return settle({ products: PRODUCTS, plans: PLANS, versions: PLAN_VERSIONS });
-  }
-  return apiRequest<CatalogBundle>("/admin/catalog");
+  if (USE_FIXTURES) return (await fixtures()).catalog();
+  return expectMembers<CatalogBundle>(
+    "/admin/catalog",
+    await operatorRequest<unknown>("/admin/catalog"),
+    ["products", "plans", "versions"],
+  );
 }
 
 /* --------------------------- credit ledger -------------------------- */
 
-export interface ListLedgerParams {
-  search?: string;
-  compOnly?: boolean;
-}
-
 export async function listLedger(params: ListLedgerParams = {}): Promise<Page<CreditLedgerEntry>> {
-  if (USE_FIXTURES) {
-    const q = params.search?.trim() ?? "";
-    const items = CREDIT_LEDGER.filter((e) => {
-      const matchQuery = q === "" || matches(e.organization_name, q) || matches(e.reason, q);
-      const matchComp = !params.compOnly || e.is_comp;
-      return matchQuery && matchComp;
-    }).sort((a, b) => b.created_at.localeCompare(a.created_at));
-    return settle({ items, total: items.length });
-  }
+  if (USE_FIXTURES) return (await fixtures()).ledger(params);
 
   const query = new URLSearchParams();
   if (params.search?.trim()) query.set("q", params.search.trim());
   if (params.compOnly) query.set("comp", "true");
-  return apiRequest<Page<CreditLedgerEntry>>(`/admin/credit-ledger?${query.toString()}`);
+  const page = expectPage<CreditLedgerEntry>(
+    "/admin/credit-ledger",
+    await operatorRequest<unknown>(withQuery("/admin/credit-ledger", query)),
+  );
+  // `items` and `total` are all the live page shares with the console's own; every row must also
+  // carry what the screen reads of an entry, or the page is one this console cannot show.
+  for (const entry of page.items) {
+    expectMembers<CreditLedgerEntry>("/admin/credit-ledger", entry, LEDGER_ENTRY_MEMBERS);
+  }
+  return page;
 }
 
 /* ------------------------------- audit ------------------------------ */
 
-export interface ListAuditParams {
-  search?: string;
-  action?: string | "all";
-}
-
 export async function listAudit(params: ListAuditParams = {}): Promise<Page<AuditEntry>> {
-  if (USE_FIXTURES) {
-    const q = params.search?.trim() ?? "";
-    const items = AUDIT_LOG.filter((a) => {
-      const matchQuery =
-        q === "" ||
-        matches(a.summary, q) ||
-        matches(a.actor, q) ||
-        (a.organization_name ? matches(a.organization_name, q) : false);
-      const matchAction = !params.action || params.action === "all" || a.action === params.action;
-      return matchQuery && matchAction;
-    });
-    return settle({ items, total: items.length });
-  }
+  if (USE_FIXTURES) return (await fixtures()).audit(params);
 
   const query = new URLSearchParams();
   if (params.search?.trim()) query.set("q", params.search.trim());
   if (params.action && params.action !== "all") query.set("action", params.action);
-  return apiRequest<Page<AuditEntry>>(`/admin/audit?${query.toString()}`);
+  return expectPage<AuditEntry>(
+    "/admin/audit",
+    await operatorRequest<unknown>(withQuery("/admin/audit", query)),
+  );
 }
 
 /* ----------------------------- overrides ---------------------------- */
 
 /**
+ * What `POST /admin/overrides` answers (`OverrideOut`), read into what the console says about an
+ * accepted override. **A write is not read strictly:** the request has already landed by the time
+ * its answer arrives, so an answer in a shape this console does not expect must not turn an
+ * override that took effect into an error message. It says what it can and names no audit row it
+ * was not told about.
+ */
+function acceptedFrom(answer: unknown): OverrideResult {
+  const body = typeof answer === "object" && answer !== null ? (answer as Record<string, unknown>) : {};
+  if (typeof body.summary === "string") {
+    return { status: "accepted", summary: body.summary, audit_id: typeof body.audit_id === "string" ? body.audit_id : null };
+  }
+  const action = typeof body.action === "string" ? body.action : "override";
+  const owner = typeof body.delegated_to === "string" ? ` to ${body.delegated_to}` : "";
+  return { status: "accepted", summary: `The ${action} override was delegated${owner}.`, audit_id: null };
+}
+
+/**
  * Drive a lifecycle override. Live, this POSTs to `/api/v1/admin/overrides` (console-service),
  * which delegates to the owning service's `/internal/v1` API under a service token (ADR-0003
- * §2). In fixtures mode it synthesizes the accepted result and the audit row the endpoint would
- * write, so the action forms demonstrate the full flow.
+ * §2). In fixtures mode it synthesizes the accepted result the endpoint would answer with, so the
+ * action forms demonstrate the full flow.
  */
 export async function postOverride(request: OverrideRequest): Promise<OverrideResult> {
-  if (USE_FIXTURES) {
-    const result: OverrideResult = {
-      override_id: `ovr_${Math.random().toString(16).slice(2, 10)}`,
-      status: "accepted",
-      audit: {
-        audit_id: `aud_${Math.random().toString(16).slice(2, 8)}`,
-        occurred_at: new Date().toISOString(),
-        actor: "Priya Venkatesan",
-        actor_email: "priya.venkatesan@opsgrids.com",
-        action: `override.${request.kind}`,
-        organization_id: request.organization_id,
-        organization_name: null,
-        summary: `Simulated ${request.kind} override (fixtures mode — not sent to a live service)`,
-        result: "success",
-        target_ref: null,
-      },
-    };
-    return settle(result, 500);
-  }
-  return apiRequest<OverrideResult>("/admin/overrides", { method: "POST", body: request });
+  if (USE_FIXTURES) return (await fixtures()).override(request);
+  return acceptedFrom(await operatorRequest<unknown>("/admin/overrides", { method: "POST", body: request }));
 }

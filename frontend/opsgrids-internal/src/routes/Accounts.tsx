@@ -1,26 +1,29 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
+import { useAsync } from "@opsgrids/client";
+import { BuildingIcon, LockIcon, TagIcon } from "@opsgrids/ui";
+
 import { listOrganizations } from "@/api/client";
 import type { AccountStatus, OrganizationRow } from "@/api/types";
 import { formatDate, formatInt, relativeDays } from "@/lib/format";
-import { useAsync } from "@/lib/useAsync";
 import {
   AccountStatusPill,
   Avatar,
+  BespokeTag,
   Card,
   DataTable,
   EmptyState,
   EnvBadge,
-  ErrorState,
+  LoadFailure,
+  Money,
   PageHeader,
   Pill,
   SearchInput,
+  Select,
   Skeleton,
-  Money,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { BuildingsIcon, LockIcon, TagIcon } from "@/ui/icons";
 
 type StatusFilter = AccountStatus | "all";
 
@@ -68,6 +71,7 @@ export function AccountsPage() {
   const [bespoke, setBespoke] = useState(false);
   const [sort, setSort] = useState<SortKey>("mrr_desc");
 
+  // The sidebar's search lands here with `?q=`, including while this screen is already open.
   useEffect(() => {
     const q = searchParams.get("q");
     if (q !== null) setSearch(q);
@@ -92,16 +96,16 @@ export function AccountsPage() {
       header: "Organization",
       render: (row) => (
         <div className="flex items-center gap-3">
-          <Avatar name={row.name} size="sm" />
+          <Avatar name={row.name} size="sm" shape="square" />
           <div className="flex min-w-0 flex-col leading-tight">
             <Link
               to={`/accounts/${row.organization_id}`}
-              className="truncate font-bold text-ink hover:text-accent transition-colors"
+              className="truncate font-bold text-ink transition-colors hover:text-accent"
               onClick={(e) => e.stopPropagation()}
             >
               {row.name}
             </Link>
-            <span className="mono truncate text-xs text-faint">{row.slug}</span>
+            <span className="money truncate text-xs text-faint">{row.slug}</span>
           </div>
         </div>
       ),
@@ -116,11 +120,7 @@ export function AccountsPage() {
           <span className="font-semibold text-ink">{row.primary_product_name}</span>
           <span className="flex items-center gap-1.5 text-xs text-muted">
             {row.plan_name}
-            {row.is_bespoke ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-1.5 py-0.5 text-[0.65rem] font-semibold text-accent-ink">
-                <TagIcon className="size-3" /> Bespoke
-              </span>
-            ) : null}
+            {row.is_bespoke ? <BespokeTag /> : null}
           </span>
         </div>
       ),
@@ -133,7 +133,7 @@ export function AccountsPage() {
           <AccountStatusPill status={row.status} />
           {row.locked ? (
             <span
-              className="inline-flex items-center gap-1 text-xs font-semibold text-suspended"
+              className="inline-flex items-center gap-1 text-xs font-semibold text-danger"
               title="Access locked — entitlement lapsed to a 402"
             >
               <LockIcon className="size-3.5" />
@@ -189,7 +189,7 @@ export function AccountsPage() {
 
       {/* Controls */}
       <Card className="flex flex-col gap-4 p-4 sm:p-5">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
           <SearchInput
             label="Search accounts"
             placeholder="Search by name, slug, product or region…"
@@ -197,27 +197,20 @@ export function AccountsPage() {
             onChange={(e) => setSearch(e.target.value)}
             containerClassName="lg:max-w-sm"
           />
-          <div className="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1">
+          <div className="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1" role="group" aria-label="Status">
             {STATUS_FILTERS.map((f) => (
               <Pill key={f.value} active={status === f.value} onClick={() => setStatus(f.value)}>
                 {f.label}
               </Pill>
             ))}
           </div>
-          <label className="ml-auto inline-flex h-11 shrink-0 items-center gap-2 rounded-full bg-ground px-4">
-            <span className="text-xs font-semibold uppercase tracking-wide text-faint">Sort</span>
-            <select
-              value={sort}
-              onChange={(e) => setSort(e.target.value as SortKey)}
-              className="cursor-pointer bg-transparent text-sm font-semibold text-ink focus:outline-none"
-            >
-              {SORTS.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          <Select
+            label="Sort"
+            options={SORTS}
+            value={sort}
+            onChange={(e) => setSort(e.target.value as SortKey)}
+            containerClassName="lg:ml-auto lg:w-56"
+          />
         </div>
         <div className="flex items-center gap-2 border-t border-line pt-4">
           <Pill active={bespoke} leadingIcon={<TagIcon className="size-4" />} onClick={() => setBespoke((v) => !v)}>
@@ -229,27 +222,28 @@ export function AccountsPage() {
       {/* Table */}
       <Card className="flex flex-col gap-2 p-4 sm:p-5">
         {accounts.status === "success" ? (
-          <div className="flex flex-wrap items-center justify-between gap-2 px-1 pb-2">
+          <div role="status" className="flex flex-wrap items-center justify-between gap-2 px-1 pb-2">
             <span className="text-sm text-muted">
               <span className="tnum font-semibold text-ink">{rows.length}</span>{" "}
               {rows.length === 1 ? "account" : "accounts"}
             </span>
             <span className="text-sm text-muted">
-              Combined MRR{" "}
-              <Money minor={totalMrr} currency="INR" className="font-semibold text-ink" />
+              Combined MRR <Money minor={totalMrr} currency="INR" className="font-semibold text-ink" />
             </span>
           </div>
         ) : null}
 
         {accounts.status === "loading" ? (
-          <div className="flex flex-col gap-2 py-2">
+          <div className="flex flex-col gap-2 py-2" aria-busy>
             {Array.from({ length: 8 }).map((_, i) => (
-              <Skeleton key={i} className="h-12 w-full" />
+              <Skeleton key={i} className="h-12 w-full rounded-tile" />
             ))}
           </div>
         ) : null}
 
-        {accounts.status === "error" ? <ErrorState message={accounts.error.message} /> : null}
+        {accounts.status === "error" ? (
+          <LoadFailure error={accounts.error} title="Couldn't load accounts" onRetry={accounts.reload} />
+        ) : null}
 
         {accounts.status === "success" ? (
           <DataTable
@@ -261,7 +255,7 @@ export function AccountsPage() {
             onRowClick={(row) => navigate(`/accounts/${row.organization_id}`)}
             emptyState={
               <EmptyState
-                icon={<BuildingsIcon className="size-6" />}
+                icon={<BuildingIcon className="size-6" />}
                 title="No matching accounts"
                 description="No organization matches these filters. Try a different status, clear the bespoke filter, or adjust the search."
               />

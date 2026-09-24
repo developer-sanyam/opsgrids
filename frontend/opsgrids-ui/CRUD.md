@@ -266,6 +266,31 @@ as icon, label, value and caption — no delta pill, no sparkline. Do not invent
 the props, and do not fork a second stat card: a card with nothing to compare against says so by
 showing nothing.
 
+## Pieces a control panel needs
+
+Added for the operator console; they are for every app.
+
+- `DefinitionList` — label/value pairs as a real `<dl>`, for an entity's facts. Not a table.
+- `AuthCard` — the card a sign-in step sits in: brand, title, intro, footer. `titleRef` hands the
+  title back so a step change can move focus to it; a step that replaces the form must do that, or a
+  keyboard user is left on a control that no longer exists.
+- `Avatar` takes `shape="circle" | "square"` — a person is a circle, an organization a square.
+- `Sidebar`'s account block takes `detail: { label, value }` in place of an organization line, for an
+  app with no organization (the operator console shows the staff role).
+- `DataTable` takes `dense` for a control panel's row height. Clickable rows are `role="button"`
+  rows with a key handler; if a row's whole job is to open a page, put a link in the first cell too.
+- `FormDialog` takes `submitTone="danger"` for an action that cannot be taken back or that cuts
+  something off (suspend, reverse). The tone is the button's colour, not a substitute for the
+  confirmation copy.
+
+## Fonts
+
+Every app's `main.tsx` imports `@opsgrids/ui/fonts` before its stylesheet. It brings Manrope from
+the package (latin and latin-ext, `font-display: swap`, served from the app's own origin); an app
+that wants a second face adds an `@fontsource` package and imports it the same way. **Never a
+`<link>` to a font host** — `tools/frontend_manifest.py` fails on it, and the edge's CSP has no
+third-party `font-src` to allow it.
+
 ## Touch targets
 
 Every control in `RowActions` — the inline pills, the overflow trigger, the menu items — carries a

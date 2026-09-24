@@ -180,4 +180,39 @@ describe("FormDialog", () => {
     expect(innerSubmit).toHaveBeenCalledTimes(1);
     expect(outerSubmit).not.toHaveBeenCalled();
   });
+
+  it("styles the submit as the destructive act when the form is one, and only then", () => {
+    const { rerender } = render(
+      <FormDialog
+        open
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        title="Suspend Acme Ltd"
+        submitLabel="Suspend account"
+      >
+        <p>fields</p>
+      </FormDialog>,
+    );
+    const plain = screen.getByRole("button", { name: "Suspend account" });
+    expect(plain.className).toContain("bg-accent");
+    expect(plain.className).not.toContain("bg-negative");
+
+    rerender(
+      <FormDialog
+        open
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        title="Suspend Acme Ltd"
+        submitLabel="Suspend account"
+        submitTone="danger"
+      >
+        <p>fields</p>
+      </FormDialog>,
+    );
+    const destructive = screen.getByRole("button", { name: "Suspend account" });
+    expect(destructive.className).toContain("bg-negative");
+    expect(destructive.className).not.toContain("bg-accent");
+    // Cancel is never the loud one: focus and emphasis stay off the destructive act.
+    expect(screen.getByRole("button", { name: "Cancel" }).className).not.toContain("bg-negative");
+  });
 });

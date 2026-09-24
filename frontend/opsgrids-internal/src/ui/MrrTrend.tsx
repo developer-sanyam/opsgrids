@@ -1,4 +1,5 @@
 import { useId, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
 
 import type { MrrPoint } from "@/api/types";
 import { formatMoney } from "@/lib/money";
@@ -30,9 +31,13 @@ function geometry(series: MrrPoint[]): Geo {
 }
 
 /**
- * The MRR-over-time area chart. A live current headline sits above (rendered by the caller); this
- * draws the trailing-12-months area+line with a hover tooltip that reads out the month's MRR. The
- * series carries integer minor amounts, so the tooltip formats real money.
+ * The MRR-over-time area chart. The live headline sits above it, rendered by the caller; this
+ * draws the trailing-12-months area and line, with a hover read-out of the month's MRR. The series
+ * carries integer minor amounts, so the read-out formats real money — and the same figures are in
+ * the figure's caption, off-screen, so the chart is not the only place they exist.
+ *
+ * The read-out is placed by two custom properties a class turns into `left` and `top`, so no
+ * position is set inline.
  */
 export function MrrTrend({ series, currency }: { series: MrrPoint[]; currency: string }) {
   const [hover, setHover] = useState<number | null>(null);
@@ -91,15 +96,17 @@ export function MrrTrend({ series, currency }: { series: MrrPoint[]; currency: s
 
       {active ? (
         <div
-          className="pointer-events-none absolute -translate-x-1/2 -translate-y-full rounded-tile bg-ink px-2.5 py-1.5 text-xs font-semibold text-surface shadow-float"
-          style={{ left: `${(active.x / W) * 100}%`, top: `${(active.y / H) * 100}%` }}
+          className="pointer-events-none absolute left-(--x) top-(--y) -translate-x-1/2 -translate-y-full rounded-tile bg-ink px-2.5 py-1.5 text-xs font-semibold text-surface shadow-float"
+          style={
+            { "--x": `${(active.x / W) * 100}%`, "--y": `${(active.y / H) * 100}%` } as CSSProperties
+          }
         >
           <span className="block text-surface/60">{active.p.label}</span>
-          <span className="mono">{formatMoney(active.p.mrr_minor, currency)}</span>
+          <span className="money">{formatMoney(active.p.mrr_minor, currency)}</span>
         </div>
       ) : null}
 
-      <div className="mt-2 flex justify-between px-0.5 text-[0.7rem] font-medium text-faint">
+      <div className="mt-2 flex justify-between px-0.5 text-xs font-medium text-faint">
         {series.map((p) => (
           <span key={p.label} className="tnum">
             {p.label}

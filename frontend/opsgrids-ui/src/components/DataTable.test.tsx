@@ -171,4 +171,23 @@ describe("DataTable", () => {
     expect(screen.getAllByRole("row")).toHaveLength(4);
     expect(screen.queryByRole("checkbox")).toBeNull();
   });
+
+  it("tightens the rows for a register, and only the rows", () => {
+    const { rerender } = render(
+      <DataTable columns={COLUMNS} rows={ROWS} rowKey={(row) => row.id} />,
+    );
+    const roomy = screen.getAllByRole("cell")[0]?.className ?? "";
+    const roomyHeader = screen.getAllByRole("columnheader")[0]?.className ?? "";
+    expect(roomy).toContain("py-3.5");
+    expect(roomyHeader).toContain("py-3");
+
+    rerender(<DataTable columns={COLUMNS} rows={ROWS} rowKey={(row) => row.id} dense />);
+    const tight = screen.getAllByRole("cell")[0]?.className ?? "";
+    const tightHeader = screen.getAllByRole("columnheader")[0]?.className ?? "";
+    expect(tight).toContain("py-2.5");
+    expect(tight).not.toContain("py-3.5");
+    expect(tightHeader).toContain("py-2.5");
+    // Same rows, same columns: density is padding and nothing else.
+    expect(screen.getAllByRole("row")).toHaveLength(4);
+  });
 });

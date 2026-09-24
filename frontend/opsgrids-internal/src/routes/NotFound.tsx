@@ -1,9 +1,10 @@
 import { Link } from "react-router-dom";
 
-import { Card } from "@/ui";
-import { GaugeIcon } from "@/ui/icons";
+import { GaugeIcon } from "@opsgrids/ui";
 
-/** A tasteful 404 for an unknown console route. */
+import { Card } from "@/ui";
+
+/** A 404 for an unknown console route. */
 export function NotFoundPage() {
   return (
     <div className="rise flex justify-center pt-8">
@@ -20,7 +21,7 @@ export function NotFoundPage() {
         </div>
         <Link
           to="/"
-          className="inline-flex h-11 items-center rounded-full bg-accent px-5 font-semibold text-white hover:bg-accent-strong transition-colors"
+          className="inline-flex h-11 items-center rounded-full bg-accent px-5 font-semibold text-white transition-colors hover:bg-accent-strong"
         >
           Back to overview
         </Link>

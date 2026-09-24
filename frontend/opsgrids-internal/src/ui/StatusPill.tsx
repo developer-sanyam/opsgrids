@@ -1,29 +1,24 @@
 import type { ReactNode } from "react";
 
-import type {
-  AccountStatus,
-  Invoice,
-  LedgerKind,
-  PlanVersionState,
-} from "@/api/types";
-import { cn } from "@/lib/cn";
+import { cn, TagIcon } from "@opsgrids/ui";
 
-export type PillTone =
-  | "active"
-  | "trial"
-  | "pastdue"
-  | "suspended"
-  | "cancelled"
-  | "comp"
-  | "accent";
+import type { AccountStatus, Invoice, LedgerKind, PlanVersionState } from "@/api/types";
+
+/**
+ * The lifecycle families (ADR-0004 §4), expressed over the Console's semantic tokens rather than
+ * as a palette of their own: active is the green `present`, trial the blue `info`, past-due the
+ * amber `late`, suspended the red `danger`, comp the `cyan`, cancelled the quiet neutral. The
+ * operator console adds no colour to the design system — it names the ones already there.
+ */
+export type PillTone = "active" | "trial" | "pastdue" | "suspended" | "cancelled" | "comp" | "accent";
 
 const TONE: Record<PillTone, string> = {
-  active: "bg-active-soft text-active",
-  trial: "bg-trial-soft text-trial",
-  pastdue: "bg-pastdue-soft text-pastdue",
-  suspended: "bg-suspended-soft text-suspended",
-  cancelled: "bg-cancelled-soft text-cancelled",
-  comp: "bg-comp-soft text-comp",
+  active: "bg-present-soft text-present",
+  trial: "bg-info-soft text-info",
+  pastdue: "bg-late-soft text-late",
+  suspended: "bg-danger-soft text-danger",
+  cancelled: "bg-ground text-muted",
+  comp: "bg-cyan-soft text-cyan",
   accent: "bg-accent-soft text-accent-ink",
 };
 
@@ -37,7 +32,7 @@ export function StatusPill({
 }: {
   tone: PillTone;
   children: ReactNode;
-  className?: string;
+  className?: string | undefined;
 }) {
   return (
     <span className={cn(BASE, TONE[tone], className)}>
@@ -113,4 +108,20 @@ const LEDGER_LABEL: Record<LedgerKind, string> = {
 
 export function LedgerKindPill({ kind }: { kind: LedgerKind }) {
   return <StatusPill tone={LEDGER_TONE[kind]}>{LEDGER_LABEL[kind]}</StatusPill>;
+}
+
+/** "Bespoke" — pinned to an audience-of-one plan version (ADR-0004 §2). */
+export function BespokeTag() {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-1.5 py-0.5 text-xs font-semibold text-accent-ink">
+      <TagIcon className="size-3" /> Bespoke
+    </span>
+  );
+}
+
+/** "Comp" — complimentary access, as against a monetary credit. */
+export function CompTag() {
+  return (
+    <span className="rounded-full bg-cyan-soft px-2 py-0.5 text-xs font-semibold text-cyan">Comp</span>
+  );
 }
