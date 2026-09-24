@@ -16,10 +16,13 @@ The order of checks is deliberate, cheapest and most-conclusive first:
 
 Rate limiting comes *after* authentication so it counts against a person rather than an
 address, which is what makes a shared office NAT usable. The unauthenticated paths are
-limited by IP instead — the *caller's* IP (`client_limiter_key`: `X-Forwarded-For`, believed only
-from a configured proxy and read from the right), with a ceiling over all of them combined. Provider
-webhooks (`GatewayPolicy.webhook_paths`) take a third route: no token, but exact path and method,
-their own buckets, and no cookie or CORS surface.
+limited by IP instead — the *caller's* IP (`_resolve_client`: `X-Forwarded-For`, believed only
+from a configured proxy and read from the right), with a ceiling over all callers combined, one for
+the credential endpoints and one for everything else public. Provider webhooks
+(`GatewayPolicy.webhook_paths`) take a third route: no token, but exact path and method, no
+cookie or `Authorization` forwarded, and no limit except their own address's *rejected*
+deliveries. Every unauthenticated request whose body the gateway buffers has a read deadline and
+a slot (`_BodySlots`), so a stranger cannot hold memory by sending half a body and stopping.
 
 The proxy step caps the request body (`DEFAULT_MAX_BODY_BYTES`, or a route's own override)
 and enforces it against the bytes actually read. The gateway buffers a body whole before
@@ -32,11 +35,12 @@ downstream service — whose own limit protects only itself — is ever asked it
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import json
 import posixpath
 import re
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -47,8 +51,10 @@ from starlette.background import BackgroundTask
 from platform_core.auth import decode_token
 from platform_core.cache import (
     cache_set,
+    check_rate_limit,
     current_permission_version,
     enforce_rate_limit,
+    record_rate_limit_hit,
     resolve_cached,
 )
 from platform_core.config import ServiceSettings
@@ -57,6 +63,8 @@ from platform_core.errors import (
     PayloadTooLargeProblem,
     PaymentRequiredProblem,
     ProblemError,
+    RequestTimeoutProblem,
+    ServiceBusyProblem,
     UnauthorizedProblem,
     UpstreamUnavailableProblem,
 )
@@ -151,14 +159,37 @@ MAX_ROUTE_BODY_BYTES = 32 * 1024 * 1024
 IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 
+#: The only address space a trusted proxy may live in: private (RFC 1918), loopback, link-local and
+#: IPv6 unique-local. A reverse proxy sits on the machine's own networks, and the header it
+#: writes is believed *because of who delivered it* — so a range containing public addresses is
+#: not a proxy list, it is "any host on the internet may tell me who the caller is". A
+#: `/0` is the obvious way to write that, but `0.0.0.0/1` with `128.0.0.0/1`, `2000::/3` and a
+#: `8.0.0.0/8` are the same mistake, which is why this is an allow-list and not a check for `/0`.
+#: (Kept as two tuples because `subnet_of` refuses to compare an IPv4 network with an IPv6 one.)
+_TRUSTED_PROXY_ALLOWED_V4 = tuple(
+    ipaddress.IPv4Network(text)
+    for text in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16")
+)
+_TRUSTED_PROXY_ALLOWED_V6 = tuple(
+    ipaddress.IPv6Network(text) for text in ("::1/128", "fe80::/10", "fc00::/7")
+)
+
+
+def _within_allowed_proxy_space(network: IPNetwork) -> bool:
+    if isinstance(network, ipaddress.IPv4Network):
+        return any(network.subnet_of(allowed) for allowed in _TRUSTED_PROXY_ALLOWED_V4)
+    return any(network.subnet_of(allowed) for allowed in _TRUSTED_PROXY_ALLOWED_V6)
+
+
 def parse_trusted_proxies(raw: Iterable[str]) -> tuple[IPNetwork, ...]:
     """Parse a list of addresses/CIDRs the gateway will believe `X-Forwarded-For` from.
 
     Refuses at boot — a deployment artefact, the same class as `_parse_max_body_bytes` — rather
     than at request time, in both directions: a typo'd entry that silently trusted nothing would
     leave every anonymous caller sharing one bucket again (the bug this list exists to fix), and
-    an entry that matches *everything* (`0.0.0.0/0`, `::/0`) would let any client name its own
-    address. Neither is a configuration anyone meant.
+    an entry that reaches beyond the machine's own networks would let a host on the internet name
+    its own address. Every entry must be a subnet of `_TRUSTED_PROXY_ALLOWED_V4`/`_V6`; the error
+    names the entry so the line in `.env` can be found.
     """
     networks: list[IPNetwork] = []
     for item in raw:
@@ -171,10 +202,12 @@ def parse_trusted_proxies(raw: Iterable[str]) -> tuple[IPNetwork, ...]:
             raise ValueError(
                 f"trusted proxy {text!r} is not an IP address or a CIDR range"
             ) from exc
-        if network.prefixlen == 0:
+        if not _within_allowed_proxy_space(network):
             raise ValueError(
-                f"trusted proxy {text!r} matches every address, which lets any client choose the "
-                "address it is rate limited under"
+                f"trusted proxy {text!r} is not inside a private, loopback, link-local or "
+                "unique-local range (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, "
+                "::1/128, 169.254.0.0/16, fe80::/10, fc00::/7); trusting an address a host on "
+                "the internet can hold lets it choose the address it is rate limited under"
             )
         networks.append(network)
     return tuple(networks)
@@ -205,8 +238,11 @@ def _limiter_key(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
     return str(address)
 
 
-def client_limiter_key(request: Request, trusted_proxies: tuple[IPNetwork, ...] = ()) -> str:
-    """The address an unauthenticated request is rate limited under.
+def _resolve_client(
+    request: Request, trusted_proxies: tuple[IPNetwork, ...]
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address | str | None:
+    """Who called: an address, the peer's own text when that is not an address (an in-process
+    test client reports "testclient"), or `None` when the request carries no peer at all.
 
     Behind a reverse proxy the socket peer is the *proxy* — Caddy's container address on the
     compose network — not the caller, and limiting on it collapses every anonymous caller in
@@ -222,23 +258,26 @@ def client_limiter_key(request: Request, trusted_proxies: tuple[IPNetwork, ...] 
     own infrastructure and everything to the left of the first address that is *not* ours is
     whatever the client claimed. The first untrusted address from the right is the caller.
 
-    Every ambiguous case falls back to the peer, which is the conservative bucket (shared, so
+    Every ambiguous case falls back to the peer, which is the conservative answer (shared, so
     stricter, never spoofable): no header, an entry that is not an address (a proxy that appends
     writes one; garbage on the right means something did not), or a chain made only of trusted
     proxies. The empty default trusts nobody, which is the right posture for development and for
     any deployment that has not said where its proxy is.
+
+    **Trusted means the whole named range, not one proxy.** Any host that can connect from inside
+    it may name a caller, so on the compose networks — where the default is the RFC 1918 ranges —
+    that is every container on `front` and `back`. The range is narrowed to Caddy's own address in
+    the runbook ("Narrowing the trusted proxy set"); the default is a deliberate trade against a
+    network whose subnet is not fixed.
     """
     peer = request.client.host if request.client else None
     if peer is None:
-        return "anonymous"
+        return None
     peer_address = _parse_ip(peer)
     if peer_address is None:
-        # Not an address at all (an in-process test client reports "testclient"). Nothing to
-        # normalise and nothing that can be a trusted proxy.
         return peer
-    fallback = _limiter_key(peer_address)
     if not trusted_proxies or not any(peer_address in network for network in trusted_proxies):
-        return fallback
+        return peer_address
 
     entries = [
         entry.strip()
@@ -248,10 +287,28 @@ def client_limiter_key(request: Request, trusted_proxies: tuple[IPNetwork, ...] 
     for entry in reversed(entries):
         address = _parse_ip(entry)
         if address is None:
-            return fallback
+            return peer_address
         if not any(address in network for network in trusted_proxies):
-            return _limiter_key(address)
-    return fallback
+            return address
+    return peer_address
+
+
+def client_limiter_key(request: Request, trusted_proxies: tuple[IPNetwork, ...] = ()) -> str:
+    """The address an unauthenticated request is rate limited under — see `_resolve_client`.
+    An IPv6 caller is counted by its /64, everything else by its address."""
+    resolved = _resolve_client(request, trusted_proxies)
+    if resolved is None:
+        return "anonymous"
+    if isinstance(resolved, str):
+        return resolved
+    return _limiter_key(resolved)
+
+
+def client_address(request: Request, trusted_proxies: tuple[IPNetwork, ...]) -> str | None:
+    """The single address to forward as `X-Forwarded-For` — the same caller `client_limiter_key`
+    counts, unbucketed. `None` when the request carries no peer at all."""
+    resolved = _resolve_client(request, trusted_proxies)
+    return None if resolved is None else str(resolved)
 
 
 #: How long a *fresh* re-resolution (see `PermissionResolver.resolve`'s `fresh` branch) is
@@ -418,9 +475,8 @@ class GatewayPolicy:
     #: A separate list from `public_paths`, not a subset of it, because a webhook is a different
     #: kind of anonymous. It carries no bearer token — the provider signs the body and the
     #: owning service verifies that signature over the raw bytes — so it is not a person, has
-    #: none of a browser's credentials (see `_WEBHOOK_STRIPPED_REQUEST_HEADERS`), is counted in
-    #: its own buckets (`webhook_rate_limit`, `webhook_global_rate_limit`) so a sign-in flood
-    #: cannot starve a payment callback and the other way round, and is public **per method**:
+    #: none of a browser's credentials (see `_WEBHOOK_STRIPPED_REQUEST_HEADERS`), is limited only
+    #: by its own *rejected* deliveries (`webhook_failure_limit`) and is public **per method**:
     #: Meta's WhatsApp handshake is a GET and its deliveries are POSTs, Razorpay only POSTs, and
     #: a DELETE to either falls through to the bearer check like any other unlisted request.
     #: Exact-matched against the normalised path, so `/api/v1/webhooks/whatsapp/../employees`
@@ -430,22 +486,48 @@ class GatewayPolicy:
     #: added after the ones above, and an existing positional construction must keep meaning what
     #: it meant.
     webhook_paths: Mapping[str, frozenset[str]] = field(default_factory=dict)
-    #: A ceiling on **all** unauthenticated requests together, per minute, on top of the
-    #: per-address limit (`anonymous_rate_limit`); `0` means none. The per-address limit stops one
-    #: address; it does nothing about a thousand of them, each politely under its own limit,
-    #: guessing passwords at the one anonymous surface the whole world can reach. Checked *after*
-    #: the per-address one, so a single address hammering the gateway spends at most its own
-    #: allowance of this and cannot exhaust it alone. Authenticated traffic never touches it.
+    #: A ceiling on the **credential** endpoints together (`credential_paths`), per minute, on top
+    #: of the per-address limit (`anonymous_rate_limit`); `0` means none. The per-address limit
+    #: stops one address; it does nothing about a thousand of them, each politely under its own
+    #: limit, guessing passwords and one-time codes. Checked *after* the per-address one, so a
+    #: single address hammering the gateway spends at most its own allowance of this and cannot
+    #: exhaust it alone. Authenticated traffic never touches it.
     anonymous_global_rate_limit: int = 0
-    #: Per-address requests per minute on one webhook path. Generous: a provider delivers from a
-    #: small set of addresses and legitimately bursts (a batch of receipts), and it retries on a
-    #: 429, so a limit set too low turns into redelivery rather than loss.
-    webhook_rate_limit: int = 600
-    #: All addresses together, per webhook path, per minute; `0` means none.
-    webhook_global_rate_limit: int = 0
-    #: Proxies whose `X-Forwarded-For` this gateway believes; see `client_limiter_key`. Empty
-    #: (the default) believes nobody, so the rate limit keys on the socket peer.
+    #: The same, for every *other* unauthenticated path (`content`: a published catalogue, an
+    #: unsubscribe link, the token refresh) — a separate bucket, and much larger, because
+    #: nothing there can be guessed and a busy day of real buyers is legitimate traffic. One shared
+    #: ceiling meant a crowd of storefront visitors could lock every merchant out of signing in,
+    #: and a sign-in flood could take every catalogue offline. `0` means none.
+    anonymous_content_global_rate_limit: int = 0
+    #: The exact public paths that take a credential (sign-in, one-time codes, password reset,
+    #: sign-up, accepting an invitation) and so count against `anonymous_global_rate_limit`;
+    #: every other public path counts against `anonymous_content_global_rate_limit`. Declared by
+    #: the gateway service, which also tests that every public path is classified one way or the
+    #: other, so a new public path is a decision and not an accident.
+    credential_paths: frozenset[str] = frozenset()
+    #: Rejected webhook deliveries per address per minute — the only limit on a webhook path. The
+    #: bucket is *read* before a delivery is forwarded and *spent* only when the service answers
+    #: 400, 401, 403 or 422 (a bad signature, a wrong verify token, an unattributable body).
+    #: A delivery that succeeds, or that fails on our side (5xx, timeout), costs nothing, and no
+    #: bucket a stranger can fill blocks a delivery from a different address: an attacker
+    #: hammering the path is refused after this many failures and is the only one who is.
+    webhook_failure_limit: int = 60
+    #: Proxies whose `X-Forwarded-For` this gateway believes; see `_resolve_client`. Empty (the
+    #: default) believes nobody, so the rate limit keys on the socket peer. When set, every
+    #: request the gateway forwards carries exactly one `X-Forwarded-For`: the resolved caller.
     trusted_proxies: tuple[IPNetwork, ...] = ()
+    #: How long an *unauthenticated* request may take to send its body before the read is
+    #: abandoned (408) and what was buffered released. The gateway buffers a body whole, and a
+    #: client that sends half of one and stops holds that memory for as long as the connection
+    #: lives; without this a handful of connections held the container's memory limit.
+    #: Authenticated requests are not subject to it — a slow document upload is legitimate.
+    unauth_body_read_timeout: float = 10.0
+    #: How many unauthenticated requests one address may have in flight at once, and how many the
+    #: process will hold in total, before answering 503 with `Retry-After: 5`. A slot is held from
+    #: the moment the request is accepted until its response has been sent, because the body
+    #: stays in memory that long. Bounds the buffered bytes to `slots * max_body_bytes`.
+    unauth_body_slots_per_address: int = 4
+    unauth_body_slots_global: int = 32
 
     def __post_init__(self) -> None:
         # A prefix without a trailing slash is a bug waiting to widen: refused at construction
@@ -465,6 +547,26 @@ class GatewayPolicy:
                 )
             if not methods or any(m != m.upper() or not m.isalpha() for m in methods):
                 raise ValueError(f"webhook path {path!r} needs upper-case HTTP method names")
+        # A limit of zero (or below) is not "off", it is "refuse everyone": the counter is
+        # incremented first and `count > 0` is true for the first request. Where `0` does mean
+        # off — the shared ceilings, documented above — it is allowed; everywhere else it is a
+        # configuration mistake and stops boot rather than the first request.
+        for name in ("rate_limit", "anonymous_rate_limit", "webhook_failure_limit"):
+            if getattr(self, name) < 1:
+                raise ValueError(f"{name} must be at least 1, got {getattr(self, name)}")
+        for name in ("anonymous_global_rate_limit", "anonymous_content_global_rate_limit"):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} must be 0 (off) or more, got {getattr(self, name)}")
+        for name in ("unauth_body_slots_per_address", "unauth_body_slots_global"):
+            if getattr(self, name) < 1:
+                raise ValueError(f"{name} must be at least 1, got {getattr(self, name)}")
+        if self.unauth_body_read_timeout <= 0:
+            raise ValueError(
+                f"unauth_body_read_timeout must be positive, got {self.unauth_body_read_timeout}"
+            )
+        not_public = sorted(self.credential_paths - self.public_paths)
+        if not_public:
+            raise ValueError(f"credential paths that are not public paths: {not_public}")
 
 
 DEFAULT_PUBLIC_PATHS = frozenset(
@@ -576,6 +678,68 @@ class PermissionResolver:
             ) from exc
 
 
+#: What a service answers to a webhook it will not accept: 400 (bad or missing signature), 401
+#: (the same, or no secret configured), 403 (Meta's verify-token handshake with the wrong token)
+#: and 422 (a body it cannot attribute). These, and only these, are spent from an address's bucket
+#: of rejected deliveries. 2xx is a delivery that worked; 5xx and timeouts are our failure, not
+#: the caller's, and must never lock a provider out.
+_WEBHOOK_REJECTION_STATUSES = frozenset({400, 401, 403, 422})
+
+
+class _BodySlots:
+    """How many unauthenticated requests are in flight at once — per address and in total.
+
+    The gateway buffers a request body whole before forwarding it, and an unauthenticated caller
+    chooses how long that takes: half a body sent and then silence holds that memory for as long
+    as the connection stays open. Forty such connections from one address held 122 MiB of a 256
+    MiB container in half a second, and a webhook path's larger body cap made it fifteen times
+    worse. A request takes a slot when it is accepted and gives it back when its response is on
+    its way — because the body stays in memory that long, not just while it is being read — and a
+    request that finds none is answered `503` with `Retry-After: 5` before a byte of its body is
+    touched. Providers retry a 503; the point is that memory is bounded by
+    `slots * max_body_bytes` whatever any caller does.
+
+    Single-threaded by construction: the check and the increment share one synchronous block, so
+    no lock is needed, and the release is in a `finally`, so a client that disconnects, a body over
+    its cap, a timeout and any other exception all give the slot back.
+    """
+
+    def __init__(self, per_address: int, total: int) -> None:
+        self._per_address = per_address
+        self._total_limit = total
+        self._held: dict[str, int] = {}
+        self._total = 0
+
+    @property
+    def in_flight(self) -> int:
+        """Slots held right now, across every address."""
+        return self._total
+
+    @contextlib.asynccontextmanager
+    async def hold(self, address: str) -> AsyncIterator[None]:
+        if self._total >= self._total_limit or self._held.get(address, 0) >= self._per_address:
+            log.warning(
+                "gateway.body_slots_full",
+                held_total=self._total,
+                held_by_address=self._held.get(address, 0),
+            )
+            raise ServiceBusyProblem(
+                "Too many requests are being processed right now. Please retry shortly.",
+                headers={"Retry-After": "5"},
+            )
+        self._total += 1
+        self._held[address] = self._held.get(address, 0) + 1
+        try:
+            yield
+        finally:
+            self._total -= 1
+            remaining = self._held[address] - 1
+            if remaining:
+                self._held[address] = remaining
+            else:
+                del self._held[address]
+
+
 def build_gateway(
     app: FastAPI,
     *,
@@ -585,6 +749,12 @@ def build_gateway(
     resolver: PermissionResolver | None = None,
 ) -> None:
     """Mount the catch-all proxy on `app`."""
+
+    # One per gateway, shared by every unauthenticated request it serves (see `_BodySlots`).
+    body_slots = _BodySlots(policy.unauth_body_slots_per_address, policy.unauth_body_slots_global)
+    # Readable by the tests and by anything that wants to export it as a gauge: how many
+    # unauthenticated requests are in flight right now.
+    app.state.body_slots = body_slots
 
     @app.api_route(
         "/api/{path:path}",
@@ -641,34 +811,73 @@ def build_gateway(
         }
         headers["x-request-id"] = request.state.request_id
         headers["x-correlation-id"] = request.state.correlation_id
+        if policy.trusted_proxies:
+            # One address, the one this gateway resolved and rate limits on. Without this the
+            # service receives whatever chain arrived — and `platform_core.audit` reads the
+            # *first* entry of it while the limiter reads the *last untrusted* one, so a caller
+            # could be limited as one address and audited as another. Only a gateway that has been
+            # told which proxy to believe does it: admin-gateway trusts none and keeps forwarding
+            # the chain it was given, which is what its own audit rows read.
+            resolved = client_address(request, policy.trusted_proxies)
+            if resolved is None:
+                headers.pop("x-forwarded-for", None)
+            else:
+                headers["x-forwarded-for"] = resolved
 
         webhook_methods = policy.webhook_paths.get(full_path)
         if webhook_methods is not None and request.method in webhook_methods:
             # A provider webhook: no bearer token, by design — the provider signs the body and
             # the owning service verifies that signature over the raw bytes we forward
             # untouched. Judged on the same normalised `full_path` as everything above, exactly
-            # and per method (see `GatewayPolicy.webhook_paths`), and counted in its own
-            # buckets: one per address, and one for the path as a whole, so neither a sign-in
-            # flood nor a webhook flood can spend the other's allowance.
+            # and per method (see `GatewayPolicy.webhook_paths`).
+            #
+            # **Only rejections are counted, and only per address.** Before the delivery is
+            # forwarded the address's bucket of *rejected* deliveries on this path is read (and
+            # spent by nobody yet); after the service answers, one is added if the answer was a
+            # rejection. A delivery that succeeds, or that fails on our side, costs nothing, and
+            # there is no ceiling over all addresses and no total-requests bucket — anything a
+            # stranger could fill would also refuse the genuine delivery from a different
+            # address, and a provider disables a webhook that fails for about a day. Five
+            # addresses posting bad signatures used to be enough to do that to every genuine
+            # Razorpay and Meta delivery for most of each minute.
+            #
+            # The residual is the cost of a rejection, not its consequence: a signature is an
+            # HMAC checked before any database statement, so unsigned traffic from many addresses
+            # only spends CPU here and in the service. Bounded by the slots below; the real
+            # mitigation is an edge allow-list of the providers' published ranges, which is the
+            # owner's to configure (RUNBOOK, "Provider webhooks").
             caller = client_limiter_key(request, policy.trusted_proxies)
-            await enforce_rate_limit(f"hook:{full_path}:{caller}", limit=policy.webhook_rate_limit)
-            if policy.webhook_global_rate_limit:
-                await enforce_rate_limit(
-                    f"hook:{full_path}",
-                    limit=policy.webhook_global_rate_limit,
-                    detail="This endpoint is receiving too many requests. Retry shortly.",
-                )
+            rejected = f"hook-fail:{full_path}:{caller}"
+            await check_rate_limit(
+                rejected,
+                limit=policy.webhook_failure_limit,
+                detail="Too many rejected deliveries from this address. Retry shortly.",
+            )
             # A provider is a server, not a browser. None of these mean anything to it and none
             # should reach the service that verifies its signature: a session cookie or bearer
             # token that rode along would be a credential handed to a route that ignores it, and
-            # an `Origin` would invite the upstream's CORS middleware to answer as though this
-            # were a page. No `x-org-slug` either — the host says nothing about which tenant a
-            # provider is calling for, and the body's own routing key does.
+            # an `Origin` would invite the *service's* CORS middleware to answer as though this
+            # were a page. (This gateway's own CORS middleware is not taken out of the path — it
+            # is `create_app`'s, shared by every service — so a request with an allowed
+            # first-party `Origin` is still answered with that origin's headers on the way out;
+            # providers send none.) No `x-org-slug` either — the host says nothing about which
+            # tenant a provider is calling for, and the body's own routing key does.
             for name in [n for n in headers if _is_browser_credential(n)]:
                 del headers[name]
-            return await _forward(
-                request, route, headers, policy, full_path, settings, webhook=True
-            )
+            async with body_slots.hold(caller):
+                response = await _forward(
+                    request,
+                    route,
+                    headers,
+                    policy,
+                    full_path,
+                    settings,
+                    webhook=True,
+                    unauthenticated=True,
+                )
+            if response.status_code in _WEBHOOK_REJECTION_STATUSES:
+                await record_rate_limit_hit(rejected)
+            return response
 
         if full_path in policy.public_paths or any(
             full_path.startswith(prefix) for prefix in policy.public_path_prefixes
@@ -681,21 +890,30 @@ def build_gateway(
             # The address is the *caller's* (`client_limiter_key`), not the socket peer's: behind
             # Caddy the peer is always Caddy, and one bucket for the whole internet is not a
             # per-address limit. Per address first, then the ceiling over all of them, so a
-            # single address cannot spend more than its own allowance of the shared one.
+            # single address cannot spend more than its own allowance of the shared one. The
+            # ceiling depends on what the path is: credential endpoints share one, everything
+            # else another, so a crowd of storefront visitors cannot lock out sign-in and a
+            # sign-in flood cannot take a catalogue offline.
             client_ip = client_limiter_key(request, policy.trusted_proxies)
             await enforce_rate_limit(f"anon:{client_ip}", limit=policy.anonymous_rate_limit)
-            if policy.anonymous_global_rate_limit:
-                await enforce_rate_limit(
-                    "anon-global",
-                    limit=policy.anonymous_global_rate_limit,
-                    detail=(
-                        "Too many unauthenticated requests are arriving right now. "
-                        "Please retry shortly."
-                    ),
+            if full_path in policy.credential_paths:
+                ceiling, ceiling_limit = "anon-global", policy.anonymous_global_rate_limit
+                ceiling_detail = (
+                    "Too many sign-in and account requests are arriving right now. "
+                    "Please retry shortly."
                 )
+            else:
+                ceiling = "anon-content-global"
+                ceiling_limit = policy.anonymous_content_global_rate_limit
+                ceiling_detail = "Too many requests are arriving right now. Please retry shortly."
+            if ceiling_limit:
+                await enforce_rate_limit(ceiling, limit=ceiling_limit, detail=ceiling_detail)
             if (slug := _slug_from_host(request)) is not None:
                 headers["x-org-slug"] = slug
-            return await _forward(request, route, headers, policy, full_path, settings)
+            async with body_slots.hold(client_ip):
+                return await _forward(
+                    request, route, headers, policy, full_path, settings, unauthenticated=True
+                )
 
         authorization = request.headers.get("Authorization", "")
         if not authorization.startswith("Bearer "):
@@ -869,7 +1087,9 @@ def _format_bytes(limit: int) -> str:
     return f"{limit} bytes"
 
 
-async def _read_capped_body(request: Request, limit: int) -> bytes:
+async def _read_capped_body(
+    request: Request, limit: int, deadline_seconds: float | None = None
+) -> bytes:
     """Buffer the request body, refusing anything past `limit` before it is all in memory.
 
     Checked twice, because `Content-Length` is a claim and not a fact:
@@ -880,6 +1100,11 @@ async def _read_capped_body(request: Request, limit: int) -> bytes:
       chunked request that never sent one at all.
 
     The counter is the enforcement. The header is only an early exit.
+
+    `deadline_seconds` bounds how long the *reading* may take: a caller who sends half a body
+    and stops would otherwise hold what it sent for as long as its connection lives. On expiry
+    the read is cancelled — what was buffered goes out of scope with it — and the answer is 408.
+    `None` (an authenticated caller) is unbounded: a slow document upload is legitimate.
     """
     declared = request.headers.get("content-length")
     if declared is not None and declared.isdigit() and int(declared) > limit:
@@ -887,18 +1112,29 @@ async def _read_capped_body(request: Request, limit: int) -> bytes:
             f"Request body exceeds the {_format_bytes(limit)} limit for this endpoint"
         )
 
-    chunks: list[bytes] = []
-    size = 0
-    async for chunk in request.stream():
-        size += len(chunk)
-        if size > limit:
-            # Stop reading here. Draining the remainder would buffer exactly what was
-            # refused, which is the thing this function exists to prevent.
-            raise PayloadTooLargeProblem(
-                f"Request body exceeds the {_format_bytes(limit)} limit for this endpoint"
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
+    async def buffer() -> bytes:
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > limit:
+                # Stop reading here. Draining the remainder would buffer exactly what was
+                # refused, which is the thing this function exists to prevent.
+                raise PayloadTooLargeProblem(
+                    f"Request body exceeds the {_format_bytes(limit)} limit for this endpoint"
+                )
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    if deadline_seconds is None:
+        return await buffer()
+    try:
+        async with asyncio.timeout(deadline_seconds):
+            return await buffer()
+    except TimeoutError as exc:
+        raise RequestTimeoutProblem(
+            f"The request body was not received within {deadline_seconds:g} seconds"
+        ) from exc
 
 
 def _is_browser_credential(header: str) -> bool:
@@ -922,6 +1158,7 @@ async def _forward(
     settings: ServiceSettings,
     *,
     webhook: bool = False,
+    unauthenticated: bool = False,
 ) -> Response:
     client: httpx.AsyncClient = request.app.state.http
 
@@ -936,8 +1173,20 @@ async def _forward(
     # must cost the gateway neither the memory nor a connection to a service that would
     # only refuse it later.
     limit = policy.max_body_bytes if route.max_body_bytes is None else route.max_body_bytes
+    # An unauthenticated caller also has a deadline for sending it (`unauth_body_read_timeout`).
+    read_timeout = policy.unauth_body_read_timeout if unauthenticated else None
     try:
-        body = await _read_capped_body(request, limit)
+        body = await _read_capped_body(request, limit, read_timeout)
+    except RequestTimeoutProblem:
+        log.warning(
+            "gateway.body_read_timeout",
+            path=request.url.path,
+            method=request.method,
+            timeout=read_timeout,
+            declared=request.headers.get("content-length"),
+            request_id=getattr(request.state, "request_id", None),
+        )
+        raise
     except PayloadTooLargeProblem:
         # The log carries the limit and the claim; the client is told the limit and
         # nothing about where the request was headed.
@@ -985,9 +1234,10 @@ async def _forward(
 
     response_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in HOP_BY_HOP}
     if webhook:
-        # The other half of "no cookie/CORS surface": whatever the owning service (or its own
+        # The other half of "no cookie from the service": whatever the owning service (or its own
         # CORS middleware) attached, a provider's reply carries neither a cookie nor an
-        # allowance for a browser origin.
+        # allowance for a browser origin *from the service*. The gateway's own CORS middleware
+        # runs outside this function and is untouched.
         response_headers = {
             k: v for k, v in response_headers.items() if not _is_cross_origin_response_header(k)
         }
@@ -1043,6 +1293,7 @@ __all__ = [
     "RouteTable",
     "TokenStaleProblem",
     "build_gateway",
+    "client_address",
     "client_limiter_key",
     "http_client",
     "parse_trusted_proxies",

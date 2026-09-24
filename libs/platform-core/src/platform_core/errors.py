@@ -129,6 +129,31 @@ class UpstreamUnavailableProblem(ProblemError):
     title = "Service unavailable"
 
 
+class RequestTimeoutProblem(ProblemError):
+    """The client did not finish sending its request in the time the entry point allows.
+
+    408, and the connection is not kept: a body that dribbles in is how one address holds
+    memory hostage, so the read is abandoned and everything buffered so far is released.
+    """
+
+    status_code = 408
+    problem_type = "request-timeout"
+    title = "Request timed out"
+
+
+class ServiceBusyProblem(ProblemError):
+    """Too many requests are being read at once; try again in a moment.
+
+    503 with `Retry-After`, distinct from `UpstreamUnavailableProblem` (a service is down) so a
+    log reader can tell a full intake from a broken dependency. Providers retry a 503, which is
+    the point of choosing it over a 429 here: nothing about the caller's own behaviour was wrong.
+    """
+
+    status_code = 503
+    problem_type = "busy"
+    title = "Service busy"
+
+
 def _json(problem: dict[str, Any], headers: dict[str, str] | None = None) -> JSONResponse:
     return JSONResponse(
         status_code=int(problem["status"]),

@@ -5,9 +5,13 @@ signature over the raw bytes — so the gateway has to let it through *without* 
 else through with it. Every test below is one half of that sentence:
 
 * what a webhook may do: reach the upstream, on its exact path and its own methods, body and
-  signature header intact, counted in its own rate-limit buckets and capped in size;
+  signature header intact, limited only by its own address's *rejected* deliveries and capped in
+  size;
 * what it may not: pass a cookie, a credential or an `Origin` on, come back with a cookie or a CORS
-  grant, or make any *other* path public — a sibling, a longer path, another method, a `..` walk.
+  grant from the service, or make any *other* path public — a sibling, a longer path, another
+  method, a `..` walk;
+* what nothing a stranger does may do: use up a bucket that a genuine delivery from a different
+  address needs.
 
 Traversal payloads are driven with a hand-built ASGI scope, not an `httpx` client, for the reason
 `test_gateway_path_normalization.py` gives: a client normalises a URL before it is ever sent.
@@ -15,7 +19,7 @@ Traversal payloads are driven with a hand-built ASGI scope, not an `httpx` clien
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator, MutableMapping
+from collections.abc import AsyncIterator, Callable, Iterator, MutableMapping
 from typing import Any
 
 import httpx
@@ -84,6 +88,9 @@ class _Upstream:
         self.calls: list[dict[str, Any]] = []
         self.response_headers: dict[str, str] = {}
         self.response_body = b'{"ok":true}'
+        #: The status the service answers with, decided per request — a signature check that
+        #: accepts what is signed and refuses what is not.
+        self.answer: Callable[[httpx.Request], int] = lambda request: 200
 
     async def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(
@@ -95,7 +102,9 @@ class _Upstream:
                 "headers": {k.lower(): v for k, v in request.headers.items()},
             }
         )
-        return httpx.Response(200, content=self.response_body, headers=self.response_headers)
+        return httpx.Response(
+            self.answer(request), content=self.response_body, headers=self.response_headers
+        )
 
     @property
     def last(self) -> dict[str, Any]:
@@ -115,14 +124,13 @@ def upstream() -> _Upstream:
     return _Upstream()
 
 
-def _build(upstream: _Upstream, **policy: Any) -> FastAPI:
-    cfg = _Settings()
+def _build(upstream: _Upstream, *, cors_origins: list[str] | None = None, **policy: Any) -> FastAPI:
+    cfg = _Settings(cors_origins=cors_origins) if cors_origins else _Settings()
     application = create_app(cfg, title="probe-gateway", database=False, redis=False)
     settings: dict[str, Any] = {
         "audience": "app",
         "public_paths": frozenset({"/api/v1/auth/login"}),
         "webhook_paths": WEBHOOKS,
-        "webhook_rate_limit": 1000,
         "anonymous_rate_limit": 1000,
     }
     settings.update(policy)
@@ -333,10 +341,18 @@ class TestNothingElseBecomesPublic:
         assert upstream.last["path"] == RAZORPAY
 
 
-# ---------------------------------------------------------------------------- no cookie / CORS
+# ------------------------------------------------------------------- cookies, credentials, CORS
 
 
-class TestNoCookieOrCorsSurface:
+class TestCookiesCredentialsAndCors:
+    """Exactly what the gateway does here, and what it does not. The service never sees a cookie,
+    an `Authorization` header or an `Origin`, and nothing the service sets comes back as a cookie
+    or a CORS grant. What it does **not** do is take the *gateway's own* CORS middleware out of
+    the path (`create_app` puts it in front of every route of every service): a request that
+    carries an allowed first-party `Origin` still gets that origin's headers, and a preflight from
+    one is still answered by the middleware. Providers send no `Origin`, so in practice nothing
+    changes for them; the last two tests state the residual instead of claiming it away."""
+
     async def test_a_browsers_credentials_do_not_reach_the_service(
         self, client: AsyncClient, upstream: _Upstream
     ) -> None:
@@ -398,75 +414,320 @@ class TestNoCookieOrCorsSurface:
         await client.post("/api/v1/auth/login", content=b"{}", headers={"Cookie": "refresh=abc"})
         assert upstream.last["headers"]["cookie"] == "refresh=abc"
 
+    async def test_the_gateways_own_cors_middleware_still_answers_an_allowed_first_party_origin(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        """The residual, stated as behaviour (probe P7). `CORSMiddleware` wraps the proxy, so a
+        webhook request that carries an allowed first-party `Origin` gets that origin's grant on
+        the way out — while the service behind it still never saw the `Origin` — and an origin
+        that is not on the list gets nothing."""
+        app = _build(upstream, cors_origins=["https://app.opsgrids.com"])
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            allowed = await client.post(
+                RAZORPAY, content=SIGNED_BODY, headers={"Origin": "https://app.opsgrids.com"}
+            )
+            other = await client.post(
+                RAZORPAY, content=SIGNED_BODY, headers={"Origin": "https://evil.example"}
+            )
+        assert allowed.status_code == 200
+        assert allowed.headers["access-control-allow-origin"] == "https://app.opsgrids.com"
+        assert "origin" not in upstream.calls[0]["headers"]
+        assert "access-control-allow-origin" not in other.headers
+        await app.state.http.aclose()
+
+    async def test_a_preflight_from_an_allowed_origin_is_answered_by_the_middleware_alone(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        app = _build(upstream, cors_origins=["https://app.opsgrids.com"])
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            preflight = await client.options(
+                RAZORPAY,
+                headers={
+                    "Origin": "https://app.opsgrids.com",
+                    "Access-Control-Request-Method": "POST",
+                },
+            )
+        assert preflight.status_code == 200
+        assert preflight.headers["access-control-allow-origin"] == "https://app.opsgrids.com"
+        assert upstream.calls == [], "a preflight is never forwarded"
+        await app.state.http.aclose()
+
 
 # ---------------------------------------------------------------------------- rate limiting
 
 
-class TestOwnBuckets:
-    async def test_webhooks_are_counted_under_their_own_key_not_the_anonymous_one(
+#: Two addresses behind the edge, and the one Caddy connects from. Behind the proxy the gateway
+#: rate limits on what `X-Forwarded-For` says (from the trusted peer), so tests name callers by it.
+CADDY = "172.18.0.5"
+TRUSTED = parse_trusted_proxies(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"])
+GENUINE = "13.232.125.1"
+FAILURE_LIMIT = 5
+
+
+def _signed_only(request: httpx.Request) -> int:
+    """A service that accepts what carries the right signature and answers 400 to the rest."""
+    return 200 if request.headers.get("x-razorpay-signature") == "good" else 400
+
+
+def _via_caddy(app: FastAPI, *, peer: str = CADDY) -> AsyncClient:
+    return AsyncClient(transport=ASGITransport(app=app, client=(peer, 4000)), base_url="http://t")
+
+
+def _hook_keys(redis: _FakeRedis) -> list[str]:
+    return sorted(k for k in redis.store if k.startswith("rl:hook"))
+
+
+class TestOnlyRejectionsAreCounted:
+    """A webhook has one limit — rejected deliveries per address — and nothing a stranger can fill
+    blocks a genuine delivery from somewhere else. Before this, a shared ceiling over all
+    addresses meant five hosts posting bad signatures could 429 every real Razorpay and Meta
+    delivery for most of each minute, and a provider disables a webhook that fails for a day."""
+
+    async def test_attackers_cannot_starve_a_genuine_delivery(
         self, redis: _FakeRedis, upstream: _Upstream
     ) -> None:
-        app = _build(upstream)
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
-            await client.post(WHATSAPP, content=SIGNED_BODY)
-        keys = sorted(redis.store)
-        assert len(keys) == 1 and keys[0].startswith(f"rl:hook:{WHATSAPP}:127.0.0.1:"), keys
+        """Probe P2. Five hostile addresses each post far more bad-signature bodies than their
+        limit; a genuine, signed delivery from a clean address afterwards is delivered."""
+        upstream.answer = _signed_only
+        app = _build(upstream, webhook_failure_limit=FAILURE_LIMIT, trusted_proxies=TRUSTED)
+        async with _via_caddy(app) as client:
+            for attacker in range(1, 6):
+                for _ in range(FAILURE_LIMIT * 4):
+                    await client.post(
+                        RAZORPAY,
+                        content=b"{}",
+                        headers={"X-Forwarded-For": f"203.0.113.{attacker}"},
+                    )
+            genuine = await client.post(
+                RAZORPAY,
+                content=SIGNED_BODY,
+                headers={"X-Forwarded-For": GENUINE, "X-Razorpay-Signature": "good"},
+            )
+        assert genuine.status_code == 200
+        assert upstream.calls[-1]["headers"]["x-razorpay-signature"] == "good"
         await app.state.http.aclose()
 
-    async def test_a_sign_in_flood_cannot_starve_a_webhook_and_the_reverse(
+    async def test_two_hundred_failures_from_other_addresses_do_not_touch_a_clean_one(
         self, redis: _FakeRedis, upstream: _Upstream
     ) -> None:
-        app = _build(upstream, anonymous_rate_limit=2, webhook_rate_limit=2)
+        upstream.answer = _signed_only
+        app = _build(upstream, webhook_failure_limit=60, trusted_proxies=TRUSTED)
+        async with _via_caddy(app) as client:
+            for i in range(200):
+                await client.post(
+                    WHATSAPP, content=b"{}", headers={"X-Forwarded-For": f"198.51.100.{i % 20}"}
+                )
+            genuine = await client.post(
+                WHATSAPP,
+                content=SIGNED_BODY,
+                headers={"X-Forwarded-For": GENUINE, "X-Razorpay-Signature": "good"},
+            )
+        assert genuine.status_code == 200
+        await app.state.http.aclose()
+
+    async def test_an_address_at_its_failure_limit_is_refused_and_a_different_one_is_not(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        """g2, reshaped. The bucket is read before anything else happens to the request."""
+        upstream.answer = _signed_only
+        app = _build(upstream, webhook_failure_limit=FAILURE_LIMIT, trusted_proxies=TRUSTED)
+        async with _via_caddy(app) as client:
+            bad = {"X-Forwarded-For": "203.0.113.9"}
+            statuses = [
+                (await client.post(RAZORPAY, content=b"{}", headers=bad)).status_code
+                for _ in range(FAILURE_LIMIT)
+            ]
+            assert statuses == [400] * FAILURE_LIMIT
+            calls_before = len(upstream.calls)
+            refused = await client.post(RAZORPAY, content=b"{}", headers=bad)
+            # Refused up front, with a Retry-After, and never forwarded.
+            assert refused.status_code == 429
+            assert refused.headers["retry-after"] == "60"
+            assert "rejected deliveries" in refused.json()["detail"]
+            assert len(upstream.calls) == calls_before
+            # Even a *signed* delivery from the same address is refused now: the check is first.
+            still = await client.post(
+                RAZORPAY, content=SIGNED_BODY, headers={**bad, "X-Razorpay-Signature": "good"}
+            )
+            assert still.status_code == 429
+
+            other = await client.post(
+                RAZORPAY,
+                content=SIGNED_BODY,
+                headers={"X-Forwarded-For": GENUINE, "X-Razorpay-Signature": "good"},
+            )
+        assert other.status_code == 200
+        await app.state.http.aclose()
+
+    async def test_a_successful_delivery_never_spends_anything(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        upstream.answer = _signed_only
+        app = _build(upstream, webhook_failure_limit=2)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            for _ in range(50):
+                ok = await client.post(
+                    RAZORPAY, content=SIGNED_BODY, headers={"X-Razorpay-Signature": "good"}
+                )
+                assert ok.status_code == 200
+        assert _hook_keys(redis) == [], "2xx must not create, let alone increment, a bucket"
+        await app.state.http.aclose()
+
+    @pytest.mark.parametrize("status", [500, 502, 503, 504])
+    async def test_a_failure_on_our_side_never_spends_anything(
+        self, redis: _FakeRedis, upstream: _Upstream, status: int
+    ) -> None:
+        """The service being down is not the provider's fault and must not lock it out — that
+        would turn an outage of ours into a webhook the provider disables."""
+        upstream.answer = lambda request: status
+        app = _build(upstream, webhook_failure_limit=2)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            for _ in range(10):
+                assert (await client.post(RAZORPAY, content=SIGNED_BODY)).status_code == status
+        assert _hook_keys(redis) == []
+        await app.state.http.aclose()
+
+    async def test_a_service_that_cannot_be_reached_never_spends_anything(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        async def refuse(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("slow")
+
+        app = _build(upstream, webhook_failure_limit=1)
+        app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(refuse))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            for _ in range(5):
+                assert (await client.post(RAZORPAY, content=SIGNED_BODY)).status_code == 503
+        assert _hook_keys(redis) == []
+        await app.state.http.aclose()
+
+    @pytest.mark.parametrize("status", [400, 401, 403, 422])
+    async def test_each_rejection_status_spends_one(
+        self, redis: _FakeRedis, upstream: _Upstream, status: int
+    ) -> None:
+        upstream.answer = lambda request: status
+        app = _build(upstream, webhook_failure_limit=3)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            results = [(await client.post(RAZORPAY, content=b"{}")).status_code for _ in range(4)]
+        assert results == [status, status, status, 429]
+        keys = _hook_keys(redis)
+        assert len(keys) == 1 and keys[0].startswith(f"rl:hook-fail:{RAZORPAY}:127.0.0.1:")
+        assert redis.store[keys[0]] == "3", "the refused fourth was never forwarded or counted"
+        await app.state.http.aclose()
+
+    @pytest.mark.parametrize("status", [200, 201, 202, 204, 301, 404, 409, 429, 500, 503])
+    async def test_no_other_status_spends_anything(
+        self, redis: _FakeRedis, upstream: _Upstream, status: int
+    ) -> None:
+        upstream.answer = lambda request: status
+        app = _build(upstream, webhook_failure_limit=1)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            for _ in range(3):
+                assert (await client.post(RAZORPAY, content=b"{}")).status_code == status
+        assert _hook_keys(redis) == []
+        await app.state.http.aclose()
+
+    async def test_a_wrong_verify_token_on_the_handshake_counts_as_a_failure(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        """Meta's subscription handshake is a GET with the token in the query, answered 403 by
+        notification when it is wrong — that is somebody probing, and is spent like a bad
+        signature. The right token (200) costs nothing."""
+        upstream.answer = lambda request: (
+            200 if request.url.params.get("hub.verify_token") == "right" else 403
+        )
+        app = _build(upstream, webhook_failure_limit=2)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            for _ in range(10):
+                good = await client.get(
+                    WHATSAPP, params={"hub.verify_token": "right", "hub.challenge": "1"}
+                )
+                assert good.status_code == 200
+            assert _hook_keys(redis) == []
+            wrong = {"hub.verify_token": "wrong", "hub.challenge": "1"}
+            results = [(await client.get(WHATSAPP, params=wrong)).status_code for _ in range(3)]
+        assert results == [403, 403, 429]
+        await app.state.http.aclose()
+
+    async def test_buckets_are_per_path_and_per_address(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        """Razorpay's rejections are not Meta's, and one address's are not another's."""
+        upstream.answer = lambda request: 400
+        app = _build(upstream, webhook_failure_limit=1, trusted_proxies=TRUSTED)
+        async with _via_caddy(app) as client:
+            one = {"X-Forwarded-For": "1.1.1.1"}
+            assert (await client.post(RAZORPAY, content=b"{}", headers=one)).status_code == 400
+            assert (await client.post(RAZORPAY, content=b"{}", headers=one)).status_code == 429
+            # Same address, other path; other address, same path.
+            assert (await client.post(WHATSAPP, content=b"{}", headers=one)).status_code == 400
+            two = {"X-Forwarded-For": "2.2.2.2"}
+            assert (await client.post(RAZORPAY, content=b"{}", headers=two)).status_code == 400
+        await app.state.http.aclose()
+
+    async def test_the_failure_bucket_is_not_the_anonymous_one_and_a_sign_in_flood_is_harmless(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        app = _build(upstream, anonymous_rate_limit=2, webhook_failure_limit=2)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
             for _ in range(2):
                 assert (await client.post("/api/v1/auth/login", content=b"{}")).status_code == 200
             assert (await client.post("/api/v1/auth/login", content=b"{}")).status_code == 429
-
-            # The anonymous bucket is spent; the webhook's is untouched.
+            # The anonymous bucket is spent; a webhook from the same address is untouched.
             assert (await client.post(RAZORPAY, content=SIGNED_BODY)).status_code == 200
-            assert (await client.post(RAZORPAY, content=SIGNED_BODY)).status_code == 200
-            over = await client.post(RAZORPAY, content=SIGNED_BODY)
-            assert over.status_code == 429
-            assert over.headers["retry-after"] == "60"
         await app.state.http.aclose()
 
-    async def test_each_webhook_path_has_its_own_ceiling(
+    async def test_there_is_no_ceiling_over_all_addresses_and_no_total_requests_bucket(
         self, redis: _FakeRedis, upstream: _Upstream
     ) -> None:
-        app = _build(upstream, webhook_global_rate_limit=2)
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
-            assert (await client.post(RAZORPAY, content=SIGNED_BODY)).status_code == 200
-            assert (await client.post(RAZORPAY, content=SIGNED_BODY)).status_code == 200
-            refused = await client.post(RAZORPAY, content=SIGNED_BODY)
-            assert refused.status_code == 429
-            assert "receiving too many requests" in refused.json()["detail"]
-            # Razorpay's ceiling is Razorpay's: Meta's deliveries are not refused for it.
-            assert (await client.post(WHATSAPP, content=SIGNED_BODY)).status_code == 200
+        """The structural guarantee. Whatever the volume of *successful* traffic from however many
+        addresses, no counter exists for it to fill."""
+        app = _build(upstream, webhook_failure_limit=1, trusted_proxies=TRUSTED)
+        async with _via_caddy(app) as client:
+            for i in range(300):
+                headers = {"X-Forwarded-For": f"198.51.100.{i % 250}"}
+                assert (
+                    await client.post(WHATSAPP, content=b"{}", headers=headers)
+                ).status_code == 200
+        assert _hook_keys(redis) == []
+        assert not [k for k in redis.store if k.startswith(("rl:hook:", "rl:anon"))]
         await app.state.http.aclose()
 
     async def test_providers_behind_the_proxy_are_counted_by_their_own_address(
         self, redis: _FakeRedis, upstream: _Upstream
     ) -> None:
-        app = _build(
-            upstream,
-            webhook_rate_limit=1,
-            trusted_proxies=parse_trusted_proxies(["172.16.0.0/12"]),
-        )
-        transport = ASGITransport(app=app, client=("172.18.0.5", 4000))
-        async with AsyncClient(transport=transport, base_url="http://t") as client:
-            one = await client.post(RAZORPAY, content=b"{}", headers={"X-Forwarded-For": "1.1.1.1"})
-            two = await client.post(RAZORPAY, content=b"{}", headers={"X-Forwarded-For": "2.2.2.2"})
-            again = await client.post(
-                RAZORPAY, content=b"{}", headers={"X-Forwarded-For": "1.1.1.1"}
-            )
-        assert (one.status_code, two.status_code, again.status_code) == (200, 200, 429)
+        upstream.answer = lambda request: 400
+        app = _build(upstream, webhook_failure_limit=1, trusted_proxies=TRUSTED)
+        async with _via_caddy(app) as client:
+            for _ in range(2):
+                await client.post(RAZORPAY, content=b"{}", headers={"X-Forwarded-For": "1.1.1.1"})
+        keys = _hook_keys(redis)
+        assert len(keys) == 1 and f"{RAZORPAY}:1.1.1.1:" in keys[0], keys
         await app.state.http.aclose()
 
-    async def test_the_limiter_fails_closed_for_a_webhook_too(
+    async def test_the_check_fails_closed_when_redis_is_down(
         self, upstream: _Upstream, redis: _FakeRedis
     ) -> None:
         """A provider retries a 503; an unverifiable limit on a public endpoint is not one to
         wave through."""
+
+        async def down(key: str) -> str | None:
+            raise ConnectionError("redis is down")
+
+        redis.get = down  # type: ignore[method-assign]
+        app = _build(upstream)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            response = await client.post(RAZORPAY, content=SIGNED_BODY)
+        assert response.status_code == 503
+        assert upstream.calls == []
+        await app.state.http.aclose()
+
+    async def test_recording_a_failure_never_turns_the_response_into_an_error(
+        self, upstream: _Upstream, redis: _FakeRedis
+    ) -> None:
+        """The service has already answered; a counter that cannot be written loosens one window
+        and is logged, it does not replace a handled rejection with a 503."""
+        upstream.answer = lambda request: 400
 
         async def down(key: str) -> int:
             raise ConnectionError("redis is down")
@@ -474,10 +735,24 @@ class TestOwnBuckets:
         redis.incr = down  # type: ignore[method-assign]
         app = _build(upstream)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
-            response = await client.post(RAZORPAY, content=SIGNED_BODY)
-        assert response.status_code == 503
-        assert upstream.calls == []
+            response = await client.post(RAZORPAY, content=b"{}")
+        assert response.status_code == 400
         await app.state.http.aclose()
+
+    async def test_a_delivery_walked_in_through_doubled_slashes_is_the_webhook_and_is_counted(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        """g1. `//` collapses before the decision, so the service is asked for the real path and
+        the rejection lands in that path's bucket rather than being judged on the raw text."""
+        upstream.answer = lambda request: 400
+        app = _build(upstream)
+        try:
+            status = await _raw(app, "POST", "/api/v1//webhooks//razorpay", body=SIGNED_BODY)
+        finally:
+            await app.state.http.aclose()
+        assert status == 400
+        assert [c["path"] for c in upstream.calls] == [RAZORPAY]
+        assert len(_hook_keys(redis)) == 1 and RAZORPAY in _hook_keys(redis)[0]
 
 
 # ------------------------------------------------------------------------------ body size
@@ -580,4 +855,43 @@ class TestPolicyValidation:
         assert dict(policy.webhook_paths) == {}
         assert policy.trusted_proxies == ()
         assert policy.anonymous_global_rate_limit == 0
-        assert policy.webhook_global_rate_limit == 0
+        assert policy.anonymous_content_global_rate_limit == 0
+        assert policy.credential_paths == frozenset()
+
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            {"webhook_failure_limit": 0},
+            {"webhook_failure_limit": -1},
+            {"anonymous_global_rate_limit": -1},
+            {"anonymous_content_global_rate_limit": -1},
+            {"anonymous_rate_limit": 0},
+            {"rate_limit": 0},
+            {"unauth_body_slots_per_address": 0},
+            {"unauth_body_slots_global": 0},
+            {"unauth_body_read_timeout": 0},
+            {"unauth_body_read_timeout": -3.0},
+        ],
+    )
+    def test_a_limit_that_refuses_everything_is_refused_at_construction(
+        self, kw: dict[str, Any]
+    ) -> None:
+        """Probe P6. `0` on a per-address limit is not "off" — the counter is incremented first and
+        one is over zero — so it would answer 429 to the very first request. It stops boot."""
+        with pytest.raises(ValueError):
+            GatewayPolicy(audience="app", public_paths=frozenset(), **kw)
+
+    @pytest.mark.parametrize(
+        "kw", [{"anonymous_global_rate_limit": 0}, {"anonymous_content_global_rate_limit": 0}]
+    )
+    def test_zero_is_off_only_where_it_is_documented_as_off(self, kw: dict[str, Any]) -> None:
+        policy = GatewayPolicy(audience="app", public_paths=frozenset(), **kw)
+        assert policy.anonymous_global_rate_limit == 0
+
+    def test_a_credential_path_that_is_not_public_is_a_typo_and_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="credential paths"):
+            GatewayPolicy(
+                audience="app",
+                public_paths=frozenset({"/api/v1/auth/login"}),
+                credential_paths=frozenset({"/api/v1/auth/logn"}),
+            )

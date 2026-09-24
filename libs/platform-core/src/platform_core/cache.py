@@ -142,6 +142,56 @@ async def enforce_rate_limit(
         raise problem
 
 
+async def check_rate_limit(
+    key: str,
+    *,
+    limit: int,
+    window_seconds: int = 60,
+    detail: str = "Too many requests. Please slow down.",
+) -> None:
+    """Read-only twin of `enforce_rate_limit`: raise 429 when the window is already spent,
+    **without spending anything**.
+
+    For a bucket that counts *outcomes* rather than arrivals — the gateway's per-address bucket
+    of rejected webhook deliveries. The request is refused up front if that address has already
+    been refused `limit` times this window, and the bucket is only ever incremented afterwards,
+    by `record_rate_limit_hit`, when the outcome turns out to be a rejection. Same window key
+    as `enforce_rate_limit`, so the two can be used on one bucket.
+
+    **Fails closed**, for the same reason `enforce_rate_limit` does.
+    """
+    bucket = f"rl:{key}:{int(time.time()) // window_seconds}"
+    try:
+        raw = await get_redis().get(bucket)
+    except Exception as exc:
+        log.error("ratelimit.unavailable", error=str(exc)[:120])
+        raise UpstreamUnavailableProblem(
+            "Cannot verify request limits right now. Please retry shortly."
+        ) from exc
+
+    if raw is not None and int(raw) >= limit:
+        problem = RateLimitedProblem(detail)
+        problem.headers = {"Retry-After": str(window_seconds)}
+        raise problem
+
+
+async def record_rate_limit_hit(key: str, *, window_seconds: int = 60) -> None:
+    """Spend one unit of a bucket that `check_rate_limit` reads.
+
+    Never raises. It runs *after* the upstream has already answered, so failing the response
+    because the counter could not be written would turn a delivery that was handled into an
+    error. The check that gates the next request already failed closed, which is where the
+    guarantee lives; a missed count here loosens one window and is logged.
+    """
+    bucket = f"rl:{key}:{int(time.time()) // window_seconds}"
+    try:
+        redis = get_redis()
+        if await redis.incr(bucket) == 1:
+            await redis.expire(bucket, window_seconds * 2)
+    except Exception as exc:
+        log.error("ratelimit.record_failed", error=str(exc)[:120])
+
+
 # --------------------------------------------------------------------- permission version
 
 
