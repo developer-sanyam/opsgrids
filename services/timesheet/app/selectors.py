@@ -35,6 +35,7 @@ def timesheets_stmt(
     ctx: ScopeContext,
     *,
     week_start: date | None = None,
+    week_start_in: list[date] | None = None,
     status: str | None = None,
 ) -> Select[Any]:
     """Scope-filtered week list, in person-ref order (the grid's stable row order)."""
@@ -45,9 +46,23 @@ def timesheets_stmt(
     stmt = ctx.apply(stmt, owner_col=Timesheet.person_id)
     if week_start is not None:
         stmt = stmt.where(Timesheet.week_start == week_start)
+    if week_start_in is not None:
+        stmt = stmt.where(Timesheet.week_start.in_(week_start_in))
     if status:
         stmt = stmt.where(Timesheet.status == status)
     return stmt.order_by(Timesheet.person_ref.asc(), Timesheet.week_start.asc())
+
+
+async def weeks_in_range(
+    session: AsyncSession, ctx: ScopeContext, week_starts: list[date]
+) -> list[Timesheet]:
+    """Every in-scope row across several weeks, in **one** query — the batched form `weeks_for`
+    would otherwise need one call per week for (the utilization series is `weeks_for` called in
+    a loop, which is exactly the N+1 CLAUDE.md forbids)."""
+    if not week_starts:
+        return []
+    stmt = timesheets_stmt(ctx, week_start_in=week_starts)
+    return list((await session.execute(stmt)).scalars().all())
 
 
 async def get_week(

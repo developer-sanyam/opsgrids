@@ -115,35 +115,12 @@ def milestones_due(milestones: Sequence[Milestone], now: date, within_days: int 
     return count
 
 
-# ------------------------------------------------------------------ burndown (sample series)
-
-#: Release / sprint burndown of remaining scope (story points), mirroring the SPA's `BURNDOWN`.
-#: The ideal line falls straight to zero; the actual line trails it. The last actual point is the
-#: live "remaining" figure and later ideal points have no actual yet (None). Representative until
-#: a reporting service ships — the SPA marks it "Sample data" when live.
-BURNDOWN_SPRINT: list[dict[str, object]] = [
-    {"label": "Mon", "ideal": 96, "actual": 96},
-    {"label": "Tue", "ideal": 80, "actual": 88},
-    {"label": "Wed", "ideal": 64, "actual": 71},
-    {"label": "Thu", "ideal": 48, "actual": 58},
-    {"label": "Fri", "ideal": 32, "actual": 44},
-    {"label": "Mon", "ideal": 16, "actual": 27},
-    {"label": "Tue", "ideal": 0, "actual": None},
-]
-BURNDOWN_RELEASE: list[dict[str, object]] = [
-    {"label": "W1", "ideal": 420, "actual": 420},
-    {"label": "W2", "ideal": 372, "actual": 388},
-    {"label": "W3", "ideal": 324, "actual": 349},
-    {"label": "W4", "ideal": 276, "actual": 300},
-    {"label": "W5", "ideal": 228, "actual": 247},
-    {"label": "W6", "ideal": 180, "actual": 205},
-    {"label": "W7", "ideal": 132, "actual": 158},
-    {"label": "W8", "ideal": 84, "actual": 118},
-    {"label": "W9", "ideal": 36, "actual": None},
-    {"label": "W10", "ideal": 0, "actual": None},
-]
-BURNDOWN_DELTA_SPRINT: float = -14.2
-BURNDOWN_DELTA_RELEASE: float = -9.6
-
-#: A representative resource-utilization figure for the KPI row (no capacity service yet).
-RESOURCE_UTILIZATION_PCT: int = 87
+# ------------------------------------------------------------------ burndown and utilization
+#
+# Neither is derivable from data this service owns. A burndown needs a dated history of
+# remaining scope — a task carries only its current `stage`, never a per-day snapshot of points
+# remaining — and utilization needs a capacity source — a member carries no weekly-hours figure.
+# Both were previously served as fixed constants with no wire flag distinguishing them from a
+# real figure (dashboard-data audit §3.9); `app/api/routes.py`'s `overview` now serves `None` for
+# all four fields instead. This is the seam a delivery-snapshot projection and a capacity model
+# replace, not a computation this module can fake honestly.

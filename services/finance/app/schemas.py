@@ -281,6 +281,42 @@ class AgingBucket(BaseModel):
     count: int
 
 
+class MonthlyRevenuePoint(BaseModel):
+    """One point of the real 12-month history: `revenue`/`received`/`outstanding` all derived
+    from this tenant's own invoices, payments and allocations — never a sample."""
+
+    #: `YYYY-MM`.
+    month: str
+    #: e.g. `"Sep 2026"`.
+    label: str
+    revenue_minor: int
+    received_minor: int
+    outstanding_minor: int
+
+
+class CurrencyRevenueHistory(BaseModel):
+    """A real revenue/receivables history, scoped to one currency.
+
+    `/finance/overview` never sums money across currencies (ADR-0000 §8), so a multi-currency
+    tenant gets one of these per currency it has actually issued or been paid in. `*_delta_pct`
+    is `None` — not `0` — when the previous month has nothing to compare against; the UI must
+    omit the delta rather than render a manufactured percentage (§5.0 of the dashboard audit).
+    """
+
+    currency: str
+    revenue_current_minor: int
+    revenue_previous_minor: int
+    revenue_delta_pct: float | None
+    received_current_minor: int
+    received_previous_minor: int
+    received_delta_pct: float | None
+    outstanding_current_minor: int
+    outstanding_previous_minor: int
+    outstanding_delta_pct: float | None
+    #: 12 months, oldest first, ending at the current month.
+    months: list[MonthlyRevenuePoint]
+
+
 class OverviewSummary(BaseModel):
     """Everything the Overview screen needs, in one payload."""
 
@@ -293,6 +329,14 @@ class OverviewSummary(BaseModel):
     #: True: the six-month cashflow chart is a representative aggregate, not derived from a real
     #: cash ledger (there is none). The UI should render its sample chip whenever this is true.
     cashflow_sample: bool = True
+    #: Real, per-currency revenue/receivables history — see `CurrencyRevenueHistory`. Empty when
+    #: this tenant has no invoices yet.
+    revenue_history: list[CurrencyRevenueHistory] = Field(default_factory=list)
+    #: The IANA zone `revenue_history`'s month boundaries are computed against. Finance carries no
+    #: per-organization timezone setting of its own today (unlike `hrms.leave`'s), so this is
+    #: always `"Asia/Kolkata"` (IST) until one exists — never the bare UTC `kpis`/`period_label`
+    #: above are anchored to.
+    revenue_history_timezone: str = "Asia/Kolkata"
 
 
 # --------------------------------------------------------------------- ledger

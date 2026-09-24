@@ -195,6 +195,36 @@ class TestEndpointAuthorization:
         assert list(columns) == ["backlog", "in_progress", "review", "done"]
         assert len(columns["backlog"]["tasks"]) == 2
 
+    async def test_assignee_me_resolves_the_caller_to_their_member_row(
+        self, client, org_id, data
+    ) -> None:
+        """`assignee=me` is resolved server-side from `ctx.subject_ref` (the token's `sref`,
+        the caller's directory id) through the member's own `directory_id` link — never a
+        caller-supplied member id."""
+        principal = principal_for(
+            org_id, ["projects.board.task.read:ORG"], subject_ref=data["directory_a"]
+        )
+        with as_principal(principal):
+            response = await client.get("/api/v1/projects-workspace/tasks?assignee=me")
+        assert response.status_code == 200
+        titles = {item["title"] for item in response.json()["items"]}
+        assert titles == {"Bulk-order CSV import"}  # member_a's card only, not member_b's
+
+    async def test_assignee_me_cannot_widen_into_the_whole_board(
+        self, client, org_id, data
+    ) -> None:
+        """A caller with an ORG-wide read grant but no member row of their own must see
+        **nothing** for `assignee=me`, never silently fall back to the whole board — a filter
+        that cannot resolve "me" must fail closed, not open."""
+        principal = principal_for(
+            org_id, ["projects.board.task.read:ORG"], subject_ref=uuid.uuid4()
+        )
+        with as_principal(principal):
+            response = await client.get("/api/v1/projects-workspace/tasks?assignee=me")
+        assert response.status_code == 200
+        assert response.json()["items"] == []
+        assert response.json()["total"] == 0
+
     async def test_overview_rolls_up_the_portfolio(self, client, org_id, data) -> None:
         principal = principal_for(org_id, ["projects.portfolio.project.read:ORG"])
         with as_principal(principal):
@@ -204,7 +234,14 @@ class TestEndpointAuthorization:
         assert body["active_projects"] == 2  # neither project is in the run phase
         assert {s["key"] for s in body["health_breakdown"]} == {"on_track", "at_risk", "delayed"}
         assert body["total_budget_minor"] == 1_240_000_000 + 1_860_000_000
-        assert len(body["burndown_sprint"]) == 7
+        # Neither is derivable from data this service owns (no capacity source, no dated
+        # burndown history) — served as `None`, never a placeholder number (dashboard-data
+        # audit §3.9).
+        assert body["utilization_pct"] is None
+        assert body["burndown_sprint"] is None
+        assert body["burndown_release"] is None
+        assert body["burndown_delta_sprint"] is None
+        assert body["burndown_delta_release"] is None
 
 
 # --------------------------------------------------------------------- the roster write surface

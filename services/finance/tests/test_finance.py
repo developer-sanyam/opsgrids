@@ -11,7 +11,8 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from app import domain, selectors
+from app import domain, selectors, services
+from app.schemas import CustomerCreate, InvoiceCreate, InvoiceLineCreate
 from tests.helpers import admin_ctx
 
 pytestmark = pytest.mark.integration
@@ -218,6 +219,104 @@ class TestOverview:
         assert summary.period_label == "August 2026"
         kpis = {k.key: k for k in summary.kpis}
         assert kpis["revenue"].value_minor > 0
+
+
+class TestRevenueHistory:
+    """`/finance/overview.revenue_history` — real, per-currency history, never the sample trend
+    it replaces."""
+
+    async def test_shape_and_consistency_with_the_headline_kpi(self, session, org_id, book) -> None:
+        """Anchored to the seeded book's own era: the INR entry's `revenue_current_minor` must
+        equal the headline `revenue` KPI for the same month — both derived from the same
+        invoice rows — and the series covers 12 months, oldest first, ending there."""
+        ctx = admin_ctx(org_id)
+        summary = await selectors.get_overview(
+            session, ctx, today=date(2026, 8, 24), now=datetime(2026, 8, 24, 12, 0, tzinfo=UTC)
+        )
+        assert summary.revenue_history_timezone == "Asia/Kolkata"
+        by_currency = {h.currency: h for h in summary.revenue_history}
+        assert set(by_currency) == {"INR"}
+        inr = by_currency["INR"]
+        assert len(inr.months) == 12
+        assert inr.months[-1].month == "2026-08"
+        assert inr.months[0].month == "2025-09"
+        assert [p.month for p in inr.months] == sorted(p.month for p in inr.months)
+        kpi_revenue = next(k.value_minor for k in summary.kpis if k.key == "revenue")
+        assert inr.revenue_current_minor == kpi_revenue
+        assert inr.months[-1].revenue_minor == kpi_revenue
+        # Outstanding as of "now" agrees with the headline receivables KPI (single-currency
+        # book, so nothing here is a cross-currency sum).
+        kpi_receivables = next(k.value_minor for k in summary.kpis if k.key == "receivables")
+        assert inr.outstanding_current_minor == kpi_receivables
+
+    async def test_empty_organization_has_no_revenue_history(self, session, org_id) -> None:
+        ctx = admin_ctx(org_id)
+        summary = await selectors.get_overview(session, ctx)
+        assert summary.revenue_history == []
+
+    async def test_multi_currency_orgs_get_one_entry_per_currency_never_summed(
+        self, session, org_id
+    ) -> None:
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            customer = await services.create_customer(
+                session,
+                ctx,
+                CustomerCreate(
+                    name="Global Co",
+                    contact_name="Amelia",
+                    email="amelia@example.com",
+                    city="Pune",
+                    state="Maharashtra",
+                ),
+            )
+            invoice_inr = await services.create_invoice(
+                session,
+                ctx,
+                InvoiceCreate(
+                    number="INV-INR-1",
+                    customer_id=customer.id,
+                    issued_date=date(2026, 8, 5),
+                    due_date=date(2026, 8, 20),
+                    tax_rate_pct=18,
+                    currency="INR",
+                    lines=[
+                        InvoiceLineCreate(description="Widgets", quantity=10, unit_price_minor=1000)
+                    ],
+                ),
+            )
+            invoice_usd = await services.create_invoice(
+                session,
+                ctx,
+                InvoiceCreate(
+                    number="INV-USD-1",
+                    customer_id=customer.id,
+                    issued_date=date(2026, 8, 6),
+                    due_date=date(2026, 8, 21),
+                    tax_rate_pct=0,
+                    currency="USD",
+                    lines=[
+                        InvoiceLineCreate(
+                            description="Consulting retainer", quantity=1, unit_price_minor=50000
+                        )
+                    ],
+                ),
+            )
+
+        summary = await selectors.get_overview(
+            session, ctx, today=date(2026, 8, 24), now=datetime(2026, 8, 24, 12, 0, tzinfo=UTC)
+        )
+        by_currency = {h.currency: h for h in summary.revenue_history}
+        assert set(by_currency) == {"INR", "USD"}
+        assert by_currency["INR"].revenue_current_minor == invoice_inr.total_minor
+        assert by_currency["USD"].revenue_current_minor == invoice_usd.total_minor
+        # Neither figure leaks into the other currency's bucket.
+        assert by_currency["INR"].months[-1].revenue_minor == invoice_inr.total_minor
+        assert by_currency["USD"].months[-1].revenue_minor == invoice_usd.total_minor
+        # Nothing existed the month before either invoice was issued — a real "nothing to
+        # compare against", not a manufactured 0%.
+        assert by_currency["INR"].revenue_delta_pct is None
+        assert by_currency["USD"].revenue_delta_pct is None
 
 
 class TestLedger:

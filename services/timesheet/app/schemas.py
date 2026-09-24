@@ -99,10 +99,14 @@ class TimesheetStatusIn(BaseModel):
 
 
 class TrendPoint(BaseModel):
-    """A point on the utilization-over-time chart. Mirrors the SPA's `TrendPoint`."""
+    """A point on the utilization-over-time chart. Mirrors the SPA's `TrendPoint`.
+
+    `value` is `None` for a week this organization recorded no timesheets in at all — never a
+    manufactured `0.0` standing in for missing data.
+    """
 
     label: str
-    value: float
+    value: float | None
 
 
 class TimesheetSummaryOut(BaseModel):
@@ -111,8 +115,9 @@ class TimesheetSummaryOut(BaseModel):
     (active projects, health) live on the project service's `/projects/summary`.
 
     `utilization_pct` is billable minutes over snapshotted capacity, one decimal.
-    `series` is utilization by week: representative history with the queried week's live
-    figure as its final point (marked representative until real history accumulates).
+    `series` is real utilization by week, computed the same way from each week's own rows —
+    `None` for a week with no timesheets rather than a placeholder — with the queried week's own
+    figure as its final point.
     """
 
     week_start: date

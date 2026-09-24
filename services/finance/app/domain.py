@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 # --------------------------------------------------------------------- vocabularies
 
@@ -2655,6 +2656,174 @@ def net_revenue_for_month(facts: list[InvoiceFacts], month: str) -> int:
         for f in facts
         if f.status not in ("draft", "void") and f.issued_date.isoformat().startswith(month)
     )
+
+
+# --------------------------------------------------------------------- revenue history
+# The real 12-month series `/finance/overview.revenue_history` serves, replacing the sample trend
+# a dashboard would otherwise have to invent. Unlike the KPIs above (anchored to `_today`, in UTC
+# — see `selectors._today`, left as-is here since changing it would move every other overview and
+# invoice-list figure, not just this one), this series resolves "today" in the organization's own
+# timezone. Finance carries no per-organization timezone setting of its own today (unlike
+# `leave.LeaveSettings`), so `DEFAULT_TIMEZONE` is the documented fallback until one exists — the
+# same "missing setting is the IST default" rule `leave-service` already applies.
+DEFAULT_TIMEZONE = "Asia/Kolkata"
+
+
+def today_in(timezone: str, *, now: datetime) -> date:
+    """ "Today" as this organization's clock would read it, never the bare UTC date a naive
+    `datetime.now(UTC).date()` would give near a midnight that has already turned over locally."""
+    return now.astimezone(ZoneInfo(timezone)).date()
+
+
+def month_key(d: date) -> str:
+    """A date's calendar month as `YYYY-MM` — the series' bucket key."""
+    return d.strftime("%Y-%m")
+
+
+def month_label(month: str) -> str:
+    """`YYYY-MM` rendered the way the chart's x-axis reads it, e.g. `Sep 2026`."""
+    return datetime.strptime(month, "%Y-%m").strftime("%b %Y")
+
+
+def add_months(month: str, delta: int) -> str:
+    """`YYYY-MM` shifted by `delta` calendar months (negative moves back in time)."""
+    year, mon = (int(part) for part in month.split("-"))
+    total = year * 12 + (mon - 1) + delta
+    return f"{total // 12:04d}-{total % 12 + 1:02d}"
+
+
+def month_end(month: str) -> date:
+    """The last calendar day of `YYYY-MM` — the anchor a month-end snapshot is struck against."""
+    year, mon = (int(part) for part in add_months(month, 1).split("-"))
+    return date(year, mon, 1) - timedelta(days=1)
+
+
+def trailing_months(anchor_month: str, span: int) -> list[str]:
+    """The `span` months ending at (and including) `anchor_month`, oldest first — the x-axis of
+    every history series here."""
+    return [add_months(anchor_month, -offset) for offset in range(span - 1, -1, -1)]
+
+
+def delta_pct(current: int, previous: int) -> float | None:
+    """Percentage change vs. a prior period, to one decimal place. `None` when the prior period
+    has nothing to compare against — a percentage computed against zero is a divide-by-zero
+    dressed up as a number, and an invented delta is worse than none (§5.0 of the dashboard audit:
+    "An invented delta is worse than no delta")."""
+    if previous == 0:
+        return None
+    return round((current - previous) / abs(previous) * 100, 1)
+
+
+@dataclass(frozen=True, slots=True)
+class InvoiceHistoryFacts:
+    """What one document needs to take part in the multi-month, multi-currency history, beyond
+    what `InvoiceFacts` carries for the single-instant overview: its own currency (the book's real
+    partition — ADR-0000 §8, money is never summed across currencies) and every allocation ever
+    applied to it, so a past month's balance can be replayed rather than read off today's."""
+
+    currency: str
+    document_type: str
+    #: The stored override only (`draft`/`void`/`paid`/…), never the derived-for-today status —
+    #: `paid` is time-dependent (set the instant a payment settles it) and would misreport an
+    #: earlier month as already settled, so history recomputes it fresh from `allocations` at
+    #: each month-end instead. Only `draft`/`void` are true create-time facts, invariant over time.
+    stored_status: str
+    issued_date: date
+    total_minor: int
+    #: `(payment.received_date, amount_minor)` per allocation ever posted against this document.
+    allocations: tuple[tuple[date, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class MonthlyRevenuePoint:
+    month: str
+    label: str
+    revenue_minor: int
+    received_minor: int
+    outstanding_minor: int
+
+
+@dataclass(frozen=True, slots=True)
+class CurrencyRevenueHistory:
+    currency: str
+    revenue_current_minor: int
+    revenue_previous_minor: int
+    received_current_minor: int
+    received_previous_minor: int
+    outstanding_current_minor: int
+    outstanding_previous_minor: int
+    months: tuple[MonthlyRevenuePoint, ...]
+
+
+def revenue_history(
+    facts: list[InvoiceHistoryFacts], *, anchor_month: str, span: int = 12
+) -> list[CurrencyRevenueHistory]:
+    """Real, per-currency revenue history: `span` months (oldest first, ending at
+    `anchor_month`) of net revenue issued, cash received and receivables outstanding, plus the
+    current-vs-previous-month figures those deltas are built from.
+
+    **Never summed across currencies** — one entry per currency this tenant has actually issued
+    or been paid in, sorted for a stable response. Draft and void documents are excluded
+    everywhere, exactly as `net_revenue_for_month`/`total_outstanding` exclude them. A credit
+    note reduces the month it is issued in (its total is negative) but, matching this platform's
+    existing receivable rule, does not net against the invoice it corrects — `total_outstanding`
+    already behaves this way and this does not add a new gap, only a history of the same one.
+    """
+    months = trailing_months(anchor_month, span)
+    previous_month = add_months(anchor_month, -1)
+
+    by_currency: dict[str, list[InvoiceHistoryFacts]] = {}
+    for f in facts:
+        by_currency.setdefault(f.currency, []).append(f)
+
+    out: list[CurrencyRevenueHistory] = []
+    for currency in sorted(by_currency):
+        live = [f for f in by_currency[currency] if f.stored_status not in ("draft", "void")]
+
+        by_month_revenue: dict[str, int] = {}
+        by_month_received: dict[str, int] = {}
+        by_month_outstanding: dict[str, int] = {}
+        points: list[MonthlyRevenuePoint] = []
+        for m in months:
+            m_end = month_end(m)
+            revenue_minor = sum(f.total_minor for f in live if month_key(f.issued_date) == m)
+            received_minor = sum(
+                amount
+                for f in live
+                for received, amount in f.allocations
+                if month_key(received) == m
+            )
+            outstanding_minor = sum(
+                max(0, f.total_minor - sum(a for d, a in f.allocations if d <= m_end))
+                for f in live
+                if f.document_type == "invoice" and f.issued_date <= m_end
+            )
+            by_month_revenue[m] = revenue_minor
+            by_month_received[m] = received_minor
+            by_month_outstanding[m] = outstanding_minor
+            points.append(
+                MonthlyRevenuePoint(
+                    month=m,
+                    label=month_label(m),
+                    revenue_minor=revenue_minor,
+                    received_minor=received_minor,
+                    outstanding_minor=outstanding_minor,
+                )
+            )
+
+        out.append(
+            CurrencyRevenueHistory(
+                currency=currency,
+                revenue_current_minor=by_month_revenue[anchor_month],
+                revenue_previous_minor=by_month_revenue.get(previous_month, 0),
+                received_current_minor=by_month_received[anchor_month],
+                received_previous_minor=by_month_received.get(previous_month, 0),
+                outstanding_current_minor=by_month_outstanding[anchor_month],
+                outstanding_previous_minor=by_month_outstanding.get(previous_month, 0),
+                months=tuple(points),
+            )
+        )
+    return out
 
 
 @dataclass(frozen=True, slots=True)

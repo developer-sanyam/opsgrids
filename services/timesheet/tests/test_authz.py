@@ -233,6 +233,9 @@ class TestEndpointAuthorization:
         assert body["utilization_pct"] == 24.0
         assert len(body["series"]) == 12
         assert body["series"][-1]["value"] == 24.0
+        # No timesheets were ever recorded for the eleven weeks before this one — real `None`,
+        # never a manufactured number.
+        assert all(point["value"] is None for point in body["series"][:-1])
 
 
 # --------------------------------------------------------------------- validation

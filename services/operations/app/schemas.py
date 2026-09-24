@@ -777,13 +777,16 @@ class OverviewOut(BaseModel):
 
     `open_pos` counts POs still in flight (draft or approved); `inventory_value_minor` is the
     value of stock on hand; `low_stock_count` is items at or below their reorder point;
-    `on_time_pct` is the spend-weighted on-time delivery rate. The series and breakdowns feed the
-    charts."""
+    `out_of_stock_count` is items with nothing on hand; `on_time_pct` is the real, spend-weighted
+    on-time delivery rate computed from received purchase orders (`expected_date` vs
+    `received_date`) — `None` when this organization has not received a PO yet, never a
+    manufactured percentage. The series and breakdowns feed the charts."""
 
     open_pos: int
     inventory_value_minor: int
     low_stock_count: int
-    on_time_pct: float
+    out_of_stock_count: int
+    on_time_pct: float | None
     currency: str
     spend_trend: list[SpendPoint] = Field(default_factory=list)
     spend_by_category: list[CategorySpend] = Field(default_factory=list)

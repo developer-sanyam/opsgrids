@@ -324,20 +324,26 @@ class OverviewOut(BaseModel):
     milestone lists; this is the same arithmetic exposed once, so a reporting view can share it.
 
     `on_time_pct` is the share of milestones that are on time (completed, on track or due soon);
-    `milestones_due` counts unfinished milestones due within the next fortnight;
-    `utilization_pct` is a representative resource-utilization figure (no capacity service yet).
+    `milestones_due` counts unfinished milestones due within the next fortnight.
+
+    `utilization_pct` and the `burndown_*` fields are `None`, not a representative figure: this
+    service has no capacity source (a member carries no weekly hours) and no dated history of a
+    task's remaining points (a task carries its current `stage`, never a per-day snapshot), so
+    neither is derivable from data that exists. Rendering a placeholder number here previously
+    looked live and was not; `None` is the honest answer until a capacity source and a delivery
+    snapshot both exist (see the dashboard-data audit, §3.9 and §3.4 row 14-15).
     """
 
     active_projects: int
     on_time_pct: float
     milestones_due: int
-    utilization_pct: int
+    utilization_pct: int | None
     avg_progress_pct: int
     total_budget_minor: int
     total_spent_minor: int
     currency: str
     health_breakdown: list[HealthSlice]
-    burndown_sprint: list[BurndownPoint]
-    burndown_release: list[BurndownPoint]
-    burndown_delta_sprint: float
-    burndown_delta_release: float
+    burndown_sprint: list[BurndownPoint] | None
+    burndown_release: list[BurndownPoint] | None
+    burndown_delta_sprint: float | None
+    burndown_delta_release: float | None

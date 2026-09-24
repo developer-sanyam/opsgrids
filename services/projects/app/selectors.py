@@ -62,6 +62,24 @@ async def get_member_by_id(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_member_by_directory_id(
+    session: AsyncSession, org_id: uuid.UUID, directory_id: uuid.UUID
+) -> Member | None:
+    """The delivery-org member linked to a real platform login, by that login's own id.
+
+    The other direction of `get_member_by_id`'s lookup: this is how `assignee=me` resolves the
+    caller (`ctx.subject_ref`, the JWT's `sref`) to *their* member row, rather than trusting a
+    caller-supplied id — the only account a "mine" filter is allowed to widen into is the one the
+    token itself names.
+    """
+    stmt = select(Member).where(
+        Member.organization_id == org_id,
+        Member.directory_id == directory_id,
+        Member.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def member_ref_taken(session: AsyncSession, org_id: uuid.UUID, ref: str) -> bool:
     """Whether `ref` is already used in this organization, active **or soft-deleted**.
 
@@ -250,14 +268,27 @@ async def milestones_for_project(
 
 
 def tasks_stmt(
-    ctx: ScopeContext, *, stage: str | None = None, project_code: str | None = None
+    ctx: ScopeContext,
+    *,
+    stage: str | None = None,
+    project_code: str | None = None,
+    assignee_id: uuid.UUID | None = None,
 ) -> Select[Any]:
-    """Scope-filtered board task list."""
+    """Scope-filtered board task list.
+
+    `assignee_id`, when given, narrows further to one member's cards — the `assignee=me` route
+    param resolves it server-side first, so this never accepts a caller-chosen id. It composes
+    with (never replaces) `ctx.apply`'s own scope filter: an ORG-scoped reader who asks for
+    `assignee=me` still only sees their own cards, and an OWN-scoped reader asking for someone
+    else's id sees nothing, because both filters must hold at once.
+    """
     stmt = select(Task).where(
         Task.organization_id == ctx.organization_id,
         Task.deleted_at.is_(None),
     )
     stmt = ctx.apply(stmt, owner_col=Task.assignee_id)
+    if assignee_id is not None:
+        stmt = stmt.where(Task.assignee_id == assignee_id)
     if stage:
         stmt = stmt.where(Task.stage == stage)
     if project_code:

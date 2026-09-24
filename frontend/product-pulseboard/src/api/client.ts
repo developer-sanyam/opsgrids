@@ -175,7 +175,8 @@ interface TimesheetSummaryWire {
   billable_hours: number;
   capacity_hours: number;
   utilization_pct: number;
-  series: TrendPoint[];
+  /** `null` for a week with no timesheets at all — a real "no data", not a 0% week. */
+  series: { label: string; value: number | null }[];
 }
 
 /* ------------------------------------------------------------------------ mappers
@@ -594,7 +595,14 @@ export async function getTimesheetSummary(week: string = WEEK_START): Promise<Ti
       series: [{ label: "This week", value: utilization_pct }],
     });
   }
-  return apiRequest<TimesheetSummaryWire>(`/timesheets/summary${qs({ week })}`);
+  const wire = await apiRequest<TimesheetSummaryWire>(`/timesheets/summary${qs({ week })}`);
+  // Weeks with no timesheets are skipped rather than plotted as 0%. The headline week is always
+  // real, so an org with no history still gets a one-point series, as fixture mode does.
+  const series = wire.series.filter((p): p is TrendPoint => p.value !== null);
+  return {
+    ...wire,
+    series: series.length > 0 ? series : [{ label: "This week", value: wire.utilization_pct }],
+  };
 }
 
 /* ------------------------------------------------------------------------ standups */
