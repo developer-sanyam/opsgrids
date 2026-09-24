@@ -179,7 +179,6 @@ export function OverviewPage() {
             <UtilizationTrend
               current={state.data.timesheetSummary.utilization_pct}
               series={state.data.timesheetSummary.series}
-              sampleHistory
             />
           ) : state.status === "error" ? (
             <ErrorState message={state.error.message} />

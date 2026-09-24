@@ -184,6 +184,67 @@ class TestEndpointAuthorization:
         assert body["pipeline_value_minor"] == 32_000_000 * 100
         assert body["win_rate_pct"] == 0  # subject_a has no decided deals
 
+    async def test_owner_equals_me_narrows_an_org_readers_summary_to_their_own_book(
+        self, client, org_id, data
+    ) -> None:
+        """`owner=me`, resolved from the token, gives an ORG-scoped reader just their own
+        pipeline — the same numbers the OWN-scoped test above sees, on a wider grant."""
+        principal = principal_for(
+            org_id, ["crm.pipeline.deal.read:ORG"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.get("/api/v1/deals/summary?owner=me")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["open_deals"] == 1
+        assert body["pipeline_value_minor"] == 32_000_000 * 100
+
+    async def test_owner_id_narrows_an_org_readers_summary_to_the_named_rep(
+        self, client, org_id, data
+    ) -> None:
+        """`owner_id` names a specific rep, the way the list endpoint's own filter does — an
+        ORG-scoped manager can pull one rep's numbers without seeing the whole book conflated."""
+        principal = principal_for(
+            org_id, ["crm.pipeline.deal.read:ORG"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.get(f"/api/v1/deals/summary?owner_id={data['subject_b']}")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["open_deals"] == 0  # subject_b's only deal is closed_won
+        assert body["won_value_minor"] == 21_000_000 * 100
+
+    async def test_owner_id_cannot_widen_an_own_scoped_readers_summary(
+        self, client, org_id, data
+    ) -> None:
+        """The negative case: an OWN-scoped rep naming a colleague's id must get nothing back —
+        neither the colleague's numbers nor, by falling back silently, their own whole-org view.
+        `ctx.apply` and the `owner_id` filter both hold at once."""
+        principal = principal_for(
+            org_id, ["crm.pipeline.deal.read:OWN"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.get(f"/api/v1/deals/summary?owner_id={data['subject_b']}")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["open_deals"] == 0
+        assert body["pipeline_value_minor"] == 0
+        assert body["won_value_minor"] == 0
+
+    async def test_owner_equals_me_with_no_subject_ref_is_the_all_zero_rollup(
+        self, client, org_id, data
+    ) -> None:
+        """A caller with no `subject_ref` asking for `owner=me` has nothing to resolve "me" to —
+        the all-zero rollup, never the unfiltered book."""
+        principal = principal_for(org_id, ["crm.pipeline.deal.read:ORG"], subject_ref=None)
+        with as_principal(principal):
+            response = await client.get("/api/v1/deals/summary?owner=me")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["open_deals"] == 0
+        assert body["pipeline_value_minor"] == 0
+        assert body["trend"] is None
+
     async def test_the_wire_shape_matches_the_spa_contract(self, client, org_id, data) -> None:
         """The list row carries exactly the SPA's `Deal` fields — the flag-flip check."""
         principal = principal_for(

@@ -1153,7 +1153,7 @@
         "type": "object"
       },
       "OverviewOut": {
-        "description": "The Operations overview's server-side rollup. The SPA can derive all of this from the\nlist endpoints; this exposes the same arithmetic once, so a reporting view can share it.\n\n`open_pos` counts POs still in flight (draft or approved); `inventory_value_minor` is the\nvalue of stock on hand; `low_stock_count` is items at or below their reorder point;\n`on_time_pct` is the spend-weighted on-time delivery rate. The series and breakdowns feed the\ncharts.",
+        "description": "The Operations overview's server-side rollup. The SPA can derive all of this from the\nlist endpoints; this exposes the same arithmetic once, so a reporting view can share it.\n\n`open_pos` counts POs still in flight (draft or approved); `inventory_value_minor` is the\nvalue of stock on hand; `low_stock_count` is items at or below their reorder point;\n`out_of_stock_count` is items with nothing on hand; `on_time_pct` is the real, spend-weighted\non-time delivery rate computed from received purchase orders (`expected_date` vs\n`received_date`) \u2014 `None` when this organization has not received a PO yet, never a\nmanufactured percentage. The series and breakdowns feed the charts.",
         "properties": {
           "attention": {
             "items": {
@@ -1175,11 +1175,22 @@
             "type": "integer"
           },
           "on_time_pct": {
-            "title": "On Time Pct",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Time Pct"
           },
           "open_pos": {
             "title": "Open Pos",
+            "type": "integer"
+          },
+          "out_of_stock_count": {
+            "title": "Out Of Stock Count",
             "type": "integer"
           },
           "po_status_mix": {
@@ -1215,6 +1226,7 @@
           "open_pos",
           "inventory_value_minor",
           "low_stock_count",
+          "out_of_stock_count",
           "on_time_pct",
           "currency"
         ],

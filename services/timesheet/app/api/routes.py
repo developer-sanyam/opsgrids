@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, scope, selectors, services
 from app.config import settings
-from app.models import SCHEMA
+from app.models import SCHEMA, Timesheet
 from app.schemas import (
     ServiceInfo,
     TimesheetRowOut,
@@ -85,23 +85,32 @@ async def summary(
     session: SessionDep, ctx: TimesheetRead, week: WeekParam = None
 ) -> TimesheetSummaryOut:
     """Entered / billable hours, snapshotted capacity and the utilization percentage for the
-    week, plus the utilization-by-week series (representative history with the queried week's
-    live figure as its final point). The engagement-side numbers live on the project service's
-    `/projects/summary`."""
+    week, plus the real utilization-by-week series (the queried week's own figure as its final
+    point). The engagement-side numbers live on the project service's `/projects/summary`."""
     monday = _monday(week)
-    sheets = await selectors.weeks_for(session, ctx, monday)
-    entries = await selectors.entries_by_sheet(session, ctx.organization_id, [s.id for s in sheets])
-    entered, billable, capacity = selectors.week_totals(sheets, entries)
-    live = domain.utilization_pct(billable, capacity)
-
-    history = domain.UTILIZATION_HISTORY
-    series = [
-        TrendPoint(
-            label=domain.week_label(monday - timedelta(weeks=len(history) - i)),
-            value=float(value),
-        )
-        for i, value in enumerate(history)
+    history_mondays = [
+        monday - timedelta(weeks=offset)
+        for offset in range(domain.UTILIZATION_HISTORY_WEEKS, 0, -1)
     ]
+    all_mondays = [*history_mondays, monday]
+
+    # One query across every week the series needs — a loop calling `weeks_for` once per week
+    # is exactly the N+1 CLAUDE.md forbids.
+    sheets = await selectors.weeks_in_range(session, ctx, all_mondays)
+    entries = await selectors.entries_by_sheet(session, ctx.organization_id, [s.id for s in sheets])
+    sheets_by_week: dict[date, list[Timesheet]] = {wk: [] for wk in all_mondays}
+    for sheet in sheets:
+        sheets_by_week.setdefault(sheet.week_start, []).append(sheet)
+
+    series = []
+    for w in history_mondays:
+        _, w_billable, w_capacity = selectors.week_totals(sheets_by_week[w], entries)
+        point = domain.utilization_point(w_billable, w_capacity, has_data=bool(sheets_by_week[w]))
+        series.append(TrendPoint(label=domain.week_label(w), value=point))
+
+    this_week_sheets = sheets_by_week[monday]
+    entered, billable, capacity = selectors.week_totals(this_week_sheets, entries)
+    live = domain.utilization_pct(billable, capacity)
     series.append(TrendPoint(label=domain.week_label(monday), value=live))
 
     return TimesheetSummaryOut(

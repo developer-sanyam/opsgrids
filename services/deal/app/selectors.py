@@ -94,9 +94,12 @@ async def get_deal_by_name(session: AsyncSession, org_id: uuid.UUID, name: str) 
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def all_deals(session: AsyncSession, ctx: ScopeContext) -> list[Deal]:
-    """Every in-scope deal — powers the summary rollups."""
-    return list((await session.execute(deals_stmt(ctx))).scalars().all())
+async def all_deals(
+    session: AsyncSession, ctx: ScopeContext, *, owner_id: uuid.UUID | None = None
+) -> list[Deal]:
+    """Every in-scope deal — powers the summary rollups. `owner_id` narrows further, exactly as
+    the list endpoint's own filter does (see `deals_stmt`)."""
+    return list((await session.execute(deals_stmt(ctx, owner_id=owner_id))).scalars().all())
 
 
 # ------------------------------------------------------------------ activities
@@ -109,6 +112,7 @@ def activities_stmt(
     company_id: uuid.UUID | None = None,
     contact_id: uuid.UUID | None = None,
     activity_type: str | None = None,
+    owner_id: uuid.UUID | None = None,
 ) -> Select[Any]:
     """Scope-filtered timeline, newest first — the order every timeline renders in."""
     stmt = select(Activity).where(
@@ -125,6 +129,8 @@ def activities_stmt(
         stmt = stmt.where(Activity.contact_id == contact_id)
     if activity_type:
         stmt = stmt.where(Activity.activity_type == activity_type)
+    if owner_id is not None:
+        stmt = stmt.where(Activity.owner_id == owner_id)
 
     return stmt.order_by(Activity.occurred_at.desc())
 
@@ -145,9 +151,11 @@ async def activities_for_deal(
     return list((await session.execute(stmt)).scalars().all())
 
 
-async def all_activities(session: AsyncSession, ctx: ScopeContext) -> list[Activity]:
+async def all_activities(
+    session: AsyncSession, ctx: ScopeContext, *, owner_id: uuid.UUID | None = None
+) -> list[Activity]:
     """Every in-scope activity — powers the summary's activities-this-week figure."""
-    return list((await session.execute(activities_stmt(ctx))).scalars().all())
+    return list((await session.execute(activities_stmt(ctx, owner_id=owner_id))).scalars().all())
 
 
 # ------------------------------------------------------------------ projections (ORM → wire)
