@@ -313,10 +313,16 @@ frontend-typecheck: ## tsc --noEmit, every app and package
 # ESLint through the one shared preset (opsgrids-config/eslint.preset.js): typescript-eslint,
 # react-hooks, jsx-a11y, and the vitest guard against .only / .skip / .todo left in a test.
 # `--max-warnings=0` in every package's script, so a warning is not a way past this row.
+#
+# Then the two stdlib checks over the whole workspace that no linter sees: every app's dev and
+# preview port is its own (tools/frontend_ports.py), and — tools/frontend_manifest.py — tests are
+# run or absent (no `--passWithNoTests`), no app links Google Fonts, and no two apps share a
+# session slot, the operator console's least of all.
 .PHONY: frontend-lint
-frontend-lint: ## ESLint (incl. jsx-a11y and no focused/skipped tests) + unique dev/preview ports
+frontend-lint: ## ESLint (jsx-a11y, no focused/skipped tests, tokens in the operator console) + ports, tests, fonts, session slots
 	cd frontend && pnpm -r --no-bail lint
 	uv run --no-project python tools/frontend_ports.py
+	uv run --no-project python tools/frontend_manifest.py
 
 # The frontend's `.importlinter`: which package may import which (ADR-0001), and no cycles.
 # One cruise per package because each maps `@/` to its own src/ — see .dependency-cruiser.cjs.
@@ -328,8 +334,10 @@ frontend-boundaries: ## dependency-cruiser: apps independent, shared packages vi
 	  DEPCRUISE_PACKAGE=$$p pnpm exec depcruise --config .dependency-cruiser.cjs "$$p" || rc=1; \
 	done; exit $$rc
 
-# `--passWithNoTests` survives only where a package genuinely has no tests yet (opsgrids-internal),
-# so a suite that stops being collected fails here instead of passing with zero.
+# No package runs `vitest run --passWithNoTests`: a package with tests runs them and a suite that
+# stops being collected fails here instead of passing with zero. A package with none (the presets
+# in opsgrids-config) has no `test` script at all, which `pnpm -r` skips — and
+# tools/frontend_manifest.py, in `frontend-lint`, is what holds both halves of that.
 .PHONY: frontend-test
 frontend-test: ## vitest, every app and package
 	cd frontend && pnpm -r --no-bail test
