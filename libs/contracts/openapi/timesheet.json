@@ -250,7 +250,7 @@
         "type": "object"
       },
       "TimesheetSummaryOut": {
-        "description": "The Overview's time-side rollup for one week \u2014 the same arithmetic the SPA's\n`derive.ts` runs over the timesheet rows, exposed once. The engagement-side numbers\n(active projects, health) live on the project service's `/projects/summary`.\n\n`utilization_pct` is billable minutes over snapshotted capacity, one decimal.\n`series` is utilization by week: representative history with the queried week's live\nfigure as its final point (marked representative until real history accumulates).",
+        "description": "The Overview's time-side rollup for one week \u2014 the same arithmetic the SPA's\n`derive.ts` runs over the timesheet rows, exposed once. The engagement-side numbers\n(active projects, health) live on the project service's `/projects/summary`.\n\n`utilization_pct` is billable minutes over snapshotted capacity, one decimal.\n`series` is real utilization by week, computed the same way from each week's own rows \u2014\n`None` for a week with no timesheets rather than a placeholder \u2014 with the queried week's own\nfigure as its final point.",
         "properties": {
           "billable_hours": {
             "title": "Billable Hours",
@@ -346,15 +346,22 @@
         "type": "object"
       },
       "TrendPoint": {
-        "description": "A point on the utilization-over-time chart. Mirrors the SPA's `TrendPoint`.",
+        "description": "A point on the utilization-over-time chart. Mirrors the SPA's `TrendPoint`.\n\n`value` is `None` for a week this organization recorded no timesheets in at all \u2014 never a\nmanufactured `0.0` standing in for missing data.",
         "properties": {
           "label": {
             "title": "Label",
             "type": "string"
           },
           "value": {
-            "title": "Value",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
           }
         },
         "required": [
@@ -609,7 +616,7 @@
     },
     "/api/v1/timesheets/summary": {
       "get": {
-        "description": "Entered / billable hours, snapshotted capacity and the utilization percentage for the\nweek, plus the utilization-by-week series (representative history with the queried week's\nlive figure as its final point). The engagement-side numbers live on the project service's\n`/projects/summary`.",
+        "description": "Entered / billable hours, snapshotted capacity and the utilization percentage for the\nweek, plus the real utilization-by-week series (the queried week's own figure as its final\npoint). The engagement-side numbers live on the project service's `/projects/summary`.",
         "operationId": "summary_api_v1_timesheets_summary_get",
         "parameters": [
           {
