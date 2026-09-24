@@ -2415,6 +2415,11 @@
             "title": "Queued",
             "type": "integer"
           },
+          "requested": {
+            "default": 0,
+            "title": "Requested",
+            "type": "integer"
+          },
           "submitting": {
             "title": "Submitting",
             "type": "integer"

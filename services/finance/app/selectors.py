@@ -1581,9 +1581,22 @@ async def ims_push_summary(
             )
         ).scalar_one()
     )
+    requested = (
+        await session.execute(
+            select(func.count()).where(
+                ImsPush.organization_id == org_id,
+                ImsPush.period == period,
+                ImsPush.is_current.is_(True),
+                ImsPush.status == "queued",
+                ImsPush.requested_at.is_not(None),
+                ImsPush.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one()
     return ImsPushSummaryOut(
         period=period,
         queued=by_status.get("queued", 0),
+        requested=int(requested),
         submitting=by_status.get("submitting", 0),
         pushed=by_status.get("pushed", 0),
         failed=by_status.get("failed", 0),

@@ -844,6 +844,9 @@ class TestAskingForAPush:
         assert events[0].payload["period"] == PERIOD and events[0].payload["requested"] == 2
         rows = await _audits(session, org_id, "ims.push_requested")
         assert len(rows) == 1 and rows[0].after["requested"] == 2
+        # And what a screen watches to know the push is under way.
+        summary = (await client.get(f"{SUMMARY}?period={PERIOD}")).json()
+        assert summary["queued"] == 2 and summary["requested"] == 2
 
     async def test_the_request_path_calls_no_portal_and_claims_nothing(
         self, client, session, org_id
@@ -1665,6 +1668,7 @@ class TestTheReadModel:
         assert summary == {
             "period": PERIOD,
             "queued": 2,
+            "requested": 0,
             "submitting": 0,
             "pushed": 0,
             "failed": 0,

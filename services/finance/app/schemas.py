@@ -803,6 +803,10 @@ class ImsPushSummaryOut(BaseModel):
 
     period: str
     queued: int
+    #: Of the `queued`, how many a person has already asked for — waiting on the worker or on a
+    #: retry's backoff, as opposed to waiting on a person. What a screen watches to know a push is
+    #: still under way.
+    requested: int = 0
     submitting: int
     pushed: int
     failed: int
