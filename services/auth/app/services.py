@@ -27,6 +27,7 @@ transaction bound to the caller's organization, and it is the one that ends it
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import secrets
 import uuid
@@ -532,6 +533,104 @@ async def switch_organization(
 # --------------------------------------------------------------------- refresh
 
 
+def _grace_cache_key(jti: str) -> str:
+    return f"auth:refresh_grace:{jti}"
+
+
+async def _remember_grace_replay(cfg: Settings, *, jti: str, issued: Issued) -> None:
+    """Let a concurrent presenter of the token `jti` names get back the pair `issued` names,
+    instead of tripping theft detection — see `refresh_reuse_grace_seconds`.
+
+    Keyed by the *spent* token's own jti, not the successor's: that is exactly what a second
+    racing request still holds when it shows up a moment later. `cache_set` degrades to a
+    no-op on a Redis outage, same as every other soft cache here — the worst case is simply
+    that the grace window does not apply and the older behaviour (revoke on replay) stands.
+    """
+    payload = json.dumps(
+        {
+            "access_token": issued.access_token,
+            "expires_in": issued.expires_in,
+            "refresh_token": issued.refresh_token,
+            "refresh_expires_at": issued.refresh_expires_at.isoformat(),
+            "session_id": str(issued.session_id),
+            "organization_id": str(issued.organization_id),
+            "membership_id": str(issued.membership_id),
+        }
+    )
+    await cache_set(_grace_cache_key(jti), payload, ttl=cfg.refresh_reuse_grace_seconds)
+
+
+async def _replay_within_grace(
+    cfg: Settings, *, jti: str, rotated_at: datetime | None
+) -> Issued | None:
+    """`None` unless `jti` was rotated within the grace window *and* its successor is still
+    cached — anything else falls through to the ordinary reuse response."""
+    if rotated_at is None:
+        return None
+    if datetime.now(UTC) - rotated_at > timedelta(seconds=cfg.refresh_reuse_grace_seconds):
+        return None
+    cached = await cache_get(_grace_cache_key(jti))
+    if cached is None:
+        return None
+    try:
+        data = json.loads(cached)
+        return Issued(
+            access_token=data["access_token"],
+            expires_in=data["expires_in"],
+            refresh_token=data["refresh_token"],
+            refresh_expires_at=datetime.fromisoformat(data["refresh_expires_at"]),
+            session_id=uuid.UUID(data["session_id"]),
+            organization_id=uuid.UUID(data["organization_id"]),
+            membership_id=uuid.UUID(data["membership_id"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        # A cache entry that does not parse is the same as no cache entry — fail into the
+        # ordinary, stricter path rather than trusting a malformed value.
+        return None
+
+
+async def _remember_operator_grace_replay(
+    cfg: Settings, *, jti: str, issued: OperatorIssued
+) -> None:
+    payload = json.dumps(
+        {
+            "access_token": issued.access_token,
+            "expires_in": issued.expires_in,
+            "refresh_token": issued.refresh_token,
+            "refresh_expires_at": issued.refresh_expires_at.isoformat(),
+            "session_id": str(issued.session_id),
+            "staff_id": str(issued.staff_id),
+            "operator_roles": list(issued.operator_roles),
+        }
+    )
+    await cache_set(_grace_cache_key(jti), payload, ttl=cfg.refresh_reuse_grace_seconds)
+
+
+async def _replay_operator_within_grace(
+    cfg: Settings, *, jti: str, rotated_at: datetime | None
+) -> OperatorIssued | None:
+    if rotated_at is None:
+        return None
+    if datetime.now(UTC) - rotated_at > timedelta(seconds=cfg.refresh_reuse_grace_seconds):
+        return None
+    cached = await cache_get(_grace_cache_key(jti))
+    if cached is None:
+        return None
+    try:
+        data = json.loads(cached)
+        return OperatorIssued(
+            access_token=data["access_token"],
+            expires_in=data["expires_in"],
+            refresh_token=data["refresh_token"],
+            refresh_expires_at=datetime.fromisoformat(data["refresh_expires_at"]),
+            session_id=uuid.UUID(data["session_id"]),
+            staff_id=uuid.UUID(data["staff_id"]),
+            operator_roles=list(data["operator_roles"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 async def rotate_refresh(
     session: AsyncSession,
     *,
@@ -548,6 +647,15 @@ async def rotate_refresh(
     rotated it. The whole family is revoked rather than just this link: the thief gets
     nothing, and the real user is forced to sign in again. An occasional forced re-login
     is a far better outcome than a silently shared session.
+
+    **Unless it was spent moments ago by rotation, not revocation.** A browser holds one
+    refresh cookie shared by every tab and every product SPA (ADR-0003 addendum), and two of
+    them racing — a proactive refresh in one landing mid-flight of a 401 retry in another —
+    present the identical token within milliseconds of each other. The second one in is
+    indistinguishable, on its own, from a thief who captured the first response; `_replay_
+    within_grace` is what tells them apart, by whether the rotation is recent enough and its
+    successor still cached. A token whose family is already revoked skips this entirely —
+    that is a family theft already responded to, or a logout, and grace never applies to it.
     """
     try:
         claims = tk.decode_local(pair, raw_token, issuer=cfg.jwt_issuer, expected_type=tk.REFRESH)
@@ -560,6 +668,10 @@ async def rotate_refresh(
         raise UnauthorizedProblem("That session has expired. Please sign in again.")
 
     if stored.is_spent:
+        if stored.revoked_at is None:
+            replay = await _replay_within_grace(cfg, jti=jti, rotated_at=stored.rotated_at)
+            if replay is not None:
+                return replay
         await _revoke_family(session, stored.family, reason="token_reuse")
         log.warning(
             "auth.refresh_reuse_detected", family=stored.family, user_id=str(stored.user_id)
@@ -649,6 +761,7 @@ async def rotate_refresh(
         audience=audience,
         family=stored.family,
     )
+    await _remember_grace_replay(cfg, jti=jti, issued=issued)
     await session.commit()
     return issued
 
@@ -2333,11 +2446,16 @@ async def operator_rotate_refresh(
     except Exception as exc:
         raise UnauthorizedProblem("That session has expired. Please sign in again.") from exc
 
-    stored = await session.get(RefreshToken, str(claims["jti"]))
+    jti = str(claims["jti"])
+    stored = await session.get(RefreshToken, jti)
     if stored is None:
         raise UnauthorizedProblem("That session has expired. Please sign in again.")
 
     if stored.is_spent:
+        if stored.revoked_at is None:
+            replay = await _replay_operator_within_grace(cfg, jti=jti, rotated_at=stored.rotated_at)
+            if replay is not None:
+                return replay
         await _revoke_family(session, stored.family, reason="token_reuse")
         log.warning(
             "auth.operator_refresh_reuse_detected",
@@ -2364,6 +2482,7 @@ async def operator_rotate_refresh(
     issued = _issue_operator(
         session, pair=pair, cfg=cfg, auth_session=auth_session, staff=staff, family=stored.family
     )
+    await _remember_operator_grace_replay(cfg, jti=jti, issued=issued)
     await session.commit()
     return issued
 

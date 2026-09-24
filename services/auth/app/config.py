@@ -53,6 +53,18 @@ class Settings(ServiceSettings):
     #: outside development. Never readable by JavaScript, which is the whole point.
     refresh_cookie_name: str = "opsgrids_refresh"
     refresh_cookie_domain: str | None = None
+    #: SSO topology addendum (ADR-0003): the refresh cookie is shared by every tab and every
+    #: product SPA open in the browser, but each tab refreshes on its own timer, and two of
+    #: them racing (a proactive refresh in one tab landing mid-flight of a 401 retry in
+    #: another) present the *same* refresh token to the server within milliseconds of each
+    #: other. `rotate_refresh`'s theft response — revoke the whole family — is correct
+    #: against a genuinely stolen token and wrong against this race: it would sign out a
+    #: person for opening the app in two tabs. A short grace window lets a token presented
+    #: again this soon after its own rotation get back the *same* successor it already
+    #: produced, rather than being treated as reuse; anything older than this still triggers
+    #: the family-wide revocation. 30s comfortably covers a race between two requests in
+    #: flight at once and is far too short to help an attacker who captured the token later.
+    refresh_reuse_grace_seconds: int = 30
 
     # --- MFA ------------------------------------------------------------------------
     #: M4 of the third-round security review: MAJOR 3's tolerant legacy-plaintext read

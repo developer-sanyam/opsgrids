@@ -65,7 +65,12 @@ from platform_core.auth import (
     require_operator,
 )
 from platform_core.db import get_session, get_tenant_session
-from platform_core.errors import NotFoundProblem, UnauthorizedProblem, ValidationProblem
+from platform_core.errors import (
+    ForbiddenProblem,
+    NotFoundProblem,
+    UnauthorizedProblem,
+    ValidationProblem,
+)
 
 router = APIRouter(tags=["auth"])
 wellknown = APIRouter(tags=["discovery"])
@@ -80,6 +85,23 @@ TenantSessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="fu
 #: Any authenticated operator, no role filter — `/auth/operator/me` answers "who am I", which
 #: every operator role may ask.
 OperatorPrincipalDep = Annotated[Principal, Depends(require_operator())]
+
+
+#: Every legitimate caller of `/auth/refresh` and `/auth/logout` — the shared client, same
+#: origin or cross-origin (ADR-0003 addendum) — sends this. A bare cross-site `<form>` POST
+#: cannot: forms carry no custom headers, only whatever the browser adds on its own, so this
+#: is what tells the two apart. SameSite=Lax alone is not enough here, because every
+#: `*.opsgrids.com` host — including a merchant's storefront — is the same *site* as
+#: `app.opsgrids.com`, and Lax still attaches the cookie to a same-site form post.
+CSRF_HEADER_NAME = "x-requested-with"
+CSRF_HEADER_VALUE = "opsgrids"
+
+
+def _assert_not_cross_site(request: Request) -> None:
+    """Refuse a request to a cookie-authenticated route that could not have been made by the
+    shared client — see `CSRF_HEADER_NAME`. Checked before the cookie is even read."""
+    if request.headers.get(CSRF_HEADER_NAME) != CSRF_HEADER_VALUE:
+        raise ForbiddenProblem("This request could not be verified.")
 
 
 def _set_refresh_cookie(response: Response, cfg: Settings, token: str) -> None:
@@ -248,6 +270,7 @@ async def refresh(
     Presenting a token that was already rotated ends the whole family — see
     `services.rotate_refresh` for why that trade is the right one.
     """
+    _assert_not_cross_site(request)
     cfg = settings()
     raw = request.cookies.get(cfg.refresh_cookie_name)
     if not raw:
@@ -267,6 +290,7 @@ async def refresh(
 @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT, summary="Sign out")
 async def logout(request: Request, session: SessionDep, pair: KeyDep) -> Response:
     """Idempotent: signing out twice is not an error, and neither is a stale cookie."""
+    _assert_not_cross_site(request)
     cfg = settings()
     raw = request.cookies.get(cfg.refresh_cookie_name)
     if raw:

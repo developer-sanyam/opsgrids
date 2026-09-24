@@ -381,6 +381,114 @@ class TestRefreshRotation:
                 raw_token=fresh.refresh_token,
             )
 
+    async def test_replaying_a_just_rotated_token_within_the_grace_window_gets_the_same_pair(
+        self, session, cfg, pair, directory, registered, redis
+    ) -> None:
+        """Two tabs sharing one refresh cookie can both present the token an instant apart —
+        a proactive refresh in one racing a 401 retry in another. That must not read as
+        theft: both walk away with the same successor pair, not a forced re-login."""
+        outcome = await _login(session, cfg, pair, directory)
+        assert outcome.issued is not None
+        captured = outcome.issued.refresh_token
+
+        first = await services.rotate_refresh(
+            session,
+            entitlements=FakeEntitlements(),
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            raw_token=captured,
+        )
+
+        # The second tab, a moment later, presents the same now-spent token.
+        second = await services.rotate_refresh(
+            session,
+            entitlements=FakeEntitlements(),
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            raw_token=captured,
+        )
+
+        assert second.access_token == first.access_token
+        assert second.refresh_token == first.refresh_token
+
+        # The family is intact — the successor still rotates normally, once.
+        third = await services.rotate_refresh(
+            session,
+            entitlements=FakeEntitlements(),
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            raw_token=first.refresh_token,
+        )
+        assert third.refresh_token != first.refresh_token
+
+    async def test_replaying_a_token_older_than_the_grace_window_still_reads_as_theft(
+        self, session, cfg, pair, directory, registered, redis
+    ) -> None:
+        outcome = await _login(session, cfg, pair, directory)
+        assert outcome.issued is not None
+        captured = outcome.issued.refresh_token
+
+        await services.rotate_refresh(
+            session,
+            entitlements=FakeEntitlements(),
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            raw_token=captured,
+        )
+
+        # Pretend the rotation happened long enough ago that the grace window has closed.
+        claims = jwt.decode(captured, options={"verify_signature": False})
+        stored = await session.get(RefreshToken, claims["jti"])
+        assert stored is not None
+        grace = cfg.refresh_reuse_grace_seconds
+        stored.rotated_at = datetime.now(UTC) - timedelta(seconds=grace + 5)
+        await session.commit()
+
+        with pytest.raises(UnauthorizedProblem, match="security reasons"):
+            await services.rotate_refresh(
+                session,
+                entitlements=FakeEntitlements(),
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                raw_token=captured,
+            )
+
+    async def test_a_revoked_family_never_gets_the_grace_window(
+        self, session, cfg, pair, directory, registered, redis
+    ) -> None:
+        """Grace only ever applies to a family still in good standing. Once something else has
+        ended it outright — an ordinary logout, here — the token whose rotation is still well
+        inside the grace window must not be resurrected by it."""
+        outcome = await _login(session, cfg, pair, directory)
+        assert outcome.issued is not None
+        captured = outcome.issued.refresh_token
+
+        fresh = await services.rotate_refresh(
+            session,
+            entitlements=FakeEntitlements(),
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            raw_token=captured,
+        )
+        # Signing out ends the whole family — `captured`'s row is revoked too, not only rotated.
+        await services.logout(session, pair=pair, cfg=cfg, raw_token=fresh.refresh_token)
+
+        with pytest.raises(UnauthorizedProblem):
+            await services.rotate_refresh(
+                session,
+                entitlements=FakeEntitlements(),
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                raw_token=captured,
+            )
+
     async def test_losing_membership_ends_the_session(
         self, session, cfg, pair, directory, registered
     ) -> None:
