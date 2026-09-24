@@ -15,6 +15,29 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 
+import tokens from "./rules/tokens.js";
+
+/**
+ * `opsgrids/tokens` (rules/tokens.js). Paths are relative to `frontend/`. An exemption is for code
+ * that is not console UI at all, never for console UI that is hard to fix — that goes in the
+ * baseline, which only shrinks. Each entry says why.
+ */
+export const TOKENS_OPTIONS = {
+  exempt: [
+    // The visual harness: Playwright specs and API fixtures, no UI of its own.
+    "opsgrids-visual/**",
+    // The merchant storefront's themes and the buyer-facing renderer: a separate design domain
+    // whose colours are the merchant's data, not the console's tokens.
+    "product-storefront/src/theme/**",
+    // Product marks, drawn in their fixed brand colours in every theme.
+    "*/src/ui/LogoMark.tsx",
+    // A QR code is dark on light in every theme, or a phone cannot scan it.
+    "opsgrids-ui/src/components/QrCode.tsx",
+  ],
+  // The design system may nudge by 2px or 6px inside a control; feature code may not.
+  optical: ["opsgrids-ui/**"],
+};
+
 export default tseslint.config(
   // `dist-buyer` is the storefront's second Vite output (ADR-0012 §2) and is built output like
   // `dist`; ignoring a directory a package does not have costs nothing. `storybook-static` is the
@@ -56,6 +79,17 @@ export default tseslint.config(
       // A radio card's label text sits three elements deep (label > span > span > text). The
       // default depth of 2 cannot see it and reports a labelled control as unlabelled.
       "jsx-a11y/label-has-associated-control": ["error", { depth: 3 }],
+    },
+  },
+  {
+    // Colour, spacing, radius and shadow come from @opsgrids/ui's tokens, mechanically: a style
+    // guide nobody can run is a suggestion. Ratcheted by opsgrids-config/token-baseline.json.
+    // Tests are not feature code — they assert on class names — and are not held to it.
+    files: ["**/*.{ts,tsx}"],
+    ignores: ["**/*.{test,spec}.{ts,tsx}", "**/test-setup.{ts,tsx}"],
+    plugins: { opsgrids: { rules: { tokens } } },
+    rules: {
+      "opsgrids/tokens": ["error", TOKENS_OPTIONS],
     },
   },
   {

@@ -8,7 +8,8 @@
   "scripts": {
     "visual:check": "pnpm --filter @opsgrids/visual run visual:check",
     "visual:update": "pnpm --filter @opsgrids/visual run visual:update",
-    "visual:report": "pnpm --filter @opsgrids/visual run visual:report"
+    "visual:report": "pnpm --filter @opsgrids/visual run visual:report",
+    "tokens:baseline": "pnpm --filter @opsgrids/config run tokens:baseline"
   },
   "devDependencies": {
     "dependency-cruiser": "18.4.0",
