@@ -236,11 +236,9 @@ to keep it visible.
 
 ## Deliberately out of scope
 
-* **e-Way outage retries.** e-Way filing today is manual-only (`generate_eway_bill` /
-  `cancel_eway_bill`); there is no automatic retry consumer analogous to `file_requested_invoice`
-  for it to redirect through the scheduler. The backlog is right that it wants the same mechanism
-  "more urgently" once that automatic retry exists — `schedule_event` is already general enough
-  for whoever builds it to call directly, with no scheduler change needed.
+* **e-Way outage retries.** *(Answered — see the C4 addendum at the end.)* When this ADR was
+  written e-Way filing was manual-only and there was nothing to redirect through the scheduler;
+  C4 built the automatic retry directly on `schedule_event`, with no scheduler change.
 * **Cancelling a scheduled job.** Nothing today asks to withdraw one; adding `status = 'cancelled'`
   and an event or internal call to set it is additive whenever something does.
 * **A permission-gated HTTP surface for scheduled jobs** (e.g. an admin "what's still pending"
@@ -346,3 +344,142 @@ scheduler.
 The states, who resumes what, and the provider-idempotency contract (`IrpAlreadyCancelled`,
 `EwayAlreadyGenerated` keyed by `domain.eway_idempotency_key`, `EwayAlreadyCancelled`) are in
 `docs/io-outside-transactions.md`, alongside the platform-wide instance table.
+
+## Addendum (2026-09-24) — the e-Way automatic retry (C4) and the IMS push (C2)
+
+Two finance features built on the D3 claim / call / record shape. One uses the scheduler; the other
+deliberately does not. The states and the recovery are in `docs/io-outside-transactions.md`; this
+records the decisions, several of them conservative on purpose.
+
+### C4 — e-Way automatic retry
+
+* **Which failures retry.** An outage, a timeout, a 5xx or a rate limit (`EwayUnavailable`,
+  `EwayRateLimited`) is retried. A portal **refusal** (`EwayRejected`) is not: the identical
+  consignment would be refused again. It is a terminal `failed` row carrying the portal's code and
+  its words, with PII masked (`domain.mask_portal_text`: a GSTIN keeps its state code and last three
+  characters, and a PAN, a vehicle number, an e-mail address or a phone number is masked outright;
+  the text is bounded at 400 characters before it reaches the ledger, an audit row, an event or a
+  screen), and a remedy the event and the UI both state (`correct_and_resubmit`, `register_gst`,
+  `not_required`, `retry_now`). A code this platform has not written down is `contact_support`
+  quoting the code, never a guessed remedy.
+* **Schedule and budget.** The wait after attempt `n` is `min(1 min × 2^(n−1), 30 min)`; a portal's
+  `Retry-After` is honoured but capped at the same ceiling. Eight attempts, then a terminal
+  `failed` `retry_exhausted`. Shorter than the e-invoice backoff on purpose: the goods are loaded.
+* **The seam.** Each retry is `schedule_event` for `finance.compliance.eway_bill.generation_requested`
+  with key `eway-generation:{invoice}:{chain}:{attempt}` (`ON CONFLICT DO NOTHING`, so a re-record
+  cannot double-schedule), staged in the same transaction as the `pending` row that names its
+  `retry_at`. The consumer (`generate_requested_eway`) takes the tenant from the envelope, re-arms a
+  message that arrives before its `not_before` (the early-arrival case of §5), and ignores one that
+  has been overtaken: a newer attempt, a bill that now stands, a chain that ended. It then runs the
+  same claim / call / record as the sweep.
+* **The sweep stays the net.** `resume_after(n)` for a chain of `n` claims is 5, 7, 11, 19, 35, 63
+  minutes, always longer than the scheduled delay for the same `n` (1, 2, 4, 8, 16, 30), so the
+  sweep can only ever find a retry the scheduler lost, never pre-empt one. A retry that fires after
+  the sweep already finished the chain is a no-op.
+* **Never a second bill.** Every attempt of a chain sends the idempotency key its first claim
+  computed (`domain.eway_idempotency_key`), and "already generated" is success by lookup.
+* **The 24-hour window.** An automatic drive of a chain first asked for more than 24 hours ago
+  ends `failed` `stale` without a portal call, and a retry that would *land* after the window is
+  not scheduled at all: the record step ends the chain then. A person's "retry now" is exactly the
+  decision that window is asking for, and is not refused for age.
+* **Retry now.** `POST /finance/eway-bills/retries` (body `{invoice_id}`), permission
+  `finance.compliance.eway.retry`, ORG scope, rate limited per document. **202**: it stages
+  `generation_requested` and returns the position as it stands; it makes no portal call (D3). It is
+  refused with 409 when a bill stands, a generation is in flight, or the portal refused the
+  consignment. It sits outside `/finance/invoices/*` because that prefix is append-only and
+  `tests/test_append_only.py` allows exactly one POST under it.
+* **Events** (schemas in `libs/contracts/events/`, checked by `contracts-check`):
+  `eway_bill.retry_scheduled` (attempt, `retry_at`, masked reason), `eway_bill.generated`, and
+  `eway_bill.failed`, which **now means terminal only**: an outage that will be retried is
+  `retry_scheduled`, no longer a `failed` with `retryable: true`. A subscriber that treated every
+  `failed` as final was right about the wrong thing before and is right now. `generation_requested`
+  is internal, and contracted only so its shape cannot drift silently.
+* **Notifications.** No default templates were created: what to tell whom, and through which
+  channel, is a per-organization decision that the notification service's subscription model
+  already owns. `eway_bill.retry_scheduled` was added to its subscribable events, and so were the
+  two IMS events below, so an organization can opt in.
+
+### C2 — IMS decision push-back
+
+* **Recording is not sending.** Deciding a document (single or bulk) appends to the decision
+  ledger and queues a push; nothing reaches GSTN until a person holding
+  `finance.compliance.ims.push` asks for a period to be sent. That permission is **dangerous** (it
+  is a statement to a tax authority) and separate from deciding, so a clerk who records decisions
+  for a supervisor to review cannot send them.
+* **Permission names.** The brief named `finance.ims.decision.write` and `finance.ims.decision.push`.
+  The finance catalogue's namespace is `finance.compliance.*` and already holds
+  `finance.compliance.ims.read` and `.decide`, which the existing decision endpoint, its tests and
+  every issued role use. Renaming `.decide` would have been a permission migration for no gain, so
+  `.decide` stays the write permission (single, bulk and `no_action`) and the new one is
+  `finance.compliance.ims.push`. Both new permissions (this and C4's `eway.retry`) need the ADR-0007
+  reconcile step on deploy.
+* **The ITC follows the decision, not the push.** Input tax credit (the A4 ledger and GSTR-3B 4A)
+  is a projection of each document's **latest decision**: `accept` claims it; `reject`,
+  `pending_action` and `no_action` claim nothing, and moving from accepted to any of those reverses
+  it as a new ledger row. Purchase documents are never mutated. A push that fails, conflicts or
+  drifts changes no credit: what this organization claims depends on what its people decided, not on
+  whether a portal was reachable.
+* **`no_action` is not deemed acceptance.** GSTN treats a document nobody acted on as accepted when
+  the return is filed. This platform does not: `no_action` is an explicit "I looked and choose to
+  take none", it returns the document to `pending`, and it claims nothing. The difference is the
+  conservative direction — an organization can under-claim by leaving documents undecided, never
+  over-claim. Surfacing documents GSTN will deem accepted is left to the queue's "Undecided" filter.
+* **The push row is mutable; the decision is not.** `ims_decision_pushes` is a work item with a
+  state machine, so it is updated in place — under a database trigger that freezes its identity,
+  forbids deletes and allows only the legal transitions, and with an audit row on every one. The
+  decision it carries is never touched: `ims_decisions` stays append-only at the database, a change
+  of mind is a further row, and `no_action` is one more value of `action` on that same ledger (the
+  column carries no CHECK, so widening the vocabulary is not a migration). The legal edges are
+  `queued → submitting | superseded | failed`, `submitting → queued | pushed | failed | conflict |
+  superseded` and `failed → queued` (a person asking again); `pushed`, `conflict` and `superseded`
+  are terminal, so a row cannot un-push itself. Migrations are additive: one new table, two nullable
+  columns on `eway_bills`, nothing rewritten, and decisions recorded before the push table existed
+  are backfilled on the request that first asks for their period.
+* **Conflict is never retried and never pushed over.** If GSTN holds something else for a document,
+  the push is `conflict` and stays there until a person decides again, which queues a newer version.
+  "Already recorded" for the *same* action is success; for another action it is a conflict.
+* **Drift is flagged, never fixed.** The next IMS sync compares what the portal shows with each
+  document's newest pushed decision. A mismatch sets `drift` (audited, with an event and a badge);
+  the platform does not push again on its own.
+* **Bulk is atomic and per-row.** `POST /finance/ims/decisions` records up to 100 decisions in one
+  transaction, all or none. Each is its own append-only row with its own note, audit row, ITC
+  effect and queued push. The web app requires a reason to reject or hold; the API accepts a null
+  note, as the single-decision endpoint always has.
+* **Retries are the sweep's, not the scheduler's.** A push retries on a 1 to 30 minute backoff
+  recorded in `next_attempt_at` and found by `due_ims_pushes`, because the unit of work is a period's
+  drain in batches, not one message at one time. Six unanswered calls end in `failed`
+  `retry_exhausted`. So C2 adds no `schedule_event` producer, and no change to §7 or to Q2 above.
+* **Live wiring is B5.** Portal credentials stay in finance, sealed (ADR-0019); the stub client
+  implements the whole push contract, including per-item idempotency, so the state machine runs for
+  real in tests. A live adapter maps the portal's own codes onto `recorded`, `already_recorded`,
+  `rejected` and `conflict`.
+
+### Deploying the two permissions (ADR-0007)
+
+| Permission | Guards | Dangerous | In `FINANCE_ADMIN` | In `FINANCE_VIEWER` |
+|---|---|---|---|---|
+| `finance.compliance.eway.retry` | `POST /finance/eway-bills/retries` | no: it replays facts the dispatch system already asserted, under a key that makes a second bill impossible | yes, ORG | no |
+| `finance.compliance.ims.push` | `POST /finance/ims/pushes` | **yes**: it is a statement to a tax authority | yes, ORG | no |
+
+`finance.compliance.ims.decide` (single and bulk decisions) and `.read` are unchanged. The manifest
+`libs/contracts/permissions/finance.json` is regenerated and committed (`make openapi-check` fails
+when it is behind the catalogue).
+
+A permission added to a role template that already exists reaches a *new* organization when it
+activates the product and an *existing* one **never**, until the reconcile runs (ADR-0007 §1). So
+the order is the ADR's, and it is load-bearing:
+
+1. Deploy the services that enforce or emit: `finance` (API, worker and the migrations `4c1d8e5f7a92`,
+   `9b2e6a04d3c7`, `d63f0a1b8e25`) and `notification` (its subscribable-event list gained three
+   events).
+2. `make edge-reconcile HOST=… CONFIRM=… PRODUCTS=finance` — the dry run is always printed first and
+   is the evidence to attach to the deploy — then the same with `APPLY=1`.
+3. Only then ship the product-finance SPA, whose "Retry now" and "Send to GSTN" controls assume the
+   permission exists. Before the reconcile they are simply absent for an existing organization's
+   admins, which fails closed.
+
+The reconcile widens system roles only. A customer-authored role that should hold the new
+permissions gains nothing from it; the reconcile reports those memberships (`memberships_without`)
+rather than granting a dangerous permission to a role somebody else designed. Every organization
+whose roles change has its permission version bumped, so its signed-in members refresh their token
+once: run it off-peak.

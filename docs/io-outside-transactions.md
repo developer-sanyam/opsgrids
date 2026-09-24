@@ -66,8 +66,10 @@ other slices, and are routed rather than changed here.
 | 5 | notification | Engage `verify_domain` | DNS `Resolver` | fixed (round 1) | read, resolve with no session, record. `notification/tests/test_domain_verify_transaction_boundary.py` |
 | 6 | finance | `POST /internal/v1/einvoice/filings:cancel` (`cancel_filing`) | `IrpClient.cancel` | **fixed (round 2)** | `claim_irn_cancellation` (a `cancelling` row: reason, actor, audited `einvoice.cancel_requested`) → `call_irp_cancel` → `record_irn_cancellation`; the sweep resumes `cancelling`; "already cancelled" (`IrpAlreadyCancelled`) is success-by-fetch. `test_compliance_transaction_boundary.py::TestIrnCancellation` — `test_the_route_holds_no_transaction_while_the_portal_is_called`, `test_a_crash_after_the_portal_withdrew_it_is_recorded_as_cancelled`, `test_an_outage_answers_with_the_claim_and_the_sweep_finishes_it`, `test_a_claim_nobody_can_finish_becomes_a_visible_failure`, `test_two_recorders_of_one_claim_write_one_withdrawal`, `test_a_claim_a_request_is_holding_is_skipped_not_waited_on` |
 | 7 | finance | `POST /internal/v1/eway/bills` (`generate_eway_bill`) | `EwayClient.generate` | **fixed (round 2)** | `claim_eway_generation` (a `submitting` row carrying the transport facts) → `call_eway_generate` under the (document, transporter/vehicle part) key → `record_eway_generation`; the sweep resumes `submitting`/`pending`; "already generated" (`EwayAlreadyGenerated`) is success-by-lookup. `TestEwayGeneration` — `test_the_route_holds_no_transaction_while_the_portal_is_called`, `test_a_crash_after_the_portal_issued_the_bill_records_that_bill`, `test_an_outage_is_pending_and_the_sweep_raises_it_later`, `test_a_generation_in_flight_refuses_a_second`, `test_a_generation_nobody_can_finish_becomes_a_visible_failure`; key: `TestTheEwayIdempotencyKey` |
+| 7b | finance | consumer `generate_requested_eway` (`finance.compliance.eway_bill.generation_requested`, scheduled by ADR-0015) and `POST /finance/eway-bills/retries` (the "retry now" route) | `EwayClient.generate` | **built this way (C4)** | the consumer is the same claim → call → record as #7 (`claim_eway_retry` → `call_eway_generate_off_loop` → `record_eway_generation`), each in its own `session_scope`. The route makes **no** portal call: it stages `generation_requested` and returns **202** with the position as it stands. `test_eway_retry.py` — `TestTheScheduledRetry`, `TestACrashBetweenTheCallAndTheRecord`, `TestRetryNow`, `TestARetryNeverMintsASecondBill`; and the static guard, unchanged and green |
 | 8 | finance | `POST /internal/v1/eway/bills:cancel` (`cancel_eway_bill`) | `EwayClient.cancel` | **fixed (round 2)** | `claim_eway_cancellation` (a `cancelling` row) → `call_eway_cancel` → `record_eway_cancellation`; the sweep resumes `cancelling`; `EwayAlreadyCancelled` is success-by-fetch. `TestEwayCancellation` — `test_the_route_holds_no_transaction_while_the_portal_is_called`, `test_a_crash_after_the_portal_withdrew_it_is_recorded_as_cancelled`, `test_an_outage_answers_with_the_claim_and_the_sweep_finishes_it` |
 | 9 | finance | `POST /internal/v1/ims/sync` (`sync_ims`) | `ImsClient.fetch` | **fixed (round 2)** | `claim_ims_sync` (read-only) → `fetch_ims_period` → `record_ims_fetch` + `reconcile_ims_documents` in one short transaction; ingest is `INSERT … ON CONFLICT (organization_id, source_ref) DO NOTHING RETURNING`. `TestImsSync` — `test_the_route_holds_no_transaction_while_the_portal_is_fetched`, `test_the_ingest_is_idempotent_on_the_portals_record_key`, `test_two_syncs_racing_one_period_both_succeed`, `test_an_outage_is_a_503_and_leaves_nothing_behind` |
+| 9b | finance | consumer `push_requested_ims` (`finance.compliance.ims_push.requested`) and the reclaim sweep's `_resume_ims_push`; both call `services.drive_ims_push_period` | `ImsClient.push_ims_decisions` | **built this way (C2)** | `claim_ims_push_batch` (a fenced `submitting` lease on up to one portal batch of pushes) → `call_ims_push_off_loop` (no session) → `record_ims_push_batch` (fenced on `(id, attempts)`). The route that asks for a push (`POST /finance/ims/pushes`) makes no portal call at all: it marks pushes *asked for* and stages the event. `test_ims_push.py` — `TestSendingDecisions::test_the_route_side_holds_no_transaction_while_the_portal_is_called`, `TestACrashBetweenTheCallAndTheRecord` (including `test_a_late_recorder_whose_lease_lapsed_cannot_overwrite_the_worker_that_took_over`), `TestAnOutageIsRetriedOnABoundedBackoff`, `TestOneCallInFlightPerDocument`; and the static guard (`ImsClient` is a seam type), with `tests/infra/test_io_outside_transaction.py` staying green |
 | 10 | catalog | `api/admin.py:create_version` | `ProductRegistry.products` (HTTP to product-service) inside `get_operator_session` | allow-listed | resolve the registry in its own dependency before the session opens; pass the fetched product map into `create_version` instead of the client |
 | 11 | catalog | `bundle_audit.py:main` (operator CLI) | `ProductRegistry.products` inside `session.begin()` | allow-listed | fetch the registry first, open the transaction after (low severity: nothing contends for that connection) |
 | 12 | document | `api/routes.py:upload_asset` | `ObjectStore.put` (S3) inside `get_tenant_session` | allow-listed | quota read first; PUT with no session; then open the transaction to insert the asset and audit |
@@ -102,8 +104,8 @@ too.
 | e-invoice | `cancelling` | **claim** | `claim_irn_cancellation`, sweep lease | a withdrawal was asked for: reason code in `error_code`, remark in `error`, the acknowledgement it withdraws in `ack_no`/`ack_date`; actor in `created_by` and the `einvoice.cancel_requested` audit row. No IRN on the row (the `(org, irn)` unique index) |
 | e-invoice | `cancelled` | outcome | record | withdrawn |
 | e-Way | `submitting` | **claim** | `claim_eway_generation`, sweep lease | a generation was asked for; the row carries the transport facts, which are on no invoice |
-| e-Way | `pending` | outcome | record (outage) | the portal did not answer; owed to the sweep |
-| e-Way | `generated` / `failed` | outcome | record | a bill number and its computed validity / a refusal (`retry_exhausted`, `stale`). A `failed` row that carries `valid_from` is a **failed withdrawal** — the bill still stands |
+| e-Way | `pending` | outcome | record (outage) | the portal did not answer (an outage, a timeout, a 5xx or a rate limit). Carries `attempt` and `retry_at`; the next attempt is scheduled for `retry_at` through ADR-0015 (`generation_requested`), and the sweep is the net under it |
+| e-Way | `generated` / `failed` | outcome | record | a bill number and its computed validity / a terminal refusal: the portal's own verdict (its code and masked words; never retried), or the platform giving up (`retry_exhausted`, `stale`, `no_registration`; a person may retry those). A `failed` row that carries `valid_from` is a **failed withdrawal** — the bill still stands |
 | e-Way | `cancelling` | **claim** | `claim_eway_cancellation`, sweep lease | a withdrawal was asked for; no bill number on the row (the `(org, eway_bill_no)` unique index) — the bill is the `generated` row behind it (`selectors.generation_under_claim`) |
 | e-Way | `cancelled` | outcome | record | withdrawn |
 
@@ -134,7 +136,9 @@ outage `pending` on top of a `filed` row.
 * cancel IRN / cancel e-Way: **201** with the newest row — `cancelled`, `failed` (portal refusal),
   or the `cancelling` claim itself when the portal was unreachable (the withdrawal is owed and the
   sweep finishes it).
-* generate e-Way: **201** with `generated`, `failed`, or `pending` (outage).
+* generate e-Way: **201** with `generated`, `failed`, or `pending` (outage — the next attempt is already scheduled).
+* retry an e-Way bill now (`POST /finance/eway-bills/retries`): **202** with the position as it stands. Nothing was sent: the request is staged and the worker calls the portal. **409** when there is nothing to retry (a bill stands, a generation is in flight, or the portal refused the consignment and would refuse it again); **429** inside the per-document window.
+* ask for a push of one period's IMS decisions (`POST /finance/ims/pushes`): **202** with how many were asked for. **429** inside the per-period window.
 * IMS sync: **200**; a portal outage is **503** and writes nothing.
 
 ### Who resumes what (`FilingReclaimSweep`, inside `finance-worker`)
@@ -146,6 +150,7 @@ outage `pending` on top of a `filed` row.
 | e-invoice `cancelling` | older than 5 min | `resume_after(n)`; **24-hour window from the acknowledgement** | window shut → terminal `failed` `window_closed` (no portal call); `n ≥ MAX_COMPLIANCE_RESUMES` → `retry_exhausted`; else fresh `cancelling` (the lease), call, record |
 | e-Way `submitting` or `pending` | older than 5 min | `resume_after(n)`; **chain age ≤ 24 h** from its first row; registration | too old → terminal `failed` `stale` (no portal call); exhausted → `retry_exhausted`; else fresh `submitting`, call under the same key, record |
 | e-Way `cancelling` | older than 5 min | `resume_after(n)`; **24-hour window from `valid_from`** | window shut → `window_closed`; exhausted → `retry_exhausted`; else fresh `cancelling`, call, record |
+| IMS push `submitting` past its lease, or `queued` and **asked for** whose backoff has passed (or that has waited a grace period unclaimed) (`due_ims_pushes`) | lease lapsed / `next_attempt_at` reached; a `queued` push nobody asked for is **not** work | per `(organization, period)`: `claim_ims_push_batch` re-checks under the tenant binding | claim the next portal batch (fenced by `attempts`), call, record; at `IMS_PUSH_MAX_ATTEMPTS` → terminal `failed` `retry_exhausted` |
 
 * **Nothing un-actionable reaches the batch.** An organization without a registration, and an
   invoice whose re-queue is still backing off, are excluded **in the discovery SQL**, not skipped
@@ -178,9 +183,51 @@ outage `pending` on top of a `filed` row.
   **column-scoped** `SELECT` on exactly `invoices(organization_id, id, supply_type, document_type,
   status, created_at, deleted_at)`, `einvoice_filings` and `eway_bills(organization_id, id,
   invoice_id, status, attempted_at, created_at, deleted_at)`, and
-  `gst_registrations(organization_id, id, is_primary, deleted_at)` — granted after every alembic
+  `gst_registrations(organization_id, id, is_primary, deleted_at)`, and `ims_decision_pushes(organization_id, id, period, status, requested_at, next_attempt_at, lease_until, deleted_at)` — granted after every alembic
   run by `services/finance/migrations/env.py:grant_sweep_reader`, `REVOKE ALL` first. Every write
   runs on the app role under `session_scope(organization_id=…)`.
+
+### The IMS push (C2)
+
+Recording a decision and telling GSTN are two acts, so they are two ledgers. `ims_decisions` is the
+platform's own position and stays append-only; `ims_decision_pushes` carries one row per decision
+and says whether GSTN has been told. The push row is **mutable, deliberately**: it is a work item
+with a state machine, not evidence. The database keeps it honest — a trigger
+(`finance.guard_ims_decision_push`) freezes its identity columns, forbids deletes and allows only
+the legal edges below — and every transition is audited (`ims.push_requested`, `ims.pushed`,
+`ims.push_failed`, `ims.push_conflict`, `ims.push_retry_scheduled`, `ims.push_superseded`,
+`ims.push_drift`, `ims.push_drift_cleared`). The edges: `queued → submitting | superseded | failed`,
+`submitting → queued | pushed | failed | conflict | superseded`, `failed → queued`; `pushed`,
+`conflict` and `superseded` are terminal.
+
+| Status | Written by | Meaning |
+|---|---|---|
+| `queued` | recording a decision; a retry after an outage; a person asking again after `failed` | decided locally, not yet (or not successfully) sent. `requested_at` null = waiting for a person with the push permission; set = asked for, waiting for the worker or for `next_attempt_at` |
+| `submitting` | `claim_ims_push_batch` | a worker holds the lease (`lease_until`); `attempts` is the fencing token |
+| `pushed` | `record_ims_push_batch` | GSTN holds this decision at this version |
+| `failed` | record | the portal refused it (code and masked reason on the row), or the attempt budget is spent (`retry_exhausted`). Terminal until a person asks again |
+| `conflict` | record | GSTN holds something else for the document. Never retried and never pushed over: a person decides again, which queues a newer version |
+| `superseded` | recording a newer decision | replaced before it was sent |
+
+* **One in flight per document.** Only a document's newest decision is ever sent. Recording another
+  supersedes an older `queued` push; the claim skips a document that has a `submitting` push.
+* **Claim in two statements**, one transaction: select the batch `FOR UPDATE SKIP LOCKED`, then
+  update exactly those ids. (A single `UPDATE … WHERE id IN (SELECT … LIMIT n FOR UPDATE SKIP
+  LOCKED)` was tried first and over-claimed — a batch of five reached a portal whose limit is two —
+  because the subquery is not guaranteed to be evaluated once. `TestSendingDecisions::
+  test_a_period_is_sent_in_batches_within_the_portals_limit` pins it.)
+* **Record is fenced** on `(id, attempts)`: a recorder whose lease lapsed and was taken over by the
+  sweep changes nothing. A late answer never overwrites the worker that took over.
+* **Batching.** One portal call per batch, per period; `min(domain.IMS_PUSH_BATCH_MAX,
+  client.push_batch_limit)` items, at most `IMS_PUSH_MAX_BATCHES_PER_RUN` batches per run — the next
+  tick continues.
+* **Outage.** A push whose call got no answer goes back to `queued` with `next_attempt_at` on a 1 to
+  30 minute exponential backoff and is found by the sweep (`due_ims_pushes`), not by the scheduler:
+  the work is a period-wide drain, not a delivery of one message at one time. Six unanswered calls
+  end in `failed` `retry_exhausted`.
+* **The next sync is the check.** `record_ims_fetch` compares what the portal now shows with the
+  newest `pushed` decision of each document. A mismatch sets `drift` (audited, and an event); a
+  later match clears it. The platform never "fixes" drift by pushing again on its own.
 
 ### Provider idempotency
 
@@ -191,6 +238,7 @@ outage `pending` on top of a `filed` row.
 | `EwayClient.generate` | `EwayPayload.idempotency_key` = `domain.eway_idempotency_key`: invoice, Part B (mode, vehicle, transporter, transport document — case- and space-insensitive), the two validity inputs (distance, over-dimensional) and the generation ordinal (count of earlier `generated` rows + 1) | `EwayAlreadyGenerated(ack)` | `generated` with the portal's original number |
 | `EwayClient.cancel` | the bill number | `EwayAlreadyCancelled(ack)` | `cancelled` |
 | `ImsClient.fetch` | read-only | — | ingest is idempotent on `(organization_id, source_ref)` at the database |
+| `ImsClient.push_ims_decisions` | `domain.ims_push_key`: **(period, the document's portal reference, the decision's version)** — one key per item, so a batch is many idempotent writes, never one | `already_recorded` for that item (a real adapter maps the portal's "already actioned" code onto it); an `already_recorded` for a *different* action is a `conflict`, never a success | `pushed`; the fetch that follows must show the decision (`drift` otherwise) |
 
 A real adapter must map the portal's "already done" error codes onto these exceptions rather than
 onto `…Rejected`; that mapping is what turns a crash-then-resume into a success instead of a
