@@ -25,6 +25,11 @@
 > 10. **The RUNBOOK's key counts** ("19 new keys", "20 (18)") were corrected by `0ff2954` to 22 new keys, 20 of which must be present.
 > 11. **Process-only variables** the deploy tooling reads (for example `FORCE_PULL`, `PLACEHOLDER`, `OPS_MONITOR_PORT`)
 >     are listed in the matrix's own table; `document-cron`, `storefront-cron` and `operations-cron` no longer exist.
+> 12. **The example's required secrets are empty, not `CHANGE_ME_...`.** The "placeholder" cells and the "placeholders in the example" note below describe a draft that carried `CHANGE_ME_generate_...` values. Those were removed:
+>     the services accept them in production (measured: matrix section 11, item 20, run Q9), while an empty value fails closed in preflight and in the services.
+> 13. **Other points the matrix corrects:** a value with `$`, a backtick or a backslash needs SINGLE quotes (double quotes do not protect them); `ENGAGE_PUBLIC_API_BASE` must end in `/api/v1`; `STORE_SLUG_CACHE_SECONDS` is the slug-lookup TTL,
+>     not the custom-domain takedown window; `RAZORPAY_WEBHOOK_SECRET` is in the production ref's example (category D on this box); `OPS_ALERT_EMAIL` is empty in the example and is set by the checklist after the SMTP probe printed OK;
+>     `EDGE_WEB_ROOT` and `PUBLIC_ASSET_BASE_URL` must be written bare (publish-web.sh reads them raw); `export`ed or indented profile lines are invisible to remote.sh. See matrix sections 3, 6.4 and 11.
 
 What every variable the edge deploy reads is, where its value comes from, how to make it, and
 what is still undecided. It describes the **final release**: `release/backlog-complete` plus the

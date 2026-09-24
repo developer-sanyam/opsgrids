@@ -1,11 +1,13 @@
 # Manual deployment checklist: environment, secrets and the deploy
 
 For the **manual** deployment of the final release to the production box. The owner ssh's to the box as `azureuser` for
-admin steps and deploys from a laptop clone with
+admin steps (from the owner's instruction; the repo only records that Azure's provisioning account is `azureuser`: INT:rb:1106) and deploys from a laptop clone with
 
 ```bash
-make deploy HOST=deploy@20.219.18.84 CONFIRM=edge.opsgrids.com REF=<ref>
+make deploy HOST=deploy@20.219.18.84 CONFIRM=edge.opsgrids.com REF=origin/release/backlog-complete
 ```
+
+(`REF` must be a ref that contains `5320848`: step 0.1. Write a real ref, never the `<ref>` placeholder: pasted literally it is a shell redirection.)
 
 (GitHub Actions is billing-blocked, so nothing here relies on a workflow.) Every variable, its exact syntax and its source is in
 [`ENV_SOURCE_MATRIX.md`](ENV_SOURCE_MATRIX.md); this file is the order to do things in. Citations use the same branch
@@ -23,16 +25,18 @@ abbreviations and are defined in that file's section 1 (`INT` = `release/backlog
   **`[LIVE: owner]`** = a real call to a provider or to the live box that would prove a credential or a behaviour in production. Each is safe (it sends no message and
   changes nothing) but **only the owner should run it**, and nothing in this file has been run against production.
 - **Never** paste a secret into chat, a ticket, a screenshot or a shared terminal. **Never** `cat`, `less`, `echo` or `diff` a `.env`. Values go from a command
-  straight into the file (the helpers below) or from the provider's dashboard straight into the file.
-- Do not `git add` anything in the repo root that you did not write. At audit time an untracked file named `py-microservices-vm_key.pem` sat in the main checkout's root,
-  **not gitignored**; never `git add -A` there.
+  straight into the file (the helpers below) or from the provider's dashboard straight into the file. (One sanctioned exception, step 4.3: a value goes from the box
+  to your clipboard, never to a terminal.)
+- Do not `git add` anything in the repo root that you did not write. At audit time an untracked private-key file (`*.pem`) sat in the root of the main checkout. The ignore rule
+  for `*.pem` and `*.key` is on integration and on this branch (commit `cdd1e14c`) but **not yet on `origin/main`**, so in a checkout based on main such a file is not ignored: never `git add -A` there.
 - Run a `Do` block exactly as written. Where a step says **[OWNER]** it is a decision only the owner can make; write the answer in the blank.
 
-## The order, in twelve lines
+## The order
 
 1. Decide the **ref** to deploy (part 0). 2. Take the **read-only inventory** of the box (part 2). 3. **Back up** `.env` (3.1). 4. **Append** the missing keys (3.2).
-5. **Generate** the ten secrets (3.3). 6. **Obtain** the provider values (part 4). 7. **Configure** the plain values (part 5). 8. Make the **owner decisions**, memory first (part 6).
-9. Run **preflight** until it prints `preflight: ok` (part 7). 10. **Deploy** in a quiet window (part 8). 11. **Verify** (part 9). 12. Know your **rollback** (part 10).
+5. **Generate** the nine secrets (3.3). 6. **Obtain** the provider values (part 4). 7. **Configure** the plain values (part 5). 8. Run **preflight once** to read the memory total (7.1-7.2):
+   with no ceiling yet it FAILs on the memory row only, and that row prints the number you need. 9. Make the **owner decisions**, memory first (part 6).
+10. Run **preflight** until it prints `preflight: ok` (part 7). 11. **Deploy** in a quiet window (part 8). 12. **Verify** (part 9). 13. Know your **rollback** (part 10).
 
 ## Part 0. Decisions before you start (laptop)
 
@@ -47,7 +51,7 @@ abbreviations and are defined in that file's section 1 (`INT` = `release/backlog
   The key file is not in the repo; keep it that way.
 - [ ] **0.3 The decisions this file will ask for, so you can think about them now** (each has its own step):
   memory (`EDGE_BUDGET_ACCEPTED_MB`, step 6.1); which products run (`COMPOSE_PROFILES`, 6.2); the billing run stays OFF for this deploy (6.4); accepting the one-way MFA reseal (6.5); whether provider
-  webhooks may be used (6.6); tax registration (6.7).
+  webhooks may be used (6.6); tax registration (6.7); and, only if this box sells Storefront images, the permission reconcile that signs every member out (9.9).
 - [ ] **0.4 Pick a quiet window.** This release lands ~+540 MB of containers on a box already swapping; there is no automatic rollback (part 10).
 - [ ] **0.5 Off-box copy of `PII_ENCRYPTION_KEY` exists?** **[OWNER]** Losing it loses every sealed PII value and every sealed MFA secret. This checklist never prints it; confirm your own off-box record. Yes / No: `_____`
 
@@ -74,12 +78,15 @@ All of this runs `[box: deploy]` in `/srv/opsgrids/repo/infrastructure/edge`. No
   stat -c '%U %a %n' .env      # expect: deploy 600 .env
   ```
 
-  Preflight fails the deploy if the mode is not 600 or 400 (INT:pf:30-32). Two more read-only shape checks on the raw file, counts and names only (preflight refuses the file, before reading it, if the first is nonzero; a repeated key is read differently by remote.sh in two places):
+  Preflight fails the deploy if the mode is not 600 or 400 (INT:pf:30-32). Three more read-only shape checks on the raw file, counts, names and line numbers only (preflight refuses the file, before reading it, if the first is nonzero; a repeated key is read differently by remote.sh in two places; an unbalanced quote is the one quoting mistake preflight's pre-check does NOT catch, Appendix A item 2):
 
   ```bash
   grep -c $'\r' .env                                                  # 0: a CRLF file is a preflight FAIL
   sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' .env | sort | uniq -d       # prints nothing: no key defined twice
+  awk -v q="'" '/^[A-Z][A-Z0-9_]*=/ { d = gsub(/"/, "&"); s = gsub(q, "&"); if (d % 2 || s % 2) print "check the quotes on line " NR }' .env   # prints nothing
   ```
+
+  (A line number from the last command means: look at that line's quotes; a legitimate `"it's"` also prints.)
 - [ ] **2.3 Set the ref you are about to deploy and fetch it** (so the next two commands read that release's example):
 
   ```bash
@@ -100,17 +107,29 @@ All of this runs `[box: deploy]` in `/srv/opsgrids/repo/infrastructure/edge`. No
   ```bash
   allowed=$(git show "$REF:infrastructure/edge/preflight.sh" \
     | sed -n 's/^optional_empty="\(.*\)"$/\1/p' | tr ' ' '\n' | grep -v '^\$' | sort -u | tr '\n' ' ')
-  awk -v allowed="$allowed" '
+  awk -v allowed="$allowed" -v q="'" '
   BEGIN { n = split(allowed, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
   /^[A-Z][A-Z0-9_]*=/ {
     i = index($0, "="); k = substr($0, 1, i - 1); v = substr($0, i + 1)
-    gsub(/["\047 \r]/, "", v)
+    gsub("[\"" q " \r]", "", v)
     if (v == "" && !(k in ok)) print "EMPTY (must be set)  " k
     else if (v ~ /^(replace-me|CHANGE_ME|dev-only-|ci-only-)/ || v ~ /example\.com/) print "PLACEHOLDER          " k
   }' .env
   ```
 
-  (`$allowed` should hold 26 names on this release.) A `PLACEHOLDER` line for `ACME_EMAIL` is the committed `ops@example.com`.
+  (`$allowed` should hold 26 names on this release. The awk builds its quote character with `-v q="'"` and uses only POSIX awk features; it was exercised under macOS awk only, and on any other awk a failure is a loud syntax error, not a silent miss.)
+  A `PLACEHOLDER` line for `ACME_EMAIL` is the committed `ops@example.com`. Re-run this after each of parts 3, 4 and 5: the new secrets step 3.2 appends are `EMPTY` on purpose until step 3.3 fills them.
+- [ ] **2.5b Length of the secrets that have no length check** (bytes only, never a value). Preflight length-checks only `INTERNAL_SERVICE_TOKEN`, `PII_ENCRYPTION_KEY` and `ADMIN_GATEWAY_HOP_KEY` (>= 32 bytes) and the two MinIO secrets (>= 8 characters);
+  every other secret gets a presence and placeholder check only. For the ones the box is expected to have (category D, inferred):
+
+  ```bash
+  for k in POSTGRES_PASSWORD OPSGRIDS_DB_PASSWORD RABBITMQ_PASSWORD RAZORPAY_WEBHOOK_SECRET; do
+    printf '%-26s %s bytes\n' "$k" "$(sed -n "s/^${k}=//p" .env | tail -n 1 | tr -d "\"' \r\n" | wc -c | tr -d ' ')"
+  done
+  ```
+
+  A value under 32 bytes is legal but weak. Note it, and do **not** regenerate `POSTGRES_PASSWORD`, `OPSGRIDS_DB_PASSWORD` or `RABBITMQ_PASSWORD` in `.env` alone (they take effect only on a fresh volume: matrix section 3.2);
+  a weak `RAZORPAY_WEBHOOK_SECRET` is rotated together with Razorpay's webhook settings (an owner decision). Lengths: `______`
 - [ ] **2.6 Count legacy plaintext MFA rows** (read-only; decides whether the deploy's reseal will run, section 7 of the matrix):
 
   ```bash
@@ -134,8 +153,9 @@ All of this runs `[box: deploy]` in `/srv/opsgrids/repo/infrastructure/edge`. No
 ## Part 3. Generate the secrets on the box (category A)
 
 **Generate here, never anywhere else; never from development, another environment or a chat window.** The helper below writes through a mode-600 temp file, prints only the key
-name, and **never overwrites a real value** (it acts only on an empty value or a `CHANGE_ME*` / `replace-me*` placeholder). It was exercised in a scratch directory before
-this file was written: a real value was kept, a placeholder was generated, the mode stayed 600 and no temp file was left.
+name, and **never overwrites a real value** (it acts only on an empty value or a `CHANGE_ME*`, `replace-me*`, `dev-only-*` or `ci-only-*` placeholder). It stops without writing when the key is absent
+or repeated, and it passes the new value through the environment rather than a command line, so `ps` never shows it. It was exercised in a scratch directory before this file was written (14 cases, bash 3.2 and 5): a real value was kept,
+a placeholder was generated, an absent or repeated key stopped it, the mode stayed 600 and no temp file was left.
 
 - [ ] **3.1 Back up `.env` before editing it** (the copy holds every secret: same mode, same directory, deleted in part 11):
 
@@ -158,26 +178,35 @@ this file was written: a real value was kept, a placeholder was generated, the m
   fi
   ```
 
-  **Proves:** re-running step 2.4 prints nothing (or only the two optional keys). `[STRUCTURAL]` Preflight will still refuse the placeholders: that is the point.
-- [ ] **3.3 Define the helper, then generate.** Paste the function, then the calls. **Generate only these ten keys. Never run it on `POSTGRES_PASSWORD`, `OPSGRIDS_DB_PASSWORD`,
-  `INTERNAL_SERVICE_TOKEN`, `PII_ENCRYPTION_KEY` or `RABBITMQ_PASSWORD` of this box: they exist (category D) and regenerating them breaks logins, tokens or every sealed value.**
+  **Proves:** re-running step 2.4 prints nothing. `[STRUCTURAL]` This appends **every** missing key, the two optional ones (`EDGE_PROFILES`, `EDGE_BUDGET_ACCEPTED_MB`) included, so up to 22 lines are added (20 are required).
+  Each line is the release's own example line: the new secrets (`ADMIN_GATEWAY_HOP_KEY`, `ENGAGE_UNSUBSCRIBE_SECRET`, `MINIO_ROOT_*`, `DOCUMENT_S3_*`) and `OPS_ALERT_EMAIL` arrive **empty**, and preflight refuses the empty secrets until step 3.3: that is the point.
+  **Keys the box already has are never touched by this step**: `ACME_EMAIL`, `EDGE_RESERVED_IP`, the SMTP keys, `EDGE_WEB_ROOT`, `TLS_PLATFORM_HOSTS`, `JWT_*`, `DB_*`, `APP_BASE_URL`, `CORS_ORIGINS`, `LOG_LEVEL` and the rest of the production ref's 44 keys keep whatever the box holds (which this file cannot see).
+- [ ] **3.3 Define the helper, then generate.** Paste the function, then the calls. **Run it on exactly these nine keys.** Eight are category A and new (`ADMIN_GATEWAY_HOP_KEY`, `ENGAGE_UNSUBSCRIBE_SECRET`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, the four `DOCUMENT_S3_*`);
+  the ninth, `RAZORPAY_WEBHOOK_SECRET`, is category D (very probably on the box already, inferred): the helper fills it only if it is empty or a placeholder and otherwise keeps it. A tenth, `WHATSAPP_VERIFY_TOKEN` (category A), only if you will enable WhatsApp webhooks.
+  **Never run it on `POSTGRES_PASSWORD`, `OPSGRIDS_DB_PASSWORD`, `INTERNAL_SERVICE_TOKEN`, `PII_ENCRYPTION_KEY` or `RABBITMQ_PASSWORD` of this box: they are category D (expected to exist: an inference from the production ref, not determinable from the repo) and regenerating them breaks logins, tokens or every sealed value.**
 
   ```bash
   fill_if_unset() {   # usage: fill_if_unset KEY BYTES   (never overwrites a real value; never prints one)
-    local k="$1" n="$2" cur new tmp
-    cur=$(sed -n "s/^${k}=//p" .env | head -1 | tr -d "\"' \r")
+    local k="$1" n="$2" cnt cur new tmp
+    cnt=$(grep -c "^${k}=" .env 2>/dev/null || true)
+    if [ "${cnt:-0}" -ne 1 ]; then echo "STOP:      $k is on ${cnt:-0} lines of .env (need exactly 1: steps 2.2 and 3.2)"; return 1; fi
+    cur=$(sed -n "s/^${k}=//p" .env | tr -d "\"' \r")
     case "$cur" in
-    '' | CHANGE_ME* | replace-me*)
-      new=$(openssl rand -hex "$n")
-      tmp=$(umask 077 && mktemp ./.env.XXXXXX)
-      sed "s|^${k}=.*|${k}=${new}|" .env > "$tmp" && mv "$tmp" .env
-      chmod 600 .env; echo "generated: $k" ;;
+    '' | CHANGE_ME* | replace-me* | dev-only-* | ci-only-*)
+      new=$(openssl rand -hex "$n") && [ -n "$new" ] || { echo "STOP:      openssl gave no value for $k"; return 1; }
+      tmp=$(umask 077 && mktemp ./.env.XXXXXX) || return 1
+      # the value travels in the environment, not on a command line, so `ps` never shows it
+      if NEWVAL="$new" KEYNAME="$k" awk 'BEGIN { FS = OFS = "=" } $1 == ENVIRON["KEYNAME"] { $0 = ENVIRON["KEYNAME"] "=" ENVIRON["NEWVAL"] } { print }' .env > "$tmp"; then
+        mv "$tmp" .env; chmod 600 .env; echo "generated: $k"
+      else
+        rm -f "$tmp"; echo "STOP:      could not rewrite .env for $k"; return 1
+      fi ;;
     *) echo "kept:      $k" ;;
     esac
   }
   fill_if_unset ADMIN_GATEWAY_HOP_KEY          32   # a separate openssl call from INTERNAL_SERVICE_TOKEN's
   fill_if_unset ENGAGE_UNSUBSCRIBE_SECRET      32
-  fill_if_unset RAZORPAY_WEBHOOK_SECRET        32   # paste the same value into Razorpay only once the webhook is reachable (part 4.3)
+  fill_if_unset RAZORPAY_WEBHOOK_SECRET        32   # category D: kept if the box has one; paste into Razorpay only once the webhook is reachable (part 4.3)
   fill_if_unset MINIO_ROOT_USER                16
   fill_if_unset MINIO_ROOT_PASSWORD            32
   fill_if_unset DOCUMENT_S3_ACCESS_KEY         16
@@ -188,7 +217,8 @@ this file was written: a real value was kept, a placeholder was generated, the m
   ```
 
   Why hex: `openssl rand -hex N` is N random bytes as 2N hex characters, which contain nothing `.env` needs quoted and satisfy every length rule (>= 32 bytes for the three platform secrets;
-  MinIO's >= 8). The commands are exactly the ones in the matrix, section 6.5. **Proves:** each line prints `generated:` (or `kept:` if a real value was already there). `[STRUCTURAL]`
+  MinIO's >= 8). The commands are exactly the ones in the matrix, section 6.5. **What each output line means:** `generated:` = it replaced an empty or placeholder value; `kept:` = it left a real value alone; `STOP:` = the key is absent or
+  on more than one line, or `openssl` failed, and **nothing was written** (fix that first: steps 2.2 and 3.2). Only step 3.4 proves the new value has the right shape. `[STRUCTURAL]`
 - [ ] **3.4 Check the shape without printing:**
 
   ```bash
@@ -197,21 +227,24 @@ this file was written: a real value was kept, a placeholder was generated, the m
   for k in MINIO_ROOT_USER DOCUMENT_S3_ACCESS_KEY DOCUMENT_S3_ORPHAN_ACCESS_KEY; do shape "$k" '[0-9a-f]\{32\}'; done
   ```
 
-  **Proves:** the value is 64 (or 32) lower-case hex characters: right form. `[STRUCTURAL]` It proves nothing about anyone having seen it: that is why steps 3.1-3.3 avoid printing.
+  **Proves:** the value is 64 (or 32) lower-case hex characters: right form. `[STRUCTURAL]` A `BAD` on a key that printed `kept:` in 3.3 is a value the box already had that is not helper-shaped (for example a `RAZORPAY_WEBHOOK_SECRET` of another form):
+  that is fine if preflight is ok. It proves nothing about anyone having seen it: that is why steps 3.1-3.3 avoid printing.
 - [ ] **3.5 Category D keys are untouched.** Nothing to do; this line exists so you notice if you did something. `POSTGRES_PASSWORD`, `OPSGRIDS_DB_PASSWORD`, `INTERNAL_SERVICE_TOKEN`, `PII_ENCRYPTION_KEY`,
-  `RABBITMQ_PASSWORD`, the signing key file and `EDGE_HOST` already exist. If step 2.4/2.5 reported one of them missing, **stop**: that means this box is not what the repo describes
+  `RABBITMQ_PASSWORD`, `RAZORPAY_WEBHOOK_SECRET`, the signing key file and `EDGE_HOST` are **expected to exist**: that is an inference from the production ref's example, that ref's preflight and ADR-0013, and the box's `.env` was not read, so it is not determinable from the repo
+  (steps 2.4 and 2.5 check presence only). If step 2.4/2.5 reported one of them missing, **stop**: that means this box is not what the repo describes
   (matrix section 12, item 1), and the answer is not to regenerate it.
 
 
 ## Part 4. Obtain the provider values (category B)
 
-Paste each value **from the provider's page straight into `.env` on the box** with an editor (`[box: deploy]`, `nano .env` or `vi .env`), never through the shell history, chat or a ticket. Quote any value
-that contains a space. After editing: `chmod 600 .env`, then re-run step 2.5 (names only). Nothing in this part has been run against a provider.
+Paste each value **from the provider's page straight into `.env` on the box** with an editor (`[box: deploy]`, `nano .env` or `vi .env`), never through the shell history, chat or a ticket. A value with a space goes in **double** quotes;
+a value with `$`, a backtick or a backslash goes in **single** quotes (Appendix A item 2). After editing: `chmod 600 .env`, then re-run steps 2.2 and 2.5 (names only). Nothing in this part has been run against a provider.
 
 - [ ] **4.1 Google Workspace SMTP** (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM`, `SMTP_USE_TLS`, `SMTP_USE_SSL`). **[OWNER]**
   *Where:* the Google Account that owns the `info@opsgrids.com` mailbox -> Security -> 2-Step Verification -> App passwords (repo text: INT:ex:143; provider-side, not verified in repo). Create one and copy it once.
-  *Set:* `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`, `SMTP_USERNAME=info@opsgrids.com`, `SMTP_PASSWORD="<the app password, quoted>"`, `SMTP_USE_TLS=true`, `SMTP_USE_SSL=false`, `EMAIL_FROM=info@opsgrids.com`
-  (the last six are the appended defaults; only the password is new). One `SMTP_USE_TLS` serves both notification and ops-monitor (matrix section 6.4).
+  *Expected values* (the committed defaults): `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`, `SMTP_USERNAME=info@opsgrids.com`, `SMTP_USE_TLS=true`, `SMTP_USE_SSL=false`, `EMAIL_FROM=info@opsgrids.com`, and `SMTP_PASSWORD` = the app password (quoted per the rule above if it has spaces).
+  Six of these seven keys are in the production ref's example and that ref's preflight required each line, so they are **expected to exist on the box with values this file cannot see** (not determinable from the repo): compare them with step 2.5 (names only) and change only what is wrong. Only `SMTP_USE_SSL` is new (step 3.2 appended it).
+  One `SMTP_USE_TLS` serves both notification and ops-monitor (matrix section 6.4).
   `[STRUCTURAL]` preflight accepts the password's presence, not its correctness (a fake value passes: run R1).
   **`[LIVE: owner]` verify it, sending no mail** (`[box: deploy]`, in `infrastructure/edge`). This mirrors what ops-monitor does (`starttls` with a verified context, then login) and prints only the exception class:
 
@@ -222,8 +255,9 @@ that contains a space. After editing: `chmod 600 .env`, then re-run step 2.5 (na
   host, port = os.environ["SMTP_HOST"], int(os.environ["SMTP_PORT"])
   user, pw = os.environ.get("SMTP_USERNAME", ""), os.environ.get("SMTP_PASSWORD", "")
   ctx = ssl.create_default_context()
-  ssl_mode = os.environ.get("SMTP_USE_SSL", "false").lower() in ("1", "true", "yes", "on")
-  tls_mode = os.environ.get("SMTP_USE_TLS", "true").lower() in ("1", "true", "yes", "on")
+  truthy = ("1", "true", "yes", "on", "t", "y")   # the spellings pydantic (the services) accepts as true
+  ssl_mode = os.environ.get("SMTP_USE_SSL", "false").lower() in truthy
+  tls_mode = os.environ.get("SMTP_USE_TLS", "true").lower() in truthy
   try:
       s = smtplib.SMTP_SSL(host, port, timeout=15, context=ctx) if ssl_mode else smtplib.SMTP(host, port, timeout=15)
       with s:
@@ -238,11 +272,13 @@ that contains a space. After editing: `chmod 600 .env`, then re-run step 2.5 (na
   ```
 
   `SMTP login OK` proves the mailbox accepts this login. It does **not** prove the mailbox may send as `EMAIL_FROM` or that `zionna@opsgrids.com` accepts mail: the first real alert or the daily 08:00 UTC digest does
-  (ops-monitor `/status` then shows a non-null `last_send_at`; `make edge-status` prints it). Only after `OK`, set `EMAIL_TRANSPORT=smtp` (step 5); until then `log` is safe.
+  (ops-monitor `/status` then shows a non-null `last_send_at`; `make edge-status` prints it). The probe verifies the server certificate; **notification's own STARTTLS does not** (matrix section 6.4), so an OK here does not prove that path is protected.
+  **Only after `OK`** set `EMAIL_TRANSPORT=smtp` **and** `OPS_ALERT_EMAIL` (step 5.1). `EMAIL_TRANSPORT=log` silences notification only: ops-monitor ignores it and sends whenever `SMTP_HOST`, `EMAIL_FROM` and `OPS_ALERT_EMAIL` are all non-empty,
+  so until the probe prints OK leave `OPS_ALERT_EMAIL` empty (the release's example carries it empty, so step 3.2 appended it empty).
   Result: `_____`
 - [ ] **4.2 Off-box backups** (`BACKUP_S3_BUCKET`, `BACKUP_S3_ENDPOINT`, `BACKUP_S3_REGION`, `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY`; `BACKUP_S3_PREFIX` keeps its default). **[OWNER]**
   *Where:* the backup provider's console (the example names Backblaze B2 and Cloudflare R2 as options: INT:ex:228; **which provider is in use is not determinable from the repo**). Create the bucket, a lifecycle rule for
-  retention (the box only prunes its local copies), and an application key scoped to that one bucket. Copy the endpoint URL, region, key id and secret.
+  retention (the box only prunes its local copies), and an application key scoped to that one bucket. Copy the endpoint URL, region, key id and secret (all console steps are provider-side, not verified in repo).
   *Rule:* set both credentials or neither: exactly one is a preflight FAIL, both empty is only a warning and `backup.sh` then refuses to upload and exits non-zero every night
   (INT:bk:91-94).
   *Scope caution:* the example asks for a write-only key, but the RUNBOOK's restore drill downloads with the same pair, so a write-only key cannot run the drill. Decide which you want.
@@ -253,11 +289,18 @@ that contains a space. After editing: `chmod 600 .env`, then re-run step 2.5 (na
   So there is **nothing the platform can verify** about the key pair, and filling it in does not enable live charges. Recommended: leave both **empty** (payments inert; preflight prints a warning).
   If you store them anyway: Razorpay Dashboard -> Account & Settings -> API Keys (provider-side, not verified in repo); paste into `.env`. **`[LIVE: owner]`** the only proof is an authenticated request you make directly to Razorpay
   (provider-side; outside this repo); the platform's own behaviour will not change either way.
-  **Webhook secret:** do **not** paste `RAZORPAY_WEBHOOK_SECRET` into Razorpay's dashboard (Webhooks) until step 9.7 shows the route is reachable; by static reading it is not (matrix section 9.1). Rotating it later means changing it in `.env` and in Razorpay together.
+  **Webhook secret:** do **not** paste `RAZORPAY_WEBHOOK_SECRET` into Razorpay's dashboard (Webhooks) until step 9.7 shows the route is reachable; by static reading it is not (matrix section 9.1). Rotating it later means changing it in `.env` and in Razorpay's Webhooks page together (provider-side, not verified in repo).
+  When 9.7 shows the route is reachable and you paste the secret into Razorpay, move it from the box to your clipboard **without printing it** (`[laptop]`; the one sanctioned exception to "never print a `.env` value": nothing reaches a terminal), then clear the clipboard:
+
+  ```bash
+  ssh deploy@20.219.18.84 "sed -n 's/^RAZORPAY_WEBHOOK_SECRET=//p' /srv/opsgrids/repo/infrastructure/edge/.env | tail -n 1 | tr -d '\r\n'" | pbcopy
+  # paste it into the Razorpay form, then empty the clipboard:
+  pbcopy < /dev/null
+  ```
 - [ ] **4.4 Meta / WhatsApp** (`WHATSAPP_TRANSPORT`, `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_ACCESS_TOKEN`). **[OWNER]**
   **Recommended for this deploy: change nothing.** `WHATSAPP_TRANSPORT=log` sends nothing, the other four stay empty (allowed).
   If and when you enable it: *where:* Meta for Developers -> your app -> Settings -> Basic (**App secret**); WhatsApp -> API Setup (**Phone number ID**); Business settings -> System users -> generate a token (**access token**)
-  (all provider-side, not verified in repo). `WHATSAPP_VERIFY_TOKEN` you generate (`fill_if_unset WHATSAPP_VERIFY_TOKEN 32`) and paste into the app's webhook configuration. Set `WHATSAPP_TRANSPORT=whatsapp_cloud` **last**
+  (all provider-side, not verified in repo). `WHATSAPP_VERIFY_TOKEN` you generate (`fill_if_unset WHATSAPP_VERIFY_TOKEN 32`) and paste into the app's webhook configuration (move it to your clipboard exactly as in step 4.3, with `WHATSAPP_VERIFY_TOKEN` in place of the Razorpay key). Set `WHATSAPP_TRANSPORT=whatsapp_cloud` **last**
   (it refuses to start without the phone number id and token: INT:services/notification/app/transports.py:404).
   **`[LIVE: owner]` verify the token and number id** with the same read-only Graph request the platform makes when a tenant connects (INT:services/notification/app/whatsapp_provider.py:62).
   The token is fed through `curl --config` on stdin so it never appears in the process list:
@@ -271,9 +314,11 @@ that contains a space. After editing: `chmod 600 .env`, then re-run step 2.5 (na
   `200` proves Meta accepts the token for that number id (provider-side behaviour; not verified in repo); `401`/`400` means it does not. The app secret and verify token can only be proved by Meta's own handshake and a signed delivery, which need a
   reachable route (step 9.7). Result: `_____`
 - [ ] **4.5 Sentry (`SENTRY_DSN`).** Leave empty: it is **inert** in this release (nothing reads it; no Sentry package is locked). Filling it in changes nothing.
-- [ ] **4.6 Reserved IP (`EDGE_RESERVED_IP`).** **[OWNER]** Azure portal -> the VM's public IP address resource: is it **Static**? The deploy target `20.219.18.84` may or may not be a static reservation (not determinable from the repo). It is the
-  address merchants put in DNS, so set it only to a real reserved address (`set_kv EDGE_RESERVED_IP <ip>` after step 5's helper). Empty is valid. Static? Yes / No: `_____`
-- [ ] **4.7 The two alert mailboxes exist.** **[OWNER]** `info@opsgrids.com` and `zionna@opsgrids.com` (your mail admin). Preflight cannot check that they exist.
+- [ ] **4.6 Reserved IP (`EDGE_RESERVED_IP`).** **[OWNER]** This key is in the production ref's example and that ref's preflight refused it empty or as the documentation address, so the box very probably already holds a real address (inferred; not determinable from the repo):
+  **keep it, do not blank it** (the release's preflight allows empty, but a merchant may already have put the address in DNS). Confirm in the Azure portal that the VM's public IP address resource is **Static** (Standard SKU, static allocation):
+  the repo records this as an open owner action (INT:docs/adr/0012-custom-domains.md:1793-1797; INT:docs/adr/open-questions-register.md:72, item 36); the portal check itself is provider-side, not verified in repo. Whether `20.219.18.84` is a static reservation is not determinable from the repo.
+  If the key is empty on your box and you have a real reserved address, `set_kv EDGE_RESERVED_IP IP_ADDRESS` after step 5's helper. Static? Yes / No: `_____`
+- [ ] **4.7 The two alert mailboxes exist.** **[OWNER]** `info@opsgrids.com` and `zionna@opsgrids.com` (the owner's stated recipients: from the owner's instruction, not in the repo; ask your mail admin). Preflight cannot check that they exist.
 
 ## Part 5. Configure the plain values (category C)
 
@@ -290,24 +335,26 @@ set_kv() {   # usage: set_kv KEY VALUE   (non-secret values only)
 }
 ```
 
-- [ ] **5.1 The values that must change from what step 3.2 appended:**
+- [ ] **5.1 The values that change from what the box holds:**
 
   ```bash
-  set_kv ACME_EMAIL info@opsgrids.com                                  # any inbox a human reads; the committed ops@example.com is refused
+  # ACME_EMAIL is in the production ref's example and that ref's preflight refused the placeholder, so a real inbox is probably on the box already: replace it ONLY if it is still the placeholder or empty.
+  if grep -Eq '^ACME_EMAIL=(.*example\.com.*)?$' .env; then set_kv ACME_EMAIL info@opsgrids.com; else echo "kept: ACME_EMAIL"; fi   # any inbox a human reads
+  # only after step 4.1's probe printed OK (ops-monitor sends whenever SMTP_HOST, EMAIL_FROM and OPS_ALERT_EMAIL are set, whatever EMAIL_TRANSPORT says):
   set_kv OPS_ALERT_EMAIL info@opsgrids.com,zionna@opsgrids.com         # comma, NO spaces (an unquoted space is a named preflight FAIL; exit 127 on 193b529 and earlier)
-  # only after step 4.1's probe printed OK:
   set_kv EMAIL_TRANSPORT smtp
   ```
 
   `OPS_ALERT_EMAIL` accepts several recipients as a comma-separated list; that is standard-library behaviour verified offline on Python 3.12.6 and 3.13.2, **not a pinned repo contract: no repo test sends to more than one address**
-  (matrix section 6.4).
-- [ ] **5.2 Everything else keeps the committed default** that step 3.2 appended: `EDGE_HOST` (exists), `EDGE_WEB_ROOT=/srv/opsgrids/web`, `TLS_PLATFORM_HOSTS` (the 14 names), `JWT_KID=prod-1`, `JWT_ISSUER=https://auth.opsgrids.com`,
-  `COMPOSE_PROFILES` (the box's own; step 6.2), `EDGE_PROFILES=` (empty), `SMTP_PORT=587`, `SMTP_USE_TLS=true`, `SMTP_USE_SSL=false`, `WHATSAPP_TRANSPORT=log`, `ENGAGE_PUBLIC_API_BASE=https://app.opsgrids.com/api/v1`,
+  (matrix section 6.4). The two addresses are the owner's stated recipients (from the owner's instruction; not in the repo).
+- [ ] **5.2 Everything else keeps its value.** For the **22 keys step 3.2 appended** that is the committed default; for the **44 keys the box already had** it is whatever the box holds (not determinable from the repo: compare by name with step 2.5, change only what is wrong). The committed defaults are:
+  `EDGE_HOST` (exists), `EDGE_WEB_ROOT=/srv/opsgrids/web`, `TLS_PLATFORM_HOSTS` (the 14 names), `JWT_KID=prod-1`, `JWT_ISSUER=https://auth.opsgrids.com`,
+  `COMPOSE_PROFILES` (the box's own; step 6.2), `EDGE_PROFILES=` (empty), `SMTP_PORT=587`, `SMTP_USE_TLS=true`, `SMTP_USE_SSL=false`, `WHATSAPP_TRANSPORT=log`, `ENGAGE_PUBLIC_API_BASE=https://app.opsgrids.com/api/v1` (**the path must end in `/api/v1`**),
   `DB_POOL_SIZE=5`, `DB_MAX_OVERFLOW=2`, `APP_BASE_URL=https://app.opsgrids.com`, `CORS_ORIGINS=https://app.opsgrids.com`, `LOG_LEVEL=INFO` (**exact upper case**), `STORE_SLUG_CACHE_SECONDS=300`, `BACKUP_S3_PREFIX=edge/postgres`,
-  `BACKUP_LOCAL_KEEP=7`, `ASSET_PURGE_RETENTION_DAYS=30`, `DOCUMENT_ORPHAN_SWEEP_ENABLED=false`, `DOCUMENT_ORPHAN_SWEEP_DRY_RUN=true`, `S3_PUBLIC_BUCKET=opsgrids-public`,
-  `PUBLIC_ASSET_BASE_URL=https://edge.opsgrids.com/opsgrids-public` (must equal `https://<EDGE_HOST>/<S3_PUBLIC_BUCKET>`), `OPS_MONITOR_API_CONTAINERS=` and `OPS_MONITOR_DLQ_QUEUES=` (empty: derived),
+  `BACKUP_LOCAL_KEEP=7` (a positive integer: `0` deletes every local dump), `ASSET_PURGE_RETENTION_DAYS=30`, `DOCUMENT_ORPHAN_SWEEP_ENABLED=false`, `DOCUMENT_ORPHAN_SWEEP_DRY_RUN=true`, `S3_PUBLIC_BUCKET=opsgrids-public`,
+  `PUBLIC_ASSET_BASE_URL=https://edge.opsgrids.com/opsgrids-public` (must equal `https://<EDGE_HOST>/<S3_PUBLIC_BUCKET>`; write it, and `EDGE_WEB_ROOT`, bare: no quotes, no inline comment), `OPS_MONITOR_API_CONTAINERS=` and `OPS_MONITOR_DLQ_QUEUES=` (empty: derived),
   `BILLING_TAX_CODE=` and `BILLING_TAX_JURISDICTION=` (empty). Do **not** add `BILLING_RUN_ENABLED`, `BILLING_RUN_NOT_BEFORE`, the MFA flag, or `RUN_SWEEPS_IN_API`.
-- [ ] **5.3 Duplicate and stray-line check** (preflight and remote.sh take the LAST assignment of a key, but remote.sh still takes the FIRST for `OPSGRIDS_DB_PASSWORD` and `OPS_MONITOR_PORT`, and compose has its own parser; keep every key exactly once; matrix section 11, item 5):
+- [ ] **5.3 Duplicate and stray-line check** (preflight, compose and remote.sh take the LAST assignment of a key, but remote.sh still takes the FIRST for `OPSGRIDS_DB_PASSWORD` and `OPS_MONITOR_PORT` and publish-web.sh takes the first raw line for `EDGE_WEB_ROOT` and `PUBLIC_ASSET_BASE_URL`; keep every key exactly once; matrix section 11, item 5):
 
   ```bash
   sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' .env | sort | uniq -d      # must print nothing
@@ -320,22 +367,28 @@ set_kv() {   # usage: set_kv KEY VALUE   (non-secret values only)
   **First apply the RUNBOOK's rule to what step 2.7 measured** (matrix section 6.3): scale the release, `4581 x measured / 4044`:
 
   ```bash
-  awk -v m=<measured MiB from 2.7> 'BEGIN { printf "%.0f\n", 4581 * m / 4044 }'
+  MEASURED_MIB=REPLACE_WITH_STEP_2_7      # the "measured sum" from step 2.7
+  awk -v m="$MEASURED_MIB" 'BEGIN { if (m + 0 <= 0) { print "set MEASURED_MIB first"; exit 1 } printf "%.0f\n", 4581 * m / 4044 }'
   ```
 
   Scaled figure: `______`. **If it is above 4827 (the 125% cap), or if `vmstat` showed `si`/`so` above zero at a quiet hour, do not write a ceiling: choose (a) or (b).** Otherwise
   write the number preflight prints (not the scaled one: the scaled figure only decides whether to run at all). Choose one, in writing:
   (a) resize the VM (the only option that adds headroom; the earlier "no resize" predates this release's +537 MB); (b) de-list products (drop their profiles from `COMPOSE_PROFILES` after checking they have no live activation);
-  (c) accept the overcommit. **Do not guess the number: run part 7 first and read the total preflight prints for the commit you will deploy**, then write exactly that:
+  (c) accept the overcommit. **Do not guess the number: run step 7.1 first.** Before a ceiling exists it FAILs on the memory row only, and that row prints the total for the commit you will deploy (step 7.2). Read it, come back here, and write exactly that:
 
   ```bash
-  set_kv EDGE_BUDGET_ACCEPTED_MB 4581      # <- the number preflight printed, digits only; never above 4827 (125%)
+  TOTAL=REPLACE_WITH_THE_PRINTED_TOTAL     # digits only: the number preflight printed (4581 on a fresh scratch run); never above 4827 (125%)
+  case "$TOTAL" in
+  '' | *[!0-9]* | 0?*) echo "TOTAL must be digits only, no leading zero: nothing written" ;;
+  *) set_kv EDGE_BUDGET_ACCEPTED_MB "$TOTAL" ;;
+  esac
   ```
 
   Choice: `a / b / c`   Number written: `______`   Date: `______`   By: `______`
   **Also, for this one deploy:** `set_kv EDGE_UP_PARALLEL_LIMIT 2` (starts two containers at a time; remove it in part 11).
 - [ ] **6.2 Which products run: `COMPOSE_PROFILES`.** **[OWNER]** Keep the box's existing value (all ten per ADR-0013: `inventory,storefront,hrms,crm,pulseboard,projects,support,marketing,finance,itsm`); leave `EDGE_PROFILES=` empty.
-  Names are lower case, comma separated, no spaces. Confirm it prints exactly that (profile names are not secret): `grep '^COMPOSE_PROFILES=' .env`. Removing a profile is coupled to 6.1 and to live activations.
+  Names are lower case, comma separated, no spaces, on a line that starts at column 0 as `COMPOSE_PROFILES=...` (remote.sh reads only that form: an `export COMPOSE_PROFILES=...` or indented line is accepted by preflight but is empty to remote.sh, which would then run core only). Confirm it prints exactly that (profile names are not secret): `grep '^COMPOSE_PROFILES=' .env`.
+  `EDGE_PROFILES` is honoured only by preflight and remote.sh: a `docker compose ... --env-file .env` you run by hand ignores it, so keep it empty. Removing a profile is coupled to 6.1 and to live activations.
 - [ ] **6.3 Ceiling vs cap sanity.** If you chose (c), confirm `EDGE_BUDGET_ACCEPTED_MB` <= 4827 and equals the printed total. A larger number is "slack nobody decided on"; preflight says so.
 - [ ] **6.4 The billing run stays OFF for this deploy.** **[OWNER]** Do not add `BILLING_RUN_ENABLED` / `BILLING_RUN_NOT_BEFORE`. Turning it on converts every expired trial and bills every overdue period from the cutover and is not reversible for rows already billed.
   When you are ready, follow the RUNBOOK's staging (step 9.10) with a **dry run first**. Cutover you will use later: `______________` (format `YYYY-MM-DDTHH:MM:SS+05:30` or `Z`; set once, never move it).
@@ -347,15 +400,17 @@ set_kv() {   # usage: set_kv KEY VALUE   (non-secret values only)
 
 ## Part 7. Preflight until it says `preflight: ok` (`[STRUCTURAL]`)
 
-- [ ] **7.1 Run it against the release you are about to deploy** (`[laptop]`). `make edge-preflight` runs whatever ref is *currently checked out on the box* (it takes no `REF`); to preflight the target ref use `ssh-deploy.sh`, which first checks that ref out (detached) on the box, exactly as `make deploy` would:
+- [ ] **7.1 Run it against the release you are about to deploy** (`[laptop]`). `make edge-preflight` runs whatever ref is *currently checked out on the box* (it takes no `REF`); to preflight the target ref use `ssh-deploy.sh`, which **first checks that ref out (detached) on the box**, exactly as `make deploy` would:
 
   ```bash
   REF=origin/release/backlog-complete       # the same REF as step 0.1 (5320848 or later; this is your laptop shell, not the box's)
   infrastructure/edge/ssh-deploy.sh deploy@20.219.18.84 edge.opsgrids.com "$REF" preflight
   ```
 
-  Preflight is read-only against your configuration; the only thing it starts is one throwaway container (`id -u`) to check the ops-monitor state directory's owner (INT:pf:586).
-  It contacts **no** provider and verifies **no** credential (matrix section 13). Expect the last line `preflight: ok`.
+  **This step moves the box's working tree** to the new ref while the containers still run the old one (INT:sd:56-66): files bind-mounted into running containers (the `caddy/` directory, `rabbitmq/rabbitmq.conf`, `routes.prod.json`, the permission contracts: INT:cp:190,298,607,684) change on disk,
+  `make edge-status` prints `checked out: <new ref>` beside the old `last good ref`, and a container that restarts before step 8.1 reads the new files. So run 7.1 close to 8.1, not days before. (`make deploy` runs the same preflight first, so a FAIL changes nothing else.)
+  Preflight itself changes no configuration; the only thing it starts is one throwaway container (`id -u`) to check the ops-monitor state directory's owner (INT:pf:586).
+  It contacts **no** provider and verifies **no** credential (matrix section 13). Expect the last line `preflight: ok`; on the first pass, before a ceiling exists, expect it to FAIL on the memory row only.
 - [ ] **7.2 Read the memory line** (this is where the number for step 6.1 comes from):
   `warn  memory budget (post-deploy: running that the new compose still defines, plus declared profiles): 4581M against 3862M MemTotal: 719M over MemTotal (118.6%)` with the ceiling set, or `FAIL memory budget ... no EDGE_BUDGET_ACCEPTED_MB is set` without it.
   Printed total: `______` MB.
@@ -369,16 +424,19 @@ set_kv() {   # usage: set_kv KEY VALUE   (non-secret values only)
   | `.env is mode NNN` | `chmod 600 infrastructure/edge/.env` |
   | `PUBLIC_ASSET_BASE_URL must be exactly https://$EDGE_HOST/$S3_PUBLIC_BUCKET` | set it to exactly that |
   | `EDGE_BUDGET_ACCEPTED_MB ... whole number` / `above the 125% cap` / `over the owner-accepted ceiling` | digits only, no unit, sign or leading zero (`4581`, not `04581`); the printed total; not above 4827 |
-  | `KEY in .env has an unquoted value containing whitespace` (or `... a shell metacharacter`) | double-quote the whole value; nothing was sourced or run |
+  | `KEY in .env has an unquoted value containing whitespace` (or `... a shell metacharacter`) | double-quote the whole value (single quotes if it contains `$`, a backtick or a backslash); nothing was sourced or run |
+  | `./.env: line N: ... unbound variable`, `unexpected EOF while looking for matching`, or `command not found`, with **no** `preflight: FAILED` line | a `$` in an unquoted or double-quoted value, or an unbalanced quote: the pre-check does not catch these (Appendix A item 2). If a `$(...)` sat inside double quotes it has already **run**: treat that value as suspect. Fix the line with the quoting rules, then re-run |
   | `KEY in .env has text after its closing quote` | put the whole value inside the quotes |
   | `.env has Windows (CRLF) line endings` | `sed -i 's/\r$//' .env` |
   | `profile 'x' (from EDGE_PROFILES/COMPOSE_PROFILES) is not defined in compose.prod.yml` | a typo: use only `inventory storefront hrms crm pulseboard projects support marketing finance itsm`, comma separated, no spaces |
   | `no memory-budget.json`, `no python3`, `could not read MemTotal` | the box's checkout or tooling is not what the repo describes: stop and look (the gate now fails closed) |
-  | `no signing key at ...` | category D: the file must already exist (mode 400/440/600/640); if missing, stop |
-  | `the Caddyfile serves  but TLS_PLATFORM_HOSTS does not list it` | **the known defect**: your `REF` predates `ce35c77` (Appendix A). Choose a ref that contains it |
-  | `only NG free`, `inodes NN% used` | real box problems: free disk (`docker image prune -af && docker builder prune -af`), see the RUNBOOK |
+  | `no signing key at ...` | category D: the file is expected to exist already (mode 400/440/600/640); if missing, stop |
+  | `the Caddyfile serves  but TLS_PLATFORM_HOSTS does not list it` (two spaces: an **empty** name) | **the known defect**: your `REF` predates `ce35c77` (Appendix A). Choose a ref that contains it |
+  | `the Caddyfile serves NAME but TLS_PLATFORM_HOSTS does not list it` (a real name) | the box's own `TLS_PLATFORM_HOSTS` is shorter than the committed one (the key already existed, so step 3.2 did not append it): with an editor append `,NAME` (lower case, no spaces) to that one line. Preflight checks only the twelve literal Caddy sites: also keep `edge.opsgrids.com` and `api.opsgrids.com` in the list by hand |
+  | `only NG free`, `inodes NN% used` | real box problems: free disk (`docker image prune -af && docker builder prune -af`), see the RUNBOOK. (Run from a laptop these two rows always FAIL; only the box's own reading counts) |
 
-- [ ] **7.4 Repeat until `preflight: ok`.** **Proves:** every required key is present and well formed; no placeholder remains; the three platform secrets are long enough and distinct; the memory decision is recorded. `[STRUCTURAL]`
+- [ ] **7.4 Repeat until `preflight: ok`.** **Proves:** every required key is present; no placeholder remains; `INTERNAL_SERVICE_TOKEN`, `PII_ENCRYPTION_KEY` and `ADMIN_GATEWAY_HOP_KEY` are at least 32 bytes and the hop key differs from the token; the two MinIO secrets are at least 8 characters;
+  the memory decision is recorded. Every other secret got a presence and placeholder check only (step 2.5b prints their lengths). `[STRUCTURAL]`
   **It does not prove** that any credential works.
 
 ## Part 8. Deploy
@@ -386,7 +444,7 @@ set_kv() {   # usage: set_kv KEY VALUE   (non-secret values only)
 - [ ] **8.1 Deploy** (`[laptop]`, in your quiet window; `[box: deploy]` second terminal running `vmstat 5`):
 
   ```bash
-  make deploy HOST=deploy@20.219.18.84 CONFIRM=edge.opsgrids.com REF=<ref>
+  make deploy HOST=deploy@20.219.18.84 CONFIRM=edge.opsgrids.com REF=origin/release/backlog-complete    # the same REF as steps 0.1 and 7.1
   ```
 
   `up` prints `up: starting N containers at a time, profiles: ...` (INT:rs:341): read that line, it is the profile list remote.sh will actually use. What runs, in this order (INT:rs:509-521): the wrong-box interlock (`CONFIRM` must equal the box's `EDGE_HOST`) -> the ref is checked out on the box -> **preflight** -> **build** (5-10+ minutes; a failed build leaves the site as it was) ->
@@ -431,11 +489,14 @@ set_kv() {   # usage: set_kv KEY VALUE   (non-secret values only)
   curl -s -o /dev/null -w 'whatsapp:  %{http_code}\n' 'https://app.opsgrids.com/api/v1/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=x&hub.challenge=1'
   ```
 
-  `401` = stopped at the gateway (not reachable); Razorpay `400` = reached payment (a bad signature is a 400 and nothing is recorded); WhatsApp `403` = reached notification. Results: `_____ / _____`.
-  Only if both reach their service is it sensible to configure the callback URLs at the providers and then **`[LIVE: owner]`** confirm with a real provider delivery. If `401`, leave webhooks unconfigured and raise it as a code decision.
+  **Razorpay:** `401` = stopped at the gateway (not reachable); `400` = reached payment (a bad signature is a 400 and nothing is recorded); `404` = the route is missing.
+  **WhatsApp:** this URL can only answer `401` (stopped at the gateway) or `404`; **`403` cannot occur here**. Notification mounts its webhook at the **root** (`/webhooks/whatsapp`) while the gateway forwards the `/api/v1` prefix intact, so even a public path would 404
+  (INT:services/notification/app/main.py:32-34; INT:libs/platform-core/src/platform_core/gateway.py:715). Meta's callback would have to be `https://<host>/webhooks/whatsapp` at the root, and Caddy proxies only `/api/*` (INT:cf:84), so WhatsApp webhooks are **not reachable on this box as built**, whatever this probe prints.
+  Results: `_____ / _____`.
+  Only if Razorpay answers `400` is it sensible to configure that callback URL at Razorpay and then **`[LIVE: owner]`** confirm with a real provider delivery. If `401`, leave webhooks unconfigured and raise it as a code decision.
 - [ ] **9.8 `[LIVE: owner]` SMTP end to end** (if not done in 4.1): run the probe; then wait for the first alert or the 08:00 UTC digest and confirm both recipients received it and `/status` shows `last_send_at`.
 - [ ] **9.9 Image uploads only (MinIO + document).** If this box sells Storefront images, the RUNBOOK's steps apply (INT:rb:277): reconcile the `core` permissions **dry run first**
-  (`make edge-reconcile HOST=... CONFIRM=... PRODUCTS=core`, then `... APPLY=1`), republish the bundles (`make edge-web HOST=... CONFIRM=... APP=buyer` and `... APP=storefront`) so `PUBLIC_ASSET_BASE_URL` is baked in,
+  (`make edge-reconcile HOST=... CONFIRM=... PRODUCTS=core`, then `... APPLY=1`; **the APPLY step is a fleet write: every organization's permission version bumps and every member is signed out of their cached token** (INT:rb:335-338), so it is an owner decision: choose the hour), republish the bundles (`make edge-web HOST=... CONFIRM=... APP=buyer` and `... APP=storefront`) so `PUBLIC_ASSET_BASE_URL` is baked in,
   and verify an upload end to end (RUNBOOK 'Verify an upload end to end'). `minio-init` completing (exit 0) is expected; it is a one-shot.
 - [ ] **9.10 Billing run, when you are ready (not part of this deploy)** (INT:rb:595): deploy with the run off (done); pick the cutover; preview with
   `docker compose -f compose.prod.yml --env-file .env run --rm -T subscription-worker python -m app.billing_run --dry-run --not-before <cutover>` (writes nothing); then append
@@ -457,15 +518,17 @@ set_kv() {   # usage: set_kv KEY VALUE   (non-secret values only)
 - [ ] **11.3** Keep a private record (not in the repo, not in chat): the REF deployed and its short SHA; the `EDGE_BUDGET_ACCEPTED_MB` value, its date and who decided; the MFA counts before/after; the off-box location of the `PII_ENCRYPTION_KEY` backup.
 - [ ] **11.4** Re-read `ENV_SOURCE_MATRIX.md` section 12 (unresolved items) and decide who owns each open one.
 
-## Appendix A. The two preflight gotchas (fixed on `ce35c77`, still live on any earlier ref)
+## Appendix A. The two preflight gotchas (fixed on `ce35c77`, still live on any earlier ref) and the quoting gaps that remain
 
-The owner's two known defects. Both are **fixed on integration since `ce35c77`** (the memory-headroom merge) and **present on `193b529` and earlier**; which ref you deploy decides. They are reproduced in the matrix, section 13 (runs R7a-R7c).
+The owner's two known defects. Both are **fixed on integration since `ce35c77`** (the memory-headroom merge) and **present on `193b529` and earlier**; which ref you deploy decides. They are reproduced in the matrix, section 13 (runs R7a-R7c). Item 2 also lists the quoting mistakes that even the fixed preflight does not catch (matrix section 13.6, runs Q1-Q8).
 
 1. **The Caddyfile catch-all row fails every run.** On `193b529` and earlier the catch-all site line `https:// {` is read by preflight's `sed` as an empty site name, so `FAIL the Caddyfile serves  but TLS_PLATFORM_HOSTS does not list it` appears whatever the values are and `make deploy` refuses at its first step.
    No `.env` value fixes it. Workaround: deploy a ref that contains the fix (`git merge-base --is-ancestor ce35c77 <ref>`); do not edit preflight on the box.
-2. **Unquoted whitespace in `.env` exits 127.** `.env` is `source`d as bash, so `OPS_ALERT_EMAIL=info@opsgrids.com and zionna@opsgrids.com` or `EDGE_PROFILES=inventory, storefront` runs the words after the first space as a command: on `193b529`
-   `./.env: line N: and: command not found`, exit 127, no `preflight: FAILED` footer. Workaround: **quote any value containing a space** (`SMTP_PASSWORD="<app password with spaces>"`) or avoid spaces; use the comma form for `OPS_ALERT_EMAIL`.
-   Since `ce35c77` it is a named FAIL, and the same pre-check refuses an unquoted `; & | < > ( )`, a backtick or `$(`, text after a closing quote, and CRLF line endings, before anything is sourced.
+2. **`.env` quoting mistakes (unquoted whitespace exits 127; `$` and unbalanced quotes are worse).** `.env` is `source`d as bash and parsed separately by docker compose, so `OPS_ALERT_EMAIL=info@opsgrids.com and zionna@opsgrids.com` or `EDGE_PROFILES=inventory, storefront`
+   runs the words after the first space as a command: on `193b529` `./.env: line N: and: command not found`, exit 127, no `preflight: FAILED` footer. Since `ce35c77` preflight names an unquoted space, `; & | < > ( )`, a backtick or `$(`, text after a closing quote and CRLF as a FAIL before anything is sourced.
+   **It still does not catch, and each was reproduced in a scratch tree:** a `$` in a double-quoted or unquoted value (`"ab$cd"` aborts with `cd: unbound variable`; `"ab$(cmd)"` **runs the command**), a backtick inside double quotes (it runs), and an unbalanced quote
+   (`unexpected EOF while looking for matching`, exit 2, no footer). **Rules:** spaces or `; & | < > ( )` -> **double** quotes; `$`, a backtick or a backslash -> **single** quotes (`'ab$cd'` is literal in bash and in compose); a value that also holds a single quote -> regenerate it;
+   close every quote (step 2.2 has a check); `#` starts a comment only after whitespace; hex secrets need no quotes at all. Use the comma form for `OPS_ALERT_EMAIL`. For the old defect the workaround is to quote, or to deploy a ref that has the pre-check.
 3. Also: a `make edge-preflight` runs the *checked-out* ref (use `ssh-deploy.sh ... <ref> preflight`, step 7.1); a laptop cannot run preflight meaningfully (disk, inode and `date` rows are machine-specific: matrix section 13.3).
 
 ## Appendix B. How each provider credential is verified, and by whom
@@ -480,5 +543,8 @@ Nothing in the "live" column has been run. **A green preflight never appears in 
 | `RAZORPAY_WEBHOOK_SECRET` | present, not `dev-only-*` | a Razorpay-signed delivery accepted by the service, after step 9.7 shows the route is reachable | owner | Razorpay would deliver a test event |
 | `WHATSAPP_ACCESS_TOKEN` + `WHATSAPP_PHONE_NUMBER_ID` | empty allowed | the read-only Graph `GET /{id}?fields=id` (4.4) | owner | read-only call to Meta |
 | `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN` | empty allowed | Meta's subscribe handshake and a genuine signed delivery, after 9.7 | owner | Meta calls our endpoint |
-| `MINIO_*`, `DOCUMENT_S3_*` | present, >= 8 chars where required | `minio-init` exits 0 and an upload round trip (RUNBOOK 'Verify an upload end to end') | operator | creates a test asset |
-| `ADMIN_GATEWAY_HOP_KEY`, `INTERNAL_SERVICE_TOKEN`, `PII_ENCRYPTION_KEY`, `ENGAGE_UNSUBSCRIBE_SECRET`, passwords | present, >= 32 bytes, distinct | none: locally generated secrets have no external verifier; the services starting is the signal | n/a | n/a |
+| `MINIO_*`, `DOCUMENT_S3_*` | present and not a placeholder; >= 8 characters for `MINIO_ROOT_PASSWORD` and `DOCUMENT_S3_SECRET_KEY` only | `minio-init` exits 0 and an upload round trip (RUNBOOK 'Verify an upload end to end') | operator | creates a test asset |
+| `INTERNAL_SERVICE_TOKEN`, `PII_ENCRYPTION_KEY`, `ADMIN_GATEWAY_HOP_KEY` | present, not a placeholder, >= 32 bytes; the hop key differs from the token | none: locally generated secrets have no external verifier; every service starting in production is the signal (each refuses a short or `dev-only-` value) | n/a | n/a |
+| `ENGAGE_UNSUBSCRIBE_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, `POSTGRES_PASSWORD`, `OPSGRIDS_DB_PASSWORD`, `RABBITMQ_PASSWORD` | present and not a placeholder **only: no length or strength check** (step 2.5b prints lengths) | none for the first two: a `dev-only-` or weak `ENGAGE_UNSUBSCRIBE_SECRET` stops no service (campaign signing is switched off at the feature level or runs on a weak key), so "the services started" is **not** a signal for it; the Postgres and RabbitMQ passwords are proved only by the services logging in | n/a | n/a |
+| the JWT signing key file (`JWT_PRIVATE_KEY_HOST_PATH`) | the file exists with mode 400/440/600/640; the PEM is not parsed | auth starting (the only downstream signal) | operator | none |
+| `EDGE_RESERVED_IP`, `SENTRY_DSN` | the line is present (empty allowed); an RFC 5737 documentation address only warns | `EDGE_RESERVED_IP`: compare `dig +short edge.opsgrids.com` with the Azure portal (Static?). `SENTRY_DSN`: none, it is inert in this release | owner | none |
