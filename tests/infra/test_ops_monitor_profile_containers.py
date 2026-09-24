@@ -36,11 +36,18 @@ def _budget() -> dict[str, Any]:
     return result
 
 
+#: `api_with_worker` (the worker-folding follow-up to the memory-headroom slice, 2026-09-24) is
+#: still an ordinary API container as far as ops-monitor's readiness check is concerned — the
+#: kind split is a *pricing* distinction (it costs a little more, folding a former `*-worker`
+#: container's loops in), not a container-role one. Both kinds belong in the same bucket here.
+_API_KINDS = ("api", "api_with_worker")
+
+
 def _api_containers_by_profile() -> dict[str | None, list[str]]:
     budget = _budget()
     by_profile: dict[str | None, list[str]] = {}
     for name, meta in budget["containers"].items():
-        if meta.get("kind") != "api":
+        if meta.get("kind") not in _API_KINDS:
             continue
         by_profile.setdefault(meta.get("profile"), []).append(name)
     return by_profile
@@ -77,13 +84,19 @@ def test_no_profile_is_missing_from_profile_api_containers() -> None:
 def test_every_dlq_queue_names_a_real_background_container() -> None:
     """Not a byte-for-byte mirror (memory-budget.json has no notion of queue names) — just:
     every queue in PROFILE_DLQ_QUEUES/CORE_DLQ_QUEUES belongs to a profile that memory-budget.json
-    actually lists a background container for, so a queue cannot survive a profile's worker
-    being removed from compose.prod.yml without this failing."""
+    actually lists a background OR api_with_worker container for, so a queue cannot survive a
+    profile's consumer being removed from compose.prod.yml without this failing. `api_with_worker`
+    counts too, since the worker-folding follow-up to the memory-headroom slice (2026-09-24) moved
+    several of these queues' consumers into their own API container by default
+    (RUN_CONSUMERS_IN_API) — the queue itself, and the DLQ depth this checks, does not care which
+    container binds it, only that something does; `split-workers` (the `*-worker` containers'
+    rollback profile) is deliberately not in this set, since a queue must be covered by the
+    *default* configuration, not only by the rollback."""
     budget = _budget()
     background_profiles = {
         meta.get("profile")
         for meta in budget["containers"].values()
-        if meta.get("kind") == "background"
+        if meta.get("kind") in ("background", "api_with_worker")
     }
     for profile in PROFILE_DLQ_QUEUES:
         assert profile in background_profiles, (

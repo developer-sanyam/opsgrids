@@ -34,9 +34,13 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import ProcessedEvent
@@ -62,6 +66,33 @@ log = get_logger("approval.consumers")
 QUEUE_NAME = "approval.events"
 
 consumer = EventConsumer(amqp_url=settings().rabbitmq_url, queue_name=QUEUE_NAME)
+
+#: Same shape as `app.cron.WorkScope` — defined again here, not imported, because `app.consumers`
+#: and `app.cron` are independent layers (the service anatomy, CLAUDE.md; `.importlinter`'s
+#: `service-layers` contract refuses the import).
+WorkScope = Callable[[uuid.UUID], AbstractAsyncContextManager[AsyncSession]]
+
+
+def _default_session_scope(organization_id: uuid.UUID) -> Any:
+    return session_scope(organization_id=organization_id)
+
+
+#: The transaction scope every handler below opens. Defaults to the process-wide engine — this
+#: consumer's own connection pool when it runs standalone (`python -m app.consumers`,
+#: `bin/worker`). `app/main.py` swaps it to a bulkhead scope (`platform_core.db.bulkhead_scope`)
+#: before starting this consumer as a supervised background task inside the API process, on
+#: `RUN_CONSUMERS_IN_API` — so a folded consumer's per-message transactions can neither take a
+#: connection from request traffic nor be starved by it. Module-level and process-wide on
+#: purpose, the same seam the sweeps already use (`app.cron.WorkScope`).
+_session_scope: WorkScope = _default_session_scope
+
+
+def use_session_scope(scope: WorkScope) -> None:
+    """Point every handler above at `scope` instead of the default engine. Called once, before
+    this consumer starts, by whichever entrypoint constructs it that way — never by a handler."""
+    global _session_scope
+    _session_scope = scope
+
 
 #: Contract strings from employee-service, named here rather than imported — one process may
 #: only ever hold one service's top-level `app` (CLAUDE.md).
@@ -130,7 +161,7 @@ async def _apply_hierarchy_event(envelope: dict[str, Any]) -> None:
     event_type = envelope["event_type"]
 
     applied = False
-    async with session_scope(organization_id=organization_id) as session:
+    async with _session_scope(organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("hierarchy.event.duplicate", event_id=str(event_id), event_type=event_type)
             return
@@ -225,7 +256,7 @@ async def on_regularization_requested(envelope: dict[str, Any]) -> None:
     organization_id = uuid.UUID(payload["organization_id"])
 
     opened = False
-    async with session_scope(organization_id=organization_id) as session:
+    async with _session_scope(organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("regularization.requested.duplicate", event_id=str(event_id))
             return
@@ -265,7 +296,7 @@ async def on_regularization_applied(envelope: dict[str, Any]) -> None:
     organization_id = uuid.UUID(payload["organization_id"])
 
     applied = False
-    async with session_scope(organization_id=organization_id) as session:
+    async with _session_scope(organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("regularization.applied.duplicate", event_id=str(event_id))
             return
@@ -346,7 +377,7 @@ async def on_leave_requested(envelope: dict[str, Any]) -> None:
         return
 
     opened = False
-    async with session_scope(organization_id=organization_id) as session:
+    async with _session_scope(organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("leave.requested.duplicate", event_id=str(event_id))
             return
@@ -388,7 +419,7 @@ async def on_leave_applied(envelope: dict[str, Any]) -> None:
         return
 
     applied = False
-    async with session_scope(organization_id=organization_id) as session:
+    async with _session_scope(organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("leave.applied.duplicate", event_id=str(event_id))
             return
@@ -429,7 +460,7 @@ async def on_leave_cancelled(envelope: dict[str, Any]) -> None:
         return
 
     withdrawn = False
-    async with session_scope(organization_id=organization_id) as session:
+    async with _session_scope(organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("leave.cancelled.duplicate", event_id=str(event_id))
             return

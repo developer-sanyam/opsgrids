@@ -1,9 +1,13 @@
-"""`create_bulkhead_engine` / `bulkhead_scope` — the private, one-connection engine an in-API
-sweep uses instead of the API's own request pool (memory-headroom slice, review round 3, LOW).
+"""`create_bulkhead_engine` / `bulkhead_scope` — the private, fixed-size engine background work
+sharing an API process uses instead of the API's own request pool (memory-headroom slice, review
+round 3, LOW; raised from one connection to two by the worker-folding follow-up, which put more
+than one background loop — a consumer alongside a sweep, in several services — on the same
+bulkhead).
 
-A sweep that shares an API process with request traffic used to check its per-tenant transactions
-out of the same 3 + 2 connections the requests use, and some of those transactions hold their
-connection across network calls (storefront's domain probes, document's object-store delete).
+Background work that shares an API process with request traffic used to check its per-tenant
+transactions out of the same 3 + 2 connections the requests use, and some of those transactions
+hold their connection across network calls (storefront's domain probes, document's object-store
+delete) or across whatever a folded consumer's handler does.
 """
 
 from __future__ import annotations
@@ -33,14 +37,14 @@ async def engine() -> AsyncIterator[AsyncEngine]:
     await engine.dispose()
 
 
-def test_the_bulkhead_is_one_connection_with_no_overflow_whatever_the_request_pool_is() -> None:
-    """3 + 2 is the API's request pool on the edge; the sweep's is exactly one, and never grows —
-    that is the whole point of a bulkhead (it can neither take a request's connection nor be
-    starved by one)."""
+def test_the_bulkhead_is_two_connections_with_no_overflow_whatever_the_request_pool_is() -> None:
+    """3 + 2 is the API's request pool on the edge; the bulkhead's is exactly two, and never
+    grows — that is the whole point of a bulkhead (it can neither take a request's connection nor
+    be starved by one)."""
     settings = _Settings(db_pool_size=3, db_max_overflow=2)
     engine = create_bulkhead_engine(settings, name="sweep")
     try:
-        assert engine.pool.size() == 1  # type: ignore[attr-defined]
+        assert engine.pool.size() == 2  # type: ignore[attr-defined]
         assert engine.pool._max_overflow == 0  # type: ignore[attr-defined]
     finally:
         asyncio.run(engine.dispose())
@@ -77,23 +81,24 @@ async def test_the_scope_binds_the_tenant_for_the_transaction_and_not_beyond(
 
 
 @pytest.mark.integration
-async def test_a_second_scope_waits_for_the_first_rather_than_taking_another_connection(
+async def test_a_third_scope_waits_for_the_first_two_rather_than_taking_another_connection(
     engine: AsyncEngine,
 ) -> None:
-    """One connection means sequential use: while a scope is open, another scope on the same
-    bulkhead cannot get a connection — proving it never quietly grows past one."""
+    """Two connections means two concurrent scopes and no more: with both held, a third scope on
+    the same bulkhead cannot get a connection — proving it never quietly grows past two."""
     scope = bulkhead_scope(engine)
-    async with scope(uuid.uuid4()) as held:
-        await held.execute(text("select 1"))
-        second_started = asyncio.Event()
+    async with scope(uuid.uuid4()) as first_held, scope(uuid.uuid4()) as second_held:
+        await first_held.execute(text("select 1"))
+        await second_held.execute(text("select 1"))
+        third_started = asyncio.Event()
 
         async def contender() -> None:
-            second_started.set()
+            third_started.set()
             async with scope(uuid.uuid4()) as other:
                 await other.execute(text("select 1"))
 
         task = asyncio.ensure_future(contender())
-        await second_started.wait()
+        await third_started.wait()
         done, _ = await asyncio.wait({task}, timeout=0.5)
-        assert not done, "a second scope got a connection while the first still held the only one"
+        assert not done, "a third scope got a connection while the first two still held both"
     await asyncio.wait_for(task, timeout=5)

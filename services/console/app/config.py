@@ -48,6 +48,14 @@ class Settings(ServiceSettings):
     #: individual caller's permissions gate at all.
     account_public_url: str = "http://localhost:8111"
 
+    #: Runs this service's single event consumer (`app/consumers.py`) as a supervised background
+    #: task inside the API process instead of the separate `console-worker` container (the
+    #: worker-folding follow-up to the memory-headroom slice). Off by default everywhere except
+    #: the edge box's own `.env`: `bin/worker` still runs `python -m app.consumers` standalone
+    #: unchanged, and setting this to `false` while adding `split-workers` to `EDGE_PROFILES` is
+    #: the rollback (RUNBOOK.md).
+    run_consumers_in_api: bool = False
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

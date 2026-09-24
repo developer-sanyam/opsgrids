@@ -49,6 +49,24 @@
     "API. Measured with each sweep on its own one-connection bulkhead engine, sweep off -> on:",
     "operations 97,324 -> 97,820 kB, storefront 100,420 -> 101,324 kB, document 104,820 -> 104,648 kB.",
     "",
+    "account-worker, product-worker, subscription-worker, payment-worker, notification-worker,",
+    "approval-worker, attendance-worker, leave-worker, customer-worker and finance-worker likewise no",
+    "longer run by default (the worker-folding follow-up to the memory-headroom slice): each",
+    "service's consumers, dispatchers, sweeps and drivers now run inside its own API container",
+    "(RUN_CONSUMERS_IN_API), on a two-connection bulkhead engine (create_bulkhead_engine, raised from",
+    "one now that a bulkhead can hold more than a lone sweep). The ten `*-worker` containers still",
+    "exist in `containers` below, unchanged, gated behind the new `split-workers` profile (off by",
+    "default) rather than deleted — that is the rollback (RUNBOOK.md). Measured the same way as the",
+    "three sweeps above, API off -> on (kB): account 100,380 -> 101,392 (a consumer plus one sweep),",
+    "notification 103,884 -> 105,268 (two consumers plus the campaign driver, the heaviest of the",
+    "ten). Both land at roughly +1 to +1.4 MiB regardless of how many loops share the process, the",
+    "same finding `kinds.background`'s own note already made about a background process's cost being",
+    "dominated by its imported module graph, not by loop count. Priced as a new kind, `api_with_",
+    "worker` (99 MB, `kinds.api`'s 98 rounded up by the larger of the two measured deltas), on the",
+    "ten API containers this now applies to; `mem_limit_mb` stays at `kinds.api`'s own 256m — the",
+    "same conclusion the three sweeps reached: absorbing a loop that costs about 1 MB into a",
+    "container with ~158 MB of headroom over its own idle figure does not need a bigger ceiling.",
+    "",
     "`tests/infra/test_compose_memory_budget.py` is the gate: every service compose.prod.yml",
     "defines must have a `containers` entry here, and vice versa, or the test fails by name.",
     "`preflight.sh` sums this file against the box's live /proc/meminfo through",
@@ -105,6 +123,17 @@
       "source": "MEASURED (memory-headroom slice, review round 3, 2026-09-24): the `product` image running `python -m platform_core.ops_monitor` idled at 92.3 MiB VmRSS (94,476 kB), same method as kinds.api. slice/ops-monitor priced it at 48 MB ('a shade heavier than a plain background consumer') — it is not lighter than one: it imports the same module graph plus an HTTP server. The 128m mem_limit that slice chose to keep the total under the hard line leaves ~36 MiB of headroom over this idle figure (1.4x); a reduced-headroom fuse that was tuned against the wrong number. Not raised here (that container's own block belongs to the slice that owns it) — listed in the review-round-3 report for that owner. arm64 figure; cross-check on the box.",
       "measured_mib": {
         "ops-monitor": 92.3
+      }
+    },
+    "api_with_worker": {
+      "expected_rss_mb": 99,
+      "mem_limit_mb": 256,
+      "source": "MEASURED (the worker-folding follow-up to the memory-headroom slice, 2026-09-24), same method as kinds.api: the `account` and `notification` production images run twice each against the same isolated Postgres/Redis/RabbitMQ, warmed with 40 in-container /health probes, /proc/1/status VmRSS read after ~40 s idle, RUN_CONSUMERS_IN_API=false then =true. account (a consumer plus one sweep, `DomainRecheckSweep`) 98.03 -> 99.02 MiB; notification (two consumers plus the campaign driver — the heaviest of the ten services this fold applies to) 101.45 -> 102.80 MiB. Both deltas land at +1 to +1.4 MiB: a folded loop's cost is dominated by the module graph the API process already imports, the same finding kinds.background's own note made about loop count not mattering. Priced at kinds.api's 98 + 1 = 99 (the larger delta, rounded up) rather than re-measuring each of the ten individually — this is the shared kind every API container that now folds a worker in uses, the same way every plain API shares kinds.api regardless of which service it is. mem_limit stays at kinds.api's own 256m: the sweeps that folded first (operations/storefront/document) reached the same conclusion at a similar delta, and ~157 MiB of headroom over 99 does not need to move for 1-1.4 MiB. arm64 Docker Desktop figures; cross-check `docker stats --no-stream` on the box.",
+      "measured_mib": {
+        "account_off": 98.03,
+        "account_on": 99.02,
+        "notification_off": 101.45,
+        "notification_on": 102.80
       }
     }
   },
@@ -168,34 +197,62 @@
     "redis": { "kind": "datastore", "datastore": "redis", "profile": null },
 
     "auth": { "kind": "api", "profile": null },
-    "account": { "kind": "api", "profile": null },
-    "product": { "kind": "api", "profile": null },
+    "account": {
+      "kind": "api_with_worker",
+      "profile": null,
+      "note": "runs the activation consumer and the domain re-verification sweep as a supervised background task since the worker-folding follow-up to the memory-headroom slice (2026-09-24) folded account-worker into it — RUN_CONSUMERS_IN_API. account-worker still exists, behind the split-workers profile, as the rollback."
+    },
+    "product": {
+      "kind": "api_with_worker",
+      "profile": null,
+      "note": "runs its one event consumer as a supervised background task since the worker-folding follow-up to the memory-headroom slice (2026-09-24) folded product-worker into it — RUN_CONSUMERS_IN_API. product-worker still exists, behind the split-workers profile, as the rollback."
+    },
     "app-gateway": { "kind": "api", "profile": null },
     "catalog": { "kind": "api", "profile": null },
-    "subscription": { "kind": "api", "profile": null },
+    "subscription": {
+      "kind": "api_with_worker",
+      "profile": null,
+      "note": "runs the payment-event consumer, the dunning sweep and the billing run as a supervised background task since the worker-folding follow-up to the memory-headroom slice (2026-09-24) folded subscription-worker into it — RUN_CONSUMERS_IN_API. subscription-worker still exists, behind the split-workers profile, as the rollback."
+    },
     "billing": { "kind": "api", "profile": null },
     "metering": { "kind": "api", "profile": null },
-    "payment": { "kind": "api", "profile": null },
-    "notification": { "kind": "api", "profile": null },
+    "payment": {
+      "kind": "api_with_worker",
+      "profile": null,
+      "note": "runs the charge consumers and the stuck-charge sweep as a supervised background task since the worker-folding follow-up to the memory-headroom slice (2026-09-24) folded payment-worker into it — RUN_CONSUMERS_IN_API. payment-worker still exists, behind the split-workers profile, as the rollback."
+    },
+    "notification": {
+      "kind": "api_with_worker",
+      "profile": null,
+      "note": "runs the two event consumers and the campaign send driver as a supervised background task since the worker-folding follow-up to the memory-headroom slice (2026-09-24) folded notification-worker into it — RUN_CONSUMERS_IN_API. notification-worker still exists, behind the split-workers profile, as the rollback."
+    },
 
     "edge-relay": { "kind": "background", "profile": null },
     "ops-monitor": { "kind": "ops_monitor", "profile": null },
     "account-worker": {
       "kind": "background",
-      "profile": null,
-      "note": "runs both the event consumer and the periodic domain re-verification sweep since ADR-0013's memory-budget erratum (2026-09-23) merged account-cron into it, the same merge subscription-worker already documents."
+      "profile": "split-workers",
+      "note": "off by default (the worker-folding follow-up to the memory-headroom slice, 2026-09-24): both loops it used to run alone now run inside the account API container itself (RUN_CONSUMERS_IN_API, see account's own note above). This container is the rollback, behind the split-workers profile — still `./bin/worker`, unchanged."
     },
-    "product-worker": { "kind": "background", "profile": null },
+    "product-worker": {
+      "kind": "background",
+      "profile": "split-workers",
+      "note": "off by default — see account-worker's own note; the same rollback shape, folded into product's own API container."
+    },
     "subscription-worker": {
       "kind": "background",
-      "profile": null,
-      "note": "runs the payment-event consumer, the dunning sweep and the billing run (trial end, period roll, ADR-0005 addendum 2026-09-23) in one process since ADR-0013's memory-budget erratum (2026-09-23) merged subscription-cron into it."
+      "profile": "split-workers",
+      "note": "off by default — see account-worker's own note. Ran the payment-event consumer, the dunning sweep and the billing run (trial end, period roll, ADR-0005 addendum 2026-09-23) in one process before the worker-folding follow-up moved all three into subscription's own API container; this container is the rollback."
     },
-    "payment-worker": { "kind": "background", "profile": null },
+    "payment-worker": {
+      "kind": "background",
+      "profile": "split-workers",
+      "note": "off by default — see account-worker's own note; the same rollback shape, folded into payment's own API container."
+    },
     "notification-worker": {
       "kind": "background",
-      "profile": null,
-      "note": "runs the events consumer, the dispatcher and the campaign send driver since the memory-headroom slice (2026-09-23) merged notification-cron into it, the same shape ADR-0013's erratum already used for subscription-worker and approval-worker."
+      "profile": "split-workers",
+      "note": "off by default — see account-worker's own note. Ran the events consumer, the dispatcher and the campaign send driver in one process before the worker-folding follow-up moved all three into notification's own API container; this container is the rollback."
     },
 
     "minio": { "kind": "datastore", "datastore": "minio", "profile": "storefront" },
@@ -217,20 +274,48 @@
       "note": "runs the nightly stock reconciliation (ReconcileSweep) as a supervised background task since the memory-headroom slice's fix round 2 (2026-09-24) folded operations-cron into it — RUN_SWEEPS_IN_API."
     },
 
-    "approval": { "kind": "api", "profile": "hrms" },
+    "approval": {
+      "kind": "api_with_worker",
+      "profile": "hrms",
+      "note": "runs both the hierarchy/regularization consumer and the SLA escalation sweep as a supervised background task since the worker-folding follow-up to the memory-headroom slice (2026-09-24) folded approval-worker into it — RUN_CONSUMERS_IN_API. approval-worker still exists, behind the split-workers profile, as the rollback."
+    },
     "approval-worker": {
       "kind": "background",
-      "profile": "hrms",
-      "note": "runs both the hierarchy/regularization consumer and the SLA escalation sweep since ADR-0013's memory-budget erratum (2026-09-23) merged approval-cron into it."
+      "profile": "split-workers",
+      "note": "off by default — see account-worker's own note. Ran both the hierarchy/regularization consumer and the SLA escalation sweep in one process before the worker-folding follow-up moved both into approval's own API container; this container is the rollback."
     },
     "employee": { "kind": "api", "profile": "hrms" },
-    "attendance": { "kind": "api", "profile": "hrms" },
-    "leave": { "kind": "api", "profile": "hrms" },
-    "leave-worker": { "kind": "background", "profile": "hrms" },
-    "attendance-worker": { "kind": "background", "profile": "hrms" },
+    "attendance": {
+      "kind": "api_with_worker",
+      "profile": "hrms",
+      "note": "runs its one event consumer as a supervised background task since the worker-folding follow-up to the memory-headroom slice (2026-09-24) folded attendance-worker into it — RUN_CONSUMERS_IN_API. attendance-worker still exists, behind the split-workers profile, as the rollback."
+    },
+    "leave": {
+      "kind": "api_with_worker",
+      "profile": "hrms",
+      "note": "runs its one event consumer as a supervised background task since the worker-folding follow-up to the memory-headroom slice (2026-09-24) folded leave-worker into it — RUN_CONSUMERS_IN_API. leave-worker still exists, behind the split-workers profile, as the rollback."
+    },
+    "leave-worker": {
+      "kind": "background",
+      "profile": "split-workers",
+      "note": "off by default — see account-worker's own note; the same rollback shape, folded into leave's own API container."
+    },
+    "attendance-worker": {
+      "kind": "background",
+      "profile": "split-workers",
+      "note": "off by default — see account-worker's own note; the same rollback shape, folded into attendance's own API container."
+    },
 
-    "customer": { "kind": "api", "profile": "crm" },
-    "customer-worker": { "kind": "background", "profile": "crm" },
+    "customer": {
+      "kind": "api_with_worker",
+      "profile": "crm",
+      "note": "runs its one event consumer as a supervised background task since the worker-folding follow-up to the memory-headroom slice (2026-09-24) folded customer-worker into it — RUN_CONSUMERS_IN_API. customer-worker still exists, behind the split-workers profile, as the rollback."
+    },
+    "customer-worker": {
+      "kind": "background",
+      "profile": "split-workers",
+      "note": "off by default — see account-worker's own note; the same rollback shape, folded into customer's own API container."
+    },
     "deal": { "kind": "api", "profile": "crm" },
     "lead": { "kind": "api", "profile": "crm" },
 
@@ -242,8 +327,16 @@
     "support": { "kind": "api", "profile": "support" },
     "marketing": { "kind": "api", "profile": "marketing" },
 
-    "finance": { "kind": "api", "profile": "finance" },
-    "finance-worker": { "kind": "background", "profile": "finance" },
+    "finance": {
+      "kind": "api_with_worker",
+      "profile": "finance",
+      "note": "runs the filing consumer and the filing-reclaim sweep as a supervised background task since the worker-folding follow-up to the memory-headroom slice (2026-09-24) folded finance-worker into it — RUN_CONSUMERS_IN_API. finance-worker still exists, behind the split-workers profile, as the rollback."
+    },
+    "finance-worker": {
+      "kind": "background",
+      "profile": "split-workers",
+      "note": "off by default — see account-worker's own note; the same rollback shape, folded into finance's own API container."
+    },
     "scheduler": { "kind": "background", "profile": "finance" },
 
     "itsm": { "kind": "api", "profile": "itsm" },
@@ -254,14 +347,14 @@
       "note": "the operator gateway (ADR-0003 §2): a separate audience and route table from app-gateway, fronting console's admin API and auth's operator routes. Off the box until the admin profile is turned on (RUNBOOK, 'Turning on the admin console'). Not one of the ten sellable product profiles (`profiles`, above) — internal tooling, never customer-facing."
     },
     "console": {
-      "kind": "api",
+      "kind": "api_with_worker",
       "profile": "admin",
-      "note": "the operator/staff console backend — replaces the 'operator-console-api' placeholder this file carried under `planned`. Cross-tenant reads on its own BYPASSRLS directory role (opsgrids_console_directory); writes (overrides, bespoke client pricing) delegate to the owning service (subscription, billing, catalog) rather than writing a foreign schema."
+      "note": "the operator/staff console backend — replaces the 'operator-console-api' placeholder this file carried under `planned`. Cross-tenant reads on its own BYPASSRLS directory role (opsgrids_console_directory); writes (overrides, bespoke client pricing) delegate to the owning service (subscription, billing, catalog) rather than writing a foreign schema. Runs its own event consumer (app/consumers.py, queue `console.events`) as a supervised background task since the worker-folding follow-up to the memory-headroom slice (2026-09-24) folded console-worker into it — RUN_CONSUMERS_IN_API. console-worker still exists, behind the split-workers profile, as the rollback."
     },
     "console-worker": {
       "kind": "background",
-      "profile": "admin",
-      "note": "runs console's own event consumer (app/consumers.py, queue `console.events`), folding the commerce transition stream into the projections the operator organizations/metrics/audit views read. No relay container for console: it currently publishes nothing (app/relay.py is kept from the scaffold for /health/outbox parity only), so nothing would ever leave its outbox."
+      "profile": "split-workers",
+      "note": "off by default — see account-worker's own note. Ran console's own event consumer (app/consumers.py, queue `console.events`) alone before the worker-folding follow-up moved it into console's own API process; this container is the rollback. No relay container for console: it currently publishes nothing (app/relay.py is kept from the scaffold for /health/outbox parity only), so nothing would ever leave its outbox."
     }
   },
 

@@ -155,19 +155,19 @@ def test_env_example_profile_list_fits_the_documented_box() -> None:
     )
 
 
-def test_every_sellable_profile_at_once_is_refused_not_silently_allowed() -> None:
-    """The scenario `.env.example` used to default to — every product this platform can sell,
-    on one box, at once — is exactly what `preflight.sh`'s hard budget line exists to catch.
-
-    Re-measuring `kinds.background` (memory-budget.json's own header, the memory-headroom
-    slice, 2026-09-23) showed this combination costs far more than the previous, never-actually-
-    measured 35-50 MB assumption priced it at — it does not fit this box at all any more, not
-    even before a single planned service is added. That is a real finding about a real box, not
-    a bug in this test: the assertion below is that `preflight.sh` would correctly REFUSE this
-    deploy rather than let it through to swap or OOM in production. If a future consolidation
-    slice brings this back under the hard line, update this assertion (and reconsider whether
-    `.env.example` should default to a wider list again) at the same time — a passing test here
-    would then be silently promising a safety net that no longer does anything."""
+def test_every_sellable_profile_at_once_no_longer_refuses_since_the_worker_fold() -> None:
+    """The scenario `.env.example` used to default to — every product this platform can sell, on
+    one box, at once — used to be exactly what `preflight.sh`'s hard budget line existed to catch
+    (see git history for the assertion this replaces). The worker-folding follow-up to the
+    memory-headroom slice (2026-09-24) is the consolidation slice that docstring asked for: moving
+    ten `*-worker` containers' loops into their own API process, on `RUN_CONSUMERS_IN_API`, drops
+    ~900 MB (ten containers at kinds.background's 90 MB) and adds back only ~10 MB (ten API
+    containers at kinds.api_with_worker's 99 vs kinds.api's 98) — a net ~890 MB saved, bringing
+    the ten-sellable-profiles total from 4581 MB (118.6%, over the hard line) to comfortably
+    under it. This is now a `warn`, not an `ok`: it is still above the 85% soft line, which is the
+    honest state of a box selling everything it can sell, not a bug. If a future change moves this
+    back over the hard line, or comfortably under the soft one, update this assertion again — the
+    same reasoning the docstring it replaces gave for updating it this time."""
     budget = _budget()
     enabled = _every_sellable_profile()
     total = expected_total_mb(budget, enabled)
@@ -176,10 +176,10 @@ def test_every_sellable_profile_at_once_is_refused_not_silently_allowed() -> Non
     verdict, percent = _verdict(
         mem_total_kb, total, host["soft_budget_percent"], host["hard_budget_percent"]
     )
-    assert verdict == "refuse", (
+    assert verdict == "warn", (
         f"every sellable profile ({','.join(sorted(enabled))}) now expects {total}M steady-state "
-        f"on a {host['mem_total_mb_reference']}M box ({percent}%) — no longer over the hard "
-        "budget. If a consolidation slice earned this back, update this test's expectation."
+        f"on a {host['mem_total_mb_reference']}M box ({percent}%) — verdict changed from `warn`. "
+        "Update this test's expectation and its docstring to match."
     )
 
 

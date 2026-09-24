@@ -20,7 +20,10 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager
 from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, services
 from app.config import settings
@@ -36,6 +39,30 @@ consumer = EventConsumer(amqp_url=settings().rabbitmq_url, queue_name="console.e
 
 Fold = Callable[[Any, dict[str, Any]], Awaitable[None]]
 
+#: Same shape as every service's `app.cron.WorkScope` — this service has no sweep of its own, so
+#: it is defined here rather than imported.
+WorkScope = Callable[[uuid.UUID], AbstractAsyncContextManager[AsyncSession]]
+
+
+def _default_session_scope(organization_id: uuid.UUID) -> Any:
+    return session_scope(organization_id=organization_id)
+
+
+#: The transaction scope `consume` opens below. Defaults to the process-wide engine — this
+#: consumer's own connection pool when it runs standalone (`python -m app.consumers`,
+#: `bin/worker`). `app/main.py` swaps it to a bulkhead scope (`platform_core.db.bulkhead_scope`)
+#: before starting this consumer as a supervised background task inside the API process, on
+#: `RUN_CONSUMERS_IN_API` — so a folded consumer's per-message transactions can neither take a
+#: connection from request traffic nor be starved by it.
+_session_scope: WorkScope = _default_session_scope
+
+
+def use_session_scope(scope: WorkScope) -> None:
+    """Point `consume` at `scope` instead of the default engine. Called once, before this
+    consumer starts, by whichever entrypoint constructs it that way — never by a handler."""
+    global _session_scope
+    _session_scope = scope
+
 
 async def consume(envelope: dict[str, Any], fold: Fold) -> None:
     """Run one fold inside a tenant-bound, idempotent transaction.
@@ -47,7 +74,7 @@ async def consume(envelope: dict[str, Any], fold: Fold) -> None:
     event_id = uuid.UUID(str(envelope["event_id"]))
     event_type = str(envelope["event_type"])
     organization_id = uuid.UUID(str(envelope["organization_id"]))
-    async with session_scope(organization_id=organization_id) as session:
+    async with _session_scope(organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("event.redelivered", event_type=event_type, event_id=str(event_id))
             return

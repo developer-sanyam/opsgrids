@@ -23,7 +23,11 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import services
 from app.config import Settings, settings
@@ -37,6 +41,33 @@ from platform_core.logging import get_logger
 log = get_logger("notification.dispatcher")
 
 consumer = EventConsumer(amqp_url=settings().rabbitmq_url, queue_name="notification.dispatch")
+
+#: Same shape as `app.cron.WorkScope` — defined again here, not imported, because this module
+#: and `app.cron` are independent layers (the service anatomy, CLAUDE.md; `.importlinter`'s
+#: `service-layers` contract refuses the same import from `app.consumers`, and this module keeps
+#: the same discipline even though the contract does not name it explicitly).
+WorkScope = Callable[[uuid.UUID], AbstractAsyncContextManager[AsyncSession]]
+
+
+def _default_session_scope(organization_id: uuid.UUID) -> Any:
+    return session_scope(organization_id=organization_id)
+
+
+#: The transaction scope every handler below opens. Defaults to the process-wide engine — this
+#: dispatcher's own connection pool when it runs standalone (`python -m app.dispatcher`,
+#: `bin/worker`). `app/main.py` swaps it to a bulkhead scope (`platform_core.db.bulkhead_scope`)
+#: before starting this dispatcher as a supervised background task inside the API process, on
+#: `RUN_CONSUMERS_IN_API` — so a folded dispatcher's per-message transactions can neither take a
+#: connection from request traffic nor be starved by it. Module-level and process-wide on
+#: purpose, the same seam the sweeps already use (`app.cron.WorkScope`).
+_session_scope: WorkScope = _default_session_scope
+
+
+def use_session_scope(scope: WorkScope) -> None:
+    """Point every handler above at `scope` instead of the default engine. Called once, before
+    this dispatcher starts, by whichever entrypoint constructs it that way — never by a handler."""
+    global _session_scope
+    _session_scope = scope
 
 
 async def dispatch(
@@ -58,7 +89,7 @@ async def dispatch(
     message_id = uuid.UUID(str(payload["message_id"]))
 
     # 1. Claim. Short, and committed before anything touches a network.
-    async with session_scope(organization_id=organization_id) as session:
+    async with _session_scope(organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("dispatch.redelivered", message_id=str(message_id))
             return
@@ -119,7 +150,7 @@ async def dispatch(
         return
 
     # 3. Record the win.
-    async with session_scope(organization_id=organization_id) as session:
+    async with _session_scope(organization_id) as session:
         await services.record_sent(
             session,
             organization_id=organization_id,
@@ -139,7 +170,7 @@ async def _record_failure(
     permanent: bool,
     cfg: Settings,
 ) -> None:
-    async with session_scope(organization_id=organization_id) as session:
+    async with _session_scope(organization_id) as session:
         await services.record_failure(
             session,
             organization_id=organization_id,

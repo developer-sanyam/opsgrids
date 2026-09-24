@@ -22,6 +22,14 @@ class Settings(ServiceSettings):
     #: role rather than the admin one keeps a bug in that path from writing anything (ADR-0002).
     db_directory_role: str | None = "opsgrids_product_directory"
 
+    #: Runs this service's single event consumer (`app/consumers.py`) as a supervised background
+    #: task inside the API process instead of the separate `product-worker` container (the
+    #: memory-headroom follow-up that folds every service's remaining worker in). Off by default
+    #: everywhere except the edge box's own `.env`: `bin/worker` still runs `python -m
+    #: app.consumers` standalone unchanged, and setting this to `false` while adding
+    #: `split-workers` to `EDGE_PROFILES` is the rollback (RUNBOOK.md).
+    run_consumers_in_api: bool = False
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

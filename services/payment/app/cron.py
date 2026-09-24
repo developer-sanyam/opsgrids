@@ -290,11 +290,16 @@ async def main() -> None:
     await sweep.run()
 
 
-def build_sweep() -> StuckChargeSweep:
+def build_sweep(*, work_scope: WorkScope | None = None) -> StuckChargeSweep:
+    """`work_scope` defaults to the process-wide engine — right for `bin/cron` and the standalone
+    `bin/worker`, both one process with nothing else to share a pool with. `app/main.py` passes a
+    bulkhead scope instead when this sweep is folded into the API process, so its per-charge
+    writes cannot take a connection from a request or be starved by one."""
     cfg = settings()
     return StuckChargeSweep(
         discovery_factory=get_outbox_sessionmaker(),
-        work_scope=lambda organization_id: session_scope(organization_id=organization_id),
+        work_scope=work_scope
+        or (lambda organization_id: session_scope(organization_id=organization_id)),
         reclaim_after=timedelta(seconds=cfg.charge_reclaim_after_seconds),
         poll_interval=cfg.charge_sweep_poll_interval_seconds,
     )

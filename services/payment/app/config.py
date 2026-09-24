@@ -57,6 +57,14 @@ class Settings(ServiceSettings):
     #: customer whose last attempt the provider did take (D3).
     charge_final_lookup_attempts: int = 3
 
+    #: Runs this service's worker loops — the charge consumers and the stuck-charge sweep
+    #: (`app/worker.py`) — as supervised background tasks inside the API process instead of the
+    #: separate `payment-worker` container (the memory-headroom follow-up that folds every
+    #: service's remaining worker in). Off by default everywhere except the edge box's own
+    #: `.env`: `bin/worker` still runs `app.worker` standalone unchanged, and setting this to
+    #: `false` while adding `split-workers` to `EDGE_PROFILES` is the rollback (RUNBOOK.md).
+    run_consumers_in_api: bool = False
+
     @model_validator(mode="after")
     def _lease_outlives_the_call(self) -> Settings:
         """The lease must outlast any call it covers, twice over plus a minute: a call that

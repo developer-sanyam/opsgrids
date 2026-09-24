@@ -202,28 +202,40 @@ def init_engine(settings: ServiceSettings) -> AsyncEngine:
 
 
 def create_bulkhead_engine(settings: ServiceSettings, *, name: str) -> AsyncEngine:
-    """A private, **one-connection** application-role engine for a background task that shares
-    an API process with request traffic (the in-API sweeps: `operations`, `storefront`,
-    `document`).
+    """A private, **fixed-size** application-role engine for background work that shares an API
+    process with request traffic (the in-API sweeps: `operations`, `storefront`, `document`; and,
+    since the worker-folding follow-up to the memory-headroom slice, every folded consumer,
+    dispatcher and driver too — `account`, `product`, `subscription`, `payment`, `notification`,
+    `approval`, `attendance`, `leave`, `customer`, `finance`).
 
-    Such a sweep used to check its per-tenant transactions out of the API's own pool — 3 + 2
+    Such work used to check its per-tenant transactions out of the API's own pool — 3 + 2
     connections on the edge (`DB_POOL_SIZE`/`DB_MAX_OVERFLOW`). Some of those transactions hold
     their connection across network calls (storefront's domain probes, document's object-store
-    delete — the "network I/O inside a transaction" pattern D3 is removing), so a slow probe
-    took a fifth of the request path's connections for as long as it ran. A bulkhead is the
-    cheap structural answer: the sweep gets exactly one connection of its own, never overflows,
-    and can neither take one from the requests nor be starved by them.
+    delete — the "network I/O inside a transaction" pattern D3 is removing), and a folded
+    consumer's per-message transaction is no different in kind: a slow probe or a slow message
+    took a share of the request path's connections for as long as it ran. A bulkhead is the cheap
+    structural answer: background work gets a pool of its own, capped well below the request
+    pool, and can neither take a connection from requests nor be starved by them.
+
+    **Two connections, not one** (raised from one when this stopped being sweep-only): a process
+    that folds more than one loop — a consumer *and* a sweep, or notification's two consumers
+    plus its campaign driver — now shares this one bulkhead among them, and a single connection
+    fully serialised a sweep tick behind a slow message (or the reverse). Still capped, and still
+    an order below the request pool: two background loops occasionally waiting on each other for
+    a connection is a latency cost background work can absorb; taking a connection from a request
+    is not.
 
     Same role, DSN and tenant-GUC reset as the process engine — still the NOBYPASSRLS app role,
-    still bound per transaction by `bulkhead_scope`. Cost: one more Postgres connection per
-    API process that runs a sweep, opened lazily, and an engine object; the caller must
-    `await engine.dispose()` at shutdown. **Sequential use only:** with a pool of one, a
-    transaction that opens a second session on this engine while holding the first would wait
-    out `pool_timeout` and fail — no sweep here nests scopes.
+    still bound per transaction by `bulkhead_scope`. Cost: up to two more Postgres connections
+    per API process that runs background work, opened lazily, and an engine object; the caller
+    must `await engine.dispose()` at shutdown. **No transaction here nests a second scope while
+    holding the first** — with only two connections, a caller that did would risk starving a
+    sibling loop that needs the other one, and with more than two loops sharing the pool would
+    eventually wait out `pool_timeout` and fail.
     """
     return _build_app_engine(
         settings,
-        pool_size=1,
+        pool_size=2,
         max_overflow=0,
         application_name=f"{settings.service_name}-{name}",
     )

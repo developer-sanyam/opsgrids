@@ -23,7 +23,11 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import ProcessedEvent
@@ -35,6 +39,33 @@ from platform_core.logging import get_logger
 log = get_logger("subscription.consumers")
 
 consumer = EventConsumer(amqp_url=settings().rabbitmq_url, queue_name="subscription.events")
+
+#: Same shape as `app.cron.WorkScope` — defined again here, not imported, because `app.consumers`
+#: and `app.cron` are independent layers (the service anatomy, CLAUDE.md; `.importlinter`'s
+#: `service-layers` contract refuses the import).
+WorkScope = Callable[[uuid.UUID], AbstractAsyncContextManager[AsyncSession]]
+
+
+def _default_session_scope(organization_id: uuid.UUID) -> Any:
+    return session_scope(organization_id=organization_id)
+
+
+#: The transaction scope every handler below opens. Defaults to the process-wide engine — this
+#: consumer's own connection pool when it runs standalone (`python -m app.consumers`,
+#: `bin/worker`). `app/main.py` swaps it to a bulkhead scope (`platform_core.db.bulkhead_scope`)
+#: before starting this consumer as a supervised background task inside the API process, on
+#: `RUN_CONSUMERS_IN_API` — so a folded consumer's per-message transactions can neither take a
+#: connection from request traffic nor be starved by it. Module-level and process-wide on
+#: purpose, the same seam the sweeps already use (`app.cron.WorkScope`).
+_session_scope: WorkScope = _default_session_scope
+
+
+def use_session_scope(scope: WorkScope) -> None:
+    """Point every handler above at `scope` instead of the default engine. Called once, before
+    this consumer starts, by whichever entrypoint constructs it that way — never by a handler."""
+    global _session_scope
+    _session_scope = scope
+
 
 #: The payment events that close the loop. Contract strings from payment-service, named here
 #: rather than imported — one process may only ever hold one service's `app` (ADR-0002).
@@ -74,7 +105,7 @@ async def open_dunning_on_payment_failed(envelope: dict[str, Any]) -> None:
     raw_subscription_id = payload.get("subscription_id")
 
     state = None
-    async with session_scope(organization_id=organization_id) as session:
+    async with _session_scope(organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("payment.failed.duplicate", event_id=str(event_id))
             return
@@ -121,7 +152,7 @@ async def recover_on_payment_captured(envelope: dict[str, Any]) -> None:
     raw_subscription_id = payload.get("subscription_id")
 
     state = None
-    async with session_scope(organization_id=organization_id) as session:
+    async with _session_scope(organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("payment.captured.duplicate", event_id=str(event_id))
             return
