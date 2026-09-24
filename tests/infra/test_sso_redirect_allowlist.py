@@ -14,6 +14,14 @@ one and forgotten in the others without a failing test naming which one moved:
 `app.opsgrids.com` is real but is not itself a *product* SPA the way the others are — it is the
 dashboard, the host the refresh cookie lives on and the `next` redirect's own target once
 sign-in completes — so it is expected on every list here too, not an exception.
+
+`admin.opsgrids.com` is the opposite exception: it is a named Caddy site and a `TLS_PLATFORM_HOSTS`
+entry (RUNBOOK, "Turning on the admin console"), but it holds no tenant session and is never a
+target for the dashboard's `next` redirect — the staff console authenticates operators through
+admin-gateway's own same-origin flow, a completely separate identity from the one this allow-list
+exists to redirect. It is excluded from every comparison below the same way `edge.opsgrids.com`
+and `api.opsgrids.com` already are, for a different reason: those two are TLS names with no SPA
+behind them at all, this one has a SPA that is simply never a `next`-redirect target.
 """
 
 from __future__ import annotations
@@ -27,9 +35,11 @@ EDGE_ENV_EXAMPLE = REPO_ROOT / "infrastructure/edge/.env.example"
 PLATFORM_HOSTS_TS = REPO_ROOT / "frontend/opsgrids-client/src/sso/platformHosts.ts"
 
 #: Named platform sites in the Caddyfile that are not product SPAs the `next` redirect should
-#: ever target: the edge asset host, and the one bare `https://{$EDGE_HOST}` site that serves
-#: `/opsgrids-public/*` and nothing an app user ever signs into.
-NON_APP_CADDY_HOSTS = frozenset({"{$EDGE_HOST}"})
+#: ever target: the edge asset host, the one bare `https://{$EDGE_HOST}` site that serves
+#: `/opsgrids-public/*` and nothing an app user ever signs into, and the staff console — a real
+#: SPA, but one that authenticates operators through admin-gateway's own flow and never the
+#: tenant dashboard's `next` redirect (see the module docstring).
+NON_APP_CADDY_HOSTS = frozenset({"{$EDGE_HOST}", "admin.opsgrids.com"})
 
 
 def _caddy_named_hosts() -> set[str]:
@@ -50,8 +60,10 @@ def _tls_platform_hosts() -> set[str]:
     hosts = {h.strip() for h in match.group(1).split(",") if h.strip()}
     # `edge.opsgrids.com` and `api.opsgrids.com` are platform-owned TLS names with no app behind
     # them yet (the edge asset host, and a reserved name) — real for TLS issuance, never a
-    # redirect target because no app SPA is ever published there.
-    return hosts - {"edge.opsgrids.com", "api.opsgrids.com"}
+    # redirect target because no app SPA is ever published there. `admin.opsgrids.com` does have
+    # a SPA behind it, but never a tenant one the dashboard's `next` redirect could land on — see
+    # `NON_APP_CADDY_HOSTS`.
+    return hosts - {"edge.opsgrids.com", "api.opsgrids.com", "admin.opsgrids.com"}
 
 
 def _client_allowlist() -> list[str]:

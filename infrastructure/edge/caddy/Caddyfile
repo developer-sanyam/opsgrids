@@ -207,6 +207,76 @@ https://app.opsgrids.com {
 	}
 }
 
+# ---------------------------------------------------------------------------- the admin console
+#
+# ADR-0003 §2: the operator surface is its own app on its own origin, talking only to
+# admin-gateway — never app-gateway, which must keep refusing every operator route regardless of
+# what this site does. Deliberately NOT `import edge`: that shared snippet's same-origin /api/*
+# handler is hardcoded to app-gateway, and thirteen sites already depend on it unchanged, so this
+# block inlines the same shape (on-demand TLS, JSON log, compression, the health route) rather
+# than parameterising a snippet that widely used with no way to dry-run the change against the
+# real box. Published by `make edge-web APP=internal` (publish-web.sh's app list). Off this box
+# — 502ing, the same as any other named site whose profile is not enabled — until the `admin`
+# compose profile is turned on (RUNBOOK, "Turning on the admin console").
+https://admin.opsgrids.com {
+	tls {
+		on_demand
+	}
+
+	log {
+		output stdout
+		format json
+	}
+
+	encode zstd gzip
+
+	handle /_edge/health {
+		respond "ok" 200
+	}
+
+	# The one upstream this site ever reverse-proxies to. Same-origin shape as every other
+	# platform app's /api/*, pointed at the operator gateway instead of the product one.
+	handle /api/* {
+		reverse_proxy admin-gateway:8000 {
+			lb_try_duration 20s
+			lb_try_interval 250ms
+		}
+	}
+
+	handle {
+		root * /srv/web/internal/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+		# No other platform SPA site sets these today (only the MinIO public-asset handler
+		# above does, for the same reason). Added here, and only here, because this is the one
+		# origin that can suspend a subscription, unmask nothing it should not, and set a
+		# client's price — the highest-privilege surface this platform serves. Costs nothing and
+		# holds even if something else here is ever misconfigured.
+		header X-Frame-Options "DENY"
+		header X-Content-Type-Options "nosniff"
+		# `style-src`/`font-src` carry Google Fonts (fix round 1): opsgrids-internal's own fonts
+		# are not self-hosted the way the rest of the platform's assets are, and `default-src
+		# 'self'` alone would 404 the stylesheet and the font files silently, in a way that reads
+		# as a missing-font bug rather than the CSP that actually caused it. `script-src` needs no
+		# exception: the theme-init snippet that used to be inline in index.html is now its own
+		# same-origin file (`public/theme-init.js`), so `default-src 'self'` covers it without
+		# `'unsafe-inline'`.
+		header Content-Security-Policy "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; frame-ancestors 'none'"
+		# HSTS (fix round 1): this origin is on-demand TLS like every other site here, so a
+		# plain-HTTP request to it always redirects to HTTPS already (the shared `http://`
+		# block); the header additionally tells the browser to never even try HTTP again for a
+		# year, closing the one-request window a network attacker could otherwise downgrade.
+		header Strict-Transport-Security "max-age=31536000"
+	}
+
+	handle_errors {
+		respond "The OpsGrids admin console is not published on this box yet." {err.status_code}
+	}
+}
+
 # ---------------------------------------------------------------------------- Inventory
 #
 # The operations product's own app (ADR-0001: one hostname per product). Published by

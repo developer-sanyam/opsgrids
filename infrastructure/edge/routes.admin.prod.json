@@ -1,0 +1,40 @@
+{
+  "$comment": [
+    "admin-gateway's production route table (never `routes.prod.json`, which is app-gateway's —",
+    "the same 'two separate files by design' split `test_route_table_parity.py` documents for the",
+    "app-gateway pair). In-cluster compose hostnames, mirroring `services/admin-gateway/routes.json`",
+    "(dev) route for route: only what the staff console and operator auth need. Nothing here is",
+    "tenant-facing — that boundary is drawn by which gateway a route is even listed under, not by a",
+    "flag on the route.",
+    "",
+    "`/api/v1/auth/operator` is blocked on app-gateway (`routes.prod.json`) so a customer-facing",
+    "surface can never reach it; here it is the one path that is NOT staff_only, because it is",
+    "where the operator token is obtained (there is no token yet to check) — same shape as the dev",
+    "table's own comment.",
+    "",
+    "Fix round 1 (security review): only `/api/v1/auth/operator` is routed to auth, never the",
+    "wider `/api/v1/auth` prefix the dev table carries — every staff auth route already lives",
+    "under `/operator` (login, MFA, refresh, logout, me, enrollment-codes, staff mfa:reset), so",
+    "the wider prefix bought this gateway nothing and would have proxied a tenant sign-in route",
+    "(`/api/v1/auth/login`, `/refresh`, `/mfa/verify`, `/select-org`) to a surface that must never",
+    "answer a tenant token.",
+    "",
+    "Service-to-service traffic is deliberately absent, for the same reason the dev table gives:",
+    "console calls account-service's staff-only directory route directly on its own port, catalog",
+    "and subscription directly on theirs, never through this gateway."
+  ],
+  "routes": [
+    { "prefix": "/api/v1/auth/operator", "upstream": "http://auth:8000" },
+
+    { "prefix": "/api/v1/admin/catalog", "upstream": "http://catalog:8000", "staff_only": true },
+
+    { "prefix": "/api/v1/admin/organizations", "upstream": "http://console:8000", "staff_only": true },
+    { "prefix": "/api/v1/admin/metrics/overview", "upstream": "http://console:8000", "staff_only": true },
+    { "prefix": "/api/v1/admin/subscriptions", "upstream": "http://console:8000", "staff_only": true },
+    { "prefix": "/api/v1/admin/overrides", "upstream": "http://console:8000", "staff_only": true },
+    { "prefix": "/api/v1/admin/usage", "upstream": "http://console:8000", "staff_only": true },
+    { "prefix": "/api/v1/admin/audit", "upstream": "http://console:8000", "staff_only": true },
+
+    { "prefix": "/api/v1/admin/credit-ledger", "upstream": "http://billing:8000", "staff_only": true }
+  ]
+}

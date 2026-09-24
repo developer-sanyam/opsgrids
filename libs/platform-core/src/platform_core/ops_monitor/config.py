@@ -87,6 +87,10 @@ PROFILE_API_CONTAINERS: Final[dict[str, tuple[str, ...]]] = {
     "marketing": ("marketing",),
     "finance": ("finance",),
     "itsm": ("itsm",),
+    #: Not one of the ten sellable-product profiles above — internal staff tooling
+    #: (`admin-gateway`, `console`), off by default (`memory-budget.json`'s own `profiles` list
+    #: is unchanged by it; see that file's `containers.admin-gateway`/`console`).
+    "admin": ("admin-gateway", "console"),
 }
 
 #: B1/m6: which DLQ-bearing worker exists for a given `COMPOSE_PROFILES` entry — only profiles
@@ -98,6 +102,10 @@ PROFILE_DLQ_QUEUES: Final[dict[str, tuple[str, ...]]] = {
     "crm": ("customer.events",),
     "hrms": ("approval.events", "attendance.events", "leave.events"),
     "finance": ("finance.events", "scheduler.events"),
+    #: console-worker's own consumer (`console.events`) — console currently publishes nothing of
+    #: its own, so there is no `console.events.dlq` producer on this box either, but the queue
+    #: it *binds* is real once the `admin` profile is on.
+    "admin": ("console.events",),
 }
 
 

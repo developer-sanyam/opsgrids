@@ -144,6 +144,10 @@ class TestComposeProfilesWildcard:
         "marketing",
         "finance",
         "itsm",
+        # Not one of the ten sellable-product profiles (memory-budget.json's own `profiles`
+        # list is unchanged by it) — internal staff tooling, but still a real key in
+        # PROFILE_API_CONTAINERS/PROFILE_DLQ_QUEUES, so `*` still has to expand to it too.
+        "admin",
     ]
 
     def test_the_wildcard_is_accepted_by_the_validator(self) -> None:

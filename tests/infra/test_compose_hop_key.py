@@ -1,11 +1,14 @@
 """M1(c)/(d) of the third-round security review: `ADMIN_GATEWAY_HOP_KEY` reaches auth, which
-verifies the admin-gateway hop signature, and reaches nothing else.
+verifies the admin-gateway hop signature, and admin-gateway, which signs with it
+(`GatewayPolicy.sign_admin_hop=True`, `services/admin-gateway/app/main.py`) — and reaches nothing
+else.
 
 Rendered the way compose renders it — `yaml.safe_load` resolves the `<<: *service-env` merges
 and the anchors — so a key added to the shared `x-service-env` block (which every service
 inherits, app-gateway included) shows up here as the failure it is. The signer is decided by
 `GatewayPolicy.sign_admin_hop`, not by who holds the key; but there is still no reason for the
-public product gateway to be handed a secret it has no use for.
+public product gateway, or any service besides the one gateway that signs and the one service
+that verifies, to be handed a secret it has no use for.
 """
 
 from __future__ import annotations
@@ -48,13 +51,19 @@ def test_the_shared_service_env_anchor_does_not_carry_the_key() -> None:
     assert KEY not in _rendered()["x-service-env"]
 
 
-def test_no_service_other_than_auth_carries_the_key() -> None:
+def test_admin_gateway_is_given_the_hop_key_to_sign_with() -> None:
+    """The signer needs the same key the verifier checks against — `Settings.model_post_init`
+    (admin-gateway's own config.py) refuses to start in production/staging/uat without it."""
+    assert _environment("admin-gateway").get(KEY) == "${ADMIN_GATEWAY_HOP_KEY:-}"
+
+
+def test_no_service_other_than_auth_and_admin_gateway_carries_the_key() -> None:
     carriers = sorted(
         name
         for name, cfg in _rendered()["services"].items()
         if isinstance(cfg.get("environment"), dict) and KEY in cfg["environment"]
     )
-    assert carriers == ["auth"], carriers
+    assert carriers == ["admin-gateway", "auth"], carriers
 
 
 def test_the_key_is_a_required_entry_in_the_edge_env_example() -> None:

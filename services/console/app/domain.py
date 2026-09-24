@@ -19,6 +19,8 @@ The resolved model (ADR-0004 §4, commerce plan):
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 from typing import Any
 
@@ -58,6 +60,37 @@ TERMINAL_STATE = "cancelled"
 def period_bucket(occurred_at: datetime) -> str:
     """Coarse `YYYY-MM` bucket a usage event rolls into. A trend, not a bill."""
     return f"{occurred_at.year:04d}-{occurred_at.month:02d}"
+
+
+def pricing_request_fingerprint(
+    *,
+    organization_id: str,
+    product_key: str,
+    amount_minor: int,
+    currency: str,
+    billing_interval: str,
+    apply_to_subscription: bool,
+) -> str:
+    """A stable digest of a `SetPricingIn` request, for the `Idempotency-Key` guard
+    (`services.set_organization_pricing`).
+
+    Deliberately excludes `reason` — free text an operator might phrase slightly differently on
+    a retry should not turn a legitimate replay into a "key reused for a different request"
+    conflict. Every field that decides the *money* is in the digest; the one field that only
+    explains it is not.
+    """
+    material = json.dumps(
+        {
+            "organization_id": organization_id,
+            "product_key": product_key,
+            "amount_minor": amount_minor,
+            "currency": currency,
+            "billing_interval": billing_interval,
+            "apply_to_subscription": apply_to_subscription,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def _is_stale(entry: dict[str, Any], occurred_at: str | None) -> bool:

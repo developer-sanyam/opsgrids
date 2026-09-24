@@ -7,11 +7,12 @@ surface (those are the product gateways').
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ServiceInfo(BaseModel):
@@ -156,3 +157,116 @@ class OverrideOut(BaseModel):
     organization_id: uuid.UUID
     delegated_to: str
     result: dict[str, Any]
+
+
+# --------------------------------------------------------------------- client pricing
+
+
+class ProductSubscriptionOut(BaseModel):
+    """The organization's live subscription for one product, read from subscription-service —
+    console's own projection (`OrgCommercialState`) does not carry the subscription id or
+    `current_period_end`, and a pricing screen needs both."""
+
+    id: uuid.UUID
+    state: str
+    plan_version_id: uuid.UUID
+    trial_ends_at: datetime | None = None
+    current_period_end: datetime | None = None
+
+
+class ProductPriceOut(BaseModel):
+    """One priced plan version, as either the org's current pin or the product's public plan."""
+
+    plan_version_id: uuid.UUID
+    amount_minor: int
+    currency: str
+    billing_interval: str
+    #: True for a version restricted to this one organization (ADR-0004 §2); always false for
+    #: `public_price`, which by definition is nobody's bespoke version.
+    is_bespoke: bool = False
+
+
+class PriceHistoryEntryOut(BaseModel):
+    """One past bespoke price this organization was set on this product, oldest details first —
+    read from console's own audit trail (`catalog.bespoke_price.created`), never from catalog:
+    an immutable plan version carries no reason and no actor, and console's record of the act is
+    the only place both live."""
+
+    plan_version_id: uuid.UUID
+    amount_minor: int
+    currency: str
+    billing_interval: str
+    created_at: datetime
+    #: Null until console can resolve a staff id to an email (no such read exists yet — see
+    #: `app/api/routes.py`'s pricing module docstring). Never the plaintext email either way:
+    #: PII is masked by default (CLAUDE.md).
+    created_by_email_masked: str | None = None
+    reason: str | None = None
+
+
+class ProductPricingOut(BaseModel):
+    """One product's whole pricing picture for one organization — what the console pricing
+    screen renders per row."""
+
+    product_key: str
+    product_name: str
+    subscription: ProductSubscriptionOut | None = None
+    current_price: ProductPriceOut | None = None
+    public_price: ProductPriceOut | None = None
+    history: list[PriceHistoryEntryOut] = Field(default_factory=list)
+
+
+class OrganizationPricingOut(BaseModel):
+    organization_id: uuid.UUID
+    products: list[ProductPricingOut] = Field(default_factory=list)
+
+
+_ISO_CURRENCY = re.compile(r"[A-Z]{3}")
+
+
+class SetPricingIn(BaseModel):
+    """Set one organization's price for one product (ADR-0004 §2): clone-and-publish a bespoke
+    flat plan version, and by default re-pin the organization's subscription to it.
+
+    `extra="forbid"` — a dangerous write accepts exactly this shape and nothing smuggled in
+    beside it (CLAUDE.md).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Lowercase, starts with a letter — the same shape every product key on this platform
+    #: already has (hrms, crm, storefront, ...). Fix for MAJOR-1 (security review, fix round 1):
+    #: this value is interpolated into a URL path segment two hops downstream
+    #: (`catalog_client.ensure_bespoke_price`, then catalog's own path param); an unconstrained
+    #: string let `product_key="../../../../../admin/catalog/plans?"` retarget that request
+    #: entirely, carrying console's own service token and the operator's forwarded bearer with
+    #: it. The pattern is defence at the boundary; `catalog_client` also percent-encodes it
+    #: before interpolating (defence in depth — neither alone is trusted).
+    product_key: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,39}$")
+    amount_minor: int = Field(gt=0, le=10_000_000_000)
+    currency: str = Field(default="INR", min_length=3, max_length=3)
+    billing_interval: Literal["month", "year"] = "month"
+    #: Why this price was set — required so a bespoke price is never silent about the deal it
+    #: reflects. 1-500 characters, per the contract.
+    reason: str = Field(min_length=1, max_length=500)
+    apply_to_subscription: bool = True
+
+    @field_validator("currency")
+    @classmethod
+    def _iso_currency(cls, value: str) -> str:
+        upper = value.upper()
+        if not _ISO_CURRENCY.fullmatch(upper):
+            raise ValueError("currency must be a 3-letter ISO-4217 code")
+        return upper
+
+
+class SetPricingOut(BaseModel):
+    plan_version_id: uuid.UUID
+    applied_to_subscription_id: uuid.UUID | None = None
+    #: `now` — re-pinned immediately (a trial, or a paid upgrade, which prorates now);
+    #: `next_period` — a paid downgrade, scheduled for the subscription's existing next-period
+    #: mechanism; `not_subscribed` — no subscription for this product, `apply_to_subscription`
+    #: was false, or the subscription is in a state (`past_due`, `suspended`, `cancelled`) that
+    #: subscription-service's own change-plan rule refuses to re-pin. See the pricing module
+    #: docstring in `app/api/routes.py` for exactly which.
+    effective: Literal["now", "next_period", "not_subscribed"]

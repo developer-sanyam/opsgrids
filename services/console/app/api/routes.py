@@ -29,11 +29,11 @@ from collections.abc import AsyncIterator
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import delegation, directory_client, selectors, services
+from app import delegation, directory_client, pricing, selectors, services
 from app.config import settings
 from app.delegation import DelegationError
 from app.directory_client import DirectoryLookupError
@@ -44,12 +44,15 @@ from app.schemas import (
     LifecycleCountsOut,
     MetricsOut,
     MetricsOverviewOut,
+    OrganizationPricingOut,
     OrganizationsOut,
     OrgDetailOut,
     OrgStateOut,
     OverrideIn,
     OverrideOut,
     ServiceInfo,
+    SetPricingIn,
+    SetPricingOut,
     SubscriptionOut,
     SubscriptionsOut,
     UsageListOut,
@@ -68,6 +71,14 @@ OperatorReadAny = Annotated[
 ]
 OperatorBilling = Annotated[Principal, Depends(require_operator(roles={"owner", "billing_ops"}))]
 OperatorAudit = Annotated[Principal, Depends(require_operator(roles={"owner", "support"}))]
+#: The contract's `console.pricing.read`/`console.pricing.write`, implemented as operator roles
+#: rather than the tenant permission grammar — ADR-0003's addendum is explicit that operator roles
+#: "never touch `pv` or a membership's grants", and console has no `app/catalogue.py` of its own
+#: for `tools/export_permissions.py` to read (that tool only discovers per-*tenant-product*
+#: catalogues). Reuses the existing role dependencies rather than adding new ones: read is
+#: `OperatorReadAny` (owner, billing_ops, support — any operator role admits identity/financial
+#: reads); write is `OperatorBilling` (owner, billing_ops), the same gate the override endpoint
+#: uses, since setting a client's price is a billing-shaped act.
 
 #: Cross-tenant reader: BYPASSRLS, SELECT-only, no tenant binding — the operator sees every org.
 DirectorySessionDep = Annotated[AsyncSession, Depends(get_directory_session)]
@@ -283,4 +294,111 @@ async def create_override(
         organization_id=payload.organization_id,
         delegated_to=spec.audience,
         result=result,
+    )
+
+
+@router.get(
+    "/admin/organizations/{organization_id}/pricing",
+    response_model=OrganizationPricingOut,
+    summary="Every product's price for one organization — current, public, and history",
+)
+async def get_organization_pricing(
+    organization_id: uuid.UUID,
+    request: Request,
+    directory_session: DirectorySessionDep,
+    client: DelegationClientDep,
+    operator: OperatorReadAny,
+) -> OrganizationPricingOut:
+    """Compose catalog's public flat prices and subscription's live subscriptions with console's
+    own bespoke-price audit history (`app/pricing.py`). 404 only when the organization itself does
+    not exist — an org with no subscription for a product still lists that product, `subscription`
+    and `current_price` null, per the contract.
+    """
+    operator_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    try:
+        directory = await directory_client.get_organization(
+            settings(), organization_id, operator_token=operator_token, client=client
+        )
+    except DirectoryLookupError as exc:
+        raise UpstreamUnavailableProblem(str(exc)) from exc
+    if directory is None:
+        raise NotFoundProblem("No such organization")
+
+    return await pricing.build_pricing_view(
+        settings(), directory_session, organization_id, client=client
+    )
+
+
+@router.post(
+    "/admin/organizations/{organization_id}/pricing",
+    response_model=SetPricingOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Set a client's price for a product — a bespoke plan version, optionally applied now",
+)
+async def set_organization_pricing(
+    organization_id: uuid.UUID,
+    payload: SetPricingIn,
+    request: Request,
+    app_session: AppSessionDep,
+    directory_session: DirectorySessionDep,
+    client: DelegationClientDep,
+    operator: OperatorBilling,
+    idempotency_key: Annotated[
+        str | None,
+        Header(
+            alias="Idempotency-Key",
+            max_length=255,
+            description=(
+                "Optional, at most 255 characters. A retried request with the same key and the "
+                "same body returns the first attempt's result instead of repeating the "
+                "catalog/subscription calls; the same key with a different body is a 409."
+            ),
+        ),
+    ] = None,
+) -> SetPricingOut:
+    """Clone-and-publish a bespoke flat price at catalog and, by default, re-pin the
+    organization's live subscription to it.
+
+    **`effective`, decided by subscription's own existing change-plan rule (`_change_plan`,
+    ADR-0005 addendum §4) — this endpoint never overrides it:**
+
+    * `"now"` — the subscription is on the new price immediately: it was trialling (no charge),
+      or it was `active` and the new price is a paid *upgrade* (charged now, prorated for the
+      rest of the period).
+    * `"next_period"` — the subscription was `active` and the new price is a paid *downgrade*:
+      subscription's existing scheduled-change mechanism applies it at `current_period_end`, so
+      as not to take back time already paid for.
+    * `"not_subscribed"` — the organization has no subscription for this product,
+      `apply_to_subscription` was `false`, or the live subscription is `past_due`, `suspended` or
+      `cancelled` (subscription refuses a change-plan outright in those states — there is no
+      fourth `effective` value for that refusal, so it is folded into this one; the bespoke price
+      is still created and published regardless).
+
+    `Idempotency-Key` is an optional header; a retried request with the same key and the same
+    body returns the first attempt's result rather than repeating the catalog/subscription calls.
+    The same key with a different body is a 409.
+    """
+    idempotency_key = idempotency_key or None
+    operator_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+
+    try:
+        directory = await directory_client.get_organization(
+            settings(), organization_id, operator_token=operator_token, client=client
+        )
+    except DirectoryLookupError as exc:
+        raise UpstreamUnavailableProblem(str(exc)) from exc
+    if directory is None:
+        raise NotFoundProblem("No such organization")
+
+    return await pricing.set_organization_pricing(
+        settings(),
+        organization_id=organization_id,
+        payload=payload,
+        idempotency_key=idempotency_key,
+        operator=operator,
+        operator_token=operator_token,
+        directory_session=directory_session,
+        app_session=app_session,
+        client=client,
+        request=request,
     )

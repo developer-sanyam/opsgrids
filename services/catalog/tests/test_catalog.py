@@ -388,6 +388,71 @@ class TestCloneToDraft:
         assert [(p.kind, p.amount_minor) for p in fresh.prices] == [("flat", 1200)]
         assert [(f.feature_key, f.value) for f in fresh.features] == [("seats", 10)]
 
+    async def test_a_public_bump_never_clones_a_bespoke_prices_negotiated_after_it(
+        self, platform_session: AsyncSession
+    ) -> None:
+        """MAJOR-5 (security review, fix round 1): a plan's version numbers are one shared
+        sequence across every audience. Before this fix, `clone_source` picked the single
+        highest `version_no` on the plan with no regard for `restricted_to_org_id` — so an owner
+        bumping the *public* plan after a client's negotiated bespoke price landed (a higher
+        `version_no`, simply by having been created later) cloned that client's own price into
+        the new public draft, handing it to every customer of the product."""
+        org = uuid.uuid4()
+        async with platform_session.begin():
+            plan = await _make_plan(platform_session, product_key="leak-public")
+            await _make_published_version(platform_session, plan, amount_minor=100000)
+            await _make_published_version(
+                platform_session, plan, amount_minor=1, restricted_to_org_id=org
+            )
+
+        async with platform_session.begin():
+            bump = await services.create_version(
+                platform_session,
+                operator_principal(),
+                plan,
+                VersionCreateIn(currency="USD"),  # no prices supplied -> clone
+                request=None,
+            )
+            fresh = await selectors.get_version(platform_session, bump.id)
+
+        assert fresh is not None
+        assert fresh.restricted_to_org_id is None
+        assert [(p.kind, p.amount_minor) for p in fresh.prices] == [("flat", 100000)], (
+            "the public bump must clone the newest PUBLIC version, never the bespoke one"
+        )
+
+    async def test_a_bespoke_clone_reuses_that_same_organizations_own_previous_price(
+        self, platform_session: AsyncSession
+    ) -> None:
+        """The other direction of MAJOR-5: re-versioning one organization's own bespoke line
+        (no explicit price sheet supplied) must clone that organization's own previous bespoke
+        version, never the public plan's price or another organization's."""
+        org_a = uuid.uuid4()
+        org_b = uuid.uuid4()
+        async with platform_session.begin():
+            plan = await _make_plan(platform_session, product_key="leak-bespoke")
+            await _make_published_version(platform_session, plan, amount_minor=100000)
+            await _make_published_version(
+                platform_session, plan, amount_minor=42000, restricted_to_org_id=org_a
+            )
+            await _make_published_version(
+                platform_session, plan, amount_minor=99000, restricted_to_org_id=org_b
+            )
+
+        async with platform_session.begin():
+            bump = await services.create_version(
+                platform_session,
+                operator_principal(),
+                plan,
+                VersionCreateIn(currency="USD", restricted_to_org_id=org_a),
+                request=None,
+            )
+            fresh = await selectors.get_version(platform_session, bump.id)
+
+        assert fresh is not None
+        assert fresh.restricted_to_org_id == org_a
+        assert [(p.kind, p.amount_minor) for p in fresh.prices] == [("flat", 42000)]
+
 
 # --------------------------------------------------------------------- operator boundary
 

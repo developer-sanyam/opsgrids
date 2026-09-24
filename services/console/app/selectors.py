@@ -15,6 +15,7 @@ source of truth to keep accurate.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Sequence
 from typing import Any
 
@@ -26,6 +27,10 @@ from app.models import AuditLog, OrgCommercialState, RevenueEvent, UsageSummary
 TRIAL_STARTED = "commerce.subscription.trial_started"
 ACTIVATED = "commerce.subscription.activated"
 CANCELLED = "commerce.subscription.cancelled"
+
+#: The audit action a staff-set bespoke price is recorded under (`services.record_bespoke_price`)
+#: — also the source of `GET .../pricing`'s per-product `history`.
+BESPOKE_PRICE_CREATED = "catalog.bespoke_price.created"
 
 
 async def all_org_states(session: AsyncSession) -> Sequence[OrgCommercialState]:
@@ -171,3 +176,49 @@ async def platform_metrics(session: AsyncSession) -> dict[str, Any]:
             round(churned / (churned + active_count), 4) if (churned + active_count) else 0.0
         ),
     }
+
+
+# --------------------------------------------------------------------- client pricing
+
+
+async def pricing_history(
+    session: AsyncSession, organization_id: uuid.UUID, product_key: str, *, limit: int = 20
+) -> Sequence[AuditLog]:
+    """This organization's past bespoke prices for one product, newest first — console's own
+    audit trail is the source (`services.record_bespoke_price`), because an immutable catalog
+    plan version carries no reason and no actor. Run under the app role with the transaction
+    bound to `organization_id` (RLS), like every tenant read on this session.
+    """
+    stmt = (
+        select(AuditLog)
+        .where(
+            AuditLog.organization_id == organization_id,
+            AuditLog.action == BESPOKE_PRICE_CREATED,
+            AuditLog.after["product_key"].astext == product_key,
+        )
+        .order_by(AuditLog.at.desc())
+        .limit(limit)
+    )
+    return (await session.execute(stmt)).scalars().all()
+
+
+async def find_pricing_change_by_idempotency_key(
+    session: AsyncSession, organization_id: uuid.UUID, idempotency_key: str
+) -> AuditLog | None:
+    """The recorded result of an earlier `POST .../pricing` carrying this `Idempotency-Key`, if
+    one already ran to completion for this organization. `None` means either this is the first
+    attempt, or an earlier one crashed before recording — both are safe to redo: catalog reuses a
+    matching bespoke version by content, and subscription's re-pin is refused as a no-op once the
+    subscription already holds the target pin (`app/api/routes.py`'s pricing module docstring).
+    """
+    stmt = (
+        select(AuditLog)
+        .where(
+            AuditLog.organization_id == organization_id,
+            AuditLog.action == BESPOKE_PRICE_CREATED,
+            AuditLog.after["idempotency_key"].astext == idempotency_key,
+        )
+        .order_by(AuditLog.at.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalars().first()

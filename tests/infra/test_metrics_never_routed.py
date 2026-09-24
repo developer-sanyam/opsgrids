@@ -24,6 +24,9 @@ ROUTE_FILES = [
     REPO_ROOT / "services/app-gateway/routes.json",
     REPO_ROOT / "services/admin-gateway/routes.json",
     REPO_ROOT / "infrastructure/edge/routes.prod.json",
+    # admin-gateway's own production table (fix round 1) — the same lint every other route
+    # table gets, not just app-gateway's pair.
+    REPO_ROOT / "infrastructure/edge/routes.admin.prod.json",
 ]
 CADDYFILE = REPO_ROOT / "infrastructure/edge/caddy/Caddyfile"
 
@@ -127,10 +130,10 @@ def test_the_edge_caddyfile_reverse_proxies_only_the_gateway_and_minio() -> None
     caught if someone remembers to grep for 'metrics'."""
     text = CADDYFILE.read_text()
     upstreams = _caddyfile_upstreams(text)
-    assert upstreams == {"app-gateway", "minio"}, (
-        f"the Caddyfile now reverse_proxies to {upstreams}, not just {{app-gateway, minio}} — "
-        "confirm the new upstream cannot serve /metrics (or ops-monitor's /status) before "
-        "widening this set"
+    assert upstreams == {"app-gateway", "admin-gateway", "minio"}, (
+        f"the Caddyfile now reverse_proxies to {upstreams}, not just "
+        "{app-gateway, admin-gateway, minio} — confirm the new upstream cannot serve /metrics "
+        "(or ops-monitor's /status) before widening this set"
     )
 
 

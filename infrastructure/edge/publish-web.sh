@@ -54,10 +54,11 @@ app="${APP:-buyer}"
 # dist_dir     where that script writes, relative to app_dir
 # entry        a file whose presence proves the entry point exists (refused otherwise)
 # `app_host` is the Caddy hostname each app is actually published under (unset for `buyer`,
-# which is every store's own hostname, and for `dashboard`, which is excluded from the
-# AUTH_REFRESH_CORS_ORIGINS check below on purpose — see there). It is what that check compares
-# against the box's own `.env`, so it has to be exactly the host `platformHosts.ts` and the
-# Caddyfile name, not the logical `$app` value this script's own case statement keys on.
+# which is every store's own hostname; for `dashboard`; and for `internal`, the staff console —
+# all three are excluded from the AUTH_REFRESH_CORS_ORIGINS check below on purpose, see there).
+# It is what that check compares against the box's own `.env`, so it has to be exactly the host
+# `platformHosts.ts` and the Caddyfile name, not the logical `$app` value this script's own case
+# statement keys on.
 case "$app" in
 buyer)
 	app_dir="$repo_root/frontend/product-storefront"
@@ -148,8 +149,17 @@ engage)
 	entry="index.html"
 	app_host="engage.opsgrids.com"
 	;;
+internal)
+	# The operator/staff console: admin.opsgrids.com. Its own audience and its own gateway
+	# (admin-gateway, never app-gateway — ADR-0003 §2); everything else about publishing it is
+	# the same shape as every other named product app.
+	app_dir="$repo_root/frontend/opsgrids-internal"
+	build_script="build"
+	dist_dir="dist"
+	entry="index.html"
+	;;
 *)
-	echo "unknown APP '$app' — one of: buyer, dashboard, operations, hrms, crm, pulseboard, projects, support, marketing, finance, itsm, storefront, engage" >&2
+	echo "unknown APP '$app' — one of: buyer, dashboard, operations, hrms, crm, pulseboard, projects, support, marketing, finance, itsm, storefront, engage, internal" >&2
 	exit 64
 	;;
 esac
@@ -304,8 +314,13 @@ MISSING
 	# the box's existing `APP_BASE_URL` rather than a second config key that could quietly drift
 	# from it: they name the same host on purpose. `dashboard` never sets this — the cookie
 	# already lives on its own origin — and `buyer` carries no auth code to configure at all.
+	# `internal` (the staff console, admin.opsgrids.com) is the third exception: it authenticates
+	# operators against admin-gateway's own same-origin refresh, never the tenant cookie this
+	# whole block exists to centralise, so it gets neither VITE_AUTH_ORIGIN nor the
+	# AUTH_REFRESH_CORS_ORIGINS check below — admin.opsgrids.com must never be added to that
+	# tenant-only allow-list (see infrastructure/edge/.env.example).
 	case "$app" in
-	buyer | dashboard) ;;
+	buyer | dashboard | internal) ;;
 	*)
 		auth_origin=$(ssh_box "sed -n 's/^APP_BASE_URL=//p' '$repo/infrastructure/edge/.env' | tail -n 1")
 		auth_origin=$(_dotenv_value "$auth_origin")

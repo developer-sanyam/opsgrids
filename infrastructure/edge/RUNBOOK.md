@@ -108,6 +108,7 @@ record terminates TLS at Cloudflare and our ACME challenge never arrives.
 | `finance.opsgrids.com` | A | the reserved IP — OpsGrids Finance's app |
 | `it.opsgrids.com` | A | the reserved IP — OpsGrids IT's app |
 | `store.opsgrids.com` | A | the reserved IP — OpsGrids Storefront's app |
+| `admin.opsgrids.com` | A | the reserved IP — the operator/staff console (ADR-0003 §2): only needed once the `admin` compose profile is turned on ("Turning on the admin console", below), but harmless to create now like every other name in this table |
 | every name above | AAAA | the VM's IPv6, if it has one |
 
 `opsgrids.com` (the marketing site, on Vercel) and `auth.` are ADR-0001's and are not touched
@@ -929,9 +930,10 @@ empty `ADMIN_GATEWAY_HOP_KEY` (every key in `.env.example` must be set), on any 
 and on a hop key equal to the internal token — the same rules the services enforce at startup, so
 the deploy stops instead of shipping an auth container that will not start. Generate it as
 `INTERNAL_SERVICE_TOKEN` is in "Secrets — generate them here, now, and never anywhere else"
-above: a fresh, separate 32+ byte value, never reused. (admin-gateway, the only signer, is not in
-this compose file, so operator sign-in is unreachable on this box — which is the intent; the key
-is here so that stays true if a signer is ever added.)
+above: a fresh, separate 32+ byte value, never reused. admin-gateway, the only signer, is in this
+compose file behind the `admin` profile (off by default — see "Turning on the admin console"
+below) and also reads this key, so operator sign-in stays unreachable on this box until that
+profile is turned on, and works the moment it is, with no key rotation needed in between.
 
 #### A locked-out MFA is unlocked by waiting, or by an owner
 
@@ -997,6 +999,136 @@ existing box out of band):
 The dev counterpart is `make reconcile-roles`, for the same problem on a local `make infra`
 volume that predates a service — it reads the same `SERVICES_WITH_SCHEMA` list out of
 `remote.sh` and reuses the identical SQL, against the dev password.
+
+### Turning on the admin console
+
+`admin-gateway`, `console` and `console-worker` ship in `compose.prod.yml` behind a new compose
+profile, `admin` — not one of the ten sellable-product profiles (`memory-budget.json`'s own
+`profiles` list is unchanged by it), so it costs this box nothing until you ask for it. Turning
+it on is the same shape as any other profile, plus the one thing every other profile does not
+need: a human, because there is no self-serve sign-up for staff.
+
+**A box already running `COMPOSE_PROFILES=*` ("every profile") turns this on too, today, with no
+further change.** `admin` is a real compose profile like any other; the wildcard expansion
+`preflight.sh` does reads it straight off `docker compose config --profiles`, which does not stop
+at the ten sellable products. If that is not the intended moment to expose the admin surface, set
+`COMPOSE_PROFILES` (or `EDGE_PROFILES`) to an explicit list instead of `*` before this ref reaches
+that box.
+
+1. **DNS.** `admin.opsgrids.com` → the box's reserved IP, A record only, not proxied (see "DNS
+   for the platform zone" above — the row is already in that table). Owner does this by hand in
+   Hostinger, same as every other platform name.
+
+2. **`COMPOSE_PROFILES` (or `EDGE_PROFILES`).** Add `admin` to the box's `.env`, comma-separated
+   with whatever else is already there:
+   ```
+   COMPOSE_PROFILES=inventory,admin
+   ```
+
+3. **`TLS_PLATFORM_HOSTS`.** `.env.example` lists `admin.opsgrids.com` by default now; a box
+   whose `.env` predates this change needs it appended by hand, or preflight fails with "the
+   Caddyfile serves admin.opsgrids.com but TLS_PLATFORM_HOSTS does not list it" the moment the
+   site block reaches this box (which it does on every deploy from this ref, whether or not the
+   profile is on — a Caddyfile site block is not profile-gated, only what it proxies to is).
+
+4. **`EDGE_BUDGET_ACCEPTED_MB`.** Run `preflight.sh` after steps 2-3 (before `deploy`, which runs
+   it for you anyway) and read what it prints for the post-deploy total. The admin profile itself
+   prices at **286 MB** (`memory_budget_totals.py memory-budget.json --profiles admin` — two `api`
+   containers at 98 MB and one `background` at 90 MB, `kinds.api`/`kinds.background`'s own
+   figures): added to whatever this box already runs, e.g. `inventory` alone
+   (2315 MB → **2601 MB**, 67.4% of the documented 3862 MB box — comfortably under the 85% soft
+   line) or every sellable profile at once
+   (4581 MB, per this file's own "what this release costs" table → **4867 MB**, 126.0% —
+   **over the 4827 MB / 125% absolute ceiling preflight enforces, which no
+   `EDGE_BUDGET_ACCEPTED_MB` can cover**). Which of those you are near depends entirely on what
+   this box already sells — read the number `preflight.sh` prints for *your* `COMPOSE_PROFILES`,
+   do not assume either figure above, and if it refuses outright at the absolute ceiling the fix
+   is de-listing or consolidating a product first, not raising the accepted number past what it
+   will let you.
+
+5. **Deploy.**
+   ```bash
+   make deploy HOST=deploy@<ip> CONFIRM=edge.opsgrids.com
+   ```
+   `remote.sh migrate` picks up `console`'s schema automatically (`SERVICES_WITH_SCHEMA` now
+   names it); `reconcile-roles` creates `opsgrids_console` and its directory reader
+   `opsgrids_console_directory` on a box whose Postgres volume predates this release, the same
+   way it already does for every other service added after first boot ("New service on an
+   existing box", above).
+
+6. **Publish the staff SPA.**
+   ```bash
+   make edge-web HOST=deploy@<ip> CONFIRM=edge.opsgrids.com APP=internal
+   ```
+   Ships `frontend/opsgrids-internal`'s build to `/srv/web/internal/current`, which is what
+   `admin.opsgrids.com`'s Caddyfile block serves. Until this runs, the site answers "The
+   OpsGrids admin console is not published on this box yet." rather than a 404 or a 502 — the
+   same `handle_errors` shape every other named platform app uses before its own first publish.
+
+7. **Create the first staff operator.** There is no seed for this in production —
+   `app.bootstrap.seed_dev_owner` (`bin/seed-staff`) refuses outright outside
+   `local`/`test`/`ci` on purpose, so a real box never gets a known-password account. Call the
+   same underlying, environment-agnostic function it wraps
+   (`app.bootstrap.bootstrap_staff_owner`) directly, once, from an interactive prompt —
+   **never inline in the command itself**: a password typed as a `python -c` argument is written
+   to this shell's own history file in plain text the moment the command runs, which
+   `getpass.getpass()` avoids by reading it from the terminal with no echo and nowhere it is
+   ever stored. This needs a real TTY to prompt on, so — unlike every other one-off `docker
+   compose run` in this runbook — leave off `-T`:
+   ```bash
+   docker compose -f compose.prod.yml --env-file .env run --rm --no-deps auth python3 -c "
+   import asyncio
+   import getpass
+   from app.bootstrap import bootstrap_staff_owner
+   from app.config import settings
+   from platform_core.db import dispose_engine, init_engine, session_scope
+
+   async def main() -> None:
+       email = input('Email: ')
+       display_name = input('Display name: ')
+       password = getpass.getpass('Password (not echoed, not logged): ')
+       init_engine(settings())
+       try:
+           async with session_scope() as session:
+               staff, created = await bootstrap_staff_owner(
+                   session, email=email, password=password, display_name=display_name,
+                   roles=['owner'],
+               )
+               print(f'staff_id={staff.id} created={created}')
+       finally:
+           await dispose_engine()
+
+   asyncio.run(main())
+   "
+   ```
+   `roles=['owner']` is every operator capability (the ADR-0003 addendum's role matrix); a
+   narrower first account is not useful, since only `owner` may issue another staff member's
+   enrolment code. Idempotent by email — re-running with the same email returns the existing row
+   (`created=False`) rather than a second account, and the password prompt is skipped on nothing:
+   `bootstrap_staff_owner` never rewrites a password on an existing row, so retyping one is safe.
+
+8. **Issue that account's enrolment code.** A password alone is not enough to reach MFA
+   enrolment (ADR-0003 addendum); a brand-new staff account has no confirmed factor yet, so it
+   is exactly who `bin/issue-enrollment-codes` is for ("The staff enrolment codes", above):
+   ```bash
+   docker compose -f compose.prod.yml --env-file .env run --rm -T auth \
+     python -c "from app.bootstrap import issue_codes_main; issue_codes_main()"
+   ```
+   Prints `email code` — this one line is the only place the code is ever shown. Hand it to
+   yourself out of band if someone else is at the keyboard; there is no "resend".
+
+9. **Enrol MFA and sign in**, at `https://admin.opsgrids.com`, through the console UI's own
+   sign-in screen. Underneath, it drives the same operator auth routes any client would:
+   `POST /api/v1/auth/operator/login` (email, password) → a `pre_auth_token` with no confirmed
+   factor yet → `POST /api/v1/auth/operator/mfa/enrol` (`pre_auth_token`, the enrolment code from
+   step 8) → a QR/secret and a `factor_id` → `POST /api/v1/auth/operator/mfa/enrol/confirm`
+   (`pre_auth_token`, `factor_id`, the six-digit code from an authenticator app) → a real access
+   and refresh token. Every one of these is public on admin-gateway's route table by design —
+   there is no token yet to check — and every one of them runs on a pre-auth token that is
+   useless for anything else (`services/auth/app/api/routes.py`'s own module docstring on
+   `PRE_AUTH`). From here on, sign-in is the ordinary email/password/TOTP flow every later staff
+   member also uses, once an `owner` has issued *their* enrolment code the same way (step 8, or
+   the audited `POST /auth/operator/enrollment-codes` route from inside the console itself).
 
 ### Roll back a bad deploy
 

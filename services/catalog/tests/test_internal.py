@@ -98,3 +98,67 @@ class TestInternalPinLookup:
             headers={"X-Internal-Token": _token()},
         )
         assert resp.status_code == 404
+
+
+class TestPublicFlatPlans:
+    """The console pricing screen's baseline read: one row per product's public flat plan."""
+
+    async def test_it_lists_the_newest_published_public_flat_version_per_product(
+        self, client, platform_session: AsyncSession
+    ) -> None:
+        op = operator_principal()
+        async with platform_session.begin():
+            plan = await services.create_plan(
+                platform_session,
+                op,
+                PlanCreateIn(product_key="hrms", code="flat", name="People"),
+                request=None,
+            )
+            v1 = await services.create_version(
+                platform_session,
+                op,
+                plan,
+                VersionCreateIn(
+                    currency="INR",
+                    prices=[PriceIn(kind="flat", amount_minor=100000, currency="INR")],
+                ),
+                request=None,
+            )
+            await services.publish_version(platform_session, op, v1, request=None)
+            v2 = await services.create_version(
+                platform_session,
+                op,
+                plan,
+                VersionCreateIn(
+                    currency="INR",
+                    prices=[PriceIn(kind="flat", amount_minor=120000, currency="INR")],
+                ),
+                request=None,
+            )
+            await services.publish_version(platform_session, op, v2, request=None)
+            # A bespoke, restricted version must never show up as anyone's "public" price.
+            bespoke = await services.create_version(
+                platform_session,
+                op,
+                plan,
+                VersionCreateIn(
+                    currency="INR",
+                    restricted_to_org_id=uuid.uuid4(),
+                    prices=[PriceIn(kind="flat", amount_minor=1, currency="INR")],
+                ),
+                request=None,
+            )
+            await services.publish_version(platform_session, op, bespoke, request=None)
+
+        resp = await client.get(
+            "/internal/v1/public-flat-plans", headers={"X-Internal-Token": _token()}
+        )
+        assert resp.status_code == 200
+        rows = {row["product_key"]: row for row in resp.json()["plans"]}
+        assert rows["hrms"]["plan_version_id"] == str(v2.id), "the newest published version wins"
+        assert rows["hrms"]["amount_minor"] == 120000
+        assert rows["hrms"]["product_name"] == "People"
+
+    async def test_without_a_service_token_it_is_refused(self, client) -> None:
+        resp = await client.get("/internal/v1/public-flat-plans")
+        assert resp.status_code == 401

@@ -269,6 +269,88 @@ async def record_override(
         )
 
 
+async def record_bespoke_price(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID | None,
+    operator_label: str,
+    product_key: str,
+    plan_version_id: uuid.UUID,
+    amount_minor: int,
+    currency: str,
+    billing_interval: str,
+    applied_to_subscription_id: uuid.UUID | None,
+    effective: str,
+    reason: str,
+    idempotency_key: str | None,
+    request_fingerprint: str,
+    request: Request | None,
+    apply_error: str | None = None,
+) -> None:
+    """Record a staff-set bespoke price, bound to the **target** organization — the "record" step
+    of claim/call/record (docs/io-outside-transactions.md, `app/pricing.py`) for
+    `POST .../pricing`. `catalog.bespoke_price.created` is always written;
+    `subscription.migrated_to_bespoke` only when a live subscription was actually re-pinned.
+    `after` on the first row carries the idempotency key and the request's own fingerprint, which
+    is what makes a repeat of the same `Idempotency-Key` a lookup rather than a second call to
+    catalog and subscription (`selectors.find_pricing_change_by_idempotency_key`).
+
+    `apply_error` (fix round 1, MAJOR-4) is set only when the price was created but the re-pin
+    was refused for a reason that is not the ordinary "no subscription"/"apply_to_subscription
+    was false" shape — a billing-period claim in flight (`BillingCatchingUp`), so far. Recorded
+    as `after["applied"] = False` and `after["reason"]` — the latter is this JSON blob's own key,
+    not the audit row's `reason` *column* (which always holds the staff's own stated reason for
+    the price, `reason` above, regardless of whether the re-pin applied).
+    """
+    async with session.begin():
+        await set_tenant(session, organization_id)
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=organization_id,
+            actor_id=actor_id,
+            acting_as=operator_label,
+            action="catalog.bespoke_price.created",
+            entity="plan_version",
+            entity_id=plan_version_id,
+            after={
+                "product_key": product_key,
+                "amount_minor": amount_minor,
+                "currency": currency,
+                "billing_interval": billing_interval,
+                "applied_to_subscription_id": (
+                    str(applied_to_subscription_id) if applied_to_subscription_id else None
+                ),
+                "applied": applied_to_subscription_id is not None,
+                "effective": effective,
+                "idempotency_key": idempotency_key,
+                "request_fingerprint": request_fingerprint,
+                **({"reason": apply_error} if apply_error else {}),
+            },
+            reason=reason,
+            request=request,
+        )
+        if applied_to_subscription_id is not None:
+            record_audit(
+                session,
+                AuditLog,
+                organization_id=organization_id,
+                actor_id=actor_id,
+                acting_as=operator_label,
+                action="subscription.migrated_to_bespoke",
+                entity="subscription",
+                entity_id=applied_to_subscription_id,
+                after={
+                    "product_key": product_key,
+                    "plan_version_id": str(plan_version_id),
+                    "effective": effective,
+                },
+                reason=reason,
+                request=request,
+            )
+
+
 async def record_organization_read(
     session: AsyncSession,
     *,

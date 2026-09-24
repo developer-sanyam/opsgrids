@@ -92,6 +92,22 @@ async def get_by_product(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def list_by_organization(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> list[Subscription]:
+    """Every subscription this organization holds — the operator console's cross-tenant pricing
+    read (`api/internal.py:list_subscriptions_for_operator`). Explicit filter plus RLS, exactly
+    like every other query here: the transaction is bound to `organization_id` by the caller
+    before this runs, so the filter and the policy agree rather than one standing in for the
+    other."""
+    stmt = _with_items(
+        select(Subscription)
+        .where(Subscription.organization_id == organization_id)
+        .order_by(Subscription.product_key)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
 # ----------------------------------------------------------------------- dunning (ADR-0005)
 
 

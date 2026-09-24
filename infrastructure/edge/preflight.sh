@@ -189,6 +189,12 @@ declared_profiles=$(resolve_declared_profiles "${EDGE_PROFILES:-}" "${COMPOSE_PR
 # advisories below match profile names one at a time, and a literal `*` matches none of them —
 # every sold product would read as unserved. Expanded here to the compose file's own profile
 # list; `bad` (not a silent fallback) if compose cannot list it.
+#
+# That expansion reads the list straight from `docker compose config --profiles`, which is not
+# limited to the ten sellable-product profiles: `admin` (RUNBOOK, "Turning on the admin console")
+# is a real compose profile too, so `COMPOSE_PROFILES=*` on this box turns on admin-gateway and
+# console along with everything else — worth knowing before setting it, since the admin surface
+# is otherwise off by an owner's deliberate choice, not by omission from this list.
 case ",${declared_profiles}," in
 *",*,"*)
 	if all_compose_profiles=$(docker compose -f compose.prod.yml --env-file .env config --profiles | tr '\n' ',' | sed 's/,$//') && [ -n "$all_compose_profiles" ]; then
@@ -630,6 +636,16 @@ while read -r upstream; do
 	*) echo "  warn  routes.prod.json sends traffic to '$upstream', which this box's profiles do not run (callers get 504)" >&2 ;;
 	esac
 done < <(grep -o '"upstream": *"http://[a-z-]*' routes.prod.json | sed 's#.*http://##' | sort -u)
+
+# Same check, for admin-gateway's own route table — off entirely unless the `admin` profile is
+# on, so this only ever fires for a box that declared `admin` and still points a route at
+# something its profiles do not run.
+while read -r upstream; do
+	case "$running_services" in
+	*" $upstream "*) ;;
+	*) echo "  warn  routes.admin.prod.json sends traffic to '$upstream', which this box's profiles do not run (callers get 504)" >&2 ;;
+	esac
+done < <(grep -o '"upstream": *"http://[a-z-]*' routes.admin.prod.json | sed 's#.*http://##' | sort -u)
 
 # Same check for the Caddyfile's own reverse proxies (the gateway aside, `minio` is the one
 # that is profile-gated today): a store's uploaded images 502 through Caddy rather than 404

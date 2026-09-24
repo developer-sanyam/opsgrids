@@ -246,7 +246,23 @@
     "finance-worker": { "kind": "background", "profile": "finance" },
     "scheduler": { "kind": "background", "profile": "finance" },
 
-    "itsm": { "kind": "api", "profile": "itsm" }
+    "itsm": { "kind": "api", "profile": "itsm" },
+
+    "admin-gateway": {
+      "kind": "api",
+      "profile": "admin",
+      "note": "the operator gateway (ADR-0003 §2): a separate audience and route table from app-gateway, fronting console's admin API and auth's operator routes. Off the box until the admin profile is turned on (RUNBOOK, 'Turning on the admin console'). Not one of the ten sellable product profiles (`profiles`, above) — internal tooling, never customer-facing."
+    },
+    "console": {
+      "kind": "api",
+      "profile": "admin",
+      "note": "the operator/staff console backend — replaces the 'operator-console-api' placeholder this file carried under `planned`. Cross-tenant reads on its own BYPASSRLS directory role (opsgrids_console_directory); writes (overrides, bespoke client pricing) delegate to the owning service (subscription, billing, catalog) rather than writing a foreign schema."
+    },
+    "console-worker": {
+      "kind": "background",
+      "profile": "admin",
+      "note": "runs console's own event consumer (app/consumers.py, queue `console.events`), folding the commerce transition stream into the projections the operator organizations/metrics/audit views read. No relay container for console: it currently publishes nothing (app/relay.py is kept from the scaffold for /health/outbox parity only), so nothing would ever leave its outbox."
+    }
   },
 
   "planned": {
@@ -292,12 +308,6 @@
       "kind": "api",
       "profile": null,
       "note": "backlog: a platform config surface (feature flags / org-level settings) named core rather than product-profiled, since every product would read it. No service directory yet — priced against core so a future slice adding it to `containers` with `profile: null` matches this placeholder."
-    },
-    "operator-console-api": {
-      "container": "console",
-      "kind": "api",
-      "profile": null,
-      "note": "the operator/staff console backend (this repository's own slice/operator-console-backend branch) — internal tooling used across every product, assumed core rather than profiled."
     },
     "analytics-api": {
       "container": "analytics",

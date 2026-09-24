@@ -28,13 +28,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import services
+from app import selectors, services
 from app.api.routes import CatalogDep
 from app.registry import ProductRegistry
 from app.schemas import OperatorChangePlanIn, OperatorSubscribeIn, SubscriptionOut, SuspendIn
 from platform_core.auth import require_service_token
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
+from platform_core.errors import UnauthorizedProblem
 from platform_core.logging import get_logger
 
 log = get_logger("subscription.internal")
@@ -47,6 +48,23 @@ router = APIRouter(
 )
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+
+#: Console is the only caller of the two routes below — a cross-tenant subscription read and a
+#: staff-set bespoke-price re-pin are both narrower than "any service holding a valid token"
+#: should reach, unlike the pin lookup and the bundle-sale routes elsewhere in this file, which
+#: predate this and are left as they were (out of this slice's boundary).
+TRUSTED_CALLER = "console"
+
+
+def require_console_caller(request: Request) -> None:
+    """The narrower caller check: valid, addressed to subscription (the router-level
+    `require_service_token` above already checked that), and issued by console specifically."""
+    caller = getattr(request.state, "service_caller", None)
+    if caller != TRUSTED_CALLER:
+        raise UnauthorizedProblem("Valid service token required")
+
+
+ConsoleCallerDep = Annotated[None, Depends(require_console_caller)]
 
 
 @router.post(
@@ -139,6 +157,7 @@ async def subscribe_as_operator(
 async def change_plan_as_operator(
     subscription_id: uuid.UUID,
     payload: OperatorChangePlanIn,
+    _caller: ConsoleCallerDep,
     session: SessionDep,
     catalog: CatalogDep,
     registry: RegistryDep,
@@ -156,3 +175,30 @@ async def change_plan_as_operator(
         )
         result = SubscriptionOut.model_validate(subscription)
     return result
+
+
+@router.get(
+    "/organizations/{organization_id}/subscriptions",
+    response_model=list[SubscriptionOut],
+    summary="Every subscription this organization holds — console's cross-tenant pricing read",
+)
+async def list_subscriptions_for_operator(
+    organization_id: uuid.UUID,
+    session: SessionDep,
+    request: Request,
+    _caller: ConsoleCallerDep,
+) -> list[SubscriptionOut]:
+    """What `GET /admin/organizations/{id}/pricing` and the pricing POST's re-pin decision both
+    need: this organization's live subscriptions, with the id and `current_period_end` the
+    console projection (`console.OrgCommercialState`) does not carry. Bound to the named
+    organization as the first statement, the same shape every other route in this file uses —
+    there is no principal to take a chokepoint session from on a service-token request, so RLS
+    isolation depends on this binding rather than on a caller-supplied filter alone.
+    """
+    settings: ServiceSettings = request.app.state.settings
+    async with session.begin():
+        await set_tenant(session, organization_id)
+        if not settings.is_production:
+            await assert_tenant(session, organization_id)
+        subscriptions = await selectors.list_by_organization(session, organization_id)
+        return [SubscriptionOut.model_validate(s) for s in subscriptions]

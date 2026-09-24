@@ -400,6 +400,27 @@
         "title": "OrgStateOut",
         "type": "object"
       },
+      "OrganizationPricingOut": {
+        "properties": {
+          "organization_id": {
+            "format": "uuid",
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "products": {
+            "items": {
+              "$ref": "#/components/schemas/ProductPricingOut"
+            },
+            "title": "Products",
+            "type": "array"
+          }
+        },
+        "required": [
+          "organization_id"
+        ],
+        "title": "OrganizationPricingOut",
+        "type": "object"
+      },
       "OrganizationsOut": {
         "description": "The operator organizations view: every org's state, plus the platform metrics.",
         "properties": {
@@ -521,6 +542,205 @@
         "title": "OverrideOut",
         "type": "object"
       },
+      "PriceHistoryEntryOut": {
+        "description": "One past bespoke price this organization was set on this product, oldest details first \u2014\nread from console's own audit trail (`catalog.bespoke_price.created`), never from catalog:\nan immutable plan version carries no reason and no actor, and console's record of the act is\nthe only place both live.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "billing_interval": {
+            "title": "Billing Interval",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by_email_masked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By Email Masked"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "plan_version_id": {
+            "format": "uuid",
+            "title": "Plan Version Id",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "plan_version_id",
+          "amount_minor",
+          "currency",
+          "billing_interval",
+          "created_at"
+        ],
+        "title": "PriceHistoryEntryOut",
+        "type": "object"
+      },
+      "ProductPriceOut": {
+        "description": "One priced plan version, as either the org's current pin or the product's public plan.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "billing_interval": {
+            "title": "Billing Interval",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "is_bespoke": {
+            "default": false,
+            "title": "Is Bespoke",
+            "type": "boolean"
+          },
+          "plan_version_id": {
+            "format": "uuid",
+            "title": "Plan Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan_version_id",
+          "amount_minor",
+          "currency",
+          "billing_interval"
+        ],
+        "title": "ProductPriceOut",
+        "type": "object"
+      },
+      "ProductPricingOut": {
+        "description": "One product's whole pricing picture for one organization \u2014 what the console pricing\nscreen renders per row.",
+        "properties": {
+          "current_price": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProductPriceOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/PriceHistoryEntryOut"
+            },
+            "title": "History",
+            "type": "array"
+          },
+          "product_key": {
+            "title": "Product Key",
+            "type": "string"
+          },
+          "product_name": {
+            "title": "Product Name",
+            "type": "string"
+          },
+          "public_price": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProductPriceOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subscription": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProductSubscriptionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "product_key",
+          "product_name"
+        ],
+        "title": "ProductPricingOut",
+        "type": "object"
+      },
+      "ProductSubscriptionOut": {
+        "description": "The organization's live subscription for one product, read from subscription-service \u2014\nconsole's own projection (`OrgCommercialState`) does not carry the subscription id or\n`current_period_end`, and a pricing screen needs both.",
+        "properties": {
+          "current_period_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Period End"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "plan_version_id": {
+            "format": "uuid",
+            "title": "Plan Version Id",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "trial_ends_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trial Ends At"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "plan_version_id"
+        ],
+        "title": "ProductSubscriptionOut",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -537,6 +757,93 @@
           "schema_name"
         ],
         "title": "ServiceInfo",
+        "type": "object"
+      },
+      "SetPricingIn": {
+        "additionalProperties": false,
+        "description": "Set one organization's price for one product (ADR-0004 \u00a72): clone-and-publish a bespoke\nflat plan version, and by default re-pin the organization's subscription to it.\n\n`extra=\"forbid\"` \u2014 a dangerous write accepts exactly this shape and nothing smuggled in\nbeside it (CLAUDE.md).",
+        "properties": {
+          "amount_minor": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 10000000000.0,
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "apply_to_subscription": {
+            "default": true,
+            "title": "Apply To Subscription",
+            "type": "boolean"
+          },
+          "billing_interval": {
+            "default": "month",
+            "enum": [
+              "month",
+              "year"
+            ],
+            "title": "Billing Interval",
+            "type": "string"
+          },
+          "currency": {
+            "default": "INR",
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Currency",
+            "type": "string"
+          },
+          "product_key": {
+            "pattern": "^[a-z][a-z0-9_-]{0,39}$",
+            "title": "Product Key",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "product_key",
+          "amount_minor",
+          "reason"
+        ],
+        "title": "SetPricingIn",
+        "type": "object"
+      },
+      "SetPricingOut": {
+        "properties": {
+          "applied_to_subscription_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied To Subscription Id"
+          },
+          "effective": {
+            "enum": [
+              "now",
+              "next_period",
+              "not_subscribed"
+            ],
+            "title": "Effective",
+            "type": "string"
+          },
+          "plan_version_id": {
+            "format": "uuid",
+            "title": "Plan Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan_version_id",
+          "effective"
+        ],
+        "title": "SetPricingOut",
         "type": "object"
       },
       "SubscriptionOut": {
@@ -818,6 +1125,121 @@
           }
         },
         "summary": "One organization's detail \u2014 commercial projection composed with directory identity",
+        "tags": [
+          "console"
+        ]
+      }
+    },
+    "/api/v1/admin/organizations/{organization_id}/pricing": {
+      "get": {
+        "description": "Compose catalog's public flat prices and subscription's live subscriptions with console's\nown bespoke-price audit history (`app/pricing.py`). 404 only when the organization itself does\nnot exist \u2014 an org with no subscription for a product still lists that product, `subscription`\nand `current_price` null, per the contract.",
+        "operationId": "get_organization_pricing_api_v1_admin_organizations__organization_id__pricing_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationPricingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Every product's price for one organization \u2014 current, public, and history",
+        "tags": [
+          "console"
+        ]
+      },
+      "post": {
+        "description": "Clone-and-publish a bespoke flat price at catalog and, by default, re-pin the\norganization's live subscription to it.\n\n**`effective`, decided by subscription's own existing change-plan rule (`_change_plan`,\nADR-0005 addendum \u00a74) \u2014 this endpoint never overrides it:**\n\n* `\"now\"` \u2014 the subscription is on the new price immediately: it was trialling (no charge),\n  or it was `active` and the new price is a paid *upgrade* (charged now, prorated for the\n  rest of the period).\n* `\"next_period\"` \u2014 the subscription was `active` and the new price is a paid *downgrade*:\n  subscription's existing scheduled-change mechanism applies it at `current_period_end`, so\n  as not to take back time already paid for.\n* `\"not_subscribed\"` \u2014 the organization has no subscription for this product,\n  `apply_to_subscription` was `false`, or the live subscription is `past_due`, `suspended` or\n  `cancelled` (subscription refuses a change-plan outright in those states \u2014 there is no\n  fourth `effective` value for that refusal, so it is folded into this one; the bespoke price\n  is still created and published regardless).\n\n`Idempotency-Key` is an optional header; a retried request with the same key and the same\nbody returns the first attempt's result rather than repeating the catalog/subscription calls.\nThe same key with a different body is a 409.",
+        "operationId": "set_organization_pricing_api_v1_admin_organizations__organization_id__pricing_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional, at most 255 characters. A retried request with the same key and the same body returns the first attempt's result instead of repeating the catalog/subscription calls; the same key with a different body is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional, at most 255 characters. A retried request with the same key and the same body returns the first attempt's result instead of repeating the catalog/subscription calls; the same key with a different body is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPricingIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetPricingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set a client's price for a product \u2014 a bespoke plan version, optionally applied now",
         "tags": [
           "console"
         ]
