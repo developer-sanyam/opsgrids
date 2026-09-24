@@ -206,7 +206,9 @@ class StuckChargeSweep:
         try:
             provider = self._provider_factory()
             async with self._work_scope(organization_id) as session:
-                step, charge = await services.claim_stuck_charge(session, charge_id, now=now)
+                step, charge = await services.claim_stuck_charge(
+                    session, charge_id, organization_id=organization_id, now=now
+                )
             if step == "exhausted":
                 report.exhausted += 1
                 return
@@ -222,7 +224,9 @@ class StuckChargeSweep:
                 report.failed += 1  # timed out; the lease lapses and a later tick resumes it
                 return
             async with self._work_scope(organization_id) as session:
-                await services.finalize_charge(session, charge_id, result)
+                await services.finalize_charge(
+                    session, charge_id, result, organization_id=organization_id
+                )
             report.resumed += 1
         except Exception:
             log.exception(
@@ -242,7 +246,9 @@ class StuckChargeSweep:
         lookup = await services.lookup_provider_charge_off_loop(provider, charge)
         if lookup.kind == "found" and lookup.result is not None:
             async with self._work_scope(organization_id) as session:
-                await services.finalize_charge(session, charge.id, lookup.result)
+                await services.finalize_charge(
+                    session, charge.id, lookup.result, organization_id=organization_id
+                )
             log.warning(
                 "payment.stuck_charge.found_at_final_lookup",
                 organization_id=str(organization_id),
@@ -252,7 +258,9 @@ class StuckChargeSweep:
             return
         if lookup.kind == "none":
             async with self._work_scope(organization_id) as session:
-                failed = await services.fail_exhausted_charge(session, charge.id)
+                failed = await services.fail_exhausted_charge(
+                    session, charge.id, organization_id=organization_id
+                )
             if failed is not None:
                 report.exhausted += 1
             else:

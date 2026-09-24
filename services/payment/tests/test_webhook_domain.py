@@ -179,6 +179,30 @@ class TestTheAdapterReadsARealBodyDefensively:
         ).encode()
         assert _provider().parse_webhook(body=body).entity_id == "rfnd_1"
 
+    def test_a_numeric_note_is_kept_as_text_so_a_malformed_organization_is_seen(self) -> None:
+        """A number in `organization_id` is *present and wrong* — a platform-side bug worth an
+        error log — not absent; a boolean or null is absent."""
+        body = json.dumps(
+            {
+                "event": "payment.captured",
+                "payload": {
+                    "payment": {
+                        "entity": {
+                            "notes": {"organization_id": 12345, "charge_id": 7.5, "other": True}
+                        }
+                    }
+                },
+            }
+        ).encode()
+        event = _provider().parse_webhook(body=body)
+        assert event.organization_id == "12345" and event.charge_id == "7.5"
+
+        for junk in (True, None, [], {}, ""):
+            body = json.dumps(
+                {"payload": {"payment": {"entity": {"notes": {"organization_id": junk}}}}}
+            ).encode()
+            assert _provider().parse_webhook(body=body).organization_id is None
+
     def test_an_empty_notes_list_is_no_notes(self) -> None:
         """Razorpay returns `notes: []` (a list) for a payment with none."""
         body = json.dumps(

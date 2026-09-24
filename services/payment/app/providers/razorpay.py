@@ -98,6 +98,17 @@ def _as_text(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _note_text(value: Any) -> str | None:
+    """A `notes` value as text. Razorpay notes are strings, but numbers are accepted on the wire; a
+    number is kept (as its text) rather than dropped, so a *malformed* organization id is seen as
+    present-and-wrong — which is a platform bug worth an error — and not mistaken for absent."""
+    if isinstance(value, str):
+        return value or None
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return str(value)
+    return None
+
+
 def _as_int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
@@ -315,7 +326,9 @@ class RazorpayProvider:
     def verify_webhook(self, *, signature: str | None, body: bytes) -> bool:
         """Constant-time HMAC-SHA256 of the raw body under the webhook secret — Razorpay's own
         scheme. No signature, or a signature that does not match these exact bytes, is False."""
-        if not signature:
+        # `compare_digest` on a `str` raises `TypeError` for a non-ASCII one — a 500 (retried for
+        # days) for a header anyone can send. A real HMAC is hex; anything else is simply wrong.
+        if not signature or not signature.isascii():
             return False
         expected = hmac.new(self._webhook_secret.encode(), body, hashlib.sha256).hexdigest()
         return hmac.compare_digest(expected, signature)
@@ -359,8 +372,8 @@ class RazorpayProvider:
             provider_event_id=_as_text(parsed.get("id")) or "",
             event_name=event_name,
             outcome_state=_EVENT_OUTCOMES.get(event_name, "unknown"),
-            organization_id=_as_text(notes.get("organization_id")),
-            charge_id=_as_text(notes.get("charge_id")),
+            organization_id=_note_text(notes.get("organization_id")),
+            charge_id=_note_text(notes.get("charge_id")),
             provider_payment_id=_as_text(entity.get("id")),
             failure_reason=_as_text(entity.get("error_description")),
             raw=parsed,

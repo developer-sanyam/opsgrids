@@ -81,7 +81,13 @@ async def create_charge(
                 await set_tenant(session, payload.organization_id)
                 if not settings.is_production:
                     await assert_tenant(session, payload.organization_id)
-                charge = await services.finalize_charge(session, charge.id, result, request=request)
+                charge = await services.finalize_charge(
+                    session,
+                    charge.id,
+                    result,
+                    organization_id=payload.organization_id,
+                    request=request,
+                )
 
     result_out = ChargeOut.model_validate(charge)
     log.info(

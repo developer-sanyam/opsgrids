@@ -15,6 +15,9 @@ import json
 import uuid
 from typing import Any
 
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import settings
 from platform_core.internal_auth import mint_service_token
 
@@ -123,3 +126,105 @@ def signed_post(
     if event_id is not None:
         headers["X-Razorpay-Event-Id"] = event_id
     return {"content": body, "headers": headers}
+
+
+# --------------------------------------------------------------------------- reading the truth
+#
+# State is asserted from the database on a separate BYPASSRLS session (`admin_session`), never from
+# the shared test session's identity map, which would happily show a rolled-back attribute as still
+# set.
+
+
+async def rows(admin: AsyncSession, sql: str, **params: Any) -> list[dict[str, Any]]:
+    async with admin.begin():
+        return [dict(r) for r in (await admin.execute(text(sql), params)).mappings().all()]
+
+
+async def inbox_rows(admin: AsyncSession, org: uuid.UUID) -> list[dict[str, Any]]:
+    return await rows(
+        admin,
+        "SELECT provider_event_id, event_name, charge_id, disposition, disposition_reason, id, "
+        "payload FROM payment.provider_events WHERE organization_id = :org "
+        "ORDER BY received_at, provider_event_id",
+        org=org,
+    )
+
+
+async def audit_rows(admin: AsyncSession, org: uuid.UUID) -> list[dict[str, Any]]:
+    return await rows(
+        admin,
+        "SELECT action, entity, entity_id, acting_as, before, after FROM payment.audit_logs "
+        "WHERE organization_id = :org ORDER BY at, action",
+        org=org,
+    )
+
+
+def ignored_audits(all_audits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [a for a in all_audits if a["action"] == "payment.webhook.ignored"]
+
+
+async def emitted(admin: AsyncSession, org: uuid.UUID) -> list[str]:
+    found = await rows(
+        admin,
+        "SELECT event_type FROM payment.outbox WHERE organization_id = :org ORDER BY created_at",
+        org=org,
+    )
+    return [r["event_type"] for r in found]
+
+
+async def charge_row(admin: AsyncSession, charge_id: str | uuid.UUID) -> dict[str, Any]:
+    found = await rows(
+        admin,
+        "SELECT state, failure_reason, provider_payment_id, provider_order_id "
+        "FROM payment.charges WHERE id = :id",
+        id=uuid.UUID(str(charge_id)),
+    )
+    return found[0]
+
+
+async def force_charge(admin: AsyncSession, charge_id: str | uuid.UUID, **columns: Any) -> None:
+    """Put a charge in a state the API alone would take a sweep to reach."""
+    sets = ", ".join(f"{name} = :{name}" for name in columns)
+    async with admin.begin():
+        await admin.execute(
+            text(f"UPDATE payment.charges SET {sets} WHERE id = :id"),  # noqa: S608 - test names
+            {**columns, "id": uuid.UUID(str(charge_id))},
+        )
+
+
+# --------------------------------------------------------------------------- building deliveries
+
+
+def webhook_body(
+    charge: dict[str, Any],
+    org_id: uuid.UUID,
+    *,
+    event: str,
+    created_at: int = 1_700_000_000,
+    **kw: Any,
+) -> bytes:
+    """A real-shaped (id-less) Razorpay body for `charge`, naming `org_id` in its notes."""
+    kw.setdefault("provider_payment_id", charge["provider_payment_id"])
+    return razorpay_webhook_body(
+        event=event,
+        organization_id=org_id,
+        charge_id=uuid.UUID(charge["id"]),
+        body_id=False,
+        created_at=created_at,
+        **kw,
+    )
+
+
+def edited_body(body: bytes, edit: Any) -> bytes:
+    """`body` with `edit(parsed_dict)` applied — used to remove or corrupt one field of an
+    otherwise genuine body. The caller signs the result, so it is authentic as far as the service
+    can tell."""
+    parsed = json.loads(body)
+    edit(parsed)
+    return json.dumps(parsed).encode()
+
+
+async def post_webhook(client: Any, provider: Any, body: bytes, event_id: str | None) -> Any:
+    return await client.post(
+        "/api/v1/webhooks/razorpay", **signed_post(provider, body, event_id=event_id)
+    )

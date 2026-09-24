@@ -15,132 +15,35 @@ session's identity map, which would happily show a rolled-back attribute as stil
 
 from __future__ import annotations
 
-import json
 import uuid
 from collections import Counter
-from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
+from httpx import AsyncClient
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.testing import capture_logs
 
 from app import services
-from app.main import app
 from app.providers.razorpay import RazorpayProvider
-from tests.helpers import razorpay_webhook_body, seed_charge, signed_post
+from platform_core.db import session_scope
+from tests.helpers import (
+    audit_rows,
+    charge_row,
+    edited_body,
+    emitted,
+    force_charge,
+    ignored_audits,
+    inbox_rows,
+    post_webhook,
+    seed_charge,
+    webhook_body,
+)
 
 pytestmark = pytest.mark.integration
 
 WEBHOOK = "/api/v1/webhooks/razorpay"
-
-
-@pytest_asyncio.fixture
-async def tolerant(client: AsyncClient) -> AsyncIterator[AsyncClient]:
-    """A client that answers what the server would — a 500 is a 500, not an exception in the test.
-    Built after `client` so the app's dependency overrides (the shared session, the test provider)
-    are in place."""
-    transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
-
-
-# --------------------------------------------------------------------------- reading the truth
-
-
-async def _rows(admin: AsyncSession, sql: str, **params: Any) -> list[dict[str, Any]]:
-    async with admin.begin():
-        return [dict(r) for r in (await admin.execute(text(sql), params)).mappings().all()]
-
-
-async def _inbox(admin: AsyncSession, org: uuid.UUID) -> list[dict[str, Any]]:
-    return await _rows(
-        admin,
-        "SELECT provider_event_id, event_name, charge_id, disposition, disposition_reason, id "
-        "FROM payment.provider_events WHERE organization_id = :org "
-        "ORDER BY received_at, provider_event_id",
-        org=org,
-    )
-
-
-async def _audits(admin: AsyncSession, org: uuid.UUID) -> list[dict[str, Any]]:
-    return await _rows(
-        admin,
-        "SELECT action, entity, entity_id, acting_as, after FROM payment.audit_logs "
-        "WHERE organization_id = :org ORDER BY at, action",
-        org=org,
-    )
-
-
-async def _emitted(admin: AsyncSession, org: uuid.UUID) -> list[str]:
-    rows = await _rows(
-        admin,
-        "SELECT event_type FROM payment.outbox WHERE organization_id = :org ORDER BY created_at",
-        org=org,
-    )
-    return [r["event_type"] for r in rows]
-
-
-async def _charge(admin: AsyncSession, charge_id: str) -> dict[str, Any]:
-    rows = await _rows(
-        admin,
-        "SELECT state, failure_reason, provider_payment_id, provider_order_id "
-        "FROM payment.charges WHERE id = :id",
-        id=uuid.UUID(charge_id),
-    )
-    return rows[0]
-
-
-async def _force(admin: AsyncSession, charge_id: str, **columns: Any) -> None:
-    """Put a charge in a state the API alone would take a sweep to reach."""
-    sets = ", ".join(f"{name} = :{name}" for name in columns)
-    async with admin.begin():
-        await admin.execute(
-            text(f"UPDATE payment.charges SET {sets} WHERE id = :id"),  # noqa: S608 - test-owned names
-            {**columns, "id": uuid.UUID(charge_id)},
-        )
-
-
-def _ignored(audits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [a for a in audits if a["action"] == "payment.webhook.ignored"]
-
-
-# --------------------------------------------------------------------------- building bodies
-
-
-def _body(
-    charge: dict[str, Any],
-    org_id: uuid.UUID,
-    *,
-    event: str,
-    created_at: int = 1_700_000_000,
-    **kw: Any,
-) -> bytes:
-    kw.setdefault("provider_payment_id", charge["provider_payment_id"])
-    return razorpay_webhook_body(
-        event=event,
-        organization_id=org_id,
-        charge_id=uuid.UUID(charge["id"]),
-        body_id=False,
-        created_at=created_at,
-        **kw,
-    )
-
-
-def _edited(body: bytes, edit: Any) -> bytes:
-    """`body` with `edit(parsed_dict)` applied — used to remove or corrupt one field of an otherwise
-    genuine body. The caller signs the result, so it is authentic as far as the service can tell."""
-    parsed = json.loads(body)
-    edit(parsed)
-    return json.dumps(parsed).encode()
-
-
-async def _post(client: AsyncClient, provider: RazorpayProvider, body: bytes, event_id: str) -> Any:
-    return await client.post(WEBHOOK, **signed_post(provider, body, event_id=event_id))
 
 
 # --------------------------------------------------------------------------- the tests
@@ -158,13 +61,15 @@ class TestAnIllegalTransitionIsKeptNotRetried:
         opposite. It was a 422 (`IllegalChargeTransition`), rolled back whole, retried for days."""
         charge = await seed_charge(client, org_id, key="captured-then-failed")
         assert (
-            await _post(client, provider, _body(charge, org_id, event="payment.captured"), "evt_1")
+            await post_webhook(
+                client, provider, webhook_body(charge, org_id, event="payment.captured"), "evt_1"
+            )
         ).json()["reconciled"] is True
 
-        late = await _post(
+        late = await post_webhook(
             client,
             provider,
-            _body(charge, org_id, event="payment.failed", error_description="late failure"),
+            webhook_body(charge, org_id, event="payment.failed", error_description="late failure"),
             "evt_2",
         )
 
@@ -176,19 +81,19 @@ class TestAnIllegalTransitionIsKeptNotRetried:
         assert ack["reconciled"] is False and ack["duplicate"] is False
 
         # State: exactly as the capture left it. No failure event, no second capture event.
-        stored = await _charge(admin_session, charge["id"])
+        stored = await charge_row(admin_session, charge["id"])
         assert stored["state"] == "captured" and stored["failure_reason"] is None
-        assert await _emitted(admin_session, org_id) == ["commerce.payment.captured"]
+        assert await emitted(admin_session, org_id) == ["commerce.payment.captured"]
 
         # Evidence: the authentic event is in the inbox, stating why nothing came of it...
-        inbox = await _inbox(admin_session, org_id)
+        inbox = await inbox_rows(admin_session, org_id)
         assert [r["provider_event_id"] for r in inbox] == ["evt_1", "evt_2"]
         kept = inbox[1]
         assert kept["disposition"] == "conflict"
         assert kept["disposition_reason"] == "illegal_transition"
         assert str(kept["charge_id"]) == charge["id"]
         # ...and in the audit trail, naming the states and nothing else.
-        audits = _ignored(await _audits(admin_session, org_id))
+        audits = ignored_audits(await audit_rows(admin_session, org_id))
         assert len(audits) == 1
         assert audits[0]["entity"] == "provider_event" and audits[0]["entity_id"] == kept["id"]
         assert audits[0]["acting_as"] == "razorpay-webhook"
@@ -198,27 +103,106 @@ class TestAnIllegalTransitionIsKeptNotRetried:
         assert after["provider_event_id"] == "evt_2" and after["event_name"] == "payment.failed"
         assert str(after["charge_id"]) == charge["id"]
 
-    async def test_a_capture_after_a_failure_the_provider_reported_is_kept_and_not_applied(
+    async def test_a_capture_of_the_same_payment_after_a_failure_the_provider_reported_is_applied(
         self,
         client: AsyncClient,
         provider: RazorpayProvider,
         admin_session: AsyncSession,
         org_id: uuid.UUID,
     ) -> None:
+        """Was `..._is_kept_and_not_applied` (a 200 `illegal_transition`) — and that lost money: a
+        bank's late authorisation reports the *same* payment failed and then captured, and the
+        customer has paid. It is now the second legal way back from `failed` (the first is a
+        failure the platform decided itself); the full flow, with the authorization in between, is
+        `test_webhook_late_authorization.py`."""
         charge = await seed_charge(client, org_id, key="failed-then-captured")
-        failed = _body(charge, org_id, event="payment.failed", error_description="card_declined")
-        assert (await _post(client, provider, failed, "evt_f")).json()["reconciled"] is True
+        failed = webhook_body(
+            charge, org_id, event="payment.failed", error_description="card_declined"
+        )
+        assert (await post_webhook(client, provider, failed, "evt_f")).json()["reconciled"] is True
 
-        late = await _post(
-            client, provider, _body(charge, org_id, event="payment.captured"), "evt_c"
+        late = await post_webhook(
+            client, provider, webhook_body(charge, org_id, event="payment.captured"), "evt_c"
         )
 
         assert late.status_code == 200
-        assert late.json()["ignored_reason"] == "illegal_transition"
-        stored = await _charge(admin_session, charge["id"])
+        assert late.json()["ignored_reason"] is None and late.json()["reconciled"] is True
+        stored = await charge_row(admin_session, charge["id"])
+        assert stored["state"] == "captured" and stored["failure_reason"] is None
+        assert await emitted(admin_session, org_id) == [
+            "commerce.payment.failed",
+            "commerce.payment.captured",
+        ]
+        assert [r["disposition"] for r in await inbox_rows(admin_session, org_id)] == [
+            "processed",
+            "processed",
+        ]
+
+    async def test_a_capture_of_a_different_payment_after_a_provider_failure_stays_a_conflict(
+        self,
+        client: AsyncClient,
+        provider: RazorpayProvider,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        """Only *the same payment* may come back from a provider-reported failure. A capture that
+        names another payment id (a second attempt on the Order, a stray id) must not drive the
+        charge: kept as a conflict, the failure untouched, nothing emitted."""
+        charge = await seed_charge(client, org_id, key="failed-then-other-payment")
+        failed = webhook_body(
+            charge, org_id, event="payment.failed", error_description="card_declined"
+        )
+        assert (await post_webhook(client, provider, failed, "evt_f")).json()["reconciled"] is True
+
+        late = await post_webhook(
+            client,
+            provider,
+            webhook_body(
+                charge, org_id, event="payment.captured", provider_payment_id="pay_another_one"
+            ),
+            "evt_c",
+        )
+
+        assert late.status_code == 200
+        assert late.json()["ignored_reason"] == "provider_id_conflict"
+        stored = await charge_row(admin_session, charge["id"])
         assert stored["state"] == "failed" and stored["failure_reason"] == "card_declined"
-        assert await _emitted(admin_session, org_id) == ["commerce.payment.failed"]
-        assert (await _inbox(admin_session, org_id))[1]["disposition"] == "conflict"
+        assert stored["provider_payment_id"] == charge["provider_payment_id"]
+        assert await emitted(admin_session, org_id) == ["commerce.payment.failed"]
+        assert (await inbox_rows(admin_session, org_id))[1]["disposition"] == "conflict"
+
+    async def test_a_capture_after_a_provider_failure_on_a_charge_with_no_payment_id_is_a_conflict(
+        self,
+        client: AsyncClient,
+        provider: RazorpayProvider,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        """ "The same payment" needs a payment the charge already holds. A charge the provider
+        failed that carries no id cannot vouch for whose money this is, so the capture is kept as
+        an `illegal_transition` conflict — and the id it asserted is not bound (rolled back with
+        the attempt)."""
+        charge = await seed_charge(client, org_id, key="failed-no-payment-id")
+        await force_charge(
+            admin_session,
+            charge["id"],
+            state="failed",
+            failure_reason="card_declined",
+            provider_payment_id=None,
+            provider_order_id=None,
+        )
+
+        late = await post_webhook(
+            client,
+            provider,
+            webhook_body(charge, org_id, event="payment.captured", provider_payment_id="pay_x"),
+            "evt_c",
+        )
+
+        assert late.json()["ignored_reason"] == "illegal_transition"
+        stored = await charge_row(admin_session, charge["id"])
+        assert stored["state"] == "failed" and stored["provider_payment_id"] is None
+        assert await emitted(admin_session, org_id) == []
 
     @pytest.mark.parametrize("reason", ["attempts_exhausted", "lookup_unavailable"])
     async def test_a_capture_after_a_local_failure_is_still_legal_and_is_processed(
@@ -233,18 +217,18 @@ class TestAnIllegalTransitionIsKeptNotRetried:
         says it captured — the money moved, the record follows it. The one legal way back from
         `failed`, and it must not have been swept up in the new conflict handling."""
         charge = await seed_charge(client, org_id, key=f"local-{reason}")
-        await _force(admin_session, charge["id"], state="failed", failure_reason=reason)
+        await force_charge(admin_session, charge["id"], state="failed", failure_reason=reason)
 
-        response = await _post(
-            client, provider, _body(charge, org_id, event="payment.captured"), "evt_late"
+        response = await post_webhook(
+            client, provider, webhook_body(charge, org_id, event="payment.captured"), "evt_late"
         )
 
         assert response.status_code == 200 and response.json()["reconciled"] is True
         assert response.json()["ignored_reason"] is None
-        stored = await _charge(admin_session, charge["id"])
+        stored = await charge_row(admin_session, charge["id"])
         assert stored["state"] == "captured" and stored["failure_reason"] is None
-        assert (await _inbox(admin_session, org_id))[0]["disposition"] == "processed"
-        actions = [a["action"] for a in await _audits(admin_session, org_id)]
+        assert (await inbox_rows(admin_session, org_id))[0]["disposition"] == "processed"
+        actions = [a["action"] for a in await audit_rows(admin_session, org_id)]
         assert "payment.charge.captured_after_local_failure" in actions
         assert "payment.webhook.ignored" not in actions
 
@@ -260,7 +244,7 @@ class TestAnIllegalTransitionIsKeptNotRetried:
         conflicting event must not leave the ids it asserted (or the audit row about them) on the
         charge."""
         charge = await seed_charge(client, org_id, key="no-partial-write")
-        await _force(
+        await force_charge(
             admin_session,
             charge["id"],
             state="failed",
@@ -269,25 +253,25 @@ class TestAnIllegalTransitionIsKeptNotRetried:
             provider_order_id=None,
         )
 
-        audits_before = Counter(a["action"] for a in await _audits(admin_session, org_id))
+        audits_before = Counter(a["action"] for a in await audit_rows(admin_session, org_id))
 
-        body = _body(
+        body = webhook_body(
             charge,
             org_id,
             event="payment.captured",
             provider_payment_id="pay_asserted_by_a_conflict",
             order_id="order_asserted_by_a_conflict",
         )
-        response = await _post(client, provider, body, "evt_partial")
+        response = await post_webhook(client, provider, body, "evt_partial")
 
         assert response.status_code == 200
         assert response.json()["ignored_reason"] == "illegal_transition"
-        stored = await _charge(admin_session, charge["id"])
+        stored = await charge_row(admin_session, charge["id"])
         assert stored["provider_payment_id"] is None and stored["provider_order_id"] is None
         assert stored["state"] == "failed"
         # The only audit row the attempt leaves is the conflict itself: no
         # `payment.charge.created` for an id that was never recorded.
-        audits_after = Counter(a["action"] for a in await _audits(admin_session, org_id))
+        audits_after = Counter(a["action"] for a in await audit_rows(admin_session, org_id))
         assert audits_after - audits_before == Counter({"payment.webhook.ignored": 1})
 
 
@@ -301,20 +285,23 @@ class TestAnUnknownChargeIsKeptNotRetried:
     ) -> None:
         stranger = {"id": str(uuid.uuid4()), "provider_payment_id": "pay_not_ours"}
 
-        response = await _post(
-            client, provider, _body(stranger, org_id, event="payment.captured"), "evt_stranger"
+        response = await post_webhook(
+            client,
+            provider,
+            webhook_body(stranger, org_id, event="payment.captured"),
+            "evt_stranger",
         )
 
         assert response.status_code == 200
         assert response.json()["ignored_reason"] == "unknown_charge"
         assert response.json()["reconciled"] is False
-        inbox = await _inbox(admin_session, org_id)
+        inbox = await inbox_rows(admin_session, org_id)
         assert len(inbox) == 1
         assert inbox[0]["disposition"] == "ignored"
         assert inbox[0]["disposition_reason"] == "unknown_charge"
         assert inbox[0]["charge_id"] is None
-        assert len(_ignored(await _audits(admin_session, org_id))) == 1
-        assert await _emitted(admin_session, org_id) == []
+        assert len(ignored_audits(await audit_rows(admin_session, org_id))) == 1
+        assert await emitted(admin_session, org_id) == []
 
     async def test_another_tenants_charge_is_unknown_and_recorded_under_the_named_tenant(
         self,
@@ -329,17 +316,17 @@ class TestAnUnknownChargeIsKeptNotRetried:
         of A's."""
         charge = await seed_charge(client, org_id, key="cross-tenant")
 
-        response = await _post(
-            client, provider, _body(charge, org_b, event="payment.failed"), "evt_cross"
+        response = await post_webhook(
+            client, provider, webhook_body(charge, org_b, event="payment.failed"), "evt_cross"
         )
 
         assert response.status_code == 200
         assert response.json()["ignored_reason"] == "unknown_charge"
-        assert (await _charge(admin_session, charge["id"]))["state"] == "authorized"
-        assert await _inbox(admin_session, org_id) == []
-        (row,) = await _inbox(admin_session, org_b)
+        assert (await charge_row(admin_session, charge["id"]))["state"] == "authorized"
+        assert await inbox_rows(admin_session, org_id) == []
+        (row,) = await inbox_rows(admin_session, org_b)
         assert row["disposition_reason"] == "unknown_charge"
-        assert await _emitted(admin_session, org_id) == []
+        assert await emitted(admin_session, org_id) == []
 
 
 class TestAPaymentThatIsNotTheChargeIsKeptNotRetried:
@@ -351,22 +338,22 @@ class TestAPaymentThatIsNotTheChargeIsKeptNotRetried:
         org_id: uuid.UUID,
     ) -> None:
         charge = await seed_charge(client, org_id, key="amount", amount_minor=1000)
-        before = await _charge(admin_session, charge["id"])
+        before = await charge_row(admin_session, charge["id"])
 
-        response = await _post(
+        response = await post_webhook(
             client,
             provider,
-            _body(charge, org_id, event="payment.captured", amount_minor=999),
+            webhook_body(charge, org_id, event="payment.captured", amount_minor=999),
             "evt_amount",
         )
 
         assert response.status_code == 200
         assert response.json()["ignored_reason"] == "amount_mismatch"
-        assert await _charge(admin_session, charge["id"]) == before
-        assert await _emitted(admin_session, org_id) == []
-        (row,) = await _inbox(admin_session, org_id)
+        assert await charge_row(admin_session, charge["id"]) == before
+        assert await emitted(admin_session, org_id) == []
+        (row,) = await inbox_rows(admin_session, org_id)
         assert row["disposition"] == "conflict" and row["disposition_reason"] == "amount_mismatch"
-        (audit,) = _ignored(await _audits(admin_session, org_id))
+        (audit,) = ignored_audits(await audit_rows(admin_session, org_id))
         # Integers and codes only: the amounts an operator needs, none of the body.
         assert audit["after"]["charge_amount_minor"] == 1000
         assert audit["after"]["asserted_amount_minor"] == 999
@@ -379,21 +366,21 @@ class TestAPaymentThatIsNotTheChargeIsKeptNotRetried:
         org_id: uuid.UUID,
     ) -> None:
         charge = await seed_charge(client, org_id, key="currency", currency="USD")
-        before = await _charge(admin_session, charge["id"])
+        before = await charge_row(admin_session, charge["id"])
 
-        response = await _post(
+        response = await post_webhook(
             client,
             provider,
-            _body(charge, org_id, event="payment.captured", currency="EUR"),
+            webhook_body(charge, org_id, event="payment.captured", currency="EUR"),
             "evt_currency",
         )
 
         assert response.status_code == 200
         assert response.json()["ignored_reason"] == "currency_mismatch"
-        assert await _charge(admin_session, charge["id"]) == before
-        (row,) = await _inbox(admin_session, org_id)
+        assert await charge_row(admin_session, charge["id"]) == before
+        (row,) = await inbox_rows(admin_session, org_id)
         assert row["disposition"] == "conflict" and row["disposition_reason"] == "currency_mismatch"
-        (audit,) = _ignored(await _audits(admin_session, org_id))
+        (audit,) = ignored_audits(await audit_rows(admin_session, org_id))
         assert audit["after"]["charge_currency"] == "USD"
         assert audit["after"]["asserted_currency"] == "EUR"
 
@@ -408,16 +395,16 @@ class TestAPaymentThatIsNotTheChargeIsKeptNotRetried:
         charge's payment must not suspend anyone's subscription."""
         charge = await seed_charge(client, org_id, key="amount-failed", amount_minor=4900)
 
-        response = await _post(
+        response = await post_webhook(
             client,
             provider,
-            _body(charge, org_id, event="payment.failed", amount_minor=100),
+            webhook_body(charge, org_id, event="payment.failed", amount_minor=100),
             "evt_amount_failed",
         )
 
         assert response.json()["ignored_reason"] == "amount_mismatch"
-        assert (await _charge(admin_session, charge["id"]))["state"] == "authorized"
-        assert "commerce.payment.failed" not in await _emitted(admin_session, org_id)
+        assert (await charge_row(admin_session, charge["id"]))["state"] == "authorized"
+        assert "commerce.payment.failed" not in await emitted(admin_session, org_id)
 
     async def test_an_agreeing_payment_reconciles_whatever_the_currency_s_case(
         self,
@@ -428,15 +415,17 @@ class TestAPaymentThatIsNotTheChargeIsKeptNotRetried:
     ) -> None:
         charge = await seed_charge(client, org_id, key="agree", amount_minor=2500, currency="INR")
 
-        response = await _post(
+        response = await post_webhook(
             client,
             provider,
-            _body(charge, org_id, event="payment.captured", amount_minor=2500, currency="inr"),
+            webhook_body(
+                charge, org_id, event="payment.captured", amount_minor=2500, currency="inr"
+            ),
             "evt_agree",
         )
 
         assert response.json()["reconciled"] is True and response.json()["ignored_reason"] is None
-        assert (await _inbox(admin_session, org_id))[0]["disposition"] == "processed"
+        assert (await inbox_rows(admin_session, org_id))[0]["disposition"] == "processed"
 
     async def test_a_body_that_omits_the_amount_and_currency_is_not_a_mismatch(
         self,
@@ -447,12 +436,12 @@ class TestAPaymentThatIsNotTheChargeIsKeptNotRetried:
         """What the provider does not say cannot contradict the charge; refusing a genuine capture
         because a field was missing would be its own way to lose money."""
         charge = await seed_charge(client, org_id, key="omitted")
-        body = _edited(
-            _body(charge, org_id, event="payment.captured"),
+        body = edited_body(
+            webhook_body(charge, org_id, event="payment.captured"),
             lambda b: [b["payload"]["payment"]["entity"].pop(k) for k in ("amount", "currency")],
         )
 
-        response = await _post(client, provider, body, "evt_omitted")
+        response = await post_webhook(client, provider, body, "evt_omitted")
 
         assert response.json()["reconciled"] is True
 
@@ -469,75 +458,120 @@ class TestAPaymentThatIsNotTheChargeIsKeptNotRetried:
         the provider retries for days. It is as permanent as any other contradiction."""
         a = await seed_charge(client, org_id, key="holder")
         b = await seed_charge(client, org_id, key="claimant")
-        await _force(
+        await force_charge(
             admin_session,
             b["id"],
             state="created",
             provider_payment_id=None,
             provider_order_id=None,
         )
-        a_before = await _charge(admin_session, a["id"])
-        b_before = await _charge(admin_session, b["id"])
+        a_before = await charge_row(admin_session, a["id"])
+        b_before = await charge_row(admin_session, b["id"])
 
-        body = _body(
+        body = webhook_body(
             b, org_id, event="payment.captured", provider_payment_id=a["provider_payment_id"]
         )
-        response = await _post(tolerant, provider, body, "evt_collision")
+        response = await post_webhook(tolerant, provider, body, "evt_collision")
 
         assert response.status_code == 200, response.text
         assert response.json()["ignored_reason"] == "provider_id_conflict"
-        assert await _charge(admin_session, a["id"]) == a_before
-        assert await _charge(admin_session, b["id"]) == b_before
-        assert await _emitted(admin_session, org_id) == []
-        (row,) = await _inbox(admin_session, org_id)
+        assert await charge_row(admin_session, a["id"]) == a_before
+        assert await charge_row(admin_session, b["id"]) == b_before
+        assert await emitted(admin_session, org_id) == []
+        (row,) = await inbox_rows(admin_session, org_id)
         assert row["disposition"] == "conflict"
         assert row["disposition_reason"] == "provider_id_conflict"
-        assert len(_ignored(await _audits(admin_session, org_id))) == 1
+        assert len(ignored_audits(await audit_rows(admin_session, org_id))) == 1
 
 
 class TestAnUnattributableWebhook:
     @pytest.mark.parametrize(
-        "corrupt",
+        ("corrupt", "level", "reason"),
         [
-            lambda entity: entity["notes"].pop("organization_id"),
-            lambda entity: entity.update(notes=[]),
-            lambda entity: entity["notes"].update(organization_id="not-a-uuid"),
-            lambda entity: entity["notes"].update(organization_id=12345),
+            (
+                lambda entity: entity["notes"].pop("organization_id"),
+                "error",
+                "charge_named_without_organization",
+            ),
+            (lambda entity: entity.update(notes=[]), "warning", "no_platform_notes"),
+            (lambda entity: entity.update(notes={}), "warning", "no_platform_notes"),
+            (
+                lambda entity: entity["notes"].update(organization_id="not-a-uuid"),
+                "error",
+                "organization_id_malformed",
+            ),
+            (
+                lambda entity: entity["notes"].update(organization_id=12345),
+                "error",
+                "organization_id_malformed",
+            ),
+            (
+                lambda entity: entity.update(notes={"charge_id": "garbage"}),
+                "error",
+                "charge_named_without_organization",
+            ),
         ],
-        ids=["no-org", "notes-is-a-list", "org-is-not-a-uuid", "org-is-not-a-string"],
+        ids=[
+            "charge-but-no-org",
+            "notes-is-a-list",
+            "notes-is-empty",
+            "org-is-not-a-uuid",
+            "org-is-a-number",
+            "junk-charge-id-no-org",
+        ],
     )
-    async def test_it_is_answered_200_and_writes_nothing(
+    async def test_it_is_answered_200_writes_nothing_and_is_logged_at_the_level_its_cause_deserves(
         self,
         client: AsyncClient,
         provider: RazorpayProvider,
         admin_session: AsyncSession,
         org_id: uuid.UUID,
         corrupt: Any,
+        level: str,
+        reason: str,
     ) -> None:
         """A payment made on the same Razorpay account outside this platform carries none of our
         notes. There is no tenant to record it under, and the provider redelivering it can never
         make it attributable: a 422 (or, for a malformed org id, a 500) only starts a retry storm
-        that risks the endpoint for everyone."""
+        that risks the endpoint for everyone.
+
+        But this line is the *only* trace of it, so its level matters: a body with none of our
+        notes is `warning` (ordinary noise), while one that carries our own notes half-formed — a
+        charge id with no organization, an organization that is not an id — is a platform-side bug
+        malforming what it stamped, and the 200 would otherwise lose a real capture in silence:
+        `error`."""
         charge = await seed_charge(client, org_id, key="unattributable")
-        body = _edited(
-            _body(charge, org_id, event="payment.captured"),
+        body = edited_body(
+            webhook_body(charge, org_id, event="payment.captured"),
             lambda b: corrupt(b["payload"]["payment"]["entity"]),
         )
 
         with capture_logs() as logs:
-            response = await _post(client, provider, body, "evt_outside")
+            response = await post_webhook(client, provider, body, "evt_outside")
 
         assert response.status_code == 200, response.text
         assert response.json()["ignored_reason"] == "unattributable"
         assert response.json()["provider_event_id"] == "evt_outside"
-        assert (await _charge(admin_session, charge["id"]))["state"] == "authorized"
-        assert await _inbox(admin_session, org_id) == []
-        assert _ignored(await _audits(admin_session, org_id)) == []
-        # Logged for an operator with the event's id and name and nothing else.
+        assert (await charge_row(admin_session, charge["id"]))["state"] == "authorized"
+        assert await inbox_rows(admin_session, org_id) == []
+        assert ignored_audits(await audit_rows(admin_session, org_id)) == []
         (entry,) = [e for e in logs if e["event"] == "payment.webhook.unattributable"]
-        assert set(entry) <= {"event", "log_level", "provider_event_id", "event_name"}
+        assert entry["log_level"] == level and entry["reason"] == reason
+        # Identifiers and a reason code, never the body: our own charge id only when it is one.
+        assert set(entry) <= {
+            "event",
+            "log_level",
+            "provider_event_id",
+            "event_name",
+            "reason",
+            "charge_id",
+        }
         assert entry["provider_event_id"] == "evt_outside"
         assert entry["event_name"] == "payment.captured"
+        if reason == "charge_named_without_organization" and "charge_id" in entry:
+            assert entry["charge_id"] == charge["id"]
+        if entry["reason"] == "no_platform_notes":
+            assert "charge_id" not in entry
 
 
 class TestARedeliveryOfAnIgnoredEvent:
@@ -554,22 +588,74 @@ class TestARedeliveryOfAnIgnoredEvent:
         re-recorded each time. The first delivery kept its row, so the second is a duplicate."""
         if scenario == "unknown_charge":
             subject = {"id": str(uuid.uuid4()), "provider_payment_id": "pay_nobody"}
-            body = _body(subject, org_id, event="payment.captured")
+            body = webhook_body(subject, org_id, event="payment.captured")
         else:
             subject = await seed_charge(client, org_id, key="redeliver-conflict")
-            body = _body(subject, org_id, event="payment.captured", amount_minor=1)
+            body = webhook_body(subject, org_id, event="payment.captured", amount_minor=1)
 
-        first = await _post(client, provider, body, "evt_again")
-        second = await _post(client, provider, body, "evt_again")
-        third = await _post(client, provider, body, "evt_again")
+        first = await post_webhook(client, provider, body, "evt_again")
+        second = await post_webhook(client, provider, body, "evt_again")
+        third = await post_webhook(client, provider, body, "evt_again")
 
         assert first.json()["ignored_reason"] is not None and first.json()["duplicate"] is False
         for redelivery in (second, third):
             assert redelivery.status_code == 200
             assert redelivery.json()["duplicate"] is True
             assert redelivery.json()["ignored_reason"] is None
-        assert len(await _inbox(admin_session, org_id)) == 1
-        assert len(_ignored(await _audits(admin_session, org_id))) == 1
+        assert len(await inbox_rows(admin_session, org_id)) == 1
+        assert len(ignored_audits(await audit_rows(admin_session, org_id))) == 1
+
+
+class TestTwoDeliveriesOfOneIgnoredEventRacing:
+    async def test_the_loser_of_the_race_is_a_duplicate_not_an_error_or_a_second_record(
+        self,
+        client: AsyncClient,
+        provider: RazorpayProvider,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+        monkeypatch: pytest.MonkeyPatch,
+        engines: None,
+    ) -> None:
+        """`_record_not_applied` writes the inbox row *after* the SAVEPOINT rolled the attempt
+        back, so between those two moments a concurrent delivery of the same event can land its
+        own row. The second insert then finds the key taken: it must answer as the duplicate it is
+        — one inbox row, one audit row, one log line — not raise, and not record twice.
+
+        The interleaving is forced rather than left to timing: the hook below runs a *complete*
+        second delivery of the same event id, on its own session and transaction, in exactly that
+        gap. (No charge row is involved, so the charge lock that would otherwise serialise the two
+        does not exist — the unknown-charge case is the one where this race is real.)"""
+        stranger = {"id": str(uuid.uuid4()), "provider_payment_id": "pay_nobody"}
+        body = webhook_body(stranger, org_id, event="payment.captured")
+        real_record = services._record_not_applied
+        landed: list[Any] = []
+
+        async def racing(session: AsyncSession, **kwargs: Any) -> Any:
+            if not landed:
+                landed.append(None)  # the concurrent delivery must not recurse into this hook
+                async with session_scope(organization_id=org_id) as other:
+                    landed[0] = await services.ingest_webhook(
+                        other,
+                        provider,
+                        signature=provider.sign(body),
+                        body=body,
+                        is_production=True,
+                        event_id="evt_race_dup",
+                    )
+            return await real_record(session, **kwargs)
+
+        monkeypatch.setattr(services, "_record_not_applied", racing)
+        with capture_logs() as logs:
+            loser = await post_webhook(client, provider, body, "evt_race_dup")
+
+        winner = landed[0]
+        assert winner.ignored_reason == "unknown_charge" and winner.duplicate is False
+        assert loser.status_code == 200, loser.text
+        assert loser.json()["duplicate"] is True and loser.json()["ignored_reason"] is None
+        (row,) = await inbox_rows(admin_session, org_id)
+        assert row["disposition"] == "ignored" and row["disposition_reason"] == "unknown_charge"
+        assert len(ignored_audits(await audit_rows(admin_session, org_id))) == 1
+        assert len([e for e in logs if e["event"] == "payment.webhook.ignored"]) == 1
 
 
 class TestATransientFailureIsRetryable:
@@ -589,7 +675,7 @@ class TestATransientFailureIsRetryable:
         written inside the SAVEPOINT included), so the event id is not burned and the redelivery
         lands as if it were the first."""
         charge = await seed_charge(client, org_id, key=f"outage-{failing_step}")
-        body = _body(charge, org_id, event="payment.captured")
+        body = webhook_body(charge, org_id, event="payment.captured")
 
         async def unreachable(*_args: Any, **_kwargs: Any) -> None:
             raise OperationalError(
@@ -598,20 +684,20 @@ class TestATransientFailureIsRetryable:
 
         with monkeypatch.context() as patch:
             patch.setattr(services, failing_step, unreachable)
-            down = await _post(tolerant, provider, body, "evt_outage")
+            down = await post_webhook(tolerant, provider, body, "evt_outage")
 
         assert down.status_code == 503, down.text
         assert down.json()["type"].endswith("/upstream-unavailable")
         assert "server closed" not in down.text and "SELECT" not in down.text
-        assert await _inbox(admin_session, org_id) == []
-        assert _ignored(await _audits(admin_session, org_id)) == []
-        assert (await _charge(admin_session, charge["id"]))["state"] == "authorized"
+        assert await inbox_rows(admin_session, org_id) == []
+        assert ignored_audits(await audit_rows(admin_session, org_id)) == []
+        assert (await charge_row(admin_session, charge["id"]))["state"] == "authorized"
 
         # The provider retries — the database is back — and it is processed as a first delivery.
-        back = await _post(tolerant, provider, body, "evt_outage")
+        back = await post_webhook(tolerant, provider, body, "evt_outage")
         assert back.status_code == 200
         assert back.json()["duplicate"] is False and back.json()["reconciled"] is True
-        assert (await _charge(admin_session, charge["id"]))["state"] == "captured"
+        assert (await charge_row(admin_session, charge["id"]))["state"] == "captured"
 
     async def test_only_a_verdict_is_swallowed_a_bug_is_still_a_500(
         self,
@@ -631,13 +717,13 @@ class TestATransientFailureIsRetryable:
             raise RuntimeError("a defect")
 
         monkeypatch.setattr(services, "_reconcile_charge", broken)
-        response = await _post(
-            tolerant, provider, _body(charge, org_id, event="payment.captured"), "evt_bug"
+        response = await post_webhook(
+            tolerant, provider, webhook_body(charge, org_id, event="payment.captured"), "evt_bug"
         )
 
         assert response.status_code == 500
-        assert await _inbox(admin_session, org_id) == []
-        assert _ignored(await _audits(admin_session, org_id)) == []
+        assert await inbox_rows(admin_session, org_id) == []
+        assert ignored_audits(await audit_rows(admin_session, org_id)) == []
 
 
 class TestOpsCanSeeIgnoredWebhooks:
@@ -654,14 +740,17 @@ class TestOpsCanSeeIgnoredWebhooks:
         stranger = {"id": str(uuid.uuid4()), "provider_payment_id": "pay_elsewhere"}
 
         with capture_logs() as logs:
-            await _post(
+            await post_webhook(
                 client,
                 provider,
-                _body(charge, org_id, event="payment.captured", amount_minor=1),
+                webhook_body(charge, org_id, event="payment.captured", amount_minor=1),
                 "evt_conflict",
             )
-            await _post(
-                client, provider, _body(stranger, org_id, event="payment.captured"), "evt_unknown"
+            await post_webhook(
+                client,
+                provider,
+                webhook_body(stranger, org_id, event="payment.captured"),
+                "evt_unknown",
             )
 
         entries = {

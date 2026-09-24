@@ -115,7 +115,9 @@ async def charge_on_invoice_finalized(envelope: dict[str, Any]) -> None:
         result = await services.call_provider_charge_off_loop(provider, charge)
         if result is not None:  # None: timed out — the lease lapses into the sweep
             async with session_scope(organization_id=organization_id) as session:
-                await services.finalize_charge(session, charge.id, result)
+                await services.finalize_charge(
+                    session, charge.id, result, organization_id=organization_id
+                )
 
     log.info(
         "invoice.finalized.charged",
@@ -187,7 +189,9 @@ async def charge_on_dunning_retry(envelope: dict[str, Any]) -> None:
         result = await services.call_provider_charge_off_loop(provider, charge)
         if result is not None:  # None: timed out — the lease lapses into the sweep
             async with session_scope(organization_id=organization_id) as session:
-                await services.finalize_charge(session, charge.id, result)
+                await services.finalize_charge(
+                    session, charge.id, result, organization_id=organization_id
+                )
 
     log.info(
         "dunning.retry.charged",

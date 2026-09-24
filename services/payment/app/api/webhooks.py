@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
+from asyncpg import exceptions as pg_exc  # type: ignore[import-untyped]
 from fastapi import APIRouter, Depends
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
@@ -40,6 +41,26 @@ from platform_core.logging import get_logger
 log = get_logger("payment.webhooks")
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+
+#: What "the database is not there" looks like from this route, and only that. SQLAlchemy wraps
+#: most driver failures as `OperationalError` / `InterfaceError` / a pool `TimeoutError`, but a
+#: refused or unreachable connection surfaces as a raw `OSError` (`ConnectionRefusedError`, a
+#: DNS `gaierror`, a `TimeoutError`) and the server's own "not now" answers as asyncpg errors —
+#: `PostgresConnectionError` (a connection lost or never made), `CannotConnectNowError` (starting up
+#: or shutting down), `TooManyConnectionsError`. Every one is transient: the redelivery finds the
+#: database back. **Nothing else belongs here** — a `DataError`, a `RuntimeError`, an unrelated
+#: `IntegrityError` is a defect, and a defect stays a 500 (or the platform's 409) so it is seen and
+#: never dressed up as an outage. The `try` below wraps only the transaction, whose sole I/O is the
+#: database, which is what makes a bare `OSError` safe to claim.
+TRANSIENT_DATABASE_ERRORS: tuple[type[BaseException], ...] = (
+    OperationalError,
+    InterfaceError,
+    PoolTimeoutError,
+    OSError,
+    pg_exc.PostgresConnectionError,
+    pg_exc.CannotConnectNowError,
+    pg_exc.TooManyConnectionsError,
+)
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 ProviderDep = Annotated[PaymentProvider, Depends(get_provider)]
@@ -80,7 +101,7 @@ async def razorpay_webhook(
                 event_id=event_id,
                 request=request,
             )
-    except (OperationalError, InterfaceError, PoolTimeoutError) as exc:
+    except TRANSIENT_DATABASE_ERRORS as exc:
         # The database was unreachable, or the pool exhausted: transient. The transaction has
         # rolled back — nothing was recorded, the event id is not burned — so the provider's
         # redelivery starts clean. Answered 503 rather than a bare 500 so the intent is stated; the

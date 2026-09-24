@@ -165,3 +165,13 @@ async def client(session: AsyncSession, provider: RazorpayProvider) -> AsyncIter
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
     app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def tolerant(client: AsyncClient) -> AsyncIterator[AsyncClient]:
+    """A client that answers what the server would — a 500 is a 500, not an exception in the test.
+    Built after `client` so the app's dependency overrides (the shared session, the test provider)
+    are in place."""
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c

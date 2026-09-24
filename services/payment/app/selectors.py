@@ -2,8 +2,11 @@
 
 payment has no customer list endpoint, so there is no `ctx.apply` here — the reads that exist are
 service-internal (the charge a webhook reconciles, the charge a create returns) and are already
-constrained to one organization by the transaction's tenant GUC. Each still leads with
-`organization_id` so it never leans on RLS alone to avoid a full scan.
+constrained to one organization by the transaction's tenant GUC. **Every by-id read also takes the
+organization and filters on it**: RLS is the net, not the filter (CLAUDE.md), and the webhook path
+takes its organization from an external body — so a charge, a refund total or a lock is looked up
+*within* an organization, never by primary key alone, and a test runs the path on a BYPASSRLS
+session to prove the predicate is in the query.
 """
 
 from __future__ import annotations
@@ -25,23 +28,42 @@ from app.models import (
 )
 
 
-async def get_charge(session: AsyncSession, charge_id: uuid.UUID) -> Charge | None:
-    """One charge by id, under the bound tenant. Another organization's id is invisible (a None)."""
-    return await session.get(Charge, charge_id)
+async def get_charge(
+    session: AsyncSession, organization_id: uuid.UUID, charge_id: uuid.UUID
+) -> Charge | None:
+    """One charge by id **within one organization**. Another organization's id is a None.
+
+    The organization is a predicate of the query, not left to row-level security: RLS is the net
+    (CLAUDE.md), and on the webhook path the organization comes from an external body — the query
+    itself must refuse a charge that is not that organization's, on a BYPASSRLS session as on the
+    app role."""
+    result = await session.execute(
+        select(Charge).where(Charge.organization_id == organization_id, Charge.id == charge_id)
+    )
+    return result.scalar_one_or_none()
 
 
 async def lock_charge(
-    session: AsyncSession, charge_id: uuid.UUID, *, skip_locked: bool = False
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    charge_id: uuid.UUID,
+    *,
+    skip_locked: bool = False,
 ) -> Charge | None:
-    """One charge by id, row-locked, **re-read from the database** (`populate_existing`) rather
-    than trusted from the session's identity map — the recording step and the sweep both decide
-    from what the row says *now*, which a webhook may have changed since this session last looked.
+    """One charge by id within one organization, row-locked, **re-read from the database**
+    (`populate_existing`) rather than trusted from the session's identity map — the recording step
+    and the sweep both decide from what the row says *now*, which a webhook may have changed since
+    this session last looked.
+
+    `organization_id` is required and filters the query (see `get_charge`): a webhook names its
+    tenant in a body, so a charge id from another organization must be a None here whatever the
+    session's role can see.
 
     `skip_locked` returns None for a row somebody else holds instead of waiting behind them —
     what the sweep wants."""
     stmt = (
         select(Charge)
-        .where(Charge.id == charge_id)
+        .where(Charge.organization_id == organization_id, Charge.id == charge_id)
         .with_for_update(skip_locked=skip_locked)
         .execution_options(populate_existing=True)
     )
@@ -177,7 +199,9 @@ async def usable_mandate(
     return result.scalar_one_or_none()
 
 
-async def refunded_total_for_charge(session: AsyncSession, charge_id: uuid.UUID) -> int:
+async def refunded_total_for_charge(
+    session: AsyncSession, organization_id: uuid.UUID, charge_id: uuid.UUID
+) -> int:
     """Minor units already refunded against a charge, failed refunds excluded.
 
     What the over-refund guard compares against `charge.amount_minor`: the sum of every
@@ -185,6 +209,7 @@ async def refunded_total_for_charge(session: AsyncSession, charge_id: uuid.UUID)
     """
     result = await session.execute(
         select(func.coalesce(func.sum(Refund.amount_minor), 0)).where(
+            Refund.organization_id == organization_id,
             Refund.charge_id == charge_id,
             Refund.state != REFUND_FAILED,
         )

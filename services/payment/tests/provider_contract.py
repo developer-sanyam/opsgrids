@@ -15,6 +15,9 @@ it and supplies the one fixture, `adapter`:
         def adapter(self) -> PaymentProvider:
             return MyAdapter(...)
 
+        def webhook_bodies(self, adapter):
+            return (body_of_one_event, body_of_another)
+
 Today that is the stub Razorpay adapter (`test_provider_contract.py`). The live adapter's PR adds
 its own subclass — run against a recorded-wire double, never the network — and does not merge red.
 
@@ -28,6 +31,9 @@ What it pins:
 4. The per-request timeouts an adapter declares, summed, fit inside
    `Settings.provider_call_timeout_seconds` — or an abandoned call can still land its create after
    the sweep's lookup found nothing.
+5. Webhooks: a forged signature — any bytes at all — is `False`, never accepted and never a crash;
+   a body that is not JSON is a `MalformedWebhook`; and `parse_webhook` never invents a constant
+   event id (a subclass supplies two different bodies in the adapter's own format).
 
 Each check is a plain method taking the adapter, so `test_provider_contract.py` can also run every
 one against a deliberately broken adapter and require it to fail: a contract that cannot fail is
@@ -259,3 +265,37 @@ class ProviderContract:
     def test_an_unsigned_webhook_does_not_verify(self, adapter: PaymentProvider) -> None:
         assert adapter.verify_webhook(signature=None, body=b"{}") is False
         assert adapter.verify_webhook(signature="", body=b"{}") is False
+
+    def test_a_forged_signature_never_verifies_and_never_crashes(
+        self, adapter: PaymentProvider
+    ) -> None:
+        """Whatever a caller puts in the signature header — a header anyone can send, with no
+        authentication — verification answers **False**. It must neither accept it (the signature
+        is the only authentication a webhook has) nor raise: `hmac.compare_digest` on a non-ASCII
+        `str` is a `TypeError`, which the route turned into a 500 the provider retried for days."""
+        for forged in ("0" * 64, "zz", "\xff" * 64, "é" * 32, "\u2603" * 8, " " * 64):
+            try:
+                verified = adapter.verify_webhook(signature=forged, body=b"{}")
+            except Exception as exc:
+                raise AssertionError(
+                    f"verify_webhook raised {type(exc).__name__} for the signature {forged!r}"
+                ) from exc
+            assert verified is False, f"verify_webhook accepted the forged signature {forged!r}"
+
+    def webhook_bodies(self, adapter: PaymentProvider) -> tuple[bytes, bytes]:
+        """Two authentic bodies for two **different** events, in the adapter's own wire format —
+        supplied by the subclass, because the contract cannot know a provider's payload shape."""
+        raise NotImplementedError("a subclass supplies two different webhook bodies")
+
+    def test_parse_webhook_never_invents_a_constant_event_id(
+        self, adapter: PaymentProvider
+    ) -> None:
+        """A provider whose event id is not in the body (Razorpay: a header) leaves
+        `provider_event_id` empty and lets the service resolve one. What an adapter must never do
+        is return the same *non-empty* id for two different events: the inbox keys on it, so a
+        constant is one key for every event an organization ever receives — the first recorded, the
+        rest dropped as duplicates and answered 200."""
+        first, second = self.webhook_bodies(adapter)
+        a = adapter.parse_webhook(body=first).provider_event_id
+        b = adapter.parse_webhook(body=second).provider_event_id
+        assert not (a and a == b), f"two different events parsed to the one event id {a!r}"

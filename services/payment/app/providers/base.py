@@ -184,7 +184,9 @@ class PaymentProvider(Protocol):
     #: case, in call order (Razorpay: the Order lookup, the Order create, the payments lookup, the
     #: payment create). Their **sum** must not exceed `Settings.provider_call_timeout_seconds` —
     #: the caller stops waiting there, and a request still in flight after the lease lapses could
-    #: land a second create. `ProviderContract` asserts it for every adapter.
+    #: land a second create. `ProviderContract` asserts it for every adapter. **It is a sum, not a
+    #: wall-clock bound**: an HTTP client's read timeout restarts whenever bytes arrive, so a live
+    #: adapter also needs an overall per-call deadline (ADR-0004, B5g caveats).
     request_timeouts_seconds: tuple[float, ...]
 
     def create_mandate(

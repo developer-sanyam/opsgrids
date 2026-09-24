@@ -241,10 +241,13 @@ class TestALateCaptureIsRecorded:
         assert await _events(org_id, charge.id) == [domain.EVT_FAILED, domain.EVT_CAPTURED]
         assert "payment.charge.captured_after_local_failure" in await _audits(org_id, charge.id)
 
-    async def test_a_provider_failure_still_refuses_a_capture(
+    async def test_a_provider_failure_still_refuses_a_capture_of_another_payment(
         self, client, session, provider, org_id, engines
     ) -> None:
-        """Only the platform's own failures are provisional; the provider's are final."""
+        """Only the platform's own failures are provisional, and the provider's failure is final
+        for every payment but its own: a capture of a *different* payment must not drive a charge
+        the provider reported failed. (The same payment captured later — a bank's late
+        authorisation — is the one legal way back: `test_webhook_late_authorization.py`.)"""
         charge = await _stage(provider, org_id, "prov-fail-1")
         failed = razorpay_webhook_body(
             event="payment.failed",
@@ -256,20 +259,21 @@ class TestALateCaptureIsRecorded:
         assert (await _webhook(client, provider, failed)).status_code == 200
         captured = razorpay_webhook_body(
             event="payment.captured",
-            provider_payment_id="pay_declined1",
+            provider_payment_id="pay_a_second_attempt",
             organization_id=org_id,
             charge_id=charge.id,
         )
-        # A permanent condition, not a retryable one: the capture contradicts a failure the provider
-        # itself reported, so it is recorded as a conflict and answered 200 (a 422 would have the
-        # provider redeliver it for days, and record nothing). The charge is left exactly as it was.
+        # A permanent condition, not a retryable one: recorded as a conflict and answered 200 (a
+        # 422 would have the provider redeliver it for days, and record nothing). The charge is
+        # left exactly as it was.
         res = await _webhook(client, provider, captured)
         assert res.status_code == 200, res.text
-        assert res.json()["ignored_reason"] == "illegal_transition"
+        assert res.json()["ignored_reason"] == "provider_id_conflict"
         assert res.json()["reconciled"] is False
         stored = await _read(org_id, charge.id)
         assert stored.state == CHARGE_FAILED
         assert stored.failure_reason == "card_declined"
+        assert stored.provider_payment_id == "pay_declined1"
         assert domain.EVT_CAPTURED not in await _events(org_id, charge.id)
 
 
@@ -313,22 +317,28 @@ class TestTheWebhookRecordsTheProviderId:
             refund = await services.create_refund(s, provider, locked, amount_minor=100)
         assert refund.provider_refund_id is not None
 
-    async def test_a_different_id_is_audited_not_written(
+    async def test_a_different_id_is_kept_as_a_conflict_not_written(
         self, client, session, provider, org_id, engines
     ) -> None:
         charge = await _stage(provider, org_id, "mismatch-1")
         result = services.call_provider_charge(provider, charge)
         async with session_scope(organization_id=org_id) as s:
-            await services.finalize_charge(s, charge.id, result)
+            await services.finalize_charge(s, charge.id, result, organization_id=org_id)
         body = razorpay_webhook_body(
             event="payment.captured",
             provider_payment_id="pay_other",
             organization_id=org_id,
             charge_id=charge.id,
         )
-        assert (await _webhook(client, provider, body)).status_code == 200
-        assert (await _read(org_id, charge.id)).provider_payment_id == result.provider_payment_id
-        assert "payment.charge.provider_id_mismatch" in await _audits(org_id, charge.id)
+        res = await _webhook(client, provider, body)
+        assert res.status_code == 200
+        # A webhook about another payment does not drive the charge and does not overwrite its id:
+        # it is kept as a `provider_id_conflict` (the webhook-side mismatch audit it replaces).
+        assert res.json()["ignored_reason"] == "provider_id_conflict"
+        stored = await _read(org_id, charge.id)
+        assert stored.provider_payment_id == result.provider_payment_id
+        assert stored.state == "authorized"
+        assert "payment.charge.provider_id_mismatch" not in await _audits(org_id, charge.id)
 
 
 class TestTheWebhookAndTheSweepSerialize:
@@ -374,7 +384,9 @@ class TestTheWebhookAndTheSweepSerialize:
         await _burn_budget(session, charge.id)
 
         async def claim(s: Any) -> None:
-            await services.claim_stuck_charge(s, charge.id, now=datetime.now(UTC))
+            await services.claim_stuck_charge(
+                s, charge.id, organization_id=org_id, now=datetime.now(UTC)
+            )
 
         body = razorpay_webhook_body(
             event="payment.failed",
@@ -387,7 +399,9 @@ class TestTheWebhookAndTheSweepSerialize:
 
         # And the sweep's own none-found step, run after, does not fail it a second time.
         async with session_scope(organization_id=org_id) as s:
-            assert await services.fail_exhausted_charge(s, charge.id) is None
+            assert (
+                await services.fail_exhausted_charge(s, charge.id, organization_id=org_id) is None
+            )
         assert (await _events(org_id, charge.id)).count(domain.EVT_FAILED) == 1
 
     async def test_a_capture_racing_the_sweeps_failure_is_recorded_after_it(
@@ -396,7 +410,10 @@ class TestTheWebhookAndTheSweepSerialize:
         charge = await _stage(provider, org_id, "race-exh-3")
 
         async def fail(s: Any) -> None:
-            assert await services.fail_exhausted_charge(s, charge.id) is not None
+            assert (
+                await services.fail_exhausted_charge(s, charge.id, organization_id=org_id)
+                is not None
+            )
 
         body = razorpay_webhook_body(
             event="payment.captured",

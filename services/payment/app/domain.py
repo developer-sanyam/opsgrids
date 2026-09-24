@@ -203,6 +203,20 @@ def illegal_transition(from_state: str, to_state: str) -> WebhookNotApplied:
     )
 
 
+def provider_id_conflict(held_payment_id: str, asserted_payment_id: str) -> WebhookNotApplied:
+    """A webhook about a *different* payment than the one the charge already holds. Both ids are
+    provider identifiers, not personal data, and are what an operator needs to find the other
+    payment at the provider."""
+    return WebhookNotApplied(
+        INBOX_CONFLICT,
+        REASON_PROVIDER_ID_CONFLICT,
+        {
+            "charge_provider_payment_id": held_payment_id,
+            "asserted_provider_payment_id": asserted_payment_id,
+        },
+    )
+
+
 def contradiction(
     *,
     charge_amount_minor: int,
