@@ -762,8 +762,24 @@ class TestGeneratingABill:
                 .scalars()
                 .all()
             )
+        # Since C4 `failed` is terminal only: the refusal says so, and the outage — which is being
+        # retried — is announced as `retry_scheduled` instead.
         retryable = {e.payload["error_code"]: e.payload["retryable"] for e in events}
-        assert retryable == {"114": False, domain.ERR_PORTAL_UNAVAILABLE: True}
+        assert retryable == {"114": False}
+        async with session.begin():
+            scheduled = (
+                (
+                    await session.execute(
+                        select(OutboxEvent).where(
+                            OutboxEvent.organization_id == org_id,
+                            OutboxEvent.event_type == services.EVT_EWAY_RETRY_SCHEDULED,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert [e.payload["error_code"] for e in scheduled] == [domain.ERR_PORTAL_UNAVAILABLE]
 
 
 class TestCancelling:
@@ -937,6 +953,14 @@ class TestTheReadModel:
             "cancellable_until": None,
             "remedy": None,
             "attempts": 0,
+            # The C4 retry fields: nothing attempted, so nothing to explain and nothing to retry.
+            "remedy_detail": None,
+            "error_code": None,
+            "error": None,
+            "attempt": None,
+            "max_attempts": domain.EWAY_MAX_ATTEMPTS,
+            "retry_at": None,
+            "can_retry": False,
         }
 
     async def test_a_small_consignment_reports_no_obligation(self, client, session, org_id) -> None:

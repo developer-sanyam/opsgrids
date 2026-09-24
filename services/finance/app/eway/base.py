@@ -26,7 +26,7 @@ What is deliberately encoded here rather than left to each implementation:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
@@ -36,6 +36,14 @@ class EwayRejected(Exception):
 
     Not a transport failure: the request arrived, was understood, and was rejected on its
     contents. The caller records a `failed` row and does not retry the identical consignment.
+
+    **What belongs here, and what does not (C4).** A *validation* answer — a bad GSTIN, a distance
+    outside the range, a missing Part B, a line with no HSN — is a rejection and is terminal: the
+    same bytes will be refused again. Everything a real adapter would see that is *not* about the
+    consignment's contents — a timeout, a connection reset, an HTTP 5xx, a rate limit, an expired
+    session or token the adapter could not refresh — is `EwayUnavailable` (or `EwayRateLimited`),
+    and is retried automatically. An adapter that maps a 5xx onto `EwayRejected` would turn every
+    portal hiccup into a permanent failure the goods' owner has to clear by hand.
     """
 
     def __init__(self, code: str, message: str) -> None:
@@ -49,7 +57,21 @@ class EwayUnavailable(Exception):
 
     Opposite to a rejection in what it licenses the caller to do: an outage is retryable with the
     identical consignment, and on this obligation it is urgent — the goods are already loaded.
+    Covers a timeout, a connection failure and an HTTP 5xx alike.
     """
+
+
+class EwayRateLimited(EwayUnavailable):
+    """The portal is up and is asking to be left alone for a while (HTTP 429, or its own throttle
+    code). A kind of outage — the identical consignment is retried — that may say how long it
+    wants (`retry_after`, from a `Retry-After` header); the retry honours that, up to the platform's
+    own ceiling (`domain.eway_retry_delay`)."""
+
+    def __init__(
+        self, message: str = "rate limited", *, retry_after: timedelta | None = None
+    ) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,10 +210,11 @@ class EwayClient(Protocol):
     def generate(self, payload: EwayPayload) -> EwayAck:
         """Raise a bill for one consignment and return its number.
 
-        Raises `EwayRejected` when the portal refuses the contents, `EwayUnavailable` when it
-        cannot be reached, and `EwayAlreadyGenerated` (carrying the bill it already issued) when
-        `payload.idempotency_key` names a generation it already holds. Those three are the whole
-        error surface; anything else is a bug.
+        Raises `EwayRejected` when the portal refuses the contents (terminal), `EwayUnavailable`
+        when it cannot be reached — including `EwayRateLimited`, its "slow down" kind — (retried
+        automatically, C4), and `EwayAlreadyGenerated` (carrying the bill it already issued) when
+        `payload.idempotency_key` names a generation it already holds. Those are the whole error
+        surface; anything else is a bug.
         """
         ...
 

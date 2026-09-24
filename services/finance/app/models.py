@@ -981,11 +981,24 @@ class EwayBill(Base, TenantBase):
     valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    #: The portal's numbered code, or the platform's own (`domain.PLATFORM_ERROR_CODES`).
     error_code: Mapped[str | None] = mapped_column(String(20))
+    #: The portal's words, **masked of identifiers on the way in** (`domain.mask_portal_text`) — a
+    #: GSTIN, a vehicle number or a phone number the portal echoed back is never stored.
     error: Mapped[str | None] = mapped_column(Text)
     attempted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+    #: Which attempt of its generation chain wrote this row (1-based, `domain.EWAY_MAX_ATTEMPTS`
+    #: at most) — set on the `submitting` claim, the `pending` outage row and the terminal
+    #: `failed` row of a generation; null on everything older and on withdrawals. A column rather
+    #: than a recount so the read model can say "attempt 3 of 8" from the newest row alone (C4).
+    attempt: Mapped[int | None] = mapped_column()
+    #: On a `pending` row: when the automatic retry is due — the countdown a screen shows. The
+    #: retry itself is a scheduled event (ADR-0015); this is the same instant, written down where a
+    #: person can read it, and it is what a retry that never fired is measured against.
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         Index("ix_eway_bills_org_invoice", "organization_id", "invoice_id"),

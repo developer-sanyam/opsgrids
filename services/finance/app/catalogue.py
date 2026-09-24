@@ -148,6 +148,18 @@ FINANCE = PermissionCatalogue(
             "Accept, reject or park an inbound supplier document",
             is_dangerous=True,
         ),
+        # Telling GSTN what was decided (C2). Recording a decision (`ims.decide`, above) is the
+        # platform's own position, appended to its own ledger; *pushing* it is a statement to a
+        # government that the credit on somebody else's invoice was accepted or declined, so it is
+        # a separate, dangerous permission — a clerk who may record decisions for a supervisor to
+        # review must not be able to send them by holding the first alone.
+        PermissionSpec(
+            "compliance",
+            "ims",
+            "push",
+            "Send recorded IMS decisions to the GST portal",
+            is_dangerous=True,
+        ),
         # Returns. Three permissions rather than two, because assembling a period and *filing* it
         # are different acts. Generating states what this platform believes about its own book
         # and can be repeated; filing makes a claim to a government and is terminal — which is
@@ -171,6 +183,17 @@ FINANCE = PermissionCatalogue(
         # there is one permission rather than a read/write pair: what a person does with this is
         # answer "may that lorry leave".
         PermissionSpec("compliance", "eway", "read", "See e-Way bills and their validity"),
+        # Sending a generation to the portal again by hand (C4). A write, and its own permission
+        # rather than a wider read — it makes a call to a government — but **not** dangerous: it
+        # replays transport facts the dispatch system already asserted, under the idempotency key
+        # that makes a second bill impossible, so it can create nothing the original request could
+        # not. A portal refusal is never retryable, so there is nothing here to abuse.
+        PermissionSpec(
+            "compliance",
+            "eway",
+            "retry",
+            "Retry raising an e-Way bill that failed or is waiting on the portal",
+        ),
         PermissionSpec(
             "compliance", "withholding", "read", "See TDS deducted and TCS collected per document"
         ),

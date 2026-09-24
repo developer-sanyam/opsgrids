@@ -616,19 +616,21 @@ class TestEwayGeneration:
             )
         sweep = _sweep(eway_client_factory=lambda: _DownEway())
         at = datetime.now(UTC) + LATER
-        exhausted = 0
-        for _ in range(domain.MAX_COMPLIANCE_RESUMES + 2):
+        for _ in range(domain.EWAY_MAX_ATTEMPTS + 2):
             report = await sweep.tick(now=at)
             assert report.failed == 0
-            exhausted += report.exhausted
             at += domain.FILING_RETRY_CEILING + domain.FILING_RECLAIM_AFTER
-        assert exhausted == 1
+        # Since C4 the attempt that spends the budget is what writes the terminal row (there is no
+        # further drive left for a later tick to find exhausted), so the sweep goes quiet by
+        # itself: nothing newer than a `failed` row is ever discovered again.
         bills = await _bills(session, org_id, invoice.id)
         assert bills[0].status == "failed"
         assert bills[0].error_code == domain.ERR_RETRY_EXHAUSTED
-        assert sum(1 for b in bills if b.status == "submitting") == domain.MAX_COMPLIANCE_RESUMES
+        assert sum(1 for b in bills if b.status == "submitting") == domain.EWAY_MAX_ATTEMPTS
         failures = await _events(session, org_id, services.EVT_EWAY_FAILED)
+        assert len(failures) == 1
         assert failures[-1].payload["retryable"] is False
+        assert failures[-1].payload["terminal"] is True
 
 
 class TestTheEwayIdempotencyKey:

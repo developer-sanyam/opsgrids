@@ -1093,9 +1093,17 @@ class EwayBillOut(BaseModel):
     #: `cancel` while the 24-hour window is open, null once it has closed or there is nothing to
     #: withdraw. One answer, never a set of flags: a screen must offer the action that will work.
     remedy: str | None
+    #: The portal's numbered code, or the platform's own (`unavailable`, `rate_limited`,
+    #: `retry_exhausted`, `stale`, `no_registration`).
     error_code: str | None
+    #: The portal's words, **masked** of GSTINs, vehicle numbers and other identifiers.
     error: str | None
     attempted_at: datetime
+    #: Which attempt of its generation chain wrote this row (1-based); null on older rows and on
+    #: withdrawals.
+    attempt: int | None = None
+    #: On a `pending` row, when the automatic retry is due — the countdown a screen shows.
+    retry_at: datetime | None = None
 
 
 class EwayState(BaseModel):
@@ -1114,8 +1122,30 @@ class EwayState(BaseModel):
     terminal: bool
     #: The instant the cancellation window closes, or null when there is nothing to withdraw.
     cancellable_until: datetime | None
+    #: One answer, never a set of flags. On a bill: `cancel` (inside the window) or
+    #: `contact_support`. On a **failed generation** (C4): `retry_now` (the portal was down for the
+    #: whole budget, or the chain went stale), `register_gst`, `correct_and_resubmit` (the portal
+    #: refused the contents — `remedy_detail` says which) or `not_required`.
     remedy: str | None
     attempts: int
+    #: A sentence saying what `remedy` means for *this* failure, naming the portal's own reason —
+    #: null when there is nothing to say.
+    remedy_detail: str | None = None
+    #: The portal's numbered code, or the platform's own, on a `pending` or `failed` newest row.
+    error_code: str | None = None
+    #: The portal's words, **masked** of identifiers on the way in.
+    error: str | None = None
+    #: While a generation is being retried automatically: which attempt the newest row belongs to,
+    #: out of `max_attempts`, and when the next one fires (`retry_at`, null once nothing is
+    #: scheduled) — what "attempt 3 of 8, retrying in 4 minutes" is drawn from.
+    attempt: int | None = None
+    max_attempts: int = 0
+    retry_at: datetime | None = None
+    #: Whether a person's "retry now" would be accepted: an outage awaiting its retry, or a failed
+    #: generation whose cause was never the portal's verdict on the consignment. Server-computed so
+    #: a screen cannot offer a button the server will refuse; the *permission* to press it is a
+    #: separate question the screen asks (`finance.compliance.eway.retry`).
+    can_retry: bool = False
 
 
 class EwayBillWithInvoice(BaseModel):

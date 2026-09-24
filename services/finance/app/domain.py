@@ -212,9 +212,21 @@ ERR_WINDOW_CLOSED: str = "window_closed"
 #: An e-Way generation chain older than `EWAY_REDRIVE_MAX_AGE`: goods that were meant to move a
 #: day ago are not given a bill automatically now (D3).
 ERR_STALE: str = "stale"
+#: The portal answered, but with "slow down" (HTTP 429 or the portal's own throttle code). Still an
+#: outage in what it licenses — the identical consignment is worth sending again — but recorded
+#: apart from `unavailable` because the remedy differs: wait as long as the portal asked, not as
+#: long as our own backoff would have (C4).
+ERR_RATE_LIMITED: str = "rate_limited"
 
 PLATFORM_ERROR_CODES: frozenset[str] = frozenset(
-    {ERR_PORTAL_UNAVAILABLE, ERR_RETRY_EXHAUSTED, ERR_NO_REGISTRATION, ERR_WINDOW_CLOSED, ERR_STALE}
+    {
+        ERR_PORTAL_UNAVAILABLE,
+        ERR_RATE_LIMITED,
+        ERR_RETRY_EXHAUSTED,
+        ERR_NO_REGISTRATION,
+        ERR_WINDOW_CLOSED,
+        ERR_STALE,
+    }
 )
 
 
@@ -2379,6 +2391,214 @@ def eway_remedy_for(*, status: str, generated_at: datetime | None, at: datetime)
     if status == "failed":
         return "cancel" if eway_cancellation_window_open(generated_at, at) else "contact_support"
     return None
+
+
+# --------------------------------------------------------------------- e-Way: automatic retry (C4)
+# An e-Way bill is a licence for goods that are *already loaded*, so an outage on the portal is not
+# a thing to wait for a sweep about: the retry is scheduled the moment the outage is recorded, on
+# its own short backoff (`schedule_event`, ADR-0015), and the reclaim sweep is only the net under
+# it for a schedule that was lost. Two failures look alike and are opposite, exactly as they are
+# for e-invoicing (see "the retry policy" above):
+#
+#   the portal refused the consignment — final until the consignment changes; retrying identical
+#                                        bytes only burns the budget, so it is never retried
+#   the portal did not answer          — outage, timeout, 5xx, or "slow down"; retryable with the
+#                                        *identical* consignment, under the same idempotency key
+#
+# Both are bounded, and both end in a state a person can read: a `failed` row carrying either the
+# portal's own numbered code or the platform's (`retry_exhausted`, `stale`).
+
+#: How many times one generation chain calls the portal before it stops and asks a person — the
+#: first request counts. Eight attempts on the backoff below span about an hour and a half, which
+#: rides out an ordinary NIC outage without hammering a struggling one.
+EWAY_MAX_ATTEMPTS: int = 8
+
+#: The wait after attempt 1 is this long; every later one doubles, up to the ceiling. Shorter than
+#: the e-invoice backoff on purpose: the goods are on the lorry, and nobody is waiting at a yard
+#: for a return period to close.
+EWAY_RETRY_BASE: timedelta = timedelta(minutes=1)
+EWAY_RETRY_CEILING: timedelta = timedelta(minutes=30)
+
+#: A retry that a person asks for by hand may repeat no faster than this per document, and a
+#: hammered button is refused rather than queued (`enforce_rate_limit`).
+EWAY_MANUAL_RETRY_WINDOW_SECONDS: int = 15
+
+#: The terminal failures a *person* may retry: the portal was never the problem in any of them.
+#: A portal refusal is deliberately absent — the identical consignment would be refused again, so
+#: offering "retry" there is how a user learns it does not work by watching it fail.
+EWAY_RETRYABLE_FAILURES: frozenset[str] = frozenset(
+    {ERR_RETRY_EXHAUSTED, ERR_STALE, ERR_NO_REGISTRATION}
+)
+
+
+def may_retry_eway(attempt: int) -> bool:
+    """Whether an outage on attempt `attempt` (1-based) gets another try. `<`, not `<=`: the
+    question is "is there a *next* attempt", and an off-by-one here is the difference between the
+    documented budget and one more than it."""
+    return attempt < EWAY_MAX_ATTEMPTS
+
+
+def eway_retry_delay(attempt: int, *, retry_after: timedelta | None = None) -> timedelta:
+    """How long to wait before attempt `attempt + 1`: exponential from `EWAY_RETRY_BASE`, capped at
+    `EWAY_RETRY_CEILING`.
+
+    A portal that says how long it wants to be left alone (`retry_after`, from a rate limit) is
+    obeyed — but only up to the ceiling. A `Retry-After` of a day is not a schedule this platform
+    can honour for goods on a road; it waits the ceiling and asks again, which spends attempts and
+    ends in a visible `retry_exhausted` rather than a retry nobody will ever see fire.
+    """
+    if attempt < 1:
+        raise ValueError("e-Way attempts are 1-based")
+    delay: timedelta = min(EWAY_RETRY_BASE * (2 ** (attempt - 1)), EWAY_RETRY_CEILING)
+    if retry_after is not None and retry_after > delay:
+        delay = min(retry_after, EWAY_RETRY_CEILING)
+    return delay
+
+
+#: What a person can do about a *failed generation*, as one answer (never a set of flags), beside
+#: the two withdrawal remedies `eway_remedy_for` already names (`cancel`, `contact_support`).
+#:
+#:   retry_now             — the same facts, sent again by a person: the portal was down for the
+#:                           whole budget, or the chain went stale while nobody was looking
+#:   register_gst          — no GST registration to raise the bill under; set it, then retry
+#:   correct_and_resubmit  — the portal refused the *contents*; fix the named thing and raise the
+#:                           request again from the dispatch system
+#:   not_required          — the portal says this consignment needs no bill at all
+EWAY_REMEDIES: frozenset[str] = frozenset(
+    {
+        "cancel",
+        "contact_support",
+        "retry_now",
+        "register_gst",
+        "correct_and_resubmit",
+        "not_required",
+    }
+)
+
+#: The portal's numbered refusals this platform knows how to explain (`app/eway/stub.py` mirrors the
+#: NIC numbering where it is confident of it). Anything else is `contact_support` with the code
+#: quoted, never a guess: a wrong remedy sends somebody to fix the wrong field.
+_EWAY_REFUSALS: dict[str, tuple[str, str]] = {
+    "102": (
+        "correct_and_resubmit",
+        "The seller's GSTIN was refused as invalid. Check the organization's GST registration.",
+    ),
+    "103": (
+        "correct_and_resubmit",
+        "The customer's GSTIN was refused as invalid. Correct it on the customer, then raise "
+        "the bill again.",
+    ),
+    "108": (
+        "correct_and_resubmit",
+        "The place of supply is not a GST state code. Correct it on the document.",
+    ),
+    "111": (
+        "not_required",
+        "The consignment is at or below 50,000 rupees, so the portal says no bill is needed.",
+    ),
+    "112": (
+        "correct_and_resubmit",
+        "The distance is outside what the portal accepts (1 to 4,000 km). Correct it and raise "
+        "the bill again.",
+    ),
+    "113": (
+        "correct_and_resubmit",
+        "A road movement must name the vehicle carrying it. Add the vehicle number (Part B) and "
+        "raise the bill again.",
+    ),
+    "114": (
+        "correct_and_resubmit",
+        "A rail, air or ship movement must name a transporter or a transport document (Part B). "
+        "Add one and raise the bill again.",
+    ),
+    "116": (
+        "correct_and_resubmit",
+        "A line carries no HSN/SAC code. The invoice is frozen, so issue a corrected document.",
+    ),
+    "119": (
+        "contact_support",
+        "The document's figures do not add up to the consignment value. Contact support.",
+    ),
+    "120": (
+        "contact_support",
+        "The document carries no lines. Contact support.",
+    ),
+    "122": (
+        "correct_and_resubmit",
+        "The transport mode is not one the portal accepts (road, rail, air or ship).",
+    ),
+}
+
+
+def eway_failure_remedy(error_code: str | None) -> tuple[str, str]:
+    """`(remedy, detail)` for a failed *generation* carrying `error_code`.
+
+    Platform codes map to what the platform can do (`retry_now`, `register_gst`); a numbered portal
+    code maps to what the person must fix; a code nobody has written down yet is
+    `contact_support` quoting it. Never raises and never returns `None`, so a screen can always
+    say something true.
+    """
+    if error_code in (ERR_RETRY_EXHAUSTED, ERR_STALE):
+        why = (
+            f"The portal could not be reached in {EWAY_MAX_ATTEMPTS} attempts."
+            if error_code == ERR_RETRY_EXHAUSTED
+            else "The e-Way bill was first asked for more than 24 hours ago and never generated."
+        )
+        return (
+            "retry_now",
+            f"{why} If the goods are still to move, retry now: the same consignment is sent "
+            "again and cannot produce a second bill.",
+        )
+    if error_code == ERR_NO_REGISTRATION:
+        return (
+            "register_gst",
+            "This organization has no GST registration to raise the bill under. Set one, then "
+            "retry.",
+        )
+    if error_code is not None and error_code in _EWAY_REFUSALS:
+        return _EWAY_REFUSALS[error_code]
+    return (
+        "contact_support",
+        f"The portal refused the consignment (code {error_code or 'unknown'}). Contact support "
+        "with this code.",
+    )
+
+
+# Portal text is free text, and a refusal names what it refused: a GSTIN, a vehicle number, and
+# sometimes a phone number or an address it found in the payload. The ledger, the outbox and the
+# read model all carry the *portal's own words*, so they are masked once, on the way in — nothing
+# downstream can then leak what was never stored.
+_MASK_GSTIN = re.compile(r"\b(\d{2})[A-Z]{5}\d{4}[A-Z]([1-9A-Z]Z[0-9A-Z])\b")
+_MASK_PAN = re.compile(r"\b[A-Z]{5}\d{4}[A-Z]\b")
+_MASK_VEHICLE = re.compile(r"\b([A-Z]{2})[ -]?\d{1,2}[ -]?[A-Z]{0,3}[ -]?\d{2}(\d{2})\b")
+_MASK_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_MASK_PHONE = re.compile(r"(?<![\w-])(?:\+91[ -]?)?[6-9]\d{9}(?![\w-])")
+
+#: A stored portal message never exceeds this. A misbehaving portal that echoes a whole payload
+#: back is not allowed to fill the ledger with it.
+PORTAL_TEXT_LIMIT: int = 400
+
+
+def mask_portal_text(text: str | None) -> str | None:
+    """A portal's free text with the identifiers a person could be recognised by masked.
+
+    * a GSTIN keeps its state code and its last three characters (`24**********1Z3`) — enough to
+      tell two apart in a support conversation, nothing of the PAN inside it;
+    * a bare PAN, a vehicle number (first two letters and last two digits kept), an email address
+      and a phone number are masked outright;
+    * the result is truncated to `PORTAL_TEXT_LIMIT` characters.
+
+    The **code** a portal answers with is never masked — it is the one thing a support engineer
+    needs and it identifies nobody. `None` in, `None` out.
+    """
+    if text is None:
+        return None
+    masked = _MASK_GSTIN.sub(lambda m: f"{m.group(1)}{'*' * 10}{m.group(2)}", text)
+    masked = _MASK_PAN.sub("*" * 10, masked)
+    masked = _MASK_EMAIL.sub("***@***", masked)
+    masked = _MASK_VEHICLE.sub(lambda m: f"{m.group(1)}{'*' * 4}{m.group(2)}", masked)
+    masked = _MASK_PHONE.sub("**********", masked)
+    return masked[:PORTAL_TEXT_LIMIT]
 
 
 # --------------------------------------------------------------------- withholding: TDS and TCS

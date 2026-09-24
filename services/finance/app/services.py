@@ -29,7 +29,7 @@ import asyncio
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -47,6 +47,7 @@ from app.eway.base import (
     EwayClient,
     EwayLine,
     EwayPayload,
+    EwayRateLimited,
     EwayRejected,
     EwayUnavailable,
 )
@@ -145,11 +146,20 @@ EVT_IMS_DOCUMENT_DECIDED = "finance.compliance.ims_document.decided"
 #: only the second.
 EVT_RETURN_GENERATED = "finance.compliance.gst_return.generated"
 EVT_RETURN_FILED = "finance.compliance.gst_return.filed"
-#: The e-Way events. `failed` carries `retryable` for the same reason the filing one does: an
-#: outage is worth another attempt with the identical consignment and a refusal is not.
+#: The e-Way events (C4). Three are announcements a person or a notification rule acts on:
+#: `generated` (a bill exists), `retry_scheduled` (the portal did not answer and the same
+#: consignment will be sent again at `retry_at` — the goods are loaded, so this is worth hearing),
+#: and `failed`, which since C4 is **terminal only** — a refusal, an exhausted budget or a chain
+#: that went stale — and carries the remedy. `retryable` stays on it (always false now) so a
+#: consumer written against the earlier contract keeps parsing.
 EVT_EWAY_GENERATED = "finance.compliance.eway_bill.generated"
 EVT_EWAY_FAILED = "finance.compliance.eway_bill.failed"
+EVT_EWAY_RETRY_SCHEDULED = "finance.compliance.eway_bill.retry_scheduled"
 EVT_EWAY_CANCELLED = "finance.compliance.eway_bill.cancelled"
+#: **The retry trigger** — a command to this service's own worker, not an announcement. Published
+#: directly for a person's "retry now" and handed to the scheduler (`schedule_event`, ADR-0015) for
+#: an automatic retry, exactly as `EVT_INVOICE_FILING_REQUESTED` is for a filing.
+EVT_EWAY_GENERATION_REQUESTED = "finance.compliance.eway_bill.generation_requested"
 #: A withholding assessed on a finalized document. Announced because the money it names never
 #: arrives: a downstream collections or cash-application consumer that expects the gross will
 #: chase a receivable that was settled net.
@@ -4106,8 +4116,15 @@ def _append_eway(
     valid_until: datetime | None = None,
     error_code: str | None = None,
     error: str | None = None,
+    attempt: int | None = None,
+    retry_at: datetime | None = None,
 ) -> EwayBill:
-    """Append one attempt. The only writer of this table, and it only ever inserts."""
+    """Append one attempt. The only writer of this table, and it only ever inserts.
+
+    `attempt` (which attempt of a generation chain this row belongs to) and `retry_at` (on a
+    `pending` row, when the scheduled retry is due) are the two C4 facts; `error` is stored as
+    given, so a caller putting a *portal's* words here masks them first (`domain.mask_portal_text`
+    — done once, in `call_eway_generate` and `call_eway_cancel`, where the words arrive)."""
     if status not in domain.EWAY_STATUSES:
         raise BusinessRuleProblem(f"Unknown e-Way status {status!r}")
     bill = EwayBill(
@@ -4129,6 +4146,8 @@ def _append_eway(
         error_code=error_code,
         error=error,
         attempted_at=at,
+        attempt=attempt,
+        retry_at=retry_at,
     )
     session.add(bill)
     return bill
@@ -4175,6 +4194,13 @@ class EwayGenerateFacts:
     payload: EwayPayload
     #: The clock reading the claim row was written at; every row this attempt appends uses it.
     at: datetime
+    #: Which attempt of its chain this call is (1-based) — what `record_eway_generation` decides
+    #: "is there a next one" from (`domain.may_retry_eway`).
+    attempt: int = 1
+    #: The id of the first claim row of this attempt's chain: the identity a scheduled retry is
+    #: keyed by (a chain that ended and was restarted by a person must not collide with the
+    #: schedule of the one before it) and the one a late-arriving retry is checked against.
+    chain_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -4182,7 +4208,11 @@ class _EwayGenerateOutcome:
     kind: str  # "generated" | "rejected" | "unavailable"
     ack: EwayAck | None = None
     error_code: str | None = None
+    #: The portal's words, already masked (`domain.mask_portal_text`).
     error: str | None = None
+    #: Set on an outage that was the portal saying "slow down" (`EwayRateLimited`).
+    rate_limited: bool = False
+    retry_after: timedelta | None = None
 
 
 def call_eway_generate(client: EwayClient, payload: EwayPayload) -> _EwayGenerateOutcome:
@@ -4192,17 +4222,30 @@ def call_eway_generate(client: EwayClient, payload: EwayPayload) -> _EwayGenerat
     `EwayAlreadyGenerated` is folded into `"generated"`: the portal's answer to a repeat of the
     same (document, transporter/vehicle part) key — the resumed half of a call whose first
     attempt crashed before it was recorded — carrying the bill it already issued, which is
-    exactly as good as a fresh one. An outage is `"unavailable"`, recorded as `pending`."""
+    exactly as good as a fresh one. An outage is `"unavailable"`, recorded as `pending` and
+    retried (C4): that covers a timeout, a connection failure, a 5xx and — as `EwayRateLimited`,
+    checked first because it is the more specific kind — a rate limit, whose `Retry-After` the
+    retry honours. A refusal is `"rejected"` and terminal. **Every word the portal sent back is
+    masked here**, once, so the ledger, the outbox and the API only ever hold the masked text."""
     try:
         ack = client.generate(payload)
     except EwayAlreadyGenerated as already:
         return _EwayGenerateOutcome(kind="generated", ack=already.ack)
     except EwayRejected as rejected:
         return _EwayGenerateOutcome(
-            kind="rejected", error_code=rejected.code, error=rejected.message
+            kind="rejected",
+            error_code=rejected.code,
+            error=domain.mask_portal_text(rejected.message),
+        )
+    except EwayRateLimited as limited:
+        return _EwayGenerateOutcome(
+            kind="unavailable",
+            error=domain.mask_portal_text(str(limited)),
+            rate_limited=True,
+            retry_after=limited.retry_after,
         )
     except EwayUnavailable as outage:
-        return _EwayGenerateOutcome(kind="unavailable", error=str(outage))
+        return _EwayGenerateOutcome(kind="unavailable", error=domain.mask_portal_text(str(outage)))
     return _EwayGenerateOutcome(kind="generated", ack=ack)
 
 
@@ -4287,7 +4330,16 @@ async def claim_eway_generation(
         at=at,
         idempotency_key=_eway_key(invoice, payload, bills),
     )
-    claim = _append_eway(session, ctx, invoice, payload, status="submitting", at=at)
+    # A request landing on an outage the automatic retry still owes continues that chain (the
+    # dispatch system re-asking is one more attempt at the same bill, not a fresh budget); one
+    # landing on anything else starts a chain of its own.
+    attempts = domain.leading_claim_attempts(
+        [b.status for b in bills], claim="submitting", chain=_EWAY_GENERATION_CHAIN
+    )
+    first = domain.chain_start(bills, chain=_EWAY_GENERATION_CHAIN)
+    claim = _append_eway(
+        session, ctx, invoice, payload, status="submitting", at=at, attempt=attempts + 1
+    )
     await session.flush()
     _audit_eway(
         session,
@@ -4296,9 +4348,16 @@ async def claim_eway_generation(
         claim,
         action="eway.generate_requested",
         request=request,
-        detail={"idempotency_key": eway_payload.idempotency_key},
+        detail={"idempotency_key": eway_payload.idempotency_key, "attempt": attempts + 1},
     )
-    return EwayGenerateFacts(invoice_id=invoice.id, transport=payload, payload=eway_payload, at=at)
+    return EwayGenerateFacts(
+        invoice_id=invoice.id,
+        transport=payload,
+        payload=eway_payload,
+        at=at,
+        attempt=attempts + 1,
+        chain_id=first.id if first is not None else claim.id,
+    )
 
 
 async def record_eway_generation(
@@ -4361,6 +4420,7 @@ async def record_eway_generation(
             eway_bill_no=ack.eway_bill_no,
             valid_from=ack.valid_from,
             valid_until=valid_until,
+            attempt=facts.attempt,
         )
         await session.flush()
         _audit_eway(session, ctx, invoice, bill, action="eway.generated", request=request)
@@ -4382,6 +4442,9 @@ async def record_eway_generation(
                 "valid_from": ack.valid_from.isoformat(),
                 "valid_until": valid_until.isoformat(),
                 "portal": portal,
+                #: Which attempt of its chain finally raised it — 1 for a bill raised first time,
+                #: more when the automatic retry (C4) is what got it through an outage.
+                "attempt": facts.attempt,
             },
             actor=_actor(ctx),
         )
@@ -4392,6 +4455,9 @@ async def record_eway_generation(
         return newest  # resolved by somebody else since this claim was made
 
     if outcome.kind == "rejected":
+        # Terminal at once, and never retried: the portal read the consignment and refused it, and
+        # the same bytes will be refused again. The row carries the portal's code and its masked
+        # words; the event carries the remedy (`domain.eway_failure_remedy`).
         bill = _append_eway(
             session,
             ctx,
@@ -4401,14 +4467,55 @@ async def record_eway_generation(
             at=at,
             error_code=outcome.error_code,
             error=outcome.error,
+            attempt=facts.attempt,
         )
         await session.flush()
         _audit_eway(session, ctx, invoice, bill, action="eway.rejected", request=request)
-        _publish_eway_failed(session, ctx, invoice, bill, retryable=False, portal=portal)
+        _publish_eway_failed(
+            session, ctx, invoice, bill, retryable=False, portal=portal, attempt=facts.attempt
+        )
         return bill
 
-    # The document is fine, the portal is not — and here the goods are already loaded, which is
-    # why the row is `pending` rather than `failed`: somebody is going to try again.
+    # The document is fine, the portal is not — and here the goods are already loaded. Three
+    # futures, decided here and nowhere else: another attempt is scheduled; the budget is spent
+    # (`retry_exhausted`); or the next attempt would land after the generation window shut
+    # (`stale`). None of them leaves a `pending` row nobody will ever look at again.
+    retry_at = facts.at + domain.eway_retry_delay(facts.attempt, retry_after=outcome.retry_after)
+    first = domain.chain_start(bills, chain=_EWAY_GENERATION_CHAIN)
+    window_shuts = first.attempted_at + domain.EWAY_REDRIVE_MAX_AGE if first is not None else None
+    stop: tuple[str, str] | None = None
+    if not domain.may_retry_eway(facts.attempt):
+        stop = (
+            domain.ERR_RETRY_EXHAUSTED,
+            f"gave up raising an e-Way bill for {invoice.number} after {facts.attempt} attempts; "
+            f"the portal was last unreachable with: {outcome.error}",
+        )
+    elif window_shuts is not None and retry_at >= window_shuts:
+        stop = (
+            domain.ERR_STALE,
+            f"the next attempt for {invoice.number} would land after the 24-hour generation "
+            f"window shut, so the e-Way bill is not raised automatically; the portal was last "
+            f"unreachable with: {outcome.error}",
+        )
+    if stop is not None:
+        failed = _append_eway(
+            session,
+            ctx,
+            invoice,
+            transport,
+            status="failed",
+            at=at,
+            error_code=stop[0],
+            error=stop[1][: domain.PORTAL_TEXT_LIMIT + 200],
+            attempt=facts.attempt,
+        )
+        await session.flush()
+        _audit_eway(session, ctx, invoice, failed, action="eway.failed", request=request)
+        _publish_eway_failed(
+            session, ctx, invoice, failed, retryable=False, portal=portal, attempt=facts.attempt
+        )
+        return failed
+
     bill = _append_eway(
         session,
         ctx,
@@ -4416,12 +4523,37 @@ async def record_eway_generation(
         transport,
         status="pending",
         at=facts.at,
-        error_code=domain.ERR_PORTAL_UNAVAILABLE,
+        error_code=domain.ERR_RATE_LIMITED
+        if outcome.rate_limited
+        else domain.ERR_PORTAL_UNAVAILABLE,
         error=outcome.error,
+        attempt=facts.attempt,
+        retry_at=retry_at,
     )
     await session.flush()
-    _audit_eway(session, ctx, invoice, bill, action="eway.pending", request=request)
-    _publish_eway_failed(session, ctx, invoice, bill, retryable=True, portal=portal)
+    _audit_eway(
+        session,
+        ctx,
+        invoice,
+        bill,
+        action="eway.pending",
+        request=request,
+        detail={"attempt": facts.attempt, "retry_at": retry_at.isoformat()},
+    )
+    request_eway_generation(
+        session,
+        ctx,
+        invoice_id=invoice.id,
+        number=invoice.number,
+        attempt=facts.attempt + 1,
+        chain_id=facts.chain_id,
+        not_before=retry_at,
+        trigger="retry",
+        now=facts.at,
+    )
+    _publish_eway_retry_scheduled(
+        session, ctx, invoice, bill, next_attempt=facts.attempt + 1, portal=portal
+    )
     return bill
 
 
@@ -4480,9 +4612,13 @@ def call_eway_cancel(client: EwayClient, facts: EwayCancelFacts) -> _EwayCancelO
     except EwayAlreadyCancelled as already:
         return _EwayCancelOutcome(kind="cancelled", ack=already.ack)
     except EwayRejected as rejected:
-        return _EwayCancelOutcome(kind="rejected", error_code=rejected.code, error=rejected.message)
+        return _EwayCancelOutcome(
+            kind="rejected",
+            error_code=rejected.code,
+            error=domain.mask_portal_text(rejected.message),
+        )
     except EwayUnavailable as outage:
-        return _EwayCancelOutcome(kind="unavailable", error=str(outage))
+        return _EwayCancelOutcome(kind="unavailable", error=domain.mask_portal_text(str(outage)))
     return _EwayCancelOutcome(kind="cancelled", ack=ack)
 
 
@@ -4713,6 +4849,431 @@ class EwayRedrive:
 _EWAY_GENERATION_CHAIN: frozenset[str] = frozenset({"submitting", "pending"})
 
 
+async def _drive_generation(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    invoice: Invoice,
+    bills: list[EwayBill],
+    *,
+    attempts: int,
+    first: EwayBill | None,
+    now: datetime,
+    portal: str,
+    automatic: bool,
+    trigger: str,
+    transport_from: EwayBill | None = None,
+) -> EwayRedrive:
+    """The claim half of one more attempt at a generation — shared by the reclaim sweep, the
+    scheduled retry and a person's "retry now", because all three are the same act: check that the
+    attempt is still allowed, then commit a fresh `submitting` row as the lease.
+
+    `attempts` is how many claims the chain has had (`domain.leading_claim_attempts`); `first` is
+    its oldest row (`None` for a chain that starts now, after a terminal `failed` a person is
+    retrying); `transport_from` is the row whose transport facts are re-sent (the newest, unless a
+    person is retrying a `failed` row, which copies them). Four things end the chain instead of
+    driving it, each as a terminal `failed` row a person can read, and no portal call:
+
+    * **no registration** — nothing to raise a bill under (`no_registration`);
+    * **stale** — an *automatic* drive of a chain first asked for more than 24 hours ago
+      (`stale`): goods that were meant to move a day ago are a person's decision. A person's own
+      retry (`automatic=False`) is exactly that decision and is not refused for it;
+    * **exhausted** — `domain.EWAY_MAX_ATTEMPTS` claims already made (`retry_exhausted`).
+
+    A generation is re-sent with the idempotency key its first claim computed — a function of the
+    stored transport facts and the ledger, not of anything a crash could lose — so a portal that
+    already issued the bill answers "already generated" with it, and a retry can never mint a
+    second one.
+    """
+    source = transport_from if transport_from is not None else bills[0]
+    transport = _transport_of(source)
+    at = max(now, bills[0].attempted_at)
+    registration = await selectors.get_gst_registration(session, ctx.organization_id)
+    stale = (
+        automatic and first is not None and now - first.attempted_at > domain.EWAY_REDRIVE_MAX_AGE
+    )
+    if stale or attempts >= domain.EWAY_MAX_ATTEMPTS or registration is None:
+        if registration is None:
+            code = domain.ERR_NO_REGISTRATION
+            why = "this organization no longer has a GST registration configured"
+        elif stale:
+            code = domain.ERR_STALE
+            why = (
+                f"the e-Way bill for {invoice.number} was first asked for more than "
+                f"{int(domain.EWAY_REDRIVE_MAX_AGE.total_seconds() // 3600)} hours ago and "
+                "never generated; raise it again if the goods are still to move"
+            )
+        else:
+            code = domain.ERR_RETRY_EXHAUSTED
+            why = (
+                f"gave up raising an e-Way bill for {invoice.number} after {attempts} "
+                "attempts; the portal never answered"
+            )
+        failed = _append_eway(
+            session,
+            ctx,
+            invoice,
+            transport,
+            status="failed",
+            at=at,
+            error_code=code,
+            error=why,
+            attempt=max(attempts, 1),
+        )
+        await session.flush()
+        _audit_eway(
+            session,
+            ctx,
+            invoice,
+            failed,
+            action="eway.failed",
+            request=None,
+            detail={"trigger": trigger},
+        )
+        _publish_eway_failed(
+            session,
+            ctx,
+            invoice,
+            failed,
+            retryable=False,
+            portal=portal,
+            attempt=max(attempts, 1),
+        )
+        return EwayRedrive("exhausted")
+
+    customer = await selectors.get_customer(session, ctx.organization_id, invoice.customer_id)
+    payload = build_eway_payload(
+        invoice,
+        registration,
+        transport,
+        buyer_name=customer.name if customer else "",
+        at=at,
+        idempotency_key=_eway_key(invoice, transport, bills),
+    )
+    lease = _append_eway(
+        session, ctx, invoice, transport, status="submitting", at=at, attempt=attempts + 1
+    )
+    await session.flush()
+    _audit_eway(
+        session,
+        ctx,
+        invoice,
+        lease,
+        action="eway.generate_resumed",
+        request=None,
+        detail={
+            "idempotency_key": payload.idempotency_key,
+            "attempt": attempts + 1,
+            "trigger": trigger,
+        },
+    )
+    return EwayRedrive(
+        "generate",
+        generate=EwayGenerateFacts(
+            invoice_id=invoice.id,
+            transport=transport,
+            payload=payload,
+            at=at,
+            attempt=attempts + 1,
+            chain_id=first.id if first is not None else lease.id,
+        ),
+    )
+
+
+def _eway_request_key(invoice_id: uuid.UUID, chain_id: uuid.UUID | None, attempt: int) -> str:
+    """The scheduler's idempotency key for one retry: unique per invoice **per chain** per attempt.
+    The filing key is `(invoice, attempt)` because a filing chain never restarts; an e-Way chain
+    does (a person retries after a terminal failure and attempt numbers begin again), and a key
+    that ignored the chain would collide with the earlier chain's schedule and be silently
+    dropped by the scheduler's `ON CONFLICT DO NOTHING`."""
+    return f"eway-generation:{invoice_id}:{chain_id or 'new'}:{attempt}"
+
+
+def request_eway_generation(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    invoice_id: uuid.UUID,
+    number: str,
+    attempt: int,
+    chain_id: uuid.UUID | None,
+    not_before: datetime | None,
+    trigger: str,
+    now: datetime | None = None,
+    idempotency_suffix: str | None = None,
+    requested_by: uuid.UUID | None = None,
+) -> None:
+    """Stage one more attempt at a generation — inside the caller's transaction, never as a call.
+
+    The e-Way twin of `request_filing` (ADR-0015 §4): a `not_before` in the future hands the event
+    to the scheduler (`schedule_event`, keyed per chain and attempt so a redelivered schedule
+    request cannot produce two deliveries); a null or past one publishes directly — which is what a
+    person's "retry now" does, since nobody chose to wait. The consumer that receives it
+    (`app/consumers.py:generate_requested_eway`) claims, calls and records; this function only
+    says that it should.
+    """
+    now = now or _now()
+    payload = {
+        "organization_id": str(ctx.organization_id),
+        "invoice_id": str(invoice_id),
+        "number": number,
+        "attempt": attempt,
+        "max_attempts": domain.EWAY_MAX_ATTEMPTS,
+        "chain_id": str(chain_id) if chain_id else None,
+        "not_before": not_before.isoformat() if not_before else None,
+        #: `retry` for the automatic backoff, `manual` for a person's "retry now".
+        "trigger": trigger,
+        "requested_by": str(requested_by) if requested_by else None,
+    }
+    if not_before is not None and not_before > now:
+        schedule_event(
+            session,
+            OutboxEvent,
+            organization_id=ctx.organization_id,
+            due_at=not_before,
+            idempotency_key=(
+                _eway_request_key(invoice_id, chain_id, attempt)
+                + (f":{idempotency_suffix}" if idempotency_suffix else "")
+            ),
+            target_event_type=EVT_EWAY_GENERATION_REQUESTED,
+            target_aggregate_type="invoice",
+            target_aggregate_id=invoice_id,
+            target_payload=payload,
+            target_actor=_actor(ctx),
+        )
+        return
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_EWAY_GENERATION_REQUESTED,
+        aggregate_type="invoice",
+        aggregate_id=invoice_id,
+        payload=payload,
+        actor=_actor(ctx),
+    )
+
+
+def rearm_early_eway_request(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    invoice_id: uuid.UUID,
+    event_id: uuid.UUID,
+    attempt: int,
+    chain_id: uuid.UUID | None,
+    not_before: datetime,
+    payload: dict[str, Any],
+) -> None:
+    """ADR-0015 §5's defence in depth for `generation_requested`: a retry arriving meaningfully
+    before its own `not_before` (a hand redelivery, a DLQ replay, a scheduler on a wrong clock) is
+    re-armed for what remains rather than acted on early or dropped. Keyed off this message's own
+    event id for the reason `rearm_early_filing_request` gives: the original key belongs to a job
+    that has already fired — this message *is* that firing."""
+    request_eway_generation(
+        session,
+        ctx,
+        invoice_id=invoice_id,
+        number=str(payload.get("number", "")),
+        attempt=attempt,
+        chain_id=chain_id,
+        not_before=not_before,
+        trigger=str(payload.get("trigger", "retry")),
+        idempotency_suffix=f"early-arrival:{event_id}",
+    )
+
+
+async def claim_eway_retry(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    invoice_id: uuid.UUID,
+    *,
+    attempt: int | None,
+    chain_id: uuid.UUID | None,
+    trigger: str,
+    now: datetime | None = None,
+    portal: str,
+) -> EwayRedrive:
+    """The first act of a **scheduled** retry or a person's "retry now" — what the consumer of
+    `generation_requested` runs. Same claim as the sweep's (`_drive_generation`), asked a different
+    question first: not "is this row old enough" but "is this message still the attempt the ledger
+    is waiting for".
+
+    A retry message can be late, duplicated, or overtaken — by the sweep, by the dispatch system
+    asking again, by a person — so every one of these is a named outcome that writes nothing:
+
+    * `unknown_invoice` — the message outlived its subject (also what another tenant's id reads as);
+    * `not_owed` — the newest row is not an outage awaiting a retry (a bill exists, it was
+      cancelled, the portal refused it, a withdrawal is in flight);
+    * `in_flight` — somebody's claim is standing; the sweep resumes it if their process died;
+    * `superseded` — the chain has moved on since this was scheduled: the message names an
+      attempt or a chain the ledger no longer waits for.
+
+    Everything else is `_drive_generation`'s. `trigger` is `retry` (scheduled: the chain and attempt
+    are checked, the age cap applies) or `manual` (a person: a `failed` row a person may retry
+    starts a new chain, the age cap does not apply). Row-locks the invoice, waiting for it —
+    every holder of that lock is a short transaction with no portal call in it (D3).
+    """
+    now = now or _now()
+    invoice = await selectors.get_invoice(session, ctx.organization_id, invoice_id, for_update=True)
+    if invoice is None:
+        return EwayRedrive("unknown_invoice")
+    bills = await selectors.eway_bills_for_invoice(session, ctx.organization_id, invoice.id)
+    if not bills:
+        return EwayRedrive("not_owed")
+    newest = bills[0]
+    manual = trigger == "manual"
+
+    if newest.status == "submitting":
+        return EwayRedrive("in_flight")
+    if newest.status == "pending":
+        attempts = domain.leading_claim_attempts(
+            [b.status for b in bills], claim="submitting", chain=_EWAY_GENERATION_CHAIN
+        )
+        first = domain.chain_start(bills, chain=_EWAY_GENERATION_CHAIN)
+        if not manual:
+            if attempt is not None and attempt != attempts + 1:
+                return EwayRedrive("superseded")
+            if chain_id is not None and first is not None and first.id != chain_id:
+                return EwayRedrive("superseded")
+        return await _drive_generation(
+            session,
+            ctx,
+            invoice,
+            bills,
+            attempts=attempts,
+            first=first,
+            now=now,
+            portal=portal,
+            automatic=not manual,
+            trigger=trigger,
+        )
+    if manual and _is_retryable_generation_failure(newest):
+        return await _drive_generation(
+            session,
+            ctx,
+            invoice,
+            bills,
+            attempts=0,
+            first=None,
+            now=now,
+            portal=portal,
+            automatic=False,
+            trigger=trigger,
+            transport_from=newest,
+        )
+    return EwayRedrive("not_owed")
+
+
+def _is_retryable_generation_failure(row: EwayBill) -> bool:
+    """A terminal `failed` **generation** row whose cause was never the portal's verdict on the
+    consignment (`domain.EWAY_RETRYABLE_FAILURES`). A failed *withdrawal* carries the bill's
+    `valid_from` and is not a generation at all."""
+    return (
+        row.status == "failed"
+        and row.valid_from is None
+        and row.error_code in domain.EWAY_RETRYABLE_FAILURES
+    )
+
+
+async def request_eway_retry(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    invoice_id: uuid.UUID,
+    *,
+    request: Request | None = None,
+    now: datetime | None = None,
+) -> EwayBill:
+    """A person's "retry now" — the request half. Refuses everything answerable from the ledger,
+    then stages `generation_requested` (trigger `manual`) on the outbox in this same short
+    transaction and returns the row the request was made against. **No portal call and no claim
+    row here**: the request path never waits on a government (D3), and the consumer's claim
+    re-checks everything under the invoice lock, so a double click, or a click racing the
+    automatic retry, resolves there rather than here.
+
+    What may be retried, and what may not, is the point:
+
+    * an outage the platform still owes a retry on (`pending`) — sooner than scheduled;
+    * a terminal `failed` whose cause was the platform's own (`retry_exhausted`, `stale`,
+      `no_registration`) — a new chain, a fresh budget, a person's decision that the goods are
+      still to move.
+
+    A portal **refusal** is refused with a 409 that names its code and says what to fix: the
+    identical consignment would be refused again. A bill already standing, a withdrawal, and a
+    generation in flight are 409s too. An unknown invoice — and another tenant's — is a 404.
+    """
+    now = now or _now()
+    invoice = await selectors.get_invoice(session, ctx.organization_id, invoice_id, for_update=True)
+    if invoice is None:
+        raise NotFoundProblem("That invoice is not part of this organization")
+    bills = await selectors.eway_bills_for_invoice(session, ctx.organization_id, invoice.id)
+    if not bills:
+        raise ConflictProblem(
+            f"No e-Way bill has been asked for {invoice.number}, so there is nothing to retry; "
+            "the dispatch system raises the request with the transport facts"
+        )
+    newest = bills[0]
+    if newest.status == "submitting":
+        raise ConflictProblem(
+            f"An e-Way generation for {invoice.number} is already in progress; "
+            "wait for it to finish"
+        )
+    if newest.status == "generated" or selectors.live_eway_bill(bills, at=now) is not None:
+        raise ConflictProblem(
+            f"{invoice.number} already has an e-Way bill; there is nothing to retry"
+        )
+    retryable = newest.status == "pending" or _is_retryable_generation_failure(newest)
+    if not retryable:
+        if newest.status == "failed" and newest.valid_from is None:
+            _, detail = domain.eway_failure_remedy(newest.error_code)
+            raise ConflictProblem(
+                f"Retrying will not help — the identical consignment would be refused again "
+                f"(code {newest.error_code}). {detail}"
+            )
+        raise ConflictProblem(
+            f"{invoice.number}'s newest e-Way record is {newest.status}, which is not an "
+            "outage or a failed generation, so there is nothing to retry"
+        )
+    registration = await selectors.get_gst_registration(session, ctx.organization_id)
+    if registration is None:
+        raise BusinessRuleProblem(
+            "This organization has no GST registration configured, so it cannot raise a bill"
+        )
+    attempts = (
+        domain.leading_claim_attempts(
+            [b.status for b in bills], claim="submitting", chain=_EWAY_GENERATION_CHAIN
+        )
+        if newest.status == "pending"
+        else 0
+    )
+    first = (
+        domain.chain_start(bills, chain=_EWAY_GENERATION_CHAIN)
+        if newest.status == "pending"
+        else None
+    )
+    request_eway_generation(
+        session,
+        ctx,
+        invoice_id=invoice.id,
+        number=invoice.number,
+        attempt=attempts + 1,
+        chain_id=first.id if first is not None else None,
+        not_before=None,
+        trigger="manual",
+        now=now,
+        requested_by=ctx.principal.sub,
+    )
+    _audit_eway(
+        session,
+        ctx,
+        invoice,
+        newest,
+        action="eway.retry_requested",
+        request=request,
+        detail={"attempt": attempts + 1, "from_status": newest.status},
+    )
+    return newest
+
+
 async def claim_eway_redrive(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -4749,65 +5310,17 @@ async def claim_eway_redrive(
         )
         if newest.attempted_at > now - domain.resume_after(attempts):
             return EwayRedrive("not_due")
-        transport = _transport_of(newest)
-        at = max(now, newest.attempted_at)
-        registration = await selectors.get_gst_registration(session, ctx.organization_id)
-        first = domain.chain_start(bills, chain=_EWAY_GENERATION_CHAIN)
-        # The age cap is measured from the chain's *first* row — the moment somebody first asked
-        # for this bill — not from the newest lease: goods that were meant to move a day ago are
-        # a person's decision, not an automatic generation. It also covers `pending` rows written
-        # by the pre-claim outage path, which have no `submitting` row before them at all.
-        stale = first is not None and now - first.attempted_at > domain.EWAY_REDRIVE_MAX_AGE
-        if stale or attempts >= domain.MAX_COMPLIANCE_RESUMES or registration is None:
-            if registration is None:
-                code = domain.ERR_NO_REGISTRATION
-                why = "this organization no longer has a GST registration configured"
-            elif stale:
-                code = domain.ERR_STALE
-                why = (
-                    f"the e-Way bill for {invoice.number} was first asked for more than "
-                    f"{int(domain.EWAY_REDRIVE_MAX_AGE.total_seconds() // 3600)} hours ago and "
-                    "never generated; raise it again if the goods are still to move"
-                )
-            else:
-                code = domain.ERR_RETRY_EXHAUSTED
-                why = (
-                    f"gave up raising an e-Way bill for {invoice.number} after {attempts} "
-                    "attempts; the portal never answered"
-                )
-            failed = _append_eway(
-                session, ctx, invoice, transport, status="failed", at=at, error_code=code, error=why
-            )
-            await session.flush()
-            _audit_eway(session, ctx, invoice, failed, action="eway.failed", request=None)
-            _publish_eway_failed(session, ctx, invoice, failed, retryable=False, portal=portal)
-            return EwayRedrive("exhausted")
-
-        customer = await selectors.get_customer(session, ctx.organization_id, invoice.customer_id)
-        payload = build_eway_payload(
-            invoice,
-            registration,
-            transport,
-            buyer_name=customer.name if customer else "",
-            at=at,
-            idempotency_key=_eway_key(invoice, transport, bills),
-        )
-        lease = _append_eway(session, ctx, invoice, transport, status="submitting", at=at)
-        await session.flush()
-        _audit_eway(
+        return await _drive_generation(
             session,
             ctx,
             invoice,
-            lease,
-            action="eway.generate_resumed",
-            request=None,
-            detail={"idempotency_key": payload.idempotency_key, "attempt": attempts + 1},
-        )
-        return EwayRedrive(
-            "generate",
-            generate=EwayGenerateFacts(
-                invoice_id=invoice.id, transport=transport, payload=payload, at=at
-            ),
+            bills,
+            attempts=attempts,
+            first=domain.chain_start(bills, chain=_EWAY_GENERATION_CHAIN),
+            now=now,
+            portal=portal,
+            automatic=True,
+            trigger="sweep",
         )
 
     if newest.status != "cancelling":
@@ -4896,7 +5409,14 @@ def _publish_eway_failed(
     *,
     retryable: bool,
     portal: str,
+    attempt: int | None = None,
 ) -> None:
+    """The **terminal** failure announcement (C4): a refusal, an exhausted budget or a stale chain.
+    An outage that is going to be retried is `retry_scheduled` instead — `failed` means somebody has
+    to act. Carries the remedy (`domain.eway_failure_remedy`) so a notification can say what to do
+    without reading the ledger, and the portal's words already masked (`domain.mask_portal_text`,
+    applied where they arrive; this function only forwards what the row holds)."""
+    remedy, remedy_detail = domain.eway_failure_remedy(bill.error_code)
     publish_event(
         session,
         OutboxEvent,
@@ -4912,8 +5432,50 @@ def _publish_eway_failed(
             "error_code": bill.error_code,
             "error": bill.error,
             #: A refusal stands until the consignment changes; an outage does not. The same
-            #: distinction the filing events carry, and for the same reason.
+            #: distinction the filing events carry, and for the same reason. Since C4 every
+            #: `failed` event is terminal, so this is false on all of them — kept for the
+            #: consumers written against the earlier contract, where an outage said `true`.
             "retryable": retryable,
+            "terminal": True,
+            "attempt": attempt if attempt is not None else bill.attempt,
+            "remedy": remedy,
+            "remedy_detail": remedy_detail,
+            "portal": portal,
+        },
+        actor=_actor(ctx),
+    )
+
+
+def _publish_eway_retry_scheduled(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    invoice: Invoice,
+    bill: EwayBill,
+    *,
+    next_attempt: int,
+    portal: str,
+) -> None:
+    """The portal did not answer and the same consignment will be sent again at `retry_at`. The
+    goods are already loaded, which is why this is announced rather than left for a person to
+    find on a screen: somebody may want to ring the driver."""
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_EWAY_RETRY_SCHEDULED,
+        aggregate_type="invoice",
+        aggregate_id=invoice.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "invoice_id": str(invoice.id),
+            "eway_bill_id": str(bill.id),
+            "number": invoice.number,
+            "attempt": bill.attempt,
+            "next_attempt": next_attempt,
+            "max_attempts": domain.EWAY_MAX_ATTEMPTS,
+            "retry_at": bill.retry_at.isoformat() if bill.retry_at else None,
+            "error_code": bill.error_code,
+            "error": bill.error,
             "portal": portal,
         },
         actor=_actor(ctx),

@@ -2395,6 +2395,8 @@ def to_eway_bill_out(bill: EwayBill, *, at: datetime | None = None) -> EwayBillO
         error_code=bill.error_code,
         error=bill.error,
         attempted_at=bill.attempted_at,
+        attempt=bill.attempt,
+        retry_at=bill.retry_at,
     )
 
 
@@ -2414,6 +2416,7 @@ def to_eway_state(
         supply_type=invoice.supply_type,
         status=invoice.status,
     )
+    max_attempts = domain.EWAY_MAX_ATTEMPTS
     if latest is None:
         return EwayState(
             required=required,
@@ -2425,8 +2428,21 @@ def to_eway_state(
             cancellable_until=None,
             remedy=None,
             attempts=0,
+            max_attempts=max_attempts,
         )
     effective = domain.eway_status_at(status=latest.status, valid_until=latest.valid_until, at=now)
+    # A `failed` row carrying the bill's own `valid_from` is a failed *withdrawal*; one that does
+    # not is a failed *generation*, and that is the one with a retry story (C4).
+    failed_generation = effective == "failed" and latest.valid_from is None
+    remedy = domain.eway_remedy_for(status=effective, generated_at=latest.valid_from, at=now)
+    remedy_detail: str | None = None
+    if failed_generation:
+        remedy, remedy_detail = domain.eway_failure_remedy(latest.error_code)
+    elif effective == "pending":
+        remedy_detail = (
+            "The portal did not answer. The same consignment is sent again automatically"
+            + (" when the countdown ends." if latest.retry_at is not None else ".")
+        )
     return EwayState(
         required=required,
         status=effective,
@@ -2444,8 +2460,16 @@ def to_eway_state(
             if effective in ("generated", "failed") and latest.valid_from is not None
             else None
         ),
-        remedy=domain.eway_remedy_for(status=effective, generated_at=latest.valid_from, at=now),
+        remedy=remedy,
         attempts=attempts,
+        remedy_detail=remedy_detail,
+        error_code=latest.error_code if effective in ("pending", "failed") else None,
+        error=latest.error if effective in ("pending", "failed") else None,
+        attempt=latest.attempt,
+        max_attempts=max_attempts,
+        retry_at=latest.retry_at if effective == "pending" else None,
+        can_retry=effective == "pending"
+        or (failed_generation and latest.error_code in domain.EWAY_RETRYABLE_FAILURES),
     )
 
 

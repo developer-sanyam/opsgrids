@@ -34,6 +34,8 @@ FINANCE_READS = (
 FINANCE_WRITES = (
     "finance.compliance.registration.write",
     "finance.compliance.ims.decide",
+    "finance.compliance.ims.push",
+    "finance.compliance.eway.retry",
     "finance.compliance.returns.generate",
     "finance.compliance.returns.file",
     "finance.billing.invoice.issue",

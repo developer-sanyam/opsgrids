@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import scope, selectors, services
+from app import domain, scope, selectors, services
 from app.config import settings
 from app.models import SCHEMA
 from app.schemas import (
@@ -64,6 +64,7 @@ from app.schemas import (
     WithholdingWithInvoice,
 )
 from platform_core.auth import Scope, ScopeContext, require, require_product
+from platform_core.cache import enforce_rate_limit
 from platform_core.db import get_tenant_session
 from platform_core.errors import NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
@@ -146,6 +147,13 @@ ReturnFile = Annotated[
 ]
 EwayRead = Annotated[
     ScopeContext, Depends(require("finance.compliance.eway.read", minimum=Scope.ORG))
+]
+#: Sending an e-Way generation again by hand. A write, but a small one: it replays transport facts a
+#: dispatch system already asserted, under the idempotency key that makes a second bill impossible,
+#: so it is not marked dangerous — it can create nothing the original request could not. It is still
+#: its own permission rather than `eway.read`, because it makes a government call.
+EwayRetry = Annotated[
+    ScopeContext, Depends(require("finance.compliance.eway.retry", minimum=Scope.ORG))
 ]
 WithholdingRead = Annotated[
     ScopeContext, Depends(require("finance.compliance.withholding.read", minimum=Scope.ORG))
@@ -536,6 +544,52 @@ async def read_eway_state(invoice_id: uuid.UUID, session: SessionDep, ctx: EwayR
     invoice = await selectors.get_invoice(session, ctx.organization_id, invoice_id)
     if invoice is None:
         raise NotFoundProblem("That invoice is not part of this organization")
+    latest, counts = await selectors.latest_eway_bills(session, ctx.organization_id, [invoice.id])
+    return selectors.to_eway_state(invoice, latest.get(invoice.id), counts.get(invoice.id, 0))
+
+
+@router.post(
+    "/finance/invoices/{invoice_id}/eway/retry",
+    response_model=EwayState,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Retry raising one document's e-Way bill now",
+    dependencies=[Entitled],
+    responses={
+        404: {"description": "That invoice is not part of this organization"},
+        409: {
+            "description": (
+                "Nothing to retry: a bill already stands, a generation is in flight, or the "
+                "portal refused the consignment and would refuse it again"
+            )
+        },
+        429: {"description": "Retried too recently — one attempt per document per few seconds"},
+    },
+)
+async def retry_eway_bill(
+    invoice_id: uuid.UUID, session: SessionDep, ctx: EwayRetry, request: Request
+) -> EwayState:
+    """Ask for another attempt at a bill, without waiting for the automatic retry (C4).
+
+    **202, not 201**: this stages a request and returns; the portal call happens afterwards, in the
+    worker, on the same claim/call/record path the automatic retry uses (D3 — a route wrapped end
+    to end by the tenant transaction must never hold it open across a government's answer). The
+    response is the document's e-Way position as it stands now; poll it, or read the
+    `retry_scheduled` / `generated` / `failed` events.
+
+    Offered for an outage still awaiting its retry and for a failed generation whose cause was the
+    platform's (`retry_exhausted`, `stale`, `no_registration`) — `EwayState.can_retry` says which.
+    A portal **refusal** is a 409 naming the code and what to fix: the identical consignment would
+    be refused again. Rate limited per document.
+    """
+    await enforce_rate_limit(
+        f"finance.eway.retry:{ctx.organization_id}:{invoice_id}",
+        limit=1,
+        window_seconds=domain.EWAY_MANUAL_RETRY_WINDOW_SECONDS,
+    )
+    invoice = await selectors.get_invoice(session, ctx.organization_id, invoice_id)
+    if invoice is None:
+        raise NotFoundProblem("That invoice is not part of this organization")
+    await services.request_eway_retry(session, ctx, invoice_id, request=request)
     latest, counts = await selectors.latest_eway_bills(session, ctx.organization_id, [invoice.id])
     return selectors.to_eway_state(invoice, latest.get(invoice.id), counts.get(invoice.id, 0))
 

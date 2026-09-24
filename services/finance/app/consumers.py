@@ -59,7 +59,7 @@ from typing import Any
 
 from app import domain, services
 from app.config import settings
-from app.deps import get_irp_client
+from app.deps import get_eway_client, get_irp_client
 from app.models import ProcessedEvent
 from platform_core.db import assert_app_role, init_engine, session_scope
 from platform_core.errors import BusinessRuleProblem
@@ -196,6 +196,145 @@ async def file_requested_invoice(envelope: dict[str, Any]) -> None:
 
 
 consumer.on(services.EVT_INVOICE_FILING_REQUESTED)(file_requested_invoice)
+
+
+async def generate_requested_eway(envelope: dict[str, Any]) -> None:
+    """Raise one e-Way bill because the queue asked for another attempt at it (C4).
+
+    Bound to `finance.compliance.eway_bill.generation_requested`, which this same service publishes
+    two ways: handed to the scheduler with a `not_before` after an outage (the automatic retry,
+    ADR-0015) and directly for a person's "retry now". Everything that makes it safe is the filing
+    consumer's list again, for the same reasons, and each has a test:
+
+    * **claim / call / record**, never a portal call inside a transaction (D3): the claim commits a
+      `submitting` row under the invoice lock and marks the message processed *in that same
+      transaction*; the portal is called with no session open, off the event loop; the outcome is
+      recorded in a second short transaction. A process that dies between the two leaves the
+      `submitting` claim standing, and the reclaim sweep resumes it under the same idempotency key
+      — the queue never redelivers a claimed message, so the sweep is the only recovery.
+    * **idempotent by the ledger, not only by event id**: a retry that arrives after the sweep,
+      the dispatch system or a person already moved the chain on is `superseded`; one that finds a
+      bill standing is `not_owed`. Neither calls the portal, and the portal's own key means even a
+      duplicate call cannot mint a second bill.
+    * **the tenant is bound from the envelope, never the payload** (ADR-0015 review): the payload
+      is JSON that travelled through the scheduler's table, so a disagreement between the two is
+      refused, not resolved in favour of whichever looks convenient.
+    * **a retry waits for its own `not_before`**: one arriving meaningfully early is re-armed for
+      what remains, not acted on.
+
+    Never raises for a business situation — a missing invoice, a bill that already exists, a stale
+    message are outcomes, logged — because a raise nacks the message and the second nack
+    dead-letters a compliance retry.
+    """
+    event_id = uuid.UUID(envelope["event_id"])
+    payload = envelope["payload"]
+    envelope_organization_id = uuid.UUID(str(envelope["organization_id"]))
+    payload_organization_id = uuid.UUID(payload["organization_id"])
+    invoice_id = uuid.UUID(payload["invoice_id"])
+    attempt = int(payload["attempt"]) if payload.get("attempt") is not None else None
+    trigger = str(payload.get("trigger", "retry"))
+    chain_id = uuid.UUID(payload["chain_id"]) if payload.get("chain_id") else None
+    not_before_raw = payload.get("not_before")
+    not_before = datetime.fromisoformat(not_before_raw) if not_before_raw else None
+    client = get_eway_client()
+
+    if payload_organization_id != envelope_organization_id:
+        async with session_scope(organization_id=envelope_organization_id) as session:
+            if await already_processed(session, ProcessedEvent, event_id):
+                log.info("finance.eway.duplicate", event_id=str(event_id))
+                return
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+        log.error(
+            "finance.eway.organization_mismatch",
+            event_id=str(event_id),
+            envelope_organization_id=str(envelope_organization_id),
+            payload_organization_id=str(payload_organization_id),
+        )
+        return
+
+    organization_id = envelope_organization_id
+    ctx = services.service_ctx(organization_id)
+
+    step: services.EwayRedrive
+    async with session_scope(organization_id=organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("finance.eway.duplicate", event_id=str(event_id))
+            return
+
+        if (
+            trigger != "manual"
+            and not_before is not None
+            and (not_before - datetime.now(UTC)) > domain.FILING_EARLY_ARRIVAL_TOLERANCE
+        ):
+            # Defence in depth (ADR-0015 §5): re-arm rather than act on a retry before its time.
+            services.rearm_early_eway_request(
+                session,
+                ctx,
+                invoice_id=invoice_id,
+                event_id=event_id,
+                attempt=attempt if attempt is not None else 1,
+                chain_id=chain_id,
+                not_before=not_before,
+                payload=payload,
+            )
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+            log.warning(
+                "finance.eway.early_arrival",
+                event_id=str(event_id),
+                organization_id=str(organization_id),
+                invoice_id=str(invoice_id),
+                attempt=attempt,
+                not_before=not_before.isoformat(),
+            )
+            return
+
+        step = await services.claim_eway_retry(
+            session,
+            ctx,
+            invoice_id,
+            attempt=attempt,
+            chain_id=chain_id,
+            trigger=trigger,
+            portal=client.name,
+        )
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+
+    if step.generate is None:
+        log.info(
+            "finance.eway.retry_skipped",
+            event_id=str(event_id),
+            organization_id=str(organization_id),
+            invoice_id=str(invoice_id),
+            attempt=attempt,
+            trigger=trigger,
+            outcome=step.outcome,
+        )
+        return
+
+    # No transaction open here at all (D3): the claim above already committed, and the record
+    # transaction below opens only after the portal has answered.
+    outcome = await services.call_eway_generate_off_loop(client, step.generate.payload)
+
+    async with session_scope(organization_id=organization_id) as session:
+        bill = await services.record_eway_generation(
+            session, ctx, step.generate, outcome, portal=client.name
+        )
+
+    log.info(
+        "finance.eway.retry_attempted",
+        event_id=str(event_id),
+        organization_id=str(organization_id),
+        invoice_id=str(invoice_id),
+        attempt=step.generate.attempt,
+        trigger=trigger,
+        outcome=outcome.kind,
+        eway_status=bill.status,
+        error_code=bill.error_code,
+        portal=client.name,
+    )
+
+
+consumer.on(services.EVT_EWAY_GENERATION_REQUESTED)(generate_requested_eway)
 
 
 async def main() -> None:
