@@ -61,6 +61,13 @@ def _client_allowlist() -> list[str]:
     return re.findall(r'"([^"]+)"', match.group(1))
 
 
+def _auth_refresh_cors_origins() -> set[str]:
+    text = EDGE_ENV_EXAMPLE.read_text()
+    match = re.search(r"^AUTH_REFRESH_CORS_ORIGINS=(\S+)$", text, flags=re.MULTILINE)
+    assert match, "AUTH_REFRESH_CORS_ORIGINS is missing from infrastructure/edge/.env.example"
+    return {origin.strip() for origin in match.group(1).split(",") if origin.strip()}
+
+
 def test_the_allowlist_has_no_duplicates() -> None:
     hosts = _client_allowlist()
     assert len(hosts) == len(set(hosts))
@@ -93,3 +100,26 @@ def test_no_storefront_or_wildcard_host_is_ever_allowlisted() -> None:
     for host in allowlisted:
         assert "stores.opsgrids.com" not in host
         assert "*" not in host
+
+
+def test_auth_refresh_cors_origins_is_the_platform_allowlist_minus_the_dashboard() -> None:
+    """MINOR 5 of the 2026-09-24 SSO review: `AUTH_REFRESH_CORS_ORIGINS` (app-gateway's narrow,
+    credentialed CORS allowance for /auth/refresh and /auth/logout) must name exactly the
+    product app hosts that call those two routes cross-origin — every platform app host except
+    `app.opsgrids.com` itself, which already has its own same-origin allowance via
+    `CORS_ORIGINS` and is never a *caller* of the cross-origin form. A host added to the
+    platform allow-list and forgotten here would build and deploy that app fine — its `/login`
+    redirect to the dashboard works, since that leg is same-site navigation, not a CORS-gated
+    fetch — and only fail the very next silent refresh, as a 400 preflight the client can only
+    report as its generic `"error"` outcome.
+    """
+    origins = _auth_refresh_cors_origins()
+    hosts = {origin.removeprefix("https://") for origin in origins}
+    expected = set(_client_allowlist()) - {"app.opsgrids.com"}
+    assert hosts == expected
+
+    # Every entry is a bare https:// origin — no path, no trailing slash, no port — matching
+    # `platform_core.config`'s own validator for this field.
+    for origin in origins:
+        assert origin == f"https://{origin.removeprefix('https://')}"
+        assert "/" not in origin.removeprefix("https://")
