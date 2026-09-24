@@ -21,7 +21,7 @@ from sqlalchemy import delete, select, text, update
 
 from app import domain, selectors, services
 from app.eway.base import EwayAck, EwayPayload, EwayRejected, EwayUnavailable
-from app.eway.stub import StubEwayClient, compute_eway_bill_no
+from app.eway.stub import StubEwayClient, compute_eway_bill_no, compute_eway_bill_no_for_key
 from app.models import EwayBill, OutboxEvent
 from app.schemas import (
     CancelEwayIn,
@@ -302,10 +302,26 @@ class TestTheCancellationWindow:
             is None
         )
 
-    @pytest.mark.parametrize("status", ["pending", "failed", "cancelled", "expired"])
+    @pytest.mark.parametrize("status", ["pending", "cancelled", "expired", "cancelling"])
     def test_nothing_but_a_live_bill_has_a_remedy(self, status: str) -> None:
         raised = datetime(2026, 8, 12, 9, 0, tzinfo=UTC)
         assert domain.eway_remedy_for(status=status, generated_at=raised, at=raised) is None
+
+    def test_a_failed_generation_has_no_remedy(self) -> None:
+        raised = datetime(2026, 8, 12, 9, 0, tzinfo=UTC)
+        assert domain.eway_remedy_for(status="failed", generated_at=None, at=raised) is None
+
+    def test_a_failed_withdrawal_leaves_the_bill_standing_with_a_remedy(self) -> None:
+        """A `failed` row carrying the bill's `valid_from` is a withdrawal that did not happen
+        (D3): ask again inside the window; outside it only the portal knows, so a person looks."""
+        raised = datetime(2026, 8, 12, 9, 0, tzinfo=UTC)
+        inside = raised + timedelta(hours=2)
+        outside = raised + timedelta(hours=25)
+        assert domain.eway_remedy_for(status="failed", generated_at=raised, at=inside) == "cancel"
+        assert (
+            domain.eway_remedy_for(status="failed", generated_at=raised, at=outside)
+            == "contact_support"
+        )
 
     def test_the_deadline_is_arithmetic_over_the_stored_timestamp(self) -> None:
         raised = datetime(2026, 8, 12, 9, 0, tzinfo=UTC)
@@ -512,12 +528,20 @@ class TestGeneratingABill:
                 _generate_payload(org_id, invoice.id),
                 at=raised,
             )
-        assert bill.eway_bill_no == compute_eway_bill_no(
-            seller_gstin=SELLER,
-            document_type="INV",
-            document_number="INV-EW-2",
-            raised_at=raised.isoformat(),
+        # Numbered from the generation's idempotency key (D3): the portal's own answer to a
+        # repeat of the same key is the same bill, so a resumed attempt records one bill, not two.
+        key = domain.eway_idempotency_key(
+            invoice_id=invoice.id,
+            generation=1,
+            transport_mode="road",
+            vehicle_no="MH12AB1234",
+            transporter_id=None,
+            transport_doc_no=None,
+            transport_doc_date=None,
+            distance_km=150,
+            over_dimensional=False,
         )
+        assert bill.eway_bill_no == compute_eway_bill_no_for_key(key)
 
     async def test_over_dimensional_cargo_gets_a_tenth_of_the_validity(
         self, session, org_id
@@ -771,8 +795,12 @@ class TestCancelling:
         assert cancelled.id != generated.id
         assert cancelled.status == "cancelled"
         # The generation row is left exactly as it was, so "raised, then withdrawn" reads in order.
-        assert [b.status for b in history] == ["cancelled", "generated"]
-        assert history[1].eway_bill_no == generated.eway_bill_no
+        visible = selectors.visible_attempts(history)
+        assert [b.status for b in visible] == ["cancelled", "generated"]
+        assert visible[1].eway_bill_no == generated.eway_bill_no
+        # Underneath, each act was claimed before the portal was asked (D3): the answered claims
+        # stay on the append-only ledger, ranked behind the outcome they share an instant with.
+        assert [b.status for b in history] == ["cancelled", "cancelling", "generated", "submitting"]
 
     async def test_outside_the_window_it_is_refused_and_names_the_deadline(
         self, session, org_id

@@ -215,6 +215,9 @@ Razorpay cannot satisfy, and that mismatch is discovered only after the interfac
 sites. Designing against the tighter constraints first yields an abstraction the looser provider
 fits inside easily; the reverse does not hold. The provider seam is `payment`'s alone — no other
 service knows which processor took the money, only that `billing` recorded what was collected.
+"No true idempotency key" has a consequence for every retried or resumed charge; how the adapter
+contract answers it — lookup before create, against a provider Order — is the addendum at the end
+of this ADR.
 
 ### 7. Start metering now, billed later
 
@@ -468,3 +471,41 @@ at invoice date: it is wrong for a yearly plan.
 revenue by month; the likely home is Q4's analytics projection. The line-window column is a small
 billing change to make after R2 merges. **It is not covered by any ledger item. New backlog item
 needed.**
+
+## Addendum (2026-09-24) — §6 in practice: lookup before create (D3)
+
+Razorpay offers no idempotency key on a payment create, so sending ours on the call makes nothing
+idempotent at the provider: a charge resumed after a crash between the provider call and
+recording its answer could be created twice. The adapter contract (`payment/app/providers/
+base.py`) is therefore **lookup before create**:
+
+1. `ensure_order(receipt=<charge id>, …)` finds the charge's Order by its `receipt` and creates
+   it only if Razorpay holds none. The receipt is the charge's own id — 36 characters, globally
+   unique and stable — not the platform idempotency key: Razorpay caps `receipt` at 40
+   characters (`invoice:<uuid>` is 44) and does not enforce its uniqueness, so a key two tenants
+   could share would not be safe to look up by;
+2. `find_payment(order_id=…, charge_id=…)` returns a payment already made against that Order
+   (matched on the `notes.charge_id` the platform stamps), if any;
+3. only then `charge(order_id=…)` creates one.
+
+The Order id is recorded on the charge (`charges.provider_order_id`). A charge also carries a
+**lease** (`attempts`, `next_attempt_at`, `lease_until`), claimed with one conditional
+`UPDATE … RETURNING`, so only one caller at a time — a request, its own HTTP retry, or the
+stuck-charge sweep — may call the provider for it; the sweep backs off between attempts. At the
+budget it does **not** fail the charge blind: the last attempt's create may have reached Razorpay
+with its answer lost, and failing it would send dunning to debit again. It makes a **lookup-only**
+call (`find_order` by receipt, then `find_payment`; never a create) and records a payment it finds;
+only if Razorpay holds none does it fail the charge (`failure_reason = attempts_exhausted`) and emit
+`commerce.payment.failed` so dunning proceeds. If the lookup itself cannot be made it is retried a
+bounded number of times, then the charge fails as `lookup_unavailable` with an alert. A charge
+failed for either of those reasons still accepts a late `payment.captured` — the money moved, so
+the record follows it — while a failure Razorpay reported stays final. The verified webhook also
+records the provider payment and Order ids when the charge has none (a call that outlived its
+timeout was never finalized), and it takes the same row lock as the sweep and finalize. The lease
+is validated at start-up to be at least twice the provider call timeout plus a minute, and an
+adapter's per-request timeouts over the three wire calls must sum under that timeout. The live
+wire (real Razorpay HTTP) is out of scope here and belongs to the provider-integration work
+(B5g); the stub adapter keeps the Orders and payments a real account would, so the contract is
+exercised end to end in tests. A Stripe adapter forwards the key to Stripe's native idempotency
+header and may answer the two lookups trivially. The full claim/call/record contract is
+`docs/io-outside-transactions.md`.

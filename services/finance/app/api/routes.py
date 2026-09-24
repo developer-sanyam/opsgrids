@@ -268,7 +268,7 @@ async def list_filings(
     if invoice is None:
         raise NotFoundProblem("That invoice is not part of this organization")
     rows = await selectors.filings_for_invoice(session, ctx.organization_id, invoice_id)
-    return [selectors.to_filing_out(row) for row in rows]
+    return [selectors.to_filing_out(row) for row in selectors.visible_attempts(rows)]
 
 
 @router.get(
@@ -521,7 +521,7 @@ async def list_eway_bills_for_invoice(
     if invoice is None:
         raise NotFoundProblem("That invoice is not part of this organization")
     rows = await selectors.eway_bills_for_invoice(session, ctx.organization_id, invoice_id)
-    return [selectors.to_eway_bill_out(row) for row in rows]
+    return [selectors.to_eway_bill_out(row) for row in selectors.visible_attempts(rows)]
 
 
 @router.get(

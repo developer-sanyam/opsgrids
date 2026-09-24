@@ -11,9 +11,13 @@ What is **real and tested** here:
 * **The state machine.** Razorpay's event names (`payment.captured`, `payment.failed`,
   `payment.authorized`) are mapped to the platform's charge states in one place, `_EVENT_OUTCOMES`
   — the only spot that knows Razorpay's vocabulary.
-* **Idempotency.** A platform-supplied `idempotency_key` deterministically derives the fake
-  provider ids, so the same key yields the same ids — which is exactly the property a real
-  idempotent create would have, and what lets the whole path be retried safely.
+* **Idempotency, the way Razorpay actually offers it.** Razorpay has no idempotency key on a
+  payment create. What it has is the **Order**: created with `receipt` = the platform's charge
+  key, and queryable — by receipt, and for the payments made against it. So the adapter's
+  contract is **lookup before create** (`ensure_order`, `find_payment`, then `charge`), and the
+  stubbed wire below keeps the state a real account would: Orders by receipt and payments by
+  Order, per adapter instance (one per process, `app/deps.py`). A resumed call finds the payment
+  a crashed one made; the ids are also derived from the key, so a fresh process agrees on them.
 
 What is **stubbed** — the one seam:
 
@@ -41,6 +45,7 @@ from typing import Any
 from app.providers.base import (
     ChargeResult,
     MandateResult,
+    OrderResult,
     PaymentProvider,
     RefundResult,
     WebhookEvent,
@@ -85,6 +90,10 @@ class RazorpayProvider:
         self._key_id = key_id
         self._key_secret = key_secret
         self._webhook_secret = webhook_secret
+        # The stubbed account's own state — what the real Razorpay would hold and answer lookups
+        # from: Orders by receipt, and the payments made against each Order.
+        self._orders_by_receipt: dict[str, str] = {}
+        self._payments_by_order: dict[str, ChargeResult] = {}
 
     # ------------------------------------------------------------------ the stubbed wire
 
@@ -137,6 +146,48 @@ class RazorpayProvider:
             activated_at=None,
         )
 
+    # ------------------------------------------------------------------ orders
+
+    def ensure_order(
+        self,
+        *,
+        receipt: str,
+        amount_minor: int,
+        currency: str,
+        notes: dict[str, str],
+    ) -> OrderResult:
+        """`GET /orders?receipt=…` first (`find_order`); `POST /orders` only when there is none.
+        The stub answers the lookup from the state the create left behind."""
+        found = self.find_order(receipt=receipt)
+        existing = found.provider_order_id if found is not None else None
+        if existing is None:
+            response = self._call(
+                "orders",
+                {
+                    "_id_prefix": "order_",
+                    "_status": "created",
+                    "amount": amount_minor,
+                    "currency": currency,
+                    "receipt": receipt,
+                    "notes": notes,
+                },
+                idempotency_key=receipt,
+            )
+            existing = str(response["id"])
+            self._orders_by_receipt[receipt] = existing
+        return OrderResult(provider=PROVIDER, provider_order_id=existing, receipt=receipt)
+
+    def find_order(self, *, receipt: str) -> OrderResult | None:
+        """`GET /orders?receipt=…` — the lookup alone, never a create."""
+        existing = self._orders_by_receipt.get(receipt)
+        if existing is None:
+            return None
+        return OrderResult(provider=PROVIDER, provider_order_id=existing, receipt=receipt)
+
+    def find_payment(self, *, order_id: str, charge_id: str) -> ChargeResult | None:
+        """`GET /orders/{id}/payments`, matched on the `notes.charge_id` the platform stamped."""
+        return self._payments_by_order.get(order_id)
+
     # ------------------------------------------------------------------ charges
 
     def charge(
@@ -147,6 +198,7 @@ class RazorpayProvider:
         currency: str,
         mandate_id: str | None,
         notes: dict[str, str],
+        order_id: str | None = None,
     ) -> ChargeResult:
         response = self._call(
             "payments",
@@ -158,18 +210,23 @@ class RazorpayProvider:
                 "amount": amount_minor,
                 "currency": currency,
                 "token": mandate_id,
+                "order_id": order_id,
                 "notes": notes,
             },
             idempotency_key=idempotency_key,
         )
-        return ChargeResult(
+        result = ChargeResult(
             provider=PROVIDER,
             provider_payment_id=response["id"],
             # `authorized`, not `captured`: capture is asynchronous and confirmed by webhook.
             state="authorized",
             amount_minor=amount_minor,
             currency=currency,
+            provider_order_id=order_id,
         )
+        if order_id is not None:
+            self._payments_by_order[order_id] = result
+        return result
 
     # ------------------------------------------------------------------ refunds
 
@@ -232,6 +289,7 @@ class RazorpayProvider:
             provider_payment_id=entity.get("id"),
             failure_reason=entity.get("error_description"),
             raw=parsed,
+            provider_order_id=entity.get("order_id"),
         )
 
 

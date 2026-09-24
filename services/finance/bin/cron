@@ -1,3 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec python -m app.relay
+# The filing-reclaim sweep (D3) on its own, for local debugging. In production it runs inside
+# `finance-worker` (app/worker.py), supervised alongside the filing consumer — there is no
+# `finance-cron` container. See docs/io-outside-transactions.md for what it resumes.
+exec python -m app.cron

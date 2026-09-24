@@ -1,3 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec python -m app.consumers
+# app.worker runs the charge consumers and the stuck-charge sweep together, supervised (D3 — see
+# app/worker.py's own docstring). `python -m app.consumers` and `python -m app.cron` are both still
+# independently runnable for local debugging.
+exec python -m app.worker

@@ -316,3 +316,33 @@ alert would be the first sign.
 That is why the move waits for a real producer. No ledger item exists for the move itself. It is
 scope for whichever of L2 or D4b introduces the second producer, and both are named in the
 register.
+
+## Addendum (2026-09-24) — portal calls leave the transaction (D3)
+
+Every compliance-portal call in finance now runs as **claim / call / record**: a short
+transaction that refuses what the ledger can refuse and commits what a resumed attempt needs, the
+portal call with no transaction open, and a second short transaction that appends the outcome.
+Registration (round 1) writes no claim row — the IRN is a pure function of the document. IRN
+cancellation, e-Way generation and e-Way cancellation do: `cancelling` / `submitting` rows on the
+existing append-only ledgers, carrying the reason and actor or the transport facts. IMS sync
+fetches with no transaction, then ingests (idempotent at the database on `(organization_id,
+source_ref)`) and reconciles in one.
+
+This touches the scheduler in exactly one place. A `pending` e-invoice row's retry is scheduled
+here (§4), and finance may not read the scheduler's table, so the reclaim sweep (`app/cron.py`,
+run inside `finance-worker` beside the consumer — `app/worker.py`) infers a *lost* job from time
+alone: a `pending` row older than the longest retry it could have scheduled plus grace, with no
+`filing_requested` staged since that is still backing off, is re-queued at the next attempt
+number. A redundant re-queue is harmless (the consumer's claim asks `live_registration` first).
+Re-queues are counted by the outbox rows they stage, so an invoice nothing ever answers — an
+organization without a registration is excluded outright — ends at `MAX_FILING_ATTEMPTS` in a
+terminal `retry_exhausted` row instead of looping. The same sweep resumes stale claims under a
+bounded backoff, a lease (each re-drive appends a fresh claim row; `FOR UPDATE SKIP LOCKED` on the
+invoice) and a poisoned-step guard (`MAX_COMPLIANCE_RESUMES` drives, then a terminal
+`retry_exhausted` row). The "e-Way outage retries" item under *Deliberately out of scope* is
+therefore partly answered: a `pending` e-Way row is now re-driven by the sweep, not by the
+scheduler.
+
+The states, who resumes what, and the provider-idempotency contract (`IrpAlreadyCancelled`,
+`EwayAlreadyGenerated` keyed by `domain.eway_idempotency_key`, `EwayAlreadyCancelled`) are in
+`docs/io-outside-transactions.md`, alongside the platform-wide instance table.

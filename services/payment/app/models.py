@@ -42,6 +42,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     UniqueConstraint,
     func,
@@ -195,6 +196,22 @@ class Charge(Base, TenantBase):
     #: same key are one charge — the property the create path is built around.
     idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
 
+    #: The provider Order this charge's payment is created against. Razorpay has no idempotency
+    #: key of its own (ADR-0004 §6): the Order, created with `receipt` = `idempotency_key` and
+    #: looked up by it before any create (`services.call_provider_charge`), is what lets a resumed
+    #: call find the payment a crashed one already made. Recorded at finalize.
+    provider_order_id: Mapped[str | None] = mapped_column(String(120))
+
+    # --- who may call the provider, and when (D3) -------------------------------------
+    #: Calls claimed so far, the stager's own included. The stuck-charge sweep stops at
+    #: `Settings.charge_max_attempts` and fails the charge, so dunning proceeds.
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    #: Earliest moment the sweep may claim another call — the bounded backoff between attempts.
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: While in the future, a call is in flight and nobody else may make one: a caller's HTTP
+    #: retry of the same key, or the sweep. Claimed by a conditional `UPDATE … RETURNING`.
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     refunds: Mapped[list[Refund]] = relationship(back_populates="charge")
 
     __table_args__ = (
@@ -216,6 +233,19 @@ class Charge(Base, TenantBase):
         ),
         Index("ix_charges_org_state", "organization_id", "state"),
         Index("ix_charges_org_invoice", "organization_id", "invoice_id"),
+        Index(
+            "uq_charges_org_provider_order_id",
+            "organization_id",
+            "provider_order_id",
+            unique=True,
+            postgresql_where=text("provider_order_id IS NOT NULL"),
+        ),
+        # The stuck-charge sweep's discovery: only unresolved charges, oldest first.
+        Index(
+            "ix_charges_unresolved",
+            "created_at",
+            postgresql_where=text("state = 'created' AND provider_payment_id IS NULL"),
+        ),
     )
 
 

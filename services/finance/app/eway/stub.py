@@ -11,8 +11,16 @@ What is **real** here:
   movement with no transporter, a line with no HSN, a consignment at or below the ₹50,000
   threshold, lines that do not sum to the consignment. Each refusal is a numbered code, and the
   code is what reaches `eway_bills.error_code`.
-* **The bill number.** Twelve digits, as the portal issues them, derived from the document it
-  covers **and the moment the bill was raised**. Deterministic in its inputs — the same attempt
+* **Idempotency.** A generation carrying `EwayPayload.idempotency_key` (every one the service
+  layer sends) is numbered from **that key**, and a client that has already issued a bill for it
+  answers a repeat with `EwayAlreadyGenerated` carrying the first bill — the portal's own
+  duplicate answer, so a resumed claim (D3) exercises the "already generated" path for real. A
+  repeat withdrawal of a bill it has already withdrawn is `EwayAlreadyCancelled`. The memory is
+  this client instance's (one per process, `app/deps.py`); across a restart the number is still
+  the same, because it is a function of the key.
+* **The bill number.** Twelve digits, as the portal issues them. With no idempotency key (a
+  direct caller, a test double's payload) it is derived from the document it covers **and the
+  moment the bill was raised**. Deterministic in its inputs — the same attempt
   reproduces the same number — but *not* one number per document, which is the difference from an
   IRN and it is a real one: an IRN is a hash of the document number and financial year and there
   is exactly one per document forever, while a document legitimately carries several e-Way bills
@@ -41,7 +49,14 @@ import hashlib
 from datetime import datetime
 
 from app import domain
-from app.eway.base import EwayAck, EwayCancelAck, EwayPayload, EwayRejected
+from app.eway.base import (
+    EwayAck,
+    EwayAlreadyCancelled,
+    EwayAlreadyGenerated,
+    EwayCancelAck,
+    EwayPayload,
+    EwayRejected,
+)
 
 PORTAL = "stub-eway"
 
@@ -68,23 +83,36 @@ class StubEwayClient:
 
     name = PORTAL
 
+    def __init__(self) -> None:
+        #: Bills issued, by idempotency key — what lets a repeat be answered "already generated".
+        self._issued: dict[str, EwayAck] = {}
+        #: Bills withdrawn, by number — what lets a repeat be answered "already cancelled".
+        self._cancelled: dict[str, EwayCancelAck] = {}
+
     # ------------------------------------------------------------------ generation
 
     def generate(self, payload: EwayPayload) -> EwayAck:
-        """Validate the consignment the way the portal does, then issue its bill number."""
+        """Validate the consignment the way the portal does, then issue its bill number — or,
+        for a key this client already issued a bill under, answer "already generated"."""
+        if payload.idempotency_key and payload.idempotency_key in self._issued:
+            raise EwayAlreadyGenerated(self._issued[payload.idempotency_key])
         self._validate(payload)
-        return EwayAck(
-            eway_bill_no=compute_eway_bill_no(
+        number = (
+            compute_eway_bill_no_for_key(payload.idempotency_key)
+            if payload.idempotency_key
+            else compute_eway_bill_no(
                 seller_gstin=payload.seller_gstin,
                 document_type=payload.document_type,
                 document_number=payload.document_number,
                 raised_at=payload.generated_at.isoformat(),
-            ),
-            # The portal stamps its own clock; here the caller's is the clock, which is what makes
-            # an attempt reproducible — and what makes the validity computed from it reproducible
-            # too.
-            valid_from=payload.generated_at,
+            )
         )
+        # The portal stamps its own clock; here the caller's is the clock, which is what makes an
+        # attempt reproducible — and what makes the validity computed from it reproducible too.
+        ack = EwayAck(eway_bill_no=number, valid_from=payload.generated_at)
+        if payload.idempotency_key:
+            self._issued[payload.idempotency_key] = ack
+        return ack
 
     def cancel(
         self, *, eway_bill_no: str, reason_code: str, remark: str, at: datetime
@@ -103,7 +131,11 @@ class StubEwayClient:
             )
         if not eway_bill_no.isdigit() or len(eway_bill_no) != 12:
             raise EwayRejected(ERR_INVALID_REASON, "an e-Way bill number is 12 digits")
-        return EwayCancelAck(eway_bill_no=eway_bill_no, cancel_date=at)
+        if eway_bill_no in self._cancelled:
+            raise EwayAlreadyCancelled(self._cancelled[eway_bill_no])
+        ack = EwayCancelAck(eway_bill_no=eway_bill_no, cancel_date=at)
+        self._cancelled[eway_bill_no] = ack
+        return ack
 
     # ------------------------------------------------------------------ validation
 
@@ -202,6 +234,15 @@ def compute_eway_bill_no(
     digest = hashlib.sha256(material.encode()).hexdigest()
     # Forced into the 100000000000 to 999999999999 band so it is always twelve digits, never eleven
     # with a leading zero that some downstream string comparison would quietly drop.
+    return f"{int(digest[:16], 16) % 900_000_000_000 + 100_000_000_000:012d}"
+
+
+def compute_eway_bill_no_for_key(idempotency_key: str) -> str:
+    """A 12-digit bill number derived from a generation's idempotency key alone — so a resumed
+    attempt (the same key, a later clock) is answered with the same number, as the real portal
+    answers a duplicate with the bill it already issued. Same twelve-digit band as
+    `compute_eway_bill_no`."""
+    digest = hashlib.sha256(f"eway-key:{idempotency_key}".encode()).hexdigest()
     return f"{int(digest[:16], 16) % 900_000_000_000 + 100_000_000_000:012d}"
 
 

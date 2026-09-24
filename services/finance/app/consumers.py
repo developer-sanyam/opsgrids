@@ -62,6 +62,7 @@ from app.config import settings
 from app.deps import get_irp_client
 from app.models import ProcessedEvent
 from platform_core.db import assert_app_role, init_engine, session_scope
+from platform_core.errors import BusinessRuleProblem
 from platform_core.events import EventConsumer, already_processed, mark_processed
 from platform_core.logging import get_logger
 
@@ -110,8 +111,19 @@ async def file_requested_invoice(envelope: dict[str, Any]) -> None:
 
     organization_id = envelope_organization_id
 
-    # The GUC is set here, per message, for the whole transaction: the filing row is a
+    # The GUC is set here, per message, for the *claim* transaction: the filing row is a
     # NOBYPASSRLS write against a forced tenant policy and only passes because of this binding.
+    # `mark_processed` runs here too, not after the call below — a redelivery of this same event
+    # must not re-register a document the first delivery may already have registered, and it is
+    # the *claim* that decides that (via `live_registration`), not the call. A process that dies
+    # after this commits but before the call returns or `record_autofile_result` runs leaves no
+    # filing row behind at all (see `stage_registration_attempt`); `app/cron.py`'s filing-reclaim
+    # sweep is what resumes such an invoice, not a queue retry.
+    #
+    # Note this `datetime.now(UTC)` is a *different* clock from the one `claim_autofile_attempt`
+    # resolves internally (`app.services`'s own, unpatched in tests that freeze this module's):
+    # this one only ever decides whether a message arrived early, never what gets written.
+    claim: services.AutofileClaim | None = None
     async with session_scope(organization_id=organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("finance.filing.duplicate", event_id=str(event_id))
@@ -143,14 +155,32 @@ async def file_requested_invoice(envelope: dict[str, Any]) -> None:
             )
             return
 
-        result = await services.autofile_invoice(
-            session,
-            services.service_ctx(organization_id),
-            client,
-            invoice_id=invoice_id,
-            attempt=attempt,
+        claim = await services.claim_autofile_attempt(
+            session, services.service_ctx(organization_id), invoice_id, attempt=attempt
         )
         mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+
+    if claim.outcome is not None:
+        result = claim.outcome
+    else:
+        if claim.invoice is None or claim.irp_payload is None:  # pragma: no cover
+            raise BusinessRuleProblem("a claim that did not resolve to an outcome named no invoice")
+
+        # No transaction open here at all (D3): the claim above already committed, and the
+        # record transaction below opens only after the portal has answered.
+        call_outcome = await services.call_irp_register_off_loop(client, claim.irp_payload)
+
+        async with session_scope(organization_id=organization_id) as session:
+            result = await services.record_autofile_result(
+                session,
+                services.service_ctx(organization_id),
+                claim.invoice.id,
+                call_outcome,
+                attempt=attempt,
+                retryable=claim.retryable,
+                at=claim.at,
+                client_name=client.name,
+            )
 
     log.info(
         "finance.filing.attempted",

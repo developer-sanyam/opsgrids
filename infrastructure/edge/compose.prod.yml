@@ -938,6 +938,11 @@ services:
     networks:
       - back
 
+  # Runs the charge consumers *and* the stuck-charge sweep (D3), supervised in one process —
+  # app/worker.py. A charge whose process died between the provider call and recording it is
+  # resumed only by that sweep (the consumer marks the event processed at claim time), so it
+  # must run wherever payment runs. Folded in here rather than a `payment-cron` container: no
+  # memory budget change. `bin/cron` still runs the sweep alone for local debugging.
   payment-worker:
     <<: *background
     image: opsgrids-edge/payment
@@ -1319,6 +1324,11 @@ services:
     networks:
       - back
 
+  # Runs the filing consumer *and* the filing-reclaim sweep (D3), supervised in one process —
+  # app/worker.py. The consumer marks a message processed in its claim transaction, so the
+  # queue never retries a crashed claim; the sweep is what finishes it, and it must run
+  # wherever finance runs. Folded in here rather than a `finance-cron` container: no memory
+  # budget change. `bin/cron` still runs the sweep alone for local debugging.
   finance-worker:
     <<: *background
     profiles: ['finance']

@@ -15,7 +15,17 @@
  * comes from the service's own `terminal` flag rather than from a guess about status strings.
  */
 
-import type { EInvoiceState, ImsAction, ImsReason, ImsStatus, ImsSuggestion, Invoice } from "@/api/types";
+import type {
+  EInvoiceFiling,
+  EInvoiceState,
+  EwayStatus,
+  FilingRemedy,
+  ImsAction,
+  ImsReason,
+  ImsStatus,
+  ImsSuggestion,
+  Invoice,
+} from "@/api/types";
 import { formatMoney } from "@/lib/money";
 
 /* ------------------------------------------------------------------ e-invoice filing */
@@ -124,7 +134,33 @@ export function filingView(state: EInvoiceState | undefined): FilingView | null 
           "The registration was withdrawn at the portal. No IRN stands against this document.",
         needsPerson: false,
       };
+    case "cancelling":
+      return {
+        key: "in_flight",
+        label: "Cancelling IRN",
+        detail:
+          "Withdrawal requested; the platform finishes it if the portal was unreachable.",
+        needsPerson: false,
+      };
     case "failed":
+      if (state.ack_date) {
+        // A failed *withdrawal*: the row carries the acknowledgement it was withdrawing, so the
+        // registration still stands. Not "filing failed" — the document is filed.
+        return {
+          key: "failed",
+          label: "Withdrawal failed",
+          detail: `${filingErrorSentence(state) ?? "The portal did not confirm the withdrawal."} The IRN still stands.`,
+          needsPerson: true,
+        };
+      }
+      return {
+        key: "failed",
+        label: "Filing failed",
+        detail:
+          filingErrorSentence(state) ??
+          "The portal refused this document and the platform has stopped trying.",
+        needsPerson: state.terminal ?? true,
+      };
     default:
       return {
         key: "failed",
@@ -137,9 +173,59 @@ export function filingView(state: EInvoiceState | undefined): FilingView | null 
   }
 }
 
-/** The two corrections, and the only two — never offered together, because only one is ever legal. */
+/**
+ * One row of a document's filing history, as a heading. A `cancelling` row is a withdrawal
+ * requested and not yet answered — never "Submitted", which is what a registration attempt awaiting
+ * the portal is. A `failed` row carrying an acknowledgement is a withdrawal the portal refused
+ * (the registration still stands), not a refused filing.
+ */
+export function filingRowLabel(filing: Pick<EInvoiceFiling, "status" | "ack_date">): string {
+  switch (filing.status) {
+    case "filed":
+      return "Registered";
+    case "cancelled":
+      return "Withdrawn";
+    case "cancelling":
+      return "Withdrawal requested";
+    case "failed":
+      return filing.ack_date ? "Withdrawal refused" : "Refused";
+    default:
+      return "Submitted";
+  }
+}
+
+/* ------------------------------------------------------------------ e-Way bills */
+
+/** The stored statuses a person can filter the e-Way register by, in the order they read. */
+export const EWAY_STATUS_FILTERS: readonly { value: EwayStatus | "all"; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "submitting", label: "Being raised" },
+  { value: "pending", label: "Pending" },
+  { value: "generated", label: "Generated" },
+  { value: "cancelling", label: "Being withdrawn" },
+  { value: "failed", label: "Failed" },
+  { value: "cancelled", label: "Cancelled" },
+];
+
+const EWAY_TONE: Record<EwayStatus, string> = {
+  submitting: "bg-info-soft text-info",
+  pending: "bg-late-soft text-late",
+  generated: "bg-present-soft text-present",
+  cancelling: "bg-info-soft text-info",
+  failed: "bg-danger-soft text-danger",
+  cancelled: "bg-ground text-muted",
+  expired: "bg-ground text-muted",
+};
+
+/** The tag colour for a bill's effective status. An in-flight claim reads as work in progress,
+ * never as a failure or as done. */
+export function ewayStatusTone(status: string): string {
+  return EWAY_TONE[status as EwayStatus] ?? "bg-ground text-muted";
+}
+
+/** The corrections — never offered together, because only one is ever legal at a time. */
 export interface RemedyView {
-  key: "cancel" | "credit_note";
+  key: FilingRemedy;
   /** The control's label. Ends in an ellipsis: it opens a confirmation, it does not act. */
   action: string;
   headline: string;
@@ -155,6 +241,15 @@ export function remedyView(state: EInvoiceState | undefined): RemedyView | null 
       headline: "The registration can still be withdrawn",
       consequence:
         "Withdrawing cancels the registration at the portal. The document keeps its number and stays in the register — a cancellation is a new filing row, never an edit. Once the window closes the only correction left is a credit note.",
+    };
+  }
+  if (state?.remedy === "contact_support") {
+    return {
+      key: "contact_support",
+      action: "",
+      headline: "The withdrawal could not be confirmed",
+      consequence:
+        "The platform asked the portal to withdraw this IRN and never saw an answer before the 24-hour window closed. The portal may already hold the withdrawal. Check the IRN on the portal: if it still stands, the correction is a credit note.",
     };
   }
   if (state?.remedy === "credit_note") {

@@ -115,6 +115,12 @@ class EwayPayload:
 
     lines: list[EwayLine] = field(default_factory=list)
 
+    #: The portal's own idempotency key for this generation: **(document, transporter/vehicle
+    #: part)**. Two calls carrying the same key are one bill — a real portal answers the second
+    #: with "already generated" and the number (`EwayAlreadyGenerated`). Empty for a caller that
+    #: predates the key (a test double); the service layer always sets it.
+    idempotency_key: str = ""
+
 
 @dataclass(frozen=True, slots=True)
 class EwayAck:
@@ -143,6 +149,32 @@ class EwayCancelAck:
     cancel_date: datetime
 
 
+class EwayAlreadyGenerated(Exception):
+    """The portal already holds a bill for this (document, transporter/vehicle part) — success by
+    lookup, wearing a refusal's shape.
+
+    Generation is idempotent by the portal's own key, so a repeat — a retry that raced a first
+    success, or a resumed claim after a crash between `call_eway_generate` and
+    `record_eway_generation` (D3) — is answered with the bill it already issued rather than a
+    second one. A real adapter maps that answer onto this, carrying the ack, so the resumed attempt
+    is recorded as the `generated` it is and never as a `failed`.
+    """
+
+    def __init__(self, ack: EwayAck) -> None:
+        super().__init__(f"already generated: e-Way bill {ack.eway_bill_no}")
+        self.ack = ack
+
+
+class EwayAlreadyCancelled(Exception):
+    """The portal has already withdrawn this bill — success by fetch, the cancellation twin of
+    `EwayAlreadyGenerated`. A resumed `cancelling` claim that finds the work done is recorded as
+    `cancelled`, never as a refusal."""
+
+    def __init__(self, ack: EwayCancelAck) -> None:
+        super().__init__(f"already cancelled: e-Way bill {ack.eway_bill_no}")
+        self.ack = ack
+
+
 @runtime_checkable
 class EwayClient(Protocol):
     """The contract `app/services.py` depends on — never a concrete portal.
@@ -156,13 +188,19 @@ class EwayClient(Protocol):
     def generate(self, payload: EwayPayload) -> EwayAck:
         """Raise a bill for one consignment and return its number.
 
-        Raises `EwayRejected` when the portal refuses the contents, and `EwayUnavailable` when it
-        cannot be reached. Those two are the whole error surface; anything else is a bug.
+        Raises `EwayRejected` when the portal refuses the contents, `EwayUnavailable` when it
+        cannot be reached, and `EwayAlreadyGenerated` (carrying the bill it already issued) when
+        `payload.idempotency_key` names a generation it already holds. Those three are the whole
+        error surface; anything else is a bug.
         """
         ...
 
     def cancel(
         self, *, eway_bill_no: str, reason_code: str, remark: str, at: datetime
     ) -> EwayCancelAck:
-        """Withdraw a bill, inside the portal's 24-hour window."""
+        """Withdraw a bill, inside the portal's 24-hour window.
+
+        Raises `EwayRejected`, `EwayUnavailable`, and `EwayAlreadyCancelled` when the portal
+        reports the bill was already withdrawn.
+        """
         ...

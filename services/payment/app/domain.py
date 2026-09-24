@@ -19,6 +19,8 @@ row, the audit entry and the outbox event are staged, all in one transaction.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from app.models import (
     CHARGE_AUTHORIZED,
     CHARGE_CAPTURED,
@@ -70,3 +72,30 @@ def event_for_outcome(outcome_state: str) -> str | None:
 
 def is_terminal(state: str) -> bool:
     return state in (CHARGE_CAPTURED, CHARGE_FAILED)
+
+
+#: `charges.failure_reason` codes for a failure this platform decided, not the provider. A charge
+#: failed for one of these may still be captured by a late webhook — the provider may hold a
+#: payment the platform never saw confirmed — so reconciliation accepts `failed -> captured` for
+#: exactly these (`services._reconcile_charge`) and nothing else (D3).
+FAILURE_ATTEMPTS_EXHAUSTED = "attempts_exhausted"
+FAILURE_LOOKUP_UNAVAILABLE = "lookup_unavailable"
+LOCAL_FAILURE_REASONS: frozenset[str] = frozenset(
+    {FAILURE_ATTEMPTS_EXHAUSTED, FAILURE_LOOKUP_UNAVAILABLE}
+)
+
+
+#: The first wait between two provider calls for one stuck charge, doubling per attempt to
+#: `CHARGE_RETRY_CEILING`. Pure arithmetic — the sweep and the lease claim both read it (D3).
+CHARGE_RETRY_BASE: timedelta = timedelta(minutes=5)
+CHARGE_RETRY_CEILING: timedelta = timedelta(hours=1)
+
+
+def charge_retry_backoff(attempts: int) -> timedelta:
+    """How long after claiming call number `attempts` (1-based) the next one may be claimed.
+    Exponential, capped, so a provider that is down for an hour is not hammered by a sweep that
+    ticks every minute, and a charge that can never succeed reaches its attempt budget in hours,
+    not days."""
+    attempts = max(1, attempts)
+    wait: timedelta = CHARGE_RETRY_BASE * (2 ** (attempts - 1))
+    return min(wait, CHARGE_RETRY_CEILING)

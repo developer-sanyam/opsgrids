@@ -42,14 +42,14 @@ DocumentType = str  # invoice | credit_note
 PaymentMethod = str  # bank_transfer | upi | card | cheque | cash
 CustomerStanding = str  # overdue | open | clear
 SupplyType = str  # b2b | b2c | export | sez
-FilingStatus = str  # pending | filed | failed | cancelled
+FilingStatus = str  # pending | filed | failed | cancelled | cancelling (a withdrawal in flight)
 ImsStatus = str  # pending | accepted | rejected | pending_action
 ImsAction = str  # accept | reject | pending_action
 ImsReason = str  # matched | amount_mismatch | supplier_unknown | no_purchase_record | duplicate
 ImsExpenseCategory = str  # general | ... — see domain.ITC_EXPENSE_CATEGORIES
 ReturnType = str  # gstr1 | gstr7 | gstr3b
 ReturnStatus = str  # draft | generated | filed
-EwayStatus = str  # pending | generated | failed | cancelled | expired
+EwayStatus = str  # pending | generated | failed | cancelled | expired | submitting | cancelling
 WithholdingCode = str  # gst_tds_51 | itax_194q | itax_206c_1h
 WithholdingBasis = str  # supply | aggregate
 WithholdingDirection = str  # deducted | collected
@@ -172,7 +172,9 @@ class EInvoiceState(BaseModel):
     cancellable_until: datetime | None = None
     #: `cancel` while the window is open, `credit_note` once it has closed, null when there is
     #: nothing to correct. Exactly one of the two is ever available, and offering both is how a
-    #: user discovers which by having the other fail.
+    #: user discovers which by having the other fail. After a failed withdrawal (`status` `failed`
+    #: with `ack_date` set — the registration still stands) it is `cancel` inside the window and
+    #: `contact_support` outside it: the portal may hold a withdrawal it never confirmed.
     remedy: str | None = None
 
 
