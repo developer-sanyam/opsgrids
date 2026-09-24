@@ -28,10 +28,11 @@ export function buildPlatformMetrics(): MetricsOut {
     currency: "INR",
     trials_started: trialsStarted,
     trial_conversions: trialConversions,
-    trial_conversion_rate: Math.round((trialConversions / trialsStarted) * 1000) / 10,
+    // Fractions rounded to 4 places, exactly as console's `platform_metrics` sends them.
+    trial_conversion_rate: Math.round((trialConversions / trialsStarted) * 10_000) / 10_000,
     active_subscriptions: activeSubscriptions,
     churned: cancelledCount,
-    churn_rate: Math.round((cancelledCount / (states.length || 1)) * 1000) / 10,
+    churn_rate: Math.round((cancelledCount / (states.length || 1)) * 10_000) / 10_000,
   };
 }
 

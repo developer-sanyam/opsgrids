@@ -28,10 +28,10 @@ const METRICS: MetricsOverviewOut = {
   currency: "INR",
   trials_started: 12,
   trial_conversions: 8,
-  trial_conversion_rate: 66.7,
+  trial_conversion_rate: 0.6667,
   active_subscriptions: 11,
   churned: 1,
-  churn_rate: 8.3,
+  churn_rate: 0.0833,
   organization_count: 15,
   organizations_by_lifecycle: { suspended: 2, active: 10, trial: 2, churned: 1, none: 0 },
 };
@@ -63,10 +63,10 @@ describe("OverviewPage", () => {
         currency: "INR",
         trials_started: 12,
         trial_conversions: 8,
-        trial_conversion_rate: 66.7,
+        trial_conversion_rate: 0.6667,
         active_subscriptions: 11,
         churned: 1,
-        churn_rate: 8.3,
+        churn_rate: 0.0833,
       },
     });
 
@@ -76,6 +76,7 @@ describe("OverviewPage", () => {
     expect(screen.getByText("12")).toBeTruthy();
     expect(screen.getByText("11")).toBeTruthy();
     expect(screen.getByText("66.7%")).toBeTruthy();
+    expect(screen.getByText("8.3%")).toBeTruthy();
     // "Organizations by lifecycle" is built off the real `organizations_by_lifecycle` counts.
     expect(screen.getByText("Organizations by lifecycle")).toBeTruthy();
   });

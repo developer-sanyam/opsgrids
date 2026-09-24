@@ -68,7 +68,8 @@ function buildKpis(m: MetricsOverviewOut, lockedAccounts: number): KpiConfig[] {
     {
       key: "conversion",
       label: "Trial → paid conversion",
-      value: formatPercent(m.trial_conversion_rate),
+      // The service sends rates as fractions (0.4321), not percentages.
+      value: formatPercent(m.trial_conversion_rate * 100),
       icon: <RepeatIcon className="size-5" />,
       tone: "comp",
       caption: "of trials started",
@@ -76,7 +77,7 @@ function buildKpis(m: MetricsOverviewOut, lockedAccounts: number): KpiConfig[] {
     {
       key: "churn",
       label: "Churn",
-      value: formatPercent(m.churn_rate),
+      value: formatPercent(m.churn_rate * 100),
       icon: <GaugeIcon className="size-5" />,
       tone: "pastdue",
       caption: `${m.churned} churned`,
