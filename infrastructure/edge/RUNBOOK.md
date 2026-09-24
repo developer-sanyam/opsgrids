@@ -909,6 +909,74 @@ member's MFA lock has no admin endpoint by design — it would need a new permis
 cross-service membership check to guard a fifteen-minute wait — so expiry *is* the unlock. The lock
 refuses recovery codes as well as authenticator codes, so there is nothing to do but wait.
 
+### HRMS: attendance TEAM scope, punch signals, and the employee-link verify
+
+Three changes ship together in `attendance` and one in `employee`. All migrations are additive (new
+tables only, each policied with `FORCE` in the migration that creates it), so the old code runs
+safely against the new schema for the length of a deploy.
+
+**Migrations.** `attendance` gains `7c2e9a4b1d05` (`team_membership`) and `9d4b1e7a3c68`
+(`signal_settings`, `punch_signals`, `attendance_flags`). Nothing changes on an existing table, and
+`employee` has no migration. A single `make deploy` applies both.
+
+**Permissions — a reconcile is required.** Two permissions are new in the `hrms` catalogue:
+`hrms.time.attendance_flag.read` and `hrms.time.attendance.read_sensitive`, both granted to
+`HR_ADMIN` at ORG. Until the reconcile runs, no existing tenant's HR administrator holds them (the
+routes answer 403 — the rule is off by default, so nothing else is affected). After the deploy:
+
+```bash
+make edge-reconcile HOST=… CONFIRM=… PRODUCTS=hrms            # dry run: prints the diff
+make edge-reconcile HOST=… CONFIRM=… PRODUCTS=hrms APPLY=1
+```
+
+**The TEAM projection needs a one-time backfill per existing organization.** The new attendance
+worker binds the three `hrms.people.employee.*` routing keys the moment it starts, and from then on
+every employee change keeps `team_membership` current. An employee who has not changed since
+produces no event, so until the backfill runs a TEAM-scoped caller sees **nobody** for them — never
+everybody, and it answered 403 before this release, so nothing regresses. Once the new
+`attendance-worker` is up, for each organization with HRMS employees:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec -T \
+  -e EMPLOYEE_SERVICE_URL=http://employee:8000 attendance-worker \
+  python -m app.backfill --org <organization-id> [--org <another-id> …]
+```
+
+It declares and binds the worker's queue itself before it reads anything, pages employee's internal
+hierarchy export (service token, the `org` claim bound), applies one transaction per page and holds
+no transaction open across an HTTP call. It is idempotent and version-gated: a re-run is a no-op, it
+is safe alongside live traffic, and a failure prints the `--cursor` to resume from. Find the
+organizations with `SELECT DISTINCT organization_id FROM employee.employees` as the admin role. The
+first deploy of `employee` must be up before it runs: it is the service that now admits
+`attendance` as a caller of `/internal/v1/hierarchy`.
+
+**Nothing is switched on.** Every anti-spoofing rule is off until an administrator saves settings at
+`PUT /api/v1/attendance/signal-settings`, and with no rule on nothing is stored. Check-in and
+check-out now refuse an unknown JSON field with a 422 (previously ignored): a client that sends
+extra keys must drop them. The client address in `audit_logs.ip` is now recorded only when
+`X-Forwarded-For` parses as an address (it used to make the audit insert fail for a junk value).
+
+**Retention.** `punch_signals` is not purged. It holds sealed addresses and device ids for organizations
+that turn a rule on; a purge job and a stated retention period are a follow-up, not in this release.
+
+### The employee-link verify, and the `employee.membership_id` column drop (R21)
+
+`tools/verify_membership_links.py` reports every disagreement between `employee.employees.membership_id`
+and `account.memberships.employee_id`. It is **read-only by default** — the transaction always rolls
+back — and `--apply` (which fills nulls, audited, never overwrites) is refused when `CI` is set.
+Exit status `0` is clean, `3` is findings. Nothing schedules it yet: the nightly orphan-check job
+it belongs in (R13) does not exist, and when it does the entry is
+`python tools/verify_membership_links.py --all` with exit `3` as the alert. It runs from a checkout
+that can reach the production database and employee-service, like `reconcile_membership_links.py`
+(there is no container wiring for either).
+
+**The column drop is held.** The migration is drafted in
+`docs/adr/0008-membership-id-column-drop.md` — Markdown, outside `migrations/versions/`, so no deploy
+can apply it. **Run only after the owner's dry-run**: a fleet-wide `--all` verify exiting `0` with
+`column_drop_precondition.ready: true`. It also cannot ship in the same deploy as the code change that
+stops reading the column (rule 6 above: the previous image would still select it), so it is two deploys
+in that order. The draft refuses to run without an explicit attestation.
+
 ### Deploying from the pipeline
 
 `.github/workflows/deploy.yml` runs the same two scripts a laptop does — `ssh-deploy.sh` for the

@@ -765,6 +765,19 @@ why a wrong link is an authorization defect.
 **Consequences.** It is one field, one picker and two calls. **Not covered by any ledger item. New
 backlog item needed.** It is the delivery that makes this ADR usable without an API client.
 
+**Delivered (NEW-5, 2026-09-24).** `frontend/product-hrms` gains the field
+(`src/ui/LinkedMemberSection.tsx`), built as decided: the user's own token, `PATCH
+/api/v1/members/{id}`, no internal endpoint, and no service token. Two things the decision did not
+spell out, settled here. **Showing who is linked** needs "which member is this employee?", which the
+member list could not answer, so `GET /api/v1/members` gains `?employee_id=` — ANDed onto the caller's
+scope exactly as `?linked=` is, so it can only narrow, and the partial unique index makes the answer at
+most one row. **The picker masks emails** (`j•••@d•••`, the platform's own mask shape): the list is names
+over masked addresses, enough to tell two people apart and not a screen to leave open. The field is
+gated on `core.identity.membership.write` at ORG as a hint; the server's ORG floor is the control, and
+the field handles the 403, the 409 (the server's own sentence, naming what to do) and the 404 (already
+gone) it may still get. Unlinking's confirmation names the tenant-wide refresh, and its focus lands on
+"Keep the link".
+
 ### Q2. An immediate, user-level kill (§7: "`auth.revoke_all_for_user` has no API surface") — **DECIDED: an operator route**
 
 **Decision.** Within a tenant, the lever already exists and is immediate. `DELETE
@@ -805,6 +818,18 @@ somebody has to remember to run does not get run.
 **Consequences.** **Implemented by R21** (schedule the link-verify pass), together with **R13**
 (the nightly orphan check it joins) and **R7/C10** (the alert route).
 
+**Built so far (R21, part one): the command, not the schedule.** `tools/verify_membership_links.py`
+is the read-only-by-default face of the reconcile: it reports every disagreement between
+`employee.employees.membership_id` and `account.memberships.employee_id` — a fill candidate, a
+conflict, an id the other side does not recognise — and **changes nothing unless `--apply`**, which
+is audited (`acting_as = verify-membership-links-cli`), never overwrites, and is refused when `CI` is
+set. Its exit status (`0` clean, `3` findings) is what the scheduled run alerts on. It is built as a
+second command rather than a flag on the first so the nightly entry cannot be misconfigured into a
+writer: the reconcile writes unless `--dry-run` is added, and a scheduled job is exactly the place a
+flag gets forgotten. **Nothing schedules it**: R13's nightly orphan-check job does not exist on this
+branch, so the entry `python tools/verify_membership_links.py --all` waits for it, and the alert
+route (R7/C10) with it.
+
 ### Q4. When `employee.employees.membership_id` is dropped (§3) — **DECIDED: after one production dry-run reports zero**
 
 **Decision.** The column and `uq_employees_org_membership` are dropped by R21's migration once
@@ -817,6 +842,15 @@ used the field. The same change removes `EmployeeOut.membership_id` and its HRMS
 employee ids only, so the verify half keeps working.
 
 **Consequences.** **Implemented by R21. Owner input needed:** the production dry-run output.
+
+**Prepared, not applied (R21, part one).** The migration, its precondition query and the two-deploy
+order it needs are drafted in [0008-membership-id-column-drop.md](0008-membership-id-column-drop.md)
+— deliberately **outside** `migrations/versions/`, as Markdown, so nothing can apply it by accident.
+**Run only after the owner's dry-run:** `tools/verify_membership_links.py --all` (read-only) must
+exit `0` with `column_drop_precondition.ready: true`. The draft refuses to run without an explicit
+attestation that this happened, and it cannot ship in the same deploy as the code change that stops
+reading the column, because the previous image would still select it (RUNBOOK, "Deploying", step 6).
+No migration in `services/employee/migrations/versions/` drops or alters `membership_id`.
 
 ### Q5. `sref` as one slot for ten products, and OWN scope in a tenant without HRMS — **DECIDED (direction): HR-shaped products keep the employee link; every other product keys OWN on the membership**
 
