@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Manual triggers only (ADR-0020 §3): the resumable backfill runner itself is one of
+# `app/worker.py`'s three always-on loops, started by `bin/worker`/`RUN_CONSUMERS_IN_API`, never
+# by this script.
+#
+#   bin/backfill                 sync org_profile for every organization, once
+#   bin/backfill --org <id>      enqueue a manual run for every registered entity
+#   bin/backfill --verify        a per-organization report
+exec python -m app.backfill "$@"
