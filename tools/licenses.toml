@@ -77,6 +77,18 @@ allowed = [
     "MPL-2.0",
 ]
 
-# npm packages allowed by name, each with the reason. Empty: every production package declares
-# an SPDX licence that is on the list above.
+# npm packages allowed by name, each with the reason. Everything else declares an SPDX licence that
+# is on the list above.
+#
+# The three @fontsource packages are the self-hosted typefaces (R32) and carry the SIL Open Font
+# License 1.1. It is not on `allowed` on purpose: OFL is a licence for fonts, not for code, and
+# admitting it by name keeps the list from ever meaning "anything OFL". What it grants is what a
+# product needs — bundling, embedding and redistributing the font files with software, including
+# commercially. What it withholds does not apply here: the font may not be sold on its own and a
+# modified font may not reuse the reserved name, and neither is done. Its terms attach to the
+# font files, not to the application that loads them — no copyleft reaches the product's code.
+# Checked by hand against each package's LICENSE file (5.3.0).
 [npm.packages]
+"@fontsource-variable/manrope" = "OFL-1.1 — the design system's typeface; font files only, no copyleft over the app"
+"@fontsource-variable/spline-sans-mono" = "OFL-1.1 — Finance's figure face; font files only, no copyleft over the app"
+"@fontsource/ibm-plex-mono" = "OFL-1.1 — the operator console's figure face; font files only, no copyleft over the app"

@@ -5,6 +5,8 @@ import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
 import { configureSession } from "@opsgrids/client";
 import { ThemeProvider, Toaster } from "@opsgrids/ui";
+import "@opsgrids/ui/fonts";
+import "@fontsource-variable/spline-sans-mono/wght.css";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";

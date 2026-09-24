@@ -7,9 +7,10 @@
 @source "../../opsgrids-ui/src";
 
 /* Finance runs its figures in Spline Sans Mono, so amounts line up to the paisa. The `.money`
-   rule itself is shared — only the face is this product's. */
+   rule itself is shared — only the face is this product's. The family is registered by
+   `main.tsx` from @fontsource-variable/spline-sans-mono, which names it "… Variable". */
 @theme {
   --font-mono:
-    "Spline Sans Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo,
-    Consolas, "Liberation Mono", monospace;
+    "Spline Sans Mono Variable", "Spline Sans Mono", ui-monospace, SFMono-Regular, "SF Mono",
+    Menlo, Consolas, "Liberation Mono", monospace;
 }

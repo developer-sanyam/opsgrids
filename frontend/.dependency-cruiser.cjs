@@ -17,7 +17,7 @@
 const APP = "(product-[^/]+|opsgrids-dashboard|opsgrids-internal)";
 
 /** The only files of the shared packages an app may land on: their `exports` entries. */
-const UI_EXPORTS = "^opsgrids-ui/src/(index\\.ts|icons\\.tsx|styles/console\\.css)$";
+const UI_EXPORTS = "^opsgrids-ui/src/(index\\.ts|icons\\.tsx|fonts\\.ts|styles/console\\.css)$";
 const CLIENT_EXPORTS = "^opsgrids-client/src/index\\.ts$";
 
 /** @type {import('dependency-cruiser').IConfiguration} */

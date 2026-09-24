@@ -13,6 +13,7 @@ import {
   ThemeProvider,
   Toaster,
 } from "@opsgrids/ui";
+import "@opsgrids/ui/fonts";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";

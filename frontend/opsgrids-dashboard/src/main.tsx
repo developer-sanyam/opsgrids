@@ -6,6 +6,7 @@ import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 import { configureSession, RequirePermission } from "@opsgrids/client";
 import { Skeleton, ThemeProvider, Toaster } from "@opsgrids/ui";
 
+import "@opsgrids/ui/fonts";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";

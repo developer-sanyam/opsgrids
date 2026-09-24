@@ -4,6 +4,7 @@ import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
 import { configureSession } from "@opsgrids/client";
 import { FileTextIcon, LifeBuoyIcon, PlugIcon, SettingsIcon, ThemeProvider, Toaster } from "@opsgrids/ui";
+import "@opsgrids/ui/fonts";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";

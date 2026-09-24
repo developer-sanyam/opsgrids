@@ -10,6 +10,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./icons": "./src/icons.tsx",
+    "./fonts": "./src/fonts.ts",
     "./styles.css": "./src/styles/console.css"
   },
   "files": [
@@ -20,6 +21,9 @@
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@fontsource-variable/manrope": "5.3.0"
   },
   "peerDependencies": {
     "react": "^19.0.0",
