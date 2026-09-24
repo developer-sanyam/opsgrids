@@ -34,7 +34,7 @@ export type { AccessClaims } from "./auth/token";
 
 export { configureAuthOrigin, getAuthOrigin } from "./auth/origin";
 export { refreshAccessToken } from "./auth/refresh";
-export type { RefreshOutcome } from "./auth/refresh";
+export type { RefreshResult } from "./auth/refresh";
 
 export { PLATFORM_APP_HOSTS, isAllowedRedirectTarget } from "./sso/platformHosts";
 

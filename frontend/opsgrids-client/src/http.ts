@@ -117,10 +117,12 @@ async function performRequest<T>(
 
   if (res.status === 401 && signalUnauthorized && auth) {
     // One single-flight silent refresh, shared with the proactive timer and the boot restore,
-    // and one retry — never a loop, because the retry passes `allowRefresh: false`.
+    // and one retry — never a loop, because the retry passes `allowRefresh: false`, so a 401 on
+    // the retry itself falls straight through to `notifyUnauthorized` below instead of trying
+    // a second refresh.
     if (allowRefresh) {
-      const outcome = await refreshAccessToken();
-      if (outcome === "ok") return performRequest<T>(path, options, false);
+      const result = await refreshAccessToken();
+      if (result.outcome === "ok") return performRequest<T>(path, options, false);
     }
     notifyUnauthorized();
   } else if (res.status === 401 && signalUnauthorized) {

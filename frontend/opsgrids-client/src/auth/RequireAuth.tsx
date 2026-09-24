@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
+import { ConnectionErrorScreen } from "./ConnectionErrorScreen";
 import { useAuth } from "./context";
 
 interface RequireAuthProps {
@@ -25,17 +26,26 @@ function BootScreen({ logo, message }: { logo: ReactNode; message: string }) {
 
 /**
  * Gate for the authenticated app. Holds while the session boots, redirects to `/login` when
- * there is no session (remembering where the user was headed), and otherwise renders the app.
+ * there is no session (remembering where the user was headed), shows a retry screen when the
+ * boot check itself could not complete, and otherwise renders the app.
  *
  * This hides UI; it is not enforcement. The gateway refuses an unauthenticated call regardless.
+ *
+ * `state.from` carries the *whole* path the user was headed to (pathname, search and hash) —
+ * `/login` reads it back to return here after sign-in, whether that is this app's own form or,
+ * once redirected further, the dashboard's (`RedirectToCentralLogin`, ADR-0003 addendum).
  */
 export function RequireAuth({ logo, message = "Signing you in…", children }: RequireAuthProps) {
   const { status } = useAuth();
   const location = useLocation();
 
   if (status === "loading") return <BootScreen logo={logo} message={message} />;
+  if (status === "error") {
+    return <ConnectionErrorScreen logo={logo} onRetry={() => window.location.reload()} />;
+  }
   if (status === "unauthenticated") {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+    const from = `${location.pathname}${location.search}${location.hash}`;
+    return <Navigate to="/login" replace state={{ from }} />;
   }
   return <>{children}</>;
 }

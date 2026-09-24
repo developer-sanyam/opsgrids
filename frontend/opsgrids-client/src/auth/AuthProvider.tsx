@@ -13,13 +13,24 @@ import { refreshAccessToken } from "./refresh";
 import { decodeAccessToken } from "./token";
 import type { LoginResult, LoginStep, MeOut } from "./types";
 
-/** How long before the access token's own `exp` the proactive refresh fires. Comfortably
+/** How long before the access token's own expiry the proactive refresh fires. Comfortably
  *  ahead of any request in flight, and far short of the token's usual TTL — a call that lands
  *  in the gap this misses is still caught by `apiRequest`'s own 401-retry. */
 const PROACTIVE_REFRESH_LEAD_MS = 60_000;
-/** How soon a *failed* proactive refresh (a network blip, not a dead session) tries again,
- *  rather than recomputing from the same, still-expiring token and firing immediately. */
-const PROACTIVE_REFRESH_RETRY_MS = 5_000;
+/**
+ * The floor under every proactive-refresh delay, computed or not. This is what actually stops
+ * the clock-skew spin: a client clock far enough from the server's makes "expiry minus lead
+ * time minus now" come out negative or near-zero — that reads as "already due", and without a
+ * floor the timer refires as fast as the event loop allows, forever, on every skewed client.
+ * The floor does not depend on figuring out *which* clock is wrong, only on never trusting the
+ * computed delay to be small.
+ */
+const PROACTIVE_REFRESH_MIN_DELAY_MS = 30_000;
+/** Exponential backoff for a *failed* proactive refresh (a network blip or a CORS failure, not
+ *  a dead session): 5s, 10s, 20s, … capped here, so a systemic outage does not turn into a
+ *  request every few seconds forever. Resets to the base on the next success. */
+const PROACTIVE_REFRESH_BACKOFF_BASE_MS = 5_000;
+const PROACTIVE_REFRESH_BACKOFF_MAX_MS = 5 * 60_000;
 
 interface AuthProviderProps {
   /**
@@ -48,9 +59,21 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
    * presenting the wrong one is a 401 the screen cannot explain.
    */
   const pending = useRef<{ token: string; step: "mfa" | "org_selection" } | null>(null);
+  /**
+   * When the current access token expires, by the client's own clock — set from `expires_in`
+   * (a duration, not a timestamp) at the moment a token is obtained, never from decoding the
+   * token's own `exp` claim. `exp` is the server's clock; comparing it to `Date.now()` (the
+   * client's) is exactly the comparison a skewed client clock gets wrong, and that is what
+   * turned "refresh 60s before expiry" into "refresh continuously" (`schedule` below still
+   * falls back to decoding `exp` for the one case with no better source — a token already held
+   * at boot — and the floor in `schedule` is what keeps that fallback safe too). `null` until
+   * the first token this provider itself obtains.
+   */
+  const expiresAtRef = useRef<number | null>(null);
 
   const clearSession = useCallback(() => {
     setAccessToken(null);
+    expiresAtRef.current = null;
     pending.current = null;
     setUser(null);
     setStatus("unauthenticated");
@@ -70,6 +93,12 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
   // `refreshAccessToken()` a 401 retry uses, same-origin or centralised on `app.opsgrids.com`
   // (ADR-0003 addendum) depending on `configureAuthOrigin` — the provider does not need to
   // know which.
+  //
+  // `error` (a network failure, or a cross-origin call CORS refused outright) is deliberately
+  // its own status, not folded into `unauthenticated`: the caller genuinely does not know
+  // whether a session exists, and `RequireAuth`/`RedirectToCentralLogin` render a retry screen
+  // for it rather than ever reaching `/login` — treating it as `unauthenticated` is what turned
+  // a transient failure into a product app bouncing to the dashboard and straight back.
   useEffect(() => {
     let active = true;
     // Fixture mode renders the app with a stand-in identity and no gateway call.
@@ -82,12 +111,17 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
     async function boot(): Promise<void> {
       let token = getAccessToken();
       if (!token) {
-        const outcome = await refreshAccessToken();
+        const result = await refreshAccessToken();
         if (!active) return;
-        if (outcome !== "ok") {
+        if (result.outcome === "unauthorized") {
           setStatus("unauthenticated");
           return;
         }
+        if (result.outcome === "error") {
+          setStatus("error");
+          return;
+        }
+        expiresAtRef.current = Date.now() + result.expiresIn * 1000;
         token = getAccessToken();
       }
       if (!token) {
@@ -114,6 +148,7 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
   useEffect(() => {
     setUnauthorizedHandler(() => {
       pending.current = null;
+      expiresAtRef.current = null;
       setUser(null);
       setStatus("unauthenticated");
     });
@@ -127,27 +162,43 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
     if (fixtureUser || status !== "authenticated") return;
     let active = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let backoffMs = PROACTIVE_REFRESH_BACKOFF_BASE_MS;
+
+    /** `expiresAtRef` when this provider minted the token itself; the token's own `exp` claim
+     *  (the server's clock) only for one already held at boot, which never went through here. */
+    function deadlineMs(): number | null {
+      if (expiresAtRef.current !== null) return expiresAtRef.current;
+      const claims = decodeAccessToken();
+      return typeof claims?.exp === "number" ? claims.exp * 1000 : null;
+    }
 
     function schedule(): void {
-      const claims = decodeAccessToken();
-      if (!claims?.exp) return;
-      const delay = Math.max(claims.exp * 1000 - Date.now() - PROACTIVE_REFRESH_LEAD_MS, 0);
+      const deadline = deadlineMs();
+      if (deadline === null) return;
+      const delay = Math.max(
+        deadline - Date.now() - PROACTIVE_REFRESH_LEAD_MS,
+        PROACTIVE_REFRESH_MIN_DELAY_MS,
+      );
       timer = setTimeout(() => void run(), delay);
     }
 
     async function run(): Promise<void> {
-      const outcome = await refreshAccessToken();
+      const result = await refreshAccessToken();
       if (!active) return;
-      if (outcome === "unauthorized") {
+      if (result.outcome === "unauthorized") {
         pending.current = null;
+        expiresAtRef.current = null;
         setUser(null);
         setStatus("unauthenticated");
         return;
       }
-      if (outcome === "error") {
-        timer = setTimeout(() => void run(), PROACTIVE_REFRESH_RETRY_MS);
+      if (result.outcome === "error") {
+        timer = setTimeout(() => void run(), backoffMs);
+        backoffMs = Math.min(backoffMs * 2, PROACTIVE_REFRESH_BACKOFF_MAX_MS);
         return;
       }
+      backoffMs = PROACTIVE_REFRESH_BACKOFF_BASE_MS;
+      expiresAtRef.current = Date.now() + result.expiresIn * 1000;
       schedule();
     }
 
@@ -162,6 +213,7 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
   const complete = useCallback(
     async (result: Extract<LoginResult, { status: "complete" }>) => {
       setAccessToken(result.access_token);
+      expiresAtRef.current = Date.now() + result.expires_in * 1000;
       pending.current = null;
       await hydrate();
     },

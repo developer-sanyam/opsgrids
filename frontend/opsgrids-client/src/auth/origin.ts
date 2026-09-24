@@ -19,13 +19,19 @@
 
 let authOrigin: string | null = null;
 
+/** Strip a trailing slash (or several) — the one normalisation an origin needs before it is
+ *  used to build a URL by concatenation, here and in `RedirectToCentralLogin`. */
+export function normalizeOrigin(origin: string): string {
+  return origin.replace(/\/+$/, "");
+}
+
 /**
  * Call once, from the entry module, before the first render — the same moment each app calls
  * `configureSession`. An absolute origin, no trailing slash (`https://app.opsgrids.com`), or
  * `null` to go back to same-origin.
  */
 export function configureAuthOrigin(origin: string | null): void {
-  authOrigin = origin ? origin.replace(/\/+$/, "") : null;
+  authOrigin = origin ? normalizeOrigin(origin) : null;
 }
 
 /** The configured auth origin, or `null` for same-origin. */

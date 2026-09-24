@@ -51,7 +51,11 @@ const router = createBrowserRouter([
       {
         path: "/login",
         element: AUTH_ORIGIN ? (
-          <RedirectToCentralLogin authOrigin={AUTH_ORIGIN} logo={<LogoMark className="size-11" />} />
+          <RedirectToCentralLogin
+            authOrigin={AUTH_ORIGIN}
+            logo={<LogoMark className="size-11" />}
+            appName="PulseBoard"
+          />
         ) : (
           <LoginPage />
         ),

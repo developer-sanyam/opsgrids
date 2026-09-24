@@ -15,21 +15,34 @@ interface LocationState {
   from?: string;
 }
 
+/** A wanted path that is itself `/login` — B1 of the 2026-09-24 SSO review: a product app's own
+ *  `/login` redirects here with `next=<its own URL>` whenever it finds no session, *including*
+ *  the instant right after this very page sends the browser back to a `next` that, for whatever
+ *  reason, still reads as signed out there. Honouring a `next` of `/login` would send the
+ *  browser straight back here, which reports signed in and sends it right back again — the loop
+ *  this whole file exists to close, reached from the dashboard's side of it this time. */
+function isLoginPath(pathname: string): boolean {
+  return /^\/login(?:\/|$)/i.test(pathname);
+}
+
 /**
  * A product SPA's `/login` redirects here with `?next=<its own URL>` (ADR-0003 addendum): the
  * dashboard is where sign-in actually happens, and once it completes the browser needs to go
  * back to whichever app sent it. `next` is attacker-controlled input — it rides in on a URL a
  * script on some other page can set — so it is trusted only after `isAllowedRedirectTarget`
- * confirms it names one of the platform's own app hosts; anything else (another host entirely, a
- * storefront subdomain, a custom domain, `javascript:`, a protocol-relative value, a userinfo
- * trick) is silently ignored and sign-in falls back to the ordinary in-app destination.
+ * confirms it names one of the platform's own app hosts *and* `isLoginPath` confirms it is not
+ * that app's own `/login` (see above); anything else (another host entirely, a storefront
+ * subdomain, a custom domain, `javascript:`, a protocol-relative value, a userinfo trick) is
+ * silently ignored and sign-in falls back to the ordinary in-app destination.
  *
  * A full navigation (`window.location.assign`), not `<Navigate>`: the target is a different
  * origin, which React Router's client-side router cannot and must not try to reach.
  */
 function externalDestination(search: string): string | null {
   const next = new URLSearchParams(search).get("next");
-  return next && isAllowedRedirectTarget(next) ? next : null;
+  if (!next || !isAllowedRedirectTarget(next)) return null;
+  if (isLoginPath(new URL(next).pathname)) return null;
+  return next;
 }
 
 /** What this screen renders. Distinct from `LoginStep`: it also carries the org list to show. */

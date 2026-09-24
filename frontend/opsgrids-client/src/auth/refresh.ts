@@ -15,18 +15,32 @@
 import { getAuthOrigin } from "./origin";
 import { setAccessToken } from "../session";
 
-/** `"ok"` — a new access token is already stored. `"unauthorized"` — the refresh endpoint
- *  itself said no (401/403): the session is definitively over. `"error"` — anything else
- *  (network failure, an unexpected response): unknown, and not treated as a dead session. */
-export type RefreshOutcome = "ok" | "unauthorized" | "error";
+/**
+ * `"ok"` carries `expiresIn` — seconds, relative to *this response*, exactly as the server
+ * sent it — because scheduling the next proactive refresh from it (received-at + expiresIn,
+ * both read off the client's own clock) is immune to client/server clock skew. Decoding the
+ * token's own `exp` claim and comparing it to `Date.now()` is not: a client clock far enough
+ * from the server's turns "refresh 60s before expiry" into "expiry already looks past", and
+ * the proactive timer fires again immediately, forever (`AuthProvider`'s own defence is the
+ * floor on top of this, for the one caller — a token already held at boot — that has no
+ * `expiresIn` to start from and must fall back to decoding `exp`).
+ *
+ * `"unauthorized"` — the refresh endpoint itself said no (401/403): the session is
+ * definitively over. `"error"` — anything else (network failure, a cross-origin call CORS
+ * refused outright, an unexpected response): unknown, and not treated as a dead session.
+ */
+export type RefreshResult =
+  | { outcome: "ok"; expiresIn: number }
+  | { outcome: "unauthorized" }
+  | { outcome: "error" };
 
-let inFlight: Promise<RefreshOutcome> | null = null;
+let inFlight: Promise<RefreshResult> | null = null;
 
 /** Every legitimate caller of `/auth/refresh` sends this — see `services/auth`'s
  *  `_assert_not_cross_site`. A forged cross-site `<form>` POST cannot add a header. */
 const CSRF_HEADER: Record<string, string> = { "X-Requested-With": "opsgrids" };
 
-async function performRefresh(): Promise<RefreshOutcome> {
+async function performRefresh(): Promise<RefreshResult> {
   const origin = getAuthOrigin();
   let res: Response;
   try {
@@ -36,32 +50,35 @@ async function performRefresh(): Promise<RefreshOutcome> {
       credentials: origin ? "include" : "same-origin",
     });
   } catch {
-    // A network failure says nothing about whether the session is still good.
-    return "error";
+    // A network failure (or a cross-origin call CORS refused before it ever reached the
+    // server) says nothing about whether the session is still good.
+    return { outcome: "error" };
   }
 
-  if (res.status === 401 || res.status === 403) return "unauthorized";
-  if (!res.ok) return "error";
+  if (res.status === 401 || res.status === 403) return { outcome: "unauthorized" };
+  if (!res.ok) return { outcome: "error" };
 
   let body: unknown;
   try {
     const text = await res.text();
     body = text.trim() === "" ? null : JSON.parse(text);
   } catch {
-    return "error";
+    return { outcome: "error" };
   }
-  const token =
-    body !== null && typeof body === "object" && "access_token" in body
-      ? (body as { access_token: unknown }).access_token
-      : null;
-  if (typeof token !== "string" || token === "") return "error";
+  const record = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : null;
+  const token = record && "access_token" in record ? record.access_token : null;
+  const expiresIn = record && "expires_in" in record ? record.expires_in : null;
+  if (typeof token !== "string" || token === "") return { outcome: "error" };
+  if (typeof expiresIn !== "number" || !Number.isFinite(expiresIn) || expiresIn <= 0) {
+    return { outcome: "error" };
+  }
 
   setAccessToken(token);
-  return "ok";
+  return { outcome: "ok", expiresIn };
 }
 
 /** Refresh the access token, deduplicating concurrent callers into one request. */
-export async function refreshAccessToken(): Promise<RefreshOutcome> {
+export async function refreshAccessToken(): Promise<RefreshResult> {
   if (!inFlight) {
     inFlight = performRefresh().finally(() => {
       inFlight = null;

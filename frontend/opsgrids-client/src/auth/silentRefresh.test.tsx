@@ -12,7 +12,7 @@
 
 import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 
 import { apiRequest } from "../http";
 import { getAccessToken, setAccessToken, setUnauthorizedHandler } from "../session";
@@ -235,41 +235,241 @@ describe("AuthProvider restores a session on boot", () => {
   });
 });
 
+const ME_RESPONSE_BODY = {
+  user_id: "u-1",
+  email: "priya@acme.example.com",
+  full_name: "Priya Nair",
+  organization_id: "org-a",
+  membership_id: "mem-1",
+  roles: [],
+  amr: ["pwd"],
+  must_change_password: false,
+  mfa_enabled: false,
+  organizations: [],
+};
+
+/** Advance fake time in small steps, each wrapped in `act`, rather than one big jump — a
+ *  `setTimeout` callback that itself schedules another `setTimeout` (exactly what the proactive
+ *  loop does on every success) only runs the second one if the advancement is still in
+ *  progress when it is scheduled; small steps make that reliable regardless of how many
+ *  reschedules happen inside the window. */
+async function advance(totalMs: number, stepMs = 50): Promise<void> {
+  let remaining = totalMs;
+  do {
+    const step = Math.min(stepMs, remaining);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(step);
+    });
+    remaining -= step;
+  } while (remaining > 0);
+}
+
 describe("AuthProvider refreshes proactively before the access token expires", () => {
+  it("renews itself ~60s ahead of exp, scheduling from expires_in rather than exp", async () => {
+    vi.useFakeTimers();
+    const ttlSeconds = 900;
+    setAccessToken(fakeToken({ exp: Math.floor(Date.now() / 1000) + ttlSeconds }));
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const call = record(input, init);
+        if (call.url === "/api/v1/auth/me") return Promise.resolve(respond(200, ME_RESPONSE_BODY));
+        if (call.url === "/api/v1/auth/refresh") {
+          return Promise.resolve(
+            respond(200, {
+              access_token: fakeToken({ exp: Math.floor(Date.now() / 1000) + ttlSeconds }),
+              expires_in: ttlSeconds,
+            }),
+          );
+        }
+        throw new Error(`unexpected call to ${call.url}`);
+      }),
+    );
+
+    render(
+      <AuthProvider>
+        <Probe />
+      </AuthProvider>,
+    );
+    await advance(0);
+    expect(screen.getByTestId("status").textContent).toBe("authenticated");
+    const beforeSchedule = getAccessToken();
+
+    // Comfortably inside the schedule (900s ttl - 60s lead = 840s out): nothing yet.
+    await advance(800_000, 10_000);
+    expect(getAccessToken()).toBe(beforeSchedule);
+
+    // Past it: the proactive refresh has fired, with no 401 anywhere in the log.
+    await advance(60_000, 10_000);
+    expect(getAccessToken()).not.toBe(beforeSchedule);
+    expect(calls.filter((c) => c.url === "/api/v1/auth/refresh")).toHaveLength(1);
+  });
+
+  it("does not spin when the client clock is far ahead of the server's", async () => {
+    // Adopted from the security review's clock-skew probe: a client clock 20 minutes ahead of
+    // the server's made `decodeAccessToken().exp * 1000 - Date.now()` come out deeply negative
+    // — "already expired" — every single time the proactive timer recomputed it, which fired it
+    // again immediately, forever. `PROACTIVE_REFRESH_MIN_DELAY_MS` is what a token already held
+    // at boot (this test's setup — nothing here ever calls `/auth/refresh` to get a fresh
+    // `expires_in`) still has to fall back to decoding `exp` for, so this is exactly the path
+    // the floor has to hold on its own.
+    vi.useFakeTimers();
+    const serverNow = () => Date.now() - 20 * 60 * 1000;
+    setAccessToken(fakeToken({ exp: Math.floor(serverNow() / 1000) + 900 }));
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const call = record(input, init);
+        if (call.url === "/api/v1/auth/me") return Promise.resolve(respond(200, ME_RESPONSE_BODY));
+        if (call.url === "/api/v1/auth/refresh") {
+          return Promise.resolve(
+            respond(200, {
+              access_token: fakeToken({ exp: Math.floor(serverNow() / 1000) + 900 }),
+              expires_in: 900,
+            }),
+          );
+        }
+        throw new Error(`unexpected call to ${call.url}`);
+      }),
+    );
+
+    render(
+      <AuthProvider>
+        <Probe />
+      </AuthProvider>,
+    );
+    await advance(0);
+    expect(screen.getByTestId("status").textContent).toBe("authenticated");
+
+    await advance(500, 10);
+
+    const refreshes = calls.filter((c) => c.url === "/api/v1/auth/refresh").length;
+    expect(refreshes).toBeLessThanOrEqual(1);
+  });
+
+  it("backs off exponentially on repeated failures, and resets on the next success", async () => {
+    vi.useFakeTimers();
+    const ttlSeconds = 100; // schedule floors to 30s (100 - 60 lead < 30 min) either way
+    setAccessToken(fakeToken({ exp: Math.floor(Date.now() / 1000) + ttlSeconds }));
+    let refreshAttempts = 0;
+    const FAILURES_BEFORE_SUCCESS = 3;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const call = record(input, init);
+        if (call.url === "/api/v1/auth/me") return Promise.resolve(respond(200, ME_RESPONSE_BODY));
+        if (call.url === "/api/v1/auth/refresh") {
+          refreshAttempts += 1;
+          if (refreshAttempts <= FAILURES_BEFORE_SUCCESS) return Promise.reject(new Error("network down"));
+          return Promise.resolve(
+            respond(200, {
+              access_token: fakeToken({ exp: Math.floor(Date.now() / 1000) + ttlSeconds }),
+              expires_in: ttlSeconds,
+            }),
+          );
+        }
+        throw new Error(`unexpected call to ${call.url}`);
+      }),
+    );
+
+    render(
+      <AuthProvider>
+        <Probe />
+      </AuthProvider>,
+    );
+    await advance(0);
+    expect(screen.getByTestId("status").textContent).toBe("authenticated");
+
+    // First attempt at 100s ttl - 60s lead = 40s, then backing off 5s, 10s, 20s between failures.
+    await advance(40_000, 5_000);
+    expect(refreshAttempts).toBe(1);
+    await advance(5_000);
+    expect(refreshAttempts).toBe(2);
+    await advance(10_000);
+    expect(refreshAttempts).toBe(3);
+    await advance(20_000);
+    expect(refreshAttempts).toBe(4); // the success
+
+    expect(getAccessToken()).not.toBeNull();
+    // Signed in throughout — a network blip never signs anyone out.
+    expect(screen.getByTestId("status").textContent).toBe("authenticated");
+  });
+
+  it("stops rescheduling once a refresh reports the session is over", async () => {
+    vi.useFakeTimers();
+    const ttlSeconds = 100;
+    setAccessToken(fakeToken({ exp: Math.floor(Date.now() / 1000) + ttlSeconds }));
+    let refreshAttempts = 0;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const call = record(input, init);
+        if (call.url === "/api/v1/auth/me") return Promise.resolve(respond(200, ME_RESPONSE_BODY));
+        if (call.url === "/api/v1/auth/refresh") {
+          refreshAttempts += 1;
+          return Promise.resolve(respond(401, {}));
+        }
+        throw new Error(`unexpected call to ${call.url}`);
+      }),
+    );
+
+    render(
+      <AuthProvider>
+        <Probe />
+      </AuthProvider>,
+    );
+    await advance(0);
+    expect(screen.getByTestId("status").textContent).toBe("authenticated");
+
+    await advance(40_000, 5_000);
+    expect(refreshAttempts).toBe(1);
+    expect(screen.getByTestId("status").textContent).toBe("unauthenticated");
+
+    await advance(600_000, 30_000);
+    expect(refreshAttempts).toBe(1);
+  });
+
   it(
-    "renews itself ~60s ahead of exp, with no 401 ever happening",
+    "keeps the session alive through many access-token lifetimes, then signs out cleanly " +
+      "once the server's own 7-day session cap is reached",
     async () => {
-      // A token that expires 61s from now schedules the proactive refresh about a second out
-      // (`PROACTIVE_REFRESH_LEAD_MS` is 60s) — real timers, and a real delay short enough that
-      // the test can simply wait it out.
-      const ttlSeconds = 61;
-      setAccessToken(fakeToken({ exp: Math.floor(Date.now() / 1000) + ttlSeconds }));
+      // Owner decision, 2026-09-24: a session is capped at 7 days server-side regardless of
+      // activity. The client has no notion of "7 days" at all — it just keeps renewing on
+      // whatever `expires_in` each response carries, forever, until a refresh call itself
+      // reports the session is over. This is that contract from the client's side: many
+      // 15-minute-token renewals in a row never sign anyone out, and the eventual 401 (the
+      // session's own absolute cap, not a network blip) ends it once, cleanly — never a loop.
+      vi.useFakeTimers();
+      const accessTtlSeconds = 900; // 15 minutes, this platform's real access_token_ttl_seconds
+      setAccessToken(fakeToken({ exp: Math.floor(Date.now() / 1000) + accessTtlSeconds }));
+      let refreshCount = 0;
+      const REFRESHES_BEFORE_THE_SESSION_CAP = 100; // comfortably more than one day's worth
 
       vi.stubGlobal(
         "fetch",
         vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
           const call = record(input, init);
           if (call.url === "/api/v1/auth/me") {
-            return Promise.resolve(
-              respond(200, {
-                user_id: "u-1",
-                email: "priya@acme.example.com",
-                full_name: "Priya Nair",
-                organization_id: "org-a",
-                membership_id: "mem-1",
-                roles: [],
-                amr: ["pwd"],
-                must_change_password: false,
-                mfa_enabled: false,
-                organizations: [],
-              }),
-            );
+            return Promise.resolve(respond(200, ME_RESPONSE_BODY));
           }
           if (call.url === "/api/v1/auth/refresh") {
+            refreshCount += 1;
+            if (refreshCount > REFRESHES_BEFORE_THE_SESSION_CAP) {
+              // The server clamps a refresh token's own lifetime to what is left of the
+              // session (`_refresh_ttl_seconds`, services/auth) — this is what that clamp
+              // running out looks like from here: an ordinary 401, not a network failure.
+              return Promise.resolve(respond(401, {}));
+            }
             return Promise.resolve(
               respond(200, {
-                access_token: fakeToken({ exp: Math.floor(Date.now() / 1000) + ttlSeconds }),
-                expires_in: ttlSeconds,
+                access_token: fakeToken({
+                  exp: Math.floor(Date.now() / 1000) + accessTtlSeconds,
+                }),
+                expires_in: accessTtlSeconds,
               }),
             );
           }
@@ -282,19 +482,35 @@ describe("AuthProvider refreshes proactively before the access token expires", (
           <Probe />
         </AuthProvider>,
       );
-      await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("authenticated"));
-      const beforeSchedule = getAccessToken();
+      await advance(0);
+      expect(screen.getByTestId("status").textContent).toBe("authenticated");
 
-      // The proactive timer fires on its own, with no 401 anywhere in the log to force it.
-      await waitFor(() => expect(getAccessToken()).not.toBe(beforeSchedule), { timeout: 4000 });
-      expect(calls.filter((c) => c.url === "/api/v1/auth/refresh")).toHaveLength(1);
+      // Every renewal in between: still signed in, never a loop, never an error screen.
+      for (let i = 0; i < REFRESHES_BEFORE_THE_SESSION_CAP; i += 1) {
+        await advance(accessTtlSeconds * 1000 - 60_000, 60_000);
+        expect(screen.getByTestId("status").textContent).toBe("authenticated");
+      }
+      expect(refreshCount).toBe(REFRESHES_BEFORE_THE_SESSION_CAP);
+
+      // The next one is the session's own absolute cap — a clean, one-time sign-out.
+      await advance(accessTtlSeconds * 1000 - 60_000, 60_000);
+      expect(refreshCount).toBe(REFRESHES_BEFORE_THE_SESSION_CAP + 1);
+      expect(screen.getByTestId("status").textContent).toBe("unauthenticated");
+
+      // And it stays that way — no further refresh attempts, no loop.
+      await advance(accessTtlSeconds * 1000, 60_000);
+      expect(refreshCount).toBe(REFRESHES_BEFORE_THE_SESSION_CAP + 1);
     },
-    8000,
+    20_000,
   );
 });
 
 describe("logout", () => {
-  it("posts to the auth origin with the CSRF header and clears the local session", async () => {
+  it("posts to the auth origin with the CSRF header, and never Authorization", async () => {
+    // Security review, fix round 1, B2: the scoped CORS preflight for /auth/logout allows
+    // only Content-Type and X-Requested-With. Sending Authorization alongside them made the
+    // browser refuse the preflight outright — the request never reached the server, and the
+    // best-effort `catch` around it in `AuthProvider.logout` swallowed that silently.
     configureAuthOrigin("https://app.opsgrids.com");
     setAccessToken("a-token");
     vi.stubGlobal(
@@ -311,5 +527,6 @@ describe("logout", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe("https://app.opsgrids.com/api/v1/auth/logout");
     expect(calls[0]?.headers["x-requested-with"]).toBe("opsgrids");
+    expect(calls[0]?.headers.authorization).toBeUndefined();
   });
 });

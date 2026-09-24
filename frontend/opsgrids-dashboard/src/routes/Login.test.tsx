@@ -318,6 +318,8 @@ describe("the ?next hand-off back to a product app", () => {
     ["a javascript: URL", "javascript:alert(1)"],
     ["a protocol-relative value", "//evil.example/"],
     ["a userinfo trick", "https://app.opsgrids.com@evil.example/"],
+    ["a product app's own /login (the ping-pong loop, B1 of the 2026-09-24 review)", "https://people.opsgrids.com/login"],
+    ["a product app's own /login with a sub-path", "https://people.opsgrids.com/login/"],
   ])("ignores %s and falls back to the in-app destination", async (_label, next) => {
     const user = userEvent.setup();
     routes = {
@@ -329,6 +331,23 @@ describe("the ?next hand-off back to a product app", () => {
     await signIn(user);
 
     await waitFor(() => expect(getAccessToken()).toBe(ACCESS));
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Sign in to OpsGrids" })).toBeNull(),
+    );
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it("an already-signed-in dashboard never bounces straight back to a product /login", async () => {
+    // Adopted from the security review's dashboard probe (fix round 1, B1): a tab that already
+    // holds a dashboard session (a reload, or landing here a second time) used to redirect to
+    // `next` with no user action at all whenever `next`'s host was allow-listed — including
+    // when `next` was itself a product app's `/login`, which is the other half of the loop.
+    setAccessToken("already-signed-in");
+    routes = { "/api/v1/auth/me": () => json(ME) };
+    renderPage(`/login?next=${encodeURIComponent("https://people.opsgrids.com/login")}`);
+
+    // The boot check completes and the password form disappears — status flipped to
+    // authenticated — without ever calling `assign`.
     await waitFor(() =>
       expect(screen.queryByRole("heading", { name: "Sign in to OpsGrids" })).toBeNull(),
     );
