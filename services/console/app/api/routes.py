@@ -29,7 +29,7 @@ from collections.abc import AsyncIterator
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Header, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -343,6 +343,17 @@ async def set_organization_pricing(
     directory_session: DirectorySessionDep,
     client: DelegationClientDep,
     operator: OperatorBilling,
+    idempotency_key: Annotated[
+        str | None,
+        Header(
+            alias="Idempotency-Key",
+            description=(
+                "Optional. A retried request with the same key and the same body returns the "
+                "first attempt's result instead of repeating the catalog/subscription calls; "
+                "the same key with a different body is a 409."
+            ),
+        ),
+    ] = None,
 ) -> SetPricingOut:
     """Clone-and-publish a bespoke flat price at catalog and, by default, re-pin the
     organization's live subscription to it.
@@ -366,7 +377,7 @@ async def set_organization_pricing(
     body returns the first attempt's result rather than repeating the catalog/subscription calls.
     The same key with a different body is a 409.
     """
-    idempotency_key = request.headers.get("Idempotency-Key") or None
+    idempotency_key = idempotency_key or None
     operator_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
 
     try:

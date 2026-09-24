@@ -1186,6 +1186,24 @@
               "title": "Organization Id",
               "type": "string"
             }
+          },
+          {
+            "description": "Optional. A retried request with the same key and the same body returns the first attempt's result instead of repeating the catalog/subscription calls; the same key with a different body is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional. A retried request with the same key and the same body returns the first attempt's result instead of repeating the catalog/subscription calls; the same key with a different body is a 409.",
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "requestBody": {
