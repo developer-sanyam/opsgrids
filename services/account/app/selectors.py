@@ -83,6 +83,7 @@ def members_stmt(
     org_unit_id: uuid.UUID | None = None,
     status: str | None = None,
     linked: bool | None = None,
+    employee_id: uuid.UUID | None = None,
 ) -> Select[Any]:
     """Scope-filtered member list. `ctx.apply` is the enforcement point."""
     stmt = (
@@ -134,6 +135,13 @@ def members_stmt(
         stmt = stmt.where(
             Membership.employee_id.is_not(None) if linked else Membership.employee_id.is_(None)
         )
+    if employee_id is not None:
+        # "Which member is this employee?" — what the HRMS employee page asks to show its
+        # "Linked member" field (ADR-0008 Q1). Like `linked`, ANDed onto the scope above and
+        # never in place of it, so it can only narrow: a TEAM-scoped caller naming an employee
+        # who is linked to someone outside their team gets an empty page, not that member. The
+        # partial unique index makes the answer at most one row.
+        stmt = stmt.where(Membership.employee_id == employee_id)
 
     return stmt.order_by(User.full_name)
 

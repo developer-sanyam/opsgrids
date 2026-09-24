@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
 from app.models import AuditLog, Membership, Organization
-from app.schemas import MemberPatch
+from app.schemas import MemberPatch, OrganizationIn
 from platform_core.auth import Scope
 from platform_core.cache import permission_version_key
 from platform_core.errors import ConflictProblem
@@ -484,6 +484,163 @@ class TestLinkedFilterAndsWithScope:
         assert unlinked.status_code == 200
         assert unlinked.json()["items"] == []
         assert [i["email"] for i in linked.json()["items"]] == ["report@example.com"]
+
+
+class TestEmployeeIdFilter:
+    """`?employee_id=` answers "which member is this employee?" — what the HRMS employee page
+    asks to show its "Linked member" field (ADR-0008 Q1, NEW-5). It is an authorization surface
+    like `?linked=`: ANDed onto the scope `members_stmt` applies, never in place of it, and
+    bounded by the tenant."""
+
+    async def _emails(self, session: AsyncSession, ctx: object, **kwargs: object) -> set[str]:
+        stmt = selectors.members_stmt(ctx, **kwargs)  # type: ignore[arg-type]
+        rows = (await session.execute(stmt)).all()
+        return {r[1].email for r in rows}
+
+    @pytest.fixture
+    async def employee_id(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> uuid.UUID:
+        """The report is linked to this employee; nobody else is."""
+        linked_to = uuid.uuid4()
+        await _patch(session, org, people["manager"], people["report"], employee_id=linked_to)
+        return linked_to
+
+    async def test_it_returns_the_one_member_linked_to_that_employee(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        employee_id: uuid.UUID,
+    ) -> None:
+        ctx = ctx_for(org.id, people["manager"], MEMBER_READ, Scope.ORG)
+        assert await self._emails(session, ctx, employee_id=employee_id) == {"report@example.com"}
+
+    async def test_an_employee_nobody_is_linked_to_matches_nobody(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        employee_id: uuid.UUID,
+    ) -> None:
+        ctx = ctx_for(org.id, people["manager"], MEMBER_READ, Scope.ORG)
+        assert await self._emails(session, ctx, employee_id=uuid.uuid4()) == set()
+
+    async def test_the_filter_never_matches_the_unlinked_by_being_absent(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        employee_id: uuid.UUID,
+    ) -> None:
+        """An omitted filter lists everyone; a supplied one lists only its match. There is no
+        value that turns "unlinked" (a null column) into a hit."""
+        ctx = ctx_for(org.id, people["manager"], MEMBER_READ, Scope.ORG)
+        assert len(await self._emails(session, ctx)) == 4
+        assert await self._emails(session, ctx, employee_id=employee_id) == {"report@example.com"}
+
+    async def test_team_scope_cannot_reach_a_member_outside_the_team_by_naming_the_employee(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> None:
+        """The outsider is linked to an employee and the manager names that employee: the
+        filter matches, the scope does not, and nothing comes back."""
+        outsider_employee = uuid.uuid4()
+        await _patch(
+            session, org, people["other_manager"], people["outsider"], employee_id=outsider_employee
+        )
+        ctx = ctx_for(org.id, people["manager"], MEMBER_READ, Scope.TEAM)
+        assert await self._emails(session, ctx, employee_id=outsider_employee) == set()
+
+    async def test_own_scope_sees_only_itself(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        employee_id: uuid.UUID,
+    ) -> None:
+        ctx = ctx_for(org.id, people["outsider"], MEMBER_READ, Scope.OWN)
+        assert await self._emails(session, ctx, employee_id=employee_id) == set()
+
+    async def test_location_scope_with_no_locations_still_sees_nothing(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        employee_id: uuid.UUID,
+    ) -> None:
+        ctx = ctx_for(org.id, people["manager"], MEMBER_READ, Scope.LOCATION, locations=[])
+        assert await self._emails(session, ctx, employee_id=employee_id) == set()
+
+    async def test_another_tenants_member_linked_to_the_same_employee_id_is_not_returned(
+        self,
+        session: AsyncSession,
+        admin_session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        employee_id: uuid.UUID,
+    ) -> None:
+        """Two organizations may each link a member to an employee record with the same id (an
+        id is only unique within its tenant's own HR data as far as account can tell). Naming it
+        returns this tenant's member and only this tenant's."""
+        async with admin_session.begin():
+            other_org = await services.create_organization(
+                admin_session, OrganizationIn(name="Other Co", slug="other-co"), actor_user_id=None
+            )
+            theirs = await services.add_member(
+                admin_session,
+                org_id=other_org.id,
+                email="theirs@other.example",
+                full_name="Thea Theirs",
+                actor_user_id=None,
+                role_codes=["MEMBER"],
+            )
+            theirs.employee_id = employee_id
+
+        ctx = ctx_for(org.id, people["manager"], MEMBER_READ, Scope.ORG)
+        assert await self._emails(session, ctx, employee_id=employee_id) == {"report@example.com"}
+
+    async def test_the_endpoint_filters_by_employee_within_the_callers_scope(
+        self,
+        client: AsyncClient,
+        org: Organization,
+        people: dict[str, Membership],
+        employee_id: uuid.UUID,
+    ) -> None:
+        from app.main import app
+        from platform_core.auth import get_principal
+
+        principal = principal_for(org.id, people["manager"], [f"{MEMBER_READ}:ORG"])
+        app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            hit = await client.get("/api/v1/members", params={"employee_id": str(employee_id)})
+            miss = await client.get("/api/v1/members", params={"employee_id": str(uuid.uuid4())})
+            bad = await client.get("/api/v1/members", params={"employee_id": "not-a-uuid"})
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+
+        assert hit.status_code == 200
+        assert [i["email"] for i in hit.json()["items"]] == ["report@example.com"]
+        assert hit.json()["items"][0]["employee_id"] == str(employee_id)
+        assert miss.json()["items"] == []
+        assert bad.status_code == 422
+
+    async def test_the_endpoint_refuses_a_caller_without_the_read_permission(
+        self,
+        client: AsyncClient,
+        org: Organization,
+        people: dict[str, Membership],
+        employee_id: uuid.UUID,
+    ) -> None:
+        from app.main import app
+        from platform_core.auth import get_principal
+
+        principal = principal_for(org.id, people["report"], ["core.org.organization.read:ORG"])
+        app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            response = await client.get("/api/v1/members", params={"employee_id": str(employee_id)})
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+        assert response.status_code == 403
 
 
 # --------------------------------------------------------------------- the reconcile

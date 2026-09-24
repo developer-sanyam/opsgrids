@@ -259,9 +259,21 @@ async def list_members(
             "approval inbox is silently empty (ADR-0008 §9). Omitted lists both."
         ),
     ] = None,
+    employee_id: Annotated[
+        uuid.UUID | None,
+        Query(
+            description="The member linked to this employee record, if any (at most one). "
+            "Narrows within the caller's scope, never beyond it (ADR-0008 Q1)."
+        ),
+    ] = None,
 ) -> Page[MemberOut]:
     stmt = selectors.members_stmt(
-        ctx, q=q, org_unit_id=org_unit_id, status=member_status, linked=linked
+        ctx,
+        q=q,
+        org_unit_id=org_unit_id,
+        status=member_status,
+        linked=linked,
+        employee_id=employee_id,
     )
     # `paginate` scalars() to the first entity, so page the memberships and read the
     # joined user off the relationship rather than losing the second column.

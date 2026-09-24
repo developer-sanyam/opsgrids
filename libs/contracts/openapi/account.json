@@ -2471,6 +2471,25 @@
             }
           },
           {
+            "description": "The member linked to this employee record, if any (at most one). Narrows within the caller's scope, never beyond it (ADR-0008 Q1).",
+            "in": "query",
+            "name": "employee_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The member linked to this employee record, if any (at most one). Narrows within the caller's scope, never beyond it (ADR-0008 Q1).",
+              "title": "Employee Id"
+            }
+          },
+          {
             "in": "query",
             "name": "page",
             "required": false,
