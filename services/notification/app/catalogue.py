@@ -352,6 +352,29 @@ ENGAGE = PermissionCatalogue(
             "ORG",
             is_dangerous=True,
         ),
+        # A WhatsApp template lives in the same `ProviderTemplate` row `notification`'s own
+        # `delivery.template.*` reads and writes — this is Engage's own name for the same read
+        # and write, so an organization that has bought Engage but not the transactional
+        # `notification` product can still see and register the templates it sends through its
+        # own WhatsApp account. Its own module rather than folded into `setup.whatsapp.*`: that
+        # permission protects the account credential, this protects the wording sent through it,
+        # and the two are held by different people on a larger team.
+        PermissionSpec(
+            "whatsapp",
+            "template",
+            "read",
+            "See the organization's WhatsApp templates and their real approval status",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "whatsapp",
+            "template",
+            "write",
+            "Register or update a WhatsApp template for Meta's review",
+            "ORG",
+            "ORG",
+        ),
         # The WhatsApp inbox: a customer's two-way conversation with the organization, not a
         # one-shot campaign send. `conversation.read`/`.write` are the triage surface (the list,
         # the thread, assignment, closing); `message.reply` is its own grant because sending words
@@ -423,6 +446,7 @@ ENGAGE_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("engage.setup.domain.read", "ORG"),
             ("engage.setup.sender.read", "ORG"),
             ("engage.setup.whatsapp.read", "ORG"),
+            ("engage.whatsapp.template.read", "ORG"),
             ("engage.audience.contact.read", "ORG"),
             ("engage.audience.suppression.read", "ORG"),
             ("engage.audience.list.read", "ORG"),
@@ -443,6 +467,10 @@ ENGAGE_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("engage.inbox.conversation.read", "ORG"),
             ("engage.inbox.conversation.write", "ORG"),
             ("engage.inbox.message.reply", "ORG"),
+            # An agent replying inside the service window still needs to see which templates
+            # are approved to reach a customer once that window has closed — reading, not
+            # registering one, which stays the administrator's job.
+            ("engage.whatsapp.template.read", "ORG"),
         ),
     ),
 ]

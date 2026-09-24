@@ -98,6 +98,8 @@ def test_engage_catalogue_declares_setup_and_audience_permissions() -> None:
         "engage.setup.sender.write",
         "engage.setup.whatsapp.read",
         "engage.setup.whatsapp.write",
+        "engage.whatsapp.template.read",
+        "engage.whatsapp.template.write",
         "engage.audience.contact.read",
         "engage.audience.contact.write",
         "engage.audience.suppression.read",
@@ -159,6 +161,23 @@ def test_the_default_engage_seat_is_the_viewer_not_the_administrator() -> None:
     through — so handing it out by default would make every seat able to repoint the mail."""
     defaults = [t.code for t in ENGAGE_ROLE_TEMPLATES if t.is_default]
     assert defaults == ["ENGAGE_VIEWER"]
+
+
+def test_whatsapp_template_read_is_granted_to_every_engage_seat() -> None:
+    """`ENGAGE_ADMIN`, `ENGAGE_VIEWER` and `ENGAGE_INBOX_AGENT` all read templates — the fix for
+    the bug this permission exists to close: an Engage seat with no `notification` role could
+    not load the WhatsApp templates screen at all."""
+    for code in ("ENGAGE_ADMIN", "ENGAGE_VIEWER", "ENGAGE_INBOX_AGENT"):
+        template = next(t for t in ENGAGE_ROLE_TEMPLATES if t.code == code)
+        assert "engage.whatsapp.template.read" in {g.code for g in template.grants}
+
+
+def test_only_the_engage_admin_can_write_a_whatsapp_template() -> None:
+    for code in ("ENGAGE_VIEWER", "ENGAGE_INBOX_AGENT"):
+        template = next(t for t in ENGAGE_ROLE_TEMPLATES if t.code == code)
+        assert "engage.whatsapp.template.write" not in {g.code for g in template.grants}
+    admin = next(t for t in ENGAGE_ROLE_TEMPLATES if t.code == "ENGAGE_ADMIN")
+    assert "engage.whatsapp.template.write" in {g.code for g in admin.grants}
 
 
 def test_both_products_are_exported() -> None:

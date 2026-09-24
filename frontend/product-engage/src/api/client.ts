@@ -337,37 +337,37 @@ export async function replaceWhatsApp(
   });
 }
 
-/* ------------------------------- provider templates ------------------------------ */
+/* ------------------------------- whatsapp templates ------------------------------ */
 
 /**
- * WhatsApp templates and their real approval status — `GET /notifications/provider-templates`.
+ * WhatsApp templates and their real approval status — `GET /engage/whatsapp/templates`.
  *
- * **Mounted under `/api/v1/notifications`, not `/api/v1/engage`** — the gateway gates this
- * prefix on the `notification` product entitlement (`services/app-gateway/routes.json`), not
- * `engage`, because `ProviderTemplate` is a `notification`-catalogue resource the engage router
- * only reads. An organization that has bought Engage but not the transactional-notification
- * product will see this call answer `402` even though Engage itself is active — a real product-
- * boundary gap, not a bug in this screen. `TemplatesPage` names that plainly rather than
- * reusing `EngageNotActive`'s wording, which would say the wrong product is missing.
+ * Mounted under `/api/v1/engage`, gated on `engage.whatsapp.template.read` — its own Engage
+ * permission, held by every Engage seat by default. This used to call `notification`'s own
+ * `/notifications/provider-templates`, gated on a `notification`-catalogue permission no Engage
+ * role ever granted: every Engage customer, including one with no `notification` seat at all,
+ * saw this screen fail with "Missing permission: notification.delivery.template.read". The row
+ * is the same `ProviderTemplate` either way — only the permission that reaches it changed.
  */
 export async function listWhatsAppTemplates(): Promise<Page<ProviderTemplateOut>> {
   if (USE_FIXTURES) return settle(fixturePage(WHATSAPP_TEMPLATES));
   const query = new URLSearchParams({ channel: "whatsapp", size: String(FULL_PAGE) });
-  return apiRequest<Page<ProviderTemplateOut>>(`/notifications/provider-templates?${query.toString()}`);
+  return apiRequest<Page<ProviderTemplateOut>>(`/engage/whatsapp/templates?${query.toString()}`);
 }
 
 /**
- * Register or update a WhatsApp template — `PUT /notifications/provider-templates`.
+ * Register or update a WhatsApp template — `PUT /engage/whatsapp/templates`.
  *
- * This submits what the organization intends to send; it does not and cannot approve it. The
- * service defaults `status` to `draft`, and only a sync with Meta ever moves it to `pending`,
- * `approved` or `rejected` — nothing this app sends can set it, and nothing here claims to.
+ * Gated on `engage.whatsapp.template.write`, held by `ENGAGE_ADMIN` alone. This submits what the
+ * organization intends to send; it does not and cannot approve it. The service defaults `status`
+ * to `draft`, and only a sync with Meta ever moves it to `pending`, `approved` or `rejected` —
+ * nothing this app sends can set it, and nothing here claims to.
  */
 export async function submitWhatsAppTemplate(
   input: ProviderTemplateIn,
 ): Promise<ProviderTemplateOut> {
   if (USE_FIXTURES) refuseWithoutService("Submitting a template");
-  return apiRequest<ProviderTemplateOut>("/notifications/provider-templates", {
+  return apiRequest<ProviderTemplateOut>("/engage/whatsapp/templates", {
     method: "PUT",
     body: input,
   });

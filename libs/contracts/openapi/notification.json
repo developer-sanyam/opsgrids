@@ -5931,6 +5931,121 @@
         ]
       }
     },
+    "/api/v1/engage/whatsapp/templates": {
+      "get": {
+        "description": "What can be sent outside a conversation window, and what is still in review.\n\nThe same rows `notification`'s own `GET /notifications/provider-templates` reads\n(`selectors.provider_templates_stmt`) \u2014 read here under Engage's own permission so an\norganization that has bought Engage but not the transactional `notification` product can\nstill see the real approval status of the templates it sends through its own WhatsApp\naccount, rather than a 403 for a permission it was never sold.",
+        "operationId": "list_whatsapp_templates_api_v1_engage_whatsapp_templates_get",
+        "parameters": [
+          {
+            "description": "email or whatsapp",
+            "in": "query",
+            "name": "channel",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "email or whatsapp",
+              "title": "Channel"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ProviderTemplateOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "WhatsApp templates and their real approval status",
+        "tags": [
+          "engage"
+        ]
+      },
+      "put": {
+        "description": "Same write `notification`'s own `PUT /notifications/provider-templates` makes\n(`services.upsert_provider_template`) \u2014 the row is the platform's, the permission is\nEngage's own.",
+        "operationId": "put_whatsapp_template_api_v1_engage_whatsapp_templates_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderTemplateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderTemplateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register or update a WhatsApp template",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
     "/api/v1/notifications/info": {
       "get": {
         "operationId": "info_api_v1_notifications_info_get",

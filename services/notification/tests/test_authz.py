@@ -41,6 +41,7 @@ TEMPLATE_READ_ROUTES = [
     ("GET", "/api/v1/notifications/rules"),
     ("GET", "/api/v1/notifications/preferences"),
     ("GET", "/api/v1/notifications/subscribable-events"),
+    ("GET", "/api/v1/notifications/provider-templates"),
 ]
 
 WRITE_BODIES: dict[str, dict] = {
@@ -60,6 +61,11 @@ WRITE_BODIES: dict[str, dict] = {
     "/api/v1/notifications/preferences": {
         "recipient": "a@b.example.com",
         "channel": "email",
+    },
+    "/api/v1/notifications/provider-templates": {
+        "code": "pt",
+        "channel": "whatsapp",
+        "provider_name": "meta",
     },
 }
 
@@ -91,12 +97,36 @@ async def test_reads_refuse_a_caller_without_the_entitlement(client, org_id, met
         "/api/v1/notifications/templates",
         "/api/v1/notifications/rules",
         "/api/v1/notifications/preferences",
+        "/api/v1/notifications/provider-templates",
     ],
 )
 async def test_writes_refuse_a_reader(client, org_id, path) -> None:
     with as_principal(principal_for(org_id, [f"{T_READ}:ORG"])):
         response = await client.put(path, json=WRITE_BODIES[path])
     assert response.status_code == 403
+
+
+async def test_provider_templates_still_require_the_notification_permission(client, org_id) -> None:
+    """The route this bug moved Engage off of. Unchanged: an Engage grant must not reach it —
+    only `notification.delivery.template.*`, gated on the `notification` entitlement, does."""
+    with as_principal(
+        principal_for(
+            org_id,
+            ["engage.whatsapp.template.read:ORG", "engage.whatsapp.template.write:ORG"],
+            entitlements=["engage"],
+        )
+    ):
+        read = await client.get("/api/v1/notifications/provider-templates")
+        write = await client.put(
+            "/api/v1/notifications/provider-templates",
+            json=WRITE_BODIES["/api/v1/notifications/provider-templates"],
+        )
+    assert read.status_code == 402  # not entitled to `notification` at all
+    assert write.status_code == 402
+
+    with as_principal(principal_for(org_id, [f"{T_READ}:ORG"])):
+        read = await client.get("/api/v1/notifications/provider-templates")
+    assert read.status_code == 200
 
 
 async def test_reading_messages_needs_its_own_permission(client, org_id) -> None:
