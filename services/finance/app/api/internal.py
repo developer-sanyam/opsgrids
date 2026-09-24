@@ -312,6 +312,8 @@ async def sync_ims(
             created=ingest.created,
             reconciled=reconciled.reconciled,
             run_id=reconciled.run_id,
+            drift_detected=ingest.drift_detected,
+            drift_cleared=ingest.drift_cleared,
         )
     log.info(
         "finance.ims.synced",

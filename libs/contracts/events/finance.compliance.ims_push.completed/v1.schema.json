@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/finance.compliance.ims_push.completed/v1",
+  "title": "finance.compliance.ims_push.completed",
+  "description": "One portal call of an IMS push was recorded: how many decisions GSTN took (pushed, which includes 'already recorded'), refused or held a conflicting action for (failed, conflict), and how many are queued for another attempt after an outage (retry_scheduled). needs_attention lists the decisions a person now has to look at, by portal reference and code only — never the portal's words, so the event carries nothing a supplier wrote.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "period",
+    "portal",
+    "pushed",
+    "failed",
+    "conflict",
+    "retry_scheduled",
+    "needs_attention"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "period": { "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$" },
+    "portal": { "type": "string" },
+    "pushed": { "type": "integer", "minimum": 0 },
+    "failed": { "type": "integer", "minimum": 0 },
+    "conflict": { "type": "integer", "minimum": 0 },
+    "retry_scheduled": { "type": "integer", "minimum": 0 },
+    "needs_attention": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_ref", "status", "error_code"],
+        "properties": {
+          "source_ref": { "type": "string" },
+          "status": { "enum": ["failed", "conflict"] },
+          "error_code": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

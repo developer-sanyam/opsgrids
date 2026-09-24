@@ -30,9 +30,9 @@ config.set_main_option("sqlalchemy.url", cfg.admin_dsn)
 target_metadata = Base.metadata
 
 
-#: Exactly the columns the filing-reclaim sweep's three discovery queries read (`selectors.
-#: due_filing_reclaims`, `due_stale_filings`, `due_stale_eway`) — and not one more. SELECT only;
-#: see `grant_sweep_reader`.
+#: Exactly the columns the filing-reclaim sweep's four discovery queries read (`selectors.
+#: due_filing_reclaims`, `due_stale_filings`, `due_stale_eway`, `due_ims_pushes`) — and not one
+#: more. SELECT only; see `grant_sweep_reader`.
 _SWEEP_READER_COLUMNS: dict[str, tuple[str, ...]] = {
     # due_filing_reclaims: which reportable, finalized invoices exist, and since when.
     "invoices": (
@@ -72,13 +72,26 @@ _SWEEP_READER_COLUMNS: dict[str, tuple[str, ...]] = {
         "created_at",
         "deleted_at",
     ),
+    # due_ims_pushes (C2): which (organization, period) has a push waiting to be sent or a claim
+    # that outlived its lease. Identifiers, a status and three timestamps — never the decision's
+    # action, the portal reference, the reason a push failed, or what the portal said back.
+    "ims_decision_pushes": (
+        "organization_id",
+        "id",
+        "period",
+        "status",
+        "requested_at",
+        "next_attempt_at",
+        "lease_until",
+        "deleted_at",
+    ),
 }
 
 
 def grant_sweep_reader(connection: Connection) -> None:
-    """Column-level cross-tenant `SELECT` on `invoices`, `einvoice_filings`, `gst_registrations`
-    and `eway_bills`, for
-    the filing-reclaim sweep's discovery queries (`app/cron.py`, D3).
+    """Column-level cross-tenant `SELECT` on `invoices`, `einvoice_filings`, `gst_registrations`,
+    `eway_bills` and `ims_decision_pushes`, for the filing-reclaim sweep's discovery queries
+    (`app/cron.py`, D3, and C2's IMS push resume).
 
     The sweep has the outbox relay's problem exactly: its queries exist to discover *which*
     organizations have a reportable invoice the automatic filing pipeline has lost track of, or a

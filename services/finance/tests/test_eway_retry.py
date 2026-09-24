@@ -255,6 +255,13 @@ def _envelope(row: OutboxEvent) -> dict[str, Any]:
     }
 
 
+async def _retry(client, invoice_id: uuid.UUID | str) -> Any:
+    """A person's "retry now": `POST /finance/eway-bills/retries`."""
+    return await client.post(
+        "/api/v1/finance/eway-bills/retries", json={"invoice_id": str(invoice_id)}
+    )
+
+
 def _freeze_consumer_clock(monkeypatch, *, ahead: timedelta = timedelta(hours=3)) -> None:
     """A retry fired the instant it is scheduled, not minutes later the way the real scheduler
     would: the consumer's early-arrival guard compares against the real wall clock, so without this
@@ -563,7 +570,7 @@ class TestAPermanentRefusalIsNeverRetried:
             "INV-C4-R5",
             EwayRejected("113", "a road movement must name the vehicle carrying it"),
         )
-        res = await client.post(f"/api/v1/finance/invoices/{invoice.id}/eway/retry")
+        res = await _retry(client, invoice.id)
         assert res.status_code == 409
         assert "113" in res.json()["detail"] and "vehicle" in res.json()["detail"].lower()
         assert await _requests(session, org_id) == []
@@ -1017,8 +1024,6 @@ class TestACrashBetweenTheCallAndTheRecord:
 
 
 class TestRetryNow:
-    URL = "/api/v1/finance/invoices/{}/eway/retry"
-
     async def _pending(self, session, org_id, number: str, portal: Any | None = None):
         ctx = admin_ctx(org_id)
         invoice = await _consignment(session, ctx, number)
@@ -1030,7 +1035,7 @@ class TestRetryNow:
     ) -> None:
         invoice, _ = await self._pending(session, org_id, "INV-C4-M1")
 
-        res = await client.post(self.URL.format(invoice.id))
+        res = await _retry(client, invoice.id)
 
         assert res.status_code == 202, res.text
         body = res.json()
@@ -1051,7 +1056,7 @@ class TestRetryNow:
         invoice, _ = await self._pending(session, org_id, "INV-C4-M2")
         before = [b.status for b in await _bills(session, org_id, invoice.id)]
 
-        res = await client.post(self.URL.format(invoice.id))
+        res = await _retry(client, invoice.id)
 
         assert res.status_code == 202
         assert [b.status for b in await _bills(session, org_id, invoice.id)] == before
@@ -1062,7 +1067,7 @@ class TestRetryNow:
         portal = ScriptedPortal(down(), "ok")
         monkeypatch.setattr("app.consumers.get_eway_client", lambda: portal)
         invoice, _ = await self._pending(session, org_id, "INV-C4-M3", portal)
-        await client.post(self.URL.format(invoice.id))
+        await _retry(client, invoice.id)
         request = (await _requests(session, org_id))[0]
 
         await generate_requested_eway(_envelope(request))
@@ -1073,7 +1078,7 @@ class TestRetryNow:
 
     async def test_it_is_audited_under_the_person_who_asked(self, client, session, org_id) -> None:
         invoice, _ = await self._pending(session, org_id, "INV-C4-M4")
-        await client.post(self.URL.format(invoice.id))
+        await _retry(client, invoice.id)
         async with session.begin():
             rows = (
                 (
@@ -1111,7 +1116,7 @@ class TestRetryNow:
         ].error_code == domain.ERR_RETRY_EXHAUSTED
         portal.script = ["ok"]
 
-        state = (await client.post(self.URL.format(invoice.id))).json()
+        state = (await _retry(client, invoice.id)).json()
         assert state["status"] == "failed" and state["can_retry"] is True
         request = (await _requests(session, org_id))[-1]
         assert request.payload["attempt"] == 1  # a new chain: a fresh budget
@@ -1131,7 +1136,7 @@ class TestRetryNow:
         invoice = await _consignment(session, ctx, "INV-C4-M6")
         old = datetime.now(UTC) - timedelta(hours=30)
         await _first_attempt(session, ctx, org_id, invoice, portal, at=old)
-        await client.post(self.URL.format(invoice.id))
+        await _retry(client, invoice.id)
 
         await generate_requested_eway(_envelope((await _requests(session, org_id))[0]))
 
@@ -1142,38 +1147,36 @@ class TestRetryNow:
         invoice = await _consignment(session, ctx, "INV-C4-M7")
         async with session.begin():
             await services.claim_eway_generation(session, ctx, _request_in(org_id, invoice.id))
-        res = await client.post(self.URL.format(invoice.id))
+        res = await _retry(client, invoice.id)
         assert res.status_code == 409 and "in progress" in res.json()["detail"]
 
     async def test_a_standing_bill_is_a_409(self, client, session, org_id) -> None:
         ctx = admin_ctx(org_id)
         invoice = await _consignment(session, ctx, "INV-C4-M8")
         await _first_attempt(session, ctx, org_id, invoice, ScriptedPortal("ok"))
-        res = await client.post(self.URL.format(invoice.id))
+        res = await _retry(client, invoice.id)
         assert res.status_code == 409 and "already has an e-Way bill" in res.json()["detail"]
 
     async def test_a_document_nothing_was_asked_for_is_a_409(self, client, session, org_id) -> None:
         ctx = admin_ctx(org_id)
         invoice = await _consignment(session, ctx, "INV-C4-M9")
-        res = await client.post(self.URL.format(invoice.id))
+        res = await _retry(client, invoice.id)
         assert res.status_code == 409 and "nothing to retry" in res.json()["detail"]
 
     async def test_a_second_press_within_the_window_is_rate_limited(
         self, client, session, org_id
     ) -> None:
         invoice, _ = await self._pending(session, org_id, "INV-C4-M10")
-        assert (await client.post(self.URL.format(invoice.id))).status_code == 202
-        second = await client.post(self.URL.format(invoice.id))
+        assert (await _retry(client, invoice.id)).status_code == 202
+        second = await _retry(client, invoice.id)
         assert second.status_code == 429
         assert len(await _requests(session, org_id)) == 1
 
 
 class TestRetryNowAuthorization:
-    URL = TestRetryNow.URL
-
     async def test_a_caller_without_the_permission_is_refused(self, client, org_id) -> None:
         with _as(principal_for(org_id, perms=[])):
-            res = await client.post(self.URL.format(uuid.uuid4()))
+            res = await _retry(client, uuid.uuid4())
         assert res.status_code == 403
 
     async def test_reading_e_way_bills_does_not_carry_the_right_to_retry_one(
@@ -1187,13 +1190,13 @@ class TestRetryNowAuthorization:
             perms=["finance.compliance.eway.read:ORG", "finance.compliance.einvoice.read:ORG"],
         )
         with _as(reader):
-            res = await client.post(self.URL.format(invoice.id))
+            res = await _retry(client, invoice.id)
         assert res.status_code == 403
         assert await _requests(session, org_id) == []
 
     async def test_an_own_scope_grant_is_below_the_org_floor(self, client, org_id) -> None:
         with _as(principal_for(org_id, perms=["finance.compliance.eway.retry:OWN"])):
-            res = await client.post(self.URL.format(uuid.uuid4()))
+            res = await _retry(client, uuid.uuid4())
         assert res.status_code == 403
 
     async def test_an_organization_that_has_not_activated_finance_is_402(
@@ -1202,7 +1205,7 @@ class TestRetryNowAuthorization:
         with _as(
             principal_for(org_id, perms=["finance.compliance.eway.retry:ORG"], entitlements=[])
         ):
-            res = await client.post(self.URL.format(uuid.uuid4()))
+            res = await _retry(client, uuid.uuid4())
         assert res.status_code == 402
 
     async def test_another_tenants_document_is_a_404_and_stages_nothing(
@@ -1213,12 +1216,12 @@ class TestRetryNowAuthorization:
         await _first_attempt(session, ctx, org_id, invoice, ScriptedPortal(down()))
         intruder = uuid.uuid4()
         with _as(principal_for(intruder, [f"{p}:ORG" for p in FINANCE_PERMISSIONS])):
-            res = await client.post(self.URL.format(invoice.id))
+            res = await _retry(client, invoice.id)
         assert res.status_code == 404
         assert await _requests(session, org_id) == []
 
     async def test_an_unknown_document_is_a_404(self, client) -> None:
-        res = await client.post(self.URL.format(uuid.uuid4()))
+        res = await _retry(client, uuid.uuid4())
         assert res.status_code == 404
 
 
@@ -1332,8 +1335,8 @@ class TestTheReadModel:
     async def test_the_register_marks_the_current_row_and_carries_its_state(
         self, client, session, org_id, monkeypatch
     ) -> None:
-        """The register lists every attempt. Only the document's newest carries a countdown and a
-        retry — an older `pending` row is history, and showing it a "retrying in…" would be a lie."""
+        """The register lists every attempt. Only the document's newest carries a countdown and
+        a retry — an older `pending` row is history, and a "retrying in…" on it would be a lie."""
         portal = ScriptedPortal(down(), down())
         monkeypatch.setattr("app.consumers.get_eway_client", lambda: portal)
         ctx = admin_ctx(org_id)
@@ -1413,7 +1416,7 @@ class TestEventPayloadsMatchTheirSchemas:
         ctx = admin_ctx(org_id)
         invoice = await _consignment(session, ctx, "INV-C4-E5")
         await _first_attempt(session, ctx, org_id, invoice, ScriptedPortal(down()))
-        await client.post(f"/api/v1/finance/invoices/{invoice.id}/eway/retry")
+        await _retry(client, invoice.id)
         request = (await _requests(session, org_id))[0]
         self._validate(services.EVT_EWAY_GENERATION_REQUESTED, request.payload)
 

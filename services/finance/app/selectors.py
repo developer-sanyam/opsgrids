@@ -37,6 +37,7 @@ from app.models import (
     GstReturnTransition,
     ImsDecision,
     ImsDocument,
+    ImsPush,
     ImsReconciliation,
     Invoice,
     InvoiceWithholding,
@@ -72,6 +73,9 @@ from app.schemas import (
     ImsDecisionOut,
     ImsDocumentDetail,
     ImsDocumentOut,
+    ImsPushOut,
+    ImsPushSummaryOut,
+    ImsPushWithDocument,
     ImsSuggestion,
     InvoiceLineOut,
     InvoiceOut,
@@ -1116,6 +1120,8 @@ def ims_documents_stmt(
     reason: str | None = None,
     q: str | None = None,
     sort: str = "date_asc",
+    push_status: str | None = None,
+    drift: bool | None = None,
 ) -> Select[Any]:
     """The reconciliation queue, filtered the way it is actually worked.
 
@@ -1141,6 +1147,19 @@ def ims_documents_stmt(
         stmt = stmt.where(
             ImsDocument.id.in_(select(newest.c.document_id).where(newest.c.reason == reason))
         )
+    if push_status or drift is not None:
+        # Where the delivery of each document's *newest* decision stands (C2): the current push,
+        # one per document by a partial unique index, so this is a semi-join and never a fan-out.
+        pushes = select(ImsPush.ims_document_id).where(
+            ImsPush.organization_id == ctx.organization_id,
+            ImsPush.deleted_at.is_(None),
+            ImsPush.is_current.is_(True),
+        )
+        if push_status:
+            pushes = pushes.where(ImsPush.status == push_status)
+        if drift is not None:
+            pushes = pushes.where(ImsPush.drift.is_(drift))
+        stmt = stmt.where(ImsDocument.id.in_(pushes))
     if q:
         needle = f"%{q.lower()}%"
         stmt = stmt.where(
@@ -1239,6 +1258,52 @@ async def latest_decisions(
     return {row.ims_document_id: row for row in (await session.execute(stmt)).scalars().all()}
 
 
+async def decision_counts(
+    session: AsyncSession, org_id: uuid.UUID, document_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, int]:
+    """How many decisions each document already has — the next one's version is this plus one. One
+    grouped query for any number of documents; a document with none is absent (read it as 0)."""
+    if not document_ids:
+        return {}
+    stmt = (
+        select(ImsDecision.ims_document_id, func.count())
+        .where(
+            ImsDecision.organization_id == org_id,
+            ImsDecision.ims_document_id.in_(document_ids),
+            ImsDecision.deleted_at.is_(None),
+        )
+        .group_by(ImsDecision.ims_document_id)
+    )
+    return {document_id: int(n) for document_id, n in (await session.execute(stmt)).all()}
+
+
+async def get_ims_documents(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    document_ids: list[uuid.UUID],
+    *,
+    for_update: bool = False,
+) -> dict[uuid.UUID, ImsDocument]:
+    """Org-scoped fetch of several documents by id, in one query. A missing id — including one
+    that belongs to another organization — is simply absent from the map, and is the caller's 404.
+    `for_update=True` row-locks them in **id order**, so two bulk requests over overlapping sets
+    take their locks in one order and cannot deadlock."""
+    if not document_ids:
+        return {}
+    stmt = (
+        select(ImsDocument)
+        .where(
+            ImsDocument.id.in_(document_ids),
+            ImsDocument.organization_id == org_id,
+            ImsDocument.deleted_at.is_(None),
+        )
+        .order_by(ImsDocument.id)
+    )
+    if for_update:
+        stmt = stmt.with_for_update()
+    return {doc.id: doc for doc in (await session.execute(stmt)).scalars().all()}
+
+
 async def decisions_for_document(
     session: AsyncSession, org_id: uuid.UUID, document_id: uuid.UUID
 ) -> list[ImsDecision]:
@@ -1263,16 +1328,28 @@ def to_suggestion(row: ImsReconciliation) -> ImsSuggestion:
     return ImsSuggestion.model_validate(row)
 
 
-def to_ims_decision_out(row: ImsDecision) -> ImsDecisionOut:
-    return ImsDecisionOut.model_validate(row)
+def to_ims_push_out(row: ImsPush) -> ImsPushOut:
+    out = ImsPushOut.model_validate(row)
+    out.max_attempts = domain.IMS_PUSH_MAX_ATTEMPTS
+    return out
+
+
+def to_ims_decision_out(row: ImsDecision, push: ImsPush | None = None) -> ImsDecisionOut:
+    out = ImsDecisionOut.model_validate(row)
+    if push is not None:
+        out.version = push.version
+        out.push = to_ims_push_out(push)
+    return out
 
 
 def to_ims_document_out(
     document: ImsDocument,
     suggestion: ImsReconciliation | None = None,
     decision: ImsDecision | None = None,
+    push: ImsPush | None = None,
 ) -> ImsDocumentOut:
-    """Serialise one queue row with its newest suggestion and newest decision attached."""
+    """Serialise one queue row with its newest suggestion, newest decision and current push
+    attached."""
     return ImsDocumentOut(
         id=document.id,
         source_ref=document.source_ref,
@@ -1292,18 +1369,23 @@ def to_ims_document_out(
         status=document.status,
         fetched_at=document.fetched_at,
         suggestion=to_suggestion(suggestion) if suggestion is not None else None,
-        decision=to_ims_decision_out(decision) if decision is not None else None,
+        decision=to_ims_decision_out(decision, push) if decision is not None else None,
+        push=to_ims_push_out(push) if push is not None else None,
     )
 
 
 async def ims_documents_with_context(
     session: AsyncSession, org_id: uuid.UUID, documents: list[ImsDocument]
 ) -> list[ImsDocumentOut]:
-    """Serialise a page of the queue. Two round trips for the whole page, never one per row."""
+    """Serialise a page of the queue. Three round trips for the whole page, never one per row."""
     ids = [d.id for d in documents]
     suggestions = await latest_reconciliations(session, org_id, ids)
     decisions = await latest_decisions(session, org_id, ids)
-    return [to_ims_document_out(d, suggestions.get(d.id), decisions.get(d.id)) for d in documents]
+    pushes = await latest_pushes(session, org_id, ids)
+    return [
+        to_ims_document_out(d, suggestions.get(d.id), decisions.get(d.id), pushes.get(d.id))
+        for d in documents
+    ]
 
 
 async def list_ims_documents(
@@ -1345,12 +1427,278 @@ async def ims_document_detail(
         if suggestion.duplicate_of_id is not None:
             duplicate = await get_ims_document(session, org_id, suggestion.duplicate_of_id)
 
+    by_decision = await pushes_for_decisions(session, org_id, [row.id for row in decisions])
+    current = await latest_pushes(session, org_id, [document.id])
     return ImsDocumentDetail(
-        document=to_ims_document_out(document, suggestion, decisions[0] if decisions else None),
+        document=to_ims_document_out(
+            document,
+            suggestion,
+            decisions[0] if decisions else None,
+            current.get(document.id),
+        ),
         matched_purchase=to_purchase_out(matched) if matched is not None else None,
         duplicate_of=to_ims_document_out(duplicate) if duplicate is not None else None,
-        decisions=[to_ims_decision_out(row) for row in decisions],
+        decisions=[to_ims_decision_out(row, by_decision.get(row.id)) for row in decisions],
     )
+
+
+# --------------------------------------------------------------------- IMS: pushing decisions back
+# Where the delivery of each decision to GSTN stands (C2). Reads only: every write to
+# `ims_decision_pushes` is in `services`, and the state machine's edges are enforced by the
+# database as well (`d63f0a1b8e25`).
+
+
+async def latest_pushes(
+    session: AsyncSession, org_id: uuid.UUID, document_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, ImsPush]:
+    """The **current** push per document — that of its newest decision. One row per document at
+    most (a partial unique index), so this is a single `IN` query, never one per row."""
+    if not document_ids:
+        return {}
+    stmt = select(ImsPush).where(
+        ImsPush.organization_id == org_id,
+        ImsPush.ims_document_id.in_(document_ids),
+        ImsPush.is_current.is_(True),
+        ImsPush.deleted_at.is_(None),
+    )
+    return {row.ims_document_id: row for row in (await session.execute(stmt)).scalars().all()}
+
+
+async def pushes_for_decisions(
+    session: AsyncSession, org_id: uuid.UUID, decision_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, ImsPush]:
+    """Each decision's own push, whether or not it is still the current one — the history view."""
+    if not decision_ids:
+        return {}
+    stmt = select(ImsPush).where(
+        ImsPush.organization_id == org_id,
+        ImsPush.decision_id.in_(decision_ids),
+        ImsPush.deleted_at.is_(None),
+    )
+    return {row.decision_id: row for row in (await session.execute(stmt)).scalars().all()}
+
+
+def ims_pushes_stmt(
+    ctx: ScopeContext,
+    *,
+    period: str | None = None,
+    status: str | None = None,
+    drift: bool | None = None,
+    current_only: bool = True,
+) -> Select[Any]:
+    """Scope-filtered pushes, newest request first. Current pushes by default: a superseded or
+    replaced push is history, and a list a person works from should hold what is still live."""
+    stmt = select(ImsPush).where(
+        ImsPush.organization_id == ctx.organization_id, ImsPush.deleted_at.is_(None)
+    )
+    stmt = ctx.apply(stmt, owner_col=ImsPush.id)
+    if current_only:
+        stmt = stmt.where(ImsPush.is_current.is_(True))
+    if period:
+        stmt = stmt.where(ImsPush.period == period)
+    if status:
+        stmt = stmt.where(ImsPush.status == status)
+    if drift is not None:
+        stmt = stmt.where(ImsPush.drift.is_(drift))
+    return stmt.order_by(
+        ImsPush.requested_at.desc().nulls_last(), ImsPush.created_at.desc(), ImsPush.id.desc()
+    )
+
+
+async def list_ims_pushes(
+    session: AsyncSession, ctx: ScopeContext, params: PageParams, **filters: Any
+) -> tuple[list[ImsPushWithDocument], int]:
+    """One page of pushes with their documents attached. Two round trips for the page."""
+    stmt = ims_pushes_stmt(ctx, **filters)
+    total = (
+        await session.execute(select(func.count()).select_from(stmt.order_by(None).subquery()))
+    ).scalar_one()
+    rows = list(
+        (await session.execute(stmt.offset(params.offset).limit(params.size))).scalars().all()
+    )
+    docs: dict[uuid.UUID, ImsDocument] = {}
+    if rows:
+        found = await session.execute(
+            select(ImsDocument).where(
+                ImsDocument.organization_id == ctx.organization_id,
+                ImsDocument.id.in_({row.ims_document_id for row in rows}),
+            )
+        )
+        docs = {doc.id: doc for doc in found.scalars().all()}
+    items: list[ImsPushWithDocument] = []
+    for row in rows:
+        doc = docs.get(row.ims_document_id)
+        items.append(
+            ImsPushWithDocument(
+                push=to_ims_push_out(row),
+                supplier_name=doc.supplier_name if doc else "",
+                supplier_gstin=doc.supplier_gstin if doc else "",
+                document_number=doc.document_number if doc else "",
+                document_type=doc.document_type if doc else "invoice",
+                total_minor=doc.total_minor if doc else 0,
+            )
+        )
+    return items, int(total)
+
+
+async def ims_push_summary(
+    session: AsyncSession, org_id: uuid.UUID, period: str
+) -> ImsPushSummaryOut:
+    """Where one period's current pushes stand: a count per status, the drifted, what a push
+    request would now send, and the decisions that have no push row yet."""
+    by_status = {
+        status: int(n)
+        for status, n in (
+            await session.execute(
+                select(ImsPush.status, func.count())
+                .where(
+                    ImsPush.organization_id == org_id,
+                    ImsPush.period == period,
+                    ImsPush.is_current.is_(True),
+                    ImsPush.deleted_at.is_(None),
+                )
+                .group_by(ImsPush.status)
+            )
+        ).all()
+    }
+    drift = (
+        await session.execute(
+            select(func.count()).where(
+                ImsPush.organization_id == org_id,
+                ImsPush.period == period,
+                ImsPush.is_current.is_(True),
+                ImsPush.drift.is_(True),
+                ImsPush.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    unqueued = int(
+        (
+            await session.execute(
+                select(func.count()).select_from(
+                    _unqueued_decisions_stmt(org_id, period, None).order_by(None).subquery()
+                )
+            )
+        ).scalar_one()
+    )
+    return ImsPushSummaryOut(
+        period=period,
+        queued=by_status.get("queued", 0),
+        submitting=by_status.get("submitting", 0),
+        pushed=by_status.get("pushed", 0),
+        failed=by_status.get("failed", 0),
+        conflict=by_status.get("conflict", 0),
+        drift=int(drift),
+        pushable=by_status.get("queued", 0) + by_status.get("failed", 0) + unqueued,
+        unqueued=unqueued,
+    )
+
+
+#: The most decisions one push request backfills into push rows. A period with more is worked in
+#: successive requests — the request says how many it took — rather than in one unbounded
+#: transaction.
+UNQUEUED_BACKFILL_LIMIT: int = 2_000
+
+
+async def documents_with_unqueued_decisions(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    period: str,
+    *,
+    document_ids: list[uuid.UUID] | None = None,
+    limit: int = UNQUEUED_BACKFILL_LIMIT,
+) -> list[tuple[ImsDocument, ImsDecision]]:
+    """Documents of `period` whose newest decision has **no push row** — decisions recorded before
+    pushes existed — each with that newest decision, at most `limit` of them."""
+    stmt = _unqueued_decisions_stmt(org_id, period, document_ids).limit(limit)
+    return [(doc, dec) for doc, dec in (await session.execute(stmt)).all()]
+
+
+def _unqueued_decisions_stmt(
+    org_id: uuid.UUID, period: str, document_ids: list[uuid.UUID] | None
+) -> Select[Any]:
+    """One query: the newest decision per document (`DISTINCT ON`) left-joined to its push, keeping
+    the ones with none."""
+    newest = (
+        select(ImsDecision)
+        .where(
+            ImsDecision.organization_id == org_id,
+            ImsDecision.deleted_at.is_(None),
+        )
+        .distinct(ImsDecision.ims_document_id)
+        .order_by(
+            ImsDecision.ims_document_id,
+            ImsDecision.decided_at.desc(),
+            ImsDecision.created_at.desc(),
+        )
+        .subquery()
+    )
+    decision = aliased(ImsDecision, newest)
+    stmt = (
+        select(ImsDocument, decision)
+        .join(decision, decision.ims_document_id == ImsDocument.id)
+        .outerjoin(
+            ImsPush,
+            and_(
+                ImsPush.organization_id == org_id,
+                ImsPush.decision_id == decision.id,
+            ),
+        )
+        .where(
+            ImsDocument.organization_id == org_id,
+            ImsDocument.deleted_at.is_(None),
+            ImsDocument.period == period,
+            ImsPush.id.is_(None),
+        )
+        .order_by(ImsDocument.source_ref)
+    )
+    if document_ids is not None:
+        stmt = stmt.where(ImsDocument.id.in_(document_ids))
+    return stmt
+
+
+async def due_ims_pushes(
+    session: AsyncSession, *, now: datetime, grace: Any, limit: int = 100
+) -> list[tuple[uuid.UUID, str]]:
+    """Every `(organization_id, period)` with an IMS push the reclaim sweep may act on — the
+    push half of D3's recovery, and **cross-tenant** for the reason its siblings are: it exists to
+    find *which* organizations have unfinished work, so there is no tenant to bind while asking. Run
+    on the BYPASSRLS outbox role, which holds column-scoped `SELECT` on exactly what this reads
+    (`migrations/env.py`).
+
+    Two kinds of unfinished work, and nothing else:
+
+    * a `submitting` claim past its lease — a worker died between the portal call and recording
+      what it said;
+    * a `queued` push a person **asked for** (`requested_at` set) that nobody has sent: its
+      backoff has passed (`next_attempt_at`), or — never attempted — it has waited `grace` for the
+      consumer that owns it and been lost. A `queued` push nobody asked for is *not* work: it waits
+      for a person with the push permission, however long that takes.
+
+    Distinct pairs, oldest first, bounded by `limit`, so one organization with a thousand periods
+    of backlog cannot occupy the tick.
+    """
+    unclaimed_but_asked_for = and_(
+        ImsPush.status == "queued",
+        ImsPush.requested_at.is_not(None),
+        or_(
+            and_(ImsPush.next_attempt_at.is_not(None), ImsPush.next_attempt_at <= now),
+            and_(ImsPush.next_attempt_at.is_(None), ImsPush.requested_at <= now - grace),
+        ),
+    )
+    stalled_claim = and_(
+        ImsPush.status == "submitting",
+        ImsPush.lease_until.is_not(None),
+        ImsPush.lease_until <= now,
+    )
+    stmt = (
+        select(ImsPush.organization_id, ImsPush.period)
+        .where(ImsPush.deleted_at.is_(None), or_(unclaimed_but_asked_for, stalled_claim))
+        .group_by(ImsPush.organization_id, ImsPush.period)
+        .order_by(func.min(ImsPush.requested_at).nulls_last(), ImsPush.organization_id)
+        .limit(limit)
+    )
+    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
 
 
 # --------------------------------------------------------------------- payments
@@ -2110,27 +2458,48 @@ async def itc_document_net_accrued(
     that made it, and `source_ref`'s uniqueness depends on that. So finding a document's net
     standing means going by way of its decision history rather than a direct filter.
     """
-    decisions = await decisions_for_document(session, org_id, ims_document_id)
-    if not decisions:
-        return domain.ZERO_ITC
+    net = await itc_net_accrued_for_documents(session, org_id, [ims_document_id])
+    return net.get(ims_document_id, domain.ZERO_ITC)
+
+
+async def itc_net_accrued_for_documents(
+    session: AsyncSession, org_id: uuid.UUID, ims_document_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, domain.TaxHeadAmounts]:
+    """`itc_document_net_accrued` for many documents in one query — a bulk decision must not run a
+    ledger read per document. Ledger rows are keyed by the *decision* that posted them, so the join
+    goes through `ims_decisions`; a document with nothing posted is simply absent from the map."""
+    if not ims_document_ids:
+        return {}
     stmt = (
-        select(ItcLedgerEntry.tax_head, func.coalesce(func.sum(ItcLedgerEntry.amount_minor), 0))
+        select(
+            ImsDecision.ims_document_id,
+            ItcLedgerEntry.tax_head,
+            func.coalesce(func.sum(ItcLedgerEntry.amount_minor), 0),
+        )
+        .join(ItcLedgerEntry, ItcLedgerEntry.source_id == ImsDecision.id)
         .where(
+            ImsDecision.organization_id == org_id,
+            ImsDecision.ims_document_id.in_(ims_document_ids),
+            ImsDecision.deleted_at.is_(None),
             ItcLedgerEntry.organization_id == org_id,
             ItcLedgerEntry.source_type == "ims_decision",
-            ItcLedgerEntry.source_id.in_([d.id for d in decisions]),
             ItcLedgerEntry.kind.in_(("accrual", "reversal")),
             ItcLedgerEntry.deleted_at.is_(None),
         )
-        .group_by(ItcLedgerEntry.tax_head)
+        .group_by(ImsDecision.ims_document_id, ItcLedgerEntry.tax_head)
     )
-    totals = {head: int(amount) for head, amount in (await session.execute(stmt)).all()}
-    return domain.TaxHeadAmounts(
-        igst_minor=totals.get("igst", 0),
-        cgst_minor=totals.get("cgst", 0),
-        sgst_minor=totals.get("sgst", 0),
-        cess_minor=totals.get("cess", 0),
-    )
+    heads: dict[uuid.UUID, dict[str, int]] = {}
+    for document_id, head, amount in (await session.execute(stmt)).all():
+        heads.setdefault(document_id, {})[head] = int(amount)
+    return {
+        document_id: domain.TaxHeadAmounts(
+            igst_minor=totals.get("igst", 0),
+            cgst_minor=totals.get("cgst", 0),
+            sgst_minor=totals.get("sgst", 0),
+            cess_minor=totals.get("cess", 0),
+        )
+        for document_id, totals in heads.items()
+    }
 
 
 async def itc_blocked_amounts_for_period(

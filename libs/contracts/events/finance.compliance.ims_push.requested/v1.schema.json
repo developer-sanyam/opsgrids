@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/finance.compliance.ims_push.requested/v1",
+  "title": "finance.compliance.ims_push.requested",
+  "description": "A command to finance's own worker: a person holding finance.compliance.ims.push asked for one return period's recorded IMS decisions to be told to GSTN. The pushes themselves are the work, and the consumer reads them from the ledger — nothing about a decision travels in this message. Sending a period nobody asked for never happens: recording a decision queues a push, but only this request sends it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "period", "requested", "requested_by"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "period": { "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$" },
+    "requested": { "type": "integer", "minimum": 1 },
+    "requested_by": { "type": "string", "format": "uuid" }
+  }
+}

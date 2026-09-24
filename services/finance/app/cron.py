@@ -72,8 +72,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import domain, selectors, services
 from app.config import settings
-from app.deps import get_eway_client, get_irp_client
+from app.deps import get_eway_client, get_ims_client, get_irp_client
 from app.eway.base import EwayClient
+from app.ims.base import ImsClient
 from app.irp.base import IrpClient
 from platform_core.db import (
     assert_app_role,
@@ -131,6 +132,7 @@ class FilingReclaimSweep:
         work_scope: WorkScope,
         irp_client_factory: Callable[[], IrpClient] = get_irp_client,
         eway_client_factory: Callable[[], EwayClient] = get_eway_client,
+        ims_client_factory: Callable[[], ImsClient] = get_ims_client,
         reclaim_after: timedelta = domain.FILING_RECLAIM_AFTER,
         batch_size: int = 100,
         poll_interval: float = 60.0,
@@ -140,6 +142,7 @@ class FilingReclaimSweep:
         self._work_scope = work_scope
         self._irp_client_factory = irp_client_factory
         self._eway_client_factory = eway_client_factory
+        self._ims_client_factory = ims_client_factory
         self._reclaim_after = reclaim_after
         self._batch_size = batch_size
         self._poll_interval = poll_interval
@@ -220,8 +223,11 @@ class FilingReclaimSweep:
             stale_eway = await selectors.due_stale_eway(
                 session, floors=self._eway_floors(at), limit=self._batch_size
             )
+            ims_pushes = await selectors.due_ims_pushes(
+                session, now=at, grace=self._reclaim_after, limit=self._batch_size
+            )
 
-        report.considered = len(lost) + len(stale_filings) + len(stale_eway)
+        report.considered = len(lost) + len(stale_filings) + len(stale_eway) + len(ims_pushes)
         for organization_id, invoice_id in lost:
             await self._resume_one(organization_id, invoice_id, now or datetime.now(UTC), report)
         for organization_id, invoice_id in stale_filings:
@@ -230,6 +236,8 @@ class FilingReclaimSweep:
             )
         for organization_id, invoice_id in stale_eway:
             await self._redrive_eway(organization_id, invoice_id, now or datetime.now(UTC), report)
+        for organization_id, period in ims_pushes:
+            await self._resume_ims_push(organization_id, period, now, report)
         return report
 
     def _filing_floors(self, at: datetime) -> dict[str, datetime]:
@@ -372,6 +380,53 @@ class FilingReclaimSweep:
                 invoice_id=str(invoice_id),
             )
             report.failed += 1
+
+    async def _resume_ims_push(
+        self,
+        organization_id: uuid.UUID,
+        period: str,
+        now: datetime | None,
+        report: SweepReport,
+    ) -> None:
+        """One (organization, period) with IMS decisions a person asked to have sent that nobody
+        has: a `submitting` claim past its lease (a worker died between the portal call and the
+        record), or a `queued` push past its backoff or never picked up. The same three acts the
+        consumer runs — claim, call with **no transaction open**, record — via
+        `services.drive_ims_push_period`, so a push a person asked for and one a crash half-did are
+        one code path. Bounded three ways: `IMS_PUSH_MAX_ATTEMPTS` per decision (then a terminal
+        `retry_exhausted`), the backoff between attempts, and a batch cap per visit."""
+        try:
+            run = await services.drive_ims_push_period(
+                self._work_scope,
+                self._ims_client_factory(),
+                organization_id,
+                period,
+                now=now,
+            )
+        except Exception:
+            log.exception(
+                "finance.filing_reclaim.sweep.ims_push_failed",
+                organization_id=str(organization_id),
+                period=period,
+            )
+            report.failed += 1
+            return
+        if run.acted:
+            log.info(
+                "finance.filing_reclaim.ims_push_resumed",
+                organization_id=str(organization_id),
+                period=period,
+                batches=run.batches,
+                pushed=run.pushed,
+                failed=run.failed,
+                conflict=run.conflict,
+                retry=run.retry,
+                settled=run.settled,
+            )
+            report.exhausted += run.settled
+            report.resumed += 1
+        else:
+            report.skipped += 1
 
     @staticmethod
     def _count(outcome: str, report: SweepReport) -> None:

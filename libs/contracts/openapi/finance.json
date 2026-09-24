@@ -892,6 +892,21 @@
           "invoice_number": {
             "title": "Invoice Number",
             "type": "string"
+          },
+          "is_current": {
+            "default": false,
+            "title": "Is Current",
+            "type": "boolean"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EwayState"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -900,6 +915,22 @@
           "customer_name"
         ],
         "title": "EwayBillWithInvoice",
+        "type": "object"
+      },
+      "EwayRetryIn": {
+        "additionalProperties": false,
+        "description": "Ask for another attempt at raising one document's e-Way bill, now (C4). Only the document is\nnamed: the transport facts are the ones the original request committed to the ledger, never\nretyped here \u2014 a retry that could change them would be a new request, not a retry.",
+        "properties": {
+          "invoice_id": {
+            "format": "uuid",
+            "title": "Invoice Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "invoice_id"
+        ],
+        "title": "EwayRetryIn",
         "type": "object"
       },
       "EwayState": {
@@ -1726,7 +1757,100 @@
         "title": "HsnSummaryOut",
         "type": "object"
       },
+      "ImsBulkDecisionCreate": {
+        "additionalProperties": false,
+        "description": "Record decisions on several inbound documents in one transaction \u2014 all of them or none.\n\nNot a way around anything: every item becomes its own append-only decision row with its own\naudit row, its own suggestion snapshot, its own ITC posting and its own queued push, exactly as\nif it had been decided alone, with the same person's name against it.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImsBulkDecisionItem"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ImsBulkDecisionCreate",
+        "type": "object"
+      },
+      "ImsBulkDecisionItem": {
+        "additionalProperties": false,
+        "description": "One document's decision inside a bulk request \u2014 its own action and its own reason.",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "expense_category": {
+            "default": "general",
+            "title": "Expense Category",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "document_id",
+          "action"
+        ],
+        "title": "ImsBulkDecisionItem",
+        "type": "object"
+      },
+      "ImsBulkDecisionOut": {
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/ImsBulkDecisionResult"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "title": "ImsBulkDecisionOut",
+        "type": "object"
+      },
+      "ImsBulkDecisionResult": {
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/ImsDecisionOut"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "decision"
+        ],
+        "title": "ImsBulkDecisionResult",
+        "type": "object"
+      },
       "ImsDecisionCreate": {
+        "additionalProperties": false,
         "description": "Record a decision on one inbound document. Append-only: a change of mind is a further row,\nnever an edit, because the question asked later is what was decided *and when*.",
         "properties": {
           "action": {
@@ -1741,6 +1865,7 @@
           "note": {
             "anyOf": [
               {
+                "maxLength": 1000,
                 "type": "string"
               },
               {
@@ -1792,6 +1917,16 @@
             ],
             "title": "Note"
           },
+          "push": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImsPushOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "suggested_action": {
             "anyOf": [
               {
@@ -1813,6 +1948,17 @@
               }
             ],
             "title": "Suggestion Reason"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
           }
         },
         "required": [
@@ -1927,6 +2073,16 @@
             "title": "Period",
             "type": "string"
           },
+          "push": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImsPushOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "sgst_minor": {
             "title": "Sgst Minor",
             "type": "integer"
@@ -1990,6 +2146,334 @@
           "fetched_at"
         ],
         "title": "ImsDocumentOut",
+        "type": "object"
+      },
+      "ImsPushOut": {
+        "description": "Whether GSTN has been told what one decision says (C2).\n\nThe decision is the ledger row and is never touched; this is where its delivery stands. A\n`queued` push is decided and waiting for somebody with the push permission to ask\n(`requested_at` is null) or, after an outage, for its backoff (`next_attempt_at`).\n`pushed` means GSTN holds this decision at this version. `failed` and `conflict` need a\nperson: the first is a\nportal refusal (`error_code`, `error` \u2014 masked) or a spent budget, the second is GSTN holding\nsomething else for the document. `drift` is true while a pushed decision disagrees with what the\nlast sync saw on the portal (`observed_action`).",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "decision_id": {
+            "format": "uuid",
+            "title": "Decision Id",
+            "type": "string"
+          },
+          "drift": {
+            "title": "Drift",
+            "type": "boolean"
+          },
+          "drift_detected_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drift Detected At"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "ims_document_id": {
+            "format": "uuid",
+            "title": "Ims Document Id",
+            "type": "string"
+          },
+          "is_current": {
+            "title": "Is Current",
+            "type": "boolean"
+          },
+          "max_attempts": {
+            "default": 0,
+            "title": "Max Attempts",
+            "type": "integer"
+          },
+          "next_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Attempt At"
+          },
+          "observed_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed Action"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "portal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portal"
+          },
+          "pushed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pushed At"
+          },
+          "requested_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "decision_id",
+          "ims_document_id",
+          "period",
+          "action",
+          "version",
+          "status",
+          "is_current",
+          "requested_at",
+          "attempts",
+          "next_attempt_at",
+          "pushed_at",
+          "error_code",
+          "error",
+          "portal",
+          "observed_action",
+          "observed_at",
+          "drift",
+          "drift_detected_at"
+        ],
+        "title": "ImsPushOut",
+        "type": "object"
+      },
+      "ImsPushRequestIn": {
+        "additionalProperties": false,
+        "description": "Send the decisions of one return period to the portal \u2014 the ones waiting, and the refused\nones a person is choosing to send again.",
+        "properties": {
+          "document_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Ids"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          }
+        },
+        "required": [
+          "period"
+        ],
+        "title": "ImsPushRequestIn",
+        "type": "object"
+      },
+      "ImsPushRequestOut": {
+        "description": "What a push request did: staged, not sent. The portal call happens afterwards, in the worker\n(D3), and its outcome reaches the queue as each push's status.",
+        "properties": {
+          "not_pushable": {
+            "title": "Not Pushable",
+            "type": "integer"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "requested": {
+            "title": "Requested",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "period",
+          "requested",
+          "not_pushable"
+        ],
+        "title": "ImsPushRequestOut",
+        "type": "object"
+      },
+      "ImsPushSummaryOut": {
+        "description": "Where one return period's pushes stand \u2014 what the inbox's push control is drawn from.\n\nCounts are of each document's *current* push (its newest decision's). `pushable` is what a push\nrequest would now send: decisions waiting (`queued`) and refused ones a person may send again\n(`failed`). A `conflict` is never pushable \u2014 the portal holds something else, and only a new\ndecision resolves it.",
+        "properties": {
+          "conflict": {
+            "title": "Conflict",
+            "type": "integer"
+          },
+          "drift": {
+            "title": "Drift",
+            "type": "integer"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "pushable": {
+            "title": "Pushable",
+            "type": "integer"
+          },
+          "pushed": {
+            "title": "Pushed",
+            "type": "integer"
+          },
+          "queued": {
+            "title": "Queued",
+            "type": "integer"
+          },
+          "submitting": {
+            "title": "Submitting",
+            "type": "integer"
+          },
+          "unqueued": {
+            "title": "Unqueued",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "period",
+          "queued",
+          "submitting",
+          "pushed",
+          "failed",
+          "conflict",
+          "drift",
+          "pushable",
+          "unqueued"
+        ],
+        "title": "ImsPushSummaryOut",
+        "type": "object"
+      },
+      "ImsPushWithDocument": {
+        "description": "One push on a list page, with enough of its document to be recognisable.",
+        "properties": {
+          "document_number": {
+            "title": "Document Number",
+            "type": "string"
+          },
+          "document_type": {
+            "title": "Document Type",
+            "type": "string"
+          },
+          "push": {
+            "$ref": "#/components/schemas/ImsPushOut"
+          },
+          "supplier_gstin": {
+            "title": "Supplier Gstin",
+            "type": "string"
+          },
+          "supplier_name": {
+            "title": "Supplier Name",
+            "type": "string"
+          },
+          "total_minor": {
+            "title": "Total Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "push",
+          "supplier_name",
+          "supplier_gstin",
+          "document_number",
+          "document_type",
+          "total_minor"
+        ],
+        "title": "ImsPushWithDocument",
         "type": "object"
       },
       "ImsSuggestion": {
@@ -3004,6 +3488,42 @@
           "pages"
         ],
         "title": "Page[ImsDocumentOut]",
+        "type": "object"
+      },
+      "Page_ImsPushWithDocument_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImsPushWithDocument"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ImsPushWithDocument]",
         "type": "object"
       },
       "Page_InvoiceOut_": {
@@ -4456,6 +4976,57 @@
         ]
       }
     },
+    "/api/v1/finance/eway-bills/retries": {
+      "post": {
+        "description": "Ask for another attempt at a bill, without waiting for the automatic retry (C4).\n\n**202, not 201**: this stages a request and returns; the portal call happens afterwards, in the\nworker, on the same claim/call/record path the automatic retry uses (D3 \u2014 a route wrapped end\nto end by the tenant transaction must never hold it open across a government's answer). The\nresponse is the document's e-Way position as it stands now; poll it, or read the\n`retry_scheduled` / `generated` / `failed` events.\n\nOffered for an outage still awaiting its retry and for a failed generation whose cause was the\nplatform's (`retry_exhausted`, `stale`, `no_registration`) \u2014 `EwayState.can_retry` says which.\nA portal **refusal** is a 409 naming the code and what to fix: the identical consignment would\nbe refused again. Rate limited per document.",
+        "operationId": "retry_eway_bill_api_v1_finance_eway_bills_retries_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EwayRetryIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EwayState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "That invoice is not part of this organization"
+          },
+          "409": {
+            "description": "Nothing to retry: a bill already stands, a generation is in flight, or the portal refused the consignment and would refuse it again"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "description": "Retried too recently \u2014 one attempt per document per few seconds"
+          }
+        },
+        "summary": "Retry raising one document's e-Way bill now",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
     "/api/v1/finance/gst/itc-ledger": {
       "get": {
         "operationId": "list_itc_ledger_api_v1_finance_gst_itc_ledger_get",
@@ -5213,6 +5784,51 @@
         ]
       }
     },
+    "/api/v1/finance/ims/decisions": {
+      "post": {
+        "description": "Decide up to 100 documents in one request \u2014 each with its own action and its own reason \u2014\nall of them or none.\n\nNot a shortcut around the per-document route: every item becomes its own append-only decision\nrow with the suggestion snapshotted beside it, its own audit row, its own ITC posting and its\nown queued push, under the same permission (`finance.compliance.ims.decide`, dangerous) and\nwith the same person's name against each. Recording sends nothing to GSTN; that is\n`POST /finance/ims/pushes`, a separate permission. A document that is not this organization's\nfails the whole request with a 404 and writes nothing.",
+        "operationId": "decide_ims_documents_bulk_api_v1_finance_ims_decisions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImsBulkDecisionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImsBulkDecisionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "One of those documents is not part of this organization"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record decisions on several inbound supplier documents at once",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
     "/api/v1/finance/ims/documents": {
       "get": {
         "description": "The queue, filtered the way it is actually worked.\n\nEvery filter answers a question somebody asks out loud \u2014 \"what is still undecided\", \"August\",\n\"everything from this supplier\", \"show me only the mismatches\" \u2014 and `reason` is the one that\nmakes the queue tractable: it filters on the newest suggestion, so an operator can take the\nexact matches in one pass and give the disagreements the attention they need.\n\nOldest first by default, because a queue is worked forward: the document closest to its return\ndeadline matters more than the one that arrived most recently.",
@@ -5318,6 +5934,42 @@
               "description": "date_asc|date_desc|amount_desc|amount_asc",
               "title": "Sort",
               "type": "string"
+            }
+          },
+          {
+            "description": "queued|submitting|pushed|failed|conflict \u2014 where the delivery of the newest decision to GSTN stands",
+            "in": "query",
+            "name": "push_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "queued|submitting|pushed|failed|conflict \u2014 where the delivery of the newest decision to GSTN stands",
+              "title": "Push Status"
+            }
+          },
+          {
+            "description": "true: only documents whose pushed decision the portal disagrees with",
+            "in": "query",
+            "name": "drift",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "true: only documents whose pushed decision the portal disagrees with",
+              "title": "Drift"
             }
           },
           {
@@ -5465,6 +6117,201 @@
           }
         },
         "summary": "Accept, reject or park one inbound supplier document",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/ims/pushes": {
+      "get": {
+        "description": "One page of each document's **current** push, newest request first. Read-only, under the\nordinary IMS read permission: seeing where a decision stands is not sending it.",
+        "operationId": "list_ims_pushes_api_v1_finance_ims_pushes_get",
+        "parameters": [
+          {
+            "description": "Return period, YYYY-MM",
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Return period, YYYY-MM",
+              "title": "Period"
+            }
+          },
+          {
+            "description": "queued|submitting|pushed|failed|conflict|superseded",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "queued|submitting|pushed|failed|conflict|superseded",
+              "title": "Status"
+            }
+          },
+          {
+            "description": "true: pushed decisions the portal disagrees with",
+            "in": "query",
+            "name": "drift",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "true: pushed decisions the portal disagrees with",
+              "title": "Drift"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ImsPushWithDocument_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decisions and where their delivery to GSTN stands",
+        "tags": [
+          "finance"
+        ]
+      },
+      "post": {
+        "description": "Ask for a period's waiting decisions (and refused ones a person chooses to send again) to be\ntold to GSTN.\n\n**202, not 200**: this marks them as asked for and stages the request; the portal call happens\nafterwards, in the worker, on the same claim / call / record path everything else uses (D3) \u2014\na route wrapped end to end by the tenant transaction must never hold it open across a\ngovernment's answer. Read each decision's `push.status` from the queue to see how it went.\nBehind its own permission, marked dangerous, and rate limited per period: it is a government\ncall, and a hammered button is refused rather than queued.",
+        "operationId": "request_ims_push_api_v1_finance_ims_pushes_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImsPushRequestIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImsPushRequestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "One of the named documents is not part of this organization"
+          },
+          "422": {
+            "description": "A malformed period, no GST registration, or documents of another period"
+          },
+          "429": {
+            "description": "Asked for this period too recently"
+          }
+        },
+        "summary": "Send one return period's decisions to GSTN",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/ims/pushes/summary": {
+      "get": {
+        "description": "A count per status for the period's current pushes, the drifted, and what a push request\nwould now send \u2014 what the inbox's push control is drawn from.",
+        "operationId": "read_ims_push_summary_api_v1_finance_ims_pushes_summary_get",
+        "parameters": [
+          {
+            "description": "Return period, YYYY-MM",
+            "in": "query",
+            "name": "period",
+            "required": true,
+            "schema": {
+              "description": "Return period, YYYY-MM",
+              "title": "Period",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImsPushSummaryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Where one return period's pushes stand",
         "tags": [
           "finance"
         ]
@@ -5784,59 +6631,6 @@
           }
         },
         "summary": "Every e-Way bill attempt for one document, newest first",
-        "tags": [
-          "finance"
-        ]
-      }
-    },
-    "/api/v1/finance/invoices/{invoice_id}/eway/retry": {
-      "post": {
-        "description": "Ask for another attempt at a bill, without waiting for the automatic retry (C4).\n\n**202, not 201**: this stages a request and returns; the portal call happens afterwards, in the\nworker, on the same claim/call/record path the automatic retry uses (D3 \u2014 a route wrapped end\nto end by the tenant transaction must never hold it open across a government's answer). The\nresponse is the document's e-Way position as it stands now; poll it, or read the\n`retry_scheduled` / `generated` / `failed` events.\n\nOffered for an outage still awaiting its retry and for a failed generation whose cause was the\nplatform's (`retry_exhausted`, `stale`, `no_registration`) \u2014 `EwayState.can_retry` says which.\nA portal **refusal** is a 409 naming the code and what to fix: the identical consignment would\nbe refused again. Rate limited per document.",
-        "operationId": "retry_eway_bill_api_v1_finance_invoices__invoice_id__eway_retry_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "invoice_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Invoice Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EwayState"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "404": {
-            "description": "That invoice is not part of this organization"
-          },
-          "409": {
-            "description": "Nothing to retry: a bill already stands, a generation is in flight, or the portal refused the consignment and would refuse it again"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          },
-          "429": {
-            "description": "Retried too recently \u2014 one attempt per document per few seconds"
-          }
-        },
-        "summary": "Retry raising one document's e-Way bill now",
         "tags": [
           "finance"
         ]

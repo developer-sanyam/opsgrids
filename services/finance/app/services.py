@@ -27,14 +27,18 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
+from sqlalchemy import and_, case, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 from starlette.requests import Request
 
 from app import domain, selectors
@@ -51,7 +55,15 @@ from app.eway.base import (
     EwayRejected,
     EwayUnavailable,
 )
-from app.ims.base import ImsClient, ImsSupplierDocument, ImsUnavailable
+from app.ims.base import (
+    ImsClient,
+    ImsPushItem,
+    ImsPushRejected,
+    ImsPushResult,
+    ImsRateLimited,
+    ImsSupplierDocument,
+    ImsUnavailable,
+)
 from app.irp.base import (
     IrpAck,
     IrpAlreadyCancelled,
@@ -73,6 +85,7 @@ from app.models import (
     GstReturnTransition,
     ImsDecision,
     ImsDocument,
+    ImsPush,
     ImsReconciliation,
     Invoice,
     InvoiceLine,
@@ -97,7 +110,9 @@ from app.schemas import (
     Gstr3bPaymentOut,
     Gstr3bSections,
     GstRegistrationUpsert,
+    ImsBulkDecisionItem,
     ImsDecisionCreate,
+    ImsPushRequestOut,
     InvoiceCreate,
     PaymentCreate,
     PurchaseDocumentCreate,
@@ -140,6 +155,13 @@ EVT_GST_REGISTRATION_SET = "finance.compliance.gst_registration.set"
 #: what this business chose to do about it — the row that decides whether a credit is claimed.
 EVT_IMS_DOCUMENT_INGESTED = "finance.compliance.ims_document.ingested"
 EVT_IMS_DOCUMENT_DECIDED = "finance.compliance.ims_document.decided"
+#: Telling GSTN what was decided (C2). `requested` is a **command** to this service's own worker — a
+#: person with the push permission asked for one period's decisions to be sent — and `completed` /
+#: `drift_detected` are announcements: what one portal call did, and that a sync found the portal
+#: disagreeing with a decision that had been pushed.
+EVT_IMS_PUSH_REQUESTED = "finance.compliance.ims_push.requested"
+EVT_IMS_PUSH_COMPLETED = "finance.compliance.ims_push.completed"
+EVT_IMS_PUSH_DRIFT_DETECTED = "finance.compliance.ims_push.drift_detected"
 #: The return events. `generated` announces a snapshot of a period; `filed` announces that the
 #: snapshot went to the portal. Two events rather than one because they are two claims — one
 #: about this platform's book, one to a government — and a consumer may reasonably care about
@@ -2711,6 +2733,9 @@ class IngestResult:
     fetched: int
     created: int
     documents: list[ImsDocument]
+    #: Pushed decisions this sync found the portal disagreeing with, and ones agreeing again (C2).
+    drift_detected: int = 0
+    drift_cleared: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -2839,6 +2864,10 @@ async def record_ims_fetch(
             actor=_actor(ctx),
         )
 
+    # Does the portal now hold what was pushed? Compared in this same transaction, against the
+    # action each fetched row reports for this taxpayer (C2).
+    drift = await flag_ims_drift(session, ctx, fetched, at=at)
+
     record_audit(
         session,
         AuditLog,
@@ -2852,10 +2881,18 @@ async def record_ims_fetch(
             "portal": portal,
             "fetched": len(fetched),
             "created": len(created),
+            "drift_detected": drift.detected,
+            "drift_cleared": drift.cleared,
         },
         request=request,
     )
-    return IngestResult(fetched=len(fetched), created=len(created), documents=created)
+    return IngestResult(
+        fetched=len(fetched),
+        created=len(created),
+        documents=created,
+        drift_detected=drift.detected,
+        drift_cleared=drift.cleared,
+    )
 
 
 async def ingest_ims_documents(
@@ -3125,6 +3162,49 @@ def _publish_itc_posting(
     )
 
 
+class _DecisionBatch:
+    """The reads a run of decisions **shares**, so a bulk request does not repeat them per
+    document: the GST registration (row-locked once, and only if some decision moves the ITC
+    ledger), each period's claim period (cached), and every document's net standing on the ITC
+    ledger (loaded for all of them in one query, by the caller).
+
+    A single decision is a batch of one; the code path is the same, which is what keeps the bulk
+    request from being a second, subtly different way of recording a decision.
+    """
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        ctx: ScopeContext,
+        *,
+        net_accrued: dict[uuid.UUID, domain.TaxHeadAmounts],
+    ) -> None:
+        self._session = session
+        self._ctx = ctx
+        self.net_accrued = net_accrued
+        self._registration: GstRegistration | None = None
+        self._claim_periods: dict[str, str] = {}
+
+    async def registration(self) -> GstRegistration:
+        # Locked before `claim_period_for` reads which periods are filed: a filing racing a
+        # decision holds this same lock while it moves a return to `filed`, so this either waits
+        # for that commit and then correctly sees the period as filed, or the filing is still in
+        # flight and blocks behind *this* transaction — never both reading "not filed yet".
+        if self._registration is None:
+            self._registration = await registration_for(
+                self._session, self._ctx, None, for_update=True
+            )
+        return self._registration
+
+    async def claim_period(self, period: str) -> str:
+        if period not in self._claim_periods:
+            registration = await self.registration()
+            self._claim_periods[period] = await selectors.claim_period_for(
+                self._session, self._ctx.organization_id, registration.id, period
+            )
+        return self._claim_periods[period]
+
+
 async def record_ims_decision(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -3133,6 +3213,114 @@ async def record_ims_decision(
     *,
     request: Request | None = None,
     at: datetime | None = None,
+) -> ImsDecision:
+    """Record what a person decided about one inbound document — append-only. The document is
+    locked, its context loaded, and `_decide` does the rest; see it for what a decision does."""
+    at = at or _now()
+    if payload.action not in domain.IMS_ACTIONS:
+        actions = ", ".join(sorted(domain.IMS_ACTIONS))
+        raise BusinessRuleProblem(f"An IMS decision must be one of: {actions}")
+    if payload.expense_category not in domain.ITC_EXPENSE_CATEGORIES:
+        categories = ", ".join(sorted(domain.ITC_EXPENSE_CATEGORIES))
+        raise BusinessRuleProblem(f"An expense category must be one of: {categories}")
+
+    document = await selectors.get_ims_document(
+        session, ctx.organization_id, ims_document_id, for_update=True
+    )
+    if document is None:
+        raise NotFoundProblem("That supplier document is not part of this organization")
+
+    suggestions = await selectors.latest_reconciliations(
+        session, ctx.organization_id, [document.id]
+    )
+    counts = await selectors.decision_counts(session, ctx.organization_id, [document.id])
+    net = await selectors.itc_net_accrued_for_documents(session, ctx.organization_id, [document.id])
+    return await _decide(
+        session,
+        ctx,
+        document,
+        payload,
+        suggestion=suggestions.get(document.id),
+        version=counts.get(document.id, 0) + 1,
+        batch=_DecisionBatch(session, ctx, net_accrued=net),
+        at=at,
+        request=request,
+    )
+
+
+async def record_ims_decisions_bulk(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    items: list[ImsBulkDecisionItem],
+    *,
+    request: Request | None = None,
+    at: datetime | None = None,
+) -> list[tuple[uuid.UUID, ImsDecision]]:
+    """Record several decisions in the caller's one transaction — **all of them or none** — each
+    exactly as `record_ims_decision` would have recorded it alone: its own append-only row with the
+    suggestion snapshotted beside it, its own audit row, its own ITC posting, its own queued push.
+
+    What is shared is only what is safe to share: the documents are fetched and row-locked in one
+    query (in id order, so two overlapping bulk requests cannot deadlock), and the suggestions,
+    decision counts and ITC standings for all of them are read in one query each — a bulk request
+    never runs a read per document. A document that is not part of this organization (another
+    tenant's id reads the same) is a 404 for the **whole** request, before anything is written,
+    and names none of them.
+    """
+    at = at or _now()
+    for item in items:
+        if item.action not in domain.IMS_ACTIONS:
+            actions = ", ".join(sorted(domain.IMS_ACTIONS))
+            raise BusinessRuleProblem(f"An IMS decision must be one of: {actions}")
+        if item.expense_category not in domain.ITC_EXPENSE_CATEGORIES:
+            categories = ", ".join(sorted(domain.ITC_EXPENSE_CATEGORIES))
+            raise BusinessRuleProblem(f"An expense category must be one of: {categories}")
+
+    ids = [item.document_id for item in items]
+    documents = await selectors.get_ims_documents(
+        session, ctx.organization_id, ids, for_update=True
+    )
+    if len(documents) != len(set(ids)):
+        raise NotFoundProblem(
+            "One or more of those supplier documents is not part of this organization"
+        )
+
+    suggestions = await selectors.latest_reconciliations(session, ctx.organization_id, ids)
+    counts = await selectors.decision_counts(session, ctx.organization_id, ids)
+    net = await selectors.itc_net_accrued_for_documents(session, ctx.organization_id, ids)
+    batch = _DecisionBatch(session, ctx, net_accrued=net)
+
+    decided: list[tuple[uuid.UUID, ImsDecision]] = []
+    for item in items:
+        document = documents[item.document_id]
+        decision = await _decide(
+            session,
+            ctx,
+            document,
+            ImsDecisionCreate(
+                action=item.action, note=item.note, expense_category=item.expense_category
+            ),
+            suggestion=suggestions.get(document.id),
+            version=counts.get(document.id, 0) + 1,
+            batch=batch,
+            at=at,
+            request=request,
+        )
+        decided.append((document.id, decision))
+    return decided
+
+
+async def _decide(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    document: ImsDocument,
+    payload: ImsDecisionCreate,
+    *,
+    suggestion: ImsReconciliation | None,
+    version: int,
+    batch: _DecisionBatch,
+    at: datetime,
+    request: Request | None,
 ) -> ImsDecision:
     """Record what a person decided about one inbound document — append-only.
 
@@ -3156,26 +3344,19 @@ async def record_ims_decision(
     `domain.split_positive_negative`). The document is locked `FOR UPDATE` above before any of
     this runs, so two decisions racing the same document serialise on the row rather than each
     reading the same `before_status` and each posting a transition of their own.
+
+    **The exclusion of rejected, held and un-actioned documents from ITC is this function's, and
+    it is a projection of the newest decision, not a mutation of any document (C2).** Credit is
+    posted only while the newest decision is an accept (`target` below is the document's eligible
+    amount then and zero otherwise), and leaving `accepted` for anything — `reject`,
+    `pending_action`, `no_action` — posts the exact reversal of what was outstanding. Purchase
+    documents are never touched, and GSTR-3B Table 4A reads the ledger, so a document that is not
+    currently accepted is not in the return.
+
+    **A push is queued in the same transaction** (`_queue_push`): the decision says what a person
+    decided and the push says whether GSTN has been told, so the two are written together and the
+    push never edits the decision. Sending it is a separate act with a separate permission.
     """
-    at = at or _now()
-    if payload.action not in domain.IMS_ACTIONS:
-        actions = ", ".join(sorted(domain.IMS_ACTIONS))
-        raise BusinessRuleProblem(f"An IMS decision must be one of: {actions}")
-    if payload.expense_category not in domain.ITC_EXPENSE_CATEGORIES:
-        categories = ", ".join(sorted(domain.ITC_EXPENSE_CATEGORIES))
-        raise BusinessRuleProblem(f"An expense category must be one of: {categories}")
-
-    document = await selectors.get_ims_document(
-        session, ctx.organization_id, ims_document_id, for_update=True
-    )
-    if document is None:
-        raise NotFoundProblem("That supplier document is not part of this organization")
-
-    suggestions = await selectors.latest_reconciliations(
-        session, ctx.organization_id, [document.id]
-    )
-    suggestion = suggestions.get(document.id)
-
     decision = ImsDecision(
         organization_id=ctx.organization_id,
         created_by=str(ctx.principal.sub),
@@ -3199,16 +3380,9 @@ async def record_ims_decision(
     was_accepted = before_status == "accepted"
     now_accepted = document.status == "accepted"
     if was_accepted or now_accepted:
-        # Locked before `claim_period_for` reads which periods are filed: a filing racing this
-        # decision holds this same lock while it moves a return to `filed`, so this either waits
-        # for that commit and then correctly sees the period as filed (landing one period later),
-        # or the filing is still in flight and blocks behind *this* transaction instead — never
-        # both reading "not filed yet" and both proceeding as if the other had not happened.
-        registration = await registration_for(session, ctx, None, for_update=True)
+        registration = await batch.registration()
         outstanding = (
-            await selectors.itc_document_net_accrued(session, ctx.organization_id, document.id)
-            if was_accepted
-            else domain.ZERO_ITC
+            batch.net_accrued.get(document.id, domain.ZERO_ITC) if was_accepted else domain.ZERO_ITC
         )
         # A credit note reduces what a supplier billed, so it reduces the credit this organization
         # may claim rather than adding to it — accepting one should move the ledger down.
@@ -3227,9 +3401,7 @@ async def record_ims_decision(
         accrual_part, reversal_part = domain.split_positive_negative(delta)
 
         if accrual_part.total_minor or reversal_part.total_minor:
-            claim_period = await selectors.claim_period_for(
-                session, ctx.organization_id, registration.id, document.period
-            )
+            claim_period = await batch.claim_period(document.period)
             if was_accepted and now_accepted:
                 description = (
                     f"IMS document {document.document_number} re-classified as "
@@ -3270,6 +3442,8 @@ async def record_ims_decision(
                     at=at,
                 )
 
+    push = await _queue_push(session, ctx, document, decision, version=version, at=at)
+
     record_audit(
         session,
         AuditLog,
@@ -3286,6 +3460,8 @@ async def record_ims_decision(
             "suggestion_reason": decision.suggestion_reason,
             "expense_category": decision.expense_category,
             "decision_id": str(decision.id),
+            "version": version,
+            "push_id": str(push.id),
         },
         request=request,
     )
@@ -3312,10 +3488,967 @@ async def record_ims_decision(
             #: suggestion nobody follows is a suggestion that should be changed.
             "followed_suggestion": decision.suggested_action == decision.action,
             "decided_at": decision.decided_at.isoformat(),
+            #: The decision's ordinal within its document, and that its push is now queued.
+            "version": version,
+            "push_status": push.status,
         },
         actor=_actor(ctx),
     )
     return decision
+
+
+async def _queue_push(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    document: ImsDocument,
+    decision: ImsDecision,
+    *,
+    version: int,
+    at: datetime,
+) -> ImsPush:
+    """Queue the delivery of one decision to GSTN — inside the decision's own transaction.
+
+    The document's earlier current push stops being current. One still `queued` (decided, never
+    sent) becomes `superseded`: sending it would tell GSTN something the person has since
+    reversed, and it is never worth a portal call. One already `submitting`, `pushed`, `failed` or
+    `conflict` keeps its status — it *happened*, or is happening — and only stops being the
+    document's answer; the new push is sent after it (the claim never sends a decision while an
+    older one for the same document is still in flight), so GSTN's final state is the newest one.
+    """
+    await session.execute(
+        update(ImsPush)
+        .where(
+            ImsPush.organization_id == ctx.organization_id,
+            ImsPush.ims_document_id == document.id,
+            ImsPush.is_current.is_(True),
+            ImsPush.deleted_at.is_(None),
+        )
+        .values(
+            is_current=False,
+            status=case((ImsPush.status == "queued", "superseded"), else_=ImsPush.status),
+            updated_at=at,
+            updated_by=str(ctx.principal.sub),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    push = ImsPush(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        ims_document_id=document.id,
+        decision_id=decision.id,
+        period=document.period,
+        source_ref=document.source_ref,
+        action=decision.action,
+        version=version,
+        idempotency_key=domain.ims_push_key(document.period, document.source_ref, version),
+        status="queued",
+        is_current=True,
+        attempts=0,
+        drift=False,
+    )
+    session.add(push)
+    await session.flush()
+    return push
+
+
+# --------------------------------------------------------------------- IMS: pushing decisions back
+# Recording a decision is the platform's own position; telling GSTN is a second act with a second
+# failure mode, and it runs the way every portal call here runs (D3): a short **claim**
+# transaction, the **call** with no transaction open and off the event loop, a short **record**
+# transaction. The state machine (`domain.IMS_PUSH_STATUSES`), the idempotency key (period,
+# document, decision version), the batching (per period, within the portal's limit), and the
+# recovery (the reclaim sweep resumes what a crash left `submitting`, bounded) are all here.
+#
+# Three properties carry the design, and each has a test:
+#
+# * **Nobody sends without asking.** Decisions are queued when they are recorded, but a push is
+#   sent only after a person with the push permission has *requested* it (`request_ims_push`) —
+#   recording and telling a government are separate permissions, and a decision a supervisor has
+#   not reviewed must not leave the building because a clerk recorded it.
+# * **One call in flight per decision, and per document.** The claim is a conditional `UPDATE ...
+#   RETURNING` under `FOR UPDATE SKIP LOCKED`, and `attempts` is the fencing token the record step
+#   writes against — a worker whose lease lapsed cannot overwrite what the one that took over
+#   recorded.
+# * **"Already recorded" is success.** A crash between the call and the record is repaired by
+#   asking again under the same key; the portal's answer is recorded as the success it is.
+
+
+def _push_aggregate_id(organization_id: uuid.UUID, period: str) -> uuid.UUID:
+    """A stable id for "this organization's pushes of this period" — the aggregate the period-level
+    events are published under (an outbox row needs a UUID, and a period is not one)."""
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"finance:ims-push:{organization_id}:{period}")
+
+
+def _audit_push_row(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    push_id: uuid.UUID,
+    action: str,
+    after: dict[str, Any],
+    request: Request | None = None,
+) -> None:
+    """One audit row for one push transition. The ledger of what the portal said is the push row;
+    this is who asked and what came of it, append-only."""
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action=action,
+        entity="ims_push",
+        entity_id=push_id,
+        after=after,
+        request=request,
+    )
+
+
+def _push_audit_facts(push: ImsPush, **extra: Any) -> dict[str, Any]:
+    return {
+        "ims_document_id": str(push.ims_document_id),
+        "decision_id": str(push.decision_id),
+        "period": push.period,
+        "action": push.action,
+        "version": push.version,
+        "status": push.status,
+        "attempts": push.attempts,
+        "error_code": push.error_code,
+        **extra,
+    }
+
+
+async def request_ims_push(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    period: str,
+    document_ids: list[uuid.UUID] | None,
+    request: Request | None = None,
+    now: datetime | None = None,
+) -> ImsPushRequestOut:
+    """A person asks for one return period's decisions to be sent — the request half. Stages
+    `EVT_IMS_PUSH_REQUESTED` on the outbox and marks the pushes it covers as *asked for*; **no
+    portal call and no claim here** (D3), so the request path never waits on a government.
+
+    What a request covers: every current push of `period` that is `queued` (decided, waiting), and
+    every `failed` one (a person choosing to send a refused decision again, with a fresh budget) —
+    optionally only the named documents. `submitting`, `pushed` and `conflict` pushes are left
+    exactly as they are and counted as `not_pushable`: in flight, done, or needing a new decision.
+
+    Decisions recorded before pushes existed have no push row; each gets one here, queued and then
+    covered by the same request, so a period's whole backlog is sendable without a migration having
+    to touch the ledger. Refuses an organization with no GST registration (there is no ledger on
+    the portal to record decisions against) and a named document that is not this organization's or
+    not this period's — the whole request, before anything is written.
+    """
+    now = now or _now()
+    try:
+        domain.parse_period(period)
+    except ValueError as exc:
+        raise BusinessRuleProblem(str(exc)) from exc
+
+    # The documents first: another organization's id is a 404 whatever else is true of the caller's
+    # own organization, and answering "no registration" first would let a probe tell the two apart.
+    scope_ids: list[uuid.UUID] | None = None
+    if document_ids is not None:
+        scope_ids = list(dict.fromkeys(document_ids))
+        found = await selectors.get_ims_documents(session, ctx.organization_id, scope_ids)
+        if len(found) != len(scope_ids):
+            raise NotFoundProblem(
+                "One or more of those supplier documents is not part of this organization"
+            )
+        if any(doc.period != period for doc in found.values()):
+            raise BusinessRuleProblem(
+                f"Those documents are not all in {period}; a push is made one return period at "
+                "a time"
+            )
+    if await selectors.get_gst_registration(session, ctx.organization_id) is None:
+        raise BusinessRuleProblem(
+            "This organization has no GST registration configured, so there is no portal ledger "
+            "to record decisions against"
+        )
+
+    legacy = await selectors.documents_with_unqueued_decisions(
+        session, ctx.organization_id, period, document_ids=scope_ids
+    )
+    if legacy:
+        counts = await selectors.decision_counts(
+            session, ctx.organization_id, [doc.id for doc, _ in legacy]
+        )
+        for doc, decision in legacy:
+            version = counts.get(doc.id, 1)
+            session.add(
+                ImsPush(
+                    organization_id=ctx.organization_id,
+                    created_by=str(ctx.principal.sub),
+                    ims_document_id=doc.id,
+                    decision_id=decision.id,
+                    period=doc.period,
+                    source_ref=doc.source_ref,
+                    action=decision.action,
+                    version=version,
+                    idempotency_key=domain.ims_push_key(doc.period, doc.source_ref, version),
+                    status="queued",
+                    is_current=True,
+                    attempts=0,
+                    drift=False,
+                )
+            )
+        await session.flush()
+
+    stmt = (
+        select(ImsPush)
+        .where(
+            ImsPush.organization_id == ctx.organization_id,
+            ImsPush.period == period,
+            ImsPush.is_current.is_(True),
+            ImsPush.deleted_at.is_(None),
+        )
+        .order_by(ImsPush.id)
+        .with_for_update()
+    )
+    if scope_ids is not None:
+        stmt = stmt.where(ImsPush.ims_document_id.in_(scope_ids))
+    rows = list((await session.execute(stmt)).scalars().all())
+    pushable = [row for row in rows if row.status in ("queued", "failed")]
+    for row in pushable:
+        if row.status == "failed":
+            # A person choosing to send it again: a fresh budget, and the last refusal cleared.
+            row.status = "queued"
+            row.attempts = 0
+            row.error_code = None
+            row.error = None
+        row.requested_at = now
+        row.requested_by = str(ctx.principal.sub)
+        row.next_attempt_at = None
+        row.lease_until = None
+        row.updated_by = str(ctx.principal.sub)
+    if pushable:
+        await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="ims.push_requested",
+        entity="ims_push_request",
+        entity_id=_push_aggregate_id(ctx.organization_id, period),
+        after={
+            "period": period,
+            "requested": len(pushable),
+            "not_pushable": len(rows) - len(pushable),
+            "backfilled": len(legacy),
+            "push_ids": [str(row.id) for row in pushable[:200]],
+        },
+        request=request,
+    )
+    if pushable:
+        publish_event(
+            session,
+            OutboxEvent,
+            organization_id=ctx.organization_id,
+            event_type=EVT_IMS_PUSH_REQUESTED,
+            aggregate_type="ims_push_period",
+            aggregate_id=_push_aggregate_id(ctx.organization_id, period),
+            payload={
+                "organization_id": str(ctx.organization_id),
+                "period": period,
+                "requested": len(pushable),
+                "requested_by": str(ctx.principal.sub),
+            },
+            actor=_actor(ctx),
+        )
+    return ImsPushRequestOut(
+        period=period, requested=len(pushable), not_pushable=len(rows) - len(pushable)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _ClaimedPush:
+    """One push a claim took: which row, and the `attempts` value that claim wrote — the fencing
+    token `record_ims_push_batch` must find unchanged to record anything."""
+
+    push_id: uuid.UUID
+    attempts: int
+    source_ref: str
+    idempotency_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class ImsPushClaim:
+    """What `claim_ims_push_batch` decided. `batch` carries what the portal call still to come
+    needs, as plain values, so nothing crosses the network call holding an ORM instance from a
+    transaction that has closed."""
+
+    outcome: str  # "batch" | "empty" | "no_registration"
+    period: str
+    gstin: str = ""
+    items: tuple[ImsPushItem, ...] = ()
+    claimed: tuple[_ClaimedPush, ...] = ()
+    #: Pushes this claim ended **without** a call: budget spent, superseded by a newer decision, or
+    #: no registration left to record them against.
+    settled: int = 0
+
+
+def _open_push_work(p: Any, now: datetime) -> Any:
+    """SQL: a push of `p` that is waiting for a worker — asked for and either never attempted or
+    past its backoff, or claimed and past its lease."""
+    return or_(
+        and_(
+            p.status == "queued",
+            p.requested_at.is_not(None),
+            or_(p.next_attempt_at.is_(None), p.next_attempt_at <= now),
+        ),
+        and_(p.status == "submitting", p.lease_until.is_not(None), p.lease_until <= now),
+    )
+
+
+async def claim_ims_push_batch(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    period: str,
+    now: datetime,
+    limit: int,
+    portal: str,
+) -> ImsPushClaim:
+    """The first act of a push: settle what needs no portal call, then claim up to `limit` of
+    the period's waiting decisions for one.
+
+    **Settled without a call**, in this order, each as a terminal row and an audit row:
+
+    * a superseded decision still waiting (`is_current` false) — a newer decision exists, and
+      sending the older one would tell GSTN something the person has since reversed;
+    * no GST registration — nothing to record decisions against (`no_registration`);
+    * a spent budget — `attempts` already at `domain.IMS_PUSH_MAX_ATTEMPTS` (`retry_exhausted`):
+      the poisoned-step guard, so a decision the portal never answers becomes a failure a person
+      sees rather than a row the sweep picks up on every tick forever.
+
+    **Claimed** by one conditional `UPDATE ... RETURNING` over a `FOR UPDATE SKIP LOCKED` subselect:
+    `submitting`, `attempts + 1` (the fencing token), a lease `domain.IMS_PUSH_LEASE` long. Two
+    workers racing a period take disjoint rows; a decision whose document has an older decision
+    still in flight (a live lease) is not taken, so GSTN's final state is always the newest one.
+    Oldest request first.
+    """
+    org = ctx.organization_id
+    actor = str(ctx.principal.sub)
+    p = aliased(ImsPush)
+    settled = 0
+
+    async def settle(where: Any, *, status: str, code: str | None, error: str | None) -> int:
+        result = await session.execute(
+            update(ImsPush)
+            .where(ImsPush.organization_id == org, ImsPush.period == period, where)
+            .values(
+                status=status,
+                error_code=code,
+                error=error,
+                lease_until=None,
+                next_attempt_at=None,
+                updated_at=now,
+                updated_by=actor,
+            )
+            .returning(ImsPush.id, ImsPush.source_ref, ImsPush.ims_document_id)
+            .execution_options(synchronize_session=False)
+        )
+        settled_rows = result.all()
+        for push_id, source_ref, document_id in settled_rows:
+            _audit_push_row(
+                session,
+                ctx,
+                push_id=push_id,
+                action="ims.push_superseded" if status == "superseded" else "ims.push_failed",
+                after={
+                    "period": period,
+                    "source_ref": source_ref,
+                    "ims_document_id": str(document_id),
+                    "status": status,
+                    "error_code": code,
+                },
+            )
+        return len(settled_rows)
+
+    waiting = _open_push_work(ImsPush, now)
+    settled += await settle(
+        and_(ImsPush.deleted_at.is_(None), ImsPush.is_current.is_(False), waiting),
+        status="superseded",
+        code=None,
+        error=None,
+    )
+
+    registration = await selectors.get_gst_registration(session, org)
+    if registration is None:
+        settled += await settle(
+            and_(ImsPush.deleted_at.is_(None), waiting),
+            status="failed",
+            code=domain.ERR_NO_REGISTRATION,
+            error="this organization no longer has a GST registration configured",
+        )
+        return ImsPushClaim("no_registration", period, settled=settled)
+
+    settled += await settle(
+        and_(
+            ImsPush.deleted_at.is_(None),
+            waiting,
+            ImsPush.attempts >= domain.IMS_PUSH_MAX_ATTEMPTS,
+        ),
+        status="failed",
+        code=domain.ERR_RETRY_EXHAUSTED,
+        error=(
+            f"gave up after {domain.IMS_PUSH_MAX_ATTEMPTS} attempts; the portal never confirmed "
+            "this decision"
+        ),
+    )
+
+    other = aliased(ImsPush)
+    older_in_flight = (
+        select(other.id)
+        .where(
+            other.organization_id == org,
+            other.ims_document_id == p.ims_document_id,
+            other.status == "submitting",
+            other.lease_until > now,
+            other.id != p.id,
+        )
+        .exists()
+    )
+    # Two statements in this one transaction, not one `UPDATE ... WHERE id IN (SELECT ... LIMIT n
+    # FOR UPDATE SKIP LOCKED)`: the planner may re-evaluate that subselect per candidate row, and
+    # under READ COMMITTED a LIMIT inside it then stops bounding the update — a batch of five went
+    # to a portal that takes two. The row locks the first statement takes are held until commit, so
+    # the second updates exactly the rows the first chose, and no other worker can have them.
+    chosen = list(
+        (
+            await session.execute(
+                select(p.id)
+                .where(
+                    p.organization_id == org,
+                    p.period == period,
+                    p.deleted_at.is_(None),
+                    p.is_current.is_(True),
+                    p.attempts < domain.IMS_PUSH_MAX_ATTEMPTS,
+                    _open_push_work(p, now),
+                    ~older_in_flight,
+                )
+                .order_by(p.requested_at, p.created_at, p.id)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not chosen:
+        return ImsPushClaim("empty", period, gstin=registration.gstin, settled=settled)
+    result = await session.execute(
+        update(ImsPush)
+        .where(ImsPush.organization_id == org, ImsPush.id.in_(chosen))
+        .values(
+            status="submitting",
+            attempts=ImsPush.attempts + 1,
+            lease_until=now + domain.IMS_PUSH_LEASE,
+            next_attempt_at=None,
+            portal=portal,
+            updated_at=now,
+            updated_by=actor,
+        )
+        .returning(
+            ImsPush.id,
+            ImsPush.attempts,
+            ImsPush.source_ref,
+            ImsPush.idempotency_key,
+            ImsPush.action,
+            ImsPush.version,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    taken = result.all()
+    if not taken:
+        return ImsPushClaim("empty", period, gstin=registration.gstin, settled=settled)
+    return ImsPushClaim(
+        "batch",
+        period,
+        gstin=registration.gstin,
+        items=tuple(
+            ImsPushItem(
+                source_ref=source_ref,
+                action=domain.ims_portal_action(action),
+                version=version,
+                idempotency_key=key,
+            )
+            for _, _, source_ref, key, action, version in taken
+        ),
+        claimed=tuple(
+            _ClaimedPush(push_id, attempts, source_ref, key)
+            for push_id, attempts, source_ref, key, _, _ in taken
+        ),
+        settled=settled,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _ImsPushOutcome:
+    """What the portal did to one batch, folded into plain values — no session, no database.
+    `answered` carries a verdict per document; `unavailable` (retried, with a backoff) and
+    `rejected` (the whole request refused; terminal) carry the masked reason."""
+
+    kind: str  # "answered" | "unavailable" | "rejected"
+    results: dict[str, ImsPushResult] = dataclass_field(default_factory=dict)
+    error_code: str | None = None
+    error: str | None = None
+    rate_limited: bool = False
+    retry_after: timedelta | None = None
+
+
+def call_ims_push(
+    client: ImsClient, gstin: str, period: str, items: Sequence[ImsPushItem]
+) -> _ImsPushOutcome:
+    """The second act of a push, and the only one that touches the portal. Called with **no
+    session and no transaction open** (D3).
+
+    A batch that reached the portal is `answered` document by document. An outage — a timeout, a
+    5xx, and, as `ImsRateLimited` (checked first, the more specific kind), a rate limit whose
+    `Retry-After` the retry honours — is `unavailable`: nothing is known to have been recorded and
+    every decision is sent again under the same key. A whole-request refusal is `rejected`. Every
+    word the portal sent back is masked here, once."""
+    try:
+        answers = client.push_ims_decisions(gstin=gstin, period=period, decisions=list(items))
+    except ImsPushRejected as rejected:
+        return _ImsPushOutcome(
+            kind="rejected",
+            error_code=rejected.code,
+            error=domain.mask_portal_text(rejected.message),
+        )
+    except ImsRateLimited as limited:
+        return _ImsPushOutcome(
+            kind="unavailable",
+            error=domain.mask_portal_text(str(limited)),
+            rate_limited=True,
+            retry_after=limited.retry_after,
+        )
+    except ImsUnavailable as outage:
+        return _ImsPushOutcome(kind="unavailable", error=domain.mask_portal_text(str(outage)))
+    return _ImsPushOutcome(kind="answered", results={a.source_ref: a for a in answers})
+
+
+async def call_ims_push_off_loop(
+    client: ImsClient, gstin: str, period: str, items: Sequence[ImsPushItem]
+) -> _ImsPushOutcome:
+    """`call_ims_push` on a worker thread, bounded (`off_loop`); a timeout is an outage."""
+    return await off_loop(
+        call_ims_push,
+        client,
+        gstin,
+        period,
+        items,
+        on_timeout=lambda s: _ImsPushOutcome(kind="unavailable", error=_timed_out(s)),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ImsPushRecord:
+    """What one record step wrote. `skipped` are claims this recorder no longer held — a lease that
+    lapsed and was taken over — which it correctly wrote nothing for."""
+
+    pushed: int = 0
+    failed: int = 0
+    conflict: int = 0
+    retry: int = 0
+    skipped: int = 0
+
+
+async def record_ims_push_batch(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    claim: ImsPushClaim,
+    outcome: _ImsPushOutcome,
+    *,
+    portal: str,
+    now: datetime,
+    request: Request | None = None,
+) -> ImsPushRecord:
+    """The third act: write what the portal decided, per decision, and audit each.
+
+    * `recorded` / `already_recorded` → `pushed` — *already recorded is success by fetch*. Unless
+      the portal says it holds a **different** action than this decision's, which is a `conflict`
+      wearing a success's shape, and is recorded as one.
+    * a per-document refusal → `failed`, with the portal's code and its masked words.
+    * `conflict` → `conflict`: the portal holds something else; only a new decision resolves it.
+    * an outage, or a document the portal did not answer for → back to `queued` with the bounded
+      backoff (`domain.ims_push_retry_delay`, honouring a `Retry-After` up to the ceiling) — or,
+      with the budget spent, `failed(retry_exhausted)`. A whole-request refusal fails every
+      decision in the batch.
+
+    **Fenced**: a row is written only if it is still `submitting` with the `attempts` this claim
+    took, so a late recorder whose lease lapsed cannot overwrite what the worker that took over
+    recorded. Idempotent the same way — a second recorder of the same claim finds nothing to write.
+    Every row is loaded in one query and written in one flush.
+    """
+    if not claim.claimed:
+        return ImsPushRecord()
+    actor = str(ctx.principal.sub)
+    stmt = (
+        select(ImsPush)
+        .where(
+            ImsPush.organization_id == ctx.organization_id,
+            tuple_(ImsPush.id, ImsPush.attempts).in_(
+                [(held.push_id, held.attempts) for held in claim.claimed]
+            ),
+            ImsPush.status == "submitting",
+        )
+        .order_by(ImsPush.id)
+        .with_for_update()
+    )
+    rows = list((await session.execute(stmt)).scalars().all())
+    skipped = len(claim.claimed) - len(rows)
+
+    pushed = failed = conflict = retry = 0
+    problems: list[dict[str, Any]] = []
+
+    def retry_or_exhaust(
+        row: ImsPush, *, code: str, error: str | None, after: timedelta | None
+    ) -> str:
+        row.lease_until = None
+        row.portal = portal
+        if row.attempts >= domain.IMS_PUSH_MAX_ATTEMPTS:
+            row.status = "failed"
+            row.error_code = domain.ERR_RETRY_EXHAUSTED
+            row.error = (
+                f"gave up after {row.attempts} attempts; the portal was last unreachable with: "
+                f"{error}"
+            )[: domain.PORTAL_TEXT_LIMIT + 200]
+            row.next_attempt_at = None
+            return "failed"
+        delay = domain.ims_push_retry_delay(row.attempts)
+        if after is not None:
+            # A portal that says how long it wants is obeyed, up to the platform's own ceiling.
+            delay = max(delay, min(after, domain.IMS_PUSH_RETRY_CEILING))
+        row.status = "queued"
+        row.error_code = code
+        row.error = error
+        row.next_attempt_at = now + delay
+        return "retry"
+
+    for row in rows:
+        row.updated_at = now
+        row.updated_by = actor
+        expected = domain.ims_portal_action(row.action)
+        result = outcome.results.get(row.source_ref) if outcome.kind == "answered" else None
+        disposition: str
+        audit_action: str
+
+        if outcome.kind == "rejected":
+            row.status = "failed"
+            row.error_code = outcome.error_code
+            row.error = outcome.error
+            row.lease_until = None
+            row.portal = portal
+            disposition, audit_action = "failed", "ims.push_failed"
+        elif outcome.kind == "unavailable":
+            disposition = retry_or_exhaust(
+                row,
+                code=domain.ERR_RATE_LIMITED
+                if outcome.rate_limited
+                else domain.ERR_PORTAL_UNAVAILABLE,
+                error=outcome.error,
+                after=outcome.retry_after,
+            )
+            audit_action = (
+                "ims.push_failed" if disposition == "failed" else "ims.push_retry_scheduled"
+            )
+        elif result is None:
+            disposition = retry_or_exhaust(
+                row,
+                code=domain.ERR_PORTAL_UNAVAILABLE,
+                error="the portal did not answer for this document",
+                after=None,
+            )
+            audit_action = (
+                "ims.push_failed" if disposition == "failed" else "ims.push_retry_scheduled"
+            )
+        elif result.outcome in ("recorded", "already_recorded") and result.recorded_action in (
+            None,
+            expected,
+        ):
+            row.status = "pushed"
+            row.pushed_at = now
+            row.error_code = None
+            row.error = None
+            row.lease_until = None
+            row.portal = portal
+            row.observed_action = result.recorded_action or expected
+            row.observed_at = now
+            row.drift = False
+            disposition, audit_action = "pushed", "ims.pushed"
+        elif result.outcome == "rejected":
+            row.status = "failed"
+            row.error_code = result.code or "rejected"
+            row.error = domain.mask_portal_text(result.message)
+            row.lease_until = None
+            row.portal = portal
+            disposition, audit_action = "failed", "ims.push_failed"
+        elif result.outcome in ("conflict", "already_recorded", "recorded"):
+            # `conflict`, and also an "already recorded" that names a different action than ours:
+            # the portal holds something else for this row, and a retry would only repeat it.
+            row.status = "conflict"
+            row.error_code = result.code or "conflict"
+            row.error = domain.mask_portal_text(
+                result.message
+                or f"the portal holds {result.recorded_action!r} here, not {expected!r}"
+            )
+            row.lease_until = None
+            row.portal = portal
+            row.observed_action = result.recorded_action
+            row.observed_at = now
+            disposition, audit_action = "conflict", "ims.push_conflict"
+        else:
+            disposition = retry_or_exhaust(
+                row,
+                code=domain.ERR_PORTAL_UNAVAILABLE,
+                error="the portal answered in a form this platform does not understand",
+                after=None,
+            )
+            audit_action = (
+                "ims.push_failed" if disposition == "failed" else "ims.push_retry_scheduled"
+            )
+
+        if disposition == "pushed":
+            pushed += 1
+        elif disposition == "conflict":
+            conflict += 1
+        elif disposition == "failed":
+            failed += 1
+        else:
+            retry += 1
+        if disposition in ("failed", "conflict"):
+            problems.append(
+                {"source_ref": row.source_ref, "status": row.status, "error_code": row.error_code}
+            )
+        _audit_push_row(
+            session,
+            ctx,
+            push_id=row.id,
+            action=audit_action,
+            after=_push_audit_facts(
+                row,
+                source_ref=row.source_ref,
+                next_attempt_at=row.next_attempt_at.isoformat() if row.next_attempt_at else None,
+                idempotency_key=row.idempotency_key,
+            ),
+            request=request,
+        )
+
+    if rows:
+        await session.flush()
+        publish_event(
+            session,
+            OutboxEvent,
+            organization_id=ctx.organization_id,
+            event_type=EVT_IMS_PUSH_COMPLETED,
+            aggregate_type="ims_push_period",
+            aggregate_id=_push_aggregate_id(ctx.organization_id, claim.period),
+            payload={
+                "organization_id": str(ctx.organization_id),
+                "period": claim.period,
+                "portal": portal,
+                "pushed": pushed,
+                "failed": failed,
+                "conflict": conflict,
+                "retry_scheduled": retry,
+                #: The decisions a person now has to look at, by portal reference and code only —
+                #: nothing the portal said, so the event carries no supplier's words.
+                "needs_attention": problems[:100],
+            },
+            actor=_actor(ctx),
+        )
+    return ImsPushRecord(
+        pushed=pushed, failed=failed, conflict=conflict, retry=retry, skipped=skipped
+    )
+
+
+@dataclass(slots=True)
+class ImsPushRun:
+    """What one run over a period did, summed over its batches."""
+
+    batches: int = 0
+    pushed: int = 0
+    failed: int = 0
+    conflict: int = 0
+    retry: int = 0
+    settled: int = 0
+    skipped: int = 0
+    #: True when the run stopped at its batch cap with work still waiting.
+    more: bool = False
+
+    @property
+    def acted(self) -> int:
+        return self.pushed + self.failed + self.conflict + self.retry + self.settled
+
+
+WorkScope = Callable[[uuid.UUID], AbstractAsyncContextManager[AsyncSession]]
+
+
+async def drive_ims_push_period(
+    work_scope: WorkScope,
+    client: ImsClient,
+    organization_id: uuid.UUID,
+    period: str,
+    *,
+    now: datetime | None = None,
+    max_batches: int = domain.IMS_PUSH_MAX_BATCHES_PER_RUN,
+) -> ImsPushRun:
+    """Send one period's waiting decisions: claim, call, record — repeated a batch at a time.
+
+    The one function the consumer of `EVT_IMS_PUSH_REQUESTED` and the reclaim sweep both call, so a
+    push a person asked for and a push a crash left half-done are the same code. Each claim and each
+    record is its own short transaction under `work_scope` (the tenant-bound `session_scope`); the
+    portal call in between runs with **no session open, on a worker thread** (D3). It stops when the
+    period has nothing waiting, when the portal is unreachable (the rows carry their own backoff —
+    hammering an outage from a loop would only spend the budget), or at `max_batches`, in which case
+    `more` is set and the next tick continues.
+    """
+    ctx = service_ctx(organization_id)
+    limit = max(1, min(client.push_batch_limit, domain.IMS_PUSH_BATCH_MAX))
+    run = ImsPushRun()
+    for _ in range(max_batches):
+        clock = now or _now()
+        async with work_scope(organization_id) as session:
+            claim = await claim_ims_push_batch(
+                session, ctx, period=period, now=clock, limit=limit, portal=client.name
+            )
+        run.settled += claim.settled
+        if claim.outcome != "batch":
+            return run
+
+        outcome = await call_ims_push_off_loop(client, claim.gstin, period, claim.items)
+
+        async with work_scope(organization_id) as session:
+            recorded = await record_ims_push_batch(
+                session, ctx, claim, outcome, portal=client.name, now=clock
+            )
+        run.batches += 1
+        run.pushed += recorded.pushed
+        run.failed += recorded.failed
+        run.conflict += recorded.conflict
+        run.retry += recorded.retry
+        run.skipped += recorded.skipped
+        if outcome.kind != "answered":
+            return run
+    run.more = True
+    return run
+
+
+@dataclass(frozen=True, slots=True)
+class DriftResult:
+    detected: int = 0
+    cleared: int = 0
+
+
+_DRIFT_CHUNK = 500
+
+
+async def flag_ims_drift(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    fetched: Sequence[ImsSupplierDocument],
+    *,
+    at: datetime,
+) -> DriftResult:
+    """After a sync: does the portal now hold what was pushed? The reconciliation half of C2.
+
+    For every fetched document whose portal row has a **current, `pushed`** decision, compare what
+    the portal reports as the taxpayer's action (`ImsSupplierDocument.action`) with what was pushed.
+    A disagreement sets `drift` (and announces it once, on the sync that first sees it); the two
+    agreeing again clears it. A push still `queued`, `failed` or `conflict` is never compared — it
+    is *known* not to match; drift means "we told GSTN, and GSTN does not say so". A portal that
+    reports no action for a row (`None`) is silence, not disagreement.
+
+    One query per chunk of references and one write per group — never a query per document.
+    Called inside `record_ims_fetch`'s transaction.
+    """
+    # An action outside the portal vocabulary (`domain.IMS_PORTAL_ACTIONS`) is an adapter that did
+    # not map its answer, and is treated as silence rather than compared: a word this platform
+    # does not know cannot be a disagreement about a decision it does.
+    known = set(domain.IMS_PORTAL_ACTIONS.values())
+    observed = {doc.source_ref: doc.action for doc in fetched if doc.action in known}
+    if not observed:
+        return DriftResult()
+    refs = list(observed)
+    detected = cleared = 0
+    newly: list[dict[str, Any]] = []
+    for start in range(0, len(refs), _DRIFT_CHUNK):
+        chunk = refs[start : start + _DRIFT_CHUNK]
+        rows = (
+            (
+                await session.execute(
+                    select(ImsPush)
+                    .where(
+                        ImsPush.organization_id == ctx.organization_id,
+                        ImsPush.is_current.is_(True),
+                        ImsPush.status == "pushed",
+                        ImsPush.deleted_at.is_(None),
+                        ImsPush.source_ref.in_(chunk),
+                    )
+                    .order_by(ImsPush.id)
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            seen = observed[row.source_ref]
+            drifted = domain.ims_is_drift(pushed_action=row.action, observed=seen)
+            row.observed_action = seen
+            row.observed_at = at
+            if drifted and not row.drift:
+                row.drift = True
+                row.drift_detected_at = at
+                detected += 1
+                newly.append(
+                    {
+                        "source_ref": row.source_ref,
+                        "pushed": domain.ims_portal_action(row.action),
+                        "observed": seen,
+                    }
+                )
+                _audit_push_row(
+                    session,
+                    ctx,
+                    push_id=row.id,
+                    action="ims.push_drift",
+                    after=_push_audit_facts(row, observed_action=seen),
+                )
+            elif not drifted and row.drift:
+                row.drift = False
+                cleared += 1
+                _audit_push_row(
+                    session,
+                    ctx,
+                    push_id=row.id,
+                    action="ims.push_drift_cleared",
+                    after=_push_audit_facts(row, observed_action=seen),
+                )
+    if detected or cleared:
+        await session.flush()
+    if newly:
+        publish_event(
+            session,
+            OutboxEvent,
+            organization_id=ctx.organization_id,
+            event_type=EVT_IMS_PUSH_DRIFT_DETECTED,
+            aggregate_type="ims_push_period",
+            aggregate_id=_push_aggregate_id(ctx.organization_id, fetched[0].period),
+            payload={
+                "organization_id": str(ctx.organization_id),
+                "period": fetched[0].period,
+                "detected": detected,
+                "items": newly[:100],
+            },
+            actor=_actor(ctx),
+        )
+    return DriftResult(detected=detected, cleared=cleared)
 
 
 # --------------------------------------------------------------------- GST returns

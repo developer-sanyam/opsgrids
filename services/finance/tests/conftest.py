@@ -63,6 +63,7 @@ TENANT_TABLES = (
     "purchase_documents",
     "ims_documents",
     "ims_reconciliations",
+    "ims_decision_pushes",
     "ims_decisions",
     "payments",
     "payment_allocations",

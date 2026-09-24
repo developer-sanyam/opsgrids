@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/finance.compliance.ims_push.drift_detected/v1",
+  "title": "finance.compliance.ims_push.drift_detected",
+  "description": "An IMS sync found the portal disagreeing with decisions that had been pushed to it: GSTN was told one thing and now records another (somebody acted on the portal directly, or a push did not land as recorded). Published once per sync, for the decisions that newly drifted; a decision that stays drifted is not announced again, and one that agrees again clears its flag silently. Credit on the platform's own ITC ledger follows the platform's decision, not the portal's acknowledgement — drift is a reconciliation flag for a person, never an input to the ledger.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "period", "detected", "items"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "period": { "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$" },
+    "detected": { "type": "integer", "minimum": 1 },
+    "items": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_ref", "pushed", "observed"],
+        "properties": {
+          "source_ref": { "type": "string" },
+          "pushed": { "enum": ["accepted", "rejected", "pending", "no_action"] },
+          "observed": { "enum": ["accepted", "rejected", "pending", "no_action"] }
+        }
+      }
+    }
+  }
+}

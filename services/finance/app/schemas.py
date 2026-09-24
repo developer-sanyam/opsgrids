@@ -22,7 +22,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # --------------------------------------------------------------------- service metadata
 
@@ -44,7 +44,8 @@ CustomerStanding = str  # overdue | open | clear
 SupplyType = str  # b2b | b2c | export | sez
 FilingStatus = str  # pending | filed | failed | cancelled | cancelling (a withdrawal in flight)
 ImsStatus = str  # pending | accepted | rejected | pending_action
-ImsAction = str  # accept | reject | pending_action
+ImsAction = str  # accept | reject | pending_action | no_action
+ImsPushStatus = str  # queued | submitting | pushed | failed | conflict | superseded
 ImsReason = str  # matched | amount_mismatch | supplier_unknown | no_purchase_record | duplicate
 ImsExpenseCategory = str  # general | ... — see domain.ITC_EXPENSE_CATEGORIES
 ReturnType = str  # gstr1 | gstr7 | gstr3b
@@ -588,6 +589,53 @@ class ImsSuggestion(BaseModel):
     computed_at: datetime
 
 
+class ImsPushOut(BaseModel):
+    """Whether GSTN has been told what one decision says (C2).
+
+    The decision is the ledger row and is never touched; this is where its delivery stands. A
+    `queued` push is decided and waiting for somebody with the push permission to ask
+    (`requested_at` is null) or, after an outage, for its backoff (`next_attempt_at`).
+    `pushed` means GSTN holds this decision at this version. `failed` and `conflict` need a
+    person: the first is a
+    portal refusal (`error_code`, `error` — masked) or a spent budget, the second is GSTN holding
+    something else for the document. `drift` is true while a pushed decision disagrees with what the
+    last sync saw on the portal (`observed_action`).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    decision_id: uuid.UUID
+    ims_document_id: uuid.UUID
+    period: str
+    action: ImsAction
+    #: The decision's ordinal within its document — 1 for the first, 2 after a change of mind. Half
+    #: of the idempotency key the portal deduplicates on.
+    version: int
+    status: ImsPushStatus
+    #: Whether this is the push of the document's newest decision.
+    is_current: bool
+    requested_at: datetime | None
+    attempts: int
+    #: The attempt budget: a push that has made this many portal calls without an answer becomes
+    #: `failed` with `retry_exhausted`. Filled in by the read model, not stored per row.
+    max_attempts: int = 0
+    next_attempt_at: datetime | None
+    pushed_at: datetime | None
+    #: The portal's numbered code, or the platform's own (`unavailable`, `rate_limited`,
+    #: `retry_exhausted`, `no_registration`).
+    error_code: str | None
+    #: The portal's words, **masked** of identifiers on the way in.
+    error: str | None
+    portal: str | None
+    #: What the last sync saw the portal hold for the row, in the portal's words (`accepted`,
+    #: `rejected`, `pending`, `no_action`), and when.
+    observed_action: str | None
+    observed_at: datetime | None
+    drift: bool
+    drift_detected_at: datetime | None
+
+
 class ImsDecisionOut(BaseModel):
     """One operator's decision on one inbound document — a row of history, never a status.
 
@@ -606,6 +654,10 @@ class ImsDecisionOut(BaseModel):
     #: The subject id of whoever decided.
     decided_by: str
     decided_at: datetime
+    #: The decision's ordinal within its document, and where its delivery to GSTN stands. Null on a
+    #: decision recorded before pushes existed and not yet asked for.
+    version: int | None = None
+    push: ImsPushOut | None = None
 
 
 class ImsDocumentOut(BaseModel):
@@ -640,6 +692,9 @@ class ImsDocumentOut(BaseModel):
     fetched_at: datetime
     suggestion: ImsSuggestion | None = None
     decision: ImsDecisionOut | None = None
+    #: Where the delivery of the newest decision to GSTN stands. Null before anything was decided —
+    #: and on a decision recorded before pushes existed, until a person asks for its period.
+    push: ImsPushOut | None = None
 
 
 class ImsDocumentDetail(BaseModel):
@@ -664,16 +719,123 @@ class ImsDecisionCreate(BaseModel):
     """Record a decision on one inbound document. Append-only: a change of mind is a further row,
     never an edit, because the question asked later is what was decided *and when*."""
 
-    #: accept | reject | pending_action.
+    model_config = ConfigDict(extra="forbid")
+
+    #: accept | reject | pending_action | no_action.
     action: ImsAction
-    #: The operator's own note. Free text: the portal takes no reason code for an IMS action, and
-    #: a dropdown would only invite an untrue answer.
-    note: str | None = None
+    #: The operator's own note — the reason. Free text: the portal takes no reason code for an IMS
+    #: action, and a dropdown would only invite an untrue answer.
+    note: str | None = Field(default=None, max_length=1000)
     #: What the document was for — `domain.ITC_EXPENSE_CATEGORIES`. Decides, on an `accept`,
     #: whether the ITC ledger accrues credit at all: a category in `domain.BLOCKED_ITC_CATEGORIES`
     #: accrues nothing, which is how Section 17(5) is enforced when nothing upstream classifies an
     #: inbound document any further than a supplier, a number and four money columns.
     expense_category: ImsExpenseCategory = "general"
+
+
+class ImsBulkDecisionItem(BaseModel):
+    """One document's decision inside a bulk request — its own action and its own reason."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    document_id: uuid.UUID
+    action: ImsAction
+    #: This document's reason. Per row on purpose: "rejected" is a different sentence for a
+    #: duplicate and for an amount that does not match, and one note for forty rows would say
+    #: neither.
+    note: str | None = Field(default=None, max_length=1000)
+    expense_category: ImsExpenseCategory = "general"
+
+
+class ImsBulkDecisionCreate(BaseModel):
+    """Record decisions on several inbound documents in one transaction — all of them or none.
+
+    Not a way around anything: every item becomes its own append-only decision row with its own
+    audit row, its own suggestion snapshot, its own ITC posting and its own queued push, exactly as
+    if it had been decided alone, with the same person's name against it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[ImsBulkDecisionItem] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def _one_decision_per_document(self) -> ImsBulkDecisionCreate:
+        seen: set[uuid.UUID] = set()
+        for item in self.items:
+            if item.document_id in seen:
+                raise ValueError(
+                    f"document {item.document_id} appears twice; a bulk request decides each "
+                    "document once — a change of mind is a second request"
+                )
+            seen.add(item.document_id)
+        return self
+
+
+class ImsBulkDecisionResult(BaseModel):
+    document_id: uuid.UUID
+    decision: ImsDecisionOut
+
+
+class ImsBulkDecisionOut(BaseModel):
+    results: list[ImsBulkDecisionResult]
+
+
+class ImsPushWithDocument(BaseModel):
+    """One push on a list page, with enough of its document to be recognisable."""
+
+    push: ImsPushOut
+    supplier_name: str
+    supplier_gstin: str
+    document_number: str
+    document_type: DocumentType
+    total_minor: int
+
+
+class ImsPushSummaryOut(BaseModel):
+    """Where one return period's pushes stand — what the inbox's push control is drawn from.
+
+    Counts are of each document's *current* push (its newest decision's). `pushable` is what a push
+    request would now send: decisions waiting (`queued`) and refused ones a person may send again
+    (`failed`). A `conflict` is never pushable — the portal holds something else, and only a new
+    decision resolves it.
+    """
+
+    period: str
+    queued: int
+    submitting: int
+    pushed: int
+    failed: int
+    conflict: int
+    #: Documents whose pushed decision disagrees with what the last sync saw on the portal.
+    drift: int
+    pushable: int
+    #: Decisions recorded before pushes existed: they have no push row until asked for, and are
+    #: counted here so the period's real backlog is visible. A push request includes them.
+    unqueued: int
+
+
+class ImsPushRequestIn(BaseModel):
+    """Send the decisions of one return period to the portal — the ones waiting, and the refused
+    ones a person is choosing to send again."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    period: str
+    #: Limit the push to these documents (each must be part of this organization). Null sends every
+    #: pushable decision of the period.
+    document_ids: list[uuid.UUID] | None = Field(default=None, min_length=1, max_length=500)
+
+
+class ImsPushRequestOut(BaseModel):
+    """What a push request did: staged, not sent. The portal call happens afterwards, in the worker
+    (D3), and its outcome reaches the queue as each push's status."""
+
+    period: str
+    #: Pushes now asked for — they leave `queued` for `submitting` when the worker claims them.
+    requested: int
+    #: Pushes in scope that were not asked for: already pushed, in conflict, or superseded.
+    not_pushable: int
 
 
 class ImsSyncIn(BaseModel):
@@ -700,6 +862,10 @@ class ImsSyncOut(BaseModel):
     reconciled: int
     #: Groups every suggestion this pass produced, so a run can be read back whole.
     run_id: uuid.UUID
+    #: Pushed decisions this sync found the portal disagreeing with (newly), and ones it found
+    #: agreeing again (C2). Zero when nothing had been pushed.
+    drift_detected: int = 0
+    drift_cleared: int = 0
 
 
 # --------------------------------------------------------------------- GST returns
@@ -1183,6 +1349,16 @@ class GenerateEwayIn(BaseModel):
     transport_doc_no: str | None = None
     transport_doc_date: date | None = None
     over_dimensional: bool = False
+
+
+class EwayRetryIn(BaseModel):
+    """Ask for another attempt at raising one document's e-Way bill, now (C4). Only the document is
+    named: the transport facts are the ones the original request committed to the ledger, never
+    retyped here — a retry that could change them would be a new request, not a retry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    invoice_id: uuid.UUID
 
 
 class CancelEwayIn(BaseModel):

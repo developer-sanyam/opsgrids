@@ -140,6 +140,8 @@ SUBSCRIBABLE_EVENTS: Final[tuple[str, ...]] = (
     "finance.compliance.gst_return.generated",
     "finance.compliance.ims_document.decided",
     "finance.compliance.ims_document.ingested",
+    "finance.compliance.ims_push.completed",
+    "finance.compliance.ims_push.drift_detected",
     "finance.compliance.invoice.filed",
     "finance.compliance.invoice.filing_cancelled",
     "finance.compliance.invoice.filing_failed",

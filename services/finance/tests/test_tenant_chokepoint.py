@@ -61,6 +61,10 @@ _NOT_SCOPE_FILTERED: frozenset[str] = frozenset(
         # reclaim sweep to re-drive. Same role, same reason, same column-scoped grant.
         "due_stale_filings",
         "due_stale_eway",
+        # And C2's: which (organization, period) has an IMS push a person asked for that nobody has
+        # sent, or a claim past its lease. Same role, same reason, and a column grant that reads
+        # identifiers, a status and timestamps — never the decision's action or the portal's words.
+        "due_ims_pushes",
         # Aggregate/grouped reports, not scope-narrowed *list* reads: each groups every row this
         # organization owns into a handful of summary rows rather than returning one row per
         # record for a caller to page through, so there is nothing an OWN/TEAM scope would ever

@@ -699,6 +699,132 @@ class ImsDecision(Base, TenantBase):
     )
 
 
+class ImsPush(Base, TenantBase):
+    """Whether GSTN has been told what one decision says — the delivery of an immutable fact.
+
+    One row per `ims_decisions` row, created in the transaction that records the decision. The
+    decision is never touched: it says what a person decided, and this says where that stands with
+    the portal, so a change of mind is a new decision with a new push, and the older push is
+    `superseded` or simply history.
+
+    **Not append-only, and deliberately.** The other compliance ledgers are (a trigger refuses any
+    UPDATE) because each row is a fact that happened. This one is a *state machine* with a lease
+    (`submitting`, `lease_until`, `attempts`), and the single-flight guarantee is a conditional
+    `UPDATE ... RETURNING`, which cannot coexist with a trigger refusing updates. What the database
+    still enforces is what makes that safe (`ims_decision_pushes_guard`, see the migration): the
+    identity of a push — which decision, which document, which period, which action and version,
+    under which key — can never change; a row is never deleted; and `status` only moves along the
+    edges of the state machine (`domain.IMS_PUSH_STATUSES`). Every transition writes its own
+    audit row, which *is* append-only, so the history of a push is never only what the row says
+    now.
+
+    Discovery by the reclaim sweep reads (`organization_id`, `id`, `period`, `status`,
+    `requested_at`, `next_attempt_at`, `lease_until`, `deleted_at`) on the outbox role's
+    column-scoped grant, and nothing else.
+    """
+
+    __tablename__ = "ims_decision_pushes"
+
+    ims_document_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("finance.ims_documents.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    decision_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("finance.ims_decisions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: The return period, copied from the document: the unit a push is batched and rate-limited by,
+    #: and what the sweep discovers work by without reading a document.
+    period: Mapped[str] = mapped_column(String(7), nullable=False)
+    #: The portal's reference for the row, copied for the same reason — the sync's drift check
+    #: matches what the portal reports against pushes by this, in one query, with no join.
+    source_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: The decision's action (`domain.IMS_ACTIONS`) and its ordinal within the document.
+    action: Mapped[str] = mapped_column(String(20), nullable=False)
+    version: Mapped[int] = mapped_column(nullable=False)
+    #: `domain.ims_push_key` — what the portal deduplicates on. Unique per organization.
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
+
+    #: `domain.IMS_PUSH_STATUSES`.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    #: Whether this is the push of the document's newest decision. At most one per document
+    #: (a partial unique index), and what "the document's push status" means everywhere it is read.
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    #: When a person with the push permission asked for it to be sent, and who. Null until then:
+    #: `queued` alone means "decided, awaiting a push", never "send me".
+    requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    requested_by: Mapped[str | None] = mapped_column(String(64))
+    #: Portal calls made for this push. Also the **fencing token** of a claim: a recorder writes its
+    #: outcome only `WHERE attempts = <the value its claim took>`, so a late answer from a worker
+    #: whose lease lapsed cannot overwrite what the worker that took over recorded.
+    attempts: Mapped[int] = mapped_column(nullable=False, default=0)
+    #: After an outage, not before: the bounded backoff (`domain.ims_push_retry_delay`).
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: While `submitting`: the claim stands until this, then the sweep may resume it.
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The portal's numbered code, or the platform's own (`unavailable`, `rate_limited`,
+    #: `retry_exhausted`, `no_registration`).
+    error_code: Mapped[str | None] = mapped_column(String(20))
+    #: The portal's words, **masked** of identifiers on the way in (`domain.mask_portal_text`).
+    error: Mapped[str | None] = mapped_column(Text)
+    portal: Mapped[str | None] = mapped_column(String(30))
+
+    #: What the last sync saw the portal hold for the row (`domain.IMS_PORTAL_ACTIONS` values), and
+    #: when. `drift` is true while a `pushed` decision disagrees with it — somebody acted on the
+    #: portal directly, or the push did not land as recorded.
+    observed_action: Mapped[str | None] = mapped_column(String(20))
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    drift: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    drift_detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "decision_id", name="uq_ims_pushes_org_decision"),
+        UniqueConstraint(
+            "organization_id", "idempotency_key", name="uq_ims_pushes_org_idempotency_key"
+        ),
+        # One current push per document — the row every screen means by "its push status".
+        Index(
+            "uq_ims_pushes_org_document_current",
+            "organization_id",
+            "ims_document_id",
+            unique=True,
+            postgresql_where=text("is_current"),
+        ),
+        # "This period's pushes by where they stand" — the list, the summary and the claim.
+        Index("ix_ims_pushes_org_period_status", "organization_id", "period", "status"),
+        # The reclaim sweep's discovery is cross-tenant (no organization to lead with) and reads
+        # only unfinished work, so the index is partial on exactly that.
+        Index(
+            "ix_ims_pushes_open_work",
+            "status",
+            "organization_id",
+            "period",
+            postgresql_where=text("status IN ('queued', 'submitting')"),
+        ),
+        Index(
+            "ix_ims_pushes_org_drift",
+            "organization_id",
+            "period",
+            postgresql_where=text("drift"),
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'submitting', 'pushed', 'failed', 'conflict', 'superseded')",
+            name="status",
+        ),
+        CheckConstraint(
+            "action IN ('accept', 'reject', 'pending_action', 'no_action')",
+            name="action",
+        ),
+        CheckConstraint("version >= 1", name="version"),
+        CheckConstraint("attempts >= 0", name="attempts"),
+    )
+
+
 class ItcLedgerEntry(Base, TenantBase):
     """One posting to the input-tax-credit ledger — append-only, and evidence, like
     `einvoice_filings` and `ims_decisions`.

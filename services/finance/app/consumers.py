@@ -59,7 +59,7 @@ from typing import Any
 
 from app import domain, services
 from app.config import settings
-from app.deps import get_eway_client, get_irp_client
+from app.deps import get_eway_client, get_ims_client, get_irp_client
 from app.models import ProcessedEvent
 from platform_core.db import assert_app_role, init_engine, session_scope
 from platform_core.errors import BusinessRuleProblem
@@ -335,6 +335,74 @@ async def generate_requested_eway(envelope: dict[str, Any]) -> None:
 
 
 consumer.on(services.EVT_EWAY_GENERATION_REQUESTED)(generate_requested_eway)
+
+
+async def push_requested_ims(envelope: dict[str, Any]) -> None:
+    """Send one return period's IMS decisions to GSTN because a person with the push permission
+    asked (C2).
+
+    Bound to `finance.compliance.ims_push.requested`, published by `services.request_ims_push` in
+    the same short transaction that marked the pushes as asked for. The properties are the filing
+    consumer's list, for the same reasons, and each has a test:
+
+    * **claim / call / record, never a call inside a transaction** (D3) — `drive_ims_push_period`
+      does the three acts, batch by batch, each claim and record in its own `session_scope`, the
+      portal call between them with no session open and off the event loop;
+    * **the message is marked processed first, in its own short transaction**, and the *rows* are
+      the work: what a crash leaves behind is a push the person asked for that is still `queued` or
+      `submitting`, which the reclaim sweep finds and resumes. Redelivery is therefore never the
+      recovery, and a redelivered message finds nothing left to do;
+    * **the tenant is bound from the envelope, never the payload** (ADR-0015 review).
+
+    Never raises for a business situation: a period with nothing waiting, a portal that is down (the
+    rows carry their own backoff), a period already sent by the sweep — all are outcomes, logged.
+    """
+    event_id = uuid.UUID(envelope["event_id"])
+    payload = envelope["payload"]
+    envelope_organization_id = uuid.UUID(str(envelope["organization_id"]))
+    payload_organization_id = uuid.UUID(payload["organization_id"])
+    period = str(payload["period"])
+
+    async with session_scope(organization_id=envelope_organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("finance.ims_push.duplicate", event_id=str(event_id))
+            return
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+
+    if payload_organization_id != envelope_organization_id:
+        log.error(
+            "finance.ims_push.organization_mismatch",
+            event_id=str(event_id),
+            envelope_organization_id=str(envelope_organization_id),
+            payload_organization_id=str(payload_organization_id),
+        )
+        return
+
+    client = get_ims_client()
+    run = await services.drive_ims_push_period(
+        lambda organization_id: session_scope(organization_id=organization_id),
+        client,
+        envelope_organization_id,
+        period,
+    )
+    log.info(
+        "finance.ims_push.run",
+        event_id=str(event_id),
+        organization_id=str(envelope_organization_id),
+        period=period,
+        batches=run.batches,
+        pushed=run.pushed,
+        failed=run.failed,
+        conflict=run.conflict,
+        retry=run.retry,
+        settled=run.settled,
+        skipped=run.skipped,
+        more=run.more,
+        portal=client.name,
+    )
+
+
+consumer.on(services.EVT_IMS_PUSH_REQUESTED)(push_requested_ims)
 
 
 async def main() -> None:

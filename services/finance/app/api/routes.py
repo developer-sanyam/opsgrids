@@ -35,6 +35,7 @@ from app.schemas import (
     EInvoiceFilingOut,
     EwayBillOut,
     EwayBillWithInvoice,
+    EwayRetryIn,
     EwayState,
     FileReturnIn,
     GenerateReturnIn,
@@ -42,10 +43,17 @@ from app.schemas import (
     GstRegistrationUpsert,
     GstReturnDetail,
     GstReturnOut,
+    ImsBulkDecisionCreate,
+    ImsBulkDecisionOut,
+    ImsBulkDecisionResult,
     ImsDecisionCreate,
     ImsDecisionOut,
     ImsDocumentDetail,
     ImsDocumentOut,
+    ImsPushRequestIn,
+    ImsPushRequestOut,
+    ImsPushSummaryOut,
+    ImsPushWithDocument,
     InvoiceCreate,
     InvoiceIssueIn,
     InvoiceOut,
@@ -66,7 +74,7 @@ from app.schemas import (
 from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.cache import enforce_rate_limit
 from platform_core.db import get_tenant_session
-from platform_core.errors import NotFoundProblem
+from platform_core.errors import BusinessRuleProblem, NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
 # Registering the finance scope resolver at import of the api module ties it to the product it
@@ -132,6 +140,12 @@ ImsRead = Annotated[
 #: this is a separate, dangerous permission rather than a wider read.
 ImsDecide = Annotated[
     ScopeContext, Depends(require("finance.compliance.ims.decide", minimum=Scope.ORG))
+]
+#: *Telling GSTN* what was decided is a third, separate act (C2), behind a third, separate and
+#: dangerous permission: recording a decision is the platform's own position, and a clerk who may
+#: record decisions for a supervisor to review must not be able to send them by holding that alone.
+ImsPushAllowed = Annotated[
+    ScopeContext, Depends(require("finance.compliance.ims.push", minimum=Scope.ORG))
 ]
 ReturnRead = Annotated[
     ScopeContext, Depends(require("finance.compliance.returns.read", minimum=Scope.ORG))
@@ -549,7 +563,7 @@ async def read_eway_state(invoice_id: uuid.UUID, session: SessionDep, ctx: EwayR
 
 
 @router.post(
-    "/finance/invoices/{invoice_id}/eway/retry",
+    "/finance/eway-bills/retries",
     response_model=EwayState,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Retry raising one document's e-Way bill now",
@@ -566,7 +580,7 @@ async def read_eway_state(invoice_id: uuid.UUID, session: SessionDep, ctx: EwayR
     },
 )
 async def retry_eway_bill(
-    invoice_id: uuid.UUID, session: SessionDep, ctx: EwayRetry, request: Request
+    payload: EwayRetryIn, session: SessionDep, ctx: EwayRetry, request: Request
 ) -> EwayState:
     """Ask for another attempt at a bill, without waiting for the automatic retry (C4).
 
@@ -581,6 +595,7 @@ async def retry_eway_bill(
     A portal **refusal** is a 409 naming the code and what to fix: the identical consignment would
     be refused again. Rate limited per document.
     """
+    invoice_id = payload.invoice_id
     await enforce_rate_limit(
         f"finance.eway.retry:{ctx.organization_id}:{invoice_id}",
         limit=1,
@@ -681,6 +696,19 @@ async def list_ims_documents(
     sort: Annotated[
         str, Query(description="date_asc|date_desc|amount_desc|amount_asc")
     ] = "date_asc",
+    push_status: Annotated[
+        str | None,
+        Query(
+            description=(
+                "queued|submitting|pushed|failed|conflict — where the delivery of the newest "
+                "decision to GSTN stands"
+            )
+        ),
+    ] = None,
+    drift: Annotated[
+        bool | None,
+        Query(description="true: only documents whose pushed decision the portal disagrees with"),
+    ] = None,
 ) -> Page[ImsDocumentOut]:
     """The queue, filtered the way it is actually worked.
 
@@ -702,6 +730,8 @@ async def list_ims_documents(
         period=period,
         reason=reason,
         sort=sort,
+        push_status=push_status,
+        drift=drift,
     )
     return Page.build(items, total=total, params=params)
 
@@ -757,7 +787,142 @@ async def decide_ims_document(
     decision = await services.record_ims_decision(
         session, ctx, document_id, payload, request=request
     )
-    return selectors.to_ims_decision_out(decision)
+    pushes = await selectors.pushes_for_decisions(session, ctx.organization_id, [decision.id])
+    return selectors.to_ims_decision_out(decision, pushes.get(decision.id))
+
+
+@router.post(
+    "/finance/ims/decisions",
+    response_model=ImsBulkDecisionOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record decisions on several inbound supplier documents at once",
+    dependencies=[Entitled],
+    responses={
+        404: {"description": "One of those documents is not part of this organization"},
+    },
+)
+async def decide_ims_documents_bulk(
+    payload: ImsBulkDecisionCreate, session: SessionDep, ctx: ImsDecide, request: Request
+) -> ImsBulkDecisionOut:
+    """Decide up to 100 documents in one request — each with its own action and its own reason —
+    all of them or none.
+
+    Not a shortcut around the per-document route: every item becomes its own append-only decision
+    row with the suggestion snapshotted beside it, its own audit row, its own ITC posting and its
+    own queued push, under the same permission (`finance.compliance.ims.decide`, dangerous) and
+    with the same person's name against each. Recording sends nothing to GSTN; that is
+    `POST /finance/ims/pushes`, a separate permission. A document that is not this organization's
+    fails the whole request with a 404 and writes nothing.
+    """
+    decided = await services.record_ims_decisions_bulk(session, ctx, payload.items, request=request)
+    pushes = await selectors.pushes_for_decisions(
+        session, ctx.organization_id, [decision.id for _, decision in decided]
+    )
+    return ImsBulkDecisionOut(
+        results=[
+            ImsBulkDecisionResult(
+                document_id=document_id,
+                decision=selectors.to_ims_decision_out(decision, pushes.get(decision.id)),
+            )
+            for document_id, decision in decided
+        ]
+    )
+
+
+@router.get(
+    "/finance/ims/pushes",
+    response_model=Page[ImsPushWithDocument],
+    summary="Decisions and where their delivery to GSTN stands",
+    dependencies=[Entitled],
+)
+async def list_ims_pushes(
+    session: SessionDep,
+    ctx: ImsRead,
+    params: PageQuery,
+    period: Annotated[str | None, Query(description="Return period, YYYY-MM")] = None,
+    status_filter: Annotated[
+        str | None,
+        Query(
+            alias="status",
+            description="queued|submitting|pushed|failed|conflict|superseded",
+        ),
+    ] = None,
+    drift: Annotated[
+        bool | None,
+        Query(description="true: pushed decisions the portal disagrees with"),
+    ] = None,
+) -> Page[ImsPushWithDocument]:
+    """One page of each document's **current** push, newest request first. Read-only, under the
+    ordinary IMS read permission: seeing where a decision stands is not sending it."""
+    items, total = await selectors.list_ims_pushes(
+        session, ctx, params, period=period, status=status_filter, drift=drift
+    )
+    return Page.build(items, total=total, params=params)
+
+
+@router.get(
+    "/finance/ims/pushes/summary",
+    response_model=ImsPushSummaryOut,
+    summary="Where one return period's pushes stand",
+    dependencies=[Entitled],
+)
+async def read_ims_push_summary(
+    session: SessionDep,
+    ctx: ImsRead,
+    period: Annotated[str, Query(description="Return period, YYYY-MM")],
+) -> ImsPushSummaryOut:
+    """A count per status for the period's current pushes, the drifted, and what a push request
+    would now send — what the inbox's push control is drawn from."""
+    try:
+        domain.parse_period(period)
+    except ValueError as exc:
+        raise BusinessRuleProblem(str(exc)) from exc
+    return await selectors.ims_push_summary(session, ctx.organization_id, period)
+
+
+@router.post(
+    "/finance/ims/pushes",
+    response_model=ImsPushRequestOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Send one return period's decisions to GSTN",
+    dependencies=[Entitled],
+    responses={
+        404: {"description": "One of the named documents is not part of this organization"},
+        422: {
+            "description": "A malformed period, no GST registration, or documents of another period"
+        },
+        429: {"description": "Asked for this period too recently"},
+    },
+)
+async def request_ims_push(
+    payload: ImsPushRequestIn, session: SessionDep, ctx: ImsPushAllowed, request: Request
+) -> ImsPushRequestOut:
+    """Ask for a period's waiting decisions (and refused ones a person chooses to send again) to be
+    told to GSTN.
+
+    **202, not 200**: this marks them as asked for and stages the request; the portal call happens
+    afterwards, in the worker, on the same claim / call / record path everything else uses (D3) —
+    a route wrapped end to end by the tenant transaction must never hold it open across a
+    government's answer. Read each decision's `push.status` from the queue to see how it went.
+    Behind its own permission, marked dangerous, and rate limited per period: it is a government
+    call, and a hammered button is refused rather than queued.
+    """
+    try:
+        domain.parse_period(payload.period)
+    except ValueError as exc:
+        raise BusinessRuleProblem(str(exc)) from exc
+    await enforce_rate_limit(
+        f"finance.ims.push:{ctx.organization_id}:{payload.period}",
+        limit=1,
+        window_seconds=domain.IMS_PUSH_REQUEST_WINDOW_SECONDS,
+    )
+    return await services.request_ims_push(
+        session,
+        ctx,
+        period=payload.period,
+        document_ids=payload.document_ids,
+        request=request,
+    )
 
 
 # --------------------------------------------------------------------- payments

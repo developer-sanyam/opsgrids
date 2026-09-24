@@ -709,16 +709,123 @@ IMS_DOCUMENT_TYPES: frozenset[str] = frozenset({"invoice", "credit_note", "debit
 #:   pending_action — deliberately parked: real, but not this period's, or not yet agreed.
 IMS_STATUSES: frozenset[str] = frozenset({"pending", "accepted", "rejected", "pending_action"})
 
-#: What an operator may decide. One-to-one with the three settled statuses above; `pending` is not
-#: a decision, it is the absence of one.
-IMS_ACTIONS: frozenset[str] = frozenset({"accept", "reject", "pending_action"})
+#: What an operator may decide. The three settled statuses above, plus `no_action` (C2): an explicit
+#: *"I looked, and I choose to take none"* — the decision that withdraws an earlier accept, reject
+#: or hold. It returns the document to `pending`, so nothing about it claims credit, and it is a
+#: row of its own on the ledger like every other decision. It is **not** an accept: GSTN treats a
+#: document nobody acted on as deemed accepted when the return is filed, and this platform does
+#: not — nothing here ever claims credit that a person did not accept.
+IMS_ACTIONS: frozenset[str] = frozenset({"accept", "reject", "pending_action", "no_action"})
 
 #: `action` → the status the document takes once that action is recorded.
 IMS_ACTION_STATUS: dict[str, str] = {
     "accept": "accepted",
     "reject": "rejected",
     "pending_action": "pending_action",
+    "no_action": "pending",
 }
+
+# --------------------------------------------------------------------- IMS: pushing decisions back
+# Recording a decision is the platform's own position, appended to its own ledger (`ims_decisions`);
+# telling GSTN what was decided is a second act with a second failure mode, so it has its own state
+# machine (`ims_decision_pushes`), its own permission, and its own recovery — and it never edits
+# the decision it carries. The ledger says what a person decided; the push says whether GSTN has
+# been told.
+
+#: A push's position. One row per decision.
+#:
+#:   queued      — decided locally; not yet sent. Waits for a person with the push permission to ask
+#:                 (`requested_at`), and after an outage for its backoff (`next_attempt_at`).
+#:   submitting  — claimed by a worker for a portal call, under a lease. A row still `submitting`
+#:                 past its lease is one whose worker died between the call and the record.
+#:   pushed      — GSTN holds this decision at this version (recorded, or already recorded).
+#:   failed      — the portal refused it, or the attempt budget is spent. Terminal until a person
+#:                 asks again.
+#:   conflict    — GSTN holds something else for this document (a different action at this
+#:                 version, or a newer one): a person has to reconcile, never a retry.
+#:   superseded  — a newer decision was recorded for the document before this one was sent.
+IMS_PUSH_STATUSES: frozenset[str] = frozenset(
+    {"queued", "submitting", "pushed", "failed", "conflict", "superseded"}
+)
+
+#: How a decision is written on the portal. GSTN's own words for the three actions, and for the
+#: absence of one; `pending_action` is this platform's name for GSTN's "pending".
+IMS_PORTAL_ACTIONS: dict[str, str] = {
+    "accept": "accepted",
+    "reject": "rejected",
+    "pending_action": "pending",
+    "no_action": "no_action",
+}
+
+#: Documents per portal call. The portal's own ceiling is the client's to declare
+#: (`ImsClient.push_batch_limit`); this is the platform's, whichever is smaller wins.
+IMS_PUSH_BATCH_MAX: int = 200
+
+#: How many batches one run (a consumer message, or one sweep visit to a period) may send before it
+#: stops and lets the next tick continue — a period with thousands of decisions must not hold a
+#: worker for as long as it takes.
+IMS_PUSH_MAX_BATCHES_PER_RUN: int = 25
+
+#: Portal calls one push may make before it becomes a terminal `failed(retry_exhausted)` — the
+#: poisoned-step guard. Six on a 1 to 30 minute backoff spans about an hour.
+IMS_PUSH_MAX_ATTEMPTS: int = 6
+IMS_PUSH_RETRY_BASE: timedelta = timedelta(minutes=1)
+IMS_PUSH_RETRY_CEILING: timedelta = timedelta(minutes=30)
+
+#: How long a `submitting` claim stands before the sweep may resume it. The same figure as every
+#: other compliance claim (`FILING_RECLAIM_AFTER`), so the start-up check that a lease outlives the
+#: portal call it covers (`Settings._claims_outlive_the_call`) is the one check for all of them.
+IMS_PUSH_LEASE: timedelta = FILING_RECLAIM_AFTER
+
+#: Asking for a push of one period may repeat no faster than this (`enforce_rate_limit`): it is a
+#: government call, and a hammered button is refused rather than queued.
+IMS_PUSH_REQUEST_WINDOW_SECONDS: int = 30
+
+#: The most decisions one bulk request may record. Every one is its own append-only row with its own
+#: audit row and its own push, so the bound keeps one request's transaction small.
+IMS_BULK_DECISION_MAX: int = 100
+
+
+def ims_push_retry_delay(attempts: int) -> timedelta:
+    """How long a push waits after `attempts` unanswered portal calls (1-based): exponential from
+    a minute, capped at half an hour."""
+    if attempts < 1:
+        raise ValueError("push attempts are 1-based")
+    delay: timedelta = min(IMS_PUSH_RETRY_BASE * (2 ** (attempts - 1)), IMS_PUSH_RETRY_CEILING)
+    return delay
+
+
+def ims_push_key(period: str, source_ref: str, version: int) -> str:
+    """The idempotency key one push is sent under: **(period, document, decision version)**.
+
+    The document is named by the portal's own row reference (`source_ref`) — the identity of *that
+    row on GSTN*, not of the supplier's document, so a document the supplier filed twice is two
+    pushes, exactly as it is two rows in the queue. The version is the decision's ordinal within its
+    document: a change of mind is a new version and so a new key, while a retry of the same
+    decision is the same key, which is what lets the portal answer "already recorded" and lets
+    that answer be recorded as the success it is.
+    """
+    if version < 1:
+        raise ValueError("decision versions are 1-based")
+    return f"ims-push:{period}:{source_ref}:v{version}"
+
+
+def ims_portal_action(action: str) -> str:
+    """The portal's word for one of this platform's decision actions."""
+    try:
+        return IMS_PORTAL_ACTIONS[action]
+    except KeyError as exc:
+        raise ValueError(f"{action!r} is not an IMS action") from exc
+
+
+def ims_is_drift(*, pushed_action: str, observed: str | None) -> bool:
+    """Whether what the portal shows for a document disagrees with the decision this platform
+    pushed for it. `observed` is `None` when the portal did not say — which is not drift, it is
+    silence, and inventing a mismatch from it would flag every document a sync could not read."""
+    if observed is None:
+        return False
+    return ims_portal_action(pushed_action) != observed
+
 
 # The reason classes. Deliberately few and deliberately disjoint: a reason an operator has to
 # interpret is a reason that will be ignored.
