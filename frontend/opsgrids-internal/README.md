@@ -13,8 +13,9 @@ shapes, so the switch is a flag, not a rewrite.
 
 - **Overview** — MRR + trend, active accounts, trials, trial→paid conversion, churn, locked/suspended.
 - **Accounts** — cross-tenant directory with status, MRR and drill-down.
-- **Account detail** — subscriptions, entitlements, usage, invoices, credit ledger, and the operator
-  actions (suspend / reactivate, comp grant, bespoke price, plan migration).
+- **Account detail** — subscriptions, entitlements, usage, invoices, credit ledger, per-product
+  client pricing (set a price, apply it now or from the next period, price history), and the
+  operator actions (suspend / reactivate, comp grant).
 - **Subscriptions** — every subscription across tenants with lifecycle state and next renewal.
 - **Plans & Pricing** — the immutable catalog, and creating an audience-of-one bespoke price.
 - **Grants & Credits** — the credit-ledger view: who's on comp access and when it lapses.

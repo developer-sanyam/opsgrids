@@ -22,14 +22,17 @@ import {
   PRODUCTS,
   ORGANIZATIONS,
   SUBSCRIPTIONS,
+  applyFixturePrice,
   buildOverviewMetrics,
   organizationDetail,
+  pricingForOrg,
 } from "./fixtures";
 import type {
   AccountStatus,
   AuditEntry,
   CreditLedgerEntry,
   OrganizationDetail,
+  OrganizationPricing,
   OrganizationRow,
   OverrideRequest,
   OverrideResult,
@@ -38,6 +41,8 @@ import type {
   Plan,
   PlanVersion,
   Product,
+  SetPriceRequest,
+  SetPriceResult,
   Subscription,
 } from "./types";
 
@@ -201,6 +206,45 @@ export async function listAudit(params: ListAuditParams = {}): Promise<Page<Audi
   if (params.search?.trim()) query.set("q", params.search.trim());
   if (params.action && params.action !== "all") query.set("action", params.action);
   return apiRequest<Page<AuditEntry>>(`/admin/audit?${query.toString()}`);
+}
+
+/* --------------------------- client pricing -------------------------- */
+
+/**
+ * `GET /admin/organizations/{id}/pricing` — every product's current price, the public list price
+ * for reference, and who-changed-it-when history. `console.pricing.read`.
+ */
+export async function getOrganizationPricing(organizationId: string): Promise<OrganizationPricing> {
+  if (USE_FIXTURES) {
+    const pricing = pricingForOrg(organizationId);
+    if (!pricing) throw new Error(`No organization ${organizationId}`);
+    return settle(pricing);
+  }
+  return apiRequest<OrganizationPricing>(
+    `/admin/organizations/${encodeURIComponent(organizationId)}/pricing`,
+  );
+}
+
+/**
+ * `POST /admin/organizations/{id}/pricing` — clones the product's public flat plan into a version
+ * pinned to this organization, at the agreed price, and optionally applies it to their current
+ * subscription. `idempotencyKey` is generated once per dialog open and reused on every retry within
+ * that same open, so a double click — or a genuine retry after a dropped response — resolves to the
+ * one price change, never two. `console.pricing.write`.
+ */
+export async function setOrganizationPrice(
+  organizationId: string,
+  request: SetPriceRequest,
+  idempotencyKey: string,
+): Promise<SetPriceResult> {
+  if (USE_FIXTURES) {
+    return settle(applyFixturePrice(organizationId, request), 500);
+  }
+  return apiRequest<SetPriceResult>(`/admin/organizations/${encodeURIComponent(organizationId)}/pricing`, {
+    method: "POST",
+    body: request,
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
 }
 
 /* ----------------------------- overrides ---------------------------- */

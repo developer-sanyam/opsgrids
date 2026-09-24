@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { getCatalog, getOrganization } from "@/api/client";
+import { getOrganization } from "@/api/client";
 import type {
   Entitlement,
   OrganizationDetail,
@@ -34,17 +34,11 @@ import {
   LockIcon,
   PauseIcon,
   PlayIcon,
-  RepeatIcon,
   TagIcon,
 } from "@/ui/icons";
 import type { Subscription, Invoice, CreditLedgerEntry } from "@/api/types";
-import {
-  BespokePriceAction,
-  CompGrantAction,
-  MigratePlanAction,
-  ReactivateAction,
-  SuspendAction,
-} from "./AccountActions";
+import { ClientPricingCard } from "./AccountPricing";
+import { CompGrantAction, ReactivateAction, SuspendAction } from "./AccountActions";
 import type { ActionKind } from "./AccountActions";
 
 function EntitlementFlag({ entitlement }: { entitlement: Entitlement | undefined }) {
@@ -291,9 +285,6 @@ export function AccountDetailPage() {
 
   const loader = useCallback(() => getOrganization(orgId), [orgId]);
   const detail = useAsync(loader, [orgId, reloadKey]);
-  const catalog = useAsync(getCatalog, []);
-
-  const catalogData = catalog.status === "success" ? catalog.data : null;
 
   const handleDone = useCallback((result: OverrideResult) => {
     setBanner(result);
@@ -397,12 +388,6 @@ export function AccountDetailPage() {
             <Button variant="outline" leadingIcon={<GiftIcon className="size-4" />} onClick={() => setAction("comp")}>
               Grant credit
             </Button>
-            <Button variant="outline" leadingIcon={<TagIcon className="size-4" />} onClick={() => setAction("bespoke")}>
-              Bespoke price
-            </Button>
-            <Button variant="outline" leadingIcon={<RepeatIcon className="size-4" />} onClick={() => setAction("migrate")}>
-              Migrate plan
-            </Button>
           </div>
         </div>
       </div>
@@ -433,6 +418,8 @@ export function AccountDetailPage() {
 
       <SubscriptionsCard detail={data} />
 
+      <ClientPricingCard org={org} />
+
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
         <UsageCard usage={data.usage} />
         <InvoicesCard invoices={data.invoices} />
@@ -449,18 +436,6 @@ export function AccountDetailPage() {
       ) : null}
       {action === "comp" ? (
         <CompGrantAction org={org} onClose={() => setAction(null)} onDone={handleDone} />
-      ) : null}
-      {action === "bespoke" ? (
-        <BespokePriceAction org={org} catalog={catalogData} onClose={() => setAction(null)} onDone={handleDone} />
-      ) : null}
-      {action === "migrate" ? (
-        <MigratePlanAction
-          org={org}
-          subscriptions={data.subscriptions}
-          catalog={catalogData}
-          onClose={() => setAction(null)}
-          onDone={handleDone}
-        />
       ) : null}
     </div>
   );

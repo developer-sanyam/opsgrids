@@ -23,6 +23,7 @@ export * from "./invoices";
 export * from "./usage";
 export * from "./audit";
 export * from "./metrics";
+export * from "./pricing";
 
 /** The activation projection for one subscription — trial expiry is evaluated at read time. */
 function entitlementFor(sub: Subscription): Entitlement {
