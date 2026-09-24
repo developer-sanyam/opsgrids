@@ -193,14 +193,94 @@ export interface PlanVersion {
   bundled_products?: string[];
 }
 
+/* ------------------------------ client pricing ------------------------------ */
+
+/** `month` or `year` — the two billing cadences a plan version can carry (ADR-0004 §1). */
+export type BillingInterval = "month" | "year";
+
+/** The subscription reference a pricing row carries — enough to know what "applies now" means
+ *  without pulling the whole `Subscription` shape across a second endpoint. */
+export interface PricingSubscriptionRef {
+  id: string;
+  state: AccountStatus;
+  plan_version_id: string;
+  trial_ends_at: string | null;
+  current_period_end: string;
+}
+
+/** What this organization is paying right now for one product — `null` until a price has ever
+ *  been set for them. `is_bespoke` is the "Custom" vs "List price" badge. */
+export interface ProductCurrentPrice {
+  plan_version_id: string;
+  is_bespoke: boolean;
+  amount_minor: number;
+  currency: string;
+  billing_interval: BillingInterval;
+}
+
+/** The public flat price for reference — what a non-bespoke customer on this product's standard
+ *  plan pays. Also the plan a bespoke price clones from; absent when the product has no public
+ *  flat plan to clone (the 409 `Set price` can return). */
+export interface ProductPublicPrice {
+  plan_version_id: string;
+  amount_minor: number;
+  currency: string;
+  billing_interval: BillingInterval;
+}
+
+/** One row of who set a price, to what, when and why. */
+export interface PricingHistoryEntry {
+  plan_version_id: string;
+  amount_minor: number;
+  currency: string;
+  billing_interval: BillingInterval;
+  created_at: string;
+  /** PII-masked per CLAUDE.md's platform rules — never the operator's full address. `null` when
+   *  the row has no attributable actor (a migration, or a staff account since deleted). */
+  created_by_email_masked: string | null;
+  reason: string;
+}
+
+/** One product's whole pricing picture for one organization. */
+export interface ProductPricing {
+  product_key: string;
+  product_name: string;
+  subscription: PricingSubscriptionRef | null;
+  current_price: ProductCurrentPrice | null;
+  public_price: ProductPublicPrice | null;
+  history: PricingHistoryEntry[];
+}
+
+/** `GET /api/v1/admin/organizations/{id}/pricing`. `console.pricing.read`. */
+export interface OrganizationPricing {
+  organization_id: string;
+  products: ProductPricing[];
+}
+
+/** `POST /api/v1/admin/organizations/{id}/pricing` body. Amount is exact integer paise, parsed from
+ *  the operator's rupee entry with string arithmetic — never a float (ADR-0000 §8). */
+export interface SetPriceRequest {
+  product_key: string;
+  amount_minor: number;
+  currency: "INR";
+  billing_interval: BillingInterval;
+  reason: string;
+  apply_to_subscription: boolean;
+}
+
+/** When the new price takes hold. */
+export type PricingEffect = "now" | "next_period" | "not_subscribed";
+
+/** `201` from setting a price. `console.pricing.write`. */
+export interface SetPriceResult {
+  plan_version_id: string;
+  applied_to_subscription_id: string | null;
+  effective: PricingEffect;
+}
+
 /* ------------------------------ audit ------------------------------- */
 
-export type OverrideKind =
-  | "suspend"
-  | "reactivate"
-  | "comp_grant"
-  | "bespoke_price"
-  | "plan_migration";
+export type OverrideKind = "suspend" | "reactivate" | "comp_grant" | "bespoke_price";
 
 export interface AuditEntry {
   audit_id: string;
@@ -304,13 +384,6 @@ export type OverrideRequest =
       base_plan_id: string;
       amount_minor: number;
       currency: string;
-      reason: string;
-    }
-  | {
-      kind: "plan_migration";
-      organization_id: string;
-      subscription_id: string;
-      target_plan_version_id: string;
       reason: string;
     };
 

@@ -7,6 +7,8 @@
 import type {
   Entitlement,
   OrganizationDetail,
+  OverrideRequest,
+  OverrideResult,
   Subscription,
 } from "@/api/types";
 import { PRODUCT_NAME } from "./catalog";
@@ -23,6 +25,7 @@ export * from "./invoices";
 export * from "./usage";
 export * from "./audit";
 export * from "./metrics";
+export * from "./pricing";
 
 /** The activation projection for one subscription — trial expiry is evaluated at read time. */
 function entitlementFor(sub: Subscription): Entitlement {
@@ -61,5 +64,30 @@ export function organizationDetail(organizationId: string): OrganizationDetail |
       b.created_at.localeCompare(a.created_at),
     ),
     comp_balance_minor: compBalanceMinor(organizationId),
+  };
+}
+
+/**
+ * Synthesizes the accepted result and audit row a live `POST /admin/overrides` would produce, so
+ * the action forms demonstrate the full flow with no admin-gateway. `client.ts` reaches this only
+ * through a dynamic `import()` of this module, gated on `USE_FIXTURES` — never a static import —
+ * so this fabricated identity can never ship in a production bundle.
+ */
+export function simulateOverride(request: OverrideRequest): OverrideResult {
+  return {
+    override_id: `ovr_${Math.random().toString(16).slice(2, 10)}`,
+    status: "accepted",
+    audit: {
+      audit_id: `aud_${Math.random().toString(16).slice(2, 8)}`,
+      occurred_at: new Date().toISOString(),
+      actor: "Priya Venkatesan",
+      actor_email: "priya.venkatesan@opsgrids.com",
+      action: `override.${request.kind}`,
+      organization_id: request.organization_id,
+      organization_name: null,
+      summary: `Simulated ${request.kind} override (fixtures mode — not sent to a live service)`,
+      result: "success",
+      target_ref: null,
+    },
   };
 }

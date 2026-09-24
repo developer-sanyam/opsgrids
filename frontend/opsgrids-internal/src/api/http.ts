@@ -41,8 +41,9 @@ interface RequestOptions {
   auth?: boolean;
   /** Fire the global unauthorized handler on a 401 (default true). Login/logout opt out. */
   signalUnauthorized?: boolean;
-  /** Extra request headers — e.g. the CSRF header `/auth/operator/logout` requires. Cannot
-   *  override `Accept`, `Content-Type` or `Authorization`, which this function owns. */
+  /** Extra request headers — e.g. `Idempotency-Key` on a POST that must never double-apply on a
+   *  retried click, or the CSRF header `/auth/operator/logout` requires. Cannot override `Accept`,
+   *  `Content-Type` or `Authorization`, which this function owns. */
   headers?: Record<string, string>;
 }
 
