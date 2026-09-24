@@ -647,6 +647,103 @@ class TestInternalHierarchyEndpoint:
         assert row.after is not None
         assert row.after["caller_iss"] == "attendance"
 
+    async def test_attendance_is_served_only_the_reporting_line(
+        self, client, org_id, people
+    ) -> None:
+        """Attendance keeps four facts and discards the rest, so it is sent four: no display name,
+        no employee number, no location, no dotted-line manager. The export is a bulk read of the
+        directory, and a caller that would throw the names away is not handed them."""
+        response = await client.get(
+            "/internal/v1/hierarchy",
+            params={"organization_id": str(org_id)},
+            headers=internal_headers(caller="attendance", org=org_id),
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert set(body) == {"items", "next_cursor"}
+        assert len(body["items"]) == len(people)
+        for item in body["items"]:
+            assert set(item) == {
+                "employee_id",
+                "reporting_manager_id",
+                "status",
+                "hierarchy_version",
+            }
+        for leaked in ("display_name", "employee_no", "EMP000", "location_code", "dotted_line"):
+            assert leaked not in response.text
+
+    async def test_approval_is_still_served_the_full_shape(self, client, org_id, people) -> None:
+        """Unchanged for the caller that stores names and employee numbers."""
+        response = await client.get(
+            "/internal/v1/hierarchy",
+            params={"organization_id": str(org_id)},
+            headers=internal_headers(caller="approval", org=org_id),
+        )
+        assert response.status_code == 200
+        for item in response.json()["items"]:
+            assert set(item) == {
+                "employee_id",
+                "reporting_manager_id",
+                "dotted_line_manager_id",
+                "status",
+                "location_code",
+                "display_name",
+                "employee_no",
+                "hierarchy_version",
+            }
+
+    async def test_both_callers_see_the_same_employees_in_the_same_order(
+        self, client, org_id, people
+    ) -> None:
+        """One export, two shapes: the minimal one is a projection of the full one, not a
+        different query with different rows."""
+        full = (
+            await client.get(
+                "/internal/v1/hierarchy",
+                params={"organization_id": str(org_id)},
+                headers=internal_headers(caller="approval", org=org_id),
+            )
+        ).json()
+        minimal = (
+            await client.get(
+                "/internal/v1/hierarchy",
+                params={"organization_id": str(org_id)},
+                headers=internal_headers(caller="attendance", org=org_id),
+            )
+        ).json()
+        assert [i["employee_id"] for i in minimal["items"]] == [
+            i["employee_id"] for i in full["items"]
+        ]
+        for slim, whole in zip(minimal["items"], full["items"], strict=True):
+            assert slim == {k: whole[k] for k in slim}
+
+    async def test_the_minimal_shape_pages_by_the_same_keyset_rule(
+        self, client, org_id, people
+    ) -> None:
+        first = (
+            await client.get(
+                "/internal/v1/hierarchy",
+                params={"organization_id": str(org_id), "limit": 2},
+                headers=internal_headers(caller="attendance", org=org_id),
+            )
+        ).json()
+        assert len(first["items"]) == 2
+        assert first["next_cursor"] == first["items"][-1]["employee_id"]
+        second = (
+            await client.get(
+                "/internal/v1/hierarchy",
+                params={
+                    "organization_id": str(org_id),
+                    "limit": 2,
+                    "cursor": first["next_cursor"],
+                },
+                headers=internal_headers(caller="attendance", org=org_id),
+            )
+        ).json()
+        assert {i["employee_id"] for i in second["items"]}.isdisjoint(
+            {i["employee_id"] for i in first["items"]}
+        )
+
     async def test_attendance_without_an_org_claim_is_refused(self, client, org_id, people) -> None:
         """A caller added after the gap was understood starts strict: attendance must bind the
         organization, where approval's older posture still lets the query string name it."""

@@ -230,6 +230,28 @@ class HierarchyPage(BaseModel):
     next_cursor: uuid.UUID | None
 
 
+class ReportingLineOut(BaseModel):
+    """One employee's place in the reporting line and nothing else — the minimal shape the
+    internal hierarchy export serves to a caller that has no use for names.
+
+    Attendance's TEAM projection keeps exactly these four facts. The full `HierarchyNodeOut` also
+    carries `display_name` and `employee_no`, which approval needs and attendance discards; sending
+    them to a caller that throws them away is a bulk read of a directory for no purpose, so that
+    caller is not sent them."""
+
+    employee_id: uuid.UUID
+    reporting_manager_id: uuid.UUID | None
+    status: str
+    hierarchy_version: int
+
+
+class ReportingLinePage(BaseModel):
+    """A keyset page of `ReportingLineOut`, ordered on `id`, terminating like `HierarchyPage`."""
+
+    items: list[ReportingLineOut]
+    next_cursor: uuid.UUID | None
+
+
 class EmployeeLinkOut(BaseModel):
     """One employee's recorded membership link — **two UUIDs and nothing else** (ADR-0008 §8).
 

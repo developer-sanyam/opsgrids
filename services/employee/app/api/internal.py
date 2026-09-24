@@ -4,7 +4,8 @@ Two endpoints, each with a short, documented caller list:
 
 - **`/internal/v1/hierarchy`** — the hierarchy backfill approval-service's one-time job reads
   through (ADR-0006 §2.1), and attendance-service's, which seeds its own copy of the reporting
-  line for TEAM scope (R8; attendance binds the `org` claim, approval is not yet held to it).
+  line for TEAM scope (R8; attendance binds the `org` claim, approval is not yet held to it, and
+  attendance is served only the reporting line — no names, no employee numbers).
   Employee is the only writer of reporting lines, and the ongoing
   supply is the full hierarchy state every write already stages on
   `hrms.people.employee.onboarded` / `.updated` / `.transitioned` (`app/services.py`). This is
@@ -114,7 +115,14 @@ from starlette.requests import Request
 
 from app import selectors
 from app.models import AuditLog
-from app.schemas import EmployeeLinkOut, EmployeeLinkPage, HierarchyNodeOut, HierarchyPage
+from app.schemas import (
+    EmployeeLinkOut,
+    EmployeeLinkPage,
+    HierarchyNodeOut,
+    HierarchyPage,
+    ReportingLineOut,
+    ReportingLinePage,
+)
 from platform_core.audit import record_audit
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
@@ -125,9 +133,9 @@ from platform_core.internal_auth import verify_service_token
 #:
 #: **Attendance is the second caller** (R8): its one-shot `app.backfill` seeds the `team_membership`
 #: projection that TEAM scope reads, from this same export. Admitting it is the narrow widening the
-#: per-route allowlist exists to make explicit — the page it can read is the one approval already
-#: reads (names and employee numbers included, which attendance's client parses past and never
-#: stores), so it is a second holder of an existing capability, not a new one.
+#: per-route allowlist exists to make explicit — and it is served the **minimal** shape
+#: (`HIERARCHY_MINIMAL_ISSUERS`), so no name or employee number leaves this service for a caller
+#: that would only discard it.
 HIERARCHY_ISSUERS = frozenset({"approval", "attendance"})
 
 #: The callers of `/hierarchy` that **must** bind the `org` claim. Approval binds it today but is
@@ -137,6 +145,12 @@ HIERARCHY_ISSUERS = frozenset({"approval", "attendance"})
 #: Once approval is confirmed to bind it in every deployed version this becomes the whole of
 #: `HIERARCHY_ISSUERS` and `require_org=False` below goes with it.
 HIERARCHY_ORG_REQUIRED_ISSUERS = frozenset({"attendance"})
+
+#: The callers of `/hierarchy` served the **minimal** shape — employee id, manager id, status and
+#: `hierarchy_version` — instead of the full one. Attendance parses those four and discards the
+#: rest, so it is not sent names and employee numbers it has no use for. Approval keeps the full
+#: shape, unchanged: it stores them.
+HIERARCHY_MINIMAL_ISSUERS = frozenset({"attendance"})
 
 #: ADR-0008 §8: the membership-link reconcile is `/employee-links`'s only legitimate caller.
 #:
@@ -248,8 +262,10 @@ router = APIRouter(
 
 @router.get(
     "/hierarchy",
-    response_model=HierarchyPage,
-    summary="Keyset page of one organization's full hierarchy state",
+    # Two shapes, chosen by who is asking (`HIERARCHY_MINIMAL_ISSUERS`), so no single
+    # `response_model` describes it; the router is `include_in_schema=False` either way.
+    response_model=None,
+    summary="Keyset page of one organization's hierarchy state",
 )
 async def hierarchy(
     session: SessionDep,
@@ -258,8 +274,9 @@ async def hierarchy(
     caller_claims: Annotated[dict[str, Any], Depends(_verify_internal_caller)],
     cursor: Annotated[uuid.UUID | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
-) -> HierarchyPage:
-    """Every employee of `organization_id`, in `id` order, the same shape the events carry.
+) -> HierarchyPage | ReportingLinePage:
+    """Every employee of `organization_id`, in `id` order, the same shape the events carry — or,
+    for a caller that keeps only the reporting line (`HIERARCHY_MINIMAL_ISSUERS`), just that.
 
     The transaction is opened and bound to the named organization here, as its first statement,
     because a request driven by a service token carries no principal to take the ordinary
@@ -318,23 +335,42 @@ async def hierarchy(
             request=request,
         )
 
-    items = [
-        HierarchyNodeOut(
-            employee_id=row.id,
-            reporting_manager_id=row.reporting_manager_id,
-            dotted_line_manager_id=row.dotted_line_manager_id,
-            status=row.status,
-            location_code=row.location_code,
-            display_name=row.full_name,
-            employee_no=row.employee_no,
-            hierarchy_version=row.hierarchy_version,
-        )
-        for row in rows
-    ]
     # A page shorter than `limit` is the last one. A page landing exactly on the boundary asks
     # for one more page, which comes back empty and terminates — see `HierarchyPage`.
     next_cursor = rows[-1].id if len(rows) == limit else None
-    return HierarchyPage(items=items, next_cursor=next_cursor)
+
+    if caller_claims.get("iss") in HIERARCHY_MINIMAL_ISSUERS:
+        # Only what this caller keeps. Names and employee numbers are approval's, and a caller that
+        # discards them is not sent them: the export is a bulk read of the directory.
+        return ReportingLinePage(
+            items=[
+                ReportingLineOut(
+                    employee_id=row.id,
+                    reporting_manager_id=row.reporting_manager_id,
+                    status=row.status,
+                    hierarchy_version=row.hierarchy_version,
+                )
+                for row in rows
+            ],
+            next_cursor=next_cursor,
+        )
+
+    return HierarchyPage(
+        items=[
+            HierarchyNodeOut(
+                employee_id=row.id,
+                reporting_manager_id=row.reporting_manager_id,
+                dotted_line_manager_id=row.dotted_line_manager_id,
+                status=row.status,
+                location_code=row.location_code,
+                display_name=row.full_name,
+                employee_no=row.employee_no,
+                hierarchy_version=row.hierarchy_version,
+            )
+            for row in rows
+        ],
+        next_cursor=next_cursor,
+    )
 
 
 @router.get(

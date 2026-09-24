@@ -612,6 +612,38 @@ class TestTheHttpClient:
         ]
         assert page.next_cursor is None
 
+    async def test_it_parses_the_minimal_shape_employee_now_sends_it(self) -> None:
+        """Employee serves attendance the reporting line only — four fields, no names. The parser
+        must need nothing more than that."""
+        mgr = uuid.uuid4()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "employee_id": str(EMPLOYEE_ID),
+                            "reporting_manager_id": str(mgr),
+                            "status": "on_notice",
+                            "hierarchy_version": 7,
+                        }
+                    ],
+                    "next_cursor": None,
+                },
+            )
+
+        page = await _source(handler).fetch_page(ORG_ID, cursor=None)
+
+        assert page.items == [
+            TeamItem(
+                employee_id=EMPLOYEE_ID,
+                reporting_manager_id=mgr,
+                status="on_notice",
+                hierarchy_version=7,
+            )
+        ]
+
     async def test_a_name_never_leaves_the_response_object(self) -> None:
         """The export carries names and employee numbers for approval's sake. This client parses
         four fields; nothing here can put a name in a table or a log line by way of a helper that
