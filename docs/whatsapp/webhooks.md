@@ -7,13 +7,22 @@ inbound messages unlocked (conversations, the service window, STOP) and what is 
 ## The endpoint
 
 ```
-GET  /webhooks/whatsapp   Meta's subscription handshake
-POST /webhooks/whatsapp   message status receipts
+GET  /api/v1/webhooks/whatsapp   Meta's subscription handshake
+POST /api/v1/webhooks/whatsapp   message status receipts and inbound messages
 ```
 
-Mounted at the root, outside `/api/v1`, and excluded from the OpenAPI document — this is the
-provider's endpoint, not public API. It is listed in the gateway's public paths because **Meta
-cannot hold one of our tokens**, so it is the only unauthenticated surface notification exposes.
+**The callback URL to give Meta is `https://<edge host>/api/v1/webhooks/whatsapp`** — the path the
+gateway serves. The service also answers at `/webhooks/whatsapp` (the same router mounted at the
+root), which exists for pointing a tunnel straight at the service in development and is not
+reachable through the edge. Excluded from the OpenAPI document — this is the provider's endpoint,
+not public API.
+
+app-gateway lists exactly these two methods on exactly this path in `WEBHOOK_PUBLIC_PATHS`
+(`services/app-gateway/app/main.py`) because **Meta cannot hold one of our tokens**, so it is the
+only unauthenticated surface notification exposes. The gateway gives it its own rate-limit
+buckets (per address and per path), caps the body at 3 MiB (Meta documents up to 3 MB), strips
+cookies and `Origin`, and forwards the raw body untouched — the signature below is verified over
+those exact bytes.
 
 ## How it is trusted, since there is no token
 

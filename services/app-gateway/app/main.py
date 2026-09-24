@@ -15,7 +15,9 @@ not which rows they may see.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 
 from fastapi import FastAPI
 
@@ -28,9 +30,12 @@ from platform_core.gateway import (
     RouteTable,
     build_gateway,
     http_client,
+    parse_trusted_proxies,
 )
+from platform_core.logging import get_logger
 
 cfg = settings()
+log = get_logger("app-gateway")
 
 #: The storefront's buyer surface (ADR-0010 §4, ADR-0012 §2). Lives **here, in the gateway
 #: service**, and is
@@ -93,6 +98,35 @@ ACCOUNT_PUBLIC_PATHS = frozenset({"/api/v1/account/signup"})
 #: cannot name. Anonymous, IP-rate-limited, no identity header, same as every other entry here.
 ENGAGE_PUBLIC_PATH_PREFIXES = frozenset({"/api/v1/engage/unsubscribe/"})
 
+#: The provider webhooks that reach this gateway, and the HTTP methods each accepts without a
+#: bearer token: **exact path → methods**, never a prefix.
+#:
+#: These are public because a provider cannot hold one of our tokens — the authentication is an
+#: HMAC signature over the raw body, verified by the owning service (payment for Razorpay,
+#: notification for Meta). Until they were declared here the gateway answered every provider
+#: delivery with `401 Missing bearer token`, so neither inbound WhatsApp nor a Razorpay mandate
+#: or capture ever reached the service that could have verified it. `admin-gateway` has its own
+#: Razorpay entry, but production runs no admin-gateway: the edge sends `/api/*` here, and
+#: `infrastructure/edge/routes.prod.json` routes both paths through this gateway.
+#:
+#: **Kept out of `public_paths` on purpose** (they are `GatewayPolicy.webhook_paths`). A member of
+#: `public_paths` shares the anonymous per-address bucket, is public for every method and passes
+#: a browser's cookie and `Origin` through. A webhook needs the opposite on each count: its own
+#: rate-limit buckets, one method list per path (Meta's subscription handshake is a `GET`, its
+#: deliveries and Razorpay's are `POST`s; a `DELETE` to either is a 401 like any other unlisted
+#: request), and no cookie, credential or CORS surface. `tests/infra/test_route_table_parity.py`
+#: pins that every `/api/v1/webhooks/*` route the production table serves is declared here.
+#:
+#: Signatures are still the owning service's job and are verified over the raw bytes, which this
+#: gateway forwards unmodified: the body is buffered under the route's own `max_body_bytes` (both
+#: webhook routes set one, in both route tables) and never parsed or re-encoded here.
+WEBHOOK_PUBLIC_PATHS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "/api/v1/webhooks/razorpay": frozenset({"POST"}),
+        "/api/v1/webhooks/whatsapp": frozenset({"GET", "POST"}),
+    }
+)
+
 # Resolved relative to the service directory so `make run` and the container image agree.
 _routes_path = Path(cfg.routes_file)
 if not _routes_path.is_absolute():
@@ -104,9 +138,16 @@ policy = GatewayPolicy(
     audience=cfg.audience,
     public_paths=DEFAULT_PUBLIC_PATHS | STOREFRONT_PUBLIC_PATHS | ACCOUNT_PUBLIC_PATHS,
     public_path_prefixes=ENGAGE_PUBLIC_PATH_PREFIXES,
+    webhook_paths=WEBHOOK_PUBLIC_PATHS,
     rate_limit=cfg.rate_limit_per_minute,
     anonymous_rate_limit=cfg.anonymous_rate_limit_per_minute,
+    anonymous_global_rate_limit=cfg.anonymous_global_rate_limit_per_minute,
+    webhook_rate_limit=cfg.webhook_rate_limit_per_minute,
+    webhook_global_rate_limit=cfg.webhook_global_rate_limit_per_minute,
     upstream_timeout=cfg.upstream_timeout_seconds,
+    # Only this gateway believes `X-Forwarded-For`, and only from the proxies named here: the
+    # anonymous limiter has to count the caller, not Caddy. See `Settings.trusted_proxy_cidrs`.
+    trusted_proxies=parse_trusted_proxies(cfg.trusted_proxy_cidrs),
 )
 
 resolver = PermissionResolver(cfg.account_service_url, cfg)
@@ -116,6 +157,13 @@ async def _startup(app: FastAPI) -> None:
     # One pooled client for the process. Building one per request leaks sockets under any
     # real load.
     app.state.http = http_client(policy)
+    if policy.trusted_proxies:
+        log.info("gateway.trusted_proxies", count=len(policy.trusted_proxies))
+    elif cfg.is_production:
+        # Not an error — a gateway with no proxy in front of it is legitimate — but on the
+        # production edge it is what an unset variable looks like, and the cost is silent:
+        # every anonymous caller shares Caddy's bucket and the per-address limit is a global one.
+        log.warning("gateway.no_trusted_proxies")
 
 
 async def _shutdown(app: FastAPI) -> None:

@@ -26,7 +26,15 @@
     "even decoded. Operator sign-in belongs to admin-gateway alone (ADR-0003 §2) — the route",
     "itself takes no principal (staff credentials travel in the request body), so an ordinary",
     "tenant's own valid bearer token would otherwise have been enough to reach it here. Fixes",
-    "the security review's MAJOR 3."
+    "the security review's MAJOR 3.",
+    "",
+    "The two `/api/v1/webhooks/*` entries are the provider callbacks (Razorpay, Meta's WhatsApp).",
+    "They carry no bearer token — the provider signs the body and the owning service verifies",
+    "it — so they are declared public in the gateway's own `app/main.py` (`WEBHOOK_PUBLIC_PATHS`,",
+    "exact path and method), and each says how large a body it may carry: Razorpay's payloads are",
+    "a few KiB, Meta's are documented up to 3 MB, so both are capped to the size of the real",
+    "thing rather than left at the 2 MiB default an unauthenticated route should not need. The",
+    "prefixes and caps must match `infrastructure/edge/routes.prod.json`; tests/infra checks it."
   ],
   "routes": [
     { "prefix": "/api/v1/auth/operator", "upstream": "http://localhost:8110", "blocked": true },
@@ -71,6 +79,8 @@
     { "prefix": "/api/v1/notifications", "upstream": "http://localhost:8151", "product": "notification" },
     { "prefix": "/api/v1/engage", "upstream": "http://localhost:8151", "product": "engage" },
     { "prefix": "/api/v1/approvals", "upstream": "http://localhost:8152" },
+    { "prefix": "/api/v1/webhooks/whatsapp", "upstream": "http://localhost:8151", "max_body_bytes": 3145728 },
+    { "prefix": "/api/v1/webhooks/razorpay", "upstream": "http://localhost:8163", "max_body_bytes": 262144 },
 
     { "prefix": "/api/v1/billing", "upstream": "http://localhost:8160" },
     { "prefix": "/api/v1/subscriptions", "upstream": "http://localhost:8161" },

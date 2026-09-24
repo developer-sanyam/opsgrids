@@ -33,6 +33,29 @@ Rate limiting comes *after* authentication so it counts against a person rather 
 address, which is what makes a shared office NAT usable. Public paths are limited by IP
 instead.
 
+## Unauthenticated traffic
+
+Three kinds, each with its own buckets (Redis, one-minute windows, failing closed):
+
+- **Public paths** (sign-in, password reset, sign-up, the storefront buyer calls, the Engage
+  unsubscribe link) — per *caller* address, `ANONYMOUS_RATE_LIMIT_PER_MINUTE` (60), and a ceiling
+  over **all** of them combined, `ANONYMOUS_GLOBAL_RATE_LIMIT_PER_MINUTE` (6000; `0` disables). The
+  per-address check runs first, so one address can spend at most its own allowance of the ceiling.
+- **Provider webhooks** (`WEBHOOK_PUBLIC_PATHS` in `app/main.py`: Razorpay `POST`, Meta's WhatsApp
+  `GET`/`POST`) — no token, exact path and method, per-address and per-path buckets
+  (`WEBHOOK_RATE_LIMIT_PER_MINUTE`, `WEBHOOK_GLOBAL_RATE_LIMIT_PER_MINUTE`), a body cap set on the
+  route, cookies/`Authorization`/`Origin` dropped inbound and `Set-Cookie`/`Access-Control-*`
+  dropped outbound. Authenticity is the owning service's HMAC check over the raw body.
+- **Everything else** needs a bearer token.
+
+**The caller's address** is `X-Forwarded-For`, believed only when the connecting peer is inside
+`TRUSTED_PROXY_CIDRS` and read from the right (the first address that is not a trusted proxy);
+from any other peer the header is ignored. Unset means "trust nobody", so the limiter keys on the
+socket peer — right in development, wrong behind Caddy, where the peer is always Caddy and every
+caller shares one bucket. `compose.prod.yml` sets it for the edge; `0.0.0.0/0` and malformed
+entries stop the process booting. See `infrastructure/edge/RUNBOOK.md`, "Rate limiting behind
+Caddy".
+
 ## Headers
 
 Inbound `X-*` identity headers are **stripped** before the gateway writes its own. Without

@@ -33,7 +33,16 @@
     "longer than the `/api/v1/auth` entry below, so it wins the match for every operator",
     "sign-in path here too and is refused with 404 before any token is decoded. Operator",
     "traffic reaches auth only through admin-gateway; tests/infra checks every blocked entry",
-    "in the dev table has an identical one here."
+    "in the dev table has an identical one here.",
+    "",
+    "The two `/api/v1/webhooks/*` entries are the provider callbacks (Razorpay, Meta's WhatsApp).",
+    "They carry no bearer token, so each must ALSO be declared in the gateway's",
+    "`WEBHOOK_PUBLIC_PATHS` (services/app-gateway/app/main.py), by exact path and method — a",
+    "route here that the gateway does not declare answers every provider delivery with 401, and",
+    "for a long time both did. tests/infra/test_route_table_parity.py fails when a",
+    "`/api/v1/webhooks/*` prefix here is missing from that set, from the dev table, or has a",
+    "different body cap. `max_body_bytes` is the size of the real payload (Razorpay: a few KiB;",
+    "Meta documents up to 3 MB), not the 2 MiB default."
   ],
   "routes": [
     { "prefix": "/api/v1/auth/operator", "upstream": "http://auth:8000", "blocked": true },
@@ -60,11 +69,11 @@
     { "prefix": "/api/v1/billing", "upstream": "http://billing:8000" },
     { "prefix": "/api/v1/usage", "upstream": "http://metering:8000" },
     { "prefix": "/api/v1/payment", "upstream": "http://payment:8000" },
-    { "prefix": "/api/v1/webhooks/razorpay", "upstream": "http://payment:8000" },
+    { "prefix": "/api/v1/webhooks/razorpay", "upstream": "http://payment:8000", "max_body_bytes": 262144 },
 
     { "prefix": "/api/v1/notifications", "upstream": "http://notification:8000", "product": "notification" },
     { "prefix": "/api/v1/engage", "upstream": "http://notification:8000", "product": "engage" },
-    { "prefix": "/api/v1/webhooks/whatsapp", "upstream": "http://notification:8000" },
+    { "prefix": "/api/v1/webhooks/whatsapp", "upstream": "http://notification:8000", "max_body_bytes": 3145728 },
 
     { "prefix": "/api/v1/approvals", "upstream": "http://approval:8000" },
     { "prefix": "/api/v1/employees", "upstream": "http://employee:8000", "product": "hrms" },
