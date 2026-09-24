@@ -197,14 +197,29 @@ def top_suppliers(suppliers: Sequence[Supplier], *, limit: int = 6) -> list[dict
     ]
 
 
-def weighted_on_time_pct(suppliers: Sequence[Supplier]) -> float:
-    """On-time delivery rate across suppliers, weighted by spend so a big supplier's record
-    counts for more than a marginal one. Returns a 0-100 percentage."""
-    total_spend = sum(s.spend_minor for s in suppliers)
+def on_time_delivery_pct(
+    purchase_orders: Sequence[PurchaseOrder], totals: dict[str, int]
+) -> float | None:
+    """Real, spend-weighted on-time delivery rate, computed fresh from receipts rather than read
+    off `Supplier.on_time_pct` — a figure set once when a supplier is created and never revisited
+    by a receipt (dashboard-data audit §3.5 row 13: "a weighted figure is stale seed data").
+
+    Weighted by each received PO's own total (`totals`, the overview's own PO-id → amount map)
+    so one large late delivery counts for more than a marginal one — the same intent the stale
+    per-supplier figure had, now backed by real rows. `None`, not `0.0`, when nothing has been
+    received yet: a 0% rate would claim every delivery was late, when in fact none has landed to
+    judge.
+    """
+    received = [po for po in purchase_orders if po.received_date is not None]
+    total_spend = sum(totals.get(str(po.id), 0) for po in received)
     if total_spend == 0:
-        return 0.0
-    weighted = sum(float(s.on_time_pct) * s.spend_minor for s in suppliers)
-    return round(weighted / total_spend * 10) / 10
+        return None
+    on_time_spend = sum(
+        totals.get(str(po.id), 0)
+        for po in received
+        if po.received_date is not None and po.received_date <= po.expected_date
+    )
+    return round(on_time_spend / total_spend * 1000) / 10
 
 
 # ------------------------------------------------------------------ inventory rollups
@@ -240,6 +255,10 @@ def low_stock_items(items: Sequence[InventoryItem]) -> list[InventoryItem]:
 
 def low_stock_count(items: Sequence[InventoryItem]) -> int:
     return sum(1 for it in items if is_low_stock(it))
+
+
+def out_of_stock_count(items: Sequence[InventoryItem]) -> int:
+    return sum(1 for it in items if is_out_of_stock(it))
 
 
 # ------------------------------------------------------------------ needs-attention queue
