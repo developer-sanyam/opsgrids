@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/crm.book.company.created/v1",
+  "title": "crm.book.company.created",
+  "description": "A company was added to the account book. `name` is a business name. `created_at` is the row's own creation time (an import may backdate it).",
+  "$comment": "Ahead of the producer (ADR-0020 slice I4): services/customer/app/services.py:create_company does not emit created_at yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "company_id", "name", "status", "owner_id", "created_at"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "company_id": { "type": "string", "format": "uuid" },
+    "name": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["customer", "prospect", "lead", "churned"] },
+    "owner_id": { "type": "string", "format": "uuid" },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

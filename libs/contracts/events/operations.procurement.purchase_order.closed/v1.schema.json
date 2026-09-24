@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.procurement.purchase_order.closed/v1",
+  "title": "operations.procurement.purchase_order.closed",
+  "description": "A received purchase order was closed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "purchase_order_id", "number"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "purchase_order_id": { "type": "string", "format": "uuid" },
+    "number": { "type": "string", "minLength": 1 }
+  }
+}

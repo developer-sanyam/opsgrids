@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/storefront.enquiry.created/v1",
+  "title": "storefront.enquiry.created",
+  "description": "A buyer sent an enquiry from a published store. This is the product's order equivalent: there is no cart and no checkout. `company` is the buyer's own business name. The buyer's email and phone are sealed PII and never travel on this event. `lines` carries the catalogue product and quantity for each line, with the product name as it was when the enquiry was sent. The payload carries no `organization_id`; the envelope's is authoritative.",
+  "$comment": "Ahead of the producer (ADR-0020 slice I7): services/storefront/app/services.py:create_enquiry_for_store does not emit status, lines yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["enquiry_id", "store_id", "company", "status", "line_count", "lines"],
+  "properties": {
+    "enquiry_id": { "type": "string", "format": "uuid" },
+    "store_id": { "type": "string", "format": "uuid" },
+    "company": { "type": "string" },
+    "status": { "const": "new" },
+    "line_count": { "type": "integer", "minimum": 1 },
+    "lines": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["product_id", "name", "quantity"],
+        "properties": {
+          "product_id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string", "minLength": 1 },
+          "quantity": { "type": "integer", "minimum": 1 }
+        }
+      }
+    }
+  }
+}

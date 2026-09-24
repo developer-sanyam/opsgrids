@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/hrms.time.leave.applied/v1",
+  "title": "hrms.time.leave.applied",
+  "description": "Leave's return leg (ADR-0006 §12): an approval decision was applied to the request. `outcome` is `applied` for an approval *and* for a rejection, and `status` says which. `failed` means the transition had become illegal, and `failure_reason` says why. The request's dates travel with it, so a consumer counting days on leave needs no second read.",
+  "$comment": "Ahead of the producer (ADR-0020 slice I9): services/leave/app/services.py:_publish_leave_applied does not emit status, employee_id, leave_type_id, start_date, end_date, total_half_days yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "leave_request_id",
+    "approval_request_id",
+    "request_type",
+    "outcome",
+    "status",
+    "employee_id",
+    "leave_type_id",
+    "start_date",
+    "end_date",
+    "total_half_days"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "leave_request_id": { "type": "string", "format": "uuid" },
+    "approval_request_id": { "type": ["string", "null"], "format": "uuid" },
+    "request_type": { "const": "hrms.time.leave" },
+    "outcome": { "enum": ["applied", "failed"] },
+    "failure_reason": { "type": "string" },
+    "status": { "enum": ["pending", "approved", "rejected", "cancelled", "failed"] },
+    "employee_id": { "type": "string", "format": "uuid" },
+    "leave_type_id": { "type": "string", "format": "uuid" },
+    "start_date": { "type": "string", "format": "date" },
+    "end_date": { "type": "string", "format": "date" },
+    "total_half_days": { "type": "integer", "minimum": 1 }
+  }
+}

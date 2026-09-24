@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/storefront.enquiry.status_changed/v1",
+  "title": "storefront.enquiry.status_changed",
+  "description": "A merchant moved an enquiry through its state machine (`domain.assert_enquiry_transition`). No content changes: apart from `status`, an enquiry is append-only.",
+  "$comment": "New emission (ADR-0020 slice I7): nothing publishes this event yet. services/storefront/app/services.py:update_enquiry_status must stage it on its own outbox in the same transaction as the change.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "enquiry_id", "from", "to"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "enquiry_id": { "type": "string", "format": "uuid" },
+    "from": { "enum": ["new", "contacted", "won", "lost"] },
+    "to": { "enum": ["new", "contacted", "won", "lost"] }
+  }
+}

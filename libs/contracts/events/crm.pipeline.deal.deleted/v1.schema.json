@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/crm.pipeline.deal.deleted/v1",
+  "title": "crm.pipeline.deal.deleted",
+  "description": "A deal was soft-deleted. Its activities stay on the append-only timeline.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "deal_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "deal_id": { "type": "string", "format": "uuid" }
+  }
+}

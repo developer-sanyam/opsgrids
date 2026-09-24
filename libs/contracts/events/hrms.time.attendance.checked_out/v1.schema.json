@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/hrms.time.attendance.checked_out/v1",
+  "title": "hrms.time.attendance.checked_out",
+  "description": "An employee punched out of an open record.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "attendance_id", "employee_id", "work_date", "check_out_at"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "attendance_id": { "type": "string", "format": "uuid" },
+    "employee_id": { "type": "string", "format": "uuid" },
+    "work_date": { "type": "string", "format": "date" },
+    "check_out_at": { "type": "string", "format": "date-time" }
+  }
+}

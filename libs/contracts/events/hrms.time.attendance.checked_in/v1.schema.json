@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/hrms.time.attendance.checked_in/v1",
+  "title": "hrms.time.attendance.checked_in",
+  "description": "An employee punched in, and the day's record opened as `present`. `work_date` is the business date the record belongs to. Coordinates never travel on this event.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "attendance_id",
+    "employee_id",
+    "work_date",
+    "work_mode",
+    "location_code"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "attendance_id": { "type": "string", "format": "uuid" },
+    "employee_id": { "type": "string", "format": "uuid" },
+    "work_date": { "type": "string", "format": "date" },
+    "work_mode": { "enum": ["office", "field", "remote", "hybrid"] },
+    "location_code": { "type": ["string", "null"] }
+  }
+}

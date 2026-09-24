@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/projects.board.task.deleted/v1",
+  "title": "projects.board.task.deleted",
+  "description": "A card was removed from a project's board.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "task_id", "project_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "task_id": { "type": "string", "format": "uuid" },
+    "project_id": { "type": "string", "format": "uuid" }
+  }
+}

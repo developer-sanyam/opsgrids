@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/hrms.time.leave.requested/v1",
+  "title": "hrms.time.leave.requested",
+  "description": "An employee applied for leave, and approval opens a request from this. Dates are business dates; `total_half_days` is the chargeable length. `reason` is free text written by the employee. Only approval, which shows it to the approver, may keep it; a projection must not.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "leave_request_id",
+    "employee_id",
+    "leave_type_id",
+    "start_date",
+    "end_date",
+    "half_day_start",
+    "half_day_end",
+    "total_half_days",
+    "reason"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "leave_request_id": { "type": "string", "format": "uuid" },
+    "employee_id": { "type": "string", "format": "uuid" },
+    "leave_type_id": { "type": "string", "format": "uuid" },
+    "start_date": { "type": "string", "format": "date" },
+    "end_date": { "type": "string", "format": "date" },
+    "half_day_start": { "type": "boolean" },
+    "half_day_end": { "type": "boolean" },
+    "total_half_days": { "type": "integer", "minimum": 1 },
+    "reason": { "type": ["string", "null"] }
+  }
+}
