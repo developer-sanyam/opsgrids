@@ -12,12 +12,23 @@ So the shape here encodes Razorpay's constraints as first-class:
 * `create_mandate` takes a **cap** (`max_amount_minor`) and returns a mandate whose activation is
   a separate, later moment — an eMandate is not debitable the instant it is created.
 * **Lookup before create.** The provider has no idempotency key of its own, so a charge is made
-  against a provider **Order** whose `receipt` is the platform's idempotency key:
+  against a provider **Order** whose `receipt` is the charge's own id (`str(charge.id)`: 36
+  characters, globally unique and stable — Razorpay caps `receipt` at 40 and does not enforce its
+  uniqueness, so a platform key like `invoice:<uuid>` would neither fit nor be safe):
   `ensure_order` finds the Order by that receipt before it would create one, and `find_payment`
-  finds a payment already made against it before `charge` makes another. A resumed call (after
-  a crash between the call and recording it, D3) therefore lands on the payment the first call
-  made instead of debiting twice. `charge` still carries the key; a Stripe adapter forwards it
-  to Stripe's native idempotency header and may answer the lookups trivially.
+  finds a payment already made against it before `charge` makes another. A resumed call (after a
+  crash between the call and recording it, D3) therefore lands on the payment the first call made
+  instead of debiting twice. `find_order` is the lookup alone — what the stuck-charge sweep's
+  final check at the attempt budget uses, because that check must never create anything.
+  `charge` still carries the idempotency key; a Stripe adapter forwards it to Stripe's native
+  idempotency header and may answer the lookups trivially.
+* **Every wire call is bounded.** The service runs `ensure_order` + `find_payment` + `charge` on a
+  worker thread and stops waiting after `Settings.provider_call_timeout_seconds`; the thread cannot
+  be cancelled. An adapter's own per-request connect and read timeouts, **summed over those three
+  requests**, must therefore stay under `provider_call_timeout_seconds` — otherwise an abandoned
+  call can still be in flight when the charge's lease lapses and the sweep's lookup-before-create
+  runs, and the late create lands after the lookup found nothing (a second payment). The lease is
+  itself validated to be at least twice the call timeout plus a minute (`app/config.py`).
 * `verify_webhook` is signature-first: a provider callback is trusted because it carries the
   provider's HMAC over the raw body, never because it carries a session or a token.
 
@@ -112,6 +123,9 @@ class WebhookEvent:
     provider_payment_id: str | None
     failure_reason: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    #: The Order the payment was made against, when the provider says (Razorpay: `order_id` on
+    #: the payment entity). Recorded on the charge if it has none yet.
+    provider_order_id: str | None = None
 
 
 @runtime_checkable
@@ -147,6 +161,11 @@ class PaymentProvider(Protocol):
     ) -> OrderResult:
         """The Order whose `receipt` is `receipt` — **looked up first**, created only if the
         provider holds none. Idempotent by receipt: calling it twice is one Order."""
+        ...
+
+    def find_order(self, *, receipt: str) -> OrderResult | None:
+        """The Order whose `receipt` is `receipt`, or None — a lookup that **never creates**.
+        The stuck-charge sweep's final check uses it at the attempt budget."""
         ...
 
     def find_payment(self, *, order_id: str, charge_id: str) -> ChargeResult | None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import SecretStr
+from pydantic import SecretStr, model_validator
 
 from platform_core.config import ServiceSettings, settings_for
 
@@ -51,6 +51,24 @@ class Settings(ServiceSettings):
     #: outlives this leaves the charge `created`, and the sweep resumes it once the lease expires
     #: — lookup-before-create finding whatever the abandoned call achieved.
     provider_call_timeout_seconds: float = 30.0
+    #: How many times, past `charge_max_attempts`, the sweep may try its **final lookup** (the
+    #: provider's Order and payment, never a create) before it gives up asking and fails the
+    #: charge as `lookup_unavailable` — failing without having looked would risk dunning a
+    #: customer whose last attempt the provider did take (D3).
+    charge_final_lookup_attempts: int = 3
+
+    @model_validator(mode="after")
+    def _lease_outlives_the_call(self) -> Settings:
+        """The lease must outlast any call it covers, twice over plus a minute: a call that
+        outlives its lease can still land a payment after the sweep's lookup-before-create found
+        none — a second debit (D3). Refused at start-up rather than discovered in production."""
+        floor = 2 * self.provider_call_timeout_seconds + 60
+        if self.charge_reclaim_after_seconds < floor:
+            raise ValueError(
+                "charge_reclaim_after_seconds must be at least 2 * provider_call_timeout_seconds"
+                f" + 60 ({floor:g}s); got {self.charge_reclaim_after_seconds}s"
+            )
+        return self
 
 
 def settings() -> Settings:

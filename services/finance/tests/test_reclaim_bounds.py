@@ -123,6 +123,18 @@ async def _requests(org_id: uuid.UUID) -> list[OutboxEvent]:
         return list((await s.execute(stmt)).scalars().all())
 
 
+async def _publish_all(admin_session, org_id: uuid.UUID) -> None:
+    """The relay publishes everything staged — only a published request is an attempt."""
+    async with admin_session.begin():
+        await admin_session.execute(
+            text(
+                "UPDATE finance.outbox SET published_at = now() "
+                "WHERE organization_id = :o AND published_at IS NULL"
+            ),
+            {"o": org_id},
+        )
+
+
 async def _deliver_all(org_id: uuid.UUID) -> None:
     """Run the consumer on every staged `filing_requested`, as the broker would."""
     for row in await _requests(org_id):
@@ -158,6 +170,7 @@ class TestNoRegistrationIsNeverRequeued:
         sweep = _sweep()
         for _ in range(4):
             await sweep.tick(now=datetime.now(UTC) + LATER)
+            await _publish_all(admin_session, org_id)
             await _deliver_all(org_id)
             await _age(admin_session, org_id)
         reclaims = [r for r in await _requests(org_id) if r.payload["trigger"] == "reclaim"]
@@ -190,6 +203,7 @@ class TestAnUnansweredInvoiceIsBounded:
         sweep = _sweep()
         for _ in range(domain.MAX_FILING_ATTEMPTS + 3):
             await sweep.tick(now=datetime.now(UTC) + LATER)
+            await _publish_all(admin_session, org_id)
             await _deliver_all(org_id)
             await _age(admin_session, org_id)
 
@@ -203,6 +217,45 @@ class TestAnUnansweredInvoiceIsBounded:
         assert filings[0].error_code == domain.ERR_RETRY_EXHAUSTED
         failed = await _events(session, org_id, services.EVT_INVOICE_FILING_FAILED)
         assert failed[-1].payload["terminal"] is True
+
+
+class TestARelayOutageIsNotAnAttempt:
+    """With the relay down nothing is published: a request that is only queued is not an attempt
+    the invoice failed, and re-queueing behind it would only queue a duplicate. Before, every
+    queued request counted, and an outage of ~47 minutes ended invoices `retry_exhausted` with a
+    "file manually" notice for a filing nobody had ever been asked to make."""
+
+    async def test_a_queued_finalize_request_is_never_requeued_or_exhausted(
+        self, session, admin_session, org_id
+    ) -> None:
+        invoice = await _invoice(org_id, "INV-RELAY-1", registered=True)
+        sweep = _sweep()
+        for _ in range(domain.MAX_FILING_ATTEMPTS + 3):
+            await sweep.tick(now=datetime.now(UTC) + LATER)
+            await _age(admin_session, org_id)
+        requests = await _requests(org_id)
+        assert [r.payload["trigger"] for r in requests] == ["finalized"]
+        assert await _filings(session, org_id, invoice.id) == []
+
+    async def test_one_reclaim_waits_behind_the_outage_and_the_invoice_is_not_exhausted(
+        self, session, admin_session, org_id
+    ) -> None:
+        invoice = await _invoice(org_id, "INV-RELAY-2", registered=True)
+        await _lose_finalize_request(admin_session, org_id)
+        sweep = _sweep()
+        for _ in range(domain.MAX_FILING_ATTEMPTS + 3):
+            await sweep.tick(now=datetime.now(UTC) + LATER)
+            await _age(admin_session, org_id)
+        reclaims = [r for r in await _requests(org_id) if r.payload["trigger"] == "reclaim"]
+        assert len(reclaims) == 1
+        assert await _filings(session, org_id, invoice.id) == []
+
+        # The relay comes back: the queued request is published and, unanswered, is attempt 1.
+        await _publish_all(admin_session, org_id)
+        await _age(admin_session, org_id)
+        await sweep.tick(now=datetime.now(UTC) + LATER)
+        reclaims = [r for r in await _requests(org_id) if r.payload["trigger"] == "reclaim"]
+        assert [r.payload["attempt"] for r in reclaims] == [1, 2]
 
 
 class TestDiscoveryIsNotHeadOfLineBlocked:
@@ -552,3 +605,25 @@ class TestTheSweepReadsTheClockPerInvoice:
 
 def test_the_discovery_event_name_matches_the_service_constant() -> None:
     assert selectors.FILING_REQUESTED_EVENT == services.EVT_INVOICE_FILING_REQUESTED
+
+
+class TestThePortalTimeoutFitsTheReclaimWindow:
+    def test_a_portal_call_that_could_outlive_its_claim_is_refused(self) -> None:
+        """A claim is re-drivable `FILING_RECLAIM_AFTER` after it was made; a portal call allowed
+        to run longer than half of that (less a minute) could still be answering when the sweep
+        re-drives the same claim."""
+        from pydantic import ValidationError
+
+        from app.config import Settings
+
+        with pytest.raises(ValidationError, match="portal_call_timeout_seconds"):
+            Settings(portal_call_timeout_seconds=150)
+        assert Settings(portal_call_timeout_seconds=120).portal_call_timeout_seconds == 120
+
+    def test_the_default_fits(self) -> None:
+        from app.config import settings
+
+        cfg = settings()
+        assert (
+            2 * cfg.portal_call_timeout_seconds + 60 <= domain.FILING_RECLAIM_AFTER.total_seconds()
+        )

@@ -37,6 +37,7 @@ def razorpay_webhook_body(
     amount_minor: int = 1000,
     currency: str = "USD",
     error_description: str | None = None,
+    order_id: str | None = None,
 ) -> bytes:
     """A Razorpay webhook body as raw bytes, shaped exactly as `parse_webhook` expects.
 
@@ -60,6 +61,8 @@ def razorpay_webhook_body(
     }
     if error_description is not None:
         entity["error_description"] = error_description
+    if order_id is not None:
+        entity["order_id"] = order_id
 
     body = {
         "id": event_id or f"evt_{uuid.uuid4().hex[:16]}",

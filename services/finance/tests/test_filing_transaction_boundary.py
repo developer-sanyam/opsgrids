@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app import selectors, services
 from app.config import settings
@@ -224,7 +224,7 @@ class TestNoTransactionDuringTheIrpCall:
 
 class TestCrashBetweenCallAndRecord:
     async def test_an_invoice_with_no_filing_row_at_all_is_resumed_by_the_sweep(
-        self, session, org_id: uuid.UUID
+        self, session, admin_session, org_id: uuid.UUID
     ) -> None:
         """Simulate the crash directly: claim and call the portal, but never call
         `record_autofile_result` — exactly what a process death between the two leaves behind:
@@ -242,6 +242,13 @@ class TestCrashBetweenCallAndRecord:
         async with session.begin():
             filings = await selectors.filings_for_invoice(session, org_id, invoice.id)
         assert filings == [], "the claim must not have written a row"
+        # The finalize request was delivered (the consumer's claim above is what took it), so the
+        # relay had published it; a request still queued would leave the invoice to its delivery.
+        async with admin_session.begin():
+            await admin_session.execute(
+                text("UPDATE finance.outbox SET published_at = now() WHERE organization_id = :o"),
+                {"o": org_id},
+            )
 
         sweep = FilingReclaimSweep(
             discovery_factory=get_outbox_sessionmaker(),

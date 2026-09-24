@@ -159,6 +159,11 @@ outage `pending` on top of a `filed` row.
   is itself the lease; a re-queue's lease is the `filing_requested` outbox row it staged (read on
   the database's clock). The invoice is taken `FOR UPDATE SKIP LOCKED`, so one a request or another
   replica holds is skipped this tick rather than waited on.
+* **A relay outage is not an attempt.** Only `filing_requested` rows the relay has **published**
+  count toward `MAX_FILING_ATTEMPTS`; while any request for the invoice is still queued
+  unpublished, the invoice is left alone (in discovery and in the re-check) instead of being
+  re-queued behind it — so an outage cannot spend an invoice's budget and end it
+  `retry_exhausted`. Tests: `test_reclaim_bounds.py::TestARelayOutageIsNotAnAttempt`.
 * **Poisoned-step guard.** Every path ends: `MAX_FILING_ATTEMPTS` unanswered re-queues,
   `MAX_COMPLIANCE_RESUMES` claim drives, the statutory window, the 24-hour age cap. A tick that
   raises backs off (capped) and tries again — it shares a process with the consumer, and the
@@ -202,9 +207,10 @@ generated" path runs for real in tests, not only through a fake.
 Razorpay has no idempotency key on a payment create (ADR-0004 §6 and its addendum), so:
 
 * **Lookup before create.** `call_provider_charge` ensures the charge's provider Order
-  (`receipt` = the charge idempotency key, found by it before any create), asks for a payment
-  already made against that Order, and only then creates one. `charges.provider_order_id` records
-  the Order at finalize. A resumed call finds the payment a crashed one made.
+  (`receipt` = the charge's own id — 36 characters, unique, stable; Razorpay caps receipts at 40
+  and does not make them unique), asks for a payment already made against that Order, and only
+  then creates one. `charges.provider_order_id` records the Order. A resumed call finds the
+  payment a crashed one made.
 * **One call at a time.** `charges.attempts`, `next_attempt_at`, `lease_until`: the stager holds
   the lease from insert; anyone else — the caller's own HTTP retry, the sweep — takes it only by a
   conditional `UPDATE … RETURNING` once it has lapsed and the backoff has passed. A retry of an
@@ -214,7 +220,32 @@ Razorpay has no idempotency key on a payment create (ADR-0004 §6 and its addend
   written); state moves only from `created` and only to a non-terminal state — captured/failed come
   by webhook with their events. `payment.charge.staged` is audited at insert and
   `payment.charge.created` once, by the first recorder.
-* **The sweep is bounded.** It discovers only charges with no call in flight and not backing off
-  (in SQL, so none can block the batch), claims the lease, and at `charge_max_attempts` (5) fails
-  the charge and emits `commerce.payment.failed` so dunning proceeds. Discovery reads a
-  column-scoped grant on `charges` (`selectors.SWEEP_READER_CHARGE_COLUMNS`).
+* **The sweep is bounded, and never fails a charge blind.** It discovers only charges with no call
+  in flight and not backing off (in SQL, so none can block the batch) and claims the lease. At
+  `charge_max_attempts` (5) it makes a **lookup-only** call (`find_order` by receipt, then
+  `find_payment` — never a create): a payment found is finalized; none found fails the charge
+  (`attempts_exhausted`, re-checked under the row lock) and emits `commerce.payment.failed` so
+  dunning proceeds; a lookup that cannot be made (timeout, error) is retried
+  `charge_final_lookup_attempts` (3) times, then the charge fails as `lookup_unavailable` with an
+  alert log. Discovery reads a column-scoped grant on `charges`
+  (`selectors.SWEEP_READER_CHARGE_COLUMNS`).
+* **The webhook takes the same lock and records what finalize could not.** It resolves the charge
+  `FOR UPDATE` and re-reads it, so it never acts on a state the sweep or finalize just changed (no
+  second `commerce.payment.failed`, no `captured` written over the sweep's commit). It records the
+  provider payment and Order ids from the verified body when the charge has none — a call that
+  outlived its timeout was never finalized, and its capture would otherwise leave a charge no
+  refund can reach. A `payment.captured` for a charge the platform failed on its own judgement
+  (`attempts_exhausted`, `lookup_unavailable`) is recorded (`failed -> captured`, audited
+  `payment.charge.captured_after_local_failure`, logged at error); a failure the provider reported
+  stays final.
+* **The lease outlives the call.** `charge_reclaim_after_seconds >= 2 × provider_call_timeout_seconds
+  + 60` is validated at start-up (finance: `2 × portal_call_timeout_seconds + 60 ≤
+  FILING_RECLAIM_AFTER`), and an adapter's per-request connect/read timeouts over `ensure_order`
+  + `find_payment` + `charge` must sum under `provider_call_timeout_seconds` — otherwise an
+  abandoned call could land its create after the sweep's lookup found nothing.
+* **Tests.** `payment/tests/test_charge_final_lookup.py` — `TestTheFinalLookup`
+  (`test_exhaustion_finalizes_a_charge_whose_last_attempt_made_a_payment`, none-found,
+  lookup-unavailable, lookup-timeout), `TestALateCaptureIsRecorded`,
+  `TestTheWebhookRecordsTheProviderId`, `TestTheWebhookAndTheSweepSerialize`
+  (`test_webhook_failed_vs_exhaustion_race_double_failed`), `TestTheLeaseOutlivesTheCall`,
+  `TestTheOrderReceipt`.

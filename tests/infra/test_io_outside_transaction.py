@@ -59,6 +59,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVICE_APP_ROOTS = sorted((REPO_ROOT / "services").glob("*/app"))
 #: `get_tenant_session` and `session_scope` — the chokepoints most routes take their committing
@@ -806,6 +808,56 @@ def test_a_function_reference_handed_to_a_thread_is_followed() -> None:
         "        await asyncio.to_thread(call_irp_cancel, client, facts)\n",
     )
     assert "call_irp_cancel" in {f.callee for f in found}
+
+
+@pytest.mark.parametrize(
+    ("service", "source", "callee"),
+    [
+        (
+            "finance",
+            "import functools\n"
+            "from app.services import call_irp_register\n"
+            "async def probe(session, client, payload):\n"
+            "    async with session.begin():\n"
+            "        fn = functools.partial(call_irp_register, client, payload)\n"
+            "        await asyncio.to_thread(fn)\n",
+            "call_irp_register",
+        ),
+        (
+            "finance",
+            "from app.services import call_irp_register\n"
+            "async def probe(session, client, payload):\n"
+            "    async with session.begin():\n"
+            "        await loop.run_in_executor(None, call_irp_register, client, payload)\n",
+            "call_irp_register",
+        ),
+        (
+            "finance",
+            "from app import services\n"
+            "async def probe(session, client, payload):\n"
+            "    async with session.begin():\n"
+            "        await services.call_irp_register_off_loop(client, payload)\n",
+            "call_irp_register_off_loop",
+        ),
+        (
+            "payment",
+            "from app import services\n"
+            "from platform_core.db import session_scope\n"
+            "async def probe(org, provider, charge):\n"
+            "    async with session_scope(organization_id=org) as s:\n"
+            "        await services.call_provider_charge_off_loop(provider, charge)\n",
+            "call_provider_charge_off_loop",
+        ),
+    ],
+    ids=["partial", "run_in_executor", "off_loop_in_txn", "payment_off_loop_in_session_scope"],
+)
+def test_a_thread_offload_inside_a_transaction_is_still_inside_it(
+    service: str, source: str, callee: str
+) -> None:
+    """Moving a call to a worker thread takes it off the event loop, not out of the transaction:
+    a `to_thread` / `run_in_executor` / `partial` / `*_off_loop` call made inside the block still
+    holds the connection for as long as the provider takes (the review's round-4 probes)."""
+    assert callee in {f.callee for f in _findings_in(service, source)}
 
 
 def test_an_autobegun_transaction_is_a_transaction() -> None:

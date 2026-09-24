@@ -236,11 +236,13 @@ class TestTheSweepIsBounded:
             await sweep.tick(now=base + timedelta(days=day))
 
         max_attempts = settings().charge_max_attempts
-        # The stager's own attempt counts; the sweep made the rest, then stopped.
+        # The stager's own attempt counts; the sweep made the rest, then stopped creating — its
+        # last act was a lookup (one more claimed attempt), which found no payment.
         assert calls["n"] == max_attempts - 1
         stored = await _read(org_id, charge.id)
         assert stored.state == CHARGE_FAILED
-        assert stored.attempts == max_attempts
+        assert stored.failure_reason == domain.FAILURE_ATTEMPTS_EXHAUSTED
+        assert stored.attempts == max_attempts + 1
         async with session_scope(organization_id=org_id) as s:
             events = (
                 await s.execute(

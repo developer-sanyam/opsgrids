@@ -197,6 +197,20 @@ async def _events(session, org_id: uuid.UUID, event_type: str) -> list[OutboxEve
         return list((await session.execute(stmt)).scalars().all())
 
 
+async def _relay_published(admin_session, org_id: uuid.UUID) -> None:
+    """The relay has published everything staged so far. A request still queued unpublished is in
+    flight, and the reclaim sweep leaves its invoice alone (D3 fixup), so a test of what happens
+    after a request is *lost* starts from one that was published."""
+    async with admin_session.begin():
+        await admin_session.execute(
+            text(
+                "UPDATE finance.outbox SET published_at = now() "
+                "WHERE organization_id = :o AND published_at IS NULL"
+            ),
+            {"o": org_id},
+        )
+
+
 class _RememberingIrp:
     """An IRP that holds state the way the real one does: a second cancellation of an IRN it has
     already withdrawn is answered "already cancelled", carrying the first withdrawal."""
@@ -911,9 +925,10 @@ class TestStalePendingFilings:
         ]
 
     async def test_a_pending_row_whose_retry_was_lost_is_requeued_once_and_then_filed(
-        self, client, session, org_id: uuid.UUID
+        self, client, session, admin_session, org_id: uuid.UUID
     ) -> None:
         invoice = await self._pending(client, session, org_id, "INV-D3-P1")
+        await _relay_published(admin_session, org_id)
         sweep = _sweep()
 
         # Inside the retry's own delay plus grace: the scheduled retry may still be coming.
@@ -945,6 +960,7 @@ class TestStalePendingFilings:
         self, client, session, admin_session, org_id: uuid.UUID
     ) -> None:
         await self._pending(client, session, org_id, "INV-D3-P2")
+        await _relay_published(admin_session, org_id)
         sweep = _sweep()
         later = datetime.now(UTC) + LATER
         await sweep.tick(now=later)
@@ -954,7 +970,12 @@ class TestStalePendingFilings:
             await admin_session.execute(
                 update(OutboxEvent)
                 .where(OutboxEvent.organization_id == org_id)
-                .values(created_at=text("now() - interval '1 hour'"))
+                # The relay published it an hour ago and the broker lost it: a published request
+                # nobody answered is what the lease expires on (a queued one never does).
+                .values(
+                    created_at=text("now() - interval '1 hour'"),
+                    published_at=text("now() - interval '1 hour'"),
+                )
             )
         await sweep.tick(now=later)
         assert len(await self._reclaims(session, org_id)) == 2

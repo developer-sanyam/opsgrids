@@ -156,9 +156,10 @@ class RazorpayProvider:
         currency: str,
         notes: dict[str, str],
     ) -> OrderResult:
-        """`GET /orders?receipt=…` first; `POST /orders` only when there is none. The stub answers
-        the lookup from the state the create left behind."""
-        existing = self._orders_by_receipt.get(receipt)
+        """`GET /orders?receipt=…` first (`find_order`); `POST /orders` only when there is none.
+        The stub answers the lookup from the state the create left behind."""
+        found = self.find_order(receipt=receipt)
+        existing = found.provider_order_id if found is not None else None
         if existing is None:
             response = self._call(
                 "orders",
@@ -174,6 +175,13 @@ class RazorpayProvider:
             )
             existing = str(response["id"])
             self._orders_by_receipt[receipt] = existing
+        return OrderResult(provider=PROVIDER, provider_order_id=existing, receipt=receipt)
+
+    def find_order(self, *, receipt: str) -> OrderResult | None:
+        """`GET /orders?receipt=…` — the lookup alone, never a create."""
+        existing = self._orders_by_receipt.get(receipt)
+        if existing is None:
+            return None
         return OrderResult(provider=PROVIDER, provider_order_id=existing, receipt=receipt)
 
     def find_payment(self, *, order_id: str, charge_id: str) -> ChargeResult | None:
@@ -281,6 +289,7 @@ class RazorpayProvider:
             provider_payment_id=entity.get("id"),
             failure_reason=entity.get("error_description"),
             raw=parsed,
+            provider_order_id=entity.get("order_id"),
         )
 
 

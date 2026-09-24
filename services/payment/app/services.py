@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -225,7 +226,7 @@ async def stage_charge(
 
 
 async def claim_charge_lease(
-    session: AsyncSession, charge_id: uuid.UUID, *, now: datetime
+    session: AsyncSession, charge_id: uuid.UUID, *, now: datetime, budget: int | None = None
 ) -> Charge | None:
     """Take the right to call the provider for one charge, or learn that somebody else has it.
 
@@ -234,8 +235,12 @@ async def claim_charge_lease(
     (`next_attempt_at`) and it is inside its attempt budget. Two callers racing it serialize on
     the row, and the second's `WHERE` no longer holds — so an in-flight key can never trigger a
     second call. Returns the charge (re-read) when claimed, else None.
+
+    `budget` is the exclusive upper bound on `attempts` the claim is allowed within — the call
+    budget (`charge_max_attempts`) by default, the final-lookup budget beyond it for the sweep's
+    last look (`claim_stuck_charge`).
     """
-    max_attempts = settings().charge_max_attempts
+    max_attempts = budget if budget is not None else settings().charge_max_attempts
     lease = _lease()
     stmt = (
         update(Charge)
@@ -266,20 +271,28 @@ async def claim_charge_lease(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+def _receipt(charge: Charge) -> str:
+    """The provider Order's `receipt` for a charge: its own id. 36 characters, globally unique,
+    and fixed for the charge's life — Razorpay caps `receipt` at 40 characters and does not make
+    it unique, so the platform key (`invoice:<uuid>` is 44) would be refused, and a
+    per-organization key could collide across tenants on one merchant account."""
+    return str(charge.id)
+
+
 def call_provider_charge(provider: PaymentProvider, charge: Charge) -> ChargeResult:
     """The *second* act, called with no session and therefore no transaction open — a real
     adapter's outbound HTTP happens here and only here.
 
     **Lookup before create** (ADR-0004 §6, addendum): Razorpay has no idempotency key on a payment
-    create, so this never simply creates. It ensures the charge's Order (`receipt` = the
-    platform's idempotency key — found by it if a previous call already made it), asks whether a
-    payment already exists against that Order, and only if none does creates one. A call resumed
-    after a crash between this and `finalize_charge` therefore lands on the payment the first
-    call made, never a second debit.
+    create, so this never simply creates. It ensures the charge's Order (`receipt` = the charge's
+    own id — `_receipt` — found by it if a previous call already made it), asks whether a payment
+    already exists against that Order, and only if none does creates one. A call resumed after a
+    crash between this and `finalize_charge` therefore lands on the payment the first call made,
+    never a second debit.
     """
     notes = _notes_for_charge(charge)
     order = provider.ensure_order(
-        receipt=charge.idempotency_key,
+        receipt=_receipt(charge),
         amount_minor=charge.amount_minor,
         currency=charge.currency,
         notes=notes,
@@ -317,6 +330,54 @@ async def call_provider_charge_off_loop(
             timeout_seconds=timeout,
         )
         return None
+
+
+def lookup_provider_charge(provider: PaymentProvider, charge: Charge) -> ChargeResult | None:
+    """A **lookup only**: the charge's Order by its receipt, then a payment against it. Never
+    creates an Order or a payment — this is the stuck-charge sweep's final look at the attempt
+    budget, and its whole point is to find out whether the last attempt's create landed without
+    risking another."""
+    order = provider.find_order(receipt=_receipt(charge))
+    if order is None:
+        return None
+    return provider.find_payment(order_id=order.provider_order_id, charge_id=str(charge.id))
+
+
+@dataclass(frozen=True, slots=True)
+class LookupOutcome:
+    """What the final lookup found: `found` (with the provider's payment), `none` (the provider
+    holds no payment for this charge), or `unavailable` (the lookup timed out or raised — nothing
+    is known, and nothing may be concluded)."""
+
+    kind: str
+    result: ChargeResult | None = None
+
+
+async def lookup_provider_charge_off_loop(
+    provider: PaymentProvider, charge: Charge
+) -> LookupOutcome:
+    """`lookup_provider_charge` on a worker thread, bounded like every provider call."""
+    timeout = settings().provider_call_timeout_seconds
+    try:
+        found = await asyncio.wait_for(
+            asyncio.to_thread(lookup_provider_charge, provider, charge), timeout=timeout
+        )
+    except TimeoutError:
+        log.warning(
+            "payment.charge.final_lookup_timeout",
+            charge_id=str(charge.id),
+            organization_id=str(charge.organization_id),
+            timeout_seconds=timeout,
+        )
+        return LookupOutcome("unavailable")
+    except Exception:
+        log.exception(
+            "payment.charge.final_lookup_failed",
+            charge_id=str(charge.id),
+            organization_id=str(charge.organization_id),
+        )
+        return LookupOutcome("unavailable")
+    return LookupOutcome("found", found) if found is not None else LookupOutcome("none")
 
 
 async def finalize_charge(
@@ -404,11 +465,17 @@ async def claim_stuck_charge(
 ) -> tuple[str, Charge | None]:
     """The stuck-charge sweep's first act for one charge, under the tenant binding.
 
-    `("call", charge)` — the sweep holds the lease and may call the provider.
-    `("exhausted", charge)` — the attempt budget (`charge_max_attempts`) is spent: the charge is
-    failed, audited, and `commerce.payment.failed` is staged so the subscription's dunning ladder
-    proceeds rather than waiting on a charge nothing will ever resolve.
-    `("not_due", None)` — resolved meanwhile, locked by somebody else, leased, or backing off.
+    * `("call", charge)` — inside the call budget (`charge_max_attempts`): the sweep holds the
+      lease and may call the provider (lookup before create).
+    * `("final_lookup", charge)` — the call budget is spent. The charge is **not** failed here:
+      the last attempt's create may have reached the provider with its answer lost, and failing
+      it now would tell dunning to debit again. The sweep holds a lease for a **lookup-only**
+      call (`lookup_provider_charge`) and decides from what the provider says
+      (`fail_exhausted_charge` only if it holds nothing).
+    * `("exhausted", charge)` — the final lookup itself failed `charge_final_lookup_attempts`
+      times: the charge is failed as `lookup_unavailable`, `commerce.payment.failed` is staged
+      and an alert is logged, because a person may need to look at the provider by hand.
+    * `("not_due", None)` — resolved meanwhile, locked by somebody else, leased, or backing off.
     """
     charge = await selectors.lock_charge(session, charge_id, skip_locked=True)
     if (
@@ -420,30 +487,60 @@ async def claim_stuck_charge(
         or (charge.next_attempt_at is not None and charge.next_attempt_at > now)
     ):
         return "not_due", None
-    if charge.attempts >= settings().charge_max_attempts:
-        before = charge.state
-        charge.state = CHARGE_FAILED
-        charge.failure_reason = (
-            f"the provider never confirmed this charge after {charge.attempts} attempts"
-        )[:200]
-        charge.lease_until = None
-        await session.flush()
-        record_audit(
-            session,
-            AuditLog,
-            organization_id=charge.organization_id,
-            actor_id=None,
-            acting_as="stuck-charge-sweep",
-            action="payment.charge.failed",
-            entity="charge",
-            entity_id=charge.id,
-            before={"state": before},
-            after={"state": charge.state, "failure_reason": charge.failure_reason},
+    cfg = settings()
+    lookup_budget = cfg.charge_max_attempts + cfg.charge_final_lookup_attempts
+    if charge.attempts >= lookup_budget:
+        log.error(
+            "payment.charge.failed_without_provider_answer",
+            charge_id=str(charge.id),
+            organization_id=str(charge.organization_id),
+            attempts=charge.attempts,
+            hint="the provider could not be asked whether it holds a payment; check it by hand",
         )
-        _publish_payment_event(session, charge, domain.EVT_FAILED)
+        _fail_locally(session, charge, domain.FAILURE_LOOKUP_UNAVAILABLE)
+        await session.flush()
         return "exhausted", charge
+    if charge.attempts >= cfg.charge_max_attempts:
+        claimed = await claim_charge_lease(session, charge.id, now=now, budget=lookup_budget)
+        return ("final_lookup", claimed) if claimed is not None else ("not_due", None)
     claimed = await claim_charge_lease(session, charge.id, now=now)
     return ("call", claimed) if claimed is not None else ("not_due", None)
+
+
+async def fail_exhausted_charge(session: AsyncSession, charge_id: uuid.UUID) -> Charge | None:
+    """The sweep's last act when the final lookup found **no** payment at the provider: re-check,
+    under the row lock, that the charge is still `created` with no provider payment (a webhook
+    may have landed while the lookup was out), then fail it as `attempts_exhausted` and stage
+    `commerce.payment.failed` so dunning proceeds. None when something else resolved it first."""
+    charge = await selectors.lock_charge(session, charge_id)
+    if charge is None or charge.state != CHARGE_CREATED or charge.provider_payment_id is not None:
+        return None
+    _fail_locally(session, charge, domain.FAILURE_ATTEMPTS_EXHAUSTED)
+    await session.flush()
+    return charge
+
+
+def _fail_locally(session: AsyncSession, charge: Charge, reason: str) -> None:
+    """Fail a charge on this platform's own decision — `reason` is one of
+    `domain.LOCAL_FAILURE_REASONS`, which is what later lets a provider's late
+    `payment.captured` still be recorded (`_reconcile_charge`). Audited and announced."""
+    before = charge.state
+    charge.state = CHARGE_FAILED
+    charge.failure_reason = reason
+    charge.lease_until = None
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=charge.organization_id,
+        actor_id=None,
+        acting_as="stuck-charge-sweep",
+        action="payment.charge.failed",
+        entity="charge",
+        entity_id=charge.id,
+        before={"state": before},
+        after={"state": charge.state, "failure_reason": reason, "attempts": charge.attempts},
+    )
+    _publish_payment_event(session, charge, domain.EVT_FAILED)
 
 
 async def create_charge(
@@ -546,19 +643,82 @@ async def ingest_webhook(
 async def _resolve_charge(
     session: AsyncSession, organization_id: uuid.UUID, event: WebhookEvent
 ) -> Charge | None:
-    """Find the charge a webhook is about — by the stamped `charge_id`, else the provider id."""
+    """Find the charge a webhook is about — by the stamped `charge_id`, else the provider id —
+    **row-locked and re-read** (`selectors.lock_charge`). A webhook, `finalize_charge` and the
+    stuck-charge sweep all decide from the charge's state; each takes the lock, so none acts on a
+    state another has already changed (a second `commerce.payment.failed`, a `captured` written
+    over the sweep's commit)."""
+    charge_id: uuid.UUID | None = None
     if event.charge_id:
         try:
-            charge = await selectors.get_charge(session, uuid.UUID(event.charge_id))
+            charge_id = uuid.UUID(event.charge_id)
         except ValueError:
-            charge = None
+            charge_id = None
+    if charge_id is not None:
+        charge = await selectors.lock_charge(session, charge_id)
         if charge is not None:
             return charge
     if event.provider_payment_id:
-        return await selectors.get_charge_by_provider_payment_id(
+        found = await selectors.get_charge_by_provider_payment_id(
             session, organization_id, event.provider_payment_id
         )
+        if found is not None:
+            return await selectors.lock_charge(session, found.id)
     return None
+
+
+def _record_provider_ids(
+    session: AsyncSession, charge: Charge, event: WebhookEvent, *, request: Request | None
+) -> None:
+    """Take the provider's payment and Order ids from a **verified** webhook when the charge has
+    none yet. `finalize_charge` is not the only way a charge learns them: a provider call that
+    outlived its timeout was abandoned, its result never recorded, but its capture webhook still
+    arrives — and without this the charge would be captured with no provider id forever (no
+    refund possible, a `captured` event naming nothing). A *different* id than the one stored is
+    logged and audited, never written over."""
+    if event.provider_payment_id:
+        if charge.provider_payment_id is None:
+            charge.provider_payment_id = event.provider_payment_id
+            # The first record of the provider's payment, however it arrives — the same single
+            # `payment.charge.created` row `finalize_charge` writes when it gets there first.
+            record_audit(
+                session,
+                AuditLog,
+                organization_id=charge.organization_id,
+                actor_id=None,
+                acting_as=f"{event.provider}-webhook",
+                action="payment.charge.created",
+                entity="charge",
+                entity_id=charge.id,
+                after={
+                    "state": charge.state,
+                    "amount_minor": charge.amount_minor,
+                    "provider_payment_id": charge.provider_payment_id,
+                },
+                request=request,
+            )
+        elif charge.provider_payment_id != event.provider_payment_id:
+            log.error(
+                "payment.charge.provider_id_mismatch",
+                charge_id=str(charge.id),
+                organization_id=str(charge.organization_id),
+                source="webhook",
+            )
+            record_audit(
+                session,
+                AuditLog,
+                organization_id=charge.organization_id,
+                actor_id=None,
+                acting_as=f"{event.provider}-webhook",
+                action="payment.charge.provider_id_mismatch",
+                entity="charge",
+                entity_id=charge.id,
+                before={"provider_payment_id": charge.provider_payment_id},
+                after={"provider_payment_id": event.provider_payment_id},
+                request=request,
+            )
+    if event.provider_order_id and charge.provider_order_id is None:
+        charge.provider_order_id = event.provider_order_id
 
 
 async def _reconcile_charge(
@@ -577,6 +737,7 @@ async def _reconcile_charge(
     if charge is None:
         return False
 
+    _record_provider_ids(session, charge, event, request=request)
     target = event.outcome_state
     event_type = domain.event_for_outcome(target)
 
@@ -585,13 +746,48 @@ async def _reconcile_charge(
         # `created -> authorized` if that is what it is, but emit nothing.
         if target == CHARGE_AUTHORIZED and domain.is_legal(charge.state, CHARGE_AUTHORIZED):
             charge.state = CHARGE_AUTHORIZED
-            await session.flush()
+        await session.flush()
         return False
 
     if charge.state == target:
         # A different event id asserting the same terminal outcome — idempotent no-op. Guarded
         # here so the state machine below never sees an illegal `failed -> failed` self-edge.
+        await session.flush()
         return False
+
+    if (
+        charge.state == CHARGE_FAILED
+        and target == CHARGE_CAPTURED
+        and charge.failure_reason in domain.LOCAL_FAILURE_REASONS
+    ):
+        # The platform failed this charge on its own judgement (the sweep's budget), and the
+        # provider has now said it captured money for it. The money moved; the record follows the
+        # money. Refusing here would roll the inbox back and leave a capture nobody ever records.
+        log.error(
+            "payment.charge.captured_after_local_failure",
+            charge_id=str(charge.id),
+            organization_id=str(charge.organization_id),
+            failure_reason=charge.failure_reason,
+        )
+        before_reason = charge.failure_reason
+        charge.state = CHARGE_CAPTURED
+        charge.failure_reason = None
+        await session.flush()
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=charge.organization_id,
+            actor_id=None,
+            acting_as=f"{event.provider}-webhook",
+            action="payment.charge.captured_after_local_failure",
+            entity="charge",
+            entity_id=charge.id,
+            before={"state": CHARGE_FAILED, "failure_reason": before_reason},
+            after={"state": charge.state, "provider_payment_id": charge.provider_payment_id},
+            request=request,
+        )
+        _publish_payment_event(session, charge, event_type)
+        return True
 
     domain.assert_legal(charge.state, target)
     before = charge.state

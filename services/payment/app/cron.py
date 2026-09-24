@@ -34,9 +34,15 @@ call lands on the payment a crashed one made. And the lease (`services.claim_cha
 conditional `UPDATE … RETURNING`) means the sweep never calls while a request's call for the same
 charge is still in flight.
 
-**Bounded.** Each call claims an attempt; the next waits `domain.charge_retry_backoff(n)`; at
-`Settings.charge_max_attempts` the charge is failed and `commerce.payment.failed` is staged, so
-the subscription's dunning ladder proceeds rather than waiting on a charge nothing will resolve.
+**Bounded, and never failed blind.** Each call claims an attempt; the next waits
+`domain.charge_retry_backoff(n)`. At `Settings.charge_max_attempts` the sweep does not simply fail
+the charge — the last attempt's create may have reached the provider with its answer lost, and a
+failure would tell dunning to debit again. It makes a **lookup-only** call (the charge's Order by
+receipt, then a payment against it): a payment found is recorded; none found fails the charge as
+`attempts_exhausted` and stages `commerce.payment.failed`, so dunning proceeds; a lookup that
+cannot be made is retried up to `charge_final_lookup_attempts` times, then the charge is failed
+as `lookup_unavailable` with an alert. A provider's late `payment.captured` for a charge the
+platform failed this way is still recorded (`services._reconcile_charge`).
 A tick that raises (a discovery query failing) backs off and tries again rather than ending the
 loop — it shares a process with the consumers. An exception on one charge is logged with its
 identifiers and counted `failed`; the tick moves on.
@@ -57,6 +63,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app import selectors, services
 from app.config import settings
 from app.deps import get_provider
+from app.models import Charge
 from app.providers.base import PaymentProvider
 from platform_core.db import (
     assert_app_role,
@@ -188,14 +195,23 @@ class StuckChargeSweep:
         report: SweepReport,
     ) -> None:
         """Claim (`services.claim_stuck_charge` — re-checked under the tenant binding, the lease
-        taken or the charge failed at its budget), call the provider on a worker thread with no
-        transaction open, record in a second short transaction."""
+        taken), call the provider on a worker thread with no transaction open, record in a second
+        short transaction.
+
+        At the attempt budget the call is a **lookup only** (`final_lookup`): a payment the
+        provider holds is recorded like any answer; none at all fails the charge
+        (`fail_exhausted_charge`, re-checked under the lock) and tells dunning; a lookup that
+        could not be made leaves the charge for the next tick, until the final-lookup budget is
+        spent too (`exhausted`, `lookup_unavailable`)."""
         try:
             provider = self._provider_factory()
             async with self._work_scope(organization_id) as session:
                 step, charge = await services.claim_stuck_charge(session, charge_id, now=now)
             if step == "exhausted":
                 report.exhausted += 1
+                return
+            if step == "final_lookup" and charge is not None:
+                await self._final_lookup(organization_id, charge, provider, report)
                 return
             if step != "call" or charge is None:
                 report.skipped += 1
@@ -215,6 +231,34 @@ class StuckChargeSweep:
                 charge_id=str(charge_id),
             )
             report.failed += 1
+
+    async def _final_lookup(
+        self,
+        organization_id: uuid.UUID,
+        charge: Charge,
+        provider: PaymentProvider,
+        report: SweepReport,
+    ) -> None:
+        lookup = await services.lookup_provider_charge_off_loop(provider, charge)
+        if lookup.kind == "found" and lookup.result is not None:
+            async with self._work_scope(organization_id) as session:
+                await services.finalize_charge(session, charge.id, lookup.result)
+            log.warning(
+                "payment.stuck_charge.found_at_final_lookup",
+                organization_id=str(organization_id),
+                charge_id=str(charge.id),
+            )
+            report.resumed += 1
+            return
+        if lookup.kind == "none":
+            async with self._work_scope(organization_id) as session:
+                failed = await services.fail_exhausted_charge(session, charge.id)
+            if failed is not None:
+                report.exhausted += 1
+            else:
+                report.skipped += 1
+            return
+        report.failed += 1  # the lookup itself could not be made; the next tick asks again
 
 
 async def main() -> None:

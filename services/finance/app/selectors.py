@@ -602,26 +602,44 @@ def _request_backoff(requests: Any) -> Any:
 
 
 def _requests_backing_off(org_col: Any, invoice_col: Any, after_col: Any) -> Any:
-    """SQL: this invoice has had `filing_requested` staged on the outbox since `after_col`, and the
-    newest of them is still inside `resume_after(count)` — a re-queue that nobody has answered yet,
-    backing off. Measured on the database's clock (`created_at` is `now()` at insert).
+    """SQL: a `filing_requested` for this invoice is still in flight — either one the relay has
+    **not yet published** (any, whenever staged), or one published since `after_col` whose
+    newest is still inside `resume_after(count)` of the published ones. Measured on the
+    database's clock (`created_at` is `now()` at insert).
 
-    An aggregate with `HAVING` and no `GROUP BY` yields one row when the condition holds and none
-    otherwise (no requests at all gives a NULL `max`, and the comparison is not true), so the
+    Unpublished requests are never attempts: with the relay down they only mean the request is
+    queued, and counting them would spend an invoice's whole budget in the outage and end it
+    `retry_exhausted` with nothing ever having been asked of anybody. While one is queued, the
+    invoice is simply left alone — re-queueing behind it would only queue a duplicate.
+
+    The published half is an aggregate with `HAVING` and no `GROUP BY`: one row when the condition
+    holds, none otherwise (no requests gives a NULL `max`, and the comparison is not true), so the
     whole thing is an `EXISTS`. This is what keeps a re-queued or backing-off invoice **out of the
     discovery batch** instead of occupying one of its `limit` slots every tick."""
-    return (
+    queued = (
+        select(OutboxEvent.id)
+        .where(
+            OutboxEvent.organization_id == org_col,
+            OutboxEvent.aggregate_id == invoice_col,
+            OutboxEvent.event_type == FILING_REQUESTED_EVENT,
+            OutboxEvent.published_at.is_(None),
+        )
+        .exists()
+    )
+    recent = (
         select(literal(1))
         .select_from(OutboxEvent)
         .where(
             OutboxEvent.organization_id == org_col,
             OutboxEvent.aggregate_id == invoice_col,
             OutboxEvent.event_type == FILING_REQUESTED_EVENT,
+            OutboxEvent.published_at.is_not(None),
             OutboxEvent.created_at > after_col,
         )
         .having(func.max(OutboxEvent.created_at) + _request_backoff(func.count()) > func.now())
         .exists()
     )
+    return or_(queued, recent)
 
 
 def _has_live_registration(org_col: Any) -> Any:
@@ -772,16 +790,21 @@ async def due_stale_eway(
 
 @dataclass(frozen=True, slots=True)
 class RequestHistory:
-    """`filing_requested` staged for one invoice since some moment, read under the tenant binding:
-    how many, the newest, and the database's own clock to compare the newest against."""
+    """`filing_requested` for one invoice, read under the tenant binding: how many the relay has
+    **published** since some moment (the attempts that count), the newest of those, whether any
+    request is still queued unpublished, and the database's own clock."""
 
     count: int
     newest_at: datetime | None
     db_now: datetime
+    queued: bool = False
 
     def backing_off(self) -> bool:
-        """Still inside `domain.resume_after(count)` of the newest — exactly `_requests_backing_
-        off`'s SQL, so discovery and the re-check agree."""
+        """A request is still queued, or the newest published one is still inside
+        `domain.resume_after(count)` — exactly `_requests_backing_off`'s SQL, so discovery and the
+        re-check agree."""
+        if self.queued:
+            return True
         if self.count == 0 or self.newest_at is None:
             return False
         return self.newest_at + domain.resume_after(self.count) > self.db_now
@@ -790,26 +813,34 @@ class RequestHistory:
 async def filing_requests_since(
     session: AsyncSession, org_id: uuid.UUID, invoice_id: uuid.UUID, *, after: datetime
 ) -> RequestHistory:
-    """How many `filing_requested` events this service staged for the invoice after `after` (a
-    filing row's, or the invoice's own, `created_at`) — the sweep's **lease and budget** for a
-    re-queue.
+    """How many `filing_requested` events for the invoice the relay has **published** since
+    `after` (a filing row's, or the invoice's own, `created_at`), and whether any is still queued
+    unpublished — the sweep's **lease and budget** for a re-queue.
 
     A re-queue cannot be recorded on the ledger (a `pending` row is never rewritten, and a lost
     invoice has no row at all), so the outbox rows the re-queues themselves staged are the record:
-    while the newest is inside its backoff the invoice is left alone, and at
-    `domain.MAX_FILING_ATTEMPTS` the sweep stops with a terminal row. The finalize request is
-    staged in the invoice's own transaction, so it is never newer than `invoice.created_at` and
-    never counts. Runs under the tenant binding, on the app role, against this service's own
-    outbox — no cross-schema read.
+    while one is still queued, or the newest published one is inside its backoff, the invoice is
+    left alone; at `domain.MAX_FILING_ATTEMPTS` *published* requests the sweep stops with a
+    terminal row. Unpublished rows are never counted — a relay outage is not an invoice's failure
+    to file. The finalize request is staged in the invoice's own transaction, so it is never newer
+    than `invoice.created_at` and never counts as an attempt. Runs under the tenant binding, on
+    the app role, against this service's own outbox — no cross-schema read.
     """
-    stmt = select(func.count(), func.max(OutboxEvent.created_at), func.now()).where(
+    published_since = and_(OutboxEvent.published_at.is_not(None), OutboxEvent.created_at > after)
+    stmt = select(
+        func.count().filter(published_since),
+        func.max(OutboxEvent.created_at).filter(published_since),
+        func.count().filter(OutboxEvent.published_at.is_(None)),
+        func.now(),
+    ).where(
         OutboxEvent.organization_id == org_id,
         OutboxEvent.event_type == FILING_REQUESTED_EVENT,
         OutboxEvent.aggregate_id == invoice_id,
-        OutboxEvent.created_at > after,
     )
-    count, newest_at, db_now = (await session.execute(stmt)).one()
-    return RequestHistory(count=int(count), newest_at=newest_at, db_now=db_now)
+    count, newest_at, queued, db_now = (await session.execute(stmt)).one()
+    return RequestHistory(
+        count=int(count), newest_at=newest_at, db_now=db_now, queued=int(queued) > 0
+    )
 
 
 async def latest_filings(

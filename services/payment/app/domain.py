@@ -74,6 +74,17 @@ def is_terminal(state: str) -> bool:
     return state in (CHARGE_CAPTURED, CHARGE_FAILED)
 
 
+#: `charges.failure_reason` codes for a failure this platform decided, not the provider. A charge
+#: failed for one of these may still be captured by a late webhook — the provider may hold a
+#: payment the platform never saw confirmed — so reconciliation accepts `failed -> captured` for
+#: exactly these (`services._reconcile_charge`) and nothing else (D3).
+FAILURE_ATTEMPTS_EXHAUSTED = "attempts_exhausted"
+FAILURE_LOOKUP_UNAVAILABLE = "lookup_unavailable"
+LOCAL_FAILURE_REASONS: frozenset[str] = frozenset(
+    {FAILURE_ATTEMPTS_EXHAUSTED, FAILURE_LOOKUP_UNAVAILABLE}
+)
+
+
 #: The first wait between two provider calls for one stuck charge, doubling per attempt to
 #: `CHARGE_RETRY_CEILING`. Pure arithmetic — the sweep and the lease claim both read it (D3).
 CHARGE_RETRY_BASE: timedelta = timedelta(minutes=5)

@@ -7,11 +7,16 @@ in D3 round 2 — `finance-cron` and `payment-cron` were never added to compose 
 consumers had stopped letting the queue retry a crashed claim, so the sweep was the *only* thing
 that would ever finish one.
 
-The rule this pins: every service whose `bin/cron` runs `app.cron` either has its own
-compose service running `./bin/cron`, or folds the sweep into its worker — a compose service
-built from its image runs `./bin/worker`, `bin/worker` runs `app.worker`, and `app/worker.py`
-imports the sweep from `app.cron`. (The memory-budget erratum's folds —
-subscription, account, approval — and D3's — finance, payment — are the second shape.)
+The rule this pins: every service whose `bin/cron` runs `app.cron` has its sweep run by one of
+three shapes —
+
+* its own compose service running `./bin/cron`;
+* its worker: a compose service built from its image runs `./bin/worker`, `bin/worker` runs
+  `app.worker`, and `app/worker.py` imports the sweep from `app.cron` (the memory-budget
+  erratum's folds — subscription, account, approval — and D3's — finance, payment);
+* its API: the API container's environment turns `RUN_SWEEPS_IN_API` on (`true`, or
+  `${RUN_SWEEPS_IN_API:-true}`) — the memory-headroom slice's fold for document, operations and
+  storefront, whose own tests pin the lifespan wiring.
 """
 
 from __future__ import annotations
@@ -56,6 +61,39 @@ def _runs(compose: dict[str, dict], service: str, entrypoint: str) -> bool:
     )
 
 
+_SWEEPS_IN_API_ON = re.compile(r"^(true|\$\{RUN_SWEEPS_IN_API:-true\})$")
+
+
+def _environment(spec: dict) -> dict[str, str]:
+    env = spec.get("environment") or {}
+    if isinstance(env, list):
+        env = dict(str(item).split("=", 1) for item in env if "=" in str(item))
+    return {str(k): str(v) for k, v in env.items()}
+
+
+def _runs_sweeps_in_api(compose: dict[str, dict], service: str) -> bool:
+    """An API container of this service's image (no worker or cron command) with
+    `RUN_SWEEPS_IN_API` switched on."""
+    image = f"opsgrids-edge/{service}"
+    for spec in compose.values():
+        if spec.get("image") != image:
+            continue
+        command = _command(spec)
+        if "./bin/worker" in command or "./bin/cron" in command:
+            continue
+        if _SWEEPS_IN_API_ON.match(_environment(spec).get("RUN_SWEEPS_IN_API", "")):
+            return True
+    return False
+
+
+def _sweep_runs(compose: dict[str, dict], service: str) -> bool:
+    return (
+        _runs(compose, service, "./bin/cron")
+        or (_runs(compose, service, "./bin/worker") and _folded_into_worker(service))
+        or _runs_sweeps_in_api(compose, service)
+    )
+
+
 def _folded_into_worker(service: str) -> bool:
     root = REPO_ROOT / "services" / service
     bin_worker = root / "bin" / "worker"
@@ -78,14 +116,29 @@ def test_the_sweeping_services_are_found() -> None:
 
 @pytest.mark.parametrize("service", SWEEPING)
 def test_every_sweep_runs_in_a_container(service: str) -> None:
-    compose = _compose_services()
-    own_container = _runs(compose, service, "./bin/cron")
-    in_worker = _runs(compose, service, "./bin/worker") and _folded_into_worker(service)
-    assert own_container or in_worker, (
+    assert _sweep_runs(_compose_services(), service), (
         f"services/{service}/app/cron.py has a sweep and nothing on the edge runs it: add a "
-        f"`{service}-cron` compose service on ./bin/cron, or run it from app/worker.py "
-        f"(bin/worker -> app.worker) in `{service}-worker`."
+        f"`{service}-cron` compose service on ./bin/cron, run it from app/worker.py "
+        f"(bin/worker -> app.worker) in `{service}-worker`, or set RUN_SWEEPS_IN_API on its API "
+        "container."
     )
+
+
+@pytest.mark.parametrize(
+    ("environment", "runs"),
+    [
+        ({"RUN_SWEEPS_IN_API": "${RUN_SWEEPS_IN_API:-true}"}, True),
+        (["RUN_SWEEPS_IN_API=true"], True),
+        ({"RUN_SWEEPS_IN_API": "false"}, False),
+        ({}, False),
+    ],
+)
+def test_a_sweep_folded_into_its_api_container_counts(environment: dict | list, runs: bool) -> None:
+    """The memory-headroom shape: no `*-cron` container, the API runs the sweep in its lifespan
+    when compose turns it on. Anything but an explicit on is the silent "runs nowhere" this file
+    exists to catch."""
+    compose = {"document": {"image": "opsgrids-edge/document", "environment": environment}}
+    assert _sweep_runs(compose, "document") is runs
 
 
 @pytest.mark.parametrize("service", ["finance", "payment"])
