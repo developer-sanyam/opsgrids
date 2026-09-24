@@ -115,6 +115,8 @@ describe("table states", () => {
 
   it("shows the trial state with days left", async () => {
     mockAuth(["owner"]);
+    // Relative to the real clock the card reads, so the trial is always still running.
+    const trialEnd = new Date(Date.now() + 11 * 86_400_000).toISOString();
     vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(
       pricing([
         product({
@@ -122,8 +124,8 @@ describe("table states", () => {
             id: "sub_2",
             state: "trial",
             plan_version_id: "pv_crm_growth_v2",
-            trial_ends_at: "2026-09-05T00:00:00Z",
-            current_period_end: "2026-09-05T00:00:00Z",
+            trial_ends_at: trialEnd,
+            current_period_end: trialEnd,
           },
         }),
       ]),

@@ -31,10 +31,11 @@ export function formatDateTime(iso: string | null): string {
 }
 
 /**
- * A signed, human relative distance from `now` (default: the fixed "today" of the fixtures). Past
- * reads "3 days ago"; future reads "in 12 days". Used for last-activity and grant-expiry columns.
+ * A signed, human relative distance from `now` (default: the real clock; tests pass their own).
+ * Past reads "3 days ago"; future reads "in 12 days". Used for last-activity and grant-expiry
+ * columns.
  */
-export function relativeDays(iso: string | null, now: Date = new Date("2026-08-24T00:00:00Z")): string {
+export function relativeDays(iso: string | null, now: Date = new Date()): string {
   if (!iso) return "—";
   const then = new Date(iso);
   if (Number.isNaN(then.getTime())) return "—";
@@ -49,8 +50,9 @@ export function relativeDays(iso: string | null, now: Date = new Date("2026-08-2
   return days < 0 ? `${months} ${munit} ago` : `in ${months} ${munit}`;
 }
 
-/** Whole-number days between `iso` and now — negative if past. */
-export function daysUntil(iso: string | null, now: Date = new Date("2026-08-24T00:00:00Z")): number | null {
+/** Whole-number days between `iso` and now (the real clock unless a test passes one) — negative
+ *  if past. */
+export function daysUntil(iso: string | null, now: Date = new Date()): number | null {
   if (!iso) return null;
   const then = new Date(iso);
   if (Number.isNaN(then.getTime())) return null;
