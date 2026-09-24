@@ -125,31 +125,6 @@ def activities_this_week(activities: Sequence[Activity], *, now: datetime | None
     return sum(1 for a in activities if cutoff <= _aware(a.occurred_at) <= now)
 
 
-# Open pipeline value at each month-end through 2026, in minor units (paise), rising to
-# roughly today's live open pipeline — the SPA's `PIPELINE_TREND` sample series.
-# Representative rather than authoritative until a reporting service keeps real history
-# (the finance-service precedent); the SPA labels the chart's history as sample data.
-_TREND_HISTORY_MINOR: tuple[tuple[str, int], ...] = (
-    ("Jan", 172_000_000 * 100),
-    ("Feb", 188_000_000 * 100),
-    ("Mar", 196_000_000 * 100),
-    ("Apr", 214_000_000 * 100),
-    ("May", 221_000_000 * 100),
-    ("Jun", 238_000_000 * 100),
-    ("Jul", 251_000_000 * 100),
-)
-
-
-def pipeline_trend(live_open_minor: int) -> list[dict[str, object]]:
-    """The pipeline-over-time series: representative month-end history with the final
-    point always the **live** open pipeline, so the chart ends on the truth."""
-    points: list[dict[str, object]] = [
-        {"label": label, "value_minor": value} for label, value in _TREND_HISTORY_MINOR
-    ]
-    points.append({"label": "Aug", "value_minor": live_open_minor})
-    return points
-
-
 def _aware(dt: datetime) -> datetime:
     """Treat a naive timestamp as UTC so comparisons never raise."""
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)

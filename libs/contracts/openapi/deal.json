@@ -721,7 +721,7 @@
         "type": "object"
       },
       "SummaryOut": {
-        "description": "The Overview dashboard's server-side rollup: the same arithmetic the SPA's\n`data/derive.ts` runs over the deal list, exposed once so a reporting view can share\nit. Headline figures are computed live from the deals and activities; the trend's\nearlier months are representative history (the seam a reporting service replaces \u2014\nsee `app.domain.pipeline_trend`), with the final point always the live open pipeline.",
+        "description": "The Overview dashboard's server-side rollup: the same arithmetic the SPA's\n`data/derive.ts` runs over the deal list, exposed once so a reporting view can share\nit. Headline figures are computed live from the deals and activities.\n\n`trend` is `None`, not a placeholder history: an open-pipeline-value-over-time chart needs a\ndated snapshot of what was open on a past day, and this service keeps only each deal's\n*current* stage and value, never a history of either. That is a genuinely missing capability\n(a stage-history/insights projection, dashboard-data audit \u00a73.3 row 12), not something this\nendpoint can compute honestly today \u2014 so it reports `None` here instead of the fixed months\nit used to serve unflagged as if they were real.",
         "properties": {
           "activities_this_week": {
             "title": "Activities This Week",
@@ -747,11 +747,18 @@
             "type": "integer"
           },
           "trend": {
-            "items": {
-              "$ref": "#/components/schemas/TrendPointOut"
-            },
-            "title": "Trend",
-            "type": "array"
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/TrendPointOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trend"
           },
           "weighted_pipeline_minor": {
             "title": "Weighted Pipeline Minor",
@@ -1198,8 +1205,48 @@
     },
     "/api/v1/deals/summary": {
       "get": {
-        "description": "The same arithmetic the SPA's `data/derive.ts` runs over the deal list, computed\nserver-side over the caller's scope: an OWN-scoped rep gets their own numbers.",
+        "description": "The same arithmetic the SPA's `data/derive.ts` runs over the deal list, computed\nserver-side over the caller's scope: an OWN-scoped rep gets their own numbers.\n\n`owner_id`/`owner=me` narrow *further*, the way `/deals`'s own `owner_id` filter does \u2014 both\ncompose with `ctx.apply`'s scope filter rather than replacing it, so an OWN-scoped caller who\nnames someone else's id still gets nothing back, never that colleague's numbers. `owner=me`\nresolves the caller's own id from the token (`ctx.subject_ref`) rather than trusting a\ncaller-chosen id for \"mine\"; a caller with no `subject_ref` gets the all-zero rollup, never\nthe whole book.",
         "operationId": "summary_api_v1_deals_summary_get",
+        "parameters": [
+          {
+            "description": "Narrow the rollup to one rep's own pipeline",
+            "in": "query",
+            "name": "owner_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Narrow the rollup to one rep's own pipeline",
+              "title": "Owner Id"
+            }
+          },
+          {
+            "description": "`me` narrows to the caller's own pipeline, resolved server-side",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "const": "me",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`me` narrows to the caller's own pipeline, resolved server-side",
+              "title": "Owner"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -1210,6 +1257,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Pipeline summary \u2014 the Overview rollups",
