@@ -57,7 +57,7 @@ describe("login", () => {
     expect(headers.Authorization).toBeUndefined();
     expect(JSON.parse(init.body as string)).toEqual({
       email: "owner@opsgrids.example",
-      password: "hunter2",
+      password: "hunter2", // pragma: allowlist secret -- a test fixture, not a real credential
     });
   });
 });
