@@ -138,6 +138,10 @@ app = create_app(
     # permission-version check both read it, and both fail closed.
     database=False,
     redis=True,
+    # M2(b) of the 2026-09-24 SSO review: Caddy is the only thing in front of this process in
+    # production, so `request.client.host` — what the anonymous rate limiter keys on — is
+    # otherwise always Caddy's own address, one shared bucket for every visitor on the box.
+    trust_forwarded_for=True,
 )
 
 build_gateway(app, settings=cfg, routes=routes, policy=policy, resolver=resolver)

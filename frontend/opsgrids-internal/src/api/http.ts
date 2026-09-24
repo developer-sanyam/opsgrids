@@ -41,8 +41,9 @@ interface RequestOptions {
   auth?: boolean;
   /** Fire the global unauthorized handler on a 401 (default true). Login/logout opt out. */
   signalUnauthorized?: boolean;
-  /** Extra headers beyond `Accept` / `Content-Type` / `Authorization` — e.g. `Idempotency-Key` on
-   *  a POST that must never double-apply on a retried click. */
+  /** Extra request headers — e.g. `Idempotency-Key` on a POST that must never double-apply on a
+   *  retried click, or the CSRF header `/auth/operator/logout` requires. Cannot override `Accept`,
+   *  `Content-Type` or `Authorization`, which this function owns. */
   headers?: Record<string, string>;
 }
 
@@ -63,7 +64,7 @@ function messageFor(problem: ProblemJson | null, status: number): string {
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = "GET", body, auth = true, signalUnauthorized = true } = options;
 
-  const headers: Record<string, string> = { Accept: "application/json", ...options.headers };
+  const headers: Record<string, string> = { ...options.headers, Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (auth) {
     const token = getAccessToken();

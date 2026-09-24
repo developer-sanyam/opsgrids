@@ -71,9 +71,9 @@ function stubFetch() {
   );
 }
 
-function renderPage() {
+function renderPage(path = "/login") {
   return render(
-    <MemoryRouter initialEntries={["/login"]}>
+    <MemoryRouter initialEntries={[path]}>
       <AuthProvider>
         <LoginPage />
       </AuthProvider>
@@ -273,5 +273,84 @@ describe("sign-in with a second factor", () => {
     const select = calls.find((c) => c.url === "/api/v1/auth/select-org");
     // The org hop carries the token MFA minted, not the one `login` originally answered with.
     expect(select?.body).toEqual({ pre_auth_token: afterMfaToken, organization_id: ORG_B.organization_id });
+  });
+});
+
+describe("the ?next hand-off back to a product app", () => {
+  // jsdom's `window.location.assign` is not a configurable property, so `vi.spyOn` cannot wrap
+  // it directly — the whole object is replaced instead, and restored after each test.
+  const realLocation = window.location;
+  let assign: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    assign = vi.fn();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...realLocation, assign },
+    });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, "location", { configurable: true, value: realLocation });
+  });
+
+  it("sends the browser to an allow-listed product app after sign-in", async () => {
+    const user = userEvent.setup();
+    routes = {
+      "/api/v1/auth/login": () => json(COMPLETE),
+      "/api/v1/auth/me": () => json(ME),
+    };
+    renderPage(`/login?next=${encodeURIComponent("https://people.opsgrids.com/employees")}`);
+
+    await signIn(user);
+
+    await waitFor(() => expect(getAccessToken()).toBe(ACCESS));
+    await waitFor(() =>
+      expect(assign).toHaveBeenCalledWith("https://people.opsgrids.com/employees"),
+    );
+  });
+
+  it.each([
+    ["a host that is not a platform app", "https://evil.example/"],
+    ["a storefront subdomain", "https://acme.stores.opsgrids.com/"],
+    ["a merchant's custom domain", "https://shop.merchant.example/"],
+    ["plain http", "http://app.opsgrids.com/"],
+    ["a javascript: URL", "javascript:alert(1)"],
+    ["a protocol-relative value", "//evil.example/"],
+    ["a userinfo trick", "https://app.opsgrids.com@evil.example/"],
+    ["a product app's own /login (the ping-pong loop, B1 of the 2026-09-24 review)", "https://people.opsgrids.com/login"],
+    ["a product app's own /login with a sub-path", "https://people.opsgrids.com/login/"],
+  ])("ignores %s and falls back to the in-app destination", async (_label, next) => {
+    const user = userEvent.setup();
+    routes = {
+      "/api/v1/auth/login": () => json(COMPLETE),
+      "/api/v1/auth/me": () => json(ME),
+    };
+    renderPage(`/login?next=${encodeURIComponent(next)}`);
+
+    await signIn(user);
+
+    await waitFor(() => expect(getAccessToken()).toBe(ACCESS));
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Sign in to OpsGrids" })).toBeNull(),
+    );
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it("an already-signed-in dashboard never bounces straight back to a product /login", async () => {
+    // Adopted from the security review's dashboard probe (fix round 1, B1): a tab that already
+    // holds a dashboard session (a reload, or landing here a second time) used to redirect to
+    // `next` with no user action at all whenever `next`'s host was allow-listed — including
+    // when `next` was itself a product app's `/login`, which is the other half of the loop.
+    setAccessToken("already-signed-in");
+    routes = { "/api/v1/auth/me": () => json(ME) };
+    renderPage(`/login?next=${encodeURIComponent("https://people.opsgrids.com/login")}`);
+
+    // The boot check completes and the password form disappears — status flipped to
+    // authenticated — without ever calling `assign`.
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Sign in to OpsGrids" })).toBeNull(),
+    );
+    expect(assign).not.toHaveBeenCalled();
   });
 });

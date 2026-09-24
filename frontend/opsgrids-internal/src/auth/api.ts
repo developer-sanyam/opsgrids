@@ -79,7 +79,19 @@ export function me(): Promise<OperatorMe> {
   return apiRequest<OperatorMe>("/auth/operator/me");
 }
 
-/** `POST /auth/operator/logout`. Best-effort — clears the refresh cookie server-side. */
+/**
+ * `POST /auth/operator/logout`. Best-effort — clears the refresh cookie server-side.
+ *
+ * `auth: false`, and the CSRF header every cookie-authenticated auth route now requires
+ * (`services/auth`'s `_assert_not_cross_site`, security review fix round 1, MINOR 1) — this is
+ * cookie-authenticated same as the tenant logout, and does not need a bearer token to say who is
+ * signing out.
+ */
 export function logout(): Promise<void> {
-  return apiRequest<void>("/auth/operator/logout", { method: "POST", signalUnauthorized: false });
+  return apiRequest<void>("/auth/operator/logout", {
+    method: "POST",
+    auth: false,
+    signalUnauthorized: false,
+    headers: { "X-Requested-With": "opsgrids" },
+  });
 }

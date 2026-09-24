@@ -7,7 +7,17 @@ import { createContext, useContext } from "react";
 
 import type { LoginStep, MeOut } from "./types";
 
-export type AuthStatus = "loading" | "authenticated" | "unauthenticated";
+/**
+ * `error` is boot-specific: no token was held, the one silent-refresh attempt boot gets could
+ * not even complete (a network failure, or a cross-origin call CORS refused outright — never a
+ * definitive "no" from the server, which is `unauthorized`/`unauthenticated`), and there is
+ * genuinely no way to know whether a session exists. Treating that the same as
+ * `unauthenticated` is what turned a transient failure into an SSO redirect loop: a product app
+ * would bounce to the dashboard, which — itself unaffected by whatever broke the cross-origin
+ * call — reports signed in and bounces straight back. `error` renders a retry screen instead of
+ * ever reaching `/login`.
+ */
+export type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "error";
 
 export interface AuthContextValue {
   /** `loading` while the stored token is being verified on boot. */
