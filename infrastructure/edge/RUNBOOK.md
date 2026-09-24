@@ -243,6 +243,20 @@ make edge-web HOST=deploy@<ip> CONFIRM=edge.opsgrids.com
 make edge-web HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PLACEHOLDER=1
 ```
 
+**Single sign-on (ADR-0003 addendum, 2026-09-24):** `publish-web.sh` reads the box's own
+`APP_BASE_URL` and bakes it into every product SPA's build as `VITE_AUTH_ORIGIN` — never `dashboard`
+(the cookie already lives on its own origin) or `buyer` (no auth code at all). This is what lets a
+product app's own `/login` route send the browser to the dashboard and get a session back rather
+than rendering a form nobody can complete there. It needs nothing extra on the box: `APP_BASE_URL`
+already has to be set for `CORS_ORIGINS` to be right. `AUTH_REFRESH_CORS_ORIGINS` (`.env`, required)
+is the matching server-side half — the narrow, credentialed CORS allowance on app-gateway for
+exactly `/api/v1/auth/refresh` and `/auth/logout`, one entry per product app host, never a
+storefront host. `.env.example` lists the current set; keep it in step with `TLS_PLATFORM_HOSTS`
+when a product ships a new host, or that app's sign-in will work once (same-origin, on first
+load) and then silently fail to survive a reload once its access token expires — the refresh call
+will 403 at the gateway's CORS layer, never reach the browser's own error handling, and the
+symptom is "signed out every ~15 minutes" all over again on that one app.
+
 ### 7. Prove it works, in this order
 
 ```bash

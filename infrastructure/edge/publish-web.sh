@@ -226,28 +226,27 @@ MISSING
 		exit 1
 	fi
 
+	# A value read over ssh from a file that started life on a human's laptop can carry a
+	# trailing `\r` (a `.env` ever touched on Windows, or a paste through a CRLF-preserving
+	# terminal) or a pair of quotes a human added out of habit. Left in, either lands verbatim
+	# inside a Vite-baked env var — wrong with nothing that errors anywhere, the quiet-failure
+	# shape both checks below exist to catch for the *empty* case and must not reintroduce for
+	# the *malformed* one.
+	_clean_env_value() {
+		printf '%s' "$1" | tr -d '\r' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+	}
+
 	# `buyer` and `storefront` are the two entry points that ever render an uploaded image
 	# (ADR-0009 §6, `theme/render/assetSrc.ts`). Vite bakes `import.meta.env.VITE_*` in at build
 	# time from the shell's own environment, so this has to be read from the box's `.env` here,
 	# on the laptop doing the build, not set anywhere on the box itself. Left unset, the resolver
 	# falls back to same-origin — `/{org}/{asset}` at the bundle's own root — which is NOT where
 	# Caddy proxies the bucket (`/opsgrids-public/*`), so every uploaded image would 404 on a
-	# live store while the upload itself kept succeeding: the quiet-failure shape this platform
-	# specifically tries not to ship.
+	# live store while the upload itself kept succeeding.
 	case "$app" in
 	buyer | storefront)
 		asset_base=$(ssh_box "sed -n 's/^PUBLIC_ASSET_BASE_URL=//p' '$repo/infrastructure/edge/.env' | head -1")
-		# A value read over ssh from a file that started life on a human's laptop can carry a
-		# trailing `\r` (a `.env` ever touched on Windows, or a paste through a CRLF-preserving
-		# terminal) or a pair of quotes a human added out of habit. Left in, either lands
-		# verbatim inside Vite's baked-in `VITE_ASSET_BASE_URL` — a broken image URL with
-		# nothing that errors anywhere, the exact quiet-failure shape this whole check exists to
-		# catch for the *empty* case and must not reintroduce for the *malformed* one.
-		asset_base=$(printf '%s' "$asset_base" | tr -d '\r')
-		asset_base=${asset_base#\"}
-		asset_base=${asset_base%\"}
-		asset_base=${asset_base#\'}
-		asset_base=${asset_base%\'}
+		asset_base=$(_clean_env_value "$asset_base")
 		if [ -z "$asset_base" ]; then
 			echo "refusing to publish: PUBLIC_ASSET_BASE_URL is empty in the box's .env." >&2
 			echo "  Every uploaded image would 404 on the live store. Set it (infrastructure/edge/.env.example)" >&2
@@ -268,6 +267,36 @@ MISSING
 		;;
 	*)
 		echo "building $app with node $node_major"
+		;;
+	esac
+
+	# ADR-0003 addendum: every product SPA except the dashboard and the buyer bundle centralises
+	# its silent refresh and logout against `app.opsgrids.com` — the one host the refresh cookie
+	# lives on. Baked in at build time the same way `VITE_ASSET_BASE_URL` is above, and read from
+	# the box's existing `APP_BASE_URL` rather than a second config key that could quietly drift
+	# from it: they name the same host on purpose. `dashboard` never sets this — the cookie
+	# already lives on its own origin — and `buyer` carries no auth code to configure at all.
+	case "$app" in
+	buyer | dashboard) ;;
+	*)
+		auth_origin=$(ssh_box "sed -n 's/^APP_BASE_URL=//p' '$repo/infrastructure/edge/.env' | head -1")
+		auth_origin=$(_clean_env_value "$auth_origin")
+		if [ -z "$auth_origin" ]; then
+			echo "refusing to publish: APP_BASE_URL is empty in the box's .env." >&2
+			echo "  $app would build defaulting to same-origin refresh, which is wrong for every" >&2
+			echo "  app but the dashboard — sign-in would never survive a reload. Set it and" >&2
+			echo "  deploy before publishing $app." >&2
+			exit 1
+		fi
+		case "$auth_origin" in
+		https://*) ;;
+		*)
+			echo "refusing to publish: APP_BASE_URL on the box is not an https:// URL." >&2
+			exit 1
+			;;
+		esac
+		export VITE_AUTH_ORIGIN="$auth_origin"
+		echo "  VITE_AUTH_ORIGIN=$auth_origin"
 		;;
 	esac
 	(cd "$repo_root/frontend" && pnpm install --frozen-lockfile)
