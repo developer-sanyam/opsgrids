@@ -6,29 +6,44 @@ not a local query or a local write. The one local write this flow makes —
 `services.record_bespoke_price` — stays in `services.py` with everything else that writes
 console's own schema.
 
-## Timing semantics, decided once here rather than re-derived at each call site
+## Timing semantics (revised, fix round 1 — PAID-UPGRADE TIMING)
 
-Subscription's own `_change_plan` already decides all of this (ADR-0005 addendum §4); this module
-never re-implements the rule, it only reads the outcome off the response:
+The first cut of this module let a paid *upgrade* re-pin immediately and prorate now, the same
+way a customer's own change-plan works. The independent review changed that decision: **a staff
+price change on an active, paying subscription always takes effect next period, whichever
+direction it moves the price** — an operator negotiating a new deal is not the same act as a
+customer choosing to pay more today for more seats right now, and immediate proration would
+charge a card for a price the customer never chose at checkout. This module tells subscription
+which timing it wants (`OperatorChangePlanIn.timing`, subscription-service) rather than letting
+`_change_plan`'s own direction-based default decide:
 
-* a **trial** re-pins immediately, at no charge — `_change_plan`'s `paid` flag is false with no
-  lifecycle claim outstanding, so neither the proration branch nor the deferred-downgrade branch
-  fires. `effective="now"`.
-* a paid **upgrade** (the bespoke price is higher than the pin it replaces) re-pins immediately
-  and prorates the difference now — subscription's existing, unmodified rule. `effective="now"`.
-* a paid **downgrade** is scheduled for `current_period_end` via subscription's existing
-  `pending_plan_version_id` mechanism, reused exactly as it already exists rather than building a
-  new "scheduled upgrade" path subscription does not have — the brief's own instruction where the
-  service already supports a scheduled re-pin. `effective="next_period"`.
-* `past_due`, `suspended` and `cancelled` subscriptions refuse a change-plan outright
-  (subscription's `BusinessRuleProblem`, surfaced here as a 422 from `change_plan`). **This is a
-  deviation from a literal reading of the API contract**: its `effective` enum has only three
-  members, and there is no fourth one for "refused by a business rule". Folded into
-  `not_subscribed` as the least misleading of the three available — the wire truth the UI needs
-  ("the live subscription is not on this price") is the same one `not_subscribed` already states
-  for "no subscription at all" and "`apply_to_subscription` was false". The bespoke price is still
-  created and published in every case; only the re-pin is skipped. Called out again on
-  `SetPricingOut.effective`'s own docstring.
+* a **trial** (`sub["state"] == "trial"`) re-pins immediately, at no charge — `timing` is left
+  unset, and `_change_plan`'s `paid` flag is false regardless, so no proration or scheduling
+  branch fires either way. `effective="now"`.
+* an **active** (paying) subscription always gets `timing="next_period"`, up or down: subscription
+  schedules it via its existing `pending_plan_version_id` mechanism (ADR-0005 addendum §4, reused
+  exactly as it already exists — no new "scheduled upgrade" machinery was built). `effective`
+  is never assumed from the request; it is read back off subscription's own response
+  (`plan_version_id` moved now vs. `pending_plan_version_id` set) so it reports **exactly what
+  happened**, not what was asked for.
+* `past_due`, `suspended` and `cancelled` subscriptions refuse a change-plan outright — this is
+  subscription's own **422** (`BusinessRuleProblem`), and only a 422 folds into `"not_subscribed"`
+  as the least misleading of the three values the contract's `effective` enum has. **This is a
+  deviation from a literal reading of the API contract**: there is no fourth value for "refused by
+  a business rule". The bespoke price is still created and published either way; only the re-pin
+  is skipped. Called out again on `SetPricingOut.effective`'s own docstring.
+* a **409** from subscription (`BillingCatchingUp` — a billing-period claim is in flight for this
+  subscription, independent of and unrelated to the past_due/suspended/cancelled business rule
+  above) is a **fix in this round**: it used to be folded into `"not_subscribed"` too, which is
+  actively wrong for a subscription that is very much still subscribed — it silently told staff a
+  live subscription did not exist, and hid the same shape of failure a credential
+  misconfiguration would produce. It is now surfaced as this endpoint's own **409**, and the
+  bespoke price's audit row records `applied: false` and why (`app/services.py`'s
+  `record_bespoke_price`), rather than reporting a success shape.
+* anything else the subscription call raises (a transport failure, an unclassified status, a
+  401/403/404 that should never happen for a call console itself constructs correctly) is a
+  **503** — never silently folded into `"not_subscribed"`, which is what let a real outage or a
+  broken credential look identical to "nothing to apply" before this fix.
 * re-requesting a price the subscription is **already** pinned to (or already has scheduled) is
   answered without a second call to subscription at all — read straight off the subscription list
   this flow already fetched — rather than relying on subscription's own "already pinned" refusal,
@@ -82,6 +97,7 @@ from app.subscription_client import list_subscriptions as _list_subscriptions
 from platform_core.auth import Principal
 from platform_core.errors import (
     ConflictProblem,
+    ForbiddenProblem,
     NotFoundProblem,
     UpstreamUnavailableProblem,
     ValidationProblem,
@@ -89,6 +105,13 @@ from platform_core.errors import (
 from platform_core.logging import get_logger
 
 log = get_logger("console.pricing")
+
+
+class BillingCatchingUpError(Exception):
+    """subscription refused the re-pin with a 409 (`BillingCatchingUp`) — a billing period claim
+    is in flight for this subscription. Distinct from the 422 business-rule refusal
+    (past_due/suspended/cancelled): the subscription is very much live, so this must never be
+    reported as `not_subscribed` (MAJOR-4, fix round 1)."""
 
 
 def _price_out(doc: dict[str, Any], *, is_bespoke: bool) -> ProductPriceOut | None:
@@ -143,8 +166,11 @@ async def build_pricing_view(
         current_price: ProductPriceOut | None = None
         if sub is not None:
             try:
+                # MAJOR-1 (fix round 1): parsed, not passed through as a raw string from
+                # subscription's own JSON — `get_plan_version` is typed `uuid.UUID` precisely so
+                # this cannot be skipped at a call site.
                 version_doc = await _get_plan_version(
-                    settings, sub["plan_version_id"], client=client
+                    settings, uuid.UUID(str(sub["plan_version_id"])), client=client
                 )
             except CatalogError as exc:
                 raise UpstreamUnavailableProblem(str(exc)) from exc
@@ -242,14 +268,38 @@ async def set_organization_pricing(
     effective = "not_subscribed"
 
     if payload.apply_to_subscription:
-        applied_to_subscription_id, effective = await _apply_to_subscription(
-            settings,
-            organization_id=organization_id,
-            product_key=payload.product_key,
-            plan_version_id=plan_version_id,
-            operator=operator,
-            client=client,
-        )
+        try:
+            applied_to_subscription_id, effective = await _apply_to_subscription(
+                settings,
+                organization_id=organization_id,
+                product_key=payload.product_key,
+                plan_version_id=plan_version_id,
+                operator=operator,
+                client=client,
+            )
+        except BillingCatchingUpError as exc:
+            # MAJOR-4 (fix round 1): the bespoke price was created — record that, with why the
+            # re-pin did not happen — then surface the 409 itself rather than a 201 claiming
+            # `not_subscribed`, which used to hide this behind a false success.
+            await services.record_bespoke_price(
+                app_session,
+                organization_id=organization_id,
+                actor_id=operator.sub,
+                operator_label=f"operator:{operator.sub}",
+                product_key=payload.product_key,
+                plan_version_id=plan_version_id,
+                amount_minor=payload.amount_minor,
+                currency=payload.currency,
+                billing_interval=payload.billing_interval,
+                applied_to_subscription_id=None,
+                effective="billing_catching_up",
+                apply_error=str(exc),
+                reason=payload.reason,
+                idempotency_key=idempotency_key,
+                request_fingerprint=fingerprint,
+                request=request,
+            )
+            raise ConflictProblem(str(exc)) from exc
 
     await services.record_bespoke_price(
         app_session,
@@ -263,6 +313,7 @@ async def set_organization_pricing(
         billing_interval=payload.billing_interval,
         applied_to_subscription_id=applied_to_subscription_id,
         effective=effective,
+        apply_error=None,
         reason=payload.reason,
         idempotency_key=idempotency_key,
         request_fingerprint=fingerprint,
@@ -283,6 +334,11 @@ def _catalog_problem(exc: CatalogError) -> Exception:
         return ConflictProblem(str(exc))
     if exc.status_code == 422:
         return ValidationProblem(str(exc))
+    if exc.status_code == 403:
+        # MAJOR-2 (fix round 1): catalog's own `require_operator` role check genuinely refused
+        # the operator's role — a real, caller-facing authorization decision console must not
+        # fold into a generic 503 "catalog is unavailable".
+        return ForbiddenProblem(str(exc))
     return UpstreamUnavailableProblem(str(exc))
 
 
@@ -290,11 +346,22 @@ def _replay(existing: AuditLog, fingerprint: str) -> SetPricingOut:
     after = existing.after or {}
     if after.get("request_fingerprint") != fingerprint:
         raise ConflictProblem("Idempotency-Key was already used for a different pricing request")
+    effective = str(after.get("effective", "not_subscribed"))
+    if effective == "billing_catching_up":
+        # MAJOR-4 (fix round 1): the first attempt's re-pin was refused because billing was
+        # still catching up. That is not a value `SetPricingOut.effective` can express (nor
+        # should it be re-reported as a 201 "not_subscribed") — replay the same 409 rather than
+        # inventing a success shape for a request that did not fully succeed.
+        raise ConflictProblem(
+            str(after.get("reason"))
+            or "The price was created but not applied yet: billing is catching up for this "
+            "subscription"
+        )
     applied = after.get("applied_to_subscription_id")
     return SetPricingOut(
         plan_version_id=uuid.UUID(str(existing.entity_id)),
         applied_to_subscription_id=uuid.UUID(str(applied)) if applied else None,
-        effective=str(after.get("effective", "not_subscribed")),
+        effective=effective,
     )
 
 
@@ -311,7 +378,7 @@ async def _apply_to_subscription(
 
     Checks the subscription's *current* state for the target pin before calling `change_plan`
     again — the idempotent-replay path for a retried apply that already succeeded, and for the
-    ordinary case where a downgrade to this exact price was already scheduled by an earlier call.
+    ordinary case where a re-pin to this exact price was already scheduled by an earlier call.
     """
     try:
         subs = await _list_subscriptions(settings, organization_id, client=client)
@@ -329,6 +396,11 @@ async def _apply_to_subscription(
     if sub.get("pending_plan_version_id") and str(sub["pending_plan_version_id"]) == target:
         return subscription_id, "next_period"
 
+    # PAID-UPGRADE TIMING (fix round 1): an active, paying subscription always waits for the
+    # next period, whichever direction the new price moves — a trial has nothing to defer, so it
+    # keeps subscription's own immediate default (`timing=None`).
+    timing = "next_period" if str(sub.get("state")) == "active" else None
+
     try:
         changed = await _change_plan(
             settings,
@@ -337,12 +409,13 @@ async def _apply_to_subscription(
             plan_version_id=plan_version_id,
             operator_id=f"operator:{operator.sub}",
             client=client,
+            timing=timing,
         )
     except SubscriptionChangeError as exc:
-        if exc.status_code is not None and 400 <= exc.status_code < 500:
-            # A business rule refused the re-pin — most likely a past_due/suspended/cancelled
-            # subscription, which subscription's own `_change_plan` never allows to change plan
-            # at all. The bespoke price still exists; only the live subscription is untouched.
+        if exc.status_code == 422:
+            # subscription's own business-rule refusal — a past_due/suspended/cancelled
+            # subscription never changes plan at all. The bespoke price still exists; only the
+            # live subscription is untouched.
             log.warning(
                 "pricing.repin_refused",
                 organization_id=str(organization_id),
@@ -350,6 +423,17 @@ async def _apply_to_subscription(
                 detail=str(exc),
             )
             return None, "not_subscribed"
+        if exc.status_code == 409:
+            # MAJOR-4 (fix round 1): a billing-period claim is in flight for this subscription
+            # (`BillingCatchingUp`) — a live, paying subscription, not "nothing to apply". Must
+            # never be reported as `not_subscribed`; the caller surfaces this as its own 409.
+            raise BillingCatchingUpError(
+                "The price was created but not applied yet: billing is catching up for this "
+                "subscription"
+            ) from exc
+        # Anything else — 401/403/404, an unclassified status, a transport failure — is an
+        # internal or upstream problem, never folded into a silent `not_subscribed` success
+        # shape (MAJOR-4: that used to hide a credential misconfiguration the same way).
         raise UpstreamUnavailableProblem(str(exc)) from exc
 
     if str(changed.get("plan_version_id")) == target:

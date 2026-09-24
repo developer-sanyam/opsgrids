@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -116,11 +116,23 @@ class OperatorSubscribeIn(BaseModel):
 
 
 class OperatorChangePlanIn(BaseModel):
-    """Re-pin a subscription on the platform team's behalf — how a bundle moves between rungs."""
+    """Re-pin a subscription on the platform team's behalf — how a bundle moves between rungs,
+    and (fix round 1, PAID-UPGRADE TIMING) how a staff-set price change on the admin console
+    is applied.
+
+    `timing` is `None` for every existing caller (a bundle rung change): `_change_plan`'s own
+    direction-based default decides — immediate for an upgrade, deferred to the next period for
+    a downgrade, exactly as it always has. `"next_period"` forces the deferred path regardless of
+    direction, which console's own pricing write asks for on every *active, paying* subscription
+    (never on a trial, which has no money to defer) — an operator negotiating a new deal is not
+    the same act as a customer choosing to pay more right now, and this is what stops that
+    upgrade from prorating and charging a card immediately for a price nobody chose at checkout.
+    """
 
     organization_id: uuid.UUID
     plan_version_id: uuid.UUID
     operator_id: str = Field(min_length=1, max_length=64)
+    timing: Literal["next_period"] | None = None
 
 
 class CancelIn(BaseModel):

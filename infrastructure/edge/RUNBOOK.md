@@ -975,6 +975,13 @@ profile, `admin` — not one of the ten sellable-product profiles (`memory-budge
 it on is the same shape as any other profile, plus the one thing every other profile does not
 need: a human, because there is no self-serve sign-up for staff.
 
+**A box already running `COMPOSE_PROFILES=*` ("every profile") turns this on too, today, with no
+further change.** `admin` is a real compose profile like any other; the wildcard expansion
+`preflight.sh` does reads it straight off `docker compose config --profiles`, which does not stop
+at the ten sellable products. If that is not the intended moment to expose the admin surface, set
+`COMPOSE_PROFILES` (or `EDGE_PROFILES`) to an explicit list instead of `*` before this ref reaches
+that box.
+
 1. **DNS.** `admin.opsgrids.com` → the box's reserved IP, A record only, not proxied (see "DNS
    for the platform zone" above — the row is already in that table). Owner does this by hand in
    Hostinger, same as every other platform name.
@@ -1029,24 +1036,29 @@ need: a human, because there is no self-serve sign-up for staff.
    `app.bootstrap.seed_dev_owner` (`bin/seed-staff`) refuses outright outside
    `local`/`test`/`ci` on purpose, so a real box never gets a known-password account. Call the
    same underlying, environment-agnostic function it wraps
-   (`app.bootstrap.bootstrap_staff_owner`) directly, once, choosing your own password and never
-   printing it anywhere this shell's history is not already trusted:
+   (`app.bootstrap.bootstrap_staff_owner`) directly, once, from an interactive prompt —
+   **never inline in the command itself**: a password typed as a `python -c` argument is written
+   to this shell's own history file in plain text the moment the command runs, which
+   `getpass.getpass()` avoids by reading it from the terminal with no echo and nowhere it is
+   ever stored. This needs a real TTY to prompt on, so — unlike every other one-off `docker
+   compose run` in this runbook — leave off `-T`:
    ```bash
-   docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T auth python3 -c "
+   docker compose -f compose.prod.yml --env-file .env run --rm --no-deps auth python3 -c "
    import asyncio
+   import getpass
    from app.bootstrap import bootstrap_staff_owner
    from app.config import settings
    from platform_core.db import dispose_engine, init_engine, session_scope
 
    async def main() -> None:
+       email = input('Email: ')
+       display_name = input('Display name: ')
+       password = getpass.getpass('Password (not echoed, not logged): ')
        init_engine(settings())
        try:
            async with session_scope() as session:
                staff, created = await bootstrap_staff_owner(
-                   session,
-                   email='YOUR-EMAIL@opsgrids.com',
-                   password='CHOOSE-A-REAL-PASSWORD-AND-DO-NOT-REUSE-IT',  # pragma: allowlist secret
-                   display_name='YOUR NAME',
+                   session, email=email, password=password, display_name=display_name,
                    roles=['owner'],
                )
                print(f'staff_id={staff.id} created={created}')
@@ -1059,7 +1071,8 @@ need: a human, because there is no self-serve sign-up for staff.
    `roles=['owner']` is every operator capability (the ADR-0003 addendum's role matrix); a
    narrower first account is not useful, since only `owner` may issue another staff member's
    enrolment code. Idempotent by email — re-running with the same email returns the existing row
-   (`created=False`) rather than a second account.
+   (`created=False`) rather than a second account, and the password prompt is skipped on nothing:
+   `bootstrap_staff_owner` never rewrites a password on an existing row, so retyping one is safe.
 
 8. **Issue that account's enrolment code.** A password alone is not enough to reach MFA
    enrolment (ADR-0003 addendum); a brand-new staff account has no confirmed factor yet, so it

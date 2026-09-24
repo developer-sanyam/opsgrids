@@ -234,8 +234,16 @@ class SetPricingIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    product_key: str = Field(min_length=1, max_length=40)
-    amount_minor: int = Field(gt=0)
+    #: Lowercase, starts with a letter — the same shape every product key on this platform
+    #: already has (hrms, crm, storefront, ...). Fix for MAJOR-1 (security review, fix round 1):
+    #: this value is interpolated into a URL path segment two hops downstream
+    #: (`catalog_client.ensure_bespoke_price`, then catalog's own path param); an unconstrained
+    #: string let `product_key="../../../../../admin/catalog/plans?"` retarget that request
+    #: entirely, carrying console's own service token and the operator's forwarded bearer with
+    #: it. The pattern is defence at the boundary; `catalog_client` also percent-encodes it
+    #: before interpolating (defence in depth — neither alone is trusted).
+    product_key: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,39}$")
+    amount_minor: int = Field(gt=0, le=10_000_000_000)
     currency: str = Field(default="INR", min_length=3, max_length=3)
     billing_interval: Literal["month", "year"] = "month"
     #: Why this price was set — required so a bespoke price is never silent about the deal it

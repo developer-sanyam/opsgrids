@@ -12,13 +12,19 @@
     "where the operator token is obtained (there is no token yet to check) — same shape as the dev",
     "table's own comment.",
     "",
+    "Fix round 1 (security review): only `/api/v1/auth/operator` is routed to auth, never the",
+    "wider `/api/v1/auth` prefix the dev table carries — every staff auth route already lives",
+    "under `/operator` (login, MFA, refresh, logout, me, enrollment-codes, staff mfa:reset), so",
+    "the wider prefix bought this gateway nothing and would have proxied a tenant sign-in route",
+    "(`/api/v1/auth/login`, `/refresh`, `/mfa/verify`, `/select-org`) to a surface that must never",
+    "answer a tenant token.",
+    "",
     "Service-to-service traffic is deliberately absent, for the same reason the dev table gives:",
     "console calls account-service's staff-only directory route directly on its own port, catalog",
     "and subscription directly on theirs, never through this gateway."
   ],
   "routes": [
     { "prefix": "/api/v1/auth/operator", "upstream": "http://auth:8000" },
-    { "prefix": "/api/v1/auth", "upstream": "http://auth:8000" },
 
     { "prefix": "/api/v1/admin/catalog", "upstream": "http://catalog:8000", "staff_only": true },
 

@@ -186,9 +186,18 @@ async def create_version(
     """
     next_no = await selectors.latest_version_no(session, plan.id) + 1
     # Capture the clone source *before* inserting the new version, or it would find itself as
-    # the latest and clone nothing.
+    # the latest and clone nothing. MAJOR-5 (fix round 1): filtered to the *same audience* this
+    # new version is being authored for — a public bump clones the newest public version, never
+    # a bespoke one a version-number bump happened to outrank; a bespoke re-version without an
+    # explicit price sheet clones that same organization's own previous bespoke version.
     supplied = bool(payload.prices or payload.features or payload.seat_classes)
-    source = None if supplied else await selectors.clone_source(session, plan.id)
+    source = (
+        None
+        if supplied
+        else await selectors.clone_source(
+            session, plan.id, restricted_to_org_id=payload.restricted_to_org_id
+        )
+    )
 
     # A bundle's members are checked before anything is written, while this is still a draft an
     # operator is looking at: once published, a mistake in the list is immutable and the first

@@ -69,19 +69,28 @@ async def change_plan(
     plan_version_id: uuid.UUID,
     operator_id: str,
     client: httpx.AsyncClient,
+    timing: str | None = None,
 ) -> dict[str, Any]:
-    """Re-pin `subscription_id` to `plan_version_id` on the operator's behalf. Subscription's own
-    change-plan rule decides the timing (immediate for a trial or a paid upgrade, deferred to the
-    next period for a paid downgrade); this call only carries the request."""
+    """Re-pin `subscription_id` to `plan_version_id` on the operator's behalf.
+
+    `timing="next_period"` (fix round 1, PAID-UPGRADE TIMING) forces subscription's existing
+    scheduled-change mechanism regardless of direction — a staff price change on a paying
+    subscription always waits for the next period, up or down, never prorating an upgrade in
+    immediately the way a customer's own change-plan does. Left `None`, subscription applies its
+    own default rule (immediate for a trial or an upgrade, deferred for a downgrade) — used for a
+    trial, where there is no money to defer.
+    """
     url = (
         f"{settings.subscription_internal_url}/internal/v1/subscriptions/"
         f"{subscription_id}/change-plan"
     )
-    body = {
+    body: dict[str, Any] = {
         "organization_id": str(organization_id),
         "plan_version_id": str(plan_version_id),
         "operator_id": operator_id,
     }
+    if timing is not None:
+        body["timing"] = timing
     try:
         response = await client.post(url, json=body, headers=_headers(settings))
     except httpx.HTTPError as exc:

@@ -461,6 +461,7 @@ async def change_plan_as_operator(
         subscription=subscription,
         plan_version_id=payload.plan_version_id,
         request=request,
+        forced_timing=payload.timing,
     )
 
 
@@ -474,6 +475,7 @@ async def _change_plan(
     subscription: Subscription,
     plan_version_id: uuid.UUID,
     request: Request | None,
+    forced_timing: str | None = None,
 ) -> Subscription:
     """Re-pin a subscription to a different published version — an upgrade or a downgrade.
 
@@ -549,6 +551,24 @@ async def _change_plan(
     # Money moves on an active subscription, and on a trial whose conversion is already claimed:
     # its first paid period is priced at the claimed pin. A trial with nothing claimed moves none.
     paid = subscription.state == STATE_ACTIVE or claim is not None
+
+    # PAID-UPGRADE TIMING (fix round 1): an operator-forced next-period re-pin overrides the
+    # ordinary direction-based rule below entirely — a staff price change on a paying
+    # subscription always waits for the next period, whichever way it moves the price, never
+    # prorating an upgrade in immediately the way a customer's own change-plan does. `direction
+    # != 0` guards the no-op case (an equal-price switch moves no money regardless, m8 below).
+    if forced_timing == "next_period" and paid and direction != 0:
+        _schedule_downgrade(
+            session,
+            subscription,
+            new_version,
+            members,
+            actor=actor,
+            request=request,
+            reason=reason,
+        )
+        await session.flush()
+        return subscription
 
     # ADR-0005 addendum §4. A paid **downgrade waits for the next period** — the customer paid for
     # this one — and is applied by the billing run when it claims a period not yet claimed.
@@ -643,10 +663,18 @@ def _schedule_downgrade(
     *,
     actor: dict[str, Any],
     request: Request | None,
+    reason: str = domain.REASON_DOWNGRADE,
 ) -> None:
-    """Pin a downgrade to the next period (addendum §4). Nothing about entitlement or money
-    changes now — the customer keeps what they paid for until the period ends — so this is an
-    audit row, not a transition or an event; the transition is written when the run applies it."""
+    """Pin a re-pin to the next period (addendum §4). Nothing about entitlement or money changes
+    now — the customer keeps what they paid for until the period ends — so this is an audit row,
+    not a transition or an event; the transition is written when the run applies it.
+
+    `reason` (fix round 1, PAID-UPGRADE TIMING) is `REASON_DOWNGRADE` for every call site this
+    function has ever had except one: an operator-forced `timing="next_period"` on what would
+    otherwise be an immediate, prorated upgrade (`_change_plan`, below) also schedules through
+    here, and needs its own action name so the audit trail does not call a deferred price
+    *increase* a "downgrade".
+    """
     subscription.pending_change = {
         "plan_version_id": str(version.id),
         "billing_interval": version.billing_interval,
@@ -656,12 +684,17 @@ def _schedule_downgrade(
         "actor": actor,
     }
     subscription.pending_plan_version_id = version.id
+    action = (
+        "commerce.subscription.downgrade_scheduled"
+        if reason == domain.REASON_DOWNGRADE
+        else "commerce.subscription.change_scheduled"
+    )
     record_audit(
         session,
         AuditLog,
         organization_id=subscription.organization_id,
         actor_id=uuid.UUID(actor["id"]) if actor.get("type") == "user" else None,
-        action="commerce.subscription.downgrade_scheduled",
+        action=action,
         entity="subscription",
         entity_id=subscription.id,
         before={"plan_version_id": str(subscription.plan_version_id)},
@@ -671,7 +704,7 @@ def _schedule_downgrade(
             if subscription.current_period_end
             else None,
         },
-        reason=domain.REASON_DOWNGRADE,
+        reason=reason,
         request=request,
     )
 

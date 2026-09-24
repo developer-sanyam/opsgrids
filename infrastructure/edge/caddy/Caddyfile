@@ -257,7 +257,19 @@ https://admin.opsgrids.com {
 		# holds even if something else here is ever misconfigured.
 		header X-Frame-Options "DENY"
 		header X-Content-Type-Options "nosniff"
-		header Content-Security-Policy "default-src 'self'; frame-ancestors 'none'"
+		# `style-src`/`font-src` carry Google Fonts (fix round 1): opsgrids-internal's own fonts
+		# are not self-hosted the way the rest of the platform's assets are, and `default-src
+		# 'self'` alone would 404 the stylesheet and the font files silently, in a way that reads
+		# as a missing-font bug rather than the CSP that actually caused it. `script-src` needs no
+		# exception: the theme-init snippet that used to be inline in index.html is now its own
+		# same-origin file (`public/theme-init.js`), so `default-src 'self'` covers it without
+		# `'unsafe-inline'`.
+		header Content-Security-Policy "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; frame-ancestors 'none'"
+		# HSTS (fix round 1): this origin is on-demand TLS like every other site here, so a
+		# plain-HTTP request to it always redirects to HTTPS already (the shared `http://`
+		# block); the header additionally tells the browser to never even try HTTP again for a
+		# year, closing the one-request window a network attacker could otherwise downgrade.
+		header Strict-Transport-Security "max-age=31536000"
 	}
 
 	handle_errors {

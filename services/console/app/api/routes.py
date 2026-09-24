@@ -347,10 +347,11 @@ async def set_organization_pricing(
         str | None,
         Header(
             alias="Idempotency-Key",
+            max_length=255,
             description=(
-                "Optional. A retried request with the same key and the same body returns the "
-                "first attempt's result instead of repeating the catalog/subscription calls; "
-                "the same key with a different body is a 409."
+                "Optional, at most 255 characters. A retried request with the same key and the "
+                "same body returns the first attempt's result instead of repeating the "
+                "catalog/subscription calls; the same key with a different body is a 409."
             ),
         ),
     ] = None,

@@ -189,6 +189,12 @@ declared_profiles=$(resolve_declared_profiles "${EDGE_PROFILES:-}" "${COMPOSE_PR
 # advisories below match profile names one at a time, and a literal `*` matches none of them —
 # every sold product would read as unserved. Expanded here to the compose file's own profile
 # list; `bad` (not a silent fallback) if compose cannot list it.
+#
+# That expansion reads the list straight from `docker compose config --profiles`, which is not
+# limited to the ten sellable-product profiles: `admin` (RUNBOOK, "Turning on the admin console")
+# is a real compose profile too, so `COMPOSE_PROFILES=*` on this box turns on admin-gateway and
+# console along with everything else — worth knowing before setting it, since the admin surface
+# is otherwise off by an owner's deliberate choice, not by omission from this list.
 case ",${declared_profiles}," in
 *",*,"*)
 	if all_compose_profiles=$(docker compose -f compose.prod.yml --env-file .env config --profiles | tr '\n' ',' | sed 's/,$//') && [ -n "$all_compose_profiles" ]; then

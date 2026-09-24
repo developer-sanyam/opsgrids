@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import uuid
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -73,11 +74,16 @@ async def get_public_flat_plans(
 
 
 async def get_plan_version(
-    settings: Settings, plan_version_id: uuid.UUID | str, *, client: httpx.AsyncClient
+    settings: Settings, plan_version_id: uuid.UUID, *, client: httpx.AsyncClient
 ) -> dict[str, Any] | None:
     """One plan version, unfiltered — used to price an organization's current pin. `None` for a
     version catalog no longer knows (should not happen for a live pin; treated as "cannot show a
-    current price" rather than failing the whole pricing screen)."""
+    current price" rather than failing the whole pricing screen).
+
+    Deliberately typed `uuid.UUID`, not `str` (MAJOR-1, fix round 1): a caller reading an id out
+    of another service's JSON response must parse it first, so an interpolated path segment is
+    always a real UUID's own `str()` and never an arbitrary string from a downstream body.
+    """
     url = f"{settings.catalog_internal_url}/internal/v1/plan-versions/{plan_version_id}"
     try:
         response = await client.get(url, headers=_headers(settings))
@@ -107,9 +113,15 @@ async def ensure_bespoke_price(
     """Clone the product's public flat plan into a published, audience-of-one price for
     `organization_id` — idempotent by content on catalog's side (a repeat with the same
     organization/product/price reuses the version it already made)."""
+    # MAJOR-1 (fix round 1): `product_key` is validated at the boundary (SetPricingIn's own
+    # pattern), but this is the one place it becomes a URL path segment two hops downstream —
+    # percent-encoded here too, on the assumption that a boundary validator can be loosened or
+    # bypassed (a direct call to this function from a future caller, say) without this line
+    # noticing. `organization_id` needs no equivalent: it is a `uuid.UUID` object, and `str()`
+    # of one is always exactly 36 hex-and-hyphen characters.
     url = (
         f"{settings.catalog_internal_url}/admin/internal/catalog/organizations/"
-        f"{organization_id}/products/{product_key}/bespoke-price"
+        f"{organization_id}/products/{quote(product_key, safe='')}/bespoke-price"
     )
     headers = _headers(settings)
     headers["Authorization"] = f"Bearer {operator_token}"
@@ -122,18 +134,24 @@ async def ensure_bespoke_price(
         response = await client.post(url, json=body, headers=headers)
     except httpx.HTTPError as exc:
         raise CatalogError(f"catalog is unavailable: {exc}") from exc
-    if response.status_code in (401, 403):
-        # Console's own service token or the forwarded operator token was refused — an internal
-        # credential problem, never the caller's fault, so it surfaces as a 503 like any other
-        # upstream failure rather than a 401/403 that would misdirect the operator console.
+    if response.status_code == 401:
+        # Console's own service token was refused — an internal credential problem, never the
+        # caller's fault, so it surfaces as a 503 like any other upstream failure (no
+        # status_code set here, which is CatalogError's "unclassified" bucket the caller maps
+        # to 503) rather than a 401 that would misdirect the operator console.
         log.error(
             "pricing.catalog_call_refused",
             organization_id=str(organization_id),
             product_key=product_key,
             status_code=response.status_code,
         )
-        raise CatalogError("catalog refused console's own credentials")
+        raise CatalogError("catalog refused console's own service credentials")
     if response.status_code >= 400:
+        # MAJOR-2 (fix round 1): a 403 here is catalog's own `require_operator` role check
+        # genuinely refusing the operator's role — a real, caller-facing authorization
+        # decision, not an internal credential problem (that is the 401 case above). It must
+        # reach the caller as the 403 it is, not be folded into the generic 503 "catalog is
+        # unavailable" bucket the way it used to be.
         raise CatalogError(_detail(response), status_code=response.status_code)
     result: dict[str, Any] = response.json()
     return result

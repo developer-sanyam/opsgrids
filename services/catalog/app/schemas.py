@@ -219,7 +219,7 @@ class BespokePriceIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    amount_minor: int = Field(gt=0)
+    amount_minor: int = Field(gt=0, le=10_000_000_000)
     currency: str = Field(min_length=3, max_length=3)
     billing_interval: str = Field(pattern="^(month|year)$")
 

@@ -286,6 +286,7 @@ async def record_bespoke_price(
     idempotency_key: str | None,
     request_fingerprint: str,
     request: Request | None,
+    apply_error: str | None = None,
 ) -> None:
     """Record a staff-set bespoke price, bound to the **target** organization — the "record" step
     of claim/call/record (docs/io-outside-transactions.md, `app/pricing.py`) for
@@ -294,6 +295,13 @@ async def record_bespoke_price(
     `after` on the first row carries the idempotency key and the request's own fingerprint, which
     is what makes a repeat of the same `Idempotency-Key` a lookup rather than a second call to
     catalog and subscription (`selectors.find_pricing_change_by_idempotency_key`).
+
+    `apply_error` (fix round 1, MAJOR-4) is set only when the price was created but the re-pin
+    was refused for a reason that is not the ordinary "no subscription"/"apply_to_subscription
+    was false" shape — a billing-period claim in flight (`BillingCatchingUp`), so far. Recorded
+    as `after["applied"] = False` and `after["reason"]` — the latter is this JSON blob's own key,
+    not the audit row's `reason` *column* (which always holds the staff's own stated reason for
+    the price, `reason` above, regardless of whether the re-pin applied).
     """
     async with session.begin():
         await set_tenant(session, organization_id)
@@ -314,9 +322,11 @@ async def record_bespoke_price(
                 "applied_to_subscription_id": (
                     str(applied_to_subscription_id) if applied_to_subscription_id else None
                 ),
+                "applied": applied_to_subscription_id is not None,
                 "effective": effective,
                 "idempotency_key": idempotency_key,
                 "request_fingerprint": request_fingerprint,
+                **({"reason": apply_error} if apply_error else {}),
             },
             reason=reason,
             request=request,

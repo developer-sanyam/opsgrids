@@ -37,7 +37,8 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Path
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -48,6 +49,28 @@ from platform_core.auth import Principal, require_operator, require_service_toke
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
 from platform_core.errors import ConflictProblem, NotFoundProblem, UnauthorizedProblem
+
+#: Every product key on this platform is this shape (hrms, crm, storefront, ...). Fix for
+#: MAJOR-1 (security review, fix round 1): this path parameter used to accept any string, and
+#: `..`-and-slash content in it could retarget this request at a different catalog route
+#: entirely, carrying this call's own service token and the forwarded operator bearer with it.
+#: Console validates the same shape at its own boundary and percent-encodes it again before
+#: interpolating it into this URL — this is the second, independent layer, not the only one.
+_PRODUCT_KEY_PATTERN = r"^[a-z][a-z0-9_-]{0,39}$"
+
+
+def _integrity_error_constraint(exc: IntegrityError) -> str | None:
+    """The name of the constraint that actually fired, when the driver surfaces one. Same
+    extraction `leave.services`/`approval.services` use, for the identical
+    asyncpg-wraps-the-driver-exception reason."""
+    orig = exc.orig
+    name = getattr(orig, "constraint_name", None)
+    if name is not None:
+        return str(name)
+    cause = getattr(orig, "__cause__", None)
+    name = getattr(cause, "constraint_name", None)
+    return str(name) if name is not None else None
+
 
 router = APIRouter(
     prefix="/admin/internal/catalog",
@@ -69,9 +92,13 @@ def require_console_caller(request: Request) -> None:
 
 ConsoleCallerDep = Annotated[None, Depends(require_console_caller)]
 
-#: The operator-token half: forwarded verbatim, verified via JWKS like any operator route. Owner
-#: only — the same gate `/admin/catalog` puts on every authoring route (ADR-0003 addendum).
-OperatorDep = Annotated[Principal, Depends(require_operator(roles={"owner"}))]
+#: The operator-token half: forwarded verbatim, verified via JWKS like any operator route.
+#: `owner` and `billing_ops` (fix round 1, MAJOR-2) — narrower than `/admin/catalog`'s own
+#: authoring routes (`owner`-only, ADR-0003 addendum), which can draft or publish *any* version
+#: with *any* content. This route can only ever write one flat price for one organization on an
+#: existing public product, so it sits with console's own `OperatorBilling` gate
+#: (`console/app/api/routes.py`) rather than the wider catalogue-authoring one.
+OperatorDep = Annotated[Principal, Depends(require_operator(roles={"owner", "billing_ops"}))]
 
 
 async def get_operator_session(
@@ -102,7 +129,7 @@ SessionDep = Annotated[AsyncSession, Depends(get_operator_session, scope="functi
 )
 async def ensure_bespoke_price(
     organization_id: uuid.UUID,
-    product_key: str,
+    product_key: Annotated[str, Path(pattern=_PRODUCT_KEY_PATTERN)],
     payload: BespokePriceIn,
     session: SessionDep,
     operator: OperatorDep,
@@ -147,10 +174,45 @@ async def ensure_bespoke_price(
             ],
             seat_classes=[],
         )
-        drafted = await services.create_version(
-            session, operator, plan, draft_payload, request=request, registry=None
-        )
-        version = await services.publish_version(session, operator, drafted, request=request)
+        # Concurrency (fix round 1): two identical requests racing both read "no matching
+        # version yet" above and both try to draft one. `next_version_no` is computed from the
+        # same read, so they collide on `uq_plan_versions_plan_version` rather than on content —
+        # a SAVEPOINT (not a bare `session.add`/`flush`) so the loser can recover on the *same*
+        # transaction: once one statement inside `session.begin()` raises, Postgres marks the
+        # whole transaction aborted until a ROLLBACK, and `begin_nested()` is the ROLLBACK TO
+        # SAVEPOINT that undoes only the failed insert, leaving the request's own tenant binding
+        # usable for the recovery read below.
+        try:
+            async with session.begin_nested():
+                drafted = await services.create_version(
+                    session, operator, plan, draft_payload, request=request, registry=None
+                )
+        except IntegrityError as exc:
+            if _integrity_error_constraint(exc) != "uq_plan_versions_plan_version":
+                raise
+            winner = await selectors.find_bespoke_version(
+                session,
+                plan_id=plan.id,
+                organization_id=organization_id,
+                currency=payload.currency,
+                amount_minor=payload.amount_minor,
+                billing_interval=payload.billing_interval,
+            )
+            if winner is None:
+                # The collision was with someone else's *different* draft on this plan (a
+                # concurrent public-plan bump, say) — a real conflict this route cannot resolve
+                # by re-reading, since there is nothing matching this request's own content yet.
+                raise ConflictProblem(
+                    "a concurrent change to this plan's versions conflicted with this request; "
+                    "retry it"
+                ) from exc
+            version = (
+                winner
+                if winner.state == "published"
+                else await services.publish_version(session, operator, winner, request=request)
+            )
+        else:
+            version = await services.publish_version(session, operator, drafted, request=request)
 
     fresh = await selectors.get_version(session, version.id)
     assert fresh is not None  # just written or just resolved in this same transaction

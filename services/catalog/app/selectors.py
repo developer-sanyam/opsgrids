@@ -159,16 +159,31 @@ async def latest_version_no(session: AsyncSession, plan_id: uuid.UUID) -> int:
     return int(highest or 0)
 
 
-async def clone_source(session: AsyncSession, plan_id: uuid.UUID) -> PlanVersion | None:
-    """The version a new draft clones from: the highest-numbered version of the plan.
+async def clone_source(
+    session: AsyncSession, plan_id: uuid.UUID, *, restricted_to_org_id: uuid.UUID | None
+) -> PlanVersion | None:
+    """The version a new draft clones from: the highest-numbered version of the plan **with the
+    same audience** the new draft is being authored for.
 
     Used only for its prices and features when the caller does not supply their own, so a
     "bump the version" edit does not have to re-type an unchanged price sheet.
+
+    MAJOR-5 (security review, fix round 1): a plan's version numbers are one shared sequence
+    across every audience, so before this filter the highest `version_no` on a plan could be a
+    bespoke version negotiated for one organization — cloned into whichever new draft asked next,
+    public or another organization's, leaking that organization's negotiated price into it. The
+    filter is `IS NOT DISTINCT FROM` because `restricted_to_org_id` is nullable and Postgres's
+    `IS DISTINCT FROM` is the equality operator that treats two `NULL`s as equal — an owner
+    bumping the *public* plan (`restricted_to_org_id IS NULL`) must clone the newest *public*
+    version, never a bespoke one, and `=` alone would silently exclude every public version.
     """
     version_id = (
         await session.execute(
             select(PlanVersion.id)
-            .where(PlanVersion.plan_id == plan_id)
+            .where(
+                PlanVersion.plan_id == plan_id,
+                PlanVersion.restricted_to_org_id.is_not_distinct_from(restricted_to_org_id),
+            )
             .order_by(PlanVersion.version_no.desc())
             .limit(1)
         )

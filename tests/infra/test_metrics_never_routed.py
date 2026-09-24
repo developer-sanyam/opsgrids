@@ -24,6 +24,9 @@ ROUTE_FILES = [
     REPO_ROOT / "services/app-gateway/routes.json",
     REPO_ROOT / "services/admin-gateway/routes.json",
     REPO_ROOT / "infrastructure/edge/routes.prod.json",
+    # admin-gateway's own production table (fix round 1) — the same lint every other route
+    # table gets, not just app-gateway's pair.
+    REPO_ROOT / "infrastructure/edge/routes.admin.prod.json",
 ]
 CADDYFILE = REPO_ROOT / "infrastructure/edge/caddy/Caddyfile"
 

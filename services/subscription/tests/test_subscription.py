@@ -28,15 +28,16 @@ from app.models import (
     STATE_CANCELLED,
     STATE_SUSPENDED,
     STATE_TRIAL,
+    AuditLog,
     OutboxEvent,
     Subscription,
     SubscriptionTransition,
 )
-from app.schemas import ChangePlanIn, SubscribeIn
+from app.schemas import ChangePlanIn, OperatorChangePlanIn, SubscribeIn
 from platform_core.auth import Scope, ScopeContext
 from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
 from platform_core.events import build_envelope
-from tests.helpers import FakeCatalog, customer_principal, make_version
+from tests.helpers import FakeCatalog, FakeRegistry, customer_principal, make_version
 
 pytestmark = pytest.mark.integration
 
@@ -265,6 +266,171 @@ class TestChangePlan:
             fresh = await services.require_subscription(session, sub_id)
         assert fresh.plan_version_id == v1.id
         assert fresh.pending_plan_version_id == v2.id
+
+
+# --------------------------------------------------------------------- operator-forced timing
+# (fix round 1, PAID-UPGRADE TIMING): an operator re-pin on an active, paying subscription
+# always waits for the next period when `timing="next_period"` is asked for — up or down —
+# rather than letting an upgrade prorate and charge immediately the way a customer's own
+# change-plan does.
+
+
+class TestOperatorForcedTiming:
+    async def test_an_upgrade_forced_to_next_period_does_not_charge_now(
+        self,
+        session: AsyncSession,
+        admin_session: AsyncSession,
+        catalog: FakeCatalog,
+        org_id: uuid.UUID,
+    ) -> None:
+        v1 = catalog.add(make_version(product_key="hrms", amount_minor=1000))
+        v2 = catalog.add(make_version(product_key="hrms", amount_minor=2000))
+        async with session.begin():
+            sub = await services.subscribe(
+                session,
+                _ctx(org_id),
+                catalog,
+                SubscribeIn(product_key="hrms", plan_version_id=v1.id),
+            )
+            sub_id = sub.id
+
+        async with session.begin():
+            fresh = await services.require_subscription(session, sub_id)
+            result = await services.change_plan_as_operator(
+                session,
+                catalog,
+                FakeRegistry(),
+                fresh,
+                OperatorChangePlanIn(
+                    organization_id=org_id,
+                    plan_version_id=v2.id,
+                    operator_id="operator:test",
+                    timing="next_period",
+                ),
+            )
+
+        # Without `timing`, this exact upgrade re-pins and prorates immediately
+        # (test_change_plan_repins_and_preserves_the_old_pin, above) — forced to the next period
+        # instead, nothing about the live pin or the money moves now.
+        assert result.plan_version_id == v1.id, "the pin must not move now"
+        assert result.pending_plan_version_id == v2.id
+
+        rows = await _outbox(admin_session, org_id)
+        assert not any(r.event_type == "commerce.subscription.upgraded" for r in rows), (
+            "an operator-forced next-period re-pin must not emit the immediate-upgrade event"
+        )
+
+        audit = (
+            (
+                await admin_session.execute(
+                    select(AuditLog)
+                    .where(AuditLog.organization_id == org_id)
+                    .order_by(AuditLog.at.desc())
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        assert audit is not None
+        assert audit.action == "commerce.subscription.change_scheduled", (
+            "an upgrade deferred by operator request is not a 'downgrade', and the audit trail "
+            "must not call it one"
+        )
+        assert audit.reason == domain.REASON_UPGRADE
+
+    async def test_a_downgrade_forced_to_next_period_keeps_the_downgrade_action_and_reason(
+        self,
+        session: AsyncSession,
+        admin_session: AsyncSession,
+        catalog: FakeCatalog,
+        org_id: uuid.UUID,
+    ) -> None:
+        v1 = catalog.add(make_version(product_key="hrms", amount_minor=2000))
+        v2 = catalog.add(make_version(product_key="hrms", amount_minor=500))
+        async with session.begin():
+            sub = await services.subscribe(
+                session,
+                _ctx(org_id),
+                catalog,
+                SubscribeIn(product_key="hrms", plan_version_id=v1.id),
+            )
+            sub_id = sub.id
+
+        async with session.begin():
+            fresh = await services.require_subscription(session, sub_id)
+            result = await services.change_plan_as_operator(
+                session,
+                catalog,
+                FakeRegistry(),
+                fresh,
+                OperatorChangePlanIn(
+                    organization_id=org_id,
+                    plan_version_id=v2.id,
+                    operator_id="operator:test",
+                    timing="next_period",
+                ),
+            )
+
+        assert result.plan_version_id == v1.id
+        assert result.pending_plan_version_id == v2.id
+
+        audit = (
+            (
+                await admin_session.execute(
+                    select(AuditLog)
+                    .where(AuditLog.organization_id == org_id)
+                    .order_by(AuditLog.at.desc())
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        assert audit is not None
+        assert audit.action == "commerce.subscription.downgrade_scheduled"
+        assert audit.reason == domain.REASON_DOWNGRADE
+
+    async def test_a_trial_ignores_the_forced_timing_and_repins_immediately(
+        self,
+        session: AsyncSession,
+        admin_session: AsyncSession,
+        catalog: FakeCatalog,
+        org_id: uuid.UUID,
+    ) -> None:
+        """There is no money to defer on a trial with no claimed conversion — `paid` is false
+        regardless of `timing`, so a forced `next_period` is simply a no-op guard, never a
+        subscription stuck refusing to move because console sent a timing hint it did not need
+        to check the state for first."""
+        v1 = catalog.add(make_version(product_key="hrms", amount_minor=1000, state="published"))
+        v2 = catalog.add(make_version(product_key="hrms", amount_minor=2000))
+        async with session.begin():
+            sub = await services.subscribe(
+                session,
+                _ctx(org_id),
+                catalog,
+                SubscribeIn(product_key="hrms", plan_version_id=v1.id, trial_days=14),
+            )
+            sub_id = sub.id
+            assert sub.state == STATE_TRIAL
+
+        async with session.begin():
+            fresh = await services.require_subscription(session, sub_id)
+            result = await services.change_plan_as_operator(
+                session,
+                catalog,
+                FakeRegistry(),
+                fresh,
+                OperatorChangePlanIn(
+                    organization_id=org_id,
+                    plan_version_id=v2.id,
+                    operator_id="operator:test",
+                    timing="next_period",
+                ),
+            )
+
+        assert result.plan_version_id == v2.id, "a trial re-pins immediately regardless of timing"
+        assert result.pending_plan_version_id is None
 
 
 # --------------------------------------------------------------------- append-only
