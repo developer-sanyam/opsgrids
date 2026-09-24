@@ -28,6 +28,13 @@ import { CampaignRecipients } from "./CampaignRecipients";
  * figures, and says so — the counts never revert to zero while a line above them claims they are
  * still refreshing. When the status moves on, `onChanged` reloads the page so it remounts in its
  * settled form.
+ *
+ * **`sent` with zero recipients is a distinct state, not a quiet success.** The audience can
+ * still expand to nobody — every contact removed or suppressed between Send and fan-out — and
+ * the service settles that campaign as `sent` all the same, because as far as it is concerned
+ * the send ran to completion. The green "Sent" tag alone would read as "this worked"; the banner
+ * above the counts says plainly that nothing was actually delivered, so nobody mistakes a send
+ * that reached no one for one that went out normally.
  */
 
 /**
@@ -154,8 +161,23 @@ function ReportView({
     }
   }
 
+  const sentToNobody = campaign.status === "sent" && campaign.stats.recipients === 0;
+
   return (
     <div className="flex flex-col gap-6">
+      {sentToNobody ? (
+        <InlineAlert
+          tone="warning"
+          live="off"
+          title="Sent to 0 recipients — nobody on the audience could be emailed"
+        >
+          <p>
+            Every contact in this campaign&rsquo;s audience had already unsubscribed or been
+            removed by the time it went out, so nothing was actually delivered.
+          </p>
+        </InlineAlert>
+      ) : null}
+
       {campaign.status === "paused" ? (
         <InlineAlert
           tone="danger"

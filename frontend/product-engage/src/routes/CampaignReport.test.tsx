@@ -200,6 +200,29 @@ describe("a sent campaign", () => {
     expect(screen.queryByRole("heading", { level: 2, name: "Preview" })).toBeNull();
   });
 
+  it("says plainly when a sent campaign reached nobody", async () => {
+    mockRefs();
+    vi.spyOn(client, "getCampaign").mockResolvedValue({
+      ...SENT,
+      stats: { recipients: 0, queued: 0, sent: 0, failed: 0, suppressed: 0 },
+    });
+    vi.spyOn(client, "listCampaignRecipients").mockResolvedValue(page([]));
+    renderReport(SENT);
+
+    expect(
+      await screen.findByText("Sent to 0 recipients — nobody on the audience could be emailed"),
+    ).toBeTruthy();
+  });
+
+  it("says nothing extra for a sent campaign that actually reached its audience", async () => {
+    mockSent();
+    renderReport(SENT);
+    await screen.findByRole("heading", { level: 2, name: "Delivery" });
+    expect(
+      screen.queryByText("Sent to 0 recipients — nobody on the audience could be emailed"),
+    ).toBeNull();
+  });
+
   it("says so when the sender or the list has since gone", async () => {
     vi.spyOn(client, "listSenders").mockResolvedValue(page([]));
     vi.spyOn(client, "listDomains").mockResolvedValue(page([]));
