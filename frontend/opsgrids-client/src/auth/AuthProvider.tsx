@@ -9,7 +9,17 @@ import {
 import * as authApi from "./api";
 import { AuthContext } from "./context";
 import type { AuthStatus } from "./context";
+import { refreshAccessToken } from "./refresh";
+import { decodeAccessToken } from "./token";
 import type { LoginResult, LoginStep, MeOut } from "./types";
+
+/** How long before the access token's own `exp` the proactive refresh fires. Comfortably
+ *  ahead of any request in flight, and far short of the token's usual TTL — a call that lands
+ *  in the gap this misses is still caught by `apiRequest`'s own 401-retry. */
+const PROACTIVE_REFRESH_LEAD_MS = 60_000;
+/** How soon a *failed* proactive refresh (a network blip, not a dead session) tries again,
+ *  rather than recomputing from the same, still-expiring token and firing immediately. */
+const PROACTIVE_REFRESH_RETRY_MS = 5_000;
 
 interface AuthProviderProps {
   /**
@@ -53,7 +63,13 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
     setStatus("authenticated");
   }, []);
 
-  // Boot: verify any token carried over from a reload, else land signed-out.
+  // Boot: verify any token carried over from a reload, else land signed-out. A brand-new tab,
+  // or a reload that lost the in-memory token sessionStorage did not have yet, holds no access
+  // token at all — but the refresh cookie may still be good, so a silent refresh gets one
+  // chance to restore the session before the guard ever redirects to /login. This is the same
+  // `refreshAccessToken()` a 401 retry uses, same-origin or centralised on `app.opsgrids.com`
+  // (ADR-0003 addendum) depending on `configureAuthOrigin` — the provider does not need to
+  // know which.
   useEffect(() => {
     let active = true;
     // Fixture mode renders the app with a stand-in identity and no gateway call.
@@ -62,22 +78,33 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
       setStatus("authenticated");
       return;
     }
-    const token = getAccessToken();
-    if (!token) {
-      setStatus("unauthenticated");
-      return;
-    }
-    authApi
-      .me()
-      .then((me) => {
+
+    async function boot(): Promise<void> {
+      let token = getAccessToken();
+      if (!token) {
+        const outcome = await refreshAccessToken();
+        if (!active) return;
+        if (outcome !== "ok") {
+          setStatus("unauthenticated");
+          return;
+        }
+        token = getAccessToken();
+      }
+      if (!token) {
+        setStatus("unauthenticated");
+        return;
+      }
+      try {
+        const me = await authApi.me();
         if (!active) return;
         setUser(me);
         setStatus("authenticated");
-      })
-      .catch(() => {
-        if (!active) return;
-        clearSession();
-      });
+      } catch {
+        if (active) clearSession();
+      }
+    }
+
+    void boot();
     return () => {
       active = false;
     };
@@ -92,6 +119,44 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
     });
     return () => setUnauthorizedHandler(null);
   }, []);
+
+  // Refresh ~60s ahead of the access token's own expiry, so a request in flight when it turns
+  // over is the exception rather than the rule. Runs only while genuinely signed in — fixture
+  // mode has no token to decode, and there is nothing to renew before that.
+  useEffect(() => {
+    if (fixtureUser || status !== "authenticated") return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    function schedule(): void {
+      const claims = decodeAccessToken();
+      if (!claims?.exp) return;
+      const delay = Math.max(claims.exp * 1000 - Date.now() - PROACTIVE_REFRESH_LEAD_MS, 0);
+      timer = setTimeout(() => void run(), delay);
+    }
+
+    async function run(): Promise<void> {
+      const outcome = await refreshAccessToken();
+      if (!active) return;
+      if (outcome === "unauthorized") {
+        pending.current = null;
+        setUser(null);
+        setStatus("unauthenticated");
+        return;
+      }
+      if (outcome === "error") {
+        timer = setTimeout(() => void run(), PROACTIVE_REFRESH_RETRY_MS);
+        return;
+      }
+      schedule();
+    }
+
+    schedule();
+    return () => {
+      active = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [fixtureUser, status]);
 
   /** Apply a completed login result: store the token and load the user. */
   const complete = useCallback(

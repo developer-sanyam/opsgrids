@@ -5,6 +5,7 @@
  */
 
 import { apiRequest } from "../http";
+import { getAuthOrigin } from "./origin";
 import type { LoginResult, MeOut } from "./types";
 
 /** `POST /auth/login`. Returns a discriminated result on `status`. */
@@ -59,7 +60,22 @@ export function me(): Promise<MeOut> {
   return apiRequest<MeOut>("/auth/me");
 }
 
-/** `POST /auth/logout`. Best-effort — clears the refresh cookie server-side. */
+/**
+ * `POST /auth/logout`. Best-effort — clears the refresh cookie server-side.
+ *
+ * Goes to the auth origin (`configureAuthOrigin`), same as `auth/refresh.ts` — same-origin by
+ * default, cross-origin to `app.opsgrids.com` for every product SPA that centralises its
+ * refresh there (ADR-0003 addendum). Ending the session on the host that actually holds the
+ * cookie is what makes every other open tab and app fail its next refresh and land back on
+ * `/login`; logging out only against this app's own (same-)origin would leave that cookie
+ * live everywhere else.
+ */
 export function logout(): Promise<void> {
-  return apiRequest<void>("/auth/logout", { method: "POST", signalUnauthorized: false });
+  const origin = getAuthOrigin();
+  return apiRequest<void>("/auth/logout", {
+    method: "POST",
+    signalUnauthorized: false,
+    headers: { "X-Requested-With": "opsgrids" },
+    ...(origin ? { baseUrl: origin, credentials: "include" } : {}),
+  });
 }
