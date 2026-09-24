@@ -1,5 +1,10 @@
-"""`app.worker.main()` wires all three loops — the events consumer, the dispatcher and the
-campaign driver — into one `run_supervised` group (memory-headroom slice, 2026-09-23 fix round).
+"""`app.worker.main()` wires all four loops — the events consumer, the dispatcher, the campaign
+driver and the dispatch recovery sweep — into one `run_supervised` group (memory-headroom slice,
+2026-09-23 fix round; the recovery sweep joined it with NOTIF-A).
+
+The recovery sweep is the one whose absence nothing notices: a worker without it still consumes
+and dispatches, and every message its provider fumbles once is silently never retried. So its
+presence in the group is pinned here rather than left to a reader of `worker.py`.
 
 No real database or broker: every DB-role assertion and engine constructor `main()` calls is
 faked to a no-op, and `run_supervised` itself is faked to simply await whatever it was given —
@@ -16,7 +21,7 @@ import pytest
 from app import worker
 
 
-async def test_main_wires_events_dispatch_and_campaign_driver_into_run_supervised(
+async def test_main_wires_all_four_loops_into_run_supervised(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _noop(*args: Any, **kwargs: Any) -> None:
@@ -42,9 +47,13 @@ async def test_main_wires_events_dispatch_and_campaign_driver_into_run_supervise
     async def fake_driver_run(self: worker.CampaignDriver) -> None:
         ran.add("campaign_driver")
 
+    async def fake_recovery_run(self: worker.DispatchRecovery) -> None:
+        ran.add("dispatch_recovery")
+
     monkeypatch.setattr(worker.consumers.consumer, "run", fake_events_run)
     monkeypatch.setattr(worker.dispatcher.consumer, "run", fake_dispatch_run)
     monkeypatch.setattr(worker.CampaignDriver, "run", fake_driver_run)
+    monkeypatch.setattr(worker.DispatchRecovery, "run", fake_recovery_run)
 
     captured: dict[str, Any] = {}
 
@@ -64,8 +73,9 @@ async def test_main_wires_events_dispatch_and_campaign_driver_into_run_supervise
 
     await worker.main()
 
-    assert set(captured) == {"events", "dispatch", "campaign_driver"}
-    assert ran == {"events", "dispatch", "campaign_driver"}
+    expected = {"events", "dispatch", "campaign_driver", "dispatch_recovery"}
+    assert set(captured) == expected
+    assert ran == expected
     # L11 (review round 2): the campaign thread pool must not outlive this process — a
     # non-daemon thread pool with a call in flight would otherwise hold the interpreter open
     # past the point the orchestrator expects this container to have stopped.

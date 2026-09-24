@@ -66,6 +66,39 @@ def grant_campaign_sweep_reader(connection: Connection) -> None:
     connection.commit()
 
 
+def grant_message_sweep_reader(connection: Connection) -> None:
+    """Column-level `SELECT` on `messages` for the outbox role — the dispatch recovery sweep's own
+    cross-tenant discovery (`app/cron.py`, `selectors.due_message_redrives`).
+
+    Same shape, and same reasons, as `grant_campaign_sweep_reader` above: the outbox role's slice-1
+    grant does not reach this table, and discovery must not run BYPASSRLS with a blanket `SELECT *`
+    over a table whose rows hold a recipient's address and the message they were sent. Four
+    columns, named exactly — `organization_id`, `id`, `state`, `retry_at` — never `to_address`,
+    `subject`, `body` or `provider_template_payload`.
+
+    Idempotent and called after **every** alembic run: `REVOKE` first and `GRANT` again only if the
+    table still exists, so a downgrade that drops it takes the privilege with it.
+    """
+    reader = cfg.db_outbox_role
+    if not reader:
+        return
+    if not connection.execute(
+        text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": reader}
+    ).scalar():
+        return
+    if connection.execute(
+        text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.messages"}
+    ).scalar():
+        connection.execute(text(f'REVOKE ALL ON "{SCHEMA}"."messages" FROM "{reader}"'))
+        connection.execute(
+            text(
+                "GRANT SELECT (organization_id, id, state, retry_at) "
+                f'ON "{SCHEMA}"."messages" TO "{reader}"'
+            )
+        )
+    connection.commit()
+
+
 def include_object(obj, name, type_, reflected, compare_to) -> bool:  # type: ignore[no-untyped-def]
     """Manage only this service's own schema.
 
@@ -97,6 +130,7 @@ def do_run_migrations(connection: Connection) -> None:
     # without them -- which is exactly what happened the first time this was left out.
     apply_schema_grants(connection, SCHEMA, cfg.db_app_role, outbox_role=cfg.db_outbox_role)
     grant_campaign_sweep_reader(connection)
+    grant_message_sweep_reader(connection)
 
 
 async def run_async_migrations() -> None:

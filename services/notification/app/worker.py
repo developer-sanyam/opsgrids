@@ -1,5 +1,5 @@
-"""The worker process: the rules engine, the dispatcher, and the campaign send driver, side by
-side.
+"""The worker process: the rules engine, the dispatcher, the campaign send driver and the
+dispatch recovery sweep, side by side.
 
 This service has two consumers rather than the usual one — `notification.events` folds inbound
 events into messages, and `notification.dispatch` sends them — and they are run together here so
@@ -27,6 +27,13 @@ keep running, orphaned, against a process that is already on its way down. `run_
 raises, so there is never a moment with one loop dead and another still touching a connection
 pool this process is about to tear down.
 
+**The dispatch recovery sweep is the fourth loop** (NOTIF-A). It is what makes a transient send
+failure retry and a dispatcher that died mid-send recover (`app/dispatcher.py`'s docstring has
+the whole argument): without it a message whose first attempt failed is `pending` for ever. It
+has to live with the dispatcher — a worker that runs the consumer and not the sweep looks healthy
+and quietly drops every message its provider fumbles once — so it is a loop of this process, not
+a container of its own. It uses `GuardedSweep` for the same reason the campaign driver does.
+
 `app/cron.py` keeps its own `main()` and remains directly runnable (`python -m app.cron`) for
 debugging the campaign driver in isolation on a laptop; `bin/cron` still points at it. Only
 `bin/worker` moved. `python -m app.consumers` and `python -m app.dispatcher` are likewise still
@@ -39,7 +46,7 @@ import asyncio
 
 from app import consumers, dispatcher
 from app.config import settings
-from app.cron import CampaignDriver
+from app.cron import CampaignDriver, DispatchRecovery
 from app.targets import make_resolver as make_target_resolver
 from app.transports import CAMPAIGN_SMTP_EXECUTOR
 from app.transports import build as build_transports
@@ -85,10 +92,21 @@ async def main() -> None:
         poll_interval=cfg.engage_campaign_poll_interval_seconds,
     )
 
+    recovery = DispatchRecovery(
+        discovery_factory=get_outbox_sessionmaker(),
+        work_scope=lambda organization_id: session_scope(organization_id=organization_id),
+        max_attempts=cfg.dispatch_max_attempts,
+        retry_base_seconds=cfg.dispatch_retry_base_seconds,
+        retry_max_seconds=cfg.dispatch_retry_max_seconds,
+        requeue_lease_seconds=cfg.dispatch_requeue_lease_seconds,
+        poll_interval=cfg.dispatch_recovery_poll_seconds,
+        limit=cfg.dispatch_recovery_batch,
+    )
+
     log.info(
         "notification.worker.starting",
         queues=["notification.events", "notification.dispatch"],
-        sweep="campaign_driver",
+        sweeps=["campaign_driver", "dispatch_recovery"],
     )
     try:
         # Any one of these returning or raising ends the group; `run_supervised` cancels the
@@ -99,6 +117,7 @@ async def main() -> None:
             events=consumers.consumer.run(),
             dispatch=dispatcher.consumer.run(),
             campaign_driver=driver.run(),
+            dispatch_recovery=recovery.run(),
         )
     finally:
         # `cancel_futures=True` drops anything still queued (nothing should be, since

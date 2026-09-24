@@ -306,6 +306,12 @@ The first candidates are:
 
 C4, the automatic e-Way retry, is a finance producer and does not trigger the move.
 
+Notification's send retry (NOTIF-A) was the third candidate and **deliberately does not call
+`schedule_event`**, for exactly this reason: it would have forced the move above into a defect
+fix. It keeps its own clock instead — `messages.retry_at` and the `DispatchRecovery` sweep in
+`notification-worker` (see the Engage design's §4). The trigger is unchanged: the first service
+outside the `finance` profile that does call `schedule_event` moves `scheduler` to core.
+
 **Why.** Today the coupling is harmless, because turning finance off also turns off the only
 producer. The failure it hides is quiet. A producer in another profile would stage
 `platform.schedule.requested`. The guaranteed-routing channel (§6) would then refuse it, since

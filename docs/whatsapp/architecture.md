@@ -28,6 +28,7 @@ idempotency      unique (organization_id, dedupe_key)
 message row      state `pending`, committed with the event's processed_events row
       ↓          outbox → relay → notification.dispatch queue
 dispatcher       claim → send → record, three transactions, no network inside one
+                 (a transient failure sets `retry_at`; the recovery sweep queues it again)
       ↓
 Meta Cloud API   v25.0, `type: template` outside the 24-hour window
 ```

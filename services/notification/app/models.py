@@ -326,6 +326,14 @@ class Message(Base, TenantBase):
 
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(Text)
+    #: The instant something must look at this message again — and what that means depends on its
+    #: state. `pending` after a failed attempt: the backoff is over and it is due to be queued
+    #: again (`services.redrive_message` publishes the queued event, then pushes this out by a
+    #: short lease so a queued event that is lost is queued again rather than stranding the row).
+    #: `sending`: the lease on the dispatcher's claim; a process that died between claiming and
+    #: recording leaves the row here, and once this lapses the claim is settled as a failed
+    #: attempt. Null everywhere else — a message nobody owes anything is never swept.
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: Filled from provider receipts. Separate columns rather than only a state, because "when
     #: was it read" is a question analytics asks and a single state cannot answer.
@@ -341,6 +349,16 @@ class Message(Base, TenantBase):
     __table_args__ = (
         # The dispatcher's claim query: pending rows for this org, oldest first.
         Index("ix_messages_org_state", "organization_id", "state", "created_at"),
+        # The recovery sweep's discovery (`selectors.due_message_redrives`): only the rows that
+        # are waiting on a retry or holding a claim lease, which is a handful next to the table.
+        # Led by the organization like every index here; the sweep reads the whole partial index,
+        # not one tenant's slice of it, because it is asking *which* tenants have work.
+        Index(
+            "ix_messages_org_retry_at",
+            "organization_id",
+            "retry_at",
+            postgresql_where="retry_at IS NOT NULL",
+        ),
         Index("ix_messages_org_channel", "organization_id", "channel"),
         # A receipt arrives knowing only the provider's message id, and the webhook has already
         # resolved the tenant, so the lookup leads with the organization like every other index

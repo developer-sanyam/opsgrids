@@ -132,14 +132,49 @@ def messages_stmt(
 
 
 async def get_message(
-    session: AsyncSession, org_id: uuid.UUID, message_id: uuid.UUID
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    message_id: uuid.UUID,
+    *,
+    for_update: bool = False,
 ) -> Message | None:
+    """One message. `for_update` takes the row lock, **skipping** a row somebody else holds — the
+    recovery sweep's shape: a message a dispatcher is claiming this instant is not one the sweep
+    should be settling, so it gets `None` and looks again next pass. `populate_existing` so the
+    values compared under the lock are the committed ones, not a copy this session read earlier."""
     stmt = select(Message).where(
         Message.id == message_id,
         Message.organization_id == org_id,
         Message.deleted_at.is_(None),
     )
+    if for_update:
+        stmt = stmt.with_for_update(skip_locked=True).execution_options(populate_existing=True)
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def due_message_redrives(
+    session: AsyncSession, *, now: datetime, limit: int
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """`(organization_id, message_id)` for every message whose `retry_at` has arrived: a retry
+    whose backoff is over (`pending`) and a claim whose lease has lapsed (`sending`). Oldest
+    first, at most `limit`.
+
+    Cross-tenant and BYPASSRLS by design — the same shape as `due_campaigns` and, like it, reading
+    only the four columns the outbox role is granted on `messages` (`migrations/env.py`). There is
+    no tenant to bind while asking which tenants have work; every write the sweep makes off the
+    back of this runs tenant-bound (`app/cron.py`).
+    """
+    stmt = (
+        select(Message.organization_id, Message.id)
+        .where(
+            Message.retry_at.is_not(None),
+            Message.retry_at <= now,
+            Message.state.in_(("pending", "sending")),
+        )
+        .order_by(Message.retry_at.asc(), Message.id.asc())
+        .limit(limit)
+    )
+    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
 
 
 async def find_by_dedupe_key(session: AsyncSession, org_id: uuid.UUID, key: str) -> Message | None:

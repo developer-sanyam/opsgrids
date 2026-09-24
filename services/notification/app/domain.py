@@ -14,6 +14,7 @@ import hmac
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Final, cast
 
 from platform_core.smtp_tls import TLS_MODES, TlsMode
@@ -28,8 +29,10 @@ CHANNELS: Final[tuple[str, ...]] = ("email", "whatsapp")
 #: `sending` is not bookkeeping. The dispatcher claims a message in one transaction, talks to the
 #: provider with **no transaction open**, and records the outcome in a second — so a provider
 #: outage can never hold a database transaction. The cost of that split is a crash window: a
-#: process that dies mid-send leaves a `sending` row, which is deliberately visible rather than
-#: silently retried, because "did the customer get it?" has no safe default answer.
+#: process that dies mid-send leaves a `sending` row, and "did the customer get it?" has no safe
+#: answer. The row is not abandoned: it carries a lease (`Message.retry_at`), and a claim that is
+#: never recorded is settled as a failed attempt once the lease lapses — at-least-once, on
+#: purpose (see `dispatcher.py`).
 STATE_PENDING: Final = "pending"
 STATE_SENDING: Final = "sending"
 STATE_SENT: Final = "sent"
@@ -678,6 +681,14 @@ def template_is_sendable(status: str) -> bool:
     return status == STATUS_APPROVED
 
 
+#: The defaults `Settings` carries for the retry schedule and the two leases, kept here so the
+#: service functions that take them as arguments and the settings that supply them agree.
+DEFAULT_RETRY_BASE_SECONDS: Final = 60.0
+DEFAULT_RETRY_MAX_SECONDS: Final = 3600.0
+DEFAULT_CLAIM_LEASE_SECONDS: Final = 600
+DEFAULT_REQUEUE_LEASE_SECONDS: Final = 300
+
+
 def should_retry(attempts: int, *, max_attempts: int) -> bool:
     """Whether a failed message is worth claiming again.
 
@@ -691,6 +702,20 @@ def should_retry(attempts: int, *, max_attempts: int) -> bool:
 def next_attempt_no(previous: int) -> int:
     """Attempts are numbered from one, monotonically, per message."""
     return previous + 1
+
+
+def retry_delay(attempts: int, *, base_seconds: float, max_seconds: float) -> timedelta:
+    """How long a message waits after its `attempts`-th failure before it is sent again.
+
+    Doubles from `base_seconds` and stops at `max_seconds`: a provider that is briefly down is
+    tried again quickly, one that stays down is not hammered, and a message never waits so long
+    that the customer has given up on it. `attempts` is the attempt that just failed, so the
+    first failure waits `base_seconds`.
+    """
+    exponent = max(attempts, 1) - 1
+    # Capped before the shift is applied: `2 ** exponent` is unbounded for a large count and the
+    # result is only ever compared against `max_seconds`.
+    return timedelta(seconds=min(base_seconds * (2 ** min(exponent, 30)), max_seconds))
 
 
 # --------------------------------------------------------------------- engage sending identity

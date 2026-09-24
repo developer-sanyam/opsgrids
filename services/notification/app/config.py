@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pydantic import SecretStr
 
+from app import domain
 from platform_core.config import ServiceSettings, settings_for
 from platform_core.smtp_tls import UNVERIFIED_TLS_ENVIRONMENTS, TlsMode
 
@@ -134,8 +135,26 @@ class Settings(ServiceSettings):
     dispatch_batch_size: int = 50
     #: Seconds between passes when the last one found nothing.
     dispatch_poll_interval: float = 1.0
-    #: A message that has failed this many times stops being claimed and waits for an operator.
+    #: Sends attempted for one message, the first included, before it is marked `failed` and an
+    #: alert is logged. A permanent refusal (a bad address) fails on the first and is never retried.
     dispatch_max_attempts: int = 6
+    #: The wait after a message's first failed attempt; each further failure doubles it, up to
+    #: `dispatch_retry_max_seconds`. With the defaults six attempts span about half an hour —
+    #: long enough for a provider blip, short enough that a password-reset link still matters.
+    dispatch_retry_base_seconds: float = domain.DEFAULT_RETRY_BASE_SECONDS
+    dispatch_retry_max_seconds: float = domain.DEFAULT_RETRY_MAX_SECONDS
+    #: How long a dispatcher's claim (`sending`) is trusted before the recovery sweep settles it
+    #: as a failed attempt. It must comfortably outlast one real send, so a slow provider is never
+    #: raced with itself — `model_post_init` refuses anything under six times the longest
+    #: transport timeout (an SMTP send is several round trips, each with its own timeout).
+    dispatch_claim_lease_seconds: int = domain.DEFAULT_CLAIM_LEASE_SECONDS
+    #: After the sweep queues a message whose backoff is over, how long before it queues it again
+    #: if nobody has claimed it. Only ever matters when a queued event is lost; a claim ends it.
+    dispatch_requeue_lease_seconds: int = domain.DEFAULT_REQUEUE_LEASE_SECONDS
+    #: How often the recovery sweep looks for due retries and lapsed claims, and how many it takes
+    #: per pass.
+    dispatch_recovery_poll_seconds: float = 15.0
+    dispatch_recovery_batch: int = 100
 
     @property
     def smtp_tls_mode(self) -> TlsMode:
@@ -160,6 +179,23 @@ class Settings(ServiceSettings):
                 "SMTP_USE_TLS and SMTP_USE_SSL are mutually exclusive — STARTTLS upgrades a "
                 "plain connection, SSL/SMTPS is encrypted from the first byte; pick one"
             )
+        if self.dispatch_retry_base_seconds <= 0 or (
+            self.dispatch_retry_max_seconds < self.dispatch_retry_base_seconds
+        ):
+            raise ValueError(
+                "dispatch_retry_base_seconds must be positive and no greater than "
+                "dispatch_retry_max_seconds"
+            )
+        slowest_send = 6 * max(self.smtp_timeout_seconds, self.whatsapp_timeout_seconds)
+        if self.dispatch_claim_lease_seconds < slowest_send + 60:
+            raise ValueError(
+                f"dispatch_claim_lease_seconds ({self.dispatch_claim_lease_seconds}) must be at "
+                f"least 6x the longest transport timeout plus a minute ({slowest_send + 60:.0f}): "
+                "a lease shorter than one real send would let the recovery sweep settle a "
+                "message that is still being sent, and it would be sent twice"
+            )
+        if self.dispatch_requeue_lease_seconds <= 0:
+            raise ValueError("dispatch_requeue_lease_seconds must be positive")
         if self.smtp_allow_unverified_tls and self.environment not in UNVERIFIED_TLS_ENVIRONMENTS:
             raise ValueError(
                 f"{self.environment} refuses smtp_allow_unverified_tls: a deployed service must "

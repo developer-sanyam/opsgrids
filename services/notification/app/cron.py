@@ -1,4 +1,12 @@
-"""The campaign send driver. Runs as its own process (`bin/cron`).
+"""The campaign send driver, and the dispatch recovery sweep. Runs as its own process
+(`bin/cron`), or folded into the worker (`app/worker.py`).
+
+**Two sweeps, one shape.** `CampaignDriver` (below, the bulk of this module) drains campaigns.
+`DispatchRecovery` (the end of it) is the other half of the dispatcher: it queues a message whose
+retry backoff is over and settles a claim whose dispatcher died — see its own docstring. Both
+discover across tenants on the outbox role and write under a tenant binding on the app role.
+
+**The campaign send driver.**
 
 **Why sending moved off the shared event consumer.** `consumers.fan_out` used to both expand a
 campaign's audience *and* send it, batch after batch, inside the handler for
@@ -69,7 +77,7 @@ from platform_core.db import (
     session_scope,
 )
 from platform_core.logging import get_logger
-from platform_core.supervise import GuardedSweep
+from platform_core.supervise import GuardedSweep, run_supervised
 
 log = get_logger("notification.cron")
 
@@ -275,6 +283,126 @@ class CampaignDriver(GuardedSweep):
         return "unavailable" if any_unavailable else "sent_batch"
 
 
+@dataclass
+class RecoveryReport:
+    """What one recovery tick did. Returned so a test can assert on it and the loop can log it."""
+
+    considered: int = 0
+    #: A retry whose backoff was over, published as a fresh queued event.
+    requeued: int = 0
+    #: A lapsed claim settled as a failed attempt; the message will be tried again.
+    reclaimed: int = 0
+    #: A lapsed claim on the message's last attempt: it is `failed` now.
+    gave_up: int = 0
+    #: Resolved or locked by a dispatcher between discovery and now. Looked at again next pass.
+    skipped: int = 0
+    #: A message whose own write raised. Counted rather than propagated, for the reason
+    #: `CampaignDriver`'s `failed` is: one row's fault must not stall every other message.
+    failed: int = 0
+
+
+class DispatchRecovery(GuardedSweep):
+    """The half of the dispatcher that runs on a clock.
+
+    The dispatcher (`app/dispatcher.py`) reacts to `message.queued` events, and an event is spent
+    the moment it is claimed. Two things can leave a message owed with no event coming: a
+    **transient failure** (the message goes back to `pending` with `retry_at` set to the end of
+    its backoff — `services.record_failure`) and a **crash between claim and record** (the message
+    is left `sending` with `retry_at` as the lease on the claim). This sweep finds both by
+    `retry_at` (`selectors.due_message_redrives`) and hands each to `services.redrive_message`,
+    which queues the retry or settles the lapsed claim. Without it a single SMTP blip drops a
+    password reset without a trace.
+
+    Same claim-and-drain shape as `CampaignDriver`: **discovery** is cross-tenant on the outbox
+    role (column-level `SELECT` on four columns of `messages` — never an address or a body);
+    **every write** runs on the app role inside `session_scope(organization_id=...)` — one
+    transaction per message, so one message's failure rolls back only itself. Not strictly
+    ordered by fairness: oldest `retry_at` first, `limit` per pass, so a message that raises every
+    time (a bug, not weather) is retried every tick and counted in `failed` — it can crowd the pass
+    only if there are `limit` of them, and it is logged with its ids each time.
+    """
+
+    def __init__(
+        self,
+        *,
+        discovery_factory: async_sessionmaker[AsyncSession],
+        work_scope: WorkScope,
+        max_attempts: int,
+        retry_base_seconds: float,
+        retry_max_seconds: float,
+        requeue_lease_seconds: int,
+        poll_interval: float = 15.0,
+        limit: int = 100,
+        max_backoff_seconds: float = 300.0,
+    ) -> None:
+        super().__init__(poll_interval=poll_interval, max_backoff=max_backoff_seconds)
+        self._discovery_factory = discovery_factory
+        self._work_scope = work_scope
+        self._max_attempts = max_attempts
+        self._retry_base_seconds = retry_base_seconds
+        self._retry_max_seconds = retry_max_seconds
+        self._requeue_lease_seconds = requeue_lease_seconds
+        self._limit = limit
+
+    @property
+    def _log_name(self) -> str:
+        return "notification.dispatch_recovery"
+
+    async def on_tick_success(self, result: RecoveryReport) -> None:
+        if result.considered:
+            log.info(
+                "notification.dispatch_recovery.pass",
+                considered=result.considered,
+                requeued=result.requeued,
+                reclaimed=result.reclaimed,
+                gave_up=result.gave_up,
+                skipped=result.skipped,
+                failed=result.failed,
+            )
+
+    async def tick(self, now: datetime | None = None) -> RecoveryReport:
+        """One pass. `now` exists **only** for tests — the same seam `CampaignDriver.tick` has;
+        production never passes it, so every `retry_at` is compared against the wall clock."""
+        at = now or datetime.now(UTC)
+        async with self._discovery_factory() as session, session.begin():
+            due = await selectors.due_message_redrives(session, now=at, limit=self._limit)
+
+        report = RecoveryReport(considered=len(due))
+        for organization_id, message_id in due:
+            try:
+                async with self._work_scope(organization_id) as session:
+                    outcome: services.RedriveOutcome = await services.redrive_message(
+                        session,
+                        organization_id=organization_id,
+                        message_id=message_id,
+                        max_attempts=self._max_attempts,
+                        retry_base_seconds=self._retry_base_seconds,
+                        retry_max_seconds=self._retry_max_seconds,
+                        requeue_lease_seconds=self._requeue_lease_seconds,
+                        now=at,
+                    )
+            except Exception as exc:
+                # The type, never the text: a database error's message can carry the statement's
+                # parameters, and this process handles other people's messages.
+                log.error(
+                    "notification.dispatch_recovery.message_failed",
+                    organization_id=str(organization_id),
+                    message_id=str(message_id),
+                    error_type=type(exc).__name__,
+                )
+                report.failed += 1
+                continue
+            if outcome == "requeued":
+                report.requeued += 1
+            elif outcome == "reclaimed":
+                report.reclaimed += 1
+            elif outcome == "gave_up":
+                report.gave_up += 1
+            else:
+                report.skipped += 1
+        return report
+
+
 async def main() -> None:
     cfg = settings()
     engine = init_engine(cfg)
@@ -295,7 +423,17 @@ async def main() -> None:
         pause_retry_seconds=cfg.engage_campaign_pause_retry_seconds,
         poll_interval=cfg.engage_campaign_poll_interval_seconds,
     )
-    await driver.run()
+    recovery = DispatchRecovery(
+        discovery_factory=get_outbox_sessionmaker(),
+        work_scope=lambda organization_id: session_scope(organization_id=organization_id),
+        max_attempts=cfg.dispatch_max_attempts,
+        retry_base_seconds=cfg.dispatch_retry_base_seconds,
+        retry_max_seconds=cfg.dispatch_retry_max_seconds,
+        requeue_lease_seconds=cfg.dispatch_requeue_lease_seconds,
+        poll_interval=cfg.dispatch_recovery_poll_seconds,
+        limit=cfg.dispatch_recovery_batch,
+    )
+    await run_supervised(campaign_driver=driver.run(), dispatch_recovery=recovery.run())
 
 
 if __name__ == "__main__":

@@ -489,23 +489,36 @@ async def stage_message(
         )
         return message
 
+    _publish_queued(session, message, causation_id=source_event_id, actor=actor)
+    return message
+
+
+def _publish_queued(
+    session: AsyncSession,
+    message: Message,
+    *,
+    causation_id: uuid.UUID | None = None,
+    actor: dict[str, Any] | None = None,
+) -> None:
+    """Stage the event that makes the dispatcher send `message`. One shape for both callers — a
+    message being staged for the first time, and one whose retry has fallen due
+    (`redrive_message`) — so the dispatcher cannot tell them apart and does not need to."""
     publish_event(
         session,
         OutboxEvent,
-        organization_id=organization_id,
+        organization_id=message.organization_id,
         event_type=EVT_MESSAGE_QUEUED,
         aggregate_type="message",
         aggregate_id=message.id,
         payload={
-            "organization_id": str(organization_id),
+            "organization_id": str(message.organization_id),
             "message_id": str(message.id),
-            "channel": channel,
-            "category": category,
+            "channel": message.channel,
+            "category": message.category,
         },
-        causation_id=source_event_id,
+        causation_id=causation_id,
         actor=actor,
     )
-    return message
 
 
 async def apply_rules(
@@ -841,15 +854,29 @@ async def send_direct(
 
 
 async def claim_for_send(
-    session: AsyncSession, *, organization_id: uuid.UUID, message_id: uuid.UUID
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    message_id: uuid.UUID,
+    lease_seconds: int = domain.DEFAULT_CLAIM_LEASE_SECONDS,
+    now: datetime | None = None,
 ) -> Message | None:
-    """Move one message `pending` → `sending` and count the attempt. Returns None if unclaimable.
+    """Move one message `pending` → `sending`, count the attempt and take a lease on the claim.
+    Returns None if unclaimable.
 
     Unclaimable covers every benign race: already sent, suppressed after the event was queued,
     out of attempts, or claimed by another dispatcher. Returning None rather than raising keeps a
     redelivered queued-event a no-op instead of a dead letter.
+
+    The row is locked (skipping one another dispatcher already holds) so two queued events for the
+    same message cannot both read `pending` and both go on to send it: the state check below is
+    only a guard if nobody can change the state between the read and the write.
+
+    `retry_at` becomes the lease. A dispatcher that dies before it records an outcome leaves this
+    row `sending`; once the lease lapses `redrive_message` settles the claim as a failed attempt.
     """
-    message = await selectors.get_message(session, organization_id, message_id)
+    now = now or datetime.now(UTC)
+    message = await selectors.get_message(session, organization_id, message_id, for_update=True)
     if message is None:
         return None
     if message.state != domain.STATE_PENDING:
@@ -862,6 +889,7 @@ async def claim_for_send(
     suppressions = await selectors.suppressions_for(session, organization_id, message.to_address)
     if domain.is_suppressed(suppressions, channel=message.channel, category=message.category):
         message.state = domain.STATE_SUPPRESSED
+        message.retry_at = None
         message.updated_by = SYSTEM_ACTOR
         await session.flush()
         log.info("notification.suppressed_at_dispatch", message_id=str(message.id))
@@ -869,6 +897,7 @@ async def claim_for_send(
 
     message.state = domain.STATE_SENDING
     message.attempts = domain.next_attempt_no(message.attempts)
+    message.retry_at = now + timedelta(seconds=lease_seconds)
     message.updated_by = SYSTEM_ACTOR
     await session.flush()
     return message
@@ -889,6 +918,7 @@ async def record_sent(
 
     message.state = domain.STATE_SENT
     message.sent_at = datetime.now(UTC)
+    message.retry_at = None
     message.provider_message_id = provider_message_id
     message.last_error = None
     message.updated_by = SYSTEM_ACTOR
@@ -925,6 +955,11 @@ async def record_sent(
     )
 
 
+#: What the ledger says about an attempt whose outcome the dispatcher never recorded. Fixed text:
+#: nothing about it came from a provider, because nobody was listening when it did.
+INTERRUPTED_ATTEMPT = "dispatch interrupted before its outcome was recorded"
+
+
 async def record_failure(
     session: AsyncSession,
     *,
@@ -934,53 +969,194 @@ async def record_failure(
     error: str,
     permanent: bool,
     max_attempts: int,
+    retry_base_seconds: float = domain.DEFAULT_RETRY_BASE_SECONDS,
+    retry_max_seconds: float = domain.DEFAULT_RETRY_MAX_SECONDS,
+    now: datetime | None = None,
 ) -> None:
-    """Append the failed attempt and decide whether the message waits for another.
+    """Append the failed attempt and decide what happens to the message next.
 
     A permanent refusal goes straight to `failed` — retrying an address the provider will never
     accept only delays the moment somebody looks at it. A transient failure returns to `pending`
-    while attempts remain, and the broker's redelivery brings it back.
+    with `retry_at` set to the end of its backoff, **in this same transaction**, and the recovery
+    sweep queues it again when that arrives (`redrive_message`). Until then the row is the only
+    thing that remembers the message is owed: the event that carried the first attempt was acked
+    when the dispatcher finished with it, and a redelivery of it would find its
+    `processed_events` row and stop. Out of attempts is `failed` with an alert.
     """
     message = await selectors.get_message(session, organization_id, message_id)
     if message is None:  # pragma: no cover
         return
+    await _settle_failed_attempt(
+        session,
+        message,
+        provider=provider,
+        error=error,
+        permanent=permanent,
+        max_attempts=max_attempts,
+        retry_base_seconds=retry_base_seconds,
+        retry_max_seconds=retry_max_seconds,
+        now=now or datetime.now(UTC),
+    )
 
+
+async def _settle_failed_attempt(
+    session: AsyncSession,
+    message: Message,
+    *,
+    provider: str,
+    error: str,
+    permanent: bool,
+    max_attempts: int,
+    retry_base_seconds: float,
+    retry_max_seconds: float,
+    now: datetime,
+) -> bool:
+    """The one place a failed attempt is turned into a next step — for a failure the dispatcher
+    saw (`record_failure`) and for a claim it never got to record (`redrive_message`). Returns
+    whether the message will be tried again."""
     session.add(
         Delivery(
-            organization_id=organization_id,
+            organization_id=message.organization_id,
             created_by=SYSTEM_ACTOR,
             message_id=message.id,
             attempt_no=message.attempts,
             provider=provider,
             outcome="failed",
             detail=error[:2000],
-            at=datetime.now(UTC),
+            at=now,
         )
     )
 
     retryable = not permanent and domain.should_retry(message.attempts, max_attempts=max_attempts)
-    message.state = domain.STATE_PENDING if retryable else domain.STATE_FAILED
     message.last_error = error[:2000]
     message.updated_by = SYSTEM_ACTOR
+    if retryable:
+        message.state = domain.STATE_PENDING
+        message.retry_at = now + domain.retry_delay(
+            message.attempts, base_seconds=retry_base_seconds, max_seconds=retry_max_seconds
+        )
+    else:
+        message.state = domain.STATE_FAILED
+        message.retry_at = None
     await session.flush()
 
-    if not retryable:
-        publish_event(
-            session,
-            OutboxEvent,
-            organization_id=organization_id,
-            event_type=EVT_MESSAGE_FAILED,
-            aggregate_type="message",
-            aggregate_id=message.id,
-            payload={
-                "organization_id": str(organization_id),
-                "message_id": str(message.id),
-                "channel": message.channel,
-                "attempts": message.attempts,
-                "last_error": message.last_error,
-            },
-            actor={"type": "system", "id": SYSTEM_ACTOR},
+    if retryable:
+        log.info(
+            "notification.message.retry_scheduled",
+            organization_id=str(message.organization_id),
+            message_id=str(message.id),
+            channel=message.channel,
+            attempt=message.attempts,
+            retry_at=message.retry_at.isoformat() if message.retry_at else None,
         )
+        return True
+
+    if not permanent:
+        # Out of attempts on a failure that might have passed: a person may need to look. Ids
+        # and counts only — no address, no provider text (`last_error` holds what the transport
+        # chose to say, and it is on the row for whoever comes looking).
+        log.error(
+            "notification.message.gave_up",
+            organization_id=str(message.organization_id),
+            message_id=str(message.id),
+            channel=message.channel,
+            attempts=message.attempts,
+            hint="every attempt failed; the message is `failed` and will not be retried",
+        )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=message.organization_id,
+        event_type=EVT_MESSAGE_FAILED,
+        aggregate_type="message",
+        aggregate_id=message.id,
+        payload={
+            "organization_id": str(message.organization_id),
+            "message_id": str(message.id),
+            "channel": message.channel,
+            "attempts": message.attempts,
+            "last_error": message.last_error,
+        },
+        actor={"type": "system", "id": SYSTEM_ACTOR},
+    )
+    return False
+
+
+RedriveOutcome = Literal["requeued", "reclaimed", "gave_up", "not_due"]
+
+
+async def redrive_message(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    message_id: uuid.UUID,
+    max_attempts: int,
+    retry_base_seconds: float = domain.DEFAULT_RETRY_BASE_SECONDS,
+    retry_max_seconds: float = domain.DEFAULT_RETRY_MAX_SECONDS,
+    requeue_lease_seconds: int = domain.DEFAULT_REQUEUE_LEASE_SECONDS,
+    now: datetime | None = None,
+) -> RedriveOutcome:
+    """Do what a message whose `retry_at` has arrived is waiting for. **The recovery sweep's
+    write** (`app/cron.py`), one message, one transaction, under the message's own tenant.
+
+    `pending` — its backoff is over. The queued event is published (through the outbox, so it
+    leaves only once this commits) and `retry_at` moves out by `requeue_lease_seconds`: a claim
+    clears it, and if the event is lost instead the sweep publishes another when it lapses, so a
+    message is never stranded between "waiting" and "claimed".
+
+    `sending` — the dispatcher's lease lapsed without an outcome. Whatever it was doing, it is
+    not doing it any more, so the claim is settled as a failed attempt (`INTERRUPTED_ATTEMPT`) and
+    the message goes through the same retry-or-give-up decision as any other failure. **This is
+    at-least-once, on purpose:** if the process died *after* the provider accepted the message
+    and before the outcome was recorded, the customer gets a second copy. The alternative is a
+    row that stays `sending` forever and a password reset that never arrives; a duplicate is the
+    lesser harm, and attempts stay bounded because the claim already counted this one.
+
+    The row is locked, skipping one a dispatcher holds this instant: that message is being dealt
+    with, and the sweep looks again next pass. Anything not due is `not_due`, changed only to drop
+    a `retry_at` that a message in a state nobody sweeps should not have.
+    """
+    now = now or datetime.now(UTC)
+    message = await selectors.get_message(session, organization_id, message_id, for_update=True)
+    if message is None or message.retry_at is None or message.retry_at > now:
+        return "not_due"
+
+    if message.state == domain.STATE_PENDING:
+        _publish_queued(session, message, actor={"type": "system", "id": SYSTEM_ACTOR})
+        message.retry_at = now + timedelta(seconds=requeue_lease_seconds)
+        message.updated_by = SYSTEM_ACTOR
+        await session.flush()
+        log.info(
+            "notification.message.requeued",
+            organization_id=str(message.organization_id),
+            message_id=str(message.id),
+            attempts=message.attempts,
+        )
+        return "requeued"
+
+    if message.state == domain.STATE_SENDING:
+        log.warning(
+            "notification.message.claim_lapsed",
+            organization_id=str(message.organization_id),
+            message_id=str(message.id),
+            attempt=message.attempts,
+        )
+        retried = await _settle_failed_attempt(
+            session,
+            message,
+            provider="dispatcher",
+            error=INTERRUPTED_ATTEMPT,
+            permanent=False,
+            max_attempts=max_attempts,
+            retry_base_seconds=retry_base_seconds,
+            retry_max_seconds=retry_max_seconds,
+            now=now,
+        )
+        return "reclaimed" if retried else "gave_up"
+
+    message.retry_at = None
+    await session.flush()
+    return "not_due"
 
 
 # --------------------------------------------------------------------- provider receipts

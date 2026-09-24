@@ -48,6 +48,9 @@ async def test_claiming_moves_pending_to_sending_and_counts_the_attempt(session,
     assert claimed is not None
     assert claimed.state == STATE_SENDING
     assert claimed.attempts == 1
+    # A lease on the claim: what lets a dispatcher that dies before it records an outcome be
+    # recovered (`tests/test_dispatch_retry.py`).
+    assert claimed.retry_at is not None
 
 
 async def test_a_message_cannot_be_claimed_twice(session, org_id) -> None:
@@ -102,6 +105,7 @@ async def test_recording_a_send_writes_the_attempt_and_the_event(session, org_id
     sent = (await session.execute(select(Message))).scalars().one()
     assert sent.state == STATE_SENT
     assert sent.sent_at is not None
+    assert sent.retry_at is None
     assert sent.provider_message_id == "rec-1"
 
     ledger = (await session.execute(select(Delivery))).scalars().all()
@@ -138,6 +142,8 @@ async def test_a_transient_failure_returns_the_message_to_pending(session, org_i
     assert row.state == STATE_PENDING
     assert row.attempts == 1
     assert row.last_error == "connection reset"
+    # Owed: the row itself remembers when it is due to be queued again.
+    assert row.retry_at is not None
 
 
 async def test_a_permanent_refusal_fails_immediately(session, org_id) -> None:

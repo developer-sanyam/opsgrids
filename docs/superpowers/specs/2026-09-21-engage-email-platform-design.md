@@ -169,6 +169,41 @@ place — `stage_message` (`services.py:426`) — and the dispatcher has already
 
 This is invisible at one-message-at-a-time volumes and unacceptable at campaign volumes.
 
+**Fixed (NOTIF-A, 2026-09-24).** The retry is written in the same transaction as the failure and
+driven by a clock, not by an event:
+
+- `messages.retry_at` (migration `d5a8f1c3e7b2`) is "the instant something must look at this
+  message again". `record_failure` sets it to the end of an exponential backoff (60 s doubling to
+  an hour, `dispatch_retry_*`) when the failure is transient and attempts remain; a permanent
+  refusal (`TransportRefused`) or the last attempt marks the message `failed`, publishes
+  `message.failed` and — for the last attempt — logs `notification.message.gave_up`.
+- `DispatchRecovery` (`app/cron.py`, the fourth loop in `app/worker.py`) finds due rows
+  (`selectors.due_message_redrives`, on the outbox role, four columns) and calls
+  `services.redrive_message` under the message's own tenant: a `pending` row is queued again as a
+  fresh `message.queued` through the outbox, and its `retry_at` moves out by a short lease so a
+  lost event is queued again instead of stranding it.
+- The same clock covers a crash between claim and record: the claim takes a lease
+  (`dispatch_claim_lease_seconds`, refused at startup if shorter than six times the longest
+  transport timeout plus a minute), and a `sending` row whose lease lapsed is settled as a failed
+  attempt. **That is at-least-once on purpose** — a process that died after the provider accepted
+  the message sends it twice — and it is bounded, because the claim already counted the attempt.
+  It replaces the earlier "left visible for a person" stance, which meant a dropped password reset
+  and nothing that said so.
+
+*Why not the scheduler.* `schedule_event` (ADR-0015) was the obvious seam and is deliberately not
+used: ADR-0015 §Q2 requires the change that adds the first producer outside the `finance` profile
+to move `scheduler` into the core profile in the same commit, with a preflight check and a memory
+budget line. Notification is core and always on, so doing it that way would have made a defect fix
+into an infrastructure change, and a box with the finance profile off would silently stop
+retrying. A row that remembers its own next attempt needs none of that. If the scheduler moves to
+core later, `record_failure`'s `retry_at` can become a `schedule_event` with no schema change.
+
+*Messages already stuck.* The migration does not touch them: mailing customers something that was
+owed them weeks ago is a decision, not a side effect. Rows the old defect left `pending` with
+`attempts > 0` and no `retry_at` can be released deliberately, per organization, with
+`UPDATE notification.messages SET retry_at = now() WHERE organization_id = '…' AND state =
+'pending' AND attempts > 0 AND retry_at IS NULL;` — the sweep picks them up on its next pass.
+
 ## 5. Constraints carried from the platform
 
 Not style preferences — these cause data corruption or audit failure:
