@@ -268,12 +268,12 @@ export function AccountDetailPage() {
               <div className="flex flex-wrap items-center gap-2 pt-1">
                 <AccountStatusPill status={data.status} />
                 {locked ? (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-suspended-soft px-2.5 py-1 text-xs font-semibold text-suspended">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-danger-soft px-2.5 py-1 text-xs font-semibold text-danger">
                     <LockIcon className="size-3.5" /> Access locked
                   </span>
                 ) : null}
                 {trialEndsAt ? (
-                  <span className="text-xs font-semibold text-pastdue">Trial ends {formatDate(trialEndsAt)}</span>
+                  <span className="text-xs font-semibold text-late">Trial ends {formatDate(trialEndsAt)}</span>
                 ) : null}
               </div>
             </div>
@@ -298,16 +298,16 @@ export function AccountDetailPage() {
       </div>
 
       {banner ? (
-        <div role="status" className="flex items-start gap-3 rounded-card bg-active-soft px-4 py-3 text-sm text-active">
+        <div role="status" className="flex items-start gap-3 rounded-card bg-present-soft px-4 py-3 text-sm text-present">
           <CheckCircleIcon className="mt-0.5 size-5 shrink-0" />
           <div className="flex flex-col">
             <span className="font-semibold">Override accepted</span>
-            <span className="text-active/80">Delegated to {banner.delegated_to}-service.</span>
+            <span className="text-present/80">Delegated to {banner.delegated_to}-service.</span>
           </div>
           <button
             type="button"
             onClick={() => setBanner(null)}
-            className="ml-auto text-xs font-semibold text-active/70 hover:text-active"
+            className="ml-auto text-xs font-semibold text-present/70 hover:text-present"
           >
             Dismiss
           </button>

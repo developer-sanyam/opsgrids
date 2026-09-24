@@ -251,7 +251,7 @@ export function OverviewPage() {
                       <span className="text-sm text-faint">no MRR</span>
                     )}
                     {org.locked ? (
-                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-suspended">
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-danger">
                         <LockIcon className="size-3.5" /> Locked
                       </span>
                     ) : null}

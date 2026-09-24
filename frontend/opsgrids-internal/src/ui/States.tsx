@@ -37,7 +37,7 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry?: ()
   return (
     <div className="flex flex-col items-center justify-center gap-3 py-12 text-center" role="alert">
       <div className="flex max-w-sm flex-col gap-1">
-        <p className="text-base font-bold text-suspended">Something went wrong</p>
+        <p className="text-base font-bold text-danger">Something went wrong</p>
         <p className="text-sm text-muted">{message}</p>
       </div>
       {onRetry ? (

@@ -22,7 +22,7 @@ const VARIANTS: Record<Variant, string> = {
   ghost: "bg-transparent text-ink-soft hover:bg-ground active:bg-ground disabled:text-faint",
   // Destructive operator actions (suspend). Semantic red, never the accent.
   danger:
-    "bg-suspended text-white hover:opacity-90 active:opacity-90 disabled:opacity-50",
+    "bg-danger text-white hover:opacity-90 active:opacity-90 disabled:opacity-50",
 };
 
 const SIZES: Record<Size, string> = {

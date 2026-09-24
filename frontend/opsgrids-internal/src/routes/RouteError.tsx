@@ -33,7 +33,7 @@ export function RouteErrorCard() {
   return (
     <div className="rise flex justify-center pt-8">
       <Card className="flex w-full max-w-lg flex-col items-center gap-5 p-10 text-center" role="alert">
-        <span className="grid size-14 place-items-center rounded-full bg-suspended-soft text-suspended">
+        <span className="grid size-14 place-items-center rounded-full bg-danger-soft text-danger">
           <AlertTriangleIcon className="size-6" />
         </span>
         <div className="flex flex-col gap-2">

@@ -122,7 +122,7 @@ export function AccountsPage() {
       header: "Trial",
       render: (row) =>
         row.trial_ends_at ? (
-          <span className="text-sm font-semibold text-pastdue">Ends {relativeDays(row.trial_ends_at)}</span>
+          <span className="text-sm font-semibold text-late">Ends {relativeDays(row.trial_ends_at)}</span>
         ) : (
           <span className="text-faint">—</span>
         ),
@@ -132,7 +132,7 @@ export function AccountsPage() {
       header: "Access",
       render: (row) =>
         row.locked ? (
-          <span className="inline-flex items-center gap-1 text-xs font-semibold text-suspended">
+          <span className="inline-flex items-center gap-1 text-xs font-semibold text-danger">
             <LockIcon className="size-3.5" /> Locked
           </span>
         ) : (
@@ -190,7 +190,7 @@ export function AccountsPage() {
               </Pill>
             ))}
           </div>
-          <label className="ml-auto inline-flex h-11 shrink-0 items-center gap-2 rounded-full bg-ground px-4">
+          <label className="ml-auto inline-flex h-11 shrink-0 items-center gap-2 rounded-full bg-ground px-4 focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2">
             <span className="text-xs font-semibold uppercase tracking-wide text-faint">Sort</span>
             <select
               value={sort}

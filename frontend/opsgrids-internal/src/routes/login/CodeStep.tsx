@@ -80,7 +80,7 @@ export function CodeStep({ onLocked, onBack }: CodeStepProps) {
     <SignInShell title="Enter your code" intro="From your authenticator app, or one of your recovery codes.">
       <form onSubmit={handleSubmit} className="flex flex-col gap-4" noValidate>
         {resealPending ? (
-          <p role="alert" className="rounded-tile bg-pastdue-soft px-4 py-3 text-sm text-pastdue">
+          <p role="alert" className="rounded-tile bg-late-soft px-4 py-3 text-sm text-late">
             <span className="block font-semibold">{fieldError}</span>
             <span className="mt-1 block">
               This is on our side, not your code, and it hasn&apos;t counted against you. Enter one
@@ -88,7 +88,7 @@ export function CodeStep({ onLocked, onBack }: CodeStepProps) {
             </span>
           </p>
         ) : fieldError ? (
-          <p role="alert" className="rounded-tile bg-suspended-soft px-4 py-3 text-sm font-medium text-suspended">
+          <p role="alert" className="rounded-tile bg-danger-soft px-4 py-3 text-sm font-medium text-danger">
             {fieldError}
           </p>
         ) : null}

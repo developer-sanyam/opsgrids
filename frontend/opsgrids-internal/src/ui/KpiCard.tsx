@@ -9,11 +9,11 @@ export type KpiTone = "accent" | "active" | "trial" | "comp" | "suspended" | "pa
 
 const TONE: Record<KpiTone, string> = {
   accent: "bg-accent-soft text-accent-ink",
-  active: "bg-active-soft text-active",
-  trial: "bg-trial-soft text-trial",
-  comp: "bg-comp-soft text-comp",
-  suspended: "bg-suspended-soft text-suspended",
-  pastdue: "bg-pastdue-soft text-pastdue",
+  active: "bg-present-soft text-present",
+  trial: "bg-info-soft text-info",
+  comp: "bg-cyan-soft text-cyan",
+  suspended: "bg-danger-soft text-danger",
+  pastdue: "bg-late-soft text-late",
 };
 
 interface KpiCardProps {

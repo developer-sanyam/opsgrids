@@ -44,7 +44,7 @@ export function RecoveryStep({ recoveryCodes }: { recoveryCodes: string[] }) {
       intro="Each code signs you in once if you lose access to your authenticator app."
     >
       <div className="flex flex-col gap-4">
-        <p role="alert" className="rounded-tile bg-pastdue-soft px-4 py-3 text-sm font-semibold text-pastdue">
+        <p role="alert" className="rounded-tile bg-late-soft px-4 py-3 text-sm font-semibold text-late">
           Shown only once — save these somewhere safe.
         </p>
 
@@ -57,7 +57,7 @@ export function RecoveryStep({ recoveryCodes }: { recoveryCodes: string[] }) {
         </ul>
 
         {error ? (
-          <p role="alert" className="rounded-tile bg-suspended-soft px-4 py-3 text-sm font-medium text-suspended">
+          <p role="alert" className="rounded-tile bg-danger-soft px-4 py-3 text-sm font-medium text-danger">
             {error}
           </p>
         ) : null}
