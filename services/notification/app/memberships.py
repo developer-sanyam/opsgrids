@@ -23,6 +23,7 @@ from typing import Final
 import httpx
 
 from app.config import Settings
+from app.internal_paths import uuid_segment
 from platform_core.internal_auth import mint_service_token
 from platform_core.logging import get_logger
 
@@ -45,9 +46,16 @@ async def membership_is_active(
     timeout, an unrecognisable body, a 4xx or 5xx — because a service that cannot confirm an
     assignment target must refuse it, not assume it is fine.
     """
+    org_segment = uuid_segment(organization_id)
+    membership_segment = uuid_segment(membership_id)
+    if org_segment is None or membership_segment is None:
+        # An id that is not a UUID is not a membership, and it is refused before a URL exists:
+        # see `app/internal_paths.py`. Fails closed like every other branch here.
+        log.warning("memberships.bad_id")
+        return False
     url = (
-        f"{settings.account_internal_url}/internal/v1/organizations/{organization_id}"
-        f"/memberships/{membership_id}"
+        f"{settings.account_internal_url}/internal/v1/organizations/{org_segment}"
+        f"/memberships/{membership_segment}"
     )
     headers = {
         "X-Internal-Token": mint_service_token(

@@ -129,3 +129,29 @@ async def test_a_timeout_is_unanswered(monkeypatch: pytest.MonkeyPatch) -> None:
 
     resolution = await _resolve(handler, monkeypatch)
     assert resolution == ContactResolution(answered=False)
+
+
+async def test_an_organization_id_that_is_not_a_uuid_asks_nobody(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never interpolated into the path raw: a `..` in it would retarget the call. Not an
+    answer either, so the conversation keeps whatever it already held."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - must not run
+        requests.append(request)
+        return httpx.Response(200, json={"contact_id": None})
+
+    mock = httpx.MockTransport(handler)
+    original = httpx.AsyncClient
+
+    def patched(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        kwargs.pop("timeout", None)
+        return original(transport=mock, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched)
+    resolution = await contacts.resolve_contact_by_phone(
+        _settings(), "../../11111111-1111-4111-8111-111111111111", "+917976603446"
+    )
+    assert resolution == ContactResolution(answered=False)
+    assert requests == []

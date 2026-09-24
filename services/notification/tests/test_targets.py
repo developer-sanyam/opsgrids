@@ -13,13 +13,26 @@ import pytest
 
 from app import targets
 from app.config import Settings
+from tests.helpers import CapturingLog
+
+ORG_ID = "11111111-1111-4111-8111-111111111111"
+CONTACT_ID = "22222222-2222-4222-8222-222222222222"
+#: Another organization's ids: what a crafted payload field would try to reach.
+VICTIM_ORG_ID = "33333333-3333-4333-8333-333333333333"
+VICTIM_CONTACT_ID = "44444444-4444-4444-8444-444444444444"
 
 
 def _settings() -> Settings:
     return Settings(customer_internal_url="http://customer.invalid")
 
 
-async def _resolve(handler, monkeypatch: pytest.MonkeyPatch) -> str | None:
+async def _resolve(
+    handler,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    organization_id: str = ORG_ID,
+    contact_id: str = CONTACT_ID,
+) -> str | None:
     """Drive the real resolver against a stubbed transport — no socket is opened."""
     mock = httpx.MockTransport(handler)
     original = httpx.AsyncClient
@@ -30,7 +43,7 @@ async def _resolve(handler, monkeypatch: pytest.MonkeyPatch) -> str | None:
 
     monkeypatch.setattr(httpx, "AsyncClient", patched)
     return await targets.resolve_contact_target(
-        _settings(), "11111111-1111-4111-8111-111111111111", "c0ffee", "whatsapp"
+        _settings(), organization_id, contact_id, "whatsapp"
     )
 
 
@@ -40,7 +53,7 @@ async def _resolve(handler, monkeypatch: pytest.MonkeyPatch) -> str | None:
 async def test_an_address_comes_back(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, json={"contact_id": "c0ffee", "channel": "whatsapp", "phone": "+917976603446"}
+            200, json={"contact_id": CONTACT_ID, "channel": "whatsapp", "phone": "+917976603446"}
         )
 
     assert await _resolve(handler, monkeypatch) == "+917976603446"
@@ -74,7 +87,7 @@ async def test_a_contact_with_no_number_resolves_to_none(
     """Ordinary, and most contacts are like this. Retrying would never help."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"contact_id": "c0ffee", "phone": None})
+        return httpx.Response(200, json={"contact_id": CONTACT_ID, "phone": None})
 
     assert await _resolve(handler, monkeypatch) is None
 
@@ -130,3 +143,104 @@ async def test_a_timeout_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(targets.TargetUnavailable):
         await _resolve(handler, monkeypatch)
+
+
+# --------------------------------------------------------------------- ids never reach a URL raw
+#
+# `contact_id` comes out of an event payload at a path a tenant admin chose, so it is whatever the
+# tenant's own users typed into some field. `httpx` resolves `..` in an absolute URL before it
+# sends, so an id interpolated as-is walks the call onto another organization's contact under a
+# token customer-service accepts for any organization.
+
+#: Every shape that would change which route is called, or whose, if it reached the path.
+_HOSTILE_IDS = [
+    f"../../{VICTIM_ORG_ID}/contacts/{VICTIM_CONTACT_ID}",
+    f"..%2F..%2F{VICTIM_ORG_ID}%2Fcontacts%2F{VICTIM_CONTACT_ID}",
+    f"{CONTACT_ID}/../../../{VICTIM_ORG_ID}/contacts/{VICTIM_CONTACT_ID}",
+    f"{CONTACT_ID}?x=1",
+    f"{CONTACT_ID}#frag",
+    "c0ffee",
+    "",
+    "   ",
+]
+
+
+@pytest.mark.parametrize("contact_id", _HOSTILE_IDS)
+async def test_a_contact_id_that_is_not_a_uuid_makes_no_request(
+    contact_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression for the path traversal: nothing is sent at all, and the answer is the
+    permanent "no address" (None), not an outage — retrying a value that is not a contact id
+    would never help."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - must not run
+        requests.append(request)
+        return httpx.Response(200, json={"phone": "+917976603446"})
+
+    assert await _resolve(handler, monkeypatch, contact_id=contact_id) is None
+    assert requests == []
+
+
+@pytest.mark.parametrize("organization_id", ["../x", "not-a-uuid", f"{ORG_ID}/../{VICTIM_ORG_ID}"])
+async def test_an_organization_id_that_is_not_a_uuid_makes_no_request(
+    organization_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - must not run
+        requests.append(request)
+        return httpx.Response(200, json={"phone": "+917976603446"})
+
+    assert await _resolve(handler, monkeypatch, organization_id=organization_id) is None
+    assert requests == []
+
+
+async def test_the_request_path_is_exactly_the_one_route_for_these_two_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never a path with a `..` in it, and never anything but the caller's own organization —
+    the organization in the path is the event's, which no payload field can change."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.raw_path.decode())
+        return httpx.Response(200, json={"phone": "+917976603446"})
+
+    await _resolve(handler, monkeypatch)
+    assert seen == [
+        f"/internal/v1/organizations/{ORG_ID}/contacts/{CONTACT_ID}/messaging-target"
+        "?channel=whatsapp"
+    ]
+
+
+async def test_a_braced_uppercase_uuid_is_sent_in_canonical_form(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A UUID is accepted in the spellings `uuid.UUID` parses, but the URL is built from the
+    parsed value — none of the spelling variants reaches the wire."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(200, json={"phone": "+917976603446"})
+
+    await _resolve(handler, monkeypatch, contact_id="{" + CONTACT_ID.upper() + "}")
+    assert seen == [f"/internal/v1/organizations/{ORG_ID}/contacts/{CONTACT_ID}/messaging-target"]
+
+
+async def test_a_refused_id_is_not_logged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The value is exactly the field somebody else controls — the warning names the channel
+    and which id was bad, never the id."""
+    captured = CapturingLog()
+    monkeypatch.setattr(targets, "log", captured)
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - must not run
+        return httpx.Response(200, json={})
+
+    hostile = f"../../{VICTIM_ORG_ID}/contacts/{VICTIM_CONTACT_ID}"
+    assert await _resolve(handler, monkeypatch, contact_id=hostile) is None
+    assert [event for event, _ in captured.calls] == ["target.bad_contact_id"]
+    assert VICTIM_ORG_ID not in captured.text()
+    assert VICTIM_CONTACT_ID not in captured.text()
+    assert ".." not in captured.text()

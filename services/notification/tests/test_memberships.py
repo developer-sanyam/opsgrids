@@ -95,3 +95,33 @@ async def test_an_unreachable_account_service_is_false(monkeypatch: pytest.Monke
         raise httpx.ConnectError("no route to host")
 
     assert await _check(handler, monkeypatch) is False
+
+
+@pytest.mark.parametrize(
+    ("organization_id", "membership_id"),
+    [
+        (ORG_ID, f"../../{ORG_ID}/memberships/{MEMBERSHIP_ID}"),
+        (ORG_ID, "not-a-uuid"),
+        (f"{ORG_ID}/../x", MEMBERSHIP_ID),
+    ],
+)
+async def test_an_id_that_is_not_a_uuid_asks_nobody_and_is_refused(
+    organization_id: str, membership_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fails closed like every other branch, and never builds a URL from the value."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - must not run
+        requests.append(request)
+        return httpx.Response(200, json={"exists": True, "active": True})
+
+    mock = httpx.MockTransport(handler)
+    original = httpx.AsyncClient
+
+    def patched(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        kwargs.pop("timeout", None)
+        return original(transport=mock, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched)
+    assert await membership_is_active(_settings(), organization_id, membership_id) is False
+    assert requests == []

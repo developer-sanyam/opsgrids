@@ -37,6 +37,7 @@ from typing import Final
 import httpx
 
 from app.config import Settings
+from app.internal_paths import uuid_segment
 from platform_core.internal_auth import mint_service_token
 from platform_core.logging import get_logger
 
@@ -66,13 +67,30 @@ async def resolve_contact_target(
 ) -> str | None:
     """Ask customer-service for one contact's address on one channel.
 
-    Returns the address, or None when the contact has no sealed number. Raises
-    `TargetUnavailable` when the question could not be answered — see the module docstring for
-    why those two cases must not collapse into one.
+    Returns the address, or None when the contact has no sealed number — or when either id is
+    not a UUID, which is refused before any request is built. Raises `TargetUnavailable` when the
+    question could not be answered — see the module docstring for why those two cases must not
+    collapse into one.
     """
+    # Both ids are parsed before a URL exists. `contact_id` is not ours: `apply_rules` takes it
+    # from an event payload at a path a tenant admin chose, so it is whatever the tenant's own
+    # users typed into some field. Interpolated as-is, `../../<other-org>/contacts/<id>` walks
+    # this call onto another organization's contact, under a token customer-service accepts for
+    # any organization. An id that is not a UUID is not a contact anyone could have — an
+    # unresolved recipient, not an outage, so no retry — and the log line names neither value.
+    org_segment = uuid_segment(organization_id)
+    contact_segment = uuid_segment(contact_id)
+    if org_segment is None or contact_segment is None:
+        log.warning(
+            "target.bad_contact_id",
+            channel=channel,
+            which="organization" if org_segment is None else "contact",
+        )
+        return None
+
     url = (
-        f"{settings.customer_internal_url}/internal/v1/organizations/{organization_id}"
-        f"/contacts/{contact_id}/messaging-target"
+        f"{settings.customer_internal_url}/internal/v1/organizations/{org_segment}"
+        f"/contacts/{contact_segment}/messaging-target"
     )
     headers = {
         "X-Internal-Token": mint_service_token(

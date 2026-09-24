@@ -19,12 +19,13 @@ from app.domain import STATE_PENDING, STATE_SUPPRESSED
 from app.models import Message, OutboxEvent
 from platform_core.auth import Scope
 from tests.conftest import seed_automation
-from tests.helpers import ctx_for, envelope_for
+from tests.helpers import CapturingLog, ctx_for, envelope_for
 
 pytestmark = pytest.mark.integration
 
 
 TICKET = "support.desk.ticket.created"
+CONTACT_ID = "5d2f9d0e-7c3c-4b9a-9f57-2a4f6f0c1e11"
 
 
 def _ticket_event(org_id: uuid.UUID, **over: object) -> dict:
@@ -449,7 +450,7 @@ def _invoice_event(org_id: uuid.UUID) -> dict:
     return envelope_for(
         org_id,
         "finance.billing.invoice.issued",
-        {"number": "INV-9", "customer": {"contact_id": "c0ffee"}},
+        {"number": "INV-9", "customer": {"contact_id": CONTACT_ID}},
     )
 
 
@@ -459,7 +460,7 @@ async def test_a_rule_targets_a_customer_through_the_resolver(session, org_id) -
     await _seed_contact_rule(session, org_id)
 
     async def resolver(org: str, contact: str, channel: str) -> str | None:
-        assert contact == "c0ffee"
+        assert contact == CONTACT_ID
         assert channel == "whatsapp"
         return "+917976603446"
 
@@ -571,3 +572,131 @@ async def test_a_resolved_address_that_is_not_messageable_stages_nothing(session
             resolve_target=resolver,
         )
     assert staged == []
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        # What a tenant's own users can type into any free-text payload field a rule names:
+        # `..` segments that would carry the call to another organization's contact.
+        f"../../{uuid.UUID(int=7)}/contacts/{uuid.UUID(int=8)}",
+        f"{CONTACT_ID}/../../{uuid.UUID(int=7)}",
+        f"{CONTACT_ID}?channel=email",
+        "c0ffee",
+    ],
+)
+async def test_a_contact_path_holding_a_non_uuid_is_never_resolved(
+    hostile: str, session, org_id
+) -> None:
+    """The path traversal, end to end: a rule whose contact path names a free-text field, and
+    an event whose field holds a traversal. Nothing is asked of customer-service and no message
+    is staged — refused before a URL exists, not merely after."""
+    await _seed_contact_rule(session, org_id)
+    asked: list[str] = []
+
+    async def resolver(org: str, contact: str, channel: str) -> str | None:  # pragma: no cover
+        asked.append(contact)
+        return "+917976603446"
+
+    event = envelope_for(
+        org_id,
+        "finance.billing.invoice.issued",
+        {"number": "INV-9", "customer": {"contact_id": hostile}},
+    )
+    async with session.begin():
+        staged = await services.apply_rules(
+            session, organization_id=org_id, envelope=event, resolve_target=resolver
+        )
+
+    assert staged == []
+    assert asked == []
+    assert (await session.execute(select(Message))).scalars().all() == []
+
+
+async def test_a_refused_contact_value_is_not_logged(session, org_id, monkeypatch) -> None:
+    await _seed_contact_rule(session, org_id)
+    captured = CapturingLog()
+    monkeypatch.setattr(services, "log", captured)
+    hostile = f"../../{uuid.UUID(int=7)}/contacts/{uuid.UUID(int=8)}"
+
+    async def resolver(org: str, contact: str, channel: str) -> str | None:  # pragma: no cover
+        raise AssertionError("must not be asked")
+
+    event = envelope_for(
+        org_id,
+        "finance.billing.invoice.issued",
+        {"number": "INV-9", "customer": {"contact_id": hostile}},
+    )
+    async with session.begin():
+        await services.apply_rules(
+            session, organization_id=org_id, envelope=event, resolve_target=resolver
+        )
+
+    assert "notification.rule.bad_contact_id" in [name for name, _ in captured.calls]
+    assert str(uuid.UUID(int=7)) not in captured.text()
+    assert ".." not in captured.text()
+
+
+# ------------------------------------------------------- a bad recipient is never logged raw
+
+
+@pytest.mark.parametrize(
+    ("channel", "raw"),
+    [
+        ("whatsapp", "9876543210"),  # the commonest mistake: a genuine number, no country code
+        ("whatsapp", "+91 98765 43210 ext 9"),
+        ("email", "jane@doe"),  # a typo'd address that is still somebody's real one
+    ],
+)
+async def test_a_bad_recipient_is_logged_masked_never_verbatim(
+    channel: str, raw: str, session, org_id, monkeypatch
+) -> None:
+    """The recipient is a customer's real address or number. A log line carries a masked hint
+    and a fixed reason — neither the value nor an exception message that quotes it."""
+    write = ctx_for(org_id, "notification.delivery.template.write", Scope.ORG)
+    async with session.begin():
+        await services.upsert_template(
+            session,
+            write,
+            code="hello",
+            channel=channel,
+            subject="Hi" if channel == "email" else None,
+            body="Hello",
+        )
+        await services.upsert_rule(
+            session,
+            write,
+            code="bad_recipient_rule",
+            event_type=TICKET,
+            template_code="hello",
+            channel=channel,
+            category="operational",
+            recipient_path="contact",
+        )
+    captured = CapturingLog()
+    monkeypatch.setattr(services, "log", captured)
+
+    event = envelope_for(org_id, TICKET, {"number": "TK-1", "contact": raw})
+    async with session.begin():
+        staged = await services.apply_rules(session, organization_id=org_id, envelope=event)
+
+    assert staged == []
+    (fields,) = [f for name, f in captured.calls if name == "notification.rule.bad_recipient"]
+    assert fields["reason"] == "not_a_valid_recipient"
+    assert "error" not in fields
+    assert raw not in captured.text()
+    assert raw.replace(" ", "").replace("+", "") not in captured.text()
+
+
+def test_normalize_recipient_never_quotes_the_value_in_its_message() -> None:
+    """The message is what reaches a log line or an error body away from whoever typed it."""
+    from app.domain import RuleError, normalize_recipient
+
+    for channel, raw in [
+        ("email", "jane@doe"),
+        ("whatsapp", "9876543210"),
+        ("whatsapp", "+12"),
+    ]:
+        with pytest.raises(RuleError) as excinfo:
+            normalize_recipient(channel, raw)
+        assert raw not in str(excinfo.value)

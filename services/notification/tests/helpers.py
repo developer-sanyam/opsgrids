@@ -37,6 +37,23 @@ def ctx_for(org_id: uuid.UUID, permission: str, scope: Scope) -> ScopeContext:
     return ScopeContext(principal=principal, scope=scope, permission=permission)
 
 
+class CapturingLog:
+    """A drop-in for a module's `log` that remembers every call, so a test can assert on what a
+    structlog call would otherwise only print — and, for the PII rules, on what it must not."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def _record(self, event: str, **fields: Any) -> None:
+        self.calls.append((event, fields))
+
+    debug = info = warning = error = exception = critical = _record
+
+    def text(self) -> str:
+        """Every event name and field value, as one string to search."""
+        return " ".join(f"{event} {fields}" for event, fields in self.calls)
+
+
 def envelope_for(
     org_id: uuid.UUID,
     event_type: str,

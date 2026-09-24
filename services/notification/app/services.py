@@ -34,6 +34,7 @@ from starlette.requests import Request
 
 from app import dns_check, domain, memberships, selectors, webhooks, whatsapp_provider
 from app.config import Settings, settings
+from app.internal_paths import uuid_segment
 from app.models import (
     AuditLog,
     Campaign,
@@ -623,6 +624,19 @@ async def _recipient_for(
             )
             return None
 
+        if uuid_segment(contact_id) is None:
+            # Whatever sits at that path in the event is not a contact id — a tenant's own users
+            # can type anything into a payload field, and a rule can name any of them. It is
+            # refused here so no request is built from it at all (`targets.resolve_contact_target`
+            # refuses it again: this guard must not be the only thing between the value and a
+            # URL). The value is not logged — it is exactly the field somebody else controls.
+            log.warning(
+                "notification.rule.bad_contact_id",
+                rule=rule.code,
+                path=rule.recipient_contact_path,
+            )
+            return None
+
         address = await resolve_target(str(organization_id), str(contact_id), rule.channel)
         if address is None:
             log.info(
@@ -648,12 +662,19 @@ async def _recipient_for(
         # Normalised even when it came from customer-service, which already canonicalises it.
         # Two services agreeing by construction is better than one trusting the other.
         return domain.normalize_recipient(rule.channel, str(raw_recipient))
-    except domain.RuleError as exc:
+    except domain.RuleError:
+        # Never `str(exc)`, and never the value: what failed to normalise is a customer's real
+        # address or number — a typo'd email, a national number with no `+` — and a log line is
+        # the easiest place for personal data to escape a service (CLAUDE.md). The masked form
+        # is enough to tell one bad recipient from another; the reason is fixed text.
         log.warning(
             "notification.rule.bad_recipient",
             rule=rule.code,
             channel=rule.channel,
-            error=str(exc),
+            recipient=pii.mask(
+                str(raw_recipient), kind="email" if rule.channel == "email" else "phone"
+            ),
+            reason="not_a_valid_recipient",
         )
         return None
 

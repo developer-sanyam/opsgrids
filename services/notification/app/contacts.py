@@ -32,6 +32,7 @@ from typing import Final
 import httpx
 
 from app.config import Settings
+from app.internal_paths import uuid_segment
 from platform_core.internal_auth import mint_service_token
 from platform_core.logging import get_logger
 
@@ -71,9 +72,14 @@ async def resolve_contact_by_phone(
 ) -> ContactResolution:
     """Ask customer-service which contact holds `phone`. Never raises — see the module docstring
     for the tri-state this returns instead."""
+    org_segment = uuid_segment(organization_id)
+    if org_segment is None:
+        # Never interpolated as the string it arrived as — see `app/internal_paths.py`. Not
+        # an answer, so `answered=False`: the conversation keeps whatever it already held.
+        log.warning("contacts.bad_organization_id")
+        return _UNREACHABLE
     url = (
-        f"{settings.customer_internal_url}/internal/v1/organizations/{organization_id}"
-        "/contacts:resolve"
+        f"{settings.customer_internal_url}/internal/v1/organizations/{org_segment}/contacts:resolve"
     )
     headers = {
         "X-Internal-Token": mint_service_token(

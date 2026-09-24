@@ -267,6 +267,11 @@ def normalize_recipient(channel: str, raw: str) -> str:
     typed are stripped, and a bare number is refused rather than guessed at — a missing country
     code is not something to assume, because assuming wrongly sends a stranger somebody else's
     invoice.
+
+    **A refusal never quotes the value.** What failed to normalise is a customer's real address
+    or number — the typo'd email, the national number with no `+` — and these messages end up in
+    log lines and error bodies well away from whoever typed it. The person who did is looking at
+    the field that held it.
     """
     value = raw.strip()
     if not value:
@@ -275,17 +280,17 @@ def normalize_recipient(channel: str, raw: str) -> str:
     if channel == "email":
         value = value.lower()
         if not _EMAIL.match(value):
-            raise RuleError(f"{raw!r} is not an email address")
+            raise RuleError("Recipient is not an email address")
         return value
 
     if channel == "whatsapp":
         compact = re.sub(r"[\s\-().]", "", value)
         if not compact.startswith("+"):
             raise RuleError(
-                f"{raw!r} is not in E.164 — a WhatsApp recipient needs its country code"
+                "Recipient is not in E.164 — a WhatsApp recipient needs its country code"
             )
         if not _E164.match(compact):
-            raise RuleError(f"{raw!r} is not a valid E.164 number")
+            raise RuleError("Recipient is not a valid E.164 number")
         return compact
 
     raise RuleError(f"{channel!r} is not a channel this service can reach")
