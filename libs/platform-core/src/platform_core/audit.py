@@ -10,6 +10,7 @@ nested structures rather than only top-level keys.
 
 from __future__ import annotations
 
+import ipaddress
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -138,13 +139,30 @@ def jsonable(data: Any) -> Any:
 
 
 def _client_ip(request: Request | None) -> str | None:
+    """The client address for an audit row, or None when there is not a usable one.
+
+    Returned only if it **parses as an IP address**. The `ip` column is Postgres `INET`, and a
+    forwarded header is text a client typed: `unknown`, an empty entry or `203.0.113.9:443` would
+    otherwise reach the INSERT and be rejected by the database, turning a header the caller chose
+    into a 500 on every audited endpoint (found when the attendance signals started reading the
+    same value). An address that cannot be read is recorded as unknown, never guessed and never
+    replaced by the socket peer — behind a proxy that is the proxy's own address, which would be
+    worse than a null.
+    """
     if request is None:
         return None
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
         # First hop is the client, if the proxy is trusted to rewrite this header.
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else None
+        candidate: str | None = forwarded.split(",")[0].strip()
+    else:
+        candidate = request.client.host if request.client else None
+    if not candidate:
+        return None
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError:
+        return None
 
 
 def record_audit(
