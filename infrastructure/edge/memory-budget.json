@@ -22,8 +22,9 @@
     "corrected once already (it was 42), the third was supplied unmeasured by the slice that added",
     "the container. **These are arm64 Docker Desktop figures and the box is amd64: read `free -m`",
     "and `docker stats --no-stream` on the box before treating any total here as exact.** The",
-    "datastores (caddy, postgres, rabbitmq, redis, minio) were NOT re-measured and postgres is the",
-    "one most likely to move.",
+    "datastores (caddy, postgres, rabbitmq, redis) were NOT re-measured and postgres is the one most",
+    "likely to move. minio WAS re-priced (2026-09-25, the minio-memory fix) from real production OOM",
+    "evidence plus a local repro/proof pair — see datastores.minio's own `source`.",
     "",
     "**What the re-pricing did to the release** (ten profiles, merged tree): 4112 MB at the old",
     "prices, 4581 MB at these — 118.6% of 3862 MB, 719 MB over MemTotal (the +469 is 28 APIs x 13,",
@@ -164,10 +165,10 @@
       "source": "maxmemory 64mb (compose.prod.yml) bounds the dataset; this adds client buffers, the AOF rewrite fork and Redis's own bookkeeping. See compose.prod.yml's redis command comment for what is actually stored and why the eviction policy is volatile-lru, not allkeys-lru."
     },
     "minio": {
-      "expected_rss_mb": 60,
-      "mem_limit_mb": 128,
+      "expected_rss_mb": 116,
+      "mem_limit_mb": 256,
       "mem_reservation_mb": 64,
-      "source": "compose.prod.yml's existing minio mem_limit comment: one small bucket, console disabled, no listing traffic."
+      "source": "RE-PRICED (2026-09-25, the minio-memory fix): the prior 60 MB estimate ('one small bucket, no listing traffic') was never measured and was wrong — production showed RSS reaching 116 MiB of the old 128 MiB mem_limit right after boot, OOM-killed about once a minute (RestartCount 13 in ~15 min, `docker events` oom -> die 137 -> start on repeat), because the Go runtime does not read the cgroup limit on its own and gives memory back to the OS on its own schedule, not the kernel's. Priced at that measured 116 MiB rather than a fresh guess. Fix: mem_limit raised to 256m and GOMEMLIMIT=192MiB added (compose.prod.yml) so the Go GC targets a ceiling below the cgroup limit instead of the OOM killer picking the victim. Locally reproduced on an empty-then-loaded bucket (RELEASE.2024-01-16T16-07-38Z, 300 objects via `mc mirror`): 128m + no GOMEMLIMIT OOM-killed 46s after boot (docker events: start -> oom -> die 137); 256m + GOMEMLIMIT=192MiB carried the same load and stayed up (~70-71 MiB RSS, no OOM, `docker inspect` OOMKilled=false / RestartCount=0) for 2+ minutes. Local figures are arm64 Docker Desktop, an idle/lightly-loaded bucket, not the box's own — cross-check `docker stats` on the box after this deploy."
     },
     "minio-init": {
       "expected_rss_mb": 16,
