@@ -9,9 +9,15 @@ organization leaks, so routers never write SQL.
 
 The scope columns for an attendance record are:
 
-    OWN      -> AttendanceRecord.employee_id    (the caller's own records)
-    LOCATION -> AttendanceRecord.location_code  (a single code column)
-    TEAM     -> deferred (no team column; a TEAM-scoped caller is refused — see scope.py)
+    OWN      -> AttendanceRecord.employee_id             (the caller's own records)
+    TEAM     -> TeamMembership.manager_employee_id       (the caller's current direct reports)
+    LOCATION -> AttendanceRecord.location_code           (a single code column)
+
+TEAM is a **join to a projection**, not a column on the record: the reporting line is
+employee-service's fact, and attendance keeps its own copy of it (`models.TeamMembership`), fed by
+events. The join is added only for a TEAM-scoped caller — every other rung answers from the
+record alone — and it is an inner join, so an employee the projection has never heard of matches
+no manager. An unpopulated projection therefore shows a manager nobody: the safe way to be wrong.
 """
 
 from __future__ import annotations
@@ -21,11 +27,12 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Any
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AttendanceRecord, Geofence, RegularizationRequest, Shift
-from platform_core.auth import ScopeContext
+from app.domain import STATUS_EXITED
+from app.models import AttendanceRecord, Geofence, RegularizationRequest, Shift, TeamMembership
+from platform_core.auth import Scope, ScopeContext
 
 
 def attendance_stmt(
@@ -38,17 +45,34 @@ def attendance_stmt(
 ) -> Select[Any]:
     """Scope-filtered attendance list. `ctx.apply` is the enforcement point.
 
-    `team_col` is `None`: a TEAM-scoped caller is refused here, which is the deferral in
-    `scope.py` made concrete (the reporting hierarchy lives in employee-service).
+    For a TEAM-scoped caller the record is joined to the reporting-line projection and
+    `ctx.apply` compares the projection's manager column to the caller's own employee id — so the
+    scope rule itself (a caller with no employee id matches nothing, never everything) is the
+    platform's, not re-implemented here. `exited` employees are excluded: a manager's team is
+    their *current* reports (see `models.TeamMembership`). Both join conditions name the tenant,
+    beside RLS rather than instead of it.
     """
     stmt = select(AttendanceRecord).where(
         AttendanceRecord.organization_id == ctx.organization_id,
         AttendanceRecord.deleted_at.is_(None),
     )
+    team_col = None
+    if ctx.scope is Scope.TEAM:
+        stmt = stmt.join(
+            TeamMembership,
+            and_(
+                TeamMembership.organization_id == AttendanceRecord.organization_id,
+                TeamMembership.employee_id == AttendanceRecord.employee_id,
+            ),
+        ).where(
+            TeamMembership.organization_id == ctx.organization_id,
+            TeamMembership.status != STATUS_EXITED,
+        )
+        team_col = TeamMembership.manager_employee_id
     stmt = ctx.apply(
         stmt,
         owner_col=AttendanceRecord.employee_id,
-        team_col=None,
+        team_col=team_col,
         location_col=AttendanceRecord.location_code,
     )
 
@@ -73,6 +97,25 @@ async def get_attendance(
         AttendanceRecord.id == record_id,
         AttendanceRecord.organization_id == org_id,
         AttendanceRecord.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_team_manager(
+    session: AsyncSession, org_id: uuid.UUID, employee_id: uuid.UUID
+) -> uuid.UUID | None:
+    """The manager `employee_id` currently reports to, or None.
+
+    The object-level half of TEAM scope: `ctx.assert_can_touch(team_owner_id=...)` compares this to
+    the caller's own employee id, so a record a manager could name by id but whose owner is not
+    their report is refused exactly as the list refuses it. None covers every "not in anyone's
+    team" case — no projection row yet, no manager, or an `exited` employee — and `assert_can_touch`
+    refuses all of them.
+    """
+    stmt = select(TeamMembership.manager_employee_id).where(
+        TeamMembership.organization_id == org_id,
+        TeamMembership.employee_id == employee_id,
+        TeamMembership.status != STATUS_EXITED,
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 

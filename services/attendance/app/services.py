@@ -19,16 +19,20 @@ anti-spoofing stack is deliberately out of scope.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import text
+from sqlalchemy import CursorResult, func, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import selectors
 from app.domain import (
+    TEAM_STATUSES,
     AttendanceStatus,
     CheckOutBeforeCheckIn,
     IllegalTransition,
@@ -42,6 +46,7 @@ from app.models import (
     OutboxEvent,
     RegularizationRequest,
     Shift,
+    TeamMembership,
 )
 from app.schemas import (
     CheckInIn,
@@ -963,3 +968,88 @@ async def delete_geofence(
         },
         actor=_actor(ctx),
     )
+
+
+# --------------------------------------------------------------------- the reporting line (TEAM)
+
+
+@dataclass(frozen=True, slots=True)
+class TeamMembershipWrite:
+    """One employee's reporting-line state, from an event or a backfill row — the same fields
+    either way, so both go through the identical version-gated upsert."""
+
+    employee_id: uuid.UUID
+    manager_employee_id: uuid.UUID | None
+    status: str
+    source_version: int
+    source_occurred_at: datetime
+
+
+async def upsert_team_membership_bulk(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    rows: Sequence[TeamMembershipWrite],
+) -> int:
+    """Apply reporting-line states, each only if it is newer than what is stored.
+
+    The rule (ADR-0006 §2, "a version, not a timestamp"): a row is written when it is new, or when
+    its `source_version` is **strictly greater** than the stored one. Equal is a duplicate — a
+    redelivered event, or a backfill page covering ground the live stream already applied — and a
+    lower one is a late arrival from before the state we already hold; both are dropped without
+    error, because dropping them *is* the outcome. That single gate is what makes the consumer, the
+    backfill and a backfill racing the live stream all converge, and it holds without the
+    `processed_events` ledger — a replay under a fresh event id changes nothing.
+
+    One statement for the whole batch, however many rows: PostgreSQL evaluates `ON CONFLICT ...
+    WHERE` per conflicting row, so one employee's stale version is dropped exactly as it would be
+    alone, and a page of 500 is one round trip rather than 500 (CLAUDE.md: a loop with a query in
+    it is a bug). A batch naming the same employee twice is reduced to its highest version first —
+    `ON CONFLICT DO UPDATE` refuses to touch one row twice in a statement.
+
+    Returns the number of rows written; an insert or an update that passed the gate. Never raises
+    for a stale state.
+    """
+    if not rows:
+        return 0
+    newest: dict[uuid.UUID, TeamMembershipWrite] = {}
+    for row in rows:
+        if row.status not in TEAM_STATUSES:
+            # The table's own CHECK would refuse it, but as a constraint violation that reads like
+            # a bug here rather than bad data upstream. Callers drop a malformed *event* before it
+            # reaches this; a batch that gets this far and is still wrong is a programming error.
+            raise ValueError(f"unknown employee status: {row.status!r}")
+        held = newest.get(row.employee_id)
+        if held is None or row.source_version > held.source_version:
+            newest[row.employee_id] = row
+
+    stmt = pg_insert(TeamMembership).values(
+        [
+            {
+                "organization_id": organization_id,
+                "employee_id": row.employee_id,
+                "manager_employee_id": row.manager_employee_id,
+                "status": row.status,
+                "source_version": row.source_version,
+                "source_occurred_at": row.source_occurred_at,
+            }
+            for row in newest.values()
+        ]
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[TeamMembership.organization_id, TeamMembership.employee_id],
+        set_={
+            "manager_employee_id": stmt.excluded.manager_employee_id,
+            "status": stmt.excluded.status,
+            "source_version": stmt.excluded.source_version,
+            "source_occurred_at": stmt.excluded.source_occurred_at,
+            # `on_conflict_do_update`'s `set_` is taken literally and does not consult the column's
+            # `onupdate`, so without this the timestamp would keep its insert-time value forever.
+            "updated_at": func.now(),
+        },
+        where=TeamMembership.source_version < stmt.excluded.source_version,
+    )
+    # `session.execute` is typed to the generic `Result`; an INSERT always yields a `CursorResult`
+    # at runtime, which is what carries `rowcount`.
+    result = cast("CursorResult[Any]", await session.execute(stmt))
+    return int(result.rowcount or 0)

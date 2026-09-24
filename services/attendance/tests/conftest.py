@@ -61,6 +61,7 @@ TENANT_TABLES = (
     "attendance_records",
     "shifts",
     "geofences",
+    "team_membership",
     "audit_logs",
     "outbox",
     "processed_events",

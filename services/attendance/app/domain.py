@@ -7,13 +7,16 @@ in one place rather than scattered across the write path:
   employee service's lifecycle machine; and
 * the **check-out ordering** rule — a check-out may not precede its check-in.
 
-Everything geographic is deliberately *not* here: the fence test is a PostGIS query in
-`services.check_in`, not app-side haversine maths (CLAUDE.md, plan A.4).
+The geo-fence test is deliberately *not* here: it is a PostGIS query in `services.check_in`, not
+app-side maths (CLAUDE.md, plan A.4). The anti-spoofing rules further down are a different
+question — "could one person have made these two punches" — with no fence to ask the database
+about, so they are plain functions over the numbers the punches carry.
 """
 
 from __future__ import annotations
 
 import enum
+import uuid
 from datetime import datetime
 
 
@@ -95,3 +98,24 @@ def assert_checkout_after_checkin(check_in_at: datetime, check_out_at: datetime)
     """Raise `CheckOutBeforeCheckIn` unless the check-out strictly follows the check-in."""
     if not checkout_after_checkin(check_in_at, check_out_at):
         raise CheckOutBeforeCheckIn(check_in_at, check_out_at)
+
+
+# --------------------------------------------------------------------- the reporting line (TEAM)
+
+#: `employee.employees.status`'s closed vocabulary, copied onto the TEAM projection.
+TEAM_STATUSES: frozenset[str] = frozenset({"probation", "active", "on_notice", "exited"})
+
+#: A person who has left is not a current report, so the TEAM read paths exclude this status.
+STATUS_EXITED = "exited"
+
+
+def normalise_manager(employee_id: uuid.UUID, manager_id: uuid.UUID | None) -> uuid.UUID | None:
+    """The manager to store for `employee_id`: `manager_id`, unless it points back at the person.
+
+    Employee-service refuses "reports to themselves" on write, so this never fires on a healthy
+    stream. It exists because the TEAM projection sits under an authorization check: a self-loop
+    would put a person in their own team, and the projection's own CHECK would turn a corrupt event
+    into a dead-lettered message that is never applied. Treating it as "no manager" fails closed —
+    the person is in nobody's team — and the caller logs it.
+    """
+    return None if manager_id == employee_id else manager_id

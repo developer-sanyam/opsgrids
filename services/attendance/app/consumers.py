@@ -34,6 +34,22 @@ table needs to tell apart from the other.
 
 `decided_by_employee_id` itself is still not stored as its own column — only its name is asked
 for here — see `apply_regularization_decision`'s docstring.
+
+**The reporting line, from employee's three lifecycle events (R8).** `hrms.people.employee.
+onboarded`, `.updated` and `.transitioned` each carry the employee's *complete* hierarchy state —
+manager, status and `hierarchy_version` — not a diff, so one handler serves all three and a
+consumer that missed or reordered an event converges on the next one it sees (ADR-0006 §2). The
+handler upserts `team_membership`, the read model behind TEAM scope, gated on `hierarchy_version`
+being strictly greater than the stored one: redelivery, a stale pre-move event arriving late, and
+a backfill racing the live stream are all no-ops, whatever `processed_events` says. An event with
+no `hierarchy_version` (a pod that predates it) is dropped, never read as version 0; one whose
+`organization_id` disagrees with its envelope's is dropped too — the transaction is bound to the
+envelope's tenant, and a payload naming another is not something to apply under either.
+
+`processed_events` here is the platform mixin, keyed on the event id alone. Its re-keying to
+`(organization_id, event_id)` is ADR-0006's open question 2 and changes every service's ledger at
+once; this consumer neither depends on the current shape nor pre-empts the change, because the
+version gate above is what actually makes the projection idempotent.
 """
 
 from __future__ import annotations
@@ -41,17 +57,26 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.config import settings
+from app.domain import TEAM_STATUSES, normalise_manager
 from app.models import ProcessedEvent
 from platform_core.db import assert_app_role, init_engine, session_scope
 from platform_core.events import EventConsumer, already_processed, mark_processed
 from platform_core.logging import get_logger
 
+if TYPE_CHECKING:
+    from app.services import TeamMembershipWrite
+
 log = get_logger("attendance.consumers")
 
-consumer = EventConsumer(amqp_url=settings().rabbitmq_url, queue_name="attendance.events")
+#: Named once so `app/backfill.py`'s `ensure_queue_bound` — which must declare and bind the
+#: identical queue before any backfill HTTP call (a topic exchange drops what nothing is bound
+#: to) — imports it rather than repeating the string literal.
+QUEUE_NAME = "attendance.events"
+
+consumer = EventConsumer(amqp_url=settings().rabbitmq_url, queue_name=QUEUE_NAME)
 
 #: Contract strings from approval-service, named here rather than imported — one process may only
 #: ever hold one service's top-level `app` (CLAUDE.md).
@@ -59,6 +84,15 @@ EVT_APPROVAL_REQUEST_OPENED = "core.approval.request.opened"
 EVT_APPROVAL_REQUEST_DECIDED = "core.approval.request.decided"
 #: The request type this product owns on both shared events (ADR-0006 §12).
 REQUEST_TYPE_REGULARIZATION = "hrms.time.regularization"
+
+#: From employee-service. Each carries the employee's full hierarchy state (ADR-0006 §2).
+EVT_EMPLOYEE_ONBOARDED = "hrms.people.employee.onboarded"
+EVT_EMPLOYEE_UPDATED = "hrms.people.employee.updated"
+EVT_EMPLOYEE_TRANSITIONED = "hrms.people.employee.transitioned"
+TEAM_EVENTS = (EVT_EMPLOYEE_ONBOARDED, EVT_EMPLOYEE_UPDATED, EVT_EMPLOYEE_TRANSITIONED)
+
+#: Every routing key this process binds, for the backfill to bind ahead of the worker.
+BOUND_EVENTS = (EVT_APPROVAL_REQUEST_OPENED, EVT_APPROVAL_REQUEST_DECIDED, *TEAM_EVENTS)
 
 
 def _decided_at(payload: dict[str, Any]) -> datetime:
@@ -252,6 +286,129 @@ async def on_approval_request_decided(envelope: dict[str, Any]) -> None:
         applied_status=applied_status,
         decided_by_name_present=decided_by_name is not None,
     )
+
+
+def _uuid_or_none(value: Any) -> uuid.UUID | None:
+    return uuid.UUID(str(value)) if value else None
+
+
+def _team_state(payload: dict[str, Any], occurred_at: datetime) -> TeamMembershipWrite | None:
+    """Parse an employee event's full hierarchy state into a projection write, or `None` to skip.
+
+    `None` covers two cases treated identically: the state is genuinely absent (`hierarchy_version`
+    missing — a pod that predates it, which ADR-0006 §2.1 says is *ignored, never read as version
+    0*) and the payload is malformed in a way that makes it unusable. Both are logged and dropped
+    rather than raised: `EventConsumer` redelivers once and then dead-letters, and a payload's shape
+    does not change between the two attempts, so raising would only move the message to the DLQ.
+    """
+    from app.services import TeamMembershipWrite
+
+    raw_version = payload.get("hierarchy_version")
+    if raw_version is None:
+        return None
+    try:
+        employee_id = uuid.UUID(str(payload["employee_id"]))
+        status = str(payload["status"])
+        version = int(raw_version)
+        manager = _uuid_or_none(payload.get("reporting_manager_id"))
+    except (KeyError, TypeError, ValueError) as exc:
+        log.error("team.event.malformed", error=str(exc)[:200], fields=sorted(payload.keys()))
+        return None
+    if status not in TEAM_STATUSES or version < 0:
+        log.error("team.event.malformed", status=status[:40], version=version)
+        return None
+    normalised = normalise_manager(employee_id, manager)
+    if normalised != manager:
+        log.warning("team.event.self_manager", employee_id=str(employee_id))
+    return TeamMembershipWrite(
+        employee_id=employee_id,
+        manager_employee_id=normalised,
+        status=status,
+        source_version=version,
+        source_occurred_at=occurred_at,
+    )
+
+
+def _envelope_occurred_at(envelope: dict[str, Any]) -> datetime:
+    """`source_occurred_at` is display and debugging only and **never compared** (`models.
+    TeamMembership`), so a malformed value must not dead-letter an otherwise-good state: it falls
+    back to now and is logged, the same discipline `_decided_at` uses."""
+    raw = envelope.get("occurred_at")
+    if raw:
+        try:
+            return datetime.fromisoformat(raw)
+        except (TypeError, ValueError):
+            log.warning("team.event.malformed_occurred_at", raw=str(raw)[:100])
+    return datetime.now(UTC)
+
+
+async def _apply_team_event(envelope: dict[str, Any]) -> None:
+    """Shared body for the three employee lifecycle events (see the module docstring)."""
+    from app import services
+
+    payload = envelope["payload"]
+    event_id = uuid.UUID(envelope["event_id"])
+    event_type = envelope["event_type"]
+    try:
+        organization_id = uuid.UUID(str(envelope["organization_id"]))
+        payload_org = uuid.UUID(str(payload["organization_id"]))
+    except (KeyError, TypeError, ValueError):
+        log.error("team.event.no_tenant", event_id=str(event_id), event_type=event_type)
+        return
+    if payload_org != organization_id:
+        # The transaction below is bound to the envelope's tenant. A payload naming another is
+        # corrupt or hostile, and either way is not applied under any tenant.
+        log.error(
+            "team.event.tenant_mismatch",
+            event_id=str(event_id),
+            event_type=event_type,
+            organization_id=str(organization_id),
+        )
+        return
+
+    applied = False
+    carried = False
+    async with session_scope(organization_id=organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("team.event.duplicate", event_id=str(event_id), event_type=event_type)
+            return
+        state = _team_state(payload, _envelope_occurred_at(envelope))
+        if state is not None:
+            carried = True
+            applied = (
+                await services.upsert_team_membership_bulk(
+                    session, organization_id=organization_id, rows=[state]
+                )
+                > 0
+            )
+        # Marked processed whether or not a state was found or applied: a version-less payload and
+        # a stale or equal version are handled outcomes, not errors, and recording the id is what
+        # stops either being reprocessed forever.
+        mark_processed(session, ProcessedEvent, event_id, event_type)
+
+    log.info(
+        "team.event.processed",
+        event_id=str(event_id),
+        event_type=event_type,
+        organization_id=str(organization_id),
+        carried_hierarchy_state=carried,
+        applied=applied,
+    )
+
+
+@consumer.on(EVT_EMPLOYEE_ONBOARDED)
+async def on_employee_onboarded(envelope: dict[str, Any]) -> None:
+    await _apply_team_event(envelope)
+
+
+@consumer.on(EVT_EMPLOYEE_UPDATED)
+async def on_employee_updated(envelope: dict[str, Any]) -> None:
+    await _apply_team_event(envelope)
+
+
+@consumer.on(EVT_EMPLOYEE_TRANSITIONED)
+async def on_employee_transitioned(envelope: dict[str, Any]) -> None:
+    await _apply_team_event(envelope)
 
 
 async def main() -> None:

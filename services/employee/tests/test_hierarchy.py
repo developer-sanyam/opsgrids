@@ -623,6 +623,86 @@ class TestInternalHierarchyEndpoint:
         assert row.after["caller_iss"] == "approval"
         assert row.after["count"] == len(people)
 
+    async def test_attendance_may_read_it_when_it_binds_its_organization(
+        self, client, org_id, people, session: AsyncSession
+    ) -> None:
+        """R8: attendance's TEAM backfill is the second legitimate caller. Its page is the one
+        approval reads, and every page it takes leaves an audit row naming it."""
+        response = await client.get(
+            "/internal/v1/hierarchy",
+            params={"organization_id": str(org_id)},
+            headers=internal_headers(caller="attendance", org=org_id),
+        )
+        assert response.status_code == 200
+        assert len(response.json()["items"]) == len(people)
+
+        row = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.organization_id == org_id,
+                    AuditLog.action == "employee.hierarchy.exported",
+                )
+            )
+        ).scalar_one()
+        assert row.after is not None
+        assert row.after["caller_iss"] == "attendance"
+
+    async def test_attendance_without_an_org_claim_is_refused(self, client, org_id, people) -> None:
+        """A caller added after the gap was understood starts strict: attendance must bind the
+        organization, where approval's older posture still lets the query string name it."""
+        response = await client.get(
+            "/internal/v1/hierarchy",
+            params={"organization_id": str(org_id)},
+            headers=internal_headers(caller="attendance"),
+        )
+        assert response.status_code == 401
+
+    async def test_attendance_cannot_name_an_organization_its_token_does_not_carry(
+        self, client, org_id, people, admin_session: AsyncSession
+    ) -> None:
+        other_org = uuid.uuid4()
+        async with admin_session.begin():
+            await admin_session.execute(
+                Employee.__table__.insert().values(
+                    id=uuid.uuid4(),
+                    organization_id=other_org,
+                    employee_no="Z0001",
+                    full_name="Zoe Zeta",
+                    employment_type="full_time",
+                    work_mode="office",
+                    status="active",
+                )
+            )
+        response = await client.get(
+            "/internal/v1/hierarchy",
+            params={"organization_id": str(other_org)},
+            headers=internal_headers(caller="attendance", org=org_id),
+        )
+        assert response.status_code == 401
+        assert "Zoe Zeta" not in response.text
+
+    async def test_admitting_attendance_here_does_not_admit_it_to_the_links_endpoint(
+        self, client, org_id, people
+    ) -> None:
+        """The per-route allowlists stay disjoint: a legitimate caller of one endpoint must not
+        become a caller of the other by being on the router-level union."""
+        response = await client.get(
+            "/internal/v1/employee-links",
+            params={"organization_id": str(org_id)},
+            headers=internal_headers(caller="attendance", org=org_id),
+        )
+        assert response.status_code == 401
+
+    async def test_approval_keeps_its_existing_posture(self, client, org_id, people) -> None:
+        """No org claim, `iss="approval"`: unchanged, so a deployed approval is not broken by
+        this slice."""
+        response = await client.get(
+            "/internal/v1/hierarchy",
+            params={"organization_id": str(org_id)},
+            headers=internal_headers(),
+        )
+        assert response.status_code == 200
+
     async def test_it_is_absent_from_the_public_schema(self, client, org_id, people) -> None:
         schema = (await client.get("/openapi.json")).json()
         assert not [p for p in schema["paths"] if p.startswith("/internal")]

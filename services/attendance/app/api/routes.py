@@ -229,11 +229,17 @@ async def read_attendance(
     if record is None:
         raise NotFoundProblem("That attendance record is not part of this organization")
     # Filtering the list and forgetting the detail is the named vulnerability. This closes it:
-    # the object-level check re-applies the caller's scope to the single row they named. TEAM is
-    # deferred — team_owner_id is None, so a TEAM-scoped caller is refused here (see scope.py).
+    # the object-level check re-applies the caller's scope to the single row they named. For TEAM
+    # the row's owner is looked up on the same projection the list joins, so the two cannot
+    # disagree; every other rung answers from the record alone and pays no extra query.
+    team_owner_id = (
+        await selectors.get_team_manager(session, ctx.organization_id, record.employee_id)
+        if ctx.scope is Scope.TEAM
+        else None
+    )
     ctx.assert_can_touch(
         owner_id=record.employee_id,
-        team_owner_id=None,
+        team_owner_id=team_owner_id,
         location_code=record.location_code,
     )
     regularization = await selectors.get_latest_regularization(

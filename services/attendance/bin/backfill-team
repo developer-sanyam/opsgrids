@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# One-time, per organization: bin/backfill-team --org <id> [--org <id> ...] [--cursor <uuid>]
+#
+# Fills `attendance.team_membership` — the reporting line behind TEAM scope — from
+# employee-service's paged hierarchy export, for organizations whose employees have not produced
+# an event since this service started listening. Run it once per existing organization *after* the
+# new attendance worker is up (it declares and binds the worker's queue itself before it reads
+# anything, so no event published during the run is lost). Idempotent and version-gated: a re-run
+# is the resume mechanism, and it is safe alongside live traffic.
+#
+# Deliberately its own entrypoint rather than a bin/cron flag or a worker mode: it runs once per
+# organization, exits, and has nothing in common with a recurring sweep or an event handler.
+# Inside the container the employee-service address is not the localhost default; pass
+# `-e EMPLOYEE_SERVICE_URL=http://employee:8000` (infrastructure/edge/RUNBOOK.md).
+exec python -m app.backfill "$@"

@@ -6,7 +6,8 @@ than proving one succeeds, because the success path is the one exercised by hand
 The scope tests come in two halves on purpose. `ctx.apply` narrows a *list*; `ctx.assert_can_
 touch` guards a single *object*. Filtering the list and forgetting the detail is the named
 vulnerability, so both are checked — a caller who can list only their own record must also be
-refused another person's by primary key. TEAM is asserted *refused*, documenting the deferral.
+refused another person's by primary key. TEAM, which reads a projection of employee's reporting
+line, has its own suite: `test_team_scope.py`.
 """
 
 from __future__ import annotations
@@ -28,7 +29,6 @@ from platform_core.auth import Principal, Scope, ScopeContext, get_principal
 from platform_core.errors import (
     BusinessRuleProblem,
     ConflictProblem,
-    ForbiddenProblem,
     NotFoundProblem,
 )
 from tests.helpers import ctx_for as _ctx_for
@@ -85,14 +85,14 @@ class TestListScope:
         )
         assert await self._employees(session, ctx) == set()
 
-    async def test_team_scope_is_refused_documenting_the_deferral(
+    async def test_team_scope_with_no_reporting_line_known_sees_nobody(
         self, session, org_id, records
     ) -> None:
-        """TEAM needs the reporting hierarchy from employee-service, which this service does not
-        hold yet. Until the projection lands, a TEAM-scoped read is refused rather than guessed."""
+        """TEAM reads the reporting-line projection (`tests/test_team_scope.py` covers it filled).
+        Here it is empty — a tenant not yet backfilled — and the answer is nobody: neither an
+        error nor, worse, everyone."""
         ctx = ctx_for(org_id, records["alice"], "hrms.time.attendance.read", Scope.TEAM)
-        with pytest.raises(ForbiddenProblem, match="TEAM scope is not supported"):
-            selectors.attendance_stmt(ctx)
+        assert await self._employees(session, ctx) == set()
 
 
 # --------------------------------------------------------------------- object-level
@@ -114,9 +114,11 @@ class TestObjectLevelChecks:
         assert allowed.status_code == 200
         assert refused.status_code == 403
 
-    async def test_team_scoped_detail_is_refused(self, client, org_id, records) -> None:
-        """The object-level half of the TEAM deferral: no team column, so even a record the
-        caller could name is out of reach under TEAM scope."""
+    async def test_team_scoped_detail_is_refused_when_the_owner_is_in_no_team(
+        self, client, org_id, records
+    ) -> None:
+        """The object-level half: with no reporting line known for the record's owner, a record the
+        caller could name by id is out of reach under TEAM scope."""
         principal = principal_for(org_id, records["alice"], ["hrms.time.attendance.read:TEAM"])
         with as_principal(principal):
             response = await client.get(f"/api/v1/attendance/{records['alice_record']}")

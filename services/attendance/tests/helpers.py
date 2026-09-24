@@ -199,3 +199,52 @@ def approval_decided_envelope(
         "schema_uri": "opsgrids://contracts/core.approval.request.decided/v1",
         "payload": payload,
     }
+
+
+def employee_event_envelope(
+    *,
+    organization_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    manager_id: uuid.UUID | None,
+    version: int | None,
+    status: str = "active",
+    event_type: str = "hrms.people.employee.updated",
+    event_id: uuid.UUID | None = None,
+    payload_organization_id: uuid.UUID | None = None,
+    occurred_at: str | None = None,
+) -> dict[str, Any]:
+    """An envelope shaped the way employee-service publishes one of its three lifecycle events
+    (`services/employee/app/services.py`'s `_hierarchy_snapshot`): the full hierarchy state on the
+    payload, `hierarchy_version` included. `version=None` builds the pre-upgrade shape with the
+    key absent, which the consumer must drop rather than read as version 0.
+
+    `payload_organization_id` lets a test build the tenant-mismatch shape: an envelope naming one
+    organization whose payload names another.
+    """
+    payload: dict[str, Any] = {
+        "organization_id": str(payload_organization_id or organization_id),
+        "employee_id": str(employee_id),
+        "reporting_manager_id": str(manager_id) if manager_id else None,
+        "dotted_line_manager_id": None,
+        "status": status,
+        "location_code": None,
+        "display_name": "Someone Else",
+        "employee_no": "EMP0001",
+    }
+    if version is not None:
+        payload["hierarchy_version"] = version
+    return {
+        "event_id": str(event_id or uuid.uuid4()),
+        "event_type": event_type,
+        "version": 1,
+        "organization_id": str(organization_id),
+        "aggregate_type": "employee",
+        "aggregate_id": str(employee_id),
+        "occurred_at": occurred_at or datetime.now(UTC).isoformat(),
+        "producer": "employee",
+        "correlation_id": None,
+        "causation_id": None,
+        "actor": None,
+        "schema_uri": f"opsgrids://contracts/{event_type}/v1",
+        "payload": payload,
+    }

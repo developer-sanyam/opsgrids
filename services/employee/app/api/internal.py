@@ -1,9 +1,11 @@
 """The internal API — service-to-service, never reachable from outside the cluster.
 
-Two endpoints, each with exactly one documented caller:
+Two endpoints, each with a short, documented caller list:
 
 - **`/internal/v1/hierarchy`** — the hierarchy backfill approval-service's one-time job reads
-  through (ADR-0006 §2.1). Employee is the only writer of reporting lines, and the ongoing
+  through (ADR-0006 §2.1), and attendance-service's, which seeds its own copy of the reporting
+  line for TEAM scope (R8; attendance binds the `org` claim, approval is not yet held to it).
+  Employee is the only writer of reporting lines, and the ongoing
   supply is the full hierarchy state every write already stages on
   `hrms.people.employee.onboarded` / `.updated` / `.transitioned` (`app/services.py`). This is
   the bulk read for an organization that already had employees before approval shipped, and it
@@ -119,8 +121,22 @@ from platform_core.db import assert_tenant, get_session, set_tenant
 from platform_core.errors import UnauthorizedProblem
 from platform_core.internal_auth import verify_service_token
 
-#: ADR-0006 §2.1: approval's one-time hierarchy backfill is `/hierarchy`'s only legitimate caller.
-HIERARCHY_ISSUERS = frozenset({"approval"})
+#: ADR-0006 §2.1: approval's one-time hierarchy backfill is `/hierarchy`'s original caller.
+#:
+#: **Attendance is the second caller** (R8): its one-shot `app.backfill` seeds the `team_membership`
+#: projection that TEAM scope reads, from this same export. Admitting it is the narrow widening the
+#: per-route allowlist exists to make explicit — the page it can read is the one approval already
+#: reads (names and employee numbers included, which attendance's client parses past and never
+#: stores), so it is a second holder of an existing capability, not a new one.
+HIERARCHY_ISSUERS = frozenset({"approval", "attendance"})
+
+#: The callers of `/hierarchy` that **must** bind the `org` claim. Approval binds it today but is
+#: not held to it here, because the endpoint's existing tests and its documented posture predate
+#: that; a caller added after the gap was understood starts strict, exactly as `/employee-links`
+#: does ("new internal surfaces start at the posture the old one is still migrating towards").
+#: Once approval is confirmed to bind it in every deployed version this becomes the whole of
+#: `HIERARCHY_ISSUERS` and `require_org=False` below goes with it.
+HIERARCHY_ORG_REQUIRED_ISSUERS = frozenset({"attendance"})
 
 #: ADR-0008 §8: the membership-link reconcile is `/employee-links`'s only legitimate caller.
 #:
@@ -254,10 +270,14 @@ async def hierarchy(
     allowlist and (when the caller binds one) `org`-claim check are for, and why every page is
     now audited below.
     """
-    # `require_org=False`: approval's client does not bind `ORG_CLAIM` yet and this service
-    # cannot change that file. See the module docstring's "What a complete fix still needs".
+    # `require_org` is per caller: attendance (added after the gap was understood) must bind
+    # `ORG_CLAIM`; approval is still held to the older, weaker posture. See the module
+    # docstring's "What a complete fix still needs" and `HIERARCHY_ORG_REQUIRED_ISSUERS`.
     _assert_caller_authorized(
-        caller_claims, organization_id, allowed=HIERARCHY_ISSUERS, require_org=False
+        caller_claims,
+        organization_id,
+        allowed=HIERARCHY_ISSUERS,
+        require_org=caller_claims.get("iss") in HIERARCHY_ORG_REQUIRED_ISSUERS,
     )
 
     settings: ServiceSettings = request.app.state.settings

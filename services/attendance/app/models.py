@@ -21,6 +21,7 @@ from datetime import date, datetime, time
 from decimal import Decimal
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -41,7 +42,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from platform_core.audit import AuditLogMixin
 from platform_core.events import OutboxMixin, ProcessedEventMixin
 from platform_core.models import Base as _Base
-from platform_core.models import TenantBase
+from platform_core.models import OrgScopedMixin, TenantBase, TimestampMixin
 
 SCHEMA = "attendance"
 
@@ -354,6 +355,89 @@ class RegularizationRequest(Base, TenantBase):
             "organization_id",
             "attendance_id",
             text("created_at DESC"),
+        ),
+    )
+
+
+class TeamMembership(Base, OrgScopedMixin, TimestampMixin):
+    """Who reports to whom, as employee-service last said — the read model behind TEAM scope.
+
+    A projection (ADR-0006 §2 does the same for approval's `hierarchy_nodes`; ADR-0000 §10 is why
+    it exists at all): the reporting line is employee-service's fact, this service may not read
+    that schema, and a synchronous call on the read path would make every attendance list depend
+    on another service being up. So attendance keeps its own copy, fed by the `employee.*` events
+    and a one-shot backfill, and a TEAM-scoped read joins it (`selectors.attendance_stmt`).
+
+    **Current state, not history.** One row per employee, holding the manager they report to *now*.
+    A manager change re-scopes every one of that employee's records at once: the old manager stops
+    seeing them, the new one starts, past days included. That is deliberate — TEAM means "my
+    current reports", and a per-day as-of join would need effective-dated rows the employee
+    events do not carry (they are full-state snapshots with no effective date). `source_occurred_
+    at` is display and debugging only and is never compared.
+
+    **Direct reports only**, matching employee-service (`Employee.reporting_manager_id`, "read
+    directly and never walked transitively"). That is also what makes the projection cycle-safe:
+    nothing ever walks the line, so a loop A→B→A in the data is untidy rather than dangerous — each
+    of the two simply sees the other. The one shape refused outright is an employee who is their
+    own manager (`manager_not_self`), which would put a person in their own team.
+
+    **Ordering is a version, never a timestamp** (ADR-0006 §2): `occurred_at` is the outbox row's
+    `created_at`, a transaction *start* time, so two concurrent edits can be stamped in the
+    opposite order to the one they committed in. `source_version` is employee's own
+    `hierarchy_version`, bumped by a database trigger; the upsert applies a state only when its
+    version is strictly greater than what is stored, which is what makes redelivery, reordering
+    and a backfill racing the live stream all converge. **A row is never deleted** — an exited
+    employee keeps theirs with `status = 'exited'`, because the version gate needs it: without it a
+    stale pre-exit event arriving late would find no row and resurrect the person into a team.
+
+    **`exited` leaves the team.** A manager's TEAM is their current reports, and a person who has
+    left is not one; the read paths exclude `status = 'exited'`. HR at ORG scope still sees the
+    records. (Employee-service's own TEAM read keeps exited people because it filters on the
+    manager column alone; attendance is stricter on purpose, and it is one predicate to relax.)
+
+    Neither `employee_id` nor `manager_employee_id` is a foreign key — the manager is in this same
+    table, but events arrive in any order and a report's `onboarded` can be consumed before its
+    manager's; a constraint would reject a legitimate row. A dangling manager id is a fact the
+    reads already handle: it matches nobody's subject reference.
+    """
+
+    __tablename__ = "team_membership"
+
+    # `OrgScopedMixin`'s own column carries `index=True`; the composite primary key below already
+    # leads with `organization_id`, so a duplicate single-column index would cost write throughput
+    # and serve no query (the same override `approval.hierarchy_nodes` makes).
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, nullable=False
+    )
+    #: `employee.employees.id` — a plain UUID, never a cross-schema foreign key (ADR-0000 §10).
+    employee_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    #: The employee this one reports to, or null for the top of a line. This is the TEAM scope
+    #: column: a manager's reports are the rows whose manager is the manager's own employee id.
+    manager_employee_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: probation | active | on_notice | exited — `employee`'s lifecycle, copied whole so the read
+    #: paths can drop `exited` and so a later rule has it without a second backfill.
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: The employee row's `hierarchy_version` this state came from. The ordering gate.
+    source_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: Display and debugging only. **Never compared.**
+    source_occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status in ('probation','active','on_notice','exited')", name="status"),
+        CheckConstraint("source_version >= 0", name="source_version_non_negative"),
+        CheckConstraint(
+            "manager_employee_id is null or manager_employee_id <> employee_id",
+            name="manager_not_self",
+        ),
+        # The TEAM read: `WHERE organization_id = :org AND manager_employee_id = :me AND status <>
+        # 'exited'`, then a join back on the primary key. Partial on the same predicate the read
+        # uses, with `employee_id` trailing so the manager's reports come out of the index alone.
+        Index(
+            "ix_team_membership_org_manager",
+            "organization_id",
+            "manager_employee_id",
+            "employee_id",
+            postgresql_where=text("status <> 'exited'"),
         ),
     )
 

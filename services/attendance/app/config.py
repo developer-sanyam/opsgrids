@@ -14,6 +14,11 @@ class Settings(ServiceSettings):
     db_admin_role: str | None = "opsgrids_admin"
     db_outbox_role: str | None = "opsgrids_outbox"
 
+    #: Where employee-service answers the TEAM backfill's internal hierarchy read (ADR-0006
+    #: §2.1). Service-token authenticated, never reachable from outside the cluster, and read by
+    #: the one-shot `app.backfill` command only — never on a request path.
+    employee_service_url: str = "http://localhost:8120"
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]
