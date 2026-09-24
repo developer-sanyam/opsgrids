@@ -7,13 +7,15 @@ describe("the barrel client.ts destructures via a dynamic import", () => {
   it("re-exports every binding client.ts's fixtures branches read off it", () => {
     const required = [
       "PRODUCTS",
-      "PLANS",
       "PLAN_VERSIONS",
-      "ORGANIZATIONS",
-      "SUBSCRIPTIONS",
       "CREDIT_LEDGER",
       "AUDIT_LOG",
       "buildOverviewMetrics",
+      "buildOrganizationsOut",
+      "buildSubscriptionsOut",
+      "buildUsageListOut",
+      "buildLedgerPage",
+      "buildAuditListOut",
       "organizationDetail",
       "pricingForOrg",
       "applyFixturePrice",
@@ -26,15 +28,27 @@ describe("the barrel client.ts destructures via a dynamic import", () => {
 });
 
 describe("simulateOverride", () => {
-  it("accepts every override kind and echoes the organization it targeted", () => {
+  it("accepts a suspend override and echoes the organization and delegation target it targeted", () => {
     const result = simulateOverride({
-      kind: "suspend",
+      action: "suspend",
       organization_id: "org_1",
+      subscription_id: "sub_1",
       reason: "Non-payment",
     });
-    expect(result.status).toBe("accepted");
-    expect(result.audit.organization_id).toBe("org_1");
-    expect(result.audit.action).toBe("override.suspend");
-    expect(result.audit.result).toBe("success");
+    expect(result.action).toBe("suspend");
+    expect(result.organization_id).toBe("org_1");
+    expect(result.delegated_to).toBe("subscription");
+  });
+
+  it("accepts a comp_grant override and delegates to billing", () => {
+    const result = simulateOverride({
+      action: "comp_grant",
+      organization_id: "org_1",
+      amount_minor: 5000,
+      currency: "INR",
+      reason: "Goodwill",
+    });
+    expect(result.action).toBe("comp_grant");
+    expect(result.delegated_to).toBe("billing");
   });
 });

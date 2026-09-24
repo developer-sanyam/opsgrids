@@ -20,7 +20,9 @@ interface KpiCardProps {
   label: string;
   /** Pre-formatted headline (e.g. "₹17.6L", "9", "66.7%"). */
   value: string;
-  deltaPct: number;
+  /** `null` when the metrics endpoint carries no period-over-period comparison for this figure —
+   *  the pill is omitted rather than showing a fabricated "+0.0%". */
+  deltaPct: number | null;
   series: number[];
   icon: ReactNode;
   tone: KpiTone;
@@ -34,7 +36,7 @@ interface KpiCardProps {
 
 /**
  * A dashboard KPI: a tinted icon square and an inline trend sparkline across the top, then a label,
- * a big tabular value and a coloured delta pill.
+ * a big tabular value and — when there is one — a coloured delta pill.
  */
 export function KpiCard({
   label,
@@ -53,7 +55,7 @@ export function KpiCard({
         <span className={cn("grid size-10 place-items-center rounded-tile", TONE[tone])}>
           {icon}
         </span>
-        {hideSparkline ? null : (
+        {hideSparkline || deltaPct === null ? null : (
           <Sparkline data={series} trend={deltaPct >= 0 ? "up" : "down"} />
         )}
       </div>
@@ -62,7 +64,7 @@ export function KpiCard({
         <span className="text-sm font-medium text-muted">{label}</span>
         <div className="flex flex-wrap items-center gap-2.5">
           <span className="display text-[2rem] leading-none font-extrabold tnum">{value}</span>
-          <DeltaPill value={deltaPct} positiveIsGood={positiveIsGood} />
+          {deltaPct === null ? null : <DeltaPill value={deltaPct} positiveIsGood={positiveIsGood} />}
         </div>
         {caption ? <span className="text-xs text-faint">{caption}</span> : null}
       </div>

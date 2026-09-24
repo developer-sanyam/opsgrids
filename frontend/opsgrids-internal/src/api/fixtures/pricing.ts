@@ -21,10 +21,10 @@ import type {
   ProductPublicPrice,
   SetPriceRequest,
   SetPriceResult,
-  Subscription,
 } from "@/api/types";
 import { PRODUCTS, planVersionById } from "./catalog";
-import { orgById, subscriptionsForOrg } from "./orgs";
+import type { FixtureSubscription } from "./orgs";
+import { orgDirectory, subscriptionsForOrg } from "./orgs";
 
 function toContractInterval(interval: "monthly" | "yearly"): BillingInterval {
   return interval === "yearly" ? "year" : "month";
@@ -97,7 +97,7 @@ const SEEDED_HISTORY: Record<string, PricingHistoryEntry[]> = {
 /** A bespoke subscription necessarily came from a "set price" action, so it always carries at
  *  least one history row even when nothing was hand-authored above. A public, list-priced
  *  subscription that nobody has ever touched keeps an empty history — the empty state is real. */
-function fallbackHistory(sub: Subscription | undefined): PricingHistoryEntry[] {
+function fallbackHistory(sub: FixtureSubscription | undefined): PricingHistoryEntry[] {
   if (!sub || !sub.is_bespoke) return [];
   const version = planVersionById(sub.plan_version_id);
   return [
@@ -113,7 +113,7 @@ function fallbackHistory(sub: Subscription | undefined): PricingHistoryEntry[] {
   ];
 }
 
-function currentPriceFor(sub: Subscription | undefined): ProductCurrentPrice | null {
+function currentPriceFor(sub: FixtureSubscription | undefined): ProductCurrentPrice | null {
   if (!sub) return null;
   const version = planVersionById(sub.plan_version_id);
   return {
@@ -147,7 +147,7 @@ function baseProductPricing(organizationId: string, productKey: string, productN
 }
 
 function buildOrganizationPricing(organizationId: string): OrganizationPricing | null {
-  const org = orgById(organizationId);
+  const org = orgDirectory(organizationId);
   if (!org) return null;
   return {
     organization_id: organizationId,

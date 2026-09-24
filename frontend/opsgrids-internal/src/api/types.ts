@@ -1,211 +1,243 @@
 /**
  * Wire types for the operator console.
  *
- * These mirror the documented admin-gateway contract (ADR-0003 §2, ADR-0004): the console reads
- * cross-tenant commercial data on the `operator` audience and drives the customer lifecycle. Money
- * is always an **integer minor amount + ISO-4217 currency** (never a float). The console is a
- * *consumer of the transition stream* — MRR, trial-conversion and churn are projections, not live
- * table queries — so these shapes carry already-computed metrics rather than raw event rows.
+ * These mirror the **deployed** admin-gateway contract field-for-field: console-service's
+ * `app/schemas.py` (`libs/contracts/openapi/console.json`) and billing-service's staff
+ * credit-ledger route (`libs/contracts/openapi/billing.json`). Money is always an **integer
+ * minor amount + ISO-4217 currency** (never a float).
+ *
+ * Several of these are visibly thinner than a customer-facing screen would want — no directory
+ * name on a bulk list row, no seat counts, no per-subscription id outside the pricing composite.
+ * That is not an oversight in this file: it is what the service actually returns today. Where the
+ * console needs a field the server does not send, the screen that reads it shows an honest "—",
+ * never a guess. See each screen for the specific gap and `docs/adr` / the PR description for the
+ * backend follow-ups this implies.
  */
 
-/** Small envelope every list endpoint returns. */
+/* ------------------------------ pagination ------------------------------ */
+
+/** `platform_core.pagination.Page` — the *only* endpoint that actually uses it today is billing's
+ *  staff credit-ledger read. Console-service's own list routes each use their own bespoke envelope
+ *  (`OrganizationsOut`, `SubscriptionsOut`, `UsageListOut`, `AuditListOut` below) — there is no
+ *  shared `{items, total}` shape across the admin surface, whatever a generic client might assume. */
 export interface Page<T> {
   items: T[];
   total: number;
+  page: number;
+  size: number;
+  pages: number;
 }
 
-/** The lifecycle state shared by an organization and its primary subscription (ADR-0004 §4). */
-export type AccountStatus = "active" | "trial" | "past_due" | "suspended" | "cancelled";
-
-/** A person on the customer side — the operator's point of contact. */
-export interface Contact {
-  name: string;
-  email: string;
-}
-
-/** One row in the cross-tenant accounts directory (BYPASSRLS SELECT-only read, ADR-0003 §2). */
-export interface OrganizationRow {
-  organization_id: string;
-  name: string;
-  slug: string;
-  status: AccountStatus;
-  /** Human plan label, e.g. "Scale". */
-  plan_name: string;
-  primary_product_key: string;
-  primary_product_name: string;
-  /** Monthly recurring revenue this account contributes, in minor units of `currency`. */
-  mrr_minor: number;
-  currency: string;
-  seats: number;
-  /** Pinned to a bespoke, audience-of-one plan version (ADR-0004 §2). */
-  is_bespoke: boolean;
-  /** Access is locked — a suspended account whose entitlement has lapsed to a 402. */
-  locked: boolean;
-  created_at: string;
-  last_activity_at: string | null;
-  /** Set only while `status === "trial"`. */
-  trial_ends_at: string | null;
-  region: string;
-  primary_contact: Contact;
-}
-
-/** The activation projection for one product — what the gateway's `ent` claim gates on. */
-export interface Entitlement {
-  product_key: string;
-  product_name: string;
-  /** Whether `Activation.entitles` currently evaluates true (trial expiry read at read time). */
-  entitled: boolean;
-  state: AccountStatus;
-  /** Trial end or grant lapse that will flip entitlement, if any. */
-  expires_at: string | null;
-}
-
-/** A per-customer subscription and where it sits in its lifecycle. */
-export interface Subscription {
-  subscription_id: string;
-  organization_id: string;
-  organization_name: string;
-  product_key: string;
-  product_name: string;
-  plan_name: string;
-  plan_version_id: string;
-  plan_version_no: number;
-  is_bespoke: boolean;
-  state: AccountStatus;
-  seats: number;
-  /** Monthly amount pinned from the plan version, in minor units. */
-  amount_minor: number;
-  currency: string;
-  trial_ends_at: string | null;
-  current_period_start: string;
-  current_period_end: string;
-  next_renewal_at: string | null;
-  cancel_at: string | null;
-  created_at: string;
-  /**
-   * The products this subscription switches on, snapshotted from the pinned version: the
-   * product itself, or a bundle's members. Absent from a read model that predates it.
-   */
-  entitled_products?: string[];
-}
-
-/** One usage meter's roll-up for the current period. */
-export interface UsageSummary {
-  meter_key: string;
-  meter_name: string;
-  product_key: string;
-  unit: string;
-  quantity: number;
-  /** Included allowance, if the plan meters it; null when unmetered. */
-  included: number | null;
-  /** `is_billable=false` until a plan version prices the meter (ADR-0004 §7). */
-  is_billable: boolean;
-  period_label: string;
-}
-
-/** A finalized-or-draft invoice. Frozen at finalize; corrections are new rows (ADR-0004). */
-export interface Invoice {
-  invoice_id: string;
-  organization_id: string;
-  number: string;
-  state: "draft" | "finalized" | "void";
-  currency: string;
-  total_minor: number;
-  period_start: string;
-  period_end: string;
-  finalized_at: string | null;
-  issued_at: string;
-}
-
-/** The kind of movement a credit-ledger row records. */
-export type LedgerKind = "grant" | "consumption" | "reversal";
+/* ------------------------------ organizations (console) ------------------------------ */
 
 /**
- * One append-only credit-ledger entry (ADR-0004 §3). A grant is positive; consumption is negative;
- * a reversal points at the entry it undoes. Balance and "who is on comp" are SUMs/queries over
- * these rows — never a stored column.
+ * One entry of `OrgStateOut.subscription_states` — keyed by `product_key`. The server types this
+ * as `dict[str, Any]`: `app/api/routes.py`'s own subscription-flattening code reads it with
+ * `.get(...)`, defensively, rather than assuming every key is present. This mirrors that: every
+ * field is optional and unknown extra keys are allowed.
  */
-export interface CreditLedgerEntry {
-  entry_id: string;
+export interface SubscriptionStateEntry {
+  state?: string;
+  plan_version_id?: string | null;
+  amount_minor?: number;
+  currency?: string | null;
+  trial_ends_at?: string | null;
+  [key: string]: unknown;
+}
+
+/** `OrgStateOut` — one organization's commercial snapshot. No name, no slug, no seats: those live
+ *  in account-service's directory, which this projection does not carry. */
+export interface OrgStateOut {
   organization_id: string;
-  organization_name: string;
+  mrr_minor: number;
+  currency: string | null;
+  active_products: string[];
+  subscription_states: Record<string, SubscriptionStateEntry>;
+  trial_ends_at: string | null;
+  locked: boolean;
+  updated_at: string;
+}
+
+/** `MetricsOut` — platform-wide commercial metrics, computed off the transition log. */
+export interface MetricsOut {
+  mrr_minor: number;
+  currency: string | null;
+  trials_started: number;
+  trial_conversions: number;
+  trial_conversion_rate: number;
+  active_subscriptions: number;
+  churned: number;
+  churn_rate: number;
+}
+
+/** `OrganizationsOut` — `GET /admin/organizations`. Not a `Page<T>`: every org, unfiltered, plus
+ *  the platform metrics alongside it. The server accepts no search/status/pagination query params
+ *  on this route, so any filtering happens client-side over the full set. */
+export interface OrganizationsOut {
+  organizations: OrgStateOut[];
+  metrics: MetricsOut;
+}
+
+/** `LifecycleCountsOut` — organization counts by lifecycle bucket. */
+export interface LifecycleCountsOut {
+  suspended: number;
+  active: number;
+  trial: number;
+  churned: number;
+  none: number;
+}
+
+/** `MetricsOverviewOut` — `GET /admin/metrics/overview`. There is no historical series, no
+ *  period-over-period delta and no revenue-this-period figure in this payload — those are Overview
+ *  dashboard concepts this endpoint does not (yet) compute. */
+export interface MetricsOverviewOut extends MetricsOut {
+  organization_count: number;
+  organizations_by_lifecycle: LifecycleCountsOut;
+}
+
+/** `OrgDetailOut` — `GET /admin/organizations/{id}`. The *only* place the console reads an
+ *  organization's directory identity (name, slug, status, country) — composed from
+ *  account-service's staff directory route. `commercial` is `null` only when console has not yet
+ *  projected anything for this org (never for "organization does not exist" — that is a 404). */
+export interface OrgDetailOut {
+  organization_id: string;
+  slug: string;
+  name: string;
+  status: string;
+  country: string | null;
+  created_at: string;
+  commercial: OrgStateOut | null;
+}
+
+/** `SubscriptionOut` — one row of `GET /admin/subscriptions`, flattened from every org's
+ *  `subscription_states`. No subscription id, no product/plan name, no seats: those are not part
+ *  of this projection. */
+export interface SubscriptionOut {
+  organization_id: string;
+  product_key: string;
+  state: string;
+  plan_version_id: string | null;
+  amount_minor: number;
+  currency: string | null;
+  trial_ends_at: string | null;
+}
+
+export interface SubscriptionsOut {
+  subscriptions: SubscriptionOut[];
+}
+
+/** `UsageOut` — one row of `GET /admin/usage`. Just the meter and the raw quantity; no meter name,
+ *  unit, included allowance or billability flag. */
+export interface UsageOut {
+  organization_id: string;
+  meter_key: string;
+  period: string;
+  quantity: number;
+}
+
+export interface UsageListOut {
+  usage: UsageOut[];
+}
+
+/** `AuditOut` — one row of `GET /admin/audit`. No actor name/email, no organization name, no
+ *  human summary and no success/failure flag: a row is only ever written *after* the write it
+ *  records succeeded (`services.record_override` / `record_organization_read`), so there is no
+ *  "failed" row to distinguish. */
+export interface AuditOut {
+  id: string;
+  organization_id: string;
+  actor_id: string | null;
+  acting_as: string | null;
+  action: string;
+  entity: string;
+  entity_id: string | null;
+  reason: string | null;
+  at: string;
+}
+
+export interface AuditListOut {
+  audit: AuditOut[];
+}
+
+/* --------------------------- override I/O (console) --------------------------- */
+
+/** `OverrideIn` — `POST /admin/overrides`. `delegation.py` resolves exactly two actions today;
+ *  posting anything else is a 400 ("unknown override action"). There is no `reactivate` and no
+ *  `bespoke_price` action on this endpoint — bespoke pricing is `POST .../pricing` (below). */
+export type OverrideRequest =
+  | { action: "suspend"; organization_id: string; subscription_id: string; reason: string }
+  | {
+      action: "comp_grant";
+      organization_id: string;
+      amount_minor: number;
+      currency: string;
+      reason?: string;
+    };
+
+/** `OverrideOut`. No structured audit row comes back — `result` is whatever JSON the owning
+ *  service's internal endpoint happened to return, `dict[str, Any]` server-side. */
+export interface OverrideResult {
+  action: string;
+  organization_id: string;
+  delegated_to: string;
+  result: Record<string, unknown>;
+}
+
+/* ------------------------------ credit ledger (billing) ------------------------------ */
+
+/** The values `credit_ledger.entry_type` is constrained to at the database
+ *  (`entry_type in ('grant', 'consume', 'reversal', 'expiry')`). No `is_comp` flag exists anywhere
+ *  in this schema — the console cannot distinguish a complimentary grant from a monetary one. */
+export type LedgerEntryType = "grant" | "consume" | "reversal" | "expiry";
+
+/** `CreditLedgerEntryAdminOut` — one row of `GET /admin/credit-ledger`. No organization name
+ *  (only the id) and no actor. */
+export interface CreditLedgerEntryAdminOut {
+  id: string;
+  organization_id: string;
+  entry_type: string;
   amount_minor: number;
   currency: string;
-  kind: LedgerKind;
   reason: string;
   valid_from: string;
-  /** null means no expiry. For a comp grant this is when the comp access lapses. */
   valid_until: string | null;
-  created_at: string;
-  actor: string;
   reversal_of: string | null;
-  /** Complimentary access (vs a monetary credit) — the "who's on comp" filter. */
-  is_comp: boolean;
+  drawn_from: string | null;
+  created_at: string;
 }
 
-/* ------------------------------ catalog ------------------------------ */
-
-export interface Product {
-  product_key: string;
-  name: string;
-  description: string;
+export interface ListLedgerParams {
+  organizationId?: string;
+  currency?: string;
+  entryType?: string;
+  page?: number;
+  size?: number;
 }
 
-export interface Plan {
-  plan_id: string;
-  product_key: string;
-  code: string;
-  name: string;
-  state: "active" | "retired";
-  sort_order: number;
-}
-
-export type PriceKind = "flat" | "per_seat" | "usage";
-
-export interface Price {
-  price_id: string;
-  kind: PriceKind;
-  amount_minor: number;
-  currency: string;
-  unit: string | null;
-  unit_price_micros: number | null;
-  meter_key: string | null;
-}
-
-export type PlanVersionState = "draft" | "published" | "grandfathered";
-
-export interface PlanVersion {
-  plan_version_id: string;
-  plan_id: string;
-  product_key: string;
-  plan_name: string;
-  version_no: number;
-  state: PlanVersionState;
-  published_at: string | null;
-  billing_interval: "monthly" | "yearly";
-  currency: string;
-  /** Non-null makes this an audience-of-one bespoke version (ADR-0004 §2). No FK — a plain UUID. */
-  restricted_to_org_id: string | null;
-  restricted_to_org_name: string | null;
-  prices: Price[];
-  subscriber_count: number;
-  /** A bundle's members, from its `bundled_products` feature. Absent for a single product. */
-  bundled_products?: string[];
-}
-
-/* ------------------------------ client pricing ------------------------------ */
+/* ------------------------------ client pricing (console) ------------------------------ */
+/* Verified field-for-field against `services/console/app/schemas.py`'s pricing models — this
+ * section was already correct against the live contract and is unchanged. */
 
 /** `month` or `year` — the two billing cadences a plan version can carry (ADR-0004 §1). */
 export type BillingInterval = "month" | "year";
 
+/** The minimal organization reference the pricing card needs — an id to call the pricing route
+ *  with, and a name for its dialogs. Deliberately not the bulk list row: `/admin/organizations`
+ *  does not carry a name, only `/admin/organizations/{id}` does. */
+export interface PricingOrgRef {
+  organization_id: string;
+  name: string;
+}
+
 /** The subscription reference a pricing row carries — enough to know what "applies now" means
- *  without pulling the whole `Subscription` shape across a second endpoint. */
+ *  without pulling a whole subscription shape across a second endpoint. `state` is a free string
+ *  server-side (`ProductSubscriptionOut.state: str`), not a closed enum. */
 export interface PricingSubscriptionRef {
   id: string;
-  state: AccountStatus;
+  state: string;
   plan_version_id: string;
   trial_ends_at: string | null;
-  current_period_end: string;
+  current_period_end: string | null;
 }
 
 /** What this organization is paying right now for one product — `null` until a price has ever
@@ -278,118 +310,13 @@ export interface SetPriceResult {
   effective: PricingEffect;
 }
 
-/* ------------------------------ audit ------------------------------- */
+/* ----------------------------- shared UI vocabulary ------------------------------ */
 
-export type OverrideKind = "suspend" | "reactivate" | "comp_grant" | "bespoke_price";
-
-export interface AuditEntry {
-  audit_id: string;
-  occurred_at: string;
-  actor: string;
-  actor_email: string;
-  /** e.g. "override.suspend", "override.comp_grant", "catalog.bespoke_price.created". */
-  action: string;
-  organization_id: string | null;
-  organization_name: string | null;
-  summary: string;
-  result: "success" | "failed";
-  target_ref: string | null;
-}
-
-/* ----------------------------- metrics ------------------------------ */
-
-/** One point on the MRR-over-time series. */
-export interface MrrPoint {
-  label: string;
-  mrr_minor: number;
-}
-
-/** A labelled segment of a breakdown bar (trial funnel, churn split). */
+/** A labelled segment of a breakdown bar. Used today for the real
+ *  `organizations_by_lifecycle` counts the overview metrics endpoint returns. */
 export interface BreakdownSegment {
   key: string;
   label: string;
   count: number;
   tone: "active" | "trial" | "pastdue" | "suspended" | "cancelled" | "comp" | "accent";
-}
-
-/** The Overview dashboard's headline metrics — all pre-computed projections. */
-export interface OverviewMetrics {
-  currency: string;
-  period_label: string;
-
-  mrr_minor: number;
-  mrr_delta_pct: number;
-  mrr_sparkline: number[];
-  mrr_series: MrrPoint[];
-
-  active_accounts: number;
-  active_delta_pct: number;
-  active_sparkline: number[];
-
-  trials_in_progress: number;
-  trials_delta_pct: number;
-  trials_sparkline: number[];
-
-  trial_conversion_pct: number;
-  conversion_delta_pct: number;
-  conversion_sparkline: number[];
-
-  churn_pct: number;
-  churn_delta_pct: number;
-  churn_sparkline: number[];
-
-  locked_accounts: number;
-  suspended_accounts: number;
-
-  revenue_period_minor: number;
-  revenue_delta_pct: number;
-
-  /** Trial funnel over the trailing 90 days: started → converted / still-trialing / expired. */
-  trial_funnel: BreakdownSegment[];
-  /** Net revenue-retention split for the period: retained / expansion / churned. */
-  churn_breakdown: BreakdownSegment[];
-}
-
-/** The composed account-detail payload the console reads for one org. */
-export interface OrganizationDetail {
-  organization: OrganizationRow;
-  subscriptions: Subscription[];
-  entitlements: Entitlement[];
-  usage: UsageSummary[];
-  invoices: Invoice[];
-  ledger: CreditLedgerEntry[];
-  /** SUM over ledger entries whose window covers now — the live comp/credit balance. */
-  comp_balance_minor: number;
-}
-
-/* --------------------------- override I/O --------------------------- */
-
-/** Request bodies for `POST /api/v1/admin/overrides`, discriminated on `kind`. */
-export type OverrideRequest =
-  | { kind: "suspend"; organization_id: string; reason: string }
-  | { kind: "reactivate"; organization_id: string; reason: string }
-  | {
-      kind: "comp_grant";
-      organization_id: string;
-      amount_minor: number;
-      currency: string;
-      is_comp: boolean;
-      reason: string;
-      valid_until: string | null;
-    }
-  | {
-      kind: "bespoke_price";
-      organization_id: string;
-      product_key: string;
-      base_plan_id: string;
-      amount_minor: number;
-      currency: string;
-      reason: string;
-    };
-
-/** What the override endpoint returns — an id and the audit row it wrote in the owning service. */
-export interface OverrideResult {
-  override_id: string;
-  status: "accepted";
-  audit: AuditEntry;
 }

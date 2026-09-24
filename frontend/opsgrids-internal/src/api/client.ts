@@ -2,15 +2,28 @@
  * Typed operator-console client.
  *
  * **Fixtures-first**: `VITE_USE_FIXTURES` defaults on, so the whole console renders from
- * `fixtures/` with no admin-gateway — this app is not yet wired onto `opsgrids-client` (that is
- * a separate slice; see `docs/backlog.md`). Set `VITE_USE_FIXTURES=false` to talk to the live
- * gateway; every function below then calls a real, shipped `/api/v1/admin/*` staff route
- * (ADR-0003 §2 and its addendum) with the operator token from the session — `/admin/organizations`,
- * `/admin/organizations/{id}`, `/admin/metrics/overview`, `/admin/subscriptions`, `/admin/usage`,
- * `/admin/audit`, `/admin/overrides` (console-service), `/admin/credit-ledger` (billing-service)
- * and `/admin/catalog` (catalog-service). The two code paths return the same shapes, so switching
- * to live is a flag, not a rewrite — though the *response* shapes below have not yet been checked
- * field-for-field against the live schemas, which is part of that same later slice.
+ * `fixtures/` with no admin-gateway. Set `VITE_USE_FIXTURES=false` to talk to the live gateway;
+ * every function below then calls a real, shipped `/api/v1/admin/*` staff route (ADR-0003 §2 and
+ * its addendum) with the operator token from the session — `/admin/organizations`,
+ * `/admin/organizations/{id}`, `/admin/organizations/{id}/pricing`, `/admin/metrics/overview`,
+ * `/admin/subscriptions`, `/admin/usage`, `/admin/audit`, `/admin/overrides` (console-service) and
+ * `/admin/credit-ledger` (billing-service). Every shape below has been checked field-for-field
+ * against the deployed schemas (`services/console/app/schemas.py`,
+ * `services/billing/app/schemas.py`, `libs/contracts/openapi/*.json`) — see `types.ts`'s module
+ * docstring for what that audit found and what it means for each screen.
+ *
+ * None of `/admin/organizations`, `/admin/subscriptions`, `/admin/usage` or `/admin/audit` accept a
+ * search, status or pagination query parameter — each returns its full cross-tenant set every time,
+ * so every list screen below filters client-side over what it got back. `/admin/credit-ledger` is
+ * the one exception: it is billing's own real, paginated `Page<T>` and takes `organization_id`,
+ * `currency` and `entry_type` filters — no free-text search, so the ledger screen also filters its
+ * page client-side for that.
+ *
+ * There is deliberately no `getCatalog()` here any more: catalog-service's `/admin/catalog` prefix
+ * only carries **write** routes (create/patch/retire a plan, create/publish a version) — there is
+ * no admin `GET` that lists products, plans or versions. A function that called it would 404 on
+ * every read, so the catalog-browsing screen was rebuilt around what the API actually offers
+ * instead of pointing at a route that doesn't exist (see `routes/Plans.tsx`).
  *
  * `admin.opsgrids.com` serves this console publicly, so `./fixtures` is loaded only through a
  * dynamic `import()` inside each `if (USE_FIXTURES)` branch below, never a static top-of-file
@@ -25,22 +38,20 @@
 
 import { apiRequest } from "./http";
 import type {
-  AccountStatus,
-  AuditEntry,
-  CreditLedgerEntry,
-  OrganizationDetail,
+  AuditListOut,
+  CreditLedgerEntryAdminOut,
+  ListLedgerParams,
   OrganizationPricing,
-  OrganizationRow,
+  OrganizationsOut,
+  OrgDetailOut,
   OverrideRequest,
   OverrideResult,
-  OverviewMetrics,
+  MetricsOverviewOut,
   Page,
-  Plan,
-  PlanVersion,
-  Product,
   SetPriceRequest,
   SetPriceResult,
-  Subscription,
+  SubscriptionsOut,
+  UsageListOut,
 } from "./types";
 
 /** Default source. Fixtures unless `VITE_USE_FIXTURES=false` pins the console to the live gateway.
@@ -62,161 +73,89 @@ function settle<T>(value: T, ms = 240): Promise<T> {
   return new Promise((resolve) => setTimeout(() => resolve(value), ms));
 }
 
-function matches(haystack: string, needle: string): boolean {
-  return haystack.toLowerCase().includes(needle.toLowerCase());
-}
-
 /* ----------------------------- overview ----------------------------- */
 
-export async function getOverview(): Promise<OverviewMetrics> {
+export async function getOverview(): Promise<MetricsOverviewOut> {
   if (USE_FIXTURES) {
     const { buildOverviewMetrics } = await loadFixtures();
     return settle(buildOverviewMetrics());
   }
-  return apiRequest<OverviewMetrics>("/admin/metrics/overview");
+  return apiRequest<MetricsOverviewOut>("/admin/metrics/overview");
 }
 
 /* ----------------------------- accounts ----------------------------- */
 
-export interface ListOrganizationsParams {
-  search?: string;
-  status?: AccountStatus | "all";
-  bespoke?: boolean;
-}
-
-export async function listOrganizations(
-  params: ListOrganizationsParams = {},
-): Promise<Page<OrganizationRow>> {
+/** Every organization's commercial state, plus platform metrics. The server takes no query
+ *  params on this route — every caller gets every org, every time. */
+export async function listOrganizations(): Promise<OrganizationsOut> {
   if (USE_FIXTURES) {
-    const { ORGANIZATIONS } = await loadFixtures();
-    const q = params.search?.trim() ?? "";
-    const items = ORGANIZATIONS.filter((o) => {
-      const matchQuery =
-        q === "" ||
-        matches(o.name, q) ||
-        matches(o.slug, q) ||
-        matches(o.primary_product_name, q) ||
-        matches(o.region, q);
-      const matchStatus = !params.status || params.status === "all" || o.status === params.status;
-      const matchBespoke = params.bespoke === undefined || o.is_bespoke === params.bespoke;
-      return matchQuery && matchStatus && matchBespoke;
-    });
-    return settle({ items, total: items.length });
+    const { buildOrganizationsOut } = await loadFixtures();
+    return settle(buildOrganizationsOut());
   }
-
-  const query = new URLSearchParams();
-  if (params.search?.trim()) query.set("q", params.search.trim());
-  if (params.status && params.status !== "all") query.set("status", params.status);
-  if (params.bespoke !== undefined) query.set("bespoke", String(params.bespoke));
-  return apiRequest<Page<OrganizationRow>>(`/admin/organizations?${query.toString()}`);
+  return apiRequest<OrganizationsOut>("/admin/organizations");
 }
 
-export async function getOrganization(id: string): Promise<OrganizationDetail> {
+export async function getOrganization(id: string): Promise<OrgDetailOut> {
   if (USE_FIXTURES) {
     const { organizationDetail } = await loadFixtures();
     const detail = organizationDetail(id);
     if (!detail) throw new Error(`No organization ${id}`);
     return settle(detail);
   }
-  return apiRequest<OrganizationDetail>(`/admin/organizations/${encodeURIComponent(id)}`);
+  return apiRequest<OrgDetailOut>(`/admin/organizations/${encodeURIComponent(id)}`);
 }
 
 /* --------------------------- subscriptions -------------------------- */
 
-export interface ListSubscriptionsParams {
-  search?: string;
-  state?: AccountStatus | "all";
+/** Every organization's subscriptions, flattened from their commercial snapshots. Unfiltered —
+ *  the server accepts no query params here either. */
+export async function listSubscriptions(): Promise<SubscriptionsOut> {
+  if (USE_FIXTURES) {
+    const { buildSubscriptionsOut } = await loadFixtures();
+    return settle(buildSubscriptionsOut());
+  }
+  return apiRequest<SubscriptionsOut>("/admin/subscriptions");
 }
 
-export async function listSubscriptions(
-  params: ListSubscriptionsParams = {},
-): Promise<Page<Subscription>> {
+/* -------------------------------- usage ------------------------------- */
+
+/** Every organization's usage rollups, by meter and period. Unfiltered. */
+export async function listUsage(): Promise<UsageListOut> {
   if (USE_FIXTURES) {
-    const { SUBSCRIPTIONS } = await loadFixtures();
-    const q = params.search?.trim() ?? "";
-    const items = SUBSCRIPTIONS.filter((s) => {
-      const matchQuery =
-        q === "" || matches(s.organization_name, q) || matches(s.product_name, q) || matches(s.plan_name, q);
-      const matchState = !params.state || params.state === "all" || s.state === params.state;
-      return matchQuery && matchState;
-    });
-    return settle({ items, total: items.length });
+    const { buildUsageListOut } = await loadFixtures();
+    return settle(buildUsageListOut());
+  }
+  return apiRequest<UsageListOut>("/admin/usage");
+}
+
+/* --------------------------- credit ledger (billing) ------------------ */
+
+export async function listLedger(
+  params: ListLedgerParams = {},
+): Promise<Page<CreditLedgerEntryAdminOut>> {
+  if (USE_FIXTURES) {
+    const { buildLedgerPage } = await loadFixtures();
+    return settle(buildLedgerPage(params));
   }
 
   const query = new URLSearchParams();
-  if (params.search?.trim()) query.set("q", params.search.trim());
-  if (params.state && params.state !== "all") query.set("state", params.state);
-  return apiRequest<Page<Subscription>>(`/admin/subscriptions?${query.toString()}`);
-}
-
-/* ------------------------------ catalog ----------------------------- */
-
-export interface CatalogBundle {
-  products: Product[];
-  plans: Plan[];
-  versions: PlanVersion[];
-}
-
-export async function getCatalog(): Promise<CatalogBundle> {
-  if (USE_FIXTURES) {
-    const { PRODUCTS, PLANS, PLAN_VERSIONS } = await loadFixtures();
-    return settle({ products: PRODUCTS, plans: PLANS, versions: PLAN_VERSIONS });
-  }
-  return apiRequest<CatalogBundle>("/admin/catalog");
-}
-
-/* --------------------------- credit ledger -------------------------- */
-
-export interface ListLedgerParams {
-  search?: string;
-  compOnly?: boolean;
-}
-
-export async function listLedger(params: ListLedgerParams = {}): Promise<Page<CreditLedgerEntry>> {
-  if (USE_FIXTURES) {
-    const { CREDIT_LEDGER } = await loadFixtures();
-    const q = params.search?.trim() ?? "";
-    const items = CREDIT_LEDGER.filter((e) => {
-      const matchQuery = q === "" || matches(e.organization_name, q) || matches(e.reason, q);
-      const matchComp = !params.compOnly || e.is_comp;
-      return matchQuery && matchComp;
-    }).sort((a, b) => b.created_at.localeCompare(a.created_at));
-    return settle({ items, total: items.length });
-  }
-
-  const query = new URLSearchParams();
-  if (params.search?.trim()) query.set("q", params.search.trim());
-  if (params.compOnly) query.set("comp", "true");
-  return apiRequest<Page<CreditLedgerEntry>>(`/admin/credit-ledger?${query.toString()}`);
+  if (params.organizationId) query.set("organization_id", params.organizationId);
+  if (params.currency) query.set("currency", params.currency);
+  if (params.entryType) query.set("entry_type", params.entryType);
+  query.set("page", String(params.page ?? 1));
+  query.set("size", String(params.size ?? 200));
+  return apiRequest<Page<CreditLedgerEntryAdminOut>>(`/admin/credit-ledger?${query.toString()}`);
 }
 
 /* ------------------------------- audit ------------------------------ */
 
-export interface ListAuditParams {
-  search?: string;
-  action?: string | "all";
-}
-
-export async function listAudit(params: ListAuditParams = {}): Promise<Page<AuditEntry>> {
+/** Recent operator-override audit rows across every organization. Unfiltered. */
+export async function listAudit(): Promise<AuditListOut> {
   if (USE_FIXTURES) {
-    const { AUDIT_LOG } = await loadFixtures();
-    const q = params.search?.trim() ?? "";
-    const items = AUDIT_LOG.filter((a) => {
-      const matchQuery =
-        q === "" ||
-        matches(a.summary, q) ||
-        matches(a.actor, q) ||
-        (a.organization_name ? matches(a.organization_name, q) : false);
-      const matchAction = !params.action || params.action === "all" || a.action === params.action;
-      return matchQuery && matchAction;
-    });
-    return settle({ items, total: items.length });
+    const { buildAuditListOut } = await loadFixtures();
+    return settle(buildAuditListOut());
   }
-
-  const query = new URLSearchParams();
-  if (params.search?.trim()) query.set("q", params.search.trim());
-  if (params.action && params.action !== "all") query.set("action", params.action);
-  return apiRequest<Page<AuditEntry>>(`/admin/audit?${query.toString()}`);
+  return apiRequest<AuditListOut>("/admin/audit");
 }
 
 /* --------------------------- client pricing -------------------------- */
@@ -265,8 +204,9 @@ export async function setOrganizationPrice(
 /**
  * Drive a lifecycle override. Live, this POSTs to `/api/v1/admin/overrides` (console-service),
  * which delegates to the owning service's `/internal/v1` API under a service token (ADR-0003
- * §2). In fixtures mode it synthesizes the accepted result and the audit row the endpoint would
- * write, so the action forms demonstrate the full flow.
+ * §2). `delegation.py` resolves exactly `suspend` and `comp_grant` — see `OverrideRequest` in
+ * `types.ts` for what each requires. In fixtures mode it synthesizes the accepted result so the
+ * action forms demonstrate the full flow.
  */
 export async function postOverride(request: OverrideRequest): Promise<OverrideResult> {
   if (USE_FIXTURES) {

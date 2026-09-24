@@ -1,11 +1,5 @@
 import type { ReactNode } from "react";
 
-import type {
-  AccountStatus,
-  Invoice,
-  LedgerKind,
-  PlanVersionState,
-} from "@/api/types";
 import { cn } from "@/lib/cn";
 
 export type PillTone =
@@ -47,7 +41,7 @@ export function StatusPill({
   );
 }
 
-const ACCOUNT_TONE: Record<AccountStatus, PillTone> = {
+const KNOWN_ACCOUNT_TONE: Record<string, PillTone> = {
   active: "active",
   trial: "trial",
   past_due: "pastdue",
@@ -55,7 +49,7 @@ const ACCOUNT_TONE: Record<AccountStatus, PillTone> = {
   cancelled: "cancelled",
 };
 
-const ACCOUNT_LABEL: Record<AccountStatus, string> = {
+const KNOWN_ACCOUNT_LABEL: Record<string, string> = {
   active: "Active",
   trial: "Trial",
   past_due: "Past due",
@@ -63,54 +57,34 @@ const ACCOUNT_LABEL: Record<AccountStatus, string> = {
   cancelled: "Cancelled",
 };
 
-export function AccountStatusPill({ status }: { status: AccountStatus }) {
-  return <StatusPill tone={ACCOUNT_TONE[status]}>{ACCOUNT_LABEL[status]}</StatusPill>;
+/** A lifecycle status pill. Several of the console's status fields are a free `str` server-side
+ *  (`OrgDetailOut.status`, `SubscriptionOut.state`, `ProductSubscriptionOut.state`), not a closed
+ *  enum — an unrecognized value falls back to a plain, neutral pill with the raw text rather than
+ *  throwing on a lookup miss. */
+export function AccountStatusPill({ status }: { status: string }) {
+  const tone = KNOWN_ACCOUNT_TONE[status] ?? "accent";
+  const label = KNOWN_ACCOUNT_LABEL[status] ?? status;
+  return <StatusPill tone={tone}>{label}</StatusPill>;
 }
 
-const VERSION_TONE: Record<PlanVersionState, PillTone> = {
-  draft: "cancelled",
-  published: "active",
-  grandfathered: "comp",
-};
-
-const VERSION_LABEL: Record<PlanVersionState, string> = {
-  draft: "Draft",
-  published: "Published",
-  grandfathered: "Grandfathered",
-};
-
-export function PlanVersionPill({ state }: { state: PlanVersionState }) {
-  return <StatusPill tone={VERSION_TONE[state]}>{VERSION_LABEL[state]}</StatusPill>;
-}
-
-const INVOICE_TONE: Record<Invoice["state"], PillTone> = {
-  draft: "pastdue",
-  finalized: "active",
-  void: "cancelled",
-};
-
-const INVOICE_LABEL: Record<Invoice["state"], string> = {
-  draft: "Draft",
-  finalized: "Finalized",
-  void: "Void",
-};
-
-export function InvoiceStatePill({ state }: { state: Invoice["state"] }) {
-  return <StatusPill tone={INVOICE_TONE[state]}>{INVOICE_LABEL[state]}</StatusPill>;
-}
-
-const LEDGER_TONE: Record<LedgerKind, PillTone> = {
+const KNOWN_LEDGER_TONE: Record<string, PillTone> = {
   grant: "active",
-  consumption: "cancelled",
+  consume: "cancelled",
   reversal: "pastdue",
+  expiry: "suspended",
 };
 
-const LEDGER_LABEL: Record<LedgerKind, string> = {
+const KNOWN_LEDGER_LABEL: Record<string, string> = {
   grant: "Grant",
-  consumption: "Consumption",
+  consume: "Consumption",
   reversal: "Reversal",
+  expiry: "Expiry",
 };
 
-export function LedgerKindPill({ kind }: { kind: LedgerKind }) {
-  return <StatusPill tone={LEDGER_TONE[kind]}>{LEDGER_LABEL[kind]}</StatusPill>;
+/** `entry_type` is a free `str` at the API boundary too (constrained only by a database check
+ *  constraint the client can't see), so this falls back the same way `AccountStatusPill` does. */
+export function LedgerKindPill({ kind }: { kind: string }) {
+  const tone = KNOWN_LEDGER_TONE[kind] ?? "accent";
+  const label = KNOWN_LEDGER_LABEL[kind] ?? kind;
+  return <StatusPill tone={tone}>{label}</StatusPill>;
 }

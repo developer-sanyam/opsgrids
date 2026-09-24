@@ -4,8 +4,8 @@ import type { FormEvent } from "react";
 import { getOrganizationPricing, setOrganizationPrice } from "@/api/client";
 import type {
   BillingInterval,
-  OrganizationRow,
   PricingHistoryEntry,
+  PricingOrgRef,
   PricingSubscriptionRef,
   ProductCurrentPrice,
   ProductPricing,
@@ -141,7 +141,7 @@ function ProductHistory({ product }: { product: ProductPricing }) {
 /* -------------------------------- the dialog ------------------------------- */
 
 interface SetPriceDialogProps {
-  org: OrganizationRow;
+  org: PricingOrgRef;
   product: ProductPricing;
   onClose: () => void;
   onSuccess: () => void;
@@ -400,7 +400,7 @@ function SetPriceDialog({ org, product, onClose, onSuccess }: SetPriceDialogProp
 
 /* -------------------------------- the card -------------------------------- */
 
-export function ClientPricingCard({ org }: { org: OrganizationRow }) {
+export function ClientPricingCard({ org }: { org: PricingOrgRef }) {
   const [reloadKey, setReloadKey] = useState(0);
   const [dialogProduct, setDialogProduct] = useState<ProductPricing | null>(null);
   const { hasRole } = useAuth();
