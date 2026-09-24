@@ -20,9 +20,12 @@ limited by IP instead — the *caller's* IP (`_resolve_client`: `X-Forwarded-For
 from a configured proxy and read from the right), with a ceiling over all callers combined, one for
 the credential endpoints and one for everything else public. Provider webhooks
 (`GatewayPolicy.webhook_paths`) take a third route: no token, but exact path and method, no
-cookie or `Authorization` forwarded, and no limit except their own address's *rejected*
-deliveries. Every unauthenticated request whose body the gateway buffers has a read deadline and
-a slot (`_BodySlots`), so a stranger cannot hold memory by sending half a body and stopping.
+cookie or `Authorization` forwarded, an address-and-method-scoped arrival cap, and a lockout on
+*rejected* deliveries an address inside `webhook_provider_cidrs` is exempt from. Every
+unauthenticated request whose body the gateway buffers gets a deadline scaled to its declared
+size (`_unauth_body_deadline`) and a slot in its own traffic class's pool (`_body_slot_pools`),
+so a stranger cannot hold memory by sending part of a body and stopping, and a class saturated
+this way cannot deny any other.
 
 The proxy step caps the request body (`DEFAULT_MAX_BODY_BYTES`, or a route's own override)
 and enforces it against the bytes actually read. The gateway buffers a body whole before
@@ -208,6 +211,57 @@ def parse_trusted_proxies(raw: Iterable[str]) -> tuple[IPNetwork, ...]:
                 "unique-local range (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, "
                 "::1/128, 169.254.0.0/16, fe80::/10, fc00::/7); trusting an address a host on "
                 "the internet can hold lets it choose the address it is rate limited under"
+            )
+        networks.append(network)
+    return tuple(networks)
+
+
+#: The narrowest a `WEBHOOK_PROVIDER_CIDRS` entry may be: a provider's published range is public
+#: by definition, so — unlike `parse_trusted_proxies` — there is no allow-list of *where* it may
+#: live. The risk here runs the other way: an entry that is too *wide* silently exempts a slice of
+#: the internet from the rejection lockout. `/8` (IPv4) and `/24` (IPv6) are generous enough for
+#: any real provider range (Razorpay's and Meta's published blocks are far narrower) while still
+#: catching the paste-the-wrong-thing case — a `/0`, a typo'd prefix length, a bare `0.0.0.0`.
+_PROVIDER_CIDR_MINIMUM_PREFIX_V4 = 8
+_PROVIDER_CIDR_MINIMUM_PREFIX_V6 = 24
+
+
+def parse_provider_cidrs(raw: Iterable[str]) -> tuple[IPNetwork, ...]:
+    """Parse `WEBHOOK_PROVIDER_CIDRS`: public ranges a provider's own deliveries are known to
+    originate from, exempted from the per-address *rejection* lockout (`GatewayPolicy.
+    webhook_provider_cidrs` — the arrival limit still applies to them; see `build_gateway`).
+
+    Empty by default, deliberately: guessing at Razorpay's or Meta's current published ranges and
+    shipping them in this repository would be wrong the day either provider changes them, silently
+    and with nothing here to notice. Filling it in from the providers' own current documentation is
+    the deploying owner's job (RUNBOOK, "Provider webhooks").
+
+    Refuses at boot, the same class of failure as `parse_trusted_proxies`, but checks the opposite
+    thing: not *where* the range may live (any public range is expected here), only *how wide* an
+    exemption a single entry may buy — a `/0`, or anything wider than `_PROVIDER_CIDR_MINIMUM_
+    PREFIX_V4`/`_V6`, is refused with the entry named.
+    """
+    networks: list[IPNetwork] = []
+    for item in raw:
+        text = item.strip()
+        if not text:
+            continue
+        try:
+            network = ipaddress.ip_network(text, strict=False)
+        except ValueError as exc:
+            raise ValueError(
+                f"webhook provider CIDR {text!r} is not an IP address or a CIDR range"
+            ) from exc
+        minimum = (
+            _PROVIDER_CIDR_MINIMUM_PREFIX_V4
+            if isinstance(network, ipaddress.IPv4Network)
+            else _PROVIDER_CIDR_MINIMUM_PREFIX_V6
+        )
+        if network.prefixlen < minimum:
+            raise ValueError(
+                f"webhook provider CIDR {text!r} is wider than the /{minimum} this deployment "
+                "allows — a typo this wide would exempt a slice of the internet from the "
+                "rejection lockout, not just one provider's range"
             )
         networks.append(network)
     return tuple(networks)
@@ -505,27 +559,62 @@ class GatewayPolicy:
     #: the gateway service, which also tests that every public path is classified one way or the
     #: other, so a new public path is a decision and not an accident.
     credential_paths: frozenset[str] = frozenset()
-    #: Rejected webhook deliveries per address per minute — the only limit on a webhook path. The
-    #: bucket is *read* before a delivery is forwarded and *spent* only when the service answers
-    #: 400, 401, 403 or 422 (a bad signature, a wrong verify token, an unattributable body).
-    #: A delivery that succeeds, or that fails on our side (5xx, timeout), costs nothing, and no
-    #: bucket a stranger can fill blocks a delivery from a different address: an attacker
-    #: hammering the path is refused after this many failures and is the only one who is.
-    webhook_failure_limit: int = 60
+    #: Rejected webhook deliveries per (method, path, address) per minute. The bucket is *read*
+    #: before a delivery is forwarded and *spent* only when the service answers 400, 401 or 403,
+    #: or the gateway itself refuses the body with 408 or 413 (a bad signature, a wrong verify
+    #: token, a body that never arrived, one that was too large). A delivery that succeeds, that
+    #: fails on our side (5xx, a timeout), or that the service answers 422 (an authentic event it
+    #: cannot yet attribute — a case the owning service now resolves as 200 on retry, not this
+    #: gateway's business to punish) costs nothing. Keyed by **method as well as path**, so Meta's
+    #: `GET` handshake failing does not spend the same bucket as its `POST` deliveries — a third
+    #: party can point their own Meta app or Razorpay webhook at our URL and make either provider
+    #: send a failing request from a shared egress address otherwise. 600 (ten times round one's
+    #: figure) because that address space is genuinely shared: a provider's egress IP carries
+    #: every merchant's traffic, not just ours, so the bar for "this address is hostile" has to be
+    #: higher than "any other unauthenticated caller". `webhook_provider_cidrs` exempts a known
+    #: provider range from this bucket entirely; `webhook_arrival_limit` bounds total traffic
+    #: instead, on the same per-address terms, so nothing here reopens the shared-bucket
+    #: starvation round one closed.
+    webhook_failure_limit: int = 600
+    #: Every request to a webhook path, per (method, path, address), regardless of outcome — the
+    #: total-traffic cap the failure bucket does not provide, restored per-address only (never a
+    #: ceiling shared across addresses, which is what let five hostile addresses starve every
+    #: other one in round one). Generous: a provider's real burst is nothing like this.
+    webhook_arrival_limit: int = 600
+    #: Public ranges a provider's own deliveries are known to originate from
+    #: (`parse_provider_cidrs`) — addresses inside are **never** subject to `webhook_failure_
+    #: limit`'s lockout, because that address is shared with every other merchant using the same
+    #: provider and a third party pointing their own webhook at our URL should not be able to
+    #: burn it. `webhook_arrival_limit` still applies to them. Empty by default: nobody's ranges
+    #: are guessed into this repository (RUNBOOK, "Provider webhooks").
+    webhook_provider_cidrs: tuple[IPNetwork, ...] = ()
     #: Proxies whose `X-Forwarded-For` this gateway believes; see `_resolve_client`. Empty (the
     #: default) believes nobody, so the rate limit keys on the socket peer. When set, every
     #: request the gateway forwards carries exactly one `X-Forwarded-For`: the resolved caller.
     trusted_proxies: tuple[IPNetwork, ...] = ()
-    #: How long an *unauthenticated* request may take to send its body before the read is
-    #: abandoned (408) and what was buffered released. The gateway buffers a body whole, and a
-    #: client that sends half of one and stops holds that memory for as long as the connection
-    #: lives; without this a handful of connections held the container's memory limit.
-    #: Authenticated requests are not subject to it — a slow document upload is legitimate.
+    #: The *ceiling* on how long an unauthenticated request may take to send its body — see
+    #: `_unauth_body_deadline` for the actual, usually shorter, per-request figure. The gateway
+    #: buffers a body whole, and a client that sends part of one and stops holds that memory for
+    #: as long as the connection lives; without this a handful of connections held the container's
+    #: memory limit. Authenticated requests are not subject to it — a slow document upload is
+    #: legitimate.
     unauth_body_read_timeout: float = 10.0
-    #: How many unauthenticated requests one address may have in flight at once, and how many the
-    #: process will hold in total, before answering 503 with `Retry-After: 5`. A slot is held from
-    #: the moment the request is accepted until its response has been sent, because the body
-    #: stays in memory that long. Bounds the buffered bytes to `slots * max_body_bytes`.
+    #: How many unauthenticated requests one address may have in flight *in one traffic class* at
+    #: once, and how many the process will hold *for that class* in total, before answering 503
+    #: with `Retry-After: 5`. A slot is held from the moment the request is accepted until its
+    #: response has been sent, because the body stays in memory that long.
+    #:
+    #: **Per class, not one shared pool.** `build_gateway` opens one independent `_BodySlots` per
+    #: traffic class — one per declared webhook path, one for the credential public paths, one for
+    #: the content ones — each sized by these same two numbers. A single shared pool meant eight
+    #: addresses stalling four bodies apiece (32, exactly the old global cap) denied Razorpay,
+    #: WhatsApp, sign-in, session refresh and the storefront catalogue all at once, with no
+    #: attacker required: the same 32 requests arrive for free during an ordinary auth redeploy,
+    #: while `_send_riding_out_restarts` holds them open waiting for the container to come back.
+    #: Splitting the pool cannot make one class's own saturation harmless to *itself* — that is
+    #: what a bounded pool means — but it stops it from being harmless to every *other* class too.
+    #: Buffered memory is therefore bounded per class at `slots * that class's largest body cap`,
+    #: not by one number shared across everything unauthenticated.
     unauth_body_slots_per_address: int = 4
     unauth_body_slots_global: int = 32
 
@@ -551,7 +640,12 @@ class GatewayPolicy:
         # incremented first and `count > 0` is true for the first request. Where `0` does mean
         # off — the shared ceilings, documented above — it is allowed; everywhere else it is a
         # configuration mistake and stops boot rather than the first request.
-        for name in ("rate_limit", "anonymous_rate_limit", "webhook_failure_limit"):
+        for name in (
+            "rate_limit",
+            "anonymous_rate_limit",
+            "webhook_failure_limit",
+            "webhook_arrival_limit",
+        ):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be at least 1, got {getattr(self, name)}")
         for name in ("anonymous_global_rate_limit", "anonymous_content_global_rate_limit"):
@@ -679,11 +773,19 @@ class PermissionResolver:
 
 
 #: What a service answers to a webhook it will not accept: 400 (bad or missing signature), 401
-#: (the same, or no secret configured), 403 (Meta's verify-token handshake with the wrong token)
-#: and 422 (a body it cannot attribute). These, and only these, are spent from an address's bucket
-#: of rejected deliveries. 2xx is a delivery that worked; 5xx and timeouts are our failure, not
-#: the caller's, and must never lock a provider out.
-_WEBHOOK_REJECTION_STATUSES = frozenset({400, 401, 403, 422})
+#: (the same, or no secret configured) and 403 (Meta's verify-token handshake with the wrong
+#: token). These, and only these *service* answers, are spent from an address's bucket of
+#: rejected deliveries — the gateway's own 408 (body never arrived) and 413 (body too large) are
+#: spent too, but they never produce a `Response` to check here (see the `except` clause in
+#: `build_gateway`'s webhook branch) — they raise before one exists. 2xx is a delivery that worked;
+#: 5xx and timeouts are our failure, not the caller's, and must never lock a provider out.
+#:
+#: **422 is deliberately not here.** It used to be — a body an authentic provider sends but this
+#: platform cannot yet attribute — and every provider retry of a real, signed event re-spent the
+#: same bucket a third party's forgeries would. The owning service now answers those 200 instead
+#: (so the provider stops retrying), but the exclusion holds regardless of that: a signature
+#: passed, so the request is not what this lockout exists to stop.
+_WEBHOOK_REJECTION_STATUSES = frozenset({400, 401, 403})
 
 
 class _BodySlots:
@@ -740,6 +842,28 @@ class _BodySlots:
                 del self._held[address]
 
 
+def _body_slot_pools(policy: GatewayPolicy) -> dict[str, _BodySlots]:
+    """One independent `_BodySlots` per traffic class, all sized by the same two policy numbers.
+
+    The classes are the ones `build_gateway`'s proxy function itself sorts every unauthenticated
+    request into: `"credential"`, `"content"`, and one `f"webhook:{path}"` per entry in
+    `policy.webhook_paths`. Precomputed here, once, at startup — the set of webhook paths is
+    static for the life of the process, so there is nothing to create lazily and no lock needed
+    around a dict a concurrent request might otherwise be populating.
+    """
+    classes = {"credential", "content", *(f"webhook:{path}" for path in policy.webhook_paths)}
+    return {
+        name: _BodySlots(policy.unauth_body_slots_per_address, policy.unauth_body_slots_global)
+        for name in classes
+    }
+
+
+def _in_any_network(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address, networks: tuple[IPNetwork, ...]
+) -> bool:
+    return any(address in network for network in networks)
+
+
 def build_gateway(
     app: FastAPI,
     *,
@@ -750,10 +874,10 @@ def build_gateway(
 ) -> None:
     """Mount the catch-all proxy on `app`."""
 
-    # One per gateway, shared by every unauthenticated request it serves (see `_BodySlots`).
-    body_slots = _BodySlots(policy.unauth_body_slots_per_address, policy.unauth_body_slots_global)
-    # Readable by the tests and by anything that wants to export it as a gauge: how many
-    # unauthenticated requests are in flight right now.
+    # One independent pool per traffic class (see `_body_slot_pools`), so a stalled or saturated
+    # class cannot deny another. Readable by the tests and by anything that wants to export it as
+    # a gauge: how many unauthenticated requests are in flight right now, per class.
+    body_slots = _body_slot_pools(policy)
     app.state.body_slots = body_slots
 
     @app.api_route(
@@ -831,28 +955,47 @@ def build_gateway(
             # untouched. Judged on the same normalised `full_path` as everything above, exactly
             # and per method (see `GatewayPolicy.webhook_paths`).
             #
-            # **Only rejections are counted, and only per address.** Before the delivery is
-            # forwarded the address's bucket of *rejected* deliveries on this path is read (and
-            # spent by nobody yet); after the service answers, one is added if the answer was a
-            # rejection. A delivery that succeeds, or that fails on our side, costs nothing, and
-            # there is no ceiling over all addresses and no total-requests bucket — anything a
-            # stranger could fill would also refuse the genuine delivery from a different
-            # address, and a provider disables a webhook that fails for about a day. Five
-            # addresses posting bad signatures used to be enough to do that to every genuine
-            # Razorpay and Meta delivery for most of each minute.
+            # Two independent limits, both per address and keyed by **method as well as path**
+            # (`hook-fail`/`hook-arrival:<method>:<path>:<address>`) — method-keying is what stops
+            # Meta's `GET` handshake failing from spending the same bucket as its `POST`
+            # deliveries, which mattered once addresses could be shared: a third party can point
+            # their own Meta app or Razorpay webhook at our URL and make either provider send a
+            # failing request from an egress address our genuine merchants also deliver from.
             #
-            # The residual is the cost of a rejection, not its consequence: a signature is an
-            # HMAC checked before any database statement, so unsigned traffic from many addresses
-            # only spends CPU here and in the service. Bounded by the slots below; the real
-            # mitigation is an edge allow-list of the providers' published ranges, which is the
-            # owner's to configure (RUNBOOK, "Provider webhooks").
+            # **`hook-fail`: only rejections, and only the ones this address is actually
+            # responsible for.** Before the delivery is forwarded, the address's bucket of
+            # *rejected* deliveries on this method and path is read (nobody has spent it yet);
+            # after the service answers, one is added only for a rejection (`_WEBHOOK_REJECTION_
+            # STATUSES`, plus the gateway's own 408/413 — the `except` below). A delivery that
+            # succeeds, that fails on our side, or that the service answers 422 (an authentic
+            # event it cannot yet attribute) costs nothing. Skipped entirely for an address inside
+            # `webhook_provider_cidrs`: that range is shared with every other merchant on the same
+            # provider, and one third party's forgeries must not be able to burn it.
+            #
+            # **`hook-arrival`: every request, no exemption, never shared across addresses.**
+            # Round one removed a bucket exactly this shape because it was shared *across*
+            # addresses — a handful of hostile ones could fill it and refuse a genuine one. This
+            # one is per address only, so it cannot repeat that: it bounds one address's total
+            # traffic on this method and path without ever being able to starve another.
             caller = client_limiter_key(request, policy.trusted_proxies)
-            rejected = f"hook-fail:{full_path}:{caller}"
-            await check_rate_limit(
-                rejected,
-                limit=policy.webhook_failure_limit,
-                detail="Too many rejected deliveries from this address. Retry shortly.",
+            caller_address = _resolve_client(request, policy.trusted_proxies)
+            exempt = isinstance(
+                caller_address, ipaddress.IPv4Address | ipaddress.IPv6Address
+            ) and _in_any_network(caller_address, policy.webhook_provider_cidrs)
+
+            bucket_prefix = f"{request.method}:{full_path}:{caller}"
+            rejected = f"hook-fail:{bucket_prefix}"
+            await enforce_rate_limit(
+                f"hook-arrival:{bucket_prefix}",
+                limit=policy.webhook_arrival_limit,
+                detail="Too many requests from this address. Retry shortly.",
             )
+            if not exempt:
+                await check_rate_limit(
+                    rejected,
+                    limit=policy.webhook_failure_limit,
+                    detail="Too many rejected deliveries from this address. Retry shortly.",
+                )
             # A provider is a server, not a browser. None of these mean anything to it and none
             # should reach the service that verifies its signature: a session cookie or bearer
             # token that rode along would be a credential handed to a route that ignores it, and
@@ -864,18 +1007,30 @@ def build_gateway(
             # tenant a provider is calling for, and the body's own routing key does.
             for name in [n for n in headers if _is_browser_credential(n)]:
                 del headers[name]
-            async with body_slots.hold(caller):
-                response = await _forward(
-                    request,
-                    route,
-                    headers,
-                    policy,
-                    full_path,
-                    settings,
-                    webhook=True,
-                    unauthenticated=True,
-                )
-            if response.status_code in _WEBHOOK_REJECTION_STATUSES:
+            # Its own pool (`_body_slot_pools`): a stalled body on this path cannot deny a
+            # different webhook path, sign-in, session refresh or the storefront catalogue.
+            pool = body_slots[f"webhook:{full_path}"]
+            try:
+                async with pool.hold(caller):
+                    response = await _forward(
+                        request,
+                        route,
+                        headers,
+                        policy,
+                        full_path,
+                        settings,
+                        webhook=True,
+                        unauthenticated=True,
+                    )
+            except (PayloadTooLargeProblem, RequestTimeoutProblem):
+                # The gateway's own refusal, before a `Response` exists to read a status from —
+                # counted as a rejection like the service's 400/401/403, because it is one: a
+                # body that never arrived or was declared too large is not a delivery this
+                # address gets to keep retrying for free.
+                if not exempt:
+                    await record_rate_limit_hit(rejected)
+                raise
+            if not exempt and response.status_code in _WEBHOOK_REJECTION_STATUSES:
                 await record_rate_limit_hit(rejected)
             return response
 
@@ -896,7 +1051,8 @@ def build_gateway(
             # sign-in flood cannot take a catalogue offline.
             client_ip = client_limiter_key(request, policy.trusted_proxies)
             await enforce_rate_limit(f"anon:{client_ip}", limit=policy.anonymous_rate_limit)
-            if full_path in policy.credential_paths:
+            is_credential = full_path in policy.credential_paths
+            if is_credential:
                 ceiling, ceiling_limit = "anon-global", policy.anonymous_global_rate_limit
                 ceiling_detail = (
                     "Too many sign-in and account requests are arriving right now. "
@@ -910,7 +1066,10 @@ def build_gateway(
                 await enforce_rate_limit(ceiling, limit=ceiling_limit, detail=ceiling_detail)
             if (slug := _slug_from_host(request)) is not None:
                 headers["x-org-slug"] = slug
-            async with body_slots.hold(client_ip):
+            # Its own pool (`_body_slot_pools`): a stalled credential body cannot deny a webhook,
+            # the storefront catalogue, or the other side of this same split.
+            pool = body_slots["credential" if is_credential else "content"]
+            async with pool.hold(client_ip):
                 return await _forward(
                     request, route, headers, policy, full_path, settings, unauthenticated=True
                 )
@@ -1137,6 +1296,49 @@ async def _read_capped_body(
         ) from exc
 
 
+#: The throughput an unauthenticated body is held to, once it has declared how big it is — see
+#: `_unauth_body_deadline`. Chosen well under anything a real client on an ordinary connection
+#: sends at; a caller who cannot sustain even this is not sending a body, it is holding a slot.
+_UNAUTH_BODY_MINIMUM_BYTES_PER_SECOND = 64 * 1024
+#: The floor added to the throughput budget below, so a tiny declared body is not given an
+#: unreasonably short deadline merely for being tiny — TCP and TLS setup alone can eat a
+#: meaningful fraction of a second on a slow path.
+_UNAUTH_BODY_DEADLINE_FLOOR_SECONDS = 2.0
+
+
+def _unauth_body_deadline(policy: GatewayPolicy, request: Request) -> float:
+    """How long this *particular* unauthenticated request gets to finish sending its body.
+
+    Round one gave every unauthenticated body the same flat `unauth_body_read_timeout` (10s)
+    regardless of how big it claimed to be. That is generous to exactly the shape of caller this
+    guard exists to stop: a credential body is a few hundred bytes, so declaring one and then
+    trickling it in at a few bytes a second held a slot for the full 10s on every attempt — and
+    the per-address anonymous rate limit (`anonymous_rate_limit`, 60/min) does nothing to a caller
+    who is not finishing enough requests to spend it.
+
+    So the deadline scales with what the request itself claims to be: `_UNAUTH_BODY_DEADLINE_
+    FLOOR_SECONDS` plus one second per `_UNAUTH_BODY_MINIMUM_BYTES_PER_SECOND` declared, capped at
+    the flat ceiling (`unauth_body_read_timeout`) so a large, legitimate declared body — a
+    WhatsApp delivery near its 3 MiB cap — is never held to *less* time than before. A request
+    with no usable `Content-Length` (chunked, or none at all) gets the flat ceiling outright:
+    there is nothing declared to compute a proportional budget from, and refusing to guess is
+    the same choice `_read_capped_body`'s own size check already makes.
+
+    The effect that matters: a credential body under a kilobyte now gets on the order of two
+    seconds, not ten. Refreshing four held slots before each expires needs on the order of two
+    requests a second sustained — well past what 60 requests a minute allows once the very first
+    round of holds has been placed, so the per-address rate limit (checked *before* a slot is
+    even requested) starts refusing new attempts long before the caller can keep the pool full.
+    """
+    declared = request.headers.get("content-length")
+    if declared is None or not declared.isdigit():
+        return policy.unauth_body_read_timeout
+    proportional = _UNAUTH_BODY_DEADLINE_FLOOR_SECONDS + (
+        int(declared) / _UNAUTH_BODY_MINIMUM_BYTES_PER_SECOND
+    )
+    return min(policy.unauth_body_read_timeout, proportional)
+
+
 def _is_browser_credential(header: str) -> bool:
     """A request header that only a browser session has any use for."""
     name = header.lower()
@@ -1173,8 +1375,8 @@ async def _forward(
     # must cost the gateway neither the memory nor a connection to a service that would
     # only refuse it later.
     limit = policy.max_body_bytes if route.max_body_bytes is None else route.max_body_bytes
-    # An unauthenticated caller also has a deadline for sending it (`unauth_body_read_timeout`).
-    read_timeout = policy.unauth_body_read_timeout if unauthenticated else None
+    # An unauthenticated caller also has a deadline for sending it — see `_unauth_body_deadline`.
+    read_timeout = _unauth_body_deadline(policy, request) if unauthenticated else None
     try:
         body = await _read_capped_body(request, limit, read_timeout)
     except RequestTimeoutProblem:
@@ -1296,5 +1498,6 @@ __all__ = [
     "client_address",
     "client_limiter_key",
     "http_client",
+    "parse_provider_cidrs",
     "parse_trusted_proxies",
 ]

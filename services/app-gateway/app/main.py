@@ -30,6 +30,7 @@ from platform_core.gateway import (
     RouteTable,
     build_gateway,
     http_client,
+    parse_provider_cidrs,
     parse_trusted_proxies,
 )
 from platform_core.logging import get_logger
@@ -133,14 +134,20 @@ WEBHOOK_PUBLIC_PATHS: Mapping[str, frozenset[str]] = MappingProxyType(
 #: adding a public path is a decision about its ceiling rather than a default nobody chose.
 #:
 #: *Credential* endpoints take something a stranger could guess — a password, a one-time code, a
-#: reset token, an invitation token — or create something (a sign-up), and share
-#: `anonymous_global_rate_limit` (`anon-global`). Everything else is *content* and shares
-#: `anonymous_content_global_rate_limit` (`anon-content-global`): a published catalogue, a store's
-#: identity, an enquiry, the unsubscribe link (a prefix; always content), and the session plumbing
-#: (`refresh` needs the refresh cookie, `select-org` a pre-auth token, `sso/*` a `state` this
-#: service issued) — none of which can be guessed into. Keeping the two apart is the point: with
-#: one ceiling, about a hundred storefront visitors at 60 requests a minute each exhausted it and
-#: no merchant could sign in anywhere, and a sign-in flood could take every catalogue offline.
+#: reset token, an invitation token — or **cause a write a merchant is notified about** (a sign-up,
+#: a storefront enquiry), and share `anonymous_global_rate_limit` (`anon-global`). Everything else
+#: is *content* and shares `anonymous_content_global_rate_limit` (`anon-content-global`): a
+#: published catalogue, a store's identity, the unsubscribe link (a prefix; always content), and
+#: the session plumbing (`refresh` needs the refresh cookie, `select-org` a pre-auth token,
+#: `sso/*` a `state` this service issued) — none of which can be guessed into or writes anything a
+#: person has to act on. Keeping the two apart is the point: with one ceiling, about a hundred
+#: storefront visitors at 60 requests a minute each exhausted it and no merchant could sign in
+#: anywhere, and a sign-in flood could take every catalogue offline.
+#:
+#: **The enquiry is credential, not content**, unlike the rest of `STOREFRONT_PUBLIC_PATHS`: it
+#: creates a row and notifies the merchant, so a flood of them is a write amplification and an
+#: inbox flood, not idle read traffic — the same shape of harm the credential ceiling exists to
+#: bound, not the content one's "a busy day of real buyers".
 CREDENTIAL_PUBLIC_PATHS = frozenset(
     {
         "/api/v1/auth/login",
@@ -149,6 +156,7 @@ CREDENTIAL_PUBLIC_PATHS = frozenset(
         "/api/v1/auth/password/reset",
         "/api/v1/account/signup",
         "/api/v1/invitations/accept",
+        "/api/v1/storefront/public/enquiry",
     }
 )
 CONTENT_PUBLIC_PATHS = frozenset(
@@ -158,7 +166,7 @@ CONTENT_PUBLIC_PATHS = frozenset(
         "/api/v1/auth/select-org",
         "/api/v1/auth/sso/start",
         "/api/v1/auth/sso/callback",
-        *STOREFRONT_PUBLIC_PATHS,
+        *(STOREFRONT_PUBLIC_PATHS - {"/api/v1/storefront/public/enquiry"}),
     }
 )
 
@@ -180,6 +188,9 @@ policy = GatewayPolicy(
     anonymous_content_global_rate_limit=cfg.anonymous_content_global_rate_limit_per_minute,
     credential_paths=CREDENTIAL_PUBLIC_PATHS,
     webhook_failure_limit=cfg.webhook_failure_limit_per_minute,
+    webhook_arrival_limit=cfg.webhook_arrival_limit_per_minute,
+    # Nobody's ranges are guessed into this repository — see `Settings.webhook_provider_cidrs`.
+    webhook_provider_cidrs=parse_provider_cidrs(cfg.webhook_provider_cidrs),
     unauth_body_read_timeout=cfg.unauth_body_read_timeout_seconds,
     unauth_body_slots_per_address=cfg.unauth_body_max_concurrent_per_address,
     unauth_body_slots_global=cfg.unauth_body_max_concurrent_global,

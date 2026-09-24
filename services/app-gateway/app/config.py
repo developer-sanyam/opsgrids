@@ -13,7 +13,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import NoDecode
 
 from platform_core.config import ServiceSettings, settings_for
-from platform_core.gateway import parse_trusted_proxies
+from platform_core.gateway import parse_provider_cidrs, parse_trusted_proxies
 
 
 class Settings(ServiceSettings):
@@ -54,11 +54,44 @@ class Settings(ServiceSettings):
     #: there can be guessed and a busy day of real buyers is legitimate. Sharing one ceiling let
     #: about a hundred storefront visitors lock every merchant out of signing in. `0` disables it.
     anonymous_content_global_rate_limit_per_minute: int = Field(60000, ge=0)
-    #: Provider webhooks (Razorpay, Meta) have exactly one limit: rejected deliveries per address
-    #: per minute. It is read before a delivery is forwarded and spent only when the service
-    #: answers 400/401/403/422, so a delivery that works — or that fails on our side — costs
-    #: nothing, and nothing a stranger can fill blocks a delivery from another address.
-    webhook_failure_limit_per_minute: int = Field(60, ge=1)
+    #: Provider webhooks (Razorpay, Meta) have two limits, both per (method, path, address).
+    #: `webhook_failure_limit` is read before a delivery is forwarded and spent only when the
+    #: service answers 400/401/403, or the gateway itself refuses the body with 408/413 — a
+    #: delivery that works, that fails on our side, or that the service answers 422 (an authentic
+    #: event it cannot yet attribute) costs nothing. 600, not round one's 60: a provider's egress
+    #: address is shared with every other merchant on it, so the bar for "hostile" has to be
+    #: higher than for any other unauthenticated caller — a third party can point their own Meta
+    #: app or Razorpay webhook at our URL and make either provider send a failing request from an
+    #: address our own merchants also deliver from. `webhook_provider_cidrs` exempts a known
+    #: provider range from this one entirely.
+    webhook_failure_limit_per_minute: int = Field(600, ge=1)
+    #: Every request to a webhook path, per (method, path, address), regardless of outcome —
+    #: restored per-address only, never a bucket shared across addresses (that shape is exactly
+    #: what let five hostile addresses starve every other one before the failure limit existed).
+    #: Applies even inside `webhook_provider_cidrs`.
+    webhook_arrival_limit_per_minute: int = Field(600, ge=1)
+    #: Public ranges a provider's own deliveries are known to originate from — addresses inside
+    #: are exempt from `webhook_failure_limit_per_minute`'s lockout (never from the arrival limit
+    #: above). Comma-separated CIDRs, refused at boot if malformed or wider than `/8` (IPv4) /
+    #: `/24` (IPv6) — a sanity bound on how much of the internet one typo can exempt, not an
+    #: allow-list of *where* the range may be (a provider's range is public by definition).
+    #:
+    #: **Empty by default, deliberately.** Razorpay's and Meta's current published ranges are not
+    #: guessed into this repository — they change on the providers' own schedule, silently and
+    #: with nothing here to notice, and shipping a stale guess would be worse than shipping none.
+    #: Filling this in from the providers' own current documentation is the deploying owner's job
+    #: (RUNBOOK, "Provider webhooks"); an edge allow-list of the same ranges at Caddy or the
+    #: provider-side firewall is the stronger version of the same idea, and is also the owner's.
+    webhook_provider_cidrs: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
+    @field_validator("webhook_provider_cidrs", mode="before")
+    @classmethod
+    def _split_and_validate_provider_cidrs(cls, v: object) -> object:
+        items = [item.strip() for item in v.split(",") if item.strip()] if isinstance(v, str) else v
+        if isinstance(items, list):
+            parse_provider_cidrs(str(item) for item in items)
+        return items
+
     #: How long an unauthenticated request (a webhook or a public path) may take to send its body
     #: before it is abandoned with a 408 and what it sent is released.
     unauth_body_read_timeout_seconds: float = Field(10.0, gt=0)

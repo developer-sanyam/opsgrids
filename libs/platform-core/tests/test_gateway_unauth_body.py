@@ -21,6 +21,7 @@ their request, which is the most the gateway can be holding.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable, Iterator, MutableMapping
 from dataclasses import dataclass
 from typing import Any
@@ -45,6 +46,16 @@ MIB = 1024 * 1024
 WHATSAPP_CAP = 3 * MIB
 #: What the probe sends before it stops: as much as the cap allows, less a byte.
 ALMOST_CAP = WHATSAPP_CAP - 1
+
+#: The traffic-class keys `_body_slot_pools` opens, given this file's own fixture policy
+#: (`LOGIN` is declared a credential path below, so it lands in `"credential"`, not `"content"`).
+CREDENTIAL = "credential"
+CONTENT = "content"
+WEBHOOK = f"webhook:{WHATSAPP}"
+
+
+def _slots(app: FastAPI, name: str) -> Any:
+    return app.state.body_slots[name]
 
 
 class _Settings(ServiceSettings):
@@ -124,9 +135,11 @@ def _build(upstream: _Upstream, monkeypatch: pytest.MonkeyPatch, **policy: Any) 
     settings: dict[str, Any] = {
         "audience": "app",
         "public_paths": frozenset({LOGIN}),
+        "credential_paths": frozenset({LOGIN}),
         "webhook_paths": {WHATSAPP: frozenset({"GET", "POST"})},
         "anonymous_rate_limit": 100_000,
         "webhook_failure_limit": 100_000,
+        "webhook_arrival_limit": 100_000,
         **policy,
     }
     routes = RouteTable(
@@ -272,9 +285,9 @@ class TestFortyHalfSentBodies:
         assert len(finished) == 36
         assert {a.status for a in finished} == {503}
         assert {a.headers["retry-after"] for a in finished} == {"5"}
-        assert app.state.body_slots.in_flight == 4
+        assert _slots(app, WEBHOOK).in_flight == 4
         await _cancel(tasks)
-        assert app.state.body_slots.in_flight == 0, "a cancelled request gives its slot back"
+        assert _slots(app, WEBHOOK).in_flight == 0, "a cancelled request gives its slot back"
 
     async def test_many_addresses_are_bounded_by_the_process_wide_cap(
         self, redis: _FakeRedis, upstream: _Upstream, monkeypatch: pytest.MonkeyPatch
@@ -294,7 +307,7 @@ class TestFortyHalfSentBodies:
         assert held.peak == 32 * size
         assert len(refused) == 68 and {a.status for a in refused} == {503}
         await _cancel(tasks)
-        assert app.state.body_slots.in_flight == 0
+        assert _slots(app, WEBHOOK).in_flight == 0
 
 
 class TestPublicPathsAreGuardedToo:
@@ -315,21 +328,40 @@ class TestPublicPathsAreGuardedToo:
         assert held.peak == 4 * size and held.peak < 64 * MIB
         assert sum(1 for t in tasks if t.done() and t.result().status == 503) == 36
         await _cancel(tasks)
-        assert app.state.body_slots.in_flight == 0
+        assert _slots(app, CREDENTIAL).in_flight == 0
 
-    async def test_a_public_path_and_a_webhook_draw_on_the_same_addresss_slots(
+    async def test_a_stalled_public_path_body_does_not_deny_a_webhook_from_the_same_address(
         self, redis: _FakeRedis, upstream: _Upstream, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """One address, one pool: it cannot hold four on each."""
+        """MAJOR A round two: a single shared pool meant a stalled credential body could deny a
+        webhook, sign-in itself, session refresh and the storefront catalogue all at once — with
+        no attacker needed, since the same 32 requests arrive for free during an ordinary auth
+        redeploy while `_send_riding_out_restarts` holds them open. Each traffic class now has its
+        own pool (`_body_slot_pools`), so saturating one from an address does not touch another,
+        even from that same address."""
         app = _build(upstream, monkeypatch, unauth_body_slots_per_address=1)
         stalled = asyncio.create_task(_slow_post(app, _Held(), path=LOGIN, size=1024))
         await _settle(0.1)
-        assert app.state.body_slots.in_flight == 1
+        assert _slots(app, CREDENTIAL).in_flight == 1
 
+        # The credential pool is saturated (for this address); the webhook pool is untouched.
         assert (await _quick_post(app, path=LOGIN)).status == 503
-        assert (await _quick_post(app, path=WHATSAPP)).status == 503
+        assert (await _quick_post(app, path=WHATSAPP)).status == 200
         await _cancel([stalled])
         assert (await _quick_post(app, path=LOGIN)).status == 200
+
+    async def test_a_stalled_webhook_body_does_not_deny_a_public_path_from_the_same_address(
+        self, redis: _FakeRedis, upstream: _Upstream, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = _build(upstream, monkeypatch, unauth_body_slots_per_address=1)
+        stalled = asyncio.create_task(_slow_post(app, _Held(), path=WHATSAPP, size=1024))
+        await _settle(0.1)
+        assert _slots(app, WEBHOOK).in_flight == 1
+
+        assert (await _quick_post(app, path=WHATSAPP)).status == 503
+        assert (await _quick_post(app, path=LOGIN)).status == 200
+        await _cancel([stalled])
+        assert (await _quick_post(app, path=WHATSAPP)).status == 200
 
 
 class TestTheReadDeadline:
@@ -344,7 +376,7 @@ class TestTheReadDeadline:
         answers = [t.result() for t in tasks]
         assert {a.status for a in answers} == {408}
         assert b"request-timeout" in answers[0].body
-        assert app.state.body_slots.in_flight == 0
+        assert _slots(app, WEBHOOK).in_flight == 0
         assert held.live == 0 and upstream.calls == 0, "nothing reached the service"
         # The address is free again: a genuine delivery from it goes through.
         assert (await _quick_post(app)).status == 200
@@ -363,7 +395,7 @@ class TestTheReadDeadline:
         statuses = [t.result().status for t in tasks]
         # Thirty-two got a slot and timed out; the other eight found none.
         assert statuses.count(408) == 32 and statuses.count(503) == 8
-        assert app.state.body_slots.in_flight == 0
+        assert _slots(app, WEBHOOK).in_flight == 0
 
     async def test_a_public_path_has_the_same_deadline(
         self, redis: _FakeRedis, upstream: _Upstream, monkeypatch: pytest.MonkeyPatch
@@ -402,6 +434,78 @@ class TestTheReadDeadline:
         assert upstream.calls == 1
 
 
+class TestMinimumThroughputDeadline:
+    """MAJOR A.2: the flat 10s deadline was generous to exactly the shape of caller it exists to
+    stop — a credential body is a few hundred bytes, so declaring one and trickling it in held a
+    slot for the full 10s on every attempt. The deadline now scales with what the request itself
+    declares: `2s + declared/64 KiB`, capped at the flat ceiling, so a tiny declared body is held
+    to a much shorter deadline and a large, legitimate one (a WhatsApp delivery near its cap) is
+    never held to less time than before."""
+
+    async def test_a_small_declared_body_gets_a_deadline_near_the_two_second_floor(
+        self, redis: _FakeRedis, upstream: _Upstream, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = _build(upstream, monkeypatch)  # the flat ceiling stays at its 10s default
+        declared = [(b"content-length", b"200")]
+        started = time.monotonic()
+        answer = await _slow_post(app, _Held(), path=LOGIN, size=200, extra_headers=declared)
+        elapsed = time.monotonic() - started
+        assert answer.status == 408
+        assert elapsed < 5.0, f"took {elapsed:.2f}s against a 10s flat cap and a ~2s floor"
+
+    async def test_a_large_declared_body_is_not_held_to_less_time_than_the_flat_cap_allows(
+        self, redis: _FakeRedis, upstream: _Upstream, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A WhatsApp delivery near its 3 MiB cap: `2 + 3_145_727/65536` ≈ 50s, well past the 10s
+        flat ceiling, so the ceiling — not the proportional figure — is what actually applies."""
+        app = _build(upstream, monkeypatch, unauth_body_read_timeout=0.3)
+        declared = [(b"content-length", str(ALMOST_CAP).encode())]
+        started = time.monotonic()
+        answer = await _slow_post(app, _Held(), path=WHATSAPP, size=1024, extra_headers=declared)
+        elapsed = time.monotonic() - started
+        assert answer.status == 408
+        assert elapsed >= 0.3
+
+    async def test_a_request_with_no_declared_length_gets_the_flat_ceiling(
+        self, redis: _FakeRedis, upstream: _Upstream, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Chunked, or simply absent: there is nothing declared to scale a budget from, and
+        refusing to guess is the same choice the body-size cap itself already makes."""
+        app = _build(upstream, monkeypatch, unauth_body_read_timeout=0.3)
+        started = time.monotonic()
+        answer = await _slow_post(app, _Held(), path=LOGIN, size=200)
+        elapsed = time.monotonic() - started
+        assert answer.status == 408
+        assert elapsed >= 0.3
+
+    async def test_one_address_cannot_keep_four_credential_slots_continuously_held(
+        self, redis: _FakeRedis, upstream: _Upstream, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The property that matters: with the anonymous per-address limit in effect, refreshing
+        four held slots before each expires needs more throughput than the limit allows. Four
+        stalled attempts exactly spend a rate limit of four; a fifth is refused by the *rate*
+        limiter, before it can even ask for a slot — so nothing ever refreshes the four, and their
+        own short, declared-size deadline releases every one of them regardless."""
+        app = _build(upstream, monkeypatch, anonymous_rate_limit=4, unauth_body_slots_per_address=4)
+        declared = [(b"content-length", b"200")]
+        tasks = [
+            asyncio.create_task(
+                _slow_post(app, _Held(), path=LOGIN, size=200, extra_headers=declared)
+            )
+            for _ in range(4)
+        ]
+        await _settle(0.1)
+        assert _slots(app, CREDENTIAL).in_flight == 4
+
+        refused = await _quick_post(app, path=LOGIN, headers=declared)
+        assert refused.status == 429, "the rate limit is already spent — no fifth slot is asked for"
+
+        await _settle(2.5)  # past the ~2s throughput-scaled deadline for a 200-byte body
+        assert all(t.done() for t in tasks)
+        assert {t.result().status for t in tasks} == {408}
+        assert _slots(app, CREDENTIAL).in_flight == 0
+
+
 class TestSlotsAreReleasedOnEveryWayOut:
     """One address, one slot, so a leak of any kind shows up as the next request being refused."""
 
@@ -411,7 +515,7 @@ class TestSlotsAreReleasedOnEveryWayOut:
         app = _build(upstream, monkeypatch, unauth_body_slots_per_address=1)
         for _ in range(5):
             assert (await _quick_post(app)).status == 200
-        assert app.state.body_slots.in_flight == 0
+        assert _slots(app, WEBHOOK).in_flight == 0
 
     async def test_after_a_body_over_its_cap(
         self, redis: _FakeRedis, upstream: _Upstream, monkeypatch: pytest.MonkeyPatch
@@ -419,7 +523,7 @@ class TestSlotsAreReleasedOnEveryWayOut:
         app = _build(upstream, monkeypatch, unauth_body_slots_per_address=1)
         over = await _quick_post(app, body=b"x" * (WHATSAPP_CAP + 1))
         assert over.status == 413
-        assert app.state.body_slots.in_flight == 0
+        assert _slots(app, WEBHOOK).in_flight == 0
         assert (await _quick_post(app)).status == 200
 
     async def test_after_a_declared_length_over_its_cap(
@@ -428,7 +532,7 @@ class TestSlotsAreReleasedOnEveryWayOut:
         app = _build(upstream, monkeypatch, unauth_body_slots_per_address=1)
         declared = [(b"content-length", str(WHATSAPP_CAP + 1).encode())]
         assert (await _quick_post(app, headers=declared)).status == 413
-        assert app.state.body_slots.in_flight == 0
+        assert _slots(app, WEBHOOK).in_flight == 0
         assert (await _quick_post(app)).status == 200
 
     async def test_after_a_read_timeout(
@@ -438,7 +542,7 @@ class TestSlotsAreReleasedOnEveryWayOut:
             upstream, monkeypatch, unauth_body_slots_per_address=1, unauth_body_read_timeout=0.1
         )
         assert (await _slow_post(app, _Held(), size=10)).status == 408
-        assert app.state.body_slots.in_flight == 0
+        assert _slots(app, WEBHOOK).in_flight == 0
         assert (await _quick_post(app)).status == 200
 
     async def test_after_the_client_disconnects_mid_body(
@@ -448,7 +552,7 @@ class TestSlotsAreReleasedOnEveryWayOut:
         # What the server does about a dropped connection is not the point; the slot is.
         with pytest.raises(ClientDisconnect):
             await _slow_post(app, _Held(), then="disconnect", size=1000)
-        assert app.state.body_slots.in_flight == 0, "the slot survived a dropped connection"
+        assert _slots(app, WEBHOOK).in_flight == 0, "the slot survived a dropped connection"
         assert (await _quick_post(app)).status == 200
 
     async def test_after_the_service_fails(
@@ -457,7 +561,7 @@ class TestSlotsAreReleasedOnEveryWayOut:
         upstream.fail = httpx.ReadTimeout("slow")
         app = _build(upstream, monkeypatch, unauth_body_slots_per_address=1)
         assert (await _quick_post(app)).status == 503
-        assert app.state.body_slots.in_flight == 0
+        assert _slots(app, WEBHOOK).in_flight == 0
         upstream.fail = None
         assert (await _quick_post(app)).status == 200
 
@@ -467,9 +571,9 @@ class TestSlotsAreReleasedOnEveryWayOut:
         app = _build(upstream, monkeypatch, unauth_body_slots_per_address=1)
         task = asyncio.create_task(_slow_post(app, _Held(), size=1000))
         await _settle(0.1)
-        assert app.state.body_slots.in_flight == 1
+        assert _slots(app, WEBHOOK).in_flight == 1
         await _cancel([task])
-        assert app.state.body_slots.in_flight == 0
+        assert _slots(app, WEBHOOK).in_flight == 0
         assert (await _quick_post(app)).status == 200
 
 
@@ -483,7 +587,7 @@ class TestASlotIsHeldWhileTheBodyIsInMemory:
         app = _build(upstream, monkeypatch, unauth_body_slots_per_address=1)
         first = asyncio.create_task(_quick_post(app))
         await _settle(0.1)
-        assert upstream.calls == 1 and app.state.body_slots.in_flight == 1
+        assert upstream.calls == 1 and _slots(app, WEBHOOK).in_flight == 1
 
         second = await _quick_post(app)
         assert second.status == 503 and second.headers["retry-after"] == "5"
@@ -491,7 +595,7 @@ class TestASlotIsHeldWhileTheBodyIsInMemory:
 
         upstream.gate.set()
         assert (await first).status == 200
-        assert app.state.body_slots.in_flight == 0
+        assert _slots(app, WEBHOOK).in_flight == 0
 
 
 class TestGenuineTrafficStillGetsThrough:
@@ -502,7 +606,7 @@ class TestGenuineTrafficStillGetsThrough:
         held = _Held()
         stalled = [asyncio.create_task(_slow_post(app, held)) for _ in range(3)]
         await _settle(0.1)
-        assert app.state.body_slots.in_flight == 3
+        assert _slots(app, WEBHOOK).in_flight == 3
 
         assert (await _quick_post(app)).status == 200  # the fourth slot, same address
         assert (await _quick_post(app)).status == 200  # and it was given back
@@ -530,17 +634,17 @@ class TestGenuineTrafficStillGetsThrough:
             for i in range(1, 32)
         ]
         await _settle(0.2)
-        assert app.state.body_slots.in_flight == 31
+        assert _slots(app, WEBHOOK).in_flight == 31
 
         assert (await _quick_post(app, peer="13.232.125.1")).status == 200  # the 32nd slot
         # ... and with that one taken too, the next stranger is told to retry.
         one_more = asyncio.create_task(_slow_post(app, held, peer="203.0.113.1", size=1024))
         await _settle(0.1)
-        assert app.state.body_slots.in_flight == 32
+        assert _slots(app, WEBHOOK).in_flight == 32
         refused = await _quick_post(app, peer="13.232.125.2")
         assert refused.status == 503 and refused.headers["retry-after"] == "5"
         await _cancel([*stalled, one_more])
-        assert app.state.body_slots.in_flight == 0
+        assert _slots(app, WEBHOOK).in_flight == 0
 
     async def test_authenticated_requests_take_no_slot(
         self, redis: _FakeRedis, upstream: _Upstream, monkeypatch: pytest.MonkeyPatch
@@ -595,7 +699,7 @@ class TestSlotsAreOnlyForTheUnauthenticated:
         two = _build(upstream, monkeypatch, unauth_body_slots_per_address=1)
         stalled = asyncio.create_task(_slow_post(one, _Held(), size=1024))
         await _settle(0.1)
-        assert one.state.body_slots.in_flight == 1 and two.state.body_slots.in_flight == 0
+        assert _slots(one, WEBHOOK).in_flight == 1 and _slots(two, WEBHOOK).in_flight == 0
         assert (await _quick_post(two)).status == 200
         await _cancel([stalled])
 
@@ -608,4 +712,28 @@ class TestSlotsAreOnlyForTheUnauthenticated:
         async with AsyncClient(transport=transport, base_url="http://t") as client:
             responses = [await client.post(WHATSAPP, content=b"x" * 1000) for _ in range(20)]
         assert {r.status_code for r in responses} == {200}
-        assert app.state.body_slots.in_flight == 0
+        assert _slots(app, WEBHOOK).in_flight == 0
+
+
+class TestBodySlotPoolsArePerClass:
+    """MAJOR A round two, as a structural check: `build_gateway` opens one pool per traffic
+    class, not one shared pool — `_BodySlots` remains the same class it always was, but each is
+    now independent, keyed by `"credential"`, `"content"` and one `f"webhook:{path}"` per declared
+    webhook path."""
+
+    def test_the_pools_this_test_files_own_policy_opens(
+        self, redis: _FakeRedis, upstream: _Upstream, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = _build(upstream, monkeypatch)
+        assert set(app.state.body_slots) == {CREDENTIAL, CONTENT, WEBHOOK}
+
+    async def test_each_pool_is_a_genuinely_separate_object(
+        self, redis: _FakeRedis, upstream: _Upstream, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = _build(upstream, monkeypatch, unauth_body_slots_per_address=1)
+        credential_hold = asyncio.create_task(_slow_post(app, _Held(), path=LOGIN, size=1024))
+        await _settle(0.1)
+        assert _slots(app, CREDENTIAL).in_flight == 1
+        assert _slots(app, WEBHOOK).in_flight == 0
+        assert _slots(app, CONTENT).in_flight == 0
+        await _cancel([credential_hold])

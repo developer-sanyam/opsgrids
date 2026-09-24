@@ -19,6 +19,7 @@ Traversal payloads are driven with a hand-built ASGI scope, not an `httpx` clien
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable, Iterator, MutableMapping
 from typing import Any
 
@@ -36,6 +37,7 @@ from platform_core.gateway import (
     Route,
     RouteTable,
     build_gateway,
+    parse_provider_cidrs,
     parse_trusted_proxies,
 )
 
@@ -175,6 +177,37 @@ async def _raw(app: FastAPI, method: str, raw_path: str, *, body: bytes = b"") -
 
     async def receive() -> MutableMapping[str, Any]:
         return {"type": "http.request", "body": body, "more_body": False}
+
+    async def send(message: MutableMapping[str, Any]) -> None:
+        messages.append(message)
+
+    await app(scope, receive, send)
+    return int(next(m for m in messages if m["type"] == "http.response.start")["status"])
+
+
+async def _once(body: bytes) -> MutableMapping[str, Any]:
+    return {"type": "http.request", "body": body, "more_body": False}
+
+
+async def _drive_with_receive(
+    app: FastAPI, path: str, receive: Callable[[], Any], *, declared: int
+) -> int:
+    """Like `_raw`, but the caller supplies its own `receive()` — for a body that never finishes
+    arriving, where a fixed `body=` argument cannot express the shape."""
+    scope: MutableMapping[str, Any] = {
+        "type": "http",
+        "method": "POST",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "headers": [(b"content-length", str(declared).encode())],
+        "scheme": "http",
+        "server": ("test", 80),
+        "client": ("127.0.0.1", 12345),
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+    }
+    messages: list[MutableMapping[str, Any]] = []
 
     async def send(message: MutableMapping[str, Any]) -> None:
         messages.append(message)
@@ -462,6 +495,9 @@ CADDY = "172.18.0.5"
 TRUSTED = parse_trusted_proxies(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"])
 GENUINE = "13.232.125.1"
 FAILURE_LIMIT = 5
+#: Comfortably above anything a single test drives through one address, so the arrival cap
+#: (MAJOR A.4 / B.1's own limit) never interferes with a test aimed at the *failure* bucket.
+ARRIVAL_HEADROOM = 100_000
 
 
 def _signed_only(request: httpx.Request) -> int:
@@ -473,15 +509,22 @@ def _via_caddy(app: FastAPI, *, peer: str = CADDY) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app, client=(peer, 4000)), base_url="http://t")
 
 
-def _hook_keys(redis: _FakeRedis) -> list[str]:
-    return sorted(k for k in redis.store if k.startswith("rl:hook"))
+def _fail_keys(redis: _FakeRedis) -> list[str]:
+    return sorted(k for k in redis.store if k.startswith("rl:hook-fail"))
+
+
+def _arrival_keys(redis: _FakeRedis) -> list[str]:
+    return sorted(k for k in redis.store if k.startswith("rl:hook-arrival"))
 
 
 class TestOnlyRejectionsAreCounted:
-    """A webhook has one limit — rejected deliveries per address — and nothing a stranger can fill
-    blocks a genuine delivery from somewhere else. Before this, a shared ceiling over all
-    addresses meant five hosts posting bad signatures could 429 every real Razorpay and Meta
-    delivery for most of each minute, and a provider disables a webhook that fails for a day."""
+    """A webhook has two limits, both per address: rejected deliveries (`hook-fail`) and total
+    arrivals (`hook-arrival`, MAJOR A.4/B.1) — never a bucket shared across addresses, so nothing
+    a stranger can fill blocks a genuine delivery from somewhere else. Before the failure bucket
+    existed, a shared ceiling over all addresses meant five hosts posting bad signatures could 429
+    every real Razorpay and Meta delivery for most of each minute, and a provider disables a
+    webhook that fails for a day. `webhook_arrival_limit` is set high in most tests here so it
+    never interferes with what is under test; `TestTheArrivalLimit` below is where it is."""
 
     async def test_attackers_cannot_starve_a_genuine_delivery(
         self, redis: _FakeRedis, upstream: _Upstream
@@ -489,7 +532,12 @@ class TestOnlyRejectionsAreCounted:
         """Probe P2. Five hostile addresses each post far more bad-signature bodies than their
         limit; a genuine, signed delivery from a clean address afterwards is delivered."""
         upstream.answer = _signed_only
-        app = _build(upstream, webhook_failure_limit=FAILURE_LIMIT, trusted_proxies=TRUSTED)
+        app = _build(
+            upstream,
+            webhook_failure_limit=FAILURE_LIMIT,
+            webhook_arrival_limit=ARRIVAL_HEADROOM,
+            trusted_proxies=TRUSTED,
+        )
         async with _via_caddy(app) as client:
             for attacker in range(1, 6):
                 for _ in range(FAILURE_LIMIT * 4):
@@ -511,7 +559,12 @@ class TestOnlyRejectionsAreCounted:
         self, redis: _FakeRedis, upstream: _Upstream
     ) -> None:
         upstream.answer = _signed_only
-        app = _build(upstream, webhook_failure_limit=60, trusted_proxies=TRUSTED)
+        app = _build(
+            upstream,
+            webhook_failure_limit=60,
+            webhook_arrival_limit=ARRIVAL_HEADROOM,
+            trusted_proxies=TRUSTED,
+        )
         async with _via_caddy(app) as client:
             for i in range(200):
                 await client.post(
@@ -530,7 +583,12 @@ class TestOnlyRejectionsAreCounted:
     ) -> None:
         """g2, reshaped. The bucket is read before anything else happens to the request."""
         upstream.answer = _signed_only
-        app = _build(upstream, webhook_failure_limit=FAILURE_LIMIT, trusted_proxies=TRUSTED)
+        app = _build(
+            upstream,
+            webhook_failure_limit=FAILURE_LIMIT,
+            webhook_arrival_limit=ARRIVAL_HEADROOM,
+            trusted_proxies=TRUSTED,
+        )
         async with _via_caddy(app) as client:
             bad = {"X-Forwarded-For": "203.0.113.9"}
             statuses = [
@@ -559,72 +617,87 @@ class TestOnlyRejectionsAreCounted:
         assert other.status_code == 200
         await app.state.http.aclose()
 
-    async def test_a_successful_delivery_never_spends_anything(
+    async def test_a_successful_delivery_never_spends_the_failure_bucket(
         self, redis: _FakeRedis, upstream: _Upstream
     ) -> None:
         upstream.answer = _signed_only
-        app = _build(upstream, webhook_failure_limit=2)
+        app = _build(upstream, webhook_failure_limit=2, webhook_arrival_limit=ARRIVAL_HEADROOM)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
             for _ in range(50):
                 ok = await client.post(
                     RAZORPAY, content=SIGNED_BODY, headers={"X-Razorpay-Signature": "good"}
                 )
                 assert ok.status_code == 200
-        assert _hook_keys(redis) == [], "2xx must not create, let alone increment, a bucket"
+        assert _fail_keys(redis) == [], "2xx must not create, let alone increment, the bucket"
         await app.state.http.aclose()
 
     @pytest.mark.parametrize("status", [500, 502, 503, 504])
-    async def test_a_failure_on_our_side_never_spends_anything(
+    async def test_a_failure_on_our_side_never_spends_the_failure_bucket(
         self, redis: _FakeRedis, upstream: _Upstream, status: int
     ) -> None:
         """The service being down is not the provider's fault and must not lock it out — that
         would turn an outage of ours into a webhook the provider disables."""
         upstream.answer = lambda request: status
-        app = _build(upstream, webhook_failure_limit=2)
+        app = _build(upstream, webhook_failure_limit=2, webhook_arrival_limit=ARRIVAL_HEADROOM)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
             for _ in range(10):
                 assert (await client.post(RAZORPAY, content=SIGNED_BODY)).status_code == status
-        assert _hook_keys(redis) == []
+        assert _fail_keys(redis) == []
         await app.state.http.aclose()
 
-    async def test_a_service_that_cannot_be_reached_never_spends_anything(
+    async def test_a_service_that_cannot_be_reached_never_spends_the_failure_bucket(
         self, redis: _FakeRedis, upstream: _Upstream
     ) -> None:
         async def refuse(request: httpx.Request) -> httpx.Response:
             raise httpx.ReadTimeout("slow")
 
-        app = _build(upstream, webhook_failure_limit=1)
+        app = _build(upstream, webhook_failure_limit=1, webhook_arrival_limit=ARRIVAL_HEADROOM)
         app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(refuse))
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
             for _ in range(5):
                 assert (await client.post(RAZORPAY, content=SIGNED_BODY)).status_code == 503
-        assert _hook_keys(redis) == []
+        assert _fail_keys(redis) == []
         await app.state.http.aclose()
 
-    @pytest.mark.parametrize("status", [400, 401, 403, 422])
+    @pytest.mark.parametrize("status", [400, 401, 403])
     async def test_each_rejection_status_spends_one(
         self, redis: _FakeRedis, upstream: _Upstream, status: int
     ) -> None:
         upstream.answer = lambda request: status
-        app = _build(upstream, webhook_failure_limit=3)
+        app = _build(upstream, webhook_failure_limit=3, webhook_arrival_limit=ARRIVAL_HEADROOM)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
             results = [(await client.post(RAZORPAY, content=b"{}")).status_code for _ in range(4)]
         assert results == [status, status, status, 429]
-        keys = _hook_keys(redis)
-        assert len(keys) == 1 and keys[0].startswith(f"rl:hook-fail:{RAZORPAY}:127.0.0.1:")
+        keys = _fail_keys(redis)
+        assert len(keys) == 1 and keys[0].startswith(f"rl:hook-fail:POST:{RAZORPAY}:127.0.0.1:")
         assert redis.store[keys[0]] == "3", "the refused fourth was never forwarded or counted"
         await app.state.http.aclose()
 
+    async def test_422_never_spends_the_failure_bucket_however_many_times_it_repeats(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        """MAJOR B.2: an authentic-but-unattributable event answered 422 used to count like a
+        forged one — and a provider retries an event it got no 2xx for, so every retry of one
+        genuine, signed event re-spent the same bucket a third party's forgeries would. Sending
+        many more than the (small, test-configured) failure limit must never trip it."""
+        upstream.answer = lambda request: 422
+        app = _build(upstream, webhook_failure_limit=3, webhook_arrival_limit=ARRIVAL_HEADROOM)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            results = [(await client.post(RAZORPAY, content=b"{}")).status_code for _ in range(10)]
+        assert results == [422] * 10
+        assert _fail_keys(redis) == []
+        await app.state.http.aclose()
+
     @pytest.mark.parametrize("status", [200, 201, 202, 204, 301, 404, 409, 429, 500, 503])
-    async def test_no_other_status_spends_anything(
+    async def test_no_other_status_spends_the_failure_bucket(
         self, redis: _FakeRedis, upstream: _Upstream, status: int
     ) -> None:
         upstream.answer = lambda request: status
-        app = _build(upstream, webhook_failure_limit=1)
+        app = _build(upstream, webhook_failure_limit=1, webhook_arrival_limit=ARRIVAL_HEADROOM)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
             for _ in range(3):
                 assert (await client.post(RAZORPAY, content=b"{}")).status_code == status
-        assert _hook_keys(redis) == []
+        assert _fail_keys(redis) == []
         await app.state.http.aclose()
 
     async def test_a_wrong_verify_token_on_the_handshake_counts_as_a_failure(
@@ -636,14 +709,14 @@ class TestOnlyRejectionsAreCounted:
         upstream.answer = lambda request: (
             200 if request.url.params.get("hub.verify_token") == "right" else 403
         )
-        app = _build(upstream, webhook_failure_limit=2)
+        app = _build(upstream, webhook_failure_limit=2, webhook_arrival_limit=ARRIVAL_HEADROOM)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
             for _ in range(10):
                 good = await client.get(
                     WHATSAPP, params={"hub.verify_token": "right", "hub.challenge": "1"}
                 )
                 assert good.status_code == 200
-            assert _hook_keys(redis) == []
+            assert _fail_keys(redis) == []
             wrong = {"hub.verify_token": "wrong", "hub.challenge": "1"}
             results = [(await client.get(WHATSAPP, params=wrong)).status_code for _ in range(3)]
         assert results == [403, 403, 429]
@@ -654,7 +727,12 @@ class TestOnlyRejectionsAreCounted:
     ) -> None:
         """Razorpay's rejections are not Meta's, and one address's are not another's."""
         upstream.answer = lambda request: 400
-        app = _build(upstream, webhook_failure_limit=1, trusted_proxies=TRUSTED)
+        app = _build(
+            upstream,
+            webhook_failure_limit=1,
+            webhook_arrival_limit=ARRIVAL_HEADROOM,
+            trusted_proxies=TRUSTED,
+        )
         async with _via_caddy(app) as client:
             one = {"X-Forwarded-For": "1.1.1.1"}
             assert (await client.post(RAZORPAY, content=b"{}", headers=one)).status_code == 400
@@ -668,7 +746,12 @@ class TestOnlyRejectionsAreCounted:
     async def test_the_failure_bucket_is_not_the_anonymous_one_and_a_sign_in_flood_is_harmless(
         self, redis: _FakeRedis, upstream: _Upstream
     ) -> None:
-        app = _build(upstream, anonymous_rate_limit=2, webhook_failure_limit=2)
+        app = _build(
+            upstream,
+            anonymous_rate_limit=2,
+            webhook_failure_limit=2,
+            webhook_arrival_limit=ARRIVAL_HEADROOM,
+        )
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
             for _ in range(2):
                 assert (await client.post("/api/v1/auth/login", content=b"{}")).status_code == 200
@@ -677,32 +760,46 @@ class TestOnlyRejectionsAreCounted:
             assert (await client.post(RAZORPAY, content=SIGNED_BODY)).status_code == 200
         await app.state.http.aclose()
 
-    async def test_there_is_no_ceiling_over_all_addresses_and_no_total_requests_bucket(
+    async def test_no_failure_ceiling_is_shared_across_addresses(
         self, redis: _FakeRedis, upstream: _Upstream
     ) -> None:
         """The structural guarantee. Whatever the volume of *successful* traffic from however many
-        addresses, no counter exists for it to fill."""
-        app = _build(upstream, webhook_failure_limit=1, trusted_proxies=TRUSTED)
+        addresses, no failure counter exists for it to fill — each address's own `hook-arrival`
+        counter exists (that bucket counts every arrival, by design) but stays small and never a
+        shared one."""
+        app = _build(
+            upstream,
+            webhook_failure_limit=1,
+            webhook_arrival_limit=ARRIVAL_HEADROOM,
+            trusted_proxies=TRUSTED,
+        )
         async with _via_caddy(app) as client:
             for i in range(300):
                 headers = {"X-Forwarded-For": f"198.51.100.{i % 250}"}
                 assert (
                     await client.post(WHATSAPP, content=b"{}", headers=headers)
                 ).status_code == 200
-        assert _hook_keys(redis) == []
-        assert not [k for k in redis.store if k.startswith(("rl:hook:", "rl:anon"))]
-        await app.state.http.aclose()
+        assert _fail_keys(redis) == []
+        assert not [k for k in redis.store if k.startswith("rl:anon")]
+        arrivals = _arrival_keys(redis)
+        assert len(arrivals) == 250, "one counter per address, never one shared across them"
+        assert max(int(redis.store[k]) for k in arrivals) <= 2
 
     async def test_providers_behind_the_proxy_are_counted_by_their_own_address(
         self, redis: _FakeRedis, upstream: _Upstream
     ) -> None:
         upstream.answer = lambda request: 400
-        app = _build(upstream, webhook_failure_limit=1, trusted_proxies=TRUSTED)
+        app = _build(
+            upstream,
+            webhook_failure_limit=1,
+            webhook_arrival_limit=ARRIVAL_HEADROOM,
+            trusted_proxies=TRUSTED,
+        )
         async with _via_caddy(app) as client:
             for _ in range(2):
                 await client.post(RAZORPAY, content=b"{}", headers={"X-Forwarded-For": "1.1.1.1"})
-        keys = _hook_keys(redis)
-        assert len(keys) == 1 and f"{RAZORPAY}:1.1.1.1:" in keys[0], keys
+        keys = _fail_keys(redis)
+        assert len(keys) == 1 and f"POST:{RAZORPAY}:1.1.1.1:" in keys[0], keys
         await app.state.http.aclose()
 
     async def test_the_check_fails_closed_when_redis_is_down(
@@ -726,13 +823,22 @@ class TestOnlyRejectionsAreCounted:
         self, upstream: _Upstream, redis: _FakeRedis
     ) -> None:
         """The service has already answered; a counter that cannot be written loosens one window
-        and is logged, it does not replace a handled rejection with a 503."""
+        and is logged, it does not replace a handled rejection with a 503. The arrival counter's
+        own `incr` (checked *before* forwarding, and correctly fails closed) has to keep working
+        for this request to reach the service at all — only the *second* `incr`, the failure
+        bucket's post-response record, is the one made to fail here."""
         upstream.answer = lambda request: 400
+        original_incr = redis.incr
+        calls = 0
 
-        async def down(key: str) -> int:
+        async def flaky_after_the_first(key: str) -> int:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return await original_incr(key)
             raise ConnectionError("redis is down")
 
-        redis.incr = down  # type: ignore[method-assign]
+        redis.incr = flaky_after_the_first  # type: ignore[method-assign]
         app = _build(upstream)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
             response = await client.post(RAZORPAY, content=b"{}")
@@ -752,7 +858,223 @@ class TestOnlyRejectionsAreCounted:
             await app.state.http.aclose()
         assert status == 400
         assert [c["path"] for c in upstream.calls] == [RAZORPAY]
-        assert len(_hook_keys(redis)) == 1 and RAZORPAY in _hook_keys(redis)[0]
+        assert len(_fail_keys(redis)) == 1 and RAZORPAY in _fail_keys(redis)[0]
+
+
+class TestGatewaySideRefusalsCountToo:
+    """MAJOR A.4: a body that never arrives (408) or that declares itself too large (413) used to
+    cost the attacker nothing at all — the gateway raised before a `Response` with a status code
+    existed to check, so neither joined the failure bucket. Both do now."""
+
+    async def test_a_declared_length_over_the_cap_counts_as_a_rejection(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        app = _build(upstream, webhook_failure_limit=2, webhook_arrival_limit=ARRIVAL_HEADROOM)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            for _ in range(2):
+                over = await client.post(WHATSAPP, content=b"x" * (CAP + 1))
+                assert over.status_code == 413
+            refused = await client.post(WHATSAPP, content=SIGNED_BODY)
+        assert refused.status_code == 429
+        assert upstream.calls == [], "every one of these was refused before reaching the service"
+        await app.state.http.aclose()
+
+    async def test_a_body_that_never_arrives_counts_as_a_rejection(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        app = _build(
+            upstream,
+            webhook_failure_limit=2,
+            webhook_arrival_limit=ARRIVAL_HEADROOM,
+            unauth_body_read_timeout=0.05,
+        )
+        stall = asyncio.Event()
+
+        async def receive() -> dict[str, Any]:
+            await stall.wait()
+            return {"type": "http.disconnect"}
+
+        for _ in range(2):
+            timed_out = await _drive_with_receive(app, WHATSAPP, receive, declared=CAP)
+            assert timed_out == 408
+        refused = await _drive_with_receive(
+            app, WHATSAPP, lambda: _once(SIGNED_BODY), declared=len(SIGNED_BODY)
+        )
+        assert refused == 429
+        assert upstream.calls == []
+        await app.state.http.aclose()
+
+
+class TestTheArrivalLimit:
+    """MAJOR A.4/B.1: a per-address cap on *every* request to one method and path, restored
+    without the shared-across-addresses shape round one removed. Never exempted, even for an
+    address inside `webhook_provider_cidrs` (MAJOR B.4) — only the failure lockout is."""
+
+    async def test_every_request_counts_regardless_of_outcome(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        app = _build(upstream, webhook_arrival_limit=3, webhook_failure_limit=ARRIVAL_HEADROOM)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            statuses = [
+                (await client.post(RAZORPAY, content=SIGNED_BODY)).status_code for _ in range(4)
+            ]
+        assert statuses == [200, 200, 200, 429]
+        await app.state.http.aclose()
+
+    async def test_it_is_per_address_and_never_shared(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        app = _build(
+            upstream,
+            webhook_arrival_limit=2,
+            webhook_failure_limit=ARRIVAL_HEADROOM,
+            trusted_proxies=TRUSTED,
+        )
+        async with _via_caddy(app) as client:
+            one = {"X-Forwarded-For": "1.1.1.1"}
+            two = {"X-Forwarded-For": "2.2.2.2"}
+            for _ in range(2):
+                assert (
+                    await client.post(RAZORPAY, content=SIGNED_BODY, headers=one)
+                ).status_code == 200
+            assert (
+                await client.post(RAZORPAY, content=SIGNED_BODY, headers=one)
+            ).status_code == 429
+            # A different address's allowance is untouched.
+            assert (
+                await client.post(RAZORPAY, content=SIGNED_BODY, headers=two)
+            ).status_code == 200
+        await app.state.http.aclose()
+
+    async def test_it_is_per_method_so_a_get_flood_does_not_spend_a_posts_allowance(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        app = _build(upstream, webhook_arrival_limit=2, webhook_failure_limit=ARRIVAL_HEADROOM)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            for _ in range(5):
+                await client.get(WHATSAPP, params={"hub.verify_token": "x", "hub.challenge": "1"})
+            post = await client.post(WHATSAPP, content=SIGNED_BODY)
+        assert post.status_code == 200
+        await app.state.http.aclose()
+
+    async def test_the_arrival_limit_still_applies_inside_a_provider_cidr(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        cidrs = parse_provider_cidrs(["203.0.113.0/24"])
+        app = _build(
+            upstream,
+            webhook_arrival_limit=2,
+            webhook_failure_limit=ARRIVAL_HEADROOM,
+            webhook_provider_cidrs=cidrs,
+            trusted_proxies=TRUSTED,
+        )
+        headers = {"X-Forwarded-For": "203.0.113.99"}
+        async with _via_caddy(app) as client:
+            for _ in range(2):
+                assert (
+                    await client.post(RAZORPAY, content=SIGNED_BODY, headers=headers)
+                ).status_code == 200
+            refused = await client.post(RAZORPAY, content=SIGNED_BODY, headers=headers)
+        assert refused.status_code == 429
+        await app.state.http.aclose()
+
+
+class TestWebhookProviderCidrs:
+    """MAJOR B.4: an address inside a declared provider range is never locked out by the failure
+    bucket, because that range is shared with every other merchant on the same provider and a
+    third party pointing their own webhook at our URL should not be able to burn it."""
+
+    async def test_an_address_inside_the_range_is_never_locked_out(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        upstream.answer = lambda request: 400
+        cidrs = parse_provider_cidrs(["203.0.113.0/24"])
+        app = _build(
+            upstream,
+            webhook_failure_limit=3,
+            webhook_arrival_limit=ARRIVAL_HEADROOM,
+            webhook_provider_cidrs=cidrs,
+            trusted_proxies=TRUSTED,
+        )
+        headers = {"X-Forwarded-For": "203.0.113.50"}
+        async with _via_caddy(app) as client:
+            statuses = [
+                (await client.post(RAZORPAY, content=b"{}", headers=headers)).status_code
+                for _ in range(10)
+            ]
+        assert statuses == [400] * 10, "far more than the limit, never once refused"
+        assert _fail_keys(redis) == [], "exempt: the bucket is never even read for this address"
+        await app.state.http.aclose()
+
+    async def test_an_address_outside_the_range_is_still_locked_out(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        upstream.answer = lambda request: 400
+        cidrs = parse_provider_cidrs(["203.0.113.0/24"])
+        app = _build(
+            upstream,
+            webhook_failure_limit=3,
+            webhook_arrival_limit=ARRIVAL_HEADROOM,
+            webhook_provider_cidrs=cidrs,
+            trusted_proxies=TRUSTED,
+        )
+        headers = {"X-Forwarded-For": "198.51.100.7"}
+        async with _via_caddy(app) as client:
+            statuses = [
+                (await client.post(RAZORPAY, content=b"{}", headers=headers)).status_code
+                for _ in range(4)
+            ]
+        assert statuses == [400, 400, 400, 429]
+        await app.state.http.aclose()
+
+    async def test_400s_n3_then_upstream_fixed_the_next_genuine_post_is_200(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        """Below the limit, a run of failures never blocks the request that follows once the
+        upstream is fixed — a transient misconfiguration is not a permanent lockout."""
+        upstream.answer = lambda request: 400
+        app = _build(upstream, webhook_failure_limit=5, webhook_arrival_limit=ARRIVAL_HEADROOM)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            for _ in range(3):
+                assert (await client.post(RAZORPAY, content=b"{}")).status_code == 400
+            upstream.answer = lambda request: 200
+            genuine = await client.post(RAZORPAY, content=SIGNED_BODY)
+        assert genuine.status_code == 200
+        await app.state.http.aclose()
+
+    async def test_403_handshake_gets_n4_never_touch_a_posts_bucket_then_genuine_post_is_200(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        """Method-keying (MAJOR B.1): the handshake's own `GET` bucket locking itself out past the
+        failure limit is the mechanism working as designed, on its own method — the point is that
+        none of it ever touches the `POST` bucket for the same address, so a genuine delivery
+        still succeeds."""
+        upstream.answer = lambda request: 403 if request.method == "GET" else 200
+        app = _build(upstream, webhook_failure_limit=3, webhook_arrival_limit=ARRIVAL_HEADROOM)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            statuses = [
+                (await client.get(WHATSAPP, params={"hub.verify_token": "wrong"})).status_code
+                for _ in range(5)
+            ]
+            assert statuses == [403, 403, 403, 429, 429]
+            genuine = await client.post(WHATSAPP, content=SIGNED_BODY)
+        assert genuine.status_code == 200
+        await app.state.http.aclose()
+
+    async def test_422s_n5_never_lock_out_however_many_then_genuine_post_is_200(
+        self, redis: _FakeRedis, upstream: _Upstream
+    ) -> None:
+        """422 is excluded entirely (MAJOR B.2): even well past the failure limit, none of them
+        count, so the genuine delivery that follows is never refused."""
+        upstream.answer = lambda request: 422
+        app = _build(upstream, webhook_failure_limit=3, webhook_arrival_limit=ARRIVAL_HEADROOM)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            for _ in range(10):
+                assert (await client.post(RAZORPAY, content=b"{}")).status_code == 422
+            upstream.answer = lambda request: 200
+            genuine = await client.post(RAZORPAY, content=SIGNED_BODY)
+        assert genuine.status_code == 200
+        await app.state.http.aclose()
 
 
 # ------------------------------------------------------------------------------ body size
@@ -857,12 +1179,23 @@ class TestPolicyValidation:
         assert policy.anonymous_global_rate_limit == 0
         assert policy.anonymous_content_global_rate_limit == 0
         assert policy.credential_paths == frozenset()
+        assert policy.webhook_provider_cidrs == ()
+
+    def test_the_shipped_webhook_defaults(self) -> None:
+        """MAJOR B.3: raised from round one's 60 — that address space is genuinely shared, so the
+        bar for "this address is hostile" has to be higher than for any other unauthenticated
+        caller."""
+        policy = GatewayPolicy(audience="app", public_paths=frozenset())
+        assert policy.webhook_failure_limit == 600
+        assert policy.webhook_arrival_limit == 600
 
     @pytest.mark.parametrize(
         "kw",
         [
             {"webhook_failure_limit": 0},
             {"webhook_failure_limit": -1},
+            {"webhook_arrival_limit": 0},
+            {"webhook_arrival_limit": -1},
             {"anonymous_global_rate_limit": -1},
             {"anonymous_content_global_rate_limit": -1},
             {"anonymous_rate_limit": 0},
@@ -895,3 +1228,42 @@ class TestPolicyValidation:
                 public_paths=frozenset({"/api/v1/auth/login"}),
                 credential_paths=frozenset({"/api/v1/auth/logn"}),
             )
+
+
+class TestParseProviderCidrs:
+    """MAJOR B.4: `WEBHOOK_PROVIDER_CIDRS` runs in the opposite direction from `parse_trusted_
+    proxies` — these are expected to be *public* ranges, so the guard is not "must be private", it
+    is "must not be implausibly wide"."""
+
+    def test_addresses_and_narrow_ranges_parse(self) -> None:
+        parsed = parse_provider_cidrs(["203.0.113.0/24", " 198.51.100.7 ", "", "2001:db8::/32"])
+        assert [str(n) for n in parsed] == ["203.0.113.0/24", "198.51.100.7/32", "2001:db8::/32"]
+
+    def test_empty_is_the_default_and_exempts_nobody(self) -> None:
+        assert parse_provider_cidrs([]) == ()
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "0.0.0.0/0",
+            "0.0.0.0/7",  # one bit narrower than the IPv4 floor
+            "10.0.0.0/7",
+            "::/0",
+            "2000::/23",  # one bit narrower than the IPv6 floor
+        ],
+    )
+    def test_a_range_wider_than_the_sanity_floor_is_refused(self, entry: str) -> None:
+        with pytest.raises(ValueError, match="wider than the"):
+            parse_provider_cidrs([entry])
+
+    @pytest.mark.parametrize("entry", ["10.0.0.0/8", "203.0.113.0/24", "2000::/24", "::1/128"])
+    def test_exactly_the_floor_or_narrower_is_accepted(self, entry: str) -> None:
+        assert parse_provider_cidrs([entry])
+
+    def test_a_malformed_entry_stops_boot(self) -> None:
+        with pytest.raises(ValueError, match="not an IP address or a CIDR range"):
+            parse_provider_cidrs(["not-an-address"])
+
+    def test_the_refusal_names_the_entry(self) -> None:
+        with pytest.raises(ValueError, match=r"8\.0\.0\.0/4"):
+            parse_provider_cidrs(["8.0.0.0/4"])
