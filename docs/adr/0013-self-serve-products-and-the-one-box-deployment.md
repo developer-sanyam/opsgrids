@@ -1224,3 +1224,31 @@ key table lists all 22 keys `.env.example` gained since the production ref (`ADM
 - **The `e2e-` slug reservation** (ledger note above), the `GuardedSweep` heartbeat file (still
   opt-in and unwired; the gauges are the visible signal), and `subscription`'s own `DunningSweep`
   guard (billing's, untouched as instructed).
+
+### Final fixup (after the last review; no further review follows)
+
+Small, and all in the scripts and their tests; the reviewer had prototyped each fix.
+
+- **`remote.sh` read `.env` differently from the shell that judged it (MEDIUM).** It took the FIRST
+  matching line and kept an inline ` # comment`, where bash's `.` and docker compose take the LAST
+  and drop it — so `COMPOSE_PROFILES=inventory # sold`, or a corrected line appended at the bottom,
+  made `up` start a different profile list than preflight had approved, and `EDGE_UP_PARALLEL_LIMIT=2
+  # this deploy only` fell back to 4. One `dotenv_get` now reads `EDGE_PROFILES`, `COMPOSE_PROFILES`,
+  `EDGE_UP_PARALLEL_LIMIT` and (the same class, one line) the `EDGE_HOST` of the wrong-box
+  interlock; a quoted value is what lies between its quotes; `up` says what it is about to use.
+- **The catalogue advisory matched newline-separated psql output as one string (LOW-MED)** — with
+  two or more sold products it told the owner sold products were "not sold, safe to trim".
+- **Under `set -e`/`pipefail` a failing compose aborted preflight without its FAILED footer**; a
+  ceiling with a leading zero (octal) or twenty digits (overflow) reached bash arithmetic; a zero or
+  non-numeric MemTotal was not "could not read"; a missing `memory-budget.json` or `python3` warned
+  and skipped instead of failing. All now fail by name.
+- **Also, from the reviewer's nits:** unquoted shell metacharacters, text after a closing quote,
+  `export K=a b`, CRLF line endings, a profile name compose does not define (`COMPOSE_PROFILES=hrm`
+  enabled nothing, silently), and `RUN_SWEEPS_IN_API=True`/`1` being warned as off — read the way
+  pydantic reads a bool.
+- **Docs:** the RUNBOOK gained the decision rule for reading the box (sum `docker stats`; scale the
+  release by measured / 4044; above the 4827 MB cap, or `vmstat` swapping at a quiet hour, resize or
+  de-list rather than write a ceiling) and the key count in the rollout comment is 22.
+- **Left for merge time, per the coordinator:** D3's `tests/infra/test_sweeps_run_somewhere.py` must
+  accept the in-API sweep shape, and D3's `services/{payment,finance}/app/supervise.py` should
+  become `platform_core.supervise` (ledger follow-up).

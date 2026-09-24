@@ -45,6 +45,34 @@ source lib/mfa-reseal.sh
 
 COMPOSE=(docker compose -f compose.prod.yml --env-file .env)
 
+# The value of KEY in `.env` read the way bash's `.` (preflight.sh sources the file) and docker
+# compose both read it: the LAST assignment wins; a quoted value is what is between its quotes
+# (whatever follows the closing quote, an inline comment included, is dropped); an unquoted
+# value's ` # comment` is dropped; spaces and a CR are removed. The first version of this read took
+# the FIRST line and kept an inline comment — so `COMPOSE_PROFILES=inventory # sold`, or an
+# operator appending a corrected line at the bottom of the file, made this script judge and export
+# a different profile list than preflight had checked, and `EDGE_UP_PARALLEL_LIMIT=2 # this deploy
+# only` fell back to 4. KEY is always one of this file's own constant names, never operator input.
+dotenv_get() {
+	local raw
+	raw=$(sed -n "s/^$1=//p" .env | tail -n 1)
+	raw=${raw%$'\r'}
+	case "$raw" in
+	\"*)
+		raw=${raw#\"}
+		raw=${raw%%\"*}
+		;;
+	\'*)
+		raw=${raw#\'}
+		raw=${raw%%\'*}
+		;;
+	*)
+		raw=$(printf '%s' "$raw" | sed -e 's/^[[:space:]]\{1,\}#.*$//' -e 's/[[:space:]]\{1,\}#.*$//')
+		;;
+	esac
+	printf '%s' "$raw" | tr -d ' \r'
+}
+
 # EDGE_PROFILES/COMPOSE_PROFILES precedence (`resolve_declared_profiles`, lib/active-profiles.sh)
 # — the same shared rule preflight.sh applies, so what preflight checked is what this actually
 # runs. **This used to also compute COMPOSE_PROFILES from the catalogue's own activations when
@@ -56,8 +84,8 @@ COMPOSE=(docker compose -f compose.prod.yml --env-file .env)
 resolve_profiles() {
 	[ -f .env ] || return 0
 	local edge_profiles compose_profiles resolved
-	edge_profiles=$(sed -n 's/^EDGE_PROFILES=//p' .env | head -1 | tr -d '"'"'"' \r')
-	compose_profiles=$(sed -n 's/^COMPOSE_PROFILES=//p' .env | head -1 | tr -d '"'"'"' \r')
+	edge_profiles=$(dotenv_get EDGE_PROFILES)
+	compose_profiles=$(dotenv_get COMPOSE_PROFILES)
 	resolved=$(resolve_declared_profiles "$edge_profiles" "$compose_profiles")
 	# `COMPOSE_PROFILES=*` is valid for compose itself; expand it here (as preflight.sh does) so
 	# every script judges the same explicit list. `config --profiles` reads the compose file only.
@@ -112,7 +140,7 @@ assert_host() {
 		exit 2
 	fi
 	local actual
-	actual=$(sed -n 's/^EDGE_HOST=//p' .env | head -1 | tr -d '"'"'"' \r')
+	actual=$(dotenv_get EDGE_HOST)
 	if [ "$actual" != "$claimed" ]; then
 		echo "assert-host: REFUSING." >&2
 		echo "  You asked to deploy to: $claimed" >&2
@@ -294,7 +322,7 @@ ensure_ops_monitor_state_dir() {
 up_parallel_limit() {
 	local value="${EDGE_UP_PARALLEL_LIMIT:-}"
 	if [ -z "$value" ] && [ -f .env ]; then
-		value=$(sed -n 's/^EDGE_UP_PARALLEL_LIMIT=//p' .env | head -1 | tr -d '"'"'"' \r')
+		value=$(dotenv_get EDGE_UP_PARALLEL_LIMIT)
 	fi
 	case "$value" in
 	'' | *[!0-9]* | 0) value=4 ;;
@@ -308,7 +336,10 @@ up() {
 	# Four at a time by default. Unbounded, a deploy that touches the shared environment starts
 	# every container at once, and ~59 Python interpreters importing SQLAlchemy on two cores is a
 	# load average of 7 and health checks timing out for no reason but the stampede.
-	COMPOSE_PARALLEL_LIMIT="$(up_parallel_limit)" "${COMPOSE[@]}" up -d --remove-orphans
+	local parallel_limit
+	parallel_limit=$(up_parallel_limit)
+	echo "up: starting ${parallel_limit} containers at a time, profiles: ${COMPOSE_PROFILES:-<none: core only>}"
+	COMPOSE_PARALLEL_LIMIT="$parallel_limit" "${COMPOSE[@]}" up -d --remove-orphans
 	# The Caddyfile arrives through a bind mount (of its directory — a file mount follows the
 	# inode and keeps serving the pre-checkout file), so editing it changes nothing compose
 	# can see: `up` leaves the container, and the config it loaded at start, exactly as it

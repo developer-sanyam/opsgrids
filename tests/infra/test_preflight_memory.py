@@ -513,6 +513,9 @@ def test_a_compose_config_failure_fails_the_memory_row_instead_of_pricing_zero(
     assert "docker compose config --services failed" in result.stderr
     # compose's own error stays visible — the operator needs to read *why*.
     assert "required variable is missing" in result.stderr
+    # ...and preflight still ends with its footer: a later `docker compose config --services |
+    # tr` under `set -e`/`pipefail` used to abort the script here, footer-less.
+    assert "preflight: FAILED" in result.stderr
 
 
 def test_an_empty_service_list_is_a_failure_not_a_zero_megabyte_box(box: Box) -> None:
@@ -863,11 +866,20 @@ def test_a_value_that_contains_a_hash_but_no_whitespace_is_left_alone(box: Box) 
     assert "unquoted value containing whitespace" not in box.preflight().stderr
 
 
-def test_windows_line_endings_are_not_mistaken_for_whitespace(box: Box) -> None:
+def test_windows_line_endings_are_a_named_failure_and_not_a_whitespace_complaint(
+    box: Box,
+) -> None:
+    """Bash keeps the carriage return on the end of every value it sources (`EDGE_HOST` would be
+    `edge.opsgrids.test\\r`) where docker compose strips it, so the two disagree about the box.
+    Failed by name, before anything is sourced; and the CR is not read as "whitespace"."""
     box.write_env(compose_profiles="")
     env_file = box.edge / ".env"
     env_file.write_bytes(env_file.read_bytes().replace(b"\n", b"\r\n"))
-    assert "unquoted value containing whitespace" not in box.preflight().stderr
+    result = box.preflight()
+    assert result.returncode == 1
+    assert "FAIL  .env has Windows (CRLF) line endings" in result.stderr
+    assert "unquoted value containing whitespace" not in result.stderr
+    assert "preflight: FAILED" in result.stderr
 
 
 def test_a_lowercase_assignment_is_checked_too(box: Box) -> None:
@@ -877,3 +889,240 @@ def test_a_lowercase_assignment_is_checked_too(box: Box) -> None:
     result = box.preflight()
     assert result.returncode == 1
     assert "FAIL  site_note in .env has an unquoted value containing whitespace" in result.stderr
+
+
+# ---------------------------------------------- final fixup: reading `.env` the way bash does
+
+
+def _dot_env(box: Box, text: str) -> None:
+    env_file = box.edge / ".env"
+    env_file.write_text(env_file.read_text() + text)
+
+
+def test_remote_sh_reads_dot_env_the_way_bash_and_compose_do(box: Box) -> None:
+    """LAST assignment wins and an unquoted value's inline ` # comment` is dropped — as when
+    preflight sources the file. remote.sh used to take the FIRST line and keep the comment, so an
+    operator's `COMPOSE_PROFILES=inventory # sold`, or a corrected line appended at the bottom,
+    made `up` start a different profile list than preflight had judged, and
+    `EDGE_UP_PARALLEL_LIMIT=2 # this deploy only` silently fell back to 4."""
+    box.write_env(compose_profiles="inventory")
+    env_file = box.edge / ".env"
+    env_file.write_text(
+        env_file.read_text().replace(
+            "COMPOSE_PROFILES=inventory", "COMPOSE_PROFILES=inventory # sold"
+        )
+    )
+    _dot_env(
+        box,
+        "COMPOSE_PROFILES=inventory,storefront # appended later\n"
+        "EDGE_UP_PARALLEL_LIMIT=2 # this deploy only\n",
+    )
+    result = box.run("remote.sh", "up")
+    assert result.returncode == 0, result.stderr
+    assert (box.root / "up.log").read_text().split() == ["2"]
+    assert (box.root / "up.log.profiles").read_text().split() == ["inventory,storefront"]
+    # `up` says what it is about to do, so the operator can see it before compose does it.
+    assert "up: starting 2 containers at a time, profiles: inventory,storefront" in result.stdout
+
+
+def test_a_later_edge_profiles_line_and_a_comment_after_it_are_read_correctly(box: Box) -> None:
+    box.write_env(compose_profiles="hrms", edge_profiles="hrms")
+    _dot_env(box, 'EDGE_PROFILES="inventory,crm"  # onboarding\n')
+    result = box.run("remote.sh", "up")
+    assert result.returncode == 0, result.stderr
+    assert (box.root / "up.log.profiles").read_text().split() == ["inventory,crm"]
+    assert "profiles: EDGE_PROFILES set — running inventory,crm" in result.stdout
+
+
+def test_a_comment_only_value_is_empty_not_the_comment(box: Box) -> None:
+    """`KEY= # note` is an empty assignment in bash; the read must not return `#note`."""
+    box.write_env(compose_profiles="")
+    _dot_env(box, "EDGE_UP_PARALLEL_LIMIT= # unset on purpose\n")
+    assert box.run("remote.sh", "up").returncode == 0
+    assert (box.root / "up.log").read_text().split() == ["4"]
+
+
+def test_assert_host_reads_the_last_edge_host_line_and_ignores_a_comment(box: Box) -> None:
+    """The wrong-box interlock must agree with what preflight's shell sees: last line wins, and
+    `EDGE_HOST=… # prod` is still that host."""
+    box.write_env(compose_profiles="")
+    _dot_env(box, "EDGE_HOST=other.example.test # moved\n")
+    assert box.run("remote.sh", "assert-host", "other.example.test").returncode == 0
+    refused = box.run("remote.sh", "assert-host", "edge.opsgrids.test")
+    assert refused.returncode == 2
+    assert "REFUSING" in refused.stderr
+
+
+# ------------------------------------------- final fixup: the catalogue advisory with 2+ products
+
+
+def test_several_sold_products_are_all_recognised_by_the_catalogue_advisory(box: Box) -> None:
+    """`case " $available " in` against newline-separated psql output only ever matched the first
+    key: with two or more sold products the advisory called sold products "not sold in the
+    catalogue — safe to trim", to an owner deciding what to de-list."""
+    box.extra_env = {
+        "STUB_POSTGRES": "1",
+        "STUB_AVAILABLE": "operations,storefront,hrms",
+        "STUB_ACTIVATED": "operations",
+    }
+    box.write_env(compose_profiles="inventory,storefront,hrms")
+    result = box.preflight()
+    assert "catalogue does not sell" not in result.stderr
+    assert "not sold in the catalogue" not in result.stderr
+
+
+def test_a_profile_the_catalogue_does_not_sell_is_still_reported_beside_sold_ones(
+    box: Box,
+) -> None:
+    """The fix must not turn the advisory off: `crm` runs but is not `available`."""
+    box.extra_env = {
+        "STUB_POSTGRES": "1",
+        "STUB_AVAILABLE": "operations,storefront",
+        "STUB_ACTIVATED": "",
+    }
+    box.write_env(compose_profiles="inventory,storefront,crm")
+    result = box.preflight()
+    assert "profile 'crm' runs but the catalogue does not sell 'crm'" in result.stderr
+    assert "profile 'inventory' runs but" not in result.stderr
+    assert "profile 'storefront' runs but" not in result.stderr
+
+
+# ------------------------------------------- final fixup: ceiling and MemTotal parsing
+
+
+@pytest.mark.parametrize("value", ["04600", "04589", "00", "99999999999999999999"])
+def test_a_ceiling_with_a_leading_zero_or_twenty_digits_fails_cleanly(
+    box: Box, budget: dict, value: str
+) -> None:
+    """`04600` is octal to bash arithmetic and `04589` is "value too great for base"; twenty digits
+    overflow to a negative number. All three used to reach `[ -gt ]` and either die with an
+    arithmetic error or print nonsense (`-2149M`)."""
+    box.write_env(compose_profiles=_all_ten_csv(budget), accepted_mb=value)
+    result = box.preflight()
+    assert "value too great" not in result.stderr and "integer expression" not in result.stderr
+    assert "-2149M" not in result.stdout
+    assert "FAIL  EDGE_BUDGET_ACCEPTED_MB" in result.stderr
+    assert "preflight: FAILED" in result.stderr
+
+
+def test_a_leading_zero_ceiling_names_the_rule(box: Box, budget: dict) -> None:
+    box.write_env(compose_profiles=_all_ten_csv(budget), accepted_mb="04581")
+    assert "no sign, unit or leading zero" in box.preflight().stderr
+
+
+@pytest.mark.parametrize("text", ["MemTotal: 0 kB\n", "MemTotal: abc kB\n", "MemTotal: -5 kB\n"])
+def test_a_zero_or_non_numeric_memtotal_is_the_could_not_read_row(box: Box, text: str) -> None:
+    box.meminfo.write_text(text)
+    box.write_env(compose_profiles="inventory")
+    result = box.preflight()
+    assert "could not read MemTotal" in result.stderr
+    assert "preflight: FAILED" in result.stderr
+
+
+def test_a_missing_memory_budget_file_fails_preflight_instead_of_skipping_the_check(
+    box: Box,
+) -> None:
+    """The gate fails closed everywhere else; a budget it cannot read is not one it may skip."""
+    (box.edge / "memory-budget.json").unlink()
+    box.write_env(compose_profiles="inventory")
+    result = box.preflight()
+    assert result.returncode == 1
+    assert "FAIL  no memory-budget.json — the memory budget cannot be judged" in result.stderr
+
+
+# ------------------------------------------- final fixup: the nits that were trivial
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "OPS_ALERT_EMAIL=a;touch{marker}",
+        "OPS_ALERT_EMAIL=a&b",
+        "OPS_ALERT_EMAIL=a|b",
+        "OPS_ALERT_EMAIL=$(touch{marker})",
+        "OPS_ALERT_EMAIL=`touch{marker}`",
+        "OPS_ALERT_EMAIL=<a@b.test>",
+        "OPS_ALERT_EMAIL=(a)",
+    ],
+)
+def test_an_unquoted_shell_metacharacter_is_a_named_failure_and_nothing_runs(
+    box: Box, line: str
+) -> None:
+    marker = box.root / "executed"
+    box.write_env(compose_profiles="")
+    _dot_env(box, line.format(marker=marker) + "\n")
+    result = box.preflight()
+    assert result.returncode == 1
+    assert (
+        "FAIL  OPS_ALERT_EMAIL in .env has an unquoted value containing a shell metacharacter"
+        in (result.stderr)
+    )
+    assert not marker.exists()
+
+
+def test_a_quoted_shell_metacharacter_is_fine(box: Box) -> None:
+    box.write_env(compose_profiles="")
+    _dot_env(box, 'OPS_ALERT_EMAIL="ops; team <ops@opsgrids.test>"\n')
+    assert "shell metacharacter" not in box.preflight().stderr
+
+
+@pytest.mark.parametrize(
+    "line",
+    ['SENTRY_DSN="a" b', "SENTRY_DSN='a' b", 'SENTRY_DSN="a"b'],
+)
+def test_text_after_a_closing_quote_is_a_named_failure(box: Box, line: str) -> None:
+    box.write_env(compose_profiles="")
+    _dot_env(box, line + "\n")
+    result = box.preflight()
+    assert result.returncode == 1
+    assert "FAIL  SENTRY_DSN in .env has text after its closing quote" in result.stderr
+
+
+def test_a_comment_after_a_closing_quote_is_fine(box: Box) -> None:
+    box.write_env(compose_profiles="")
+    _dot_env(box, 'SENTRY_DSN="a b"  # the dsn\n')
+    assert "closing quote" not in box.preflight().stderr
+
+
+def test_export_lines_are_checked_like_any_other_assignment(box: Box) -> None:
+    box.write_env(compose_profiles="")
+    _dot_env(box, "export OPS_ALERT_EMAIL=a b\n")
+    result = box.preflight()
+    assert result.returncode == 1
+    assert "FAIL  OPS_ALERT_EMAIL in .env has an unquoted value containing whitespace" in (
+        result.stderr
+    )
+
+
+def test_an_unknown_profile_name_is_a_named_failure(box: Box) -> None:
+    """`COMPOSE_PROFILES=hrm` enables nothing, silently: priced, judged and started as core only."""
+    box.write_env(compose_profiles="inventory,hrm")
+    result = box.preflight()
+    assert result.returncode == 1
+    assert "FAIL  profile 'hrm' (from EDGE_PROFILES/COMPOSE_PROFILES) is not defined" in (
+        result.stderr
+    )
+    assert "profile 'inventory' (from" not in result.stderr
+
+
+def test_every_defined_profile_name_passes_the_name_check(box: Box, budget: dict) -> None:
+    box.write_env(
+        compose_profiles=_all_ten_csv(budget), accepted_mb=str(_ten_profile_total(budget))
+    )
+    assert "is not defined in compose.prod.yml" not in box.preflight().stderr
+
+
+@pytest.mark.parametrize("value", ["true", "True", "TRUE", "1", "yes", "on"])
+def test_the_in_api_sweep_flag_is_read_the_way_pydantic_reads_a_bool(box: Box, value: str) -> None:
+    box.write_env(compose_profiles="")
+    _dot_env(box, f"RUN_SWEEPS_IN_API={value}\n")
+    result = box.preflight()
+    assert "in-API sweeps enabled" in result.stdout
+    assert "sweeps are OFF" not in result.stderr
+
+
+@pytest.mark.parametrize("value", ["false", "False", "0", "no", "off", "maybe"])
+def test_anything_else_is_still_warned_about_as_off(box: Box, value: str) -> None:
+    box.write_env(compose_profiles="")
+    _dot_env(box, f"RUN_SWEEPS_IN_API={value}\n")
+    assert "sweeps are OFF" in box.preflight().stderr

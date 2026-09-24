@@ -1295,6 +1295,28 @@ All figures below are **MiB, from images built on a laptop (arm64)**: the box is
 the best measurement this repository has, not the box's own. Before writing a ceiling, read the
 box: `free -m` and `docker stats --no-stream --format '{{.Name}} {{.MemUsage}}'` (read-only).
 
+**How to read the box — a rule, not a feeling.** Run this once, on the box, at a quiet hour, on the
+current production ref (the 40 containers priced at 4044 MB below):
+
+```bash
+docker stats --no-stream --format '{{.MemUsage}}' | awk '{ u=$1; v=u+0;
+  if (u ~ /GiB$/) v*=1024; else if (u ~ /KiB$/) v/=1024; else if (u !~ /MiB$/) v/=1048576;
+  s+=v } END { printf "%.0f MiB\n", s }'
+vmstat 5 3        # the si / so columns: swap-in / swap-out per second
+```
+
+1. **Scale the release.** The real sum is the measured cost of the same 40 containers that
+   `preflight.sh` prices at **4044**. If it is higher, this release is about
+   **4581 x measured / 4044** — the arm64 prices were low by the same factor everywhere.
+2. **If that scaled figure is above 4827 MB (the 125% cap), do not write a ceiling.** Preflight
+   will refuse any total above the cap even with one, and a box that far over is not "swapping
+   more", it is killing things: **resize or de-list** instead. Do the same if `vmstat 5` shows
+   `si`/`so` above zero at a quiet hour — the box is already thrashing before this release adds
+   537 MB.
+3. **Otherwise write the number preflight printed** (`EDGE_BUDGET_ACCEPTED_MB=4581`), not the
+   scaled one: the ceiling is what preflight prices, and preflight's prices are what the tests pin.
+   The scaled figure is for deciding *whether* to run at all.
+
 ### What this release costs, on the merged tree (review round 3, 2026-09-24)
 
 Re-priced from the real images: **api 98, background 90, ops-monitor 93** (were 85 / 85 / 48 —
@@ -1374,9 +1396,11 @@ Owner pre-deploy key list — every one of these is either set deliberately or k
 **A missing key fails preflight before anything changes** (`missing or empty in .env: …`), so the
 worst case of forgetting one is a re-run, but `.env.example` has 22 keys the production ref's did
 not (20 of them must be present on the box), and knowing them beforehand is cheaper. **Quote any
-value that contains a space** (`OPS_ALERT_EMAIL="ops team <ops@…>"`): `.env` is sourced as shell, and
-preflight fails an unquoted one by name, before reading the file, instead of letting bash run the
-words after the space as a command (exit 127, no footer):
+value that contains a space or a shell metacharacter** (`OPS_ALERT_EMAIL="ops team <ops@…>"`; the
+characters are `; & | < > ( )`, a backtick and `$(`): `.env` is sourced as shell, and preflight fails
+an unquoted one — and text after a closing quote, and CRLF line endings — by name, before reading
+the file, instead of letting bash run the rest as a command (exit 127, no footer). Its own reading
+of the file (last assignment wins, an inline ` # comment` is dropped) is what `remote.sh` uses too:
 
 | Key | State | Note |
 |---|---|---|
@@ -1476,7 +1500,8 @@ at the old prices). So, for this one deploy:
 
 ```bash
 # 0. The owner decision above — resize, de-list, or set EDGE_BUDGET_ACCEPTED_MB — BEFORE deploying.
-#    Add the 19 new keys (table above) and confirm COMPOSE_PROFILES lists every product sold.
+#    Add the 22 new keys (20 must be present; EDGE_PROFILES and EDGE_BUDGET_ACCEPTED_MB may be
+#    absent) from the table above, and confirm COMPOSE_PROFILES lists every product sold.
 #    Then, on the box, for this deploy only (and remove the line afterwards):
 #        echo 'EDGE_UP_PARALLEL_LIMIT=2' >> infrastructure/edge/.env
 

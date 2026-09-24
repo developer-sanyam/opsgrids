@@ -81,17 +81,33 @@ optional_empty="$optional_empty EDGE_BUDGET_ACCEPTED_MB"
 optional_absent="EDGE_PROFILES EDGE_BUDGET_ACCEPTED_MB"
 
 # `.env` is sourced as SHELL below, and this file exists to fail with a message, not with
-# whatever bash makes of a stray space. An unquoted value containing whitespace —
-# `EDGE_PROFILES=inventory, storefront`, `OPS_ALERT_EMAIL=a and b` — is not one assignment: bash
-# assigns the text before the first space and then RUNS the rest as a command (exit 127 "command
-# not found" at best, with no FAILED footer; at worst something that exists). docker compose parses
-# the same line as a single value, so the two would also disagree about what the box says. Checked
-# on the raw file, before it is sourced, and nothing is sourced if one is found. Quoted values
-# (`KEY="a b"`), a trailing space, and an inline ` # comment` after an unquoted value are all fine
-# and are not flagged.
-unquoted_whitespace=""
+# whatever bash makes of a stray character. Checked on the RAW file, before it is sourced, and
+# nothing is sourced if a line is found:
+#
+#   * An unquoted value containing whitespace — `EDGE_PROFILES=inventory, storefront`,
+#     `OPS_ALERT_EMAIL=a and b` — is not one assignment: bash assigns the text before the first
+#     space and then RUNS the rest as a command (exit 127 "command not found" at best, with no
+#     FAILED footer; at worst something that exists). docker compose parses the same line as a
+#     single value, so the two would also disagree about what the box says.
+#   * An unquoted value containing a shell metacharacter — `; & | < > ( )`, a backtick, `$(` —
+#     is run, backgrounded or redirected the same way.
+#   * Text after a closing quote — `KEY="a" b` — is a second word.
+#   * CRLF line endings: bash keeps the carriage return on the end of every value it sources
+#     (`EDGE_HOST` would be `edge.opsgrids.com\r`), where docker compose strips it.
+#
+# Quoted values (`KEY="a b"`), a trailing space, an inline ` # comment` after a value, and
+# `export KEY=…` (checked like any assignment) are fine and are not flagged. A quoted value with a
+# backslash in it is left alone rather than second-guessed.
+env_problems=""
+env_crlf=""
 while IFS= read -r env_line || [ -n "$env_line" ]; do
-	env_line=${env_line%$'\r'}
+	case "$env_line" in
+	*$'\r')
+		env_crlf=1
+		env_line=${env_line%$'\r'}
+		;;
+	esac
+	env_line=${env_line#export }
 	case "$env_line" in
 	[A-Za-z_]*=*) ;;
 	*) continue ;;
@@ -102,17 +118,47 @@ while IFS= read -r env_line || [ -n "$env_line" ]; do
 	esac
 	env_value=${env_line#*=}
 	case "$env_value" in
-	\"* | \'*) continue ;; # quoted: the shell reads it as one word, and so does compose
+	\"*)
+		# quoted: the shell reads it as one word, and so does compose — unless something follows
+		# the closing quote.
+		case "$env_value" in *\\*) continue ;; esac
+		env_rest=${env_value#\"}
+		case "$env_rest" in *\"*) ;; *) continue ;; esac
+		env_after=${env_rest#*\"}
+		;;
+	\'*)
+		case "$env_value" in *\\*) continue ;; esac
+		env_rest=${env_value#\'}
+		case "$env_rest" in *\'*) ;; *) continue ;; esac
+		env_after=${env_rest#*\'}
+		;;
+	*)
+		env_after=""
+		env_value=$(printf '%s' "$env_value" | sed -e 's/[[:space:]]\{1,\}#.*$//' -e 's/[[:space:]]\{1,\}$//')
+		case "$env_value" in
+		*[[:space:]]*)
+			env_problems="${env_problems}${env_key} in .env has an unquoted value containing whitespace — bash would run the words after the first space as a command. Quote the whole value: ${env_key}=\"…\""$'\n'
+			;;
+		*)
+			if printf '%s' "$env_value" | grep -Eq '[;&|<>()`]|\$\('; then
+				env_problems="${env_problems}${env_key} in .env has an unquoted value containing a shell metacharacter (; & | < > ( ) \` or \$( ) — bash would run, background or redirect it. Quote the whole value: ${env_key}=\"…\""$'\n'
+			fi
+			;;
+		esac
+		;;
 	esac
-	env_value=$(printf '%s' "$env_value" | sed -e 's/[[:space:]]\{1,\}#.*$//' -e 's/[[:space:]]\{1,\}$//')
-	case "$env_value" in
-	*[[:space:]]*) unquoted_whitespace="$unquoted_whitespace $env_key" ;;
-	esac
+	env_after=$(printf '%s' "$env_after" | sed -e 's/^[[:space:]]\{1,\}#.*$//' -e 's/^[[:space:]]\{1,\}$//')
+	if [ -n "$env_after" ]; then
+		env_problems="${env_problems}${env_key} in .env has text after its closing quote — bash reads it as a separate word (a command or an argument). Put the whole value inside the quotes: ${env_key}=\"…\""$'\n'
+	fi
 done <.env
-if [ -n "$unquoted_whitespace" ]; then
-	for env_key in $unquoted_whitespace; do
-		bad "$env_key in .env has an unquoted value containing whitespace — bash would run the words after the first space as a command. Quote the whole value: $env_key=\"…\""
-	done
+if [ -n "$env_crlf" ]; then
+	env_problems="${env_problems}.env has Windows (CRLF) line endings — bash keeps the carriage return on the end of every value it sources, where docker compose strips it, so the two would disagree. Convert it: sed -i 's/\\r\$//' .env"$'\n'
+fi
+if [ -n "$env_problems" ]; then
+	while IFS= read -r env_problem; do
+		[ -n "$env_problem" ] && bad "$env_problem"
+	done <<<"$env_problems"
 	echo "preflight: FAILED — nothing was changed (.env was not read: fix the line(s) above first)." >&2
 	exit 1
 fi
@@ -156,6 +202,18 @@ case ",${declared_profiles}," in
 esac
 if [ -n "${EDGE_PROFILES:-}" ]; then
 	ok "COMPOSE_PROFILES overridden by EDGE_PROFILES: $declared_profiles"
+fi
+# A profile name compose does not define enables nothing — silently: `COMPOSE_PROFILES=hrm` is
+# priced, judged and started as core only, and the products the box sells simply are not there.
+# Checked against the compose file's own list. (If compose cannot list its profiles the memory
+# row below fails closed on the same error, so nothing is skipped quietly here.)
+if [ -n "$declared_profiles" ] && known_profiles=$(docker compose -f compose.prod.yml --env-file .env config --profiles 2>/dev/null); then
+	for declared_profile in $(echo "$declared_profiles" | tr ',' ' '); do
+		case $'\n'"$known_profiles"$'\n' in
+		*$'\n'"$declared_profile"$'\n'*) ;;
+		*) bad "profile '$declared_profile' (from EDGE_PROFILES/COMPOSE_PROFILES) is not defined in compose.prod.yml, so it enables nothing. Defined: $(echo "$known_profiles" | tr '\n' ' ')" ;;
+		esac
+	done
 fi
 # Exported so every `docker compose` call below (and remote.sh's own, later) resolves the same
 # profile list this script just did — an exported shell variable takes precedence over the value
@@ -295,9 +353,11 @@ if docker info >/dev/null 2>&1; then ok "docker daemon responding"; else bad "do
 # to one and not the other fails there first, in CI, rather than surprising anyone here.
 budget_file="memory-budget.json"
 if [ ! -f "$budget_file" ]; then
-	echo "  warn  no $budget_file — memory budget check skipped" >&2
+	# The gate fails closed everywhere else (round 3): a budget it cannot read is not a budget it
+	# can skip. (`remote.sh record-budget` still skips — recording a number is not a verdict.)
+	bad "no $budget_file — the memory budget cannot be judged"
 elif ! command -v python3 >/dev/null 2>&1; then
-	echo "  warn  no python3 on this box — memory budget check skipped" >&2
+	bad "no python3 on this box — the memory budget cannot be priced or judged"
 else
 	# B1 (review round 2): price the box this deploy is about to leave behind, not the one it
 	# found. `docker compose up` starts what a newly-enabled profile adds; it never tears down
@@ -333,7 +393,7 @@ else
 	# A ceiling that is not a plain whole number of MB is a typo, not a decision — said out loud
 	# rather than silently ignored (it is treated as unset below, so the deploy would refuse).
 	case "${EDGE_BUDGET_ACCEPTED_MB:-}" in
-	*[!0-9]*) bad "EDGE_BUDGET_ACCEPTED_MB (${EDGE_BUDGET_ACCEPTED_MB}) must be a whole number of megabytes" ;;
+	*[!0-9]* | 0?*) bad "EDGE_BUDGET_ACCEPTED_MB (${EDGE_BUDGET_ACCEPTED_MB}) must be a whole number of megabytes (no sign, unit or leading zero)" ;;
 	esac
 
 	# Read from the budget file itself rather than hardcoded here — this file's own
@@ -345,7 +405,7 @@ else
 	max_accepted_percent=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['host']['max_accepted_percent'])" "$budget_file")
 	if [ -n "$expected_mb" ]; then
 		mem_total_kb=$(awk '/^MemTotal:/ {print $2}' "${EDGE_MEMINFO_FILE:-/proc/meminfo}" 2>/dev/null || echo "")
-		if [ -z "$mem_total_kb" ]; then
+		if ! [[ "$mem_total_kb" =~ ^[1-9][0-9]*$ ]]; then
 			# Same principle as post_deploy_compute: no reading is not "fine". (This used to warn
 			# and skip — the one branch of the gate that still failed open.)
 			bad "could not read MemTotal from ${EDGE_MEMINFO_FILE:-/proc/meminfo} — the memory budget cannot be judged"
@@ -373,9 +433,11 @@ else
 			accepted="${EDGE_BUDGET_ACCEPTED_MB:-}"
 			accepted_effective=""
 			case "$accepted" in
-			'' | *[!0-9]*) ;; # unset, or already reported above
+			'' | *[!0-9]* | 0?*) ;; # unset, or already reported above
 			*)
-				if [ "$accepted" -gt "$cap_mb" ]; then
+				# `${#accepted} -gt 7`: a twenty-digit value overflows bash's integer arithmetic and
+				# compares as a negative number — seven digits is already ten terabytes.
+				if [ "${#accepted}" -gt 7 ] || [ "$accepted" -gt "$cap_mb" ]; then
 					bad "EDGE_BUDGET_ACCEPTED_MB (${accepted}M) is above the ${max_accepted_percent}% cap (${cap_mb}M of ${mem_total_mb}M MemTotal) — a typo? The ceiling is the exact post-deploy total preflight printed for this commit (RUNBOOK.md, 'the memory budget'), and it never legitimately exceeds the cap."
 				else
 					accepted_effective="$accepted"
@@ -501,8 +563,11 @@ fi
 # reconciliation, no domain verification, no purge of soft-deleted uploads past their retention
 # window, with every container healthy. Loud, not fatal: an operator may be stopping a sweep on
 # purpose for a maintenance window, but never by accident.
-case "${RUN_SWEEPS_IN_API:-true}" in
-true) ok "in-API sweeps enabled (operations reconcile, storefront domains, document purge)" ;;
+# Read the way the services read it (pydantic's bool: true/True/1/yes/on/y/t, any case) — a
+# `True` in `.env` turns the sweeps ON and must not be warned about as off.
+sweeps_flag=$(printf '%s' "${RUN_SWEEPS_IN_API:-true}" | tr '[:upper:]' '[:lower:]')
+case "$sweeps_flag" in
+true | 1 | yes | on | y | t) ok "in-API sweeps enabled (operations reconcile, storefront domains, document purge)" ;;
 *)
 	echo "  warn  RUN_SWEEPS_IN_API=${RUN_SWEEPS_IN_API}: the operations, storefront and document sweeps are OFF and" >&2
 	echo "        no separate cron container exists to run them — nothing reconciles stock, verifies" >&2
@@ -558,7 +623,7 @@ done < <(sed -n 's#^https://\([a-z0-9.-]\{1,\}\) {$#\1#p' caddy/Caddyfile)
 # A prefix in the route table whose upstream is not among this box's services is a hung
 # connection and a 504 for whoever calls it. Product routes are covered by the catalogue check
 # below; this catches the ones with no product key (approvals runs only with the hrms profile).
-running_services=" $(docker compose -f compose.prod.yml --env-file .env config --services 2>/dev/null | tr '\n' ' ') "
+running_services=" $(docker compose -f compose.prod.yml --env-file .env config --services 2>/dev/null | tr '\n' ' ' || true) "
 while read -r upstream; do
 	case "$running_services" in
 	*" $upstream "*) ;;
@@ -600,6 +665,10 @@ if docker compose -f compose.prod.yml --env-file .env ps --status running postgr
 	# An empty answer and a failed question look the same to the loop below, and a green line
 	# for a check that never ran is worse than no check.
 	[ "$catalogue_rc" -eq 0 ] || bad "could not read the product catalogue (psql exit $catalogue_rc): the catalogue/profile agreement is unverified"
+	# psql prints one key per line; the `case` matches below need them space-separated. Matching
+	# `" $available "` against newline-separated output only ever found the FIRST key, so with two
+	# or more sold products the advisory told the owner sold products were "not sold — safe to trim".
+	available_set=" $(printf '%s\n' "$available" | tr '\n' ' ') "
 
 	enabled=",${declared_profiles},"
 	sold_unserved=""
@@ -616,7 +685,7 @@ if docker compose -f compose.prod.yml --env-file .env ps --status running postgr
 	for profile in $(echo "$declared_profiles" | tr ',' ' '); do
 		key=$(key_for_profile "$profile")
 		[ -n "$key" ] || continue
-		case " $available " in
+		case "$available_set" in
 		*" $key "*) ;;
 		*) echo "  warn  profile '$profile' runs but the catalogue does not sell '$key' yet (status is not 'available')" >&2 ;;
 		esac
@@ -668,7 +737,7 @@ if docker compose -f compose.prod.yml --env-file .env ps --status running postgr
 			esac
 			key=$(key_for_profile "$profile")
 			[ -n "$key" ] || continue
-			case " $available " in
+			case "$available_set" in
 			*" $key "*) continue ;; # still commercially listed, just no takers yet
 			esac
 			unused_and_unsold="$unused_and_unsold $profile"
