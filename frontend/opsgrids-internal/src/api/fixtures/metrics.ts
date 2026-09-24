@@ -1,85 +1,64 @@
 /**
- * The Overview metrics fixture. Counts (active / trial / suspended / locked, MRR) are computed off
- * the directory so the dashboard and the accounts table can never disagree; the trend series and
- * the rate metrics (trial-conversion, churn) are coherent hand-set projections — exactly the shape
- * the console's event-stream projection would emit (ADR-0004 §4).
+ * Platform metrics fixture — `MetricsOut` / `MetricsOverviewOut`, computed off the same directory
+ * fixture the accounts screens read, so the two can never disagree. There is no historical series,
+ * no period-over-period delta and no revenue-this-period figure here on purpose: the real
+ * `GET /admin/metrics/overview` payload doesn't carry them either (see `types.ts`).
  */
 
-import type { BreakdownSegment, MrrPoint, OverviewMetrics } from "@/api/types";
-import { rupees } from "./catalog";
-import { ORGANIZATIONS } from "./orgs";
+import type { LifecycleCountsOut, MetricsOut, MetricsOverviewOut } from "@/api/types";
+import { buildOrgStates, SUBSCRIPTIONS } from "./orgs";
 
-const MONTH_LABELS = [
-  "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug",
-];
-
-// MRR trailing twelve months, in whole rupees, ending at the directory's current MRR.
-const MRR_TREND_RUPEES = [
-  1_240_000, 1_310_000, 1_370_000, 1_420_000, 1_470_000, 1_515_000, 1_555_000, 1_595_000,
-  1_625_000, 1_660_000, 1_695_000, 1_760_000,
-];
-
-function countStatus(status: string): number {
-  return ORGANIZATIONS.filter((o) => o.status === status).length;
+function countByStatus(statuses: string[], status: string): number {
+  return statuses.filter((s) => s === status).length;
 }
 
-export function buildOverviewMetrics(): OverviewMetrics {
-  const mrrMinor = ORGANIZATIONS.reduce((sum, o) => sum + o.mrr_minor, 0);
-  const activeAccounts = countStatus("active");
-  const trials = countStatus("trial");
-  const suspended = countStatus("suspended");
-  const locked = ORGANIZATIONS.filter((o) => o.locked).length;
-
-  const mrrSeries: MrrPoint[] = MRR_TREND_RUPEES.map((whole, i) => ({
-    label: MONTH_LABELS[i] ?? "",
-    mrr_minor: rupees(whole),
-  }));
-
-  const trialFunnel: BreakdownSegment[] = [
-    { key: "converted", label: "Converted to paid", count: 8, tone: "active" },
-    { key: "in_trial", label: "Still in trial", count: 3, tone: "trial" },
-    { key: "expired", label: "Trial expired", count: 1, tone: "cancelled" },
-  ];
-
-  const churnBreakdown: BreakdownSegment[] = [
-    { key: "retained", label: "Retained (active)", count: activeAccounts, tone: "active" },
-    { key: "past_due", label: "Past due", count: countStatus("past_due"), tone: "pastdue" },
-    { key: "suspended", label: "Suspended", count: suspended, tone: "suspended" },
-    { key: "cancelled", label: "Cancelled", count: countStatus("cancelled"), tone: "cancelled" },
-  ];
-
+export function buildPlatformMetrics(): MetricsOut {
+  const states = buildOrgStates();
+  const mrrMinor = states.reduce((sum, s) => sum + s.mrr_minor, 0);
+  const activeSubscriptions = SUBSCRIPTIONS.filter((s) => s.state === "active").length;
+  const trialCount = SUBSCRIPTIONS.filter((s) => s.state === "trial").length;
+  const cancelledCount = SUBSCRIPTIONS.filter((s) => s.state === "cancelled").length;
+  // Trailing-90-day trial funnel: the trials seeded as still-in-progress, plus a fixed count of
+  // ones assumed to have already converted or expired — a fixtures-only approximation, not a claim
+  // about the live rate.
+  const trialsStarted = trialCount + 9;
+  const trialConversions = 8;
   return {
-    currency: "INR",
-    period_label: "August 2026",
-
     mrr_minor: mrrMinor,
-    mrr_delta_pct: 3.8,
-    mrr_sparkline: MRR_TREND_RUPEES.slice(-7),
-    mrr_series: mrrSeries,
+    currency: "INR",
+    trials_started: trialsStarted,
+    trial_conversions: trialConversions,
+    trial_conversion_rate: Math.round((trialConversions / trialsStarted) * 1000) / 10,
+    active_subscriptions: activeSubscriptions,
+    churned: cancelledCount,
+    churn_rate: Math.round((cancelledCount / (states.length || 1)) * 1000) / 10,
+  };
+}
 
-    active_accounts: activeAccounts,
-    active_delta_pct: 2.2,
-    active_sparkline: [5, 6, 6, 7, 7, 8, activeAccounts],
+export function buildLifecycleCounts(): LifecycleCountsOut {
+  const states = buildOrgStates();
+  const statuses = states.map((s) => {
+    if (s.locked) return "suspended";
+    if (s.trial_ends_at) return "trial";
+    return "active";
+  });
+  // The seed encodes "cancelled" and "past_due" only at the subscription level (`SUBSCRIPTIONS`),
+  // not on `OrgStateOut` — there is no status field there in the live contract either.
+  const cancelled = SUBSCRIPTIONS.filter((s) => s.state === "cancelled").length;
+  return {
+    suspended: countByStatus(statuses, "suspended"),
+    active: countByStatus(statuses, "active"),
+    trial: countByStatus(statuses, "trial"),
+    churned: cancelled,
+    none: 0,
+  };
+}
 
-    trials_in_progress: trials,
-    trials_delta_pct: 12.5,
-    trials_sparkline: [1, 2, 2, 2, 3, 2, trials],
-
-    trial_conversion_pct: 66.7,
-    conversion_delta_pct: 4.5,
-    conversion_sparkline: [58, 60, 61, 63, 64, 65, 67],
-
-    churn_pct: 2.4,
-    churn_delta_pct: -0.5,
-    churn_sparkline: [3.1, 3.0, 2.9, 2.8, 2.7, 2.6, 2.4],
-
-    locked_accounts: locked,
-    suspended_accounts: suspended,
-
-    revenue_period_minor: rupees(1_715_000),
-    revenue_delta_pct: 5.1,
-
-    trial_funnel: trialFunnel,
-    churn_breakdown: churnBreakdown,
+export function buildOverviewMetrics(): MetricsOverviewOut {
+  const lifecycle = buildLifecycleCounts();
+  return {
+    ...buildPlatformMetrics(),
+    organization_count: buildOrgStates().length,
+    organizations_by_lifecycle: lifecycle,
   };
 }

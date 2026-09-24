@@ -1,21 +1,18 @@
 import { useId, useState } from "react";
 import type { ReactNode } from "react";
 
-import { postOverride } from "@/api/client";
-import type { OrganizationRow, OverrideRequest, OverrideResult } from "@/api/types";
-import { Button, Money } from "@/ui";
+import { getOrganizationPricing, postOverride } from "@/api/client";
+import type { OverrideRequest, OverrideResult, PricingOrgRef, ProductPricing } from "@/api/types";
+import { useAsync } from "@/lib/useAsync";
+import { AccountStatusPill, Button, ErrorState, Money, Skeleton } from "@/ui";
 import { CheckCircleIcon, GiftIcon, PauseIcon, PlayIcon } from "@/ui/icons";
 import { Modal } from "@/ui/Modal";
 
-/**
- * Which account-detail action modal is open, or none. `"bespoke"` and `"migrate"` moved to the
- * "Client pricing" section's own "Set price" flow (`AccountPricing.tsx`) — see that module for the
- * per-product price-setting dialog the catalog's `bespoke_price` override still backs from Plans.tsx.
- */
+/** Which account-detail action modal is open, or none. */
 export type ActionKind = null | "suspend" | "reactivate" | "comp";
 
 interface ActionProps {
-  org: OrganizationRow;
+  org: PricingOrgRef;
   onClose: () => void;
   onDone: (result: OverrideResult) => void;
 }
@@ -48,19 +45,19 @@ function ErrorNote({ message }: { message: string }) {
   );
 }
 
-/** The success panel shown after an override is accepted. */
+/** The success panel shown after an override is accepted. There is no structured audit row in the
+ *  response to quote — `OverrideOut.result` is whatever JSON the owning service happened to
+ *  return — so this shows only what the console itself knows for certain: which action, and who it
+ *  delegated to. */
 function ResultPanel({ result, onClose }: { result: OverrideResult; onClose: () => void }) {
   return (
-    <div className="flex flex-col items-center gap-4 py-4 text-center">
+    <div className="flex flex-col items-center gap-4 py-4 text-center" role="status" aria-live="polite">
       <span className="grid size-14 place-items-center rounded-full bg-active-soft text-active">
         <CheckCircleIcon className="size-7" />
       </span>
       <div className="flex flex-col gap-1">
         <p className="text-base font-bold">Override accepted</p>
-        <p className="text-sm text-muted">{result.audit.summary}</p>
-        <p className="mono text-xs text-faint">
-          {result.override_id} · audit {result.audit.audit_id}
-        </p>
+        <p className="text-sm text-muted">Delegated to {result.delegated_to}-service.</p>
       </div>
       <Button onClick={onClose} className="w-full">
         Done
@@ -76,6 +73,7 @@ function useOverride(onDone: (r: OverrideResult) => void) {
   const [result, setResult] = useState<OverrideResult | null>(null);
 
   async function run(request: OverrideRequest) {
+    if (submitting) return;
     setError(null);
     setSubmitting(true);
     try {
@@ -94,10 +92,21 @@ function useOverride(onDone: (r: OverrideResult) => void) {
 
 /* -------------------------------- suspend -------------------------------- */
 
+/** `POST /admin/overrides` requires a `subscription_id` for a suspend — a real subscription UUID
+ *  that only ever shows up in one place across the whole admin surface: the per-product pricing
+ *  composite (`ProductSubscriptionOut.id`). `/admin/subscriptions` (the bulk list) carries no id at
+ *  all. So suspending means picking *which* subscription off that same pricing read, not a
+ *  free-standing subscription picker. */
 export function SuspendAction({ org, onClose, onDone }: ActionProps) {
   const reasonId = useId();
   const [reason, setReason] = useState("");
+  const [subscriptionId, setSubscriptionId] = useState<string>("");
   const { submitting, error, result, run } = useOverride(onDone);
+
+  const pricing = useAsync(() => getOrganizationPricing(org.organization_id), [org.organization_id]);
+  const subscribed: ProductPricing[] =
+    pricing.status === "success" ? pricing.data.products.filter((p) => p.subscription !== null) : [];
+  const chosen = subscriptionId || subscribed[0]?.subscription?.id || "";
 
   return (
     <Modal
@@ -114,10 +123,48 @@ export function SuspendAction({ org, onClose, onDone }: ActionProps) {
           className="flex flex-col gap-4"
           onSubmit={(e) => {
             e.preventDefault();
-            void run({ kind: "suspend", organization_id: org.organization_id, reason: reason.trim() });
+            if (!chosen) return;
+            void run({
+              action: "suspend",
+              organization_id: org.organization_id,
+              subscription_id: chosen,
+              reason: reason.trim(),
+            });
           }}
         >
           {error ? <ErrorNote message={error} /> : null}
+
+          {pricing.status === "loading" ? (
+            <Skeleton className="h-24 w-full" />
+          ) : pricing.status === "error" ? (
+            <ErrorState message={pricing.error.message} />
+          ) : subscribed.length === 0 ? (
+            <p className="rounded-tile bg-ground px-3 py-2.5 text-sm text-muted">
+              {org.name} has no subscription on any product — there is nothing to suspend.
+            </p>
+          ) : (
+            <fieldset className="flex flex-col gap-2">
+              <legend className="pb-1 text-sm font-semibold text-ink-soft">Which subscription?</legend>
+              {subscribed.map((p) => (
+                <label
+                  key={p.product_key}
+                  className="flex items-center gap-2.5 rounded-tile border border-line px-3 py-2.5 text-sm has-[:checked]:border-accent has-[:checked]:bg-accent-soft"
+                >
+                  <input
+                    type="radio"
+                    name="subscription"
+                    value={p.subscription?.id}
+                    checked={chosen === p.subscription?.id}
+                    onChange={() => setSubscriptionId(p.subscription?.id ?? "")}
+                    className="size-4 accent-[var(--color-accent)]"
+                  />
+                  <span className="font-semibold text-ink">{p.product_name}</span>
+                  <AccountStatusPill status={p.subscription?.state ?? "unknown"} />
+                </label>
+              ))}
+            </fieldset>
+          )}
+
           <div className="flex flex-col gap-1.5">
             <FieldLabel htmlFor={reasonId}>Reason (required)</FieldLabel>
             <textarea
@@ -131,7 +178,7 @@ export function SuspendAction({ org, onClose, onDone }: ActionProps) {
             />
           </div>
           <DelegationNote>
-            POSTs <span className="mono">override.suspend</span> to{" "}
+            POSTs <span className="mono">{"{action: \"suspend\"}"}</span> to{" "}
             <span className="mono">/api/v1/admin/overrides</span>, which delegates to
             subscription-service's <span className="mono">/internal</span> suspend. The activation is
             projected off, and the gateway then answers the customer with a 402.
@@ -140,7 +187,11 @@ export function SuspendAction({ org, onClose, onDone }: ActionProps) {
             <Button variant="outline" onClick={onClose} type="button">
               Cancel
             </Button>
-            <Button variant="danger" type="submit" disabled={submitting || reason.trim().length === 0}>
+            <Button
+              variant="danger"
+              type="submit"
+              disabled={submitting || reason.trim().length === 0 || !chosen}
+            >
               {submitting ? "Suspending…" : "Suspend account"}
             </Button>
           </div>
@@ -152,11 +203,10 @@ export function SuspendAction({ org, onClose, onDone }: ActionProps) {
 
 /* ------------------------------ reactivate ------------------------------- */
 
-export function ReactivateAction({ org, onClose, onDone }: ActionProps) {
-  const reasonId = useId();
-  const [reason, setReason] = useState("");
-  const { submitting, error, result, run } = useOverride(onDone);
-
+/** There is no `reactivate` override on the live API — `delegation.py` resolves exactly `suspend`
+ *  and `comp_grant`; anything else is a 400. Rather than ship a form that can only ever fail, this
+ *  says so plainly. */
+export function ReactivateAction({ org, onClose }: Omit<ActionProps, "onDone">) {
   return (
     <Modal
       open
@@ -165,57 +215,32 @@ export function ReactivateAction({ org, onClose, onDone }: ActionProps) {
       description="Restores entitlement; the customer regains access on the next token refresh."
       icon={<PlayIcon className="size-5" />}
     >
-      {result ? (
-        <ResultPanel result={result} onClose={onClose} />
-      ) : (
-        <form
-          className="flex flex-col gap-4"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void run({ kind: "reactivate", organization_id: org.organization_id, reason: reason.trim() });
-          }}
-        >
-          {error ? <ErrorNote message={error} /> : null}
-          <div className="flex flex-col gap-1.5">
-            <FieldLabel htmlFor={reasonId}>Reason (required)</FieldLabel>
-            <textarea
-              id={reasonId}
-              required
-              rows={3}
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              placeholder="e.g. Payment recovered — restoring access"
-              className={`${INPUT} h-auto py-2.5`}
-            />
-          </div>
-          <DelegationNote>
-            POSTs <span className="mono">override.reactivate</span> to{" "}
-            <span className="mono">/api/v1/admin/overrides</span>; subscription-service moves the
-            subscription back to <span className="mono">active</span> and re-projects the activation.
-          </DelegationNote>
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={onClose} type="button">
-              Cancel
-            </Button>
-            <Button type="submit" disabled={submitting || reason.trim().length === 0}>
-              {submitting ? "Reactivating…" : "Reactivate"}
-            </Button>
-          </div>
-        </form>
-      )}
+      <div className="flex flex-col gap-4">
+        <p className="rounded-tile bg-ground px-3 py-2.5 text-sm leading-relaxed text-muted">
+          Reactivating isn't available from the console yet. `/admin/overrides` only resolves
+          <span className="mono"> suspend</span> and <span className="mono"> comp_grant</span> —
+          there is no reactivate action on the live API to delegate this to.
+        </p>
+        <div className="flex justify-end">
+          <Button variant="outline" onClick={onClose} type="button">
+            Close
+          </Button>
+        </div>
+      </div>
     </Modal>
   );
 }
 
 /* ------------------------------ comp grant ------------------------------- */
 
+/** `POST /admin/overrides` for `comp_grant` accepts only `organization_id`, `amount_minor`,
+ *  `currency` and `reason` — there is no `is_comp` flag and no `valid_until`, so this form no
+ *  longer offers either: showing a control the server silently drops would be worse than not
+ *  showing it (see `types.ts`). */
 export function CompGrantAction({ org, onClose, onDone }: ActionProps) {
   const amountId = useId();
-  const expiryId = useId();
   const reasonId = useId();
   const [amount, setAmount] = useState("");
-  const [isComp, setIsComp] = useState(true);
-  const [expiry, setExpiry] = useState("");
   const [reason, setReason] = useState("");
   const { submitting, error, result, run } = useOverride(onDone);
 
@@ -227,7 +252,7 @@ export function CompGrantAction({ org, onClose, onDone }: ActionProps) {
       open
       onClose={onClose}
       title={`Grant credit — ${org.name}`}
-      description="An append-only credit-ledger entry. Nothing is mutated; balance is a SUM over entries."
+      description="An append-only credit-ledger entry. Nothing is mutated."
       icon={<GiftIcon className="size-5" />}
     >
       {result ? (
@@ -239,72 +264,30 @@ export function CompGrantAction({ org, onClose, onDone }: ActionProps) {
             e.preventDefault();
             if (!valid) return;
             void run({
-              kind: "comp_grant",
+              action: "comp_grant",
               organization_id: org.organization_id,
               amount_minor: amountMinor,
-              currency: org.currency,
-              is_comp: isComp,
+              currency: "INR",
               reason: reason.trim(),
-              valid_until: expiry ? `${expiry}T23:59:59Z` : null,
             });
           }}
         >
           {error ? <ErrorNote message={error} /> : null}
 
-          <fieldset className="flex flex-col gap-2">
-            <legend className="pb-1 text-sm font-semibold text-ink-soft">Grant type</legend>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                aria-pressed={isComp}
-                onClick={() => setIsComp(true)}
-                className={`rounded-tile border px-3 py-2.5 text-left text-sm font-semibold transition-colors ${
-                  isComp ? "border-accent bg-accent-soft text-accent-ink" : "border-line text-muted hover:bg-ground"
-                }`}
-              >
-                Comp access
-                <span className="block text-xs font-normal text-muted">Complimentary use</span>
-              </button>
-              <button
-                type="button"
-                aria-pressed={!isComp}
-                onClick={() => setIsComp(false)}
-                className={`rounded-tile border px-3 py-2.5 text-left text-sm font-semibold transition-colors ${
-                  !isComp ? "border-accent bg-accent-soft text-accent-ink" : "border-line text-muted hover:bg-ground"
-                }`}
-              >
-                Monetary credit
-                <span className="block text-xs font-normal text-muted">Offsets invoices</span>
-              </button>
-            </div>
-          </fieldset>
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="flex flex-col gap-1.5">
-              <FieldLabel htmlFor={amountId}>Amount (₹)</FieldLabel>
-              <input
-                id={amountId}
-                type="number"
-                min="1"
-                step="1"
-                required
-                inputMode="numeric"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                placeholder="45000"
-                className={`${INPUT} tnum`}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <FieldLabel htmlFor={expiryId}>Expires (optional)</FieldLabel>
-              <input
-                id={expiryId}
-                type="date"
-                value={expiry}
-                onChange={(e) => setExpiry(e.target.value)}
-                className={`${INPUT} tnum`}
-              />
-            </div>
+          <div className="flex flex-col gap-1.5">
+            <FieldLabel htmlFor={amountId}>Amount (₹)</FieldLabel>
+            <input
+              id={amountId}
+              type="number"
+              min="1"
+              step="1"
+              required
+              inputMode="numeric"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="45000"
+              className={`${INPUT} tnum`}
+            />
           </div>
 
           <div className="flex flex-col gap-1.5">
@@ -321,17 +304,15 @@ export function CompGrantAction({ org, onClose, onDone }: ActionProps) {
 
           {amountMinor > 0 ? (
             <p className="text-sm text-muted">
-              Grants{" "}
-              <Money minor={amountMinor} currency={org.currency} className="font-semibold text-ink" />{" "}
-              {isComp ? "of comp access" : "of credit"}
-              {expiry ? `, lapsing ${expiry}.` : ", with no expiry."}
+              Grants <Money minor={amountMinor} currency="INR" className="font-semibold text-ink" /> of
+              credit, with no expiry — the live ledger has no expiry field on a grant made this way.
             </p>
           ) : null}
 
           <DelegationNote>
-            POSTs <span className="mono">override.comp_grant</span> to{" "}
+            POSTs <span className="mono">{"{action: \"comp_grant\"}"}</span> to{" "}
             <span className="mono">/api/v1/admin/overrides</span> → billing-service writes one
-            append-only credit-ledger row. Revoking later is a reversing row, never a mutation.
+            append-only credit-ledger row.
           </DelegationNote>
 
           <div className="flex justify-end gap-2">
@@ -347,4 +328,3 @@ export function CompGrantAction({ org, onClose, onDone }: ActionProps) {
     </Modal>
   );
 }
-

@@ -1,9 +1,9 @@
-import { useCallback, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { listSubscriptions } from "@/api/client";
-import type { AccountStatus, Subscription } from "@/api/types";
-import { formatDate, formatInt, relativeDays } from "@/lib/format";
+import type { SubscriptionOut } from "@/api/types";
+import { formatDate } from "@/lib/format";
 import { useAsync } from "@/lib/useAsync";
 import {
   AccountStatusPill,
@@ -19,108 +19,68 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { LayersIcon, TagIcon } from "@/ui/icons";
+import { LayersIcon } from "@/ui/icons";
 
-type StateFilter = AccountStatus | "all";
-
-const STATE_FILTERS: { value: StateFilter; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "active", label: "Active" },
-  { value: "trial", label: "Trial" },
-  { value: "past_due", label: "Past due" },
-  { value: "suspended", label: "Suspended" },
-  { value: "cancelled", label: "Cancelled" },
-];
-
-const NO_ROWS: Subscription[] = [];
+const NO_ROWS: SubscriptionOut[] = [];
 
 export function SubscriptionsPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
-  const [state, setState] = useState<StateFilter>("all");
+  const [state, setState] = useState<string>("all");
 
-  const loader = useCallback(() => listSubscriptions({ search, state }), [search, state]);
-  const subs = useAsync(loader, [search, state]);
+  const subs = useAsync(() => listSubscriptions(), []);
 
-  const rows = useMemo(
-    () => (subs.status === "success" ? subs.data.items : NO_ROWS),
-    [subs],
-  );
+  const all = subs.status === "success" ? subs.data.subscriptions : NO_ROWS;
+  const states = useMemo(() => [...new Set(all.map((s) => s.state))].sort(), [all]);
 
-  const columns: Column<Subscription>[] = [
+  const rows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return all.filter((s) => {
+      const matchQuery =
+        q === "" || s.organization_id.toLowerCase().includes(q) || s.product_key.toLowerCase().includes(q);
+      const matchState = state === "all" || s.state === state;
+      return matchQuery && matchState;
+    });
+  }, [all, search, state]);
+
+  const columns: Column<SubscriptionOut>[] = [
     {
       key: "org",
       header: "Organization",
       render: (s) => (
         <Link
           to={`/accounts/${s.organization_id}`}
-          className="font-bold text-ink hover:text-accent transition-colors"
+          className="mono truncate text-sm font-bold text-ink hover:text-accent transition-colors"
           onClick={(e) => e.stopPropagation()}
         >
-          {s.organization_name}
+          {s.organization_id}
         </Link>
       ),
     },
     {
       key: "product",
-      header: "Product · plan",
-      render: (s) => {
-        const members = (s.entitled_products ?? []).filter((key) => key !== s.product_key);
-        return (
-          <div className="flex flex-col gap-0.5">
-            <div className="flex items-center gap-1.5">
-              <span className="font-semibold text-ink">{s.product_name}</span>
-              <span className="text-muted">·</span>
-              <span className="text-muted">{s.plan_name}</span>
-              {s.is_bespoke ? (
-                <span className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-1.5 py-0.5 text-[0.65rem] font-semibold text-accent-ink">
-                  <TagIcon className="size-3" /> Bespoke
-                </span>
-              ) : null}
-            </div>
-            {members.length > 0 ? (
-              <span className="text-xs text-muted">
-                Entitles <span className="mono">{members.join(", ")}</span>
-              </span>
-            ) : null}
-          </div>
-        );
-      },
+      header: "Product",
+      render: (s) => <span className="font-semibold text-ink">{s.product_key}</span>,
     },
     { key: "state", header: "State", render: (s) => <AccountStatusPill status={s.state} /> },
-    {
-      key: "seats",
-      header: "Seats",
-      align: "right",
-      cellClassName: "hidden md:table-cell tnum",
-      headerClassName: "hidden md:table-cell",
-      render: (s) => <span className="tnum text-ink-soft">{formatInt(s.seats)}</span>,
-    },
     {
       key: "amount",
       header: "Per month",
       align: "right",
       render: (s) =>
         s.amount_minor > 0 ? (
-          <Money minor={s.amount_minor} currency={s.currency} className="font-semibold" />
+          <Money minor={s.amount_minor} currency={s.currency ?? "INR"} className="font-semibold" />
         ) : (
           <span className="text-faint">—</span>
         ),
     },
     {
-      key: "renewal",
-      header: "Next renewal / ends",
+      key: "trial",
+      header: "Trial ends",
       align: "right",
       cellClassName: "hidden lg:table-cell",
       headerClassName: "hidden lg:table-cell",
-      render: (s) =>
-        s.state === "trial" ? (
-          <span className="text-pastdue">trial · {relativeDays(s.trial_ends_at)}</span>
-        ) : s.next_renewal_at ? (
-          <span className="tnum text-muted">{formatDate(s.next_renewal_at)}</span>
-        ) : (
-          <span className="text-faint">—</span>
-        ),
+      render: (s) => <span className="tnum text-muted">{s.trial_ends_at ? formatDate(s.trial_ends_at) : "—"}</span>,
     },
   ];
 
@@ -129,23 +89,31 @@ export function SubscriptionsPage() {
       <PageHeader
         eyebrow="Cross-tenant"
         title="Subscriptions"
-        description="Every subscription across all tenants, with its lifecycle state and next renewal."
+        description="Every subscription across all tenants, flattened from each organization's commercial snapshot."
         actions={<EnvBadge />}
       />
+
+      <p className="text-xs text-faint">
+        No plan name, seat count or renewal date is in this projection yet — only the plan version
+        id, amount and state.
+      </p>
 
       <Card className="flex flex-col gap-4 p-4 sm:p-5">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
           <SearchInput
             label="Search subscriptions"
-            placeholder="Search by organization, product or plan…"
+            placeholder="Search by organization id or product…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             containerClassName="lg:max-w-sm"
           />
           <div className="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1">
-            {STATE_FILTERS.map((f) => (
-              <Pill key={f.value} active={state === f.value} onClick={() => setState(f.value)}>
-                {f.label}
+            <Pill active={state === "all"} onClick={() => setState("all")}>
+              All
+            </Pill>
+            {states.map((s) => (
+              <Pill key={s} active={state === s} onClick={() => setState(s)}>
+                {s}
               </Pill>
             ))}
           </div>
@@ -165,7 +133,7 @@ export function SubscriptionsPage() {
           <DataTable
             columns={columns}
             rows={rows}
-            rowKey={(s) => s.subscription_id}
+            rowKey={(s) => `${s.organization_id}:${s.product_key}`}
             caption="Subscriptions across all tenants"
             dense
             onRowClick={(s) => navigate(`/accounts/${s.organization_id}`)}
@@ -173,7 +141,7 @@ export function SubscriptionsPage() {
               <EmptyState
                 icon={<LayersIcon className="size-6" />}
                 title="No matching subscriptions"
-                description="Nothing matches these filters. Try a different lifecycle state or clear the search."
+                description="Nothing matches these filters. Try a different state or clear the search."
               />
             }
           />

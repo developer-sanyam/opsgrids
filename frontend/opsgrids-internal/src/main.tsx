@@ -15,6 +15,7 @@ import { PlansPage } from "./routes/Plans";
 import { GrantsPage } from "./routes/Grants";
 import { AuditPage } from "./routes/Audit";
 import { NotFoundPage } from "./routes/NotFound";
+import { RouteErrorCard } from "./routes/RouteError";
 
 const router = createBrowserRouter([
   {
@@ -24,8 +25,11 @@ const router = createBrowserRouter([
         <Outlet />
       </AuthProvider>
     ),
+    // Catches anything thrown above the shell (auth wiring, the router itself) with a full-page
+    // card rather than React Router's own blank "Unexpected Application Error!".
+    errorElement: <RouteErrorCard />,
     children: [
-      { path: "/login", element: <LoginPage /> },
+      { path: "/login", element: <LoginPage />, errorElement: <RouteErrorCard /> },
       {
         path: "/",
         element: (
@@ -33,14 +37,15 @@ const router = createBrowserRouter([
             <AppShell />
           </RequireAuth>
         ),
+        errorElement: <RouteErrorCard />,
         children: [
-          { index: true, element: <OverviewPage /> },
-          { path: "accounts", element: <AccountsPage /> },
-          { path: "accounts/:orgId", element: <AccountDetailPage /> },
-          { path: "subscriptions", element: <SubscriptionsPage /> },
-          { path: "plans", element: <PlansPage /> },
-          { path: "grants", element: <GrantsPage /> },
-          { path: "audit", element: <AuditPage /> },
+          { index: true, element: <OverviewPage />, errorElement: <RouteErrorCard /> },
+          { path: "accounts", element: <AccountsPage />, errorElement: <RouteErrorCard /> },
+          { path: "accounts/:orgId", element: <AccountDetailPage />, errorElement: <RouteErrorCard /> },
+          { path: "subscriptions", element: <SubscriptionsPage />, errorElement: <RouteErrorCard /> },
+          { path: "plans", element: <PlansPage />, errorElement: <RouteErrorCard /> },
+          { path: "grants", element: <GrantsPage />, errorElement: <RouteErrorCard /> },
+          { path: "audit", element: <AuditPage />, errorElement: <RouteErrorCard /> },
           { path: "*", element: <NotFoundPage /> },
         ],
       },

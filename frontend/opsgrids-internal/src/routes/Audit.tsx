@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { listAudit } from "@/api/client";
-import type { AuditEntry } from "@/api/types";
+import type { AuditOut } from "@/api/types";
 import { formatDateTime } from "@/lib/format";
 import { useAsync } from "@/lib/useAsync";
 import {
@@ -19,28 +19,14 @@ import {
 import type { Column } from "@/ui";
 import { ShieldIcon } from "@/ui/icons";
 
-function ResultBadge({ result }: { result: AuditEntry["result"] }) {
-  const ok = result === "success";
-  return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold ${
-        ok ? "bg-active-soft text-active" : "bg-suspended-soft text-suspended"
-      }`}
-    >
-      <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      {ok ? "Success" : "Failed"}
-    </span>
-  );
-}
-
-const NO_ROWS: AuditEntry[] = [];
+const NO_ROWS: AuditOut[] = [];
 
 export function AuditPage() {
   const audit = useAsync(() => listAudit(), []);
   const [search, setSearch] = useState("");
   const [action, setAction] = useState<string>("all");
 
-  const all = audit.status === "success" ? audit.data.items : NO_ROWS;
+  const all = audit.status === "success" ? audit.data.audit : NO_ROWS;
 
   const actions = useMemo(() => [...new Set(all.map((a) => a.action))].sort(), [all]);
 
@@ -49,29 +35,29 @@ export function AuditPage() {
     return all.filter((a) => {
       const matchQuery =
         q === "" ||
-        a.summary.toLowerCase().includes(q) ||
-        a.actor.toLowerCase().includes(q) ||
-        (a.organization_name?.toLowerCase().includes(q) ?? false);
+        a.organization_id.toLowerCase().includes(q) ||
+        (a.reason?.toLowerCase().includes(q) ?? false) ||
+        a.entity_id?.toLowerCase().includes(q) === true;
       const matchAction = action === "all" || a.action === action;
       return matchQuery && matchAction;
     });
   }, [all, search, action]);
 
-  const columns: Column<AuditEntry>[] = [
+  const columns: Column<AuditOut>[] = [
     {
       key: "when",
       header: "When",
-      render: (a) => <span className="tnum whitespace-nowrap text-muted">{formatDateTime(a.occurred_at)}</span>,
+      render: (a) => <span className="tnum whitespace-nowrap text-muted">{formatDateTime(a.at)}</span>,
     },
     {
       key: "actor",
-      header: "Operator",
+      header: "Actor",
       cellClassName: "hidden md:table-cell",
       headerClassName: "hidden md:table-cell",
       render: (a) => (
         <div className="flex flex-col leading-tight">
-          <span className="font-semibold text-ink">{a.actor}</span>
-          <span className="mono text-xs text-faint">{a.actor_email}</span>
+          <span className="mono truncate text-xs text-ink">{a.actor_id ?? "system"}</span>
+          <span className="text-xs text-faint">{a.acting_as ?? "—"}</span>
         </div>
       ),
     },
@@ -81,26 +67,34 @@ export function AuditPage() {
       render: (a) => <span className="mono text-xs font-semibold text-accent-ink">{a.action}</span>,
     },
     {
+      key: "entity",
+      header: "Entity",
+      cellClassName: "hidden lg:table-cell",
+      headerClassName: "hidden lg:table-cell",
+      render: (a) => (
+        <span className="mono text-xs text-muted">
+          {a.entity}
+          {a.entity_id ? `:${a.entity_id}` : ""}
+        </span>
+      ),
+    },
+    {
       key: "org",
       header: "Organization",
       cellClassName: "hidden lg:table-cell",
       headerClassName: "hidden lg:table-cell",
-      render: (a) =>
-        a.organization_id ? (
-          <Link to={`/accounts/${a.organization_id}`} className="font-semibold text-ink hover:text-accent transition-colors">
-            {a.organization_name}
-          </Link>
-        ) : (
-          <span className="text-faint">platform</span>
-        ),
+      render: (a) => (
+        <Link to={`/accounts/${a.organization_id}`} className="mono truncate text-sm font-semibold text-ink hover:text-accent transition-colors">
+          {a.organization_id}
+        </Link>
+      ),
     },
     {
-      key: "summary",
-      header: "Summary",
+      key: "reason",
+      header: "Reason",
       cellClassName: "max-w-md",
-      render: (a) => <span className="text-muted">{a.summary}</span>,
+      render: (a) => <span className="text-muted">{a.reason ?? <span className="text-faint">—</span>}</span>,
     },
-    { key: "result", header: "Result", align: "right", render: (a) => <ResultBadge result={a.result} /> },
   ];
 
   return (
@@ -112,11 +106,16 @@ export function AuditPage() {
         actions={<EnvBadge />}
       />
 
+      <p className="text-xs text-faint">
+        Every row here already succeeded — the live audit trail only ever records a write after it
+        completes, so there is no failed-attempt row to flag.
+      </p>
+
       <Card className="flex flex-col gap-4 p-4 sm:p-5">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
           <SearchInput
             label="Search the audit log"
-            placeholder="Search by operator, organization or summary…"
+            placeholder="Search by organization id, entity or reason…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             containerClassName="lg:max-w-sm"
@@ -147,7 +146,7 @@ export function AuditPage() {
           <DataTable
             columns={columns}
             rows={rows}
-            rowKey={(a) => a.audit_id}
+            rowKey={(a) => a.id}
             caption="Operator audit log"
             dense
             emptyState={

@@ -16,16 +16,9 @@ export { KpiCard } from "./KpiCard";
 export type { KpiTone } from "./KpiCard";
 export { DeltaPill } from "./DeltaPill";
 export { Sparkline } from "./Sparkline";
-export { MrrTrend } from "./MrrTrend";
 export { BreakdownBar } from "./BreakdownBar";
 export { DataTable } from "./DataTable";
 export type { Column } from "./DataTable";
-export {
-  StatusPill,
-  AccountStatusPill,
-  PlanVersionPill,
-  InvoiceStatePill,
-  LedgerKindPill,
-} from "./StatusPill";
+export { StatusPill, AccountStatusPill, LedgerKindPill } from "./StatusPill";
 export type { PillTone } from "./StatusPill";
 export { Skeleton, EmptyState, ErrorState, SectionHeader } from "./States";

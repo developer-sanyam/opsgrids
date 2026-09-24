@@ -1,13 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { listOrganizations } from "@/api/client";
-import type { AccountStatus, OrganizationRow } from "@/api/types";
-import { formatDate, formatInt, relativeDays } from "@/lib/format";
+import type { OrgStateOut } from "@/api/types";
+import { formatDate, relativeDays } from "@/lib/format";
 import { useAsync } from "@/lib/useAsync";
 import {
-  AccountStatusPill,
-  Avatar,
   Card,
   DataTable,
   EmptyState,
@@ -17,55 +15,49 @@ import {
   Pill,
   SearchInput,
   Skeleton,
+  Tag,
   Money,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { BuildingsIcon, LockIcon, TagIcon } from "@/ui/icons";
+import { BuildingsIcon, LockIcon } from "@/ui/icons";
 
-type StatusFilter = AccountStatus | "all";
+type StatusFilter = "all" | "locked" | "trial";
 
 const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
   { value: "all", label: "All" },
-  { value: "active", label: "Active" },
-  { value: "trial", label: "Trial" },
-  { value: "past_due", label: "Past due" },
-  { value: "suspended", label: "Suspended" },
-  { value: "cancelled", label: "Cancelled" },
+  { value: "trial", label: "In trial" },
+  { value: "locked", label: "Locked" },
 ];
 
-type SortKey = "mrr_desc" | "name_asc" | "created_desc" | "seats_desc";
+type SortKey = "mrr_desc" | "id_asc" | "updated_desc";
 
 const SORTS: { value: SortKey; label: string }[] = [
   { value: "mrr_desc", label: "MRR (high → low)" },
-  { value: "name_asc", label: "Name (A → Z)" },
-  { value: "created_desc", label: "Newest first" },
-  { value: "seats_desc", label: "Seats (high → low)" },
+  { value: "updated_desc", label: "Recently updated" },
+  { value: "id_asc", label: "Organization ID (A → Z)" },
 ];
 
-function sortRows(rows: OrganizationRow[], key: SortKey): OrganizationRow[] {
+function sortRows(rows: OrgStateOut[], key: SortKey): OrgStateOut[] {
   const copy = [...rows];
   switch (key) {
     case "mrr_desc":
-      return copy.sort((a, b) => b.mrr_minor - a.mrr_minor || a.name.localeCompare(b.name));
-    case "name_asc":
-      return copy.sort((a, b) => a.name.localeCompare(b.name));
-    case "created_desc":
-      return copy.sort((a, b) => b.created_at.localeCompare(a.created_at));
-    case "seats_desc":
-      return copy.sort((a, b) => b.seats - a.seats);
+      return copy.sort((a, b) => b.mrr_minor - a.mrr_minor);
+    case "id_asc":
+      return copy.sort((a, b) => a.organization_id.localeCompare(b.organization_id));
+    case "updated_desc":
+      return copy.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
     default:
       return copy;
   }
 }
 
-const NO_ROWS: OrganizationRow[] = [];
+const NO_ROWS: OrgStateOut[] = [];
 
 export function AccountsPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
   const [status, setStatus] = useState<StatusFilter>("all");
-  const [bespoke, setBespoke] = useState(false);
   const [sort, setSort] = useState<SortKey>("mrr_desc");
 
   useEffect(() => {
@@ -73,75 +65,74 @@ export function AccountsPage() {
     if (q !== null) setSearch(q);
   }, [searchParams]);
 
-  const loader = useCallback(
-    () => listOrganizations({ search, status, ...(bespoke ? { bespoke: true } : {}) }),
-    [search, status, bespoke],
-  );
-  const accounts = useAsync(loader, [search, status, bespoke]);
+  const accounts = useAsync(() => listOrganizations(), []);
 
   const rows = useMemo(() => {
-    const items = accounts.status === "success" ? accounts.data.items : NO_ROWS;
-    return sortRows(items, sort);
-  }, [accounts, sort]);
+    const all = accounts.status === "success" ? accounts.data.organizations : NO_ROWS;
+    const q = search.trim().toLowerCase();
+    const filtered = all.filter((o) => {
+      const matchQuery =
+        q === "" || o.organization_id.toLowerCase().includes(q) || o.active_products.some((p) => p.includes(q));
+      const matchStatus =
+        status === "all" || (status === "locked" && o.locked) || (status === "trial" && o.trial_ends_at !== null);
+      return matchQuery && matchStatus;
+    });
+    return sortRows(filtered, sort);
+  }, [accounts, search, status, sort]);
 
   const totalMrr = useMemo(() => rows.reduce((sum, r) => sum + r.mrr_minor, 0), [rows]);
 
-  const columns: Column<OrganizationRow>[] = [
+  const columns: Column<OrgStateOut>[] = [
     {
       key: "org",
       header: "Organization",
       render: (row) => (
-        <div className="flex items-center gap-3">
-          <Avatar name={row.name} size="sm" />
-          <div className="flex min-w-0 flex-col leading-tight">
-            <Link
-              to={`/accounts/${row.organization_id}`}
-              className="truncate font-bold text-ink hover:text-accent transition-colors"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {row.name}
-            </Link>
-            <span className="mono truncate text-xs text-faint">{row.slug}</span>
-          </div>
-        </div>
+        <Link
+          to={`/accounts/${row.organization_id}`}
+          className="mono truncate text-sm font-bold text-ink hover:text-accent transition-colors"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {row.organization_id}
+        </Link>
       ),
     },
     {
-      key: "product",
-      header: "Product · plan",
+      key: "products",
+      header: "Active products",
       cellClassName: "hidden md:table-cell",
       headerClassName: "hidden md:table-cell",
-      render: (row) => (
-        <div className="flex flex-col leading-tight">
-          <span className="font-semibold text-ink">{row.primary_product_name}</span>
-          <span className="flex items-center gap-1.5 text-xs text-muted">
-            {row.plan_name}
-            {row.is_bespoke ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-1.5 py-0.5 text-[0.65rem] font-semibold text-accent-ink">
-                <TagIcon className="size-3" /> Bespoke
-              </span>
-            ) : null}
+      render: (row) =>
+        row.active_products.length > 0 ? (
+          <span className="flex flex-wrap gap-1">
+            {row.active_products.map((p) => (
+              <Tag key={p}>{p}</Tag>
+            ))}
           </span>
-        </div>
-      ),
+        ) : (
+          <span className="text-faint">—</span>
+        ),
     },
     {
-      key: "status",
-      header: "Status",
-      render: (row) => (
-        <div className="flex items-center gap-2">
-          <AccountStatusPill status={row.status} />
-          {row.locked ? (
-            <span
-              className="inline-flex items-center gap-1 text-xs font-semibold text-suspended"
-              title="Access locked — entitlement lapsed to a 402"
-            >
-              <LockIcon className="size-3.5" />
-              <span className="sr-only">Access locked</span>
-            </span>
-          ) : null}
-        </div>
-      ),
+      key: "trial",
+      header: "Trial",
+      render: (row) =>
+        row.trial_ends_at ? (
+          <span className="text-sm font-semibold text-pastdue">Ends {relativeDays(row.trial_ends_at)}</span>
+        ) : (
+          <span className="text-faint">—</span>
+        ),
+    },
+    {
+      key: "locked",
+      header: "Access",
+      render: (row) =>
+        row.locked ? (
+          <span className="inline-flex items-center gap-1 text-xs font-semibold text-suspended">
+            <LockIcon className="size-3.5" /> Locked
+          </span>
+        ) : (
+          <span className="text-sm text-muted">Unlocked</span>
+        ),
     },
     {
       key: "mrr",
@@ -149,32 +140,17 @@ export function AccountsPage() {
       align: "right",
       render: (row) =>
         row.mrr_minor > 0 ? (
-          <Money minor={row.mrr_minor} currency={row.currency} className="font-semibold" />
+          <Money minor={row.mrr_minor} currency={row.currency ?? "INR"} className="font-semibold" />
         ) : (
           <span className="text-faint">—</span>
         ),
     },
     {
-      key: "seats",
-      header: "Seats",
-      align: "right",
-      cellClassName: "hidden lg:table-cell tnum",
-      headerClassName: "hidden lg:table-cell",
-      render: (row) => <span className="tnum text-ink-soft">{formatInt(row.seats)}</span>,
-    },
-    {
-      key: "created",
-      header: "Created",
-      cellClassName: "hidden xl:table-cell",
-      headerClassName: "hidden xl:table-cell",
-      render: (row) => <span className="tnum text-muted">{formatDate(row.created_at)}</span>,
-    },
-    {
-      key: "activity",
-      header: "Last activity",
+      key: "updated",
+      header: "Last updated",
       cellClassName: "hidden lg:table-cell",
       headerClassName: "hidden lg:table-cell",
-      render: (row) => <span className="text-muted">{relativeDays(row.last_activity_at)}</span>,
+      render: (row) => <span className="tnum text-muted">{formatDate(row.updated_at)}</span>,
     },
   ];
 
@@ -183,16 +159,21 @@ export function AccountsPage() {
       <PageHeader
         eyebrow="Cross-tenant"
         title="Accounts"
-        description="Every customer organization, its plan, lifecycle state and revenue. Select a row to drill in."
+        description="Every customer organization's commercial state and revenue. Select a row to drill in."
         actions={<EnvBadge />}
       />
+
+      <p className="text-xs text-faint">
+        The accounts list doesn't carry a customer name or slug yet — only the organization id.
+        Open a row for its directory identity.
+      </p>
 
       {/* Controls */}
       <Card className="flex flex-col gap-4 p-4 sm:p-5">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
           <SearchInput
             label="Search accounts"
-            placeholder="Search by name, slug, product or region…"
+            placeholder="Search by organization id or product…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             containerClassName="lg:max-w-sm"
@@ -218,11 +199,6 @@ export function AccountsPage() {
               ))}
             </select>
           </label>
-        </div>
-        <div className="flex items-center gap-2 border-t border-line pt-4">
-          <Pill active={bespoke} leadingIcon={<TagIcon className="size-4" />} onClick={() => setBespoke((v) => !v)}>
-            Bespoke pricing only
-          </Pill>
         </div>
       </Card>
 
@@ -263,7 +239,7 @@ export function AccountsPage() {
               <EmptyState
                 icon={<BuildingsIcon className="size-6" />}
                 title="No matching accounts"
-                description="No organization matches these filters. Try a different status, clear the bespoke filter, or adjust the search."
+                description="No organization matches these filters. Try a different status or adjust the search."
               />
             }
           />

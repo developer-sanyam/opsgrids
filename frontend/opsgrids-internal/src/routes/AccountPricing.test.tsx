@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as client from "@/api/client";
 import { ApiError } from "@/api/http";
-import type { OrganizationPricing, OrganizationRow, ProductPricing } from "@/api/types";
+import type { OrganizationPricing, PricingOrgRef, ProductPricing } from "@/api/types";
 import * as authContext from "@/auth/context";
 import type { AuthContextValue } from "@/auth/context";
 import type { OperatorRole } from "@/auth/types";
@@ -16,25 +16,10 @@ import { ClientPricingCard } from "./AccountPricing";
  * `console.pricing.write` staying a UI hint (never an enforcement) is honoured in both directions.
  */
 
-function org(overrides: Partial<OrganizationRow> = {}): OrganizationRow {
+function org(overrides: Partial<PricingOrgRef> = {}): PricingOrgRef {
   return {
     organization_id: "org_test",
     name: "Zenith Polymers",
-    slug: "zenith-polymers",
-    status: "active",
-    plan_name: "Scale",
-    primary_product_key: "crm",
-    primary_product_name: "OpsGrids CRM",
-    mrr_minor: 12_000_00,
-    currency: "INR",
-    seats: 33,
-    is_bespoke: false,
-    locked: false,
-    created_at: "2025-08-28T00:00:00Z",
-    last_activity_at: "2026-08-23T22:31:00Z",
-    trial_ends_at: null,
-    region: "Vadodara, IN",
-    primary_contact: { name: "Nikhil Desai", email: "nikhil.desai@zenithpolymers.in" },
     ...overrides,
   };
 }
