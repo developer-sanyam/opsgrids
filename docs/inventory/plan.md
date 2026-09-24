@@ -83,7 +83,8 @@ Built:
   reversible.
 - `post_move` / `reserve` / `release`: the only writers; bucket-ordered row locks, idempotency
   keys, audit rows, outbox events, actionable `InsufficientStock` errors.
-- Reconciler (`bin/cron`, `operations-cron` in the `inventory` compose profile), discrepancy
+- Reconciler (`bin/cron`; on the edge it runs inside the `operations` API container via
+  `RUN_SWEEPS_IN_API`, no longer a separate `operations-cron` — ADR-0013 fix round 2), discrepancy
   list/resolve API, permission `operations.inventory.stock.reconcile` (dangerous).
 - Item-level API kept compatible, plus exact `*_qty` fields, `/balances`, and `Idempotency-Key` on
   adjustments. SPA shows exact quantities and sends idempotency keys.

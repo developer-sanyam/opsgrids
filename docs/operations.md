@@ -82,7 +82,8 @@ no log line that distinguishes it from a genuinely empty tenant. The mitigation 
 assertion, outside production, that the tenant context matches the principal.
 
 **Stock that disagrees with its ledger.** `operations` keeps stock as an append-only ledger with
-a balance per bucket as its locked projection (ADR-0014). The nightly `operations-cron`
+a balance per bucket as its locked projection (ADR-0014). The nightly reconcile sweep (inside the `operations` API container on the edge; `bin/cron`
+runs it standalone)
 reconciles them and **never repairs** what it finds. Alert on the log event
 `inventory.reconcile.drift` (error level) and on `inventory.reconcile.organization_failed`; a
 pass that checked nothing logs `organizations=0`, which on a box selling Inventory means the

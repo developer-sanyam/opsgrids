@@ -32,18 +32,25 @@ from platform_core.db import (
 from platform_core.errors import register_error_handlers
 from platform_core.logging import RequestContextMiddleware, configure_logging, get_logger
 from platform_core.metrics import Sample, render
+from platform_core.supervise import (
+    SWEEP_METRICS_HELP,
+    SWEEP_METRICS_TYPES,
+    sweep_health_samples,
+)
 
 _METRICS_HELP = {
     "outbox_pending": "Unpublished rows in this service's outbox.",
     "outbox_oldest_seconds": "Age of the oldest unpublished outbox row, in seconds.",
     "outbox_exhausted": "Unpublished outbox rows the relay has given up retrying.",
     "db_pool_in_use": "Checked-out connections on this process's application engine pool.",
+    **SWEEP_METRICS_HELP,
 }
 _METRICS_TYPES = {
     "outbox_pending": "gauge",
     "outbox_oldest_seconds": "gauge",
     "outbox_exhausted": "gauge",
     "db_pool_in_use": "gauge",
+    **SWEEP_METRICS_TYPES,
 }
 
 
@@ -180,6 +187,10 @@ def build_health_router(
                 Sample("outbox_oldest_seconds", float(oldest) if oldest is not None else 0.0)
             )
             samples.append(Sample("outbox_exhausted", float(exhausted or 0)))
+        # Background sweeps this process runs in-line (`start_background_sweep`) — nothing when
+        # it runs none. A sweep that has died or keeps failing would otherwise be visible only
+        # in logs, while this API answers healthily.
+        samples.extend(sweep_health_samples())
         return render(samples, help_text=_METRICS_HELP, metric_types=_METRICS_TYPES)
 
     return router

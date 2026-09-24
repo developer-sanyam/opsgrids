@@ -53,12 +53,23 @@ def _budget() -> dict:
 
 
 def _enabled_profiles() -> set[str]:
-    """`.env.example`'s COMPOSE_PROFILES — every product this platform sells, at once. The
-    worst case a box actually runs, and the one `preflight.sh` sums on the real box."""
+    """`.env.example`'s COMPOSE_PROFILES. Deliberately empty since the memory-headroom slice
+    (2026-09-23): re-measuring `kinds.background` (see memory-budget.json's own header) showed
+    every profile on at once no longer fits this box's hard budget line at all, so the example
+    stopped modelling that as a safe default. Empty means core only; a real box's list is written
+    by hand (review round 1, H2/M4 — nothing computes it from the catalogue)."""
     for line in ENV_EXAMPLE.read_text().splitlines():
         if line.startswith("COMPOSE_PROFILES="):
             return {p for p in line.split("=", 1)[1].split(",") if p}
     raise AssertionError("COMPOSE_PROFILES not found in infrastructure/edge/.env.example")
+
+
+def _every_sellable_profile() -> set[str]:
+    """`memory-budget.json`'s own `profiles` list — every product this platform can sell, at
+    once. No longer what `.env.example` defaults to (see `_enabled_profiles`'s docstring), but
+    still the worst case an operator could configure by hand, and the scenario the hard budget
+    line exists to catch."""
+    return set(_budget()["profiles"])
 
 
 def test_every_compose_service_has_a_mem_limit() -> None:
@@ -125,7 +136,10 @@ def test_env_example_profile_list_fits_the_documented_box() -> None:
     """.env.example's COMPOSE_PROFILES must not cross the hard budget line for the box
     memory-budget.json documents (ADR-0013's erratum, 2026-09-23): if it does, a fresh box
     following .env.example word for word cannot come up without heavy swapping — caught here,
-    not on a 3am page."""
+    not on a 3am page. Trivial since the memory-headroom slice (2026-09-23): the example now
+    ships empty (see `_enabled_profiles`'s docstring) precisely because the alternative —
+    defaulting to every profile — no longer passes this same assertion (see the test directly
+    below, which proves that on purpose)."""
     budget = _budget()
     enabled = _enabled_profiles()
     total = expected_total_mb(budget, enabled)
@@ -139,3 +153,77 @@ def test_env_example_profile_list_fits_the_documented_box() -> None:
         f"{host['mem_total_mb_reference']}M box ({percent}%) — over the hard budget "
         f"({host['hard_budget_percent']}%). Trim a profile or consolidate a service."
     )
+
+
+def test_every_sellable_profile_at_once_is_refused_not_silently_allowed() -> None:
+    """The scenario `.env.example` used to default to — every product this platform can sell,
+    on one box, at once — is exactly what `preflight.sh`'s hard budget line exists to catch.
+
+    Re-measuring `kinds.background` (memory-budget.json's own header, the memory-headroom
+    slice, 2026-09-23) showed this combination costs far more than the previous, never-actually-
+    measured 35-50 MB assumption priced it at — it does not fit this box at all any more, not
+    even before a single planned service is added. That is a real finding about a real box, not
+    a bug in this test: the assertion below is that `preflight.sh` would correctly REFUSE this
+    deploy rather than let it through to swap or OOM in production. If a future consolidation
+    slice brings this back under the hard line, update this assertion (and reconsider whether
+    `.env.example` should default to a wider list again) at the same time — a passing test here
+    would then be silently promising a safety net that no longer does anything."""
+    budget = _budget()
+    enabled = _every_sellable_profile()
+    total = expected_total_mb(budget, enabled)
+    host = budget["host"]
+    mem_total_kb = host["mem_total_mb_reference"] * 1024
+    verdict, percent = _verdict(
+        mem_total_kb, total, host["soft_budget_percent"], host["hard_budget_percent"]
+    )
+    assert verdict == "refuse", (
+        f"every sellable profile ({','.join(sorted(enabled))}) now expects {total}M steady-state "
+        f"on a {host['mem_total_mb_reference']}M box ({percent}%) — no longer over the hard "
+        "budget. If a consolidation slice earned this back, update this test's expectation."
+    )
+
+
+def test_realistic_default_profile_list_fits_comfortably() -> None:
+    """What the box actually runs today (ADR-0013 §5's own slice plan: Inventory is the only
+    product sold so far) must fit with real margin — not just under the hard line, under the
+    soft one too. This is the scenario `EDGE_PROFILES`/COMPOSE_PROFILES auto-off actually
+    targets: profiles grow one at a time, as products are sold, not all at once."""
+    budget = _budget()
+    enabled = {"inventory"}
+    total = expected_total_mb(budget, enabled)
+    host = budget["host"]
+    mem_total_kb = host["mem_total_mb_reference"] * 1024
+    verdict, percent = _verdict(
+        mem_total_kb, total, host["soft_budget_percent"], host["hard_budget_percent"]
+    )
+    assert verdict == "ok", (
+        f"COMPOSE_PROFILES=inventory expects {total}M steady-state on a "
+        f"{host['mem_total_mb_reference']}M box ({percent}%) — no longer comfortably under the "
+        f"soft budget ({host['soft_budget_percent']}%)."
+    )
+
+
+def _mb(value: str) -> int:
+    """`256m` / `1g` / `320m` -> megabytes, the only units compose.prod.yml uses."""
+    value = str(value).strip().lower()
+    if value.endswith("g"):
+        return int(float(value[:-1]) * 1024)
+    assert value.endswith("m"), value
+    return int(float(value[:-1]))
+
+
+def test_a_memswap_limit_that_says_no_swap_really_means_no_swap() -> None:
+    """`memswap_limit` is memory *plus* swap. `document` set it to 320m for "zero swap of its
+    own" back when the shared `mem_limit` was 320m; ADR-0013's memory-budget erratum then lowered
+    the shared limit to 256m and left 64 MB of swap the comment said did not exist (round 3).
+    Any service that sets one must set it equal to its own `mem_limit`."""
+    offenders = {}
+    for name, service in _compose_services().items():
+        if "memswap_limit" not in service:
+            continue
+        mem, swap = _mb(service["mem_limit"]), _mb(service["memswap_limit"])
+        if swap != mem:
+            offenders[name] = (
+                f"mem_limit {service['mem_limit']} but memswap_limit {service['memswap_limit']}"
+            )
+    assert not offenders, offenders

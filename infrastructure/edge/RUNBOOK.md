@@ -388,80 +388,87 @@ the permission reconcile (step 5 above) has not run yet.
 
 #### The purge sweep (ADR-0009 §8, and its 2026-09-23 addendum's §9)
 
-`document-cron` is a second container behind the same `storefront` profile as `document` and
-`minio` — see the comment on it in `compose.prod.yml`. It is the only place ADR-0009 §8's
-30-day retention window and §9's orphan-object pass actually run; nothing about the API
-container does either.
+**`document-cron` no longer exists as a container (the memory-headroom slice's fix round 2,
+2026-09-24).** The row purge (§8's 30-day retention window) runs as a supervised background task
+**inside the `document` API container** — `RUN_SWEEPS_IN_API` in `compose.prod.yml`,
+`services/document/app/main.py`'s own `_start_purge_sweep`. The orphan-object pass (§9) does
+**not**: it needs the second, list-capable credential, and that credential must never sit in the
+environment of the container that serves requests (ADR-0009 §3 — a compromised or merely buggy
+API process still cannot enumerate the bucket *because it does not hold the key that could*; a
+runtime flag cannot uphold that, since compose's `environment:` block is static). The orphan pass
+is therefore a deliberate, by-hand, one-off run — see below.
 
-**What it does, one tick at a time (default every five minutes, idle-backing-off to thirty):**
+**What the in-API sweep does, one tick at a time (default every five minutes, idle-backing-off
+to thirty):** finds every asset, across every organization, whose `deleted_at` is more than
+`ASSET_PURGE_RETENTION_DAYS` (default 30) in the past and whose `purged_at` is still null; for
+each, deletes the object from the bucket and then sets `purged_at`. A storage failure leaves the
+row untouched for the next tick — it never marks a row purged while the object might still be
+there. A tick whose *discovery* fails is logged and backed off, never propagated: this sweep now
+shares a process with request traffic, and a failing sweep must not take the API down.
 
-1. **Row purge.** Finds every asset, across every organization, whose `deleted_at` is more
-   than `ASSET_PURGE_RETENTION_DAYS` (default 30) in the past and whose `purged_at` is still
-   null; for each, deletes the object from the bucket and then sets `purged_at`. A storage
-   failure leaves the row untouched for the next tick — it never marks a row purged while the
-   object might still be there.
-2. **Orphan sweep**, only when `DOCUMENT_ORPHAN_SWEEP_ENABLED=true`: lists the whole bucket
-   with the second, list-capable credential (`DOCUMENT_S3_ORPHAN_ACCESS_KEY`/`_SECRET_KEY`,
-   held only by this container), and for every object at least 24 hours old with **no**
-   `assets` row at all — live, soft-deleted or purged — either logs what it would delete
-   (`DOCUMENT_ORPHAN_SWEEP_DRY_RUN=true`, the default even once enabled) or actually removes
-   it. A referenced object, whatever state its row is in, is never a candidate.
-
-**How to check it — logs, not a dashboard:**
+**How to check it — logs, not a dashboard** (there is no container to `ps` any more):
 
 ```bash
-make edge-logs SERVICE=document-cron
+make edge-logs SERVICE=document | grep document.sweep
 ```
 
-- `document.sweep.started` once, at boot, naming the retention window and whether the orphan
-  pass is on.
-- `document.sweep.pass` only when a tick actually did something — `purged`, `skipped`,
-  `failed`, and the four `orphan_*` counters. A quiet box between deploys is a box with no
-  soft-deleted assets past their window, not a stopped sweep; `docker compose ps` showing
-  `document-cron` running is the "is it alive at all" signal, the same as every other
-  background container here.
-- `document.sweep.purge_failed` names the organization and asset id a single purge raised on
-  — the rest of that tick, and every later tick, still runs; it is not a stuck sweep.
-- `document.sweep.tick_failed` means discovery itself failed (a DB restart, a deadlock) —
-  logged with a full traceback and backed off; it recovers on its own once the fault clears.
-- `document.sweep.orphan_would_delete` / `orphan_deleted` name the organization id, asset id
-  and key for every candidate — read a few passes of the dry-run ones before ever setting
-  `DOCUMENT_ORPHAN_SWEEP_DRY_RUN=false`.
+- `document.sweep.started` once, at boot, naming the retention window (`orphan_enabled=false`
+  in-API, always).
+- `document.sweep.pass` only when a tick actually did something — `purged`, `skipped`, `failed`.
+  A quiet box between deploys is a box with no soft-deleted assets past their window, not a
+  stopped sweep. **Whether the sweep is alive at all** is now "did `document.sweep.started`
+  appear after the last `service.starting`" — if not, `RUN_SWEEPS_IN_API` is off for this
+  container (`docker compose exec document printenv RUN_SWEEPS_IN_API`), or the sweep's outbox-role
+  precondition failed (`document.sweep.not_started` at error — the upload API still started, on
+  purpose). A sweep that ran and then died logs `supervise.background_sweep_exited`; the
+  `sweep_alive` / `sweep_consecutive_failures` / `sweep_last_success_timestamp_seconds` gauges
+  (`sweep="document.sweep"`) on `document`'s `/metrics` say the same without the logs — see 'The
+  three sweeps that live inside their API now', under the memory budget.
+- The pace: a tick that *purged* something runs again at once (a backlog drains back to back);
+  anything short of that — nothing due, or work found that every attempt failed on or that another
+  sweeper's lock skipped — backs off, doubling from the poll interval up to thirty minutes. An
+  always-failing asset therefore shows as `document.sweep.pass` with `failed` > 0 every half hour
+  and a climbing `sweep_consecutive_failures`, not as a busy loop.
+- `document.sweep.purge_failed` names the organization and asset id a single purge raised on —
+  the rest of that tick, and every later tick, still runs; it is not a stuck sweep.
+- `document.sweep.tick_failed` means discovery itself failed (a DB restart, a deadlock) — logged
+  with a full traceback and backed off; it recovers on its own once the fault clears.
 
-**Run it once by hand** (useful right after a deploy, or to confirm the retention window
-actually cleared a backlog, without waiting for the next poll):
+**Run a purge (and, if wanted, the orphan pass) once by hand** — useful right after a deploy, to
+confirm the retention window cleared a backlog without waiting for the next poll, and the *only*
+way the orphan pass ever runs:
 
 ```bash
 ssh deploy@<ip>
 cd /srv/opsgrids/repo/infrastructure/edge
-docker compose -f compose.prod.yml --env-file .env run --rm document-cron python -c "
-import asyncio
-from app.cron import main
-asyncio.run(main())
-"
+set -a; . ./.env; set +a
+# Purge only (no extra credential needed):
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps document ./bin/cron
+# Purge plus the orphan pass, dry-run — the orphan credential is handed to THIS one container
+# for THIS one run, by name, and never appears in a compose file or in `docker inspect`
+# of the long-running one:
+S3_ORPHAN_ACCESS_KEY="$DOCUMENT_S3_ORPHAN_ACCESS_KEY" S3_ORPHAN_SECRET_KEY="$DOCUMENT_S3_ORPHAN_SECRET_KEY" \
+  docker compose -f compose.prod.yml --env-file .env run --rm --no-deps \
+  -e S3_ORPHAN_ACCESS_KEY -e S3_ORPHAN_SECRET_KEY -e ORPHAN_SWEEP_ENABLED=true \
+  -e ORPHAN_SWEEP_DRY_RUN=true document ./bin/cron
 ```
 
-That runs `main()` — the same one-tick-then-loop entrypoint `bin/cron` execs — inside a
-throwaway container sharing the deployed image and `.env`; press Ctrl-C after the first
-`document.sweep.pass` (or `document.sweep.started` with nothing to do) rather than leaving it
-running as a second, redundant sweeper. `--rm` means it leaves nothing behind either way.
+Press Ctrl-C after the first `document.sweep.pass` (or `document.sweep.started` with nothing to
+do) rather than leaving it running as a second sweeper. It is safe alongside the in-API one — the
+purge claims each row with `SELECT ... FOR UPDATE SKIP LOCKED`, so two sweepers racing never
+double-purge — but pointless once the first pass has printed. `--rm` leaves nothing behind.
 
 **Turning the orphan pass on for the first time:**
 
-1. Generate `DOCUMENT_S3_ORPHAN_ACCESS_KEY`/`_SECRET_KEY` into `.env` (see `.env.example`) —
-   the next deploy's `minio-init` creates the scoped user and its `ListBucket`+`DeleteObject`
-   policy idempotently, same as the write-only pair already there.
-2. Set `DOCUMENT_ORPHAN_SWEEP_ENABLED=true`, leave `DOCUMENT_ORPHAN_SWEEP_DRY_RUN=true`, and
-   redeploy. Watch `document.sweep.orphan_would_delete` for a day or two.
-3. Only once those candidates look right — every one of them genuinely has no row — set
-   `DOCUMENT_ORPHAN_SWEEP_DRY_RUN=false` and redeploy. From here it actually calls
-   `DeleteObject` on what it lists.
-
-**Known gap this section does not close**: `infrastructure/edge/memory-budget.json` does not
-exist on this base — a sibling slice (`slice/memory-budget`) adds it. When that slice merges,
-`document-cron` needs a `"document-cron": { "kind": "background", "profile": "storefront" }`
-entry alongside `document`'s own, or `tests/infra/test_compose_memory_budget.py` fails by
-name for a container this compose file defines with no budget entry.
+1. Generate `DOCUMENT_S3_ORPHAN_ACCESS_KEY`/`_SECRET_KEY` into `.env` (see `.env.example`) — the
+   next deploy's `minio-init` creates the scoped user and its `ListBucket`+`DeleteObject` policy
+   idempotently, same as the write-only pair already there.
+2. Run it by hand, as above, with `ORPHAN_SWEEP_DRY_RUN=true`. Read the
+   `document.sweep.orphan_would_delete` lines (organization id, asset id and key for every
+   candidate) — every one of them must genuinely have no row.
+3. Only then repeat with `-e ORPHAN_SWEEP_DRY_RUN=false`. From here it actually calls
+   `DeleteObject` on what it lists. There is deliberately no always-on setting for this: a
+   bucket-wide delete earns a human at the keyboard each time.
 
 ---
 
@@ -1130,7 +1137,7 @@ A weekly five-minute check is the compensating control, and it is a habit, not a
 ```bash
 make edge-status HOST=… CONFIRM=…                 # everything up? disk?
 make edge-logs   HOST=… CONFIRM=… SERVICE=caddy | grep -ci error
-make edge-logs   HOST=… CONFIRM=… SERVICE=storefront-cron | tail -20   # is the sweep running?
+make edge-logs   HOST=… CONFIRM=… SERVICE=storefront | grep domain.sweep | tail -20   # is the sweep running?
 ```
 
 **What each failure looks like:**
@@ -1140,7 +1147,7 @@ make edge-logs   HOST=… CONFIRM=… SERVICE=storefront-cron | tail -20   # is 
 | Browser TLS error on a merchant's domain, `ask` returning 403 | The name is not `verified`/`live`/`failing` in the database, or the store is not published. The origin is refusing on purpose |
 | Browser TLS error, `ask` returning 200 | Issuance is failing. Usually the merchant's DNS does not point here, or port 80 is blocked, or the record is proxied through Cloudflare |
 | The shop loads but every API call 503s | Not TLS. Go to [triage](#is-it-the-app-the-database-caddy-or-dns) |
-| A merchant's domain says "pending" forever | The sweep is not running. `docker compose ps` — is `storefront-cron` up, or in a crash loop with `app/cron.py is not in this image`? |
+| A merchant's domain says "pending" forever | The sweep is not running. It lives inside the `storefront` container now (`RUN_SWEEPS_IN_API`; there is no `storefront-cron` to `ps`): does `make edge-logs SERVICE=storefront` show a `storefront.domain.sweep.started` after the last `service.starting`? If not, `docker compose exec storefront printenv RUN_SWEEPS_IN_API` |
 
 **Losing `caddy_data`** (the volume holding the ACME account key and every certificate) is
 survivable and expensive: Caddy re-issues each name on its next handshake, so the whole fleet
@@ -1203,8 +1210,10 @@ curl -si https://merchant.com/api/v1/auth/health    # Caddy → gateway → auth
 
 # 5. Which container is unhappy?
 make edge-status HOST=… CONFIRM=…
-#    `storefront-cron` restarting is the sweep, not the shop: domains stop being checked,
-#    nothing that is already live goes down.
+#    `storefront.domain.sweep.tick_failed` in the `storefront` log is the sweep, not the shop:
+#    domains stop being checked (it backs off and retries on its own), nothing that is already
+#    live goes down. The sweep shares that container with request traffic — a *repeatedly
+#    restarting* `storefront` is the shop.
 
 # 6. The database.
 docker compose -f compose.prod.yml --env-file .env exec -T postgres \
@@ -1263,28 +1272,285 @@ bundles, and `docker image prune -af` after a deploy is a good habit that nothin
 ## The memory budget
 
 `infrastructure/edge/memory-budget.json` prices every container this platform can deploy at a
-measured (or, where noted, conservatively estimated) steady-state RSS. `preflight.sh` sums it
-against whichever `COMPOSE_PROFILES` the box's own `.env` enables and the box's own live
+measured steady-state RSS — see the file's own header for the method (a built production image,
+run against an isolated Postgres/Redis/RabbitMQ, `/proc/1/status`'s `VmRSS` read after startup
+settles; never the shared dev database). `preflight.sh` prices **the box this deploy is about to
+leave behind** — containers that are running, restarting or paused today and that the new compose
+file still defines, plus whatever the declared profiles configure (`post_deploy_compute`,
+`lib/memory-budget.sh`; the same function `remote.sh record-budget` uses) — against the box's live
 `/proc/meminfo`, and prints one of:
 
 - **ok** — comfortably under budget.
-- **warn** — over the 80% soft line. The deploy proceeds; this is what the real production box
-  reads today with every profile on (ADR-0013's memory-budget erratum, 2026-09-23) — tight, and
-  already relying on the swapfile, but not refused.
-- **refuse** — over the 100% hard line. The deploy stops. A box this far over budget will not
-  come up cleanly under load even if the deploy itself succeeds.
+- **warn** — over the 85% soft line, or over the 100% hard line **with an owner-accepted ceiling
+  that covers it** (below). The deploy proceeds.
+- **refuse** — over the 100% hard line and either no ceiling is set, or the deploy is over it, or
+  the total is over the absolute cap (`host.max_accepted_percent`, 125% of MemTotal).
 
-If you see **refuse**: trim `COMPOSE_PROFILES` to the products this box actually sells (drop one
-with zero activations first — check the catalogue, not habit), or consolidate a service's
-processes the way `subscription` and `approval` already were (ADR-0013's erratum has the list of
-what is left to do this way). **Do not** raise `hard_budget_percent` in `memory-budget.json` to
-make a refuse go away — that number is the line past which the kernel starts reclaiming from
-Postgres, RabbitMQ or Redis instead of an idle API container, and moving it does not move that
-fact.
+**The gate fails closed.** If it cannot see — `docker ps` failing, `docker compose config
+--services` exiting non-zero (compose's own error is printed above the row), an empty service
+list, or an unreadable `MemTotal` — the row is `FAIL memory budget could not be priced — <why>`,
+never a green "0M (0%)". Fix the reason and re-run; nothing was changed.
 
-`tests/infra/test_compose_memory_budget.py` (`make test-infra`) is the same check run in CI,
-against `.env.example`'s profile list and a fixed reference `MemTotal` — so a service added to
-`compose.prod.yml` without a `memory-budget.json` entry fails before it ever reaches a box.
+All figures below are **MiB, from images built on a laptop (arm64)**: the box is amd64. They are
+the best measurement this repository has, not the box's own. Before writing a ceiling, read the
+box: `free -m` and `docker stats --no-stream --format '{{.Name}} {{.MemUsage}}'` (read-only).
+
+**How to read the box — a rule, not a feeling.** Run this once, on the box, at a quiet hour, on the
+current production ref (the 40 containers priced at 4044 MB below):
+
+```bash
+docker stats --no-stream --format '{{.MemUsage}}' | awk '{ u=$1; v=u+0;
+  if (u ~ /GiB$/) v*=1024; else if (u ~ /KiB$/) v/=1024; else if (u !~ /MiB$/) v/=1048576;
+  s+=v } END { printf "%.0f MiB\n", s }'
+vmstat 5 3        # the si / so columns: swap-in / swap-out per second
+```
+
+1. **Scale the release.** The real sum is the measured cost of the same 40 containers that
+   `preflight.sh` prices at **4044**. If it is higher, this release is about
+   **4581 x measured / 4044** — the arm64 prices were low by the same factor everywhere.
+2. **If that scaled figure is above 4827 MB (the 125% cap), do not write a ceiling.** Preflight
+   will refuse any total above the cap even with one, and a box that far over is not "swapping
+   more", it is killing things: **resize or de-list** instead. Do the same if `vmstat 5` shows
+   `si`/`so` above zero at a quiet hour — the box is already thrashing before this release adds
+   537 MB.
+3. **Otherwise write the number preflight printed** (`EDGE_BUDGET_ACCEPTED_MB=4581`), not the
+   scaled one: the ceiling is what preflight prices, and preflight's prices are what the tests pin.
+   The scaled figure is for deciding *whether* to run at all.
+
+### What this release costs, on the merged tree (review round 3, 2026-09-24)
+
+Re-priced from the real images: **api 98, background 90, ops-monitor 93** (were 85 / 85 / 48 —
+the API and ops-monitor images idle 15-95% above what the file assumed; see its header for the
+per-image readings). Against MemTotal **3862 MB** (soft line 3282, hard line 3862, cap 4827):
+
+| profiles enabled | this profile adds | cumulative total | of MemTotal |
+|---|---|---|---|
+| core (auth … ops-monitor, no profile) | — | 2217 | 57.4% |
+| + storefront | 256 | 2473 | 64.0% |
+| + inventory | 98 | 2571 | 66.6% |
+| + hrms | 662 | 3233 | 83.7% |
+| + crm | 384 | 3617 | 93.7% |
+| + pulseboard | 294 | 3911 | **101.3%** (over the hard line from here) |
+| + projects | 98 | 4009 | 103.8% |
+| + support | 98 | 4107 | 106.3% |
+| + marketing | 98 | 4205 | 108.9% |
+| + finance | 278 | 4483 | 116.1% |
+| **+ itsm — all ten, what this box declares** | 98 | **4581** | **118.6% — 719 MB over MemTotal** |
+| + every `planned` backlog item (+956) | | 5537 | 143.4% |
+
+Where the box is today, priced the same way (the ten profiles at the production ref `47143a0`,
+40 containers): **4044 MB — 104.7%, 182 MB over MemTotal.** That agrees with the ~2 GB of swap the
+box was found using. At the old prices the same set read 3664 MB (94.9%; 3494 if the two
+`*-cron` containers the budget has no entry for are left out, which is not what this file's own
+rule allows — an unpriced container is priced as `kinds.background`, never as free). **This
+release adds eight containers (customer-worker, document, lead, leave, leave-worker, minio,
+ops-monitor, scheduler: 717 MB) and removes two (approval-cron, subscription-cron: 180 MB) —
+net +537 MB, from 104.7% to 118.6%.** Folding `operations-cron`, `storefront-cron` and
+`document-cron` into their API containers (below) is already counted: it is 3 x 90 MB this total
+does not carry.
+
+### The owner decision: `EDGE_BUDGET_ACCEPTED_MB` (B2, review round 2; restated round 3)
+
+The ten profiles do not fit this box with realistic prices, before a single backlog item is added.
+Nothing in a repository can shrink that to fit; what can change is which of three things the owner
+chooses:
+
+1. **Resize the VM** — the only option that adds headroom rather than redistributing it. The
+   memory erratum (ADR-0013) recorded that the owner would not resize this box; that was decided
+   when the running set priced at ~90% on the old prices, before this release added 537 MB. Worth
+   asking again: an 8 GB VM (~7.7 GB MemTotal) puts the ten profiles near 58% and the whole
+   planned backlog near 70%; the 85% soft line needs about 5390 MB of MemTotal for the ten.
+2. **De-list products** — drop their profiles from `COMPOSE_PROFILES`, *after* confirming with the
+   catalogue that no organization has a live activation of them (preflight refuses otherwise: a
+   paying customer would lose their product). The "adds" column above is what each one frees;
+   getting under the hard line from 4581 takes 719 MB (e.g. `hrms`, 662, plus any one 98 MB
+   profile); getting under the soft line takes 1299 MB.
+3. **Accept a deliberate overcommit** — set `EDGE_BUDGET_ACCEPTED_MB` in `.env` to the number
+   preflight's own projection printed (`EDGE_BUDGET_ACCEPTED_MB=4581` for the release above),
+   *after reading it*. Understand what it means: the working set exceeds RAM by 719 MB, the kernel
+   decides which pages live in swap, and the box that is already swapping swaps more. A deploy over
+   the hard line then warns, loudly, naming the overcommit in MB and to one decimal, instead of
+   refusing; a deploy asking for even one MB more than the ceiling still refuses.
+
+**The ceiling is a decision record, not a limit to leave loose.** Its value is **exactly the
+post-deploy total preflight printed for the commit being deployed** — no more. So:
+
+- Preflight says when it is larger: `info EDGE_BUDGET_ACCEPTED_MB (…M) is NM above this deploy's
+  total` — slack nobody decided on; set it to the printed total.
+- It says when it is not needed at all (`set but not needed: this deploy is under the hard line`)
+  — clear it once the box is resized or a product de-listed, so a later deploy that does go over is
+  not silently pre-approved.
+- It is **bounded**: a ceiling above `host.max_accepted_percent` of MemTotal (125% = 4827 MB) is a
+  FAILED row naming the cap (`38940` for `3894` is a typo, not a decision), and a total above the
+  cap is refused even with a ceiling. 125% is where the kernel stops swapping and starts killing.
+- Raising it is a diff to `.env` — the audit trail. Nothing a deploy does moves it.
+
+**Do this before the first deploy of this release**, not after it refuses:
+
+```bash
+make edge-preflight HOST=… CONFIRM=…     # read-only; prints the projection and, if it applies,
+                                         # exactly which of the three options it is asking for
+```
+
+Owner pre-deploy key list — every one of these is either set deliberately or knowingly absent.
+**A missing key fails preflight before anything changes** (`missing or empty in .env: …`), so the
+worst case of forgetting one is a re-run, but `.env.example` has 22 keys the production ref's did
+not (20 of them must be present on the box), and knowing them beforehand is cheaper. **Quote any
+value that contains a space or a shell metacharacter** (`OPS_ALERT_EMAIL="ops team <ops@…>"`; the
+characters are `; & | < > ( )`, a backtick and `$(`): `.env` is sourced as shell, and preflight fails
+an unquoted one — and text after a closing quote, and CRLF line endings — by name, before reading
+the file, instead of letting bash run the rest as a command (exit 127, no footer). Its own reading
+of the file (last assignment wins, an inline ` # comment` is dropped) is what `remote.sh` uses too:
+
+| Key | State | Note |
+|---|---|---|
+| `COMPOSE_PROFILES` | **required, explicit** | every product this box sells, written by hand (M4). `*` is valid for compose and is expanded by preflight |
+| `EDGE_PROFILES` | optional, may be absent | overrides `COMPOSE_PROFILES` when a profile must run ahead of its first sale |
+| `EDGE_BUDGET_ACCEPTED_MB` | optional, may be absent | the decision above; absent means "no acceptance" — a deploy over the hard line refuses |
+| `RUN_SWEEPS_IN_API` | defaulted `true` by `compose.prod.yml`; not a `.env` key | leave alone: **`false` STOPS the operations, storefront and document sweeps** — there is no `*-cron` container left to run them. Preflight warns when it is not `true` |
+| `EDGE_UP_PARALLEL_LIMIT` | optional, commented out in `.env.example` | how many containers `up` starts at once (default 4); set `2` for this release's deploy (below) |
+| `OPS_ALERT_EMAIL` | key present, may be empty | empty = ops-monitor checks and logs but pages nobody (preflight warns in capitals); set it to an inbox a human reads |
+| `OPS_MONITOR_API_CONTAINERS`, `OPS_MONITOR_DLQ_QUEUES` | keys present, normally empty | empty = derive from `COMPOSE_PROFILES`; setting either REPLACES the derived list |
+| `SMTP_USE_SSL` | key present, `false` | `true` only for a provider that offers SMTPS on 465 and not STARTTLS; mutually exclusive with `SMTP_USE_TLS` |
+| `ENGAGE_UNSUBSCRIBE_SECRET`, `ENGAGE_PUBLIC_API_BASE` | **need real values** | a fresh secret (rotating it breaks every unsubscribe link already sent); an `https://` base a mailbox can reach |
+| `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `DOCUMENT_S3_ACCESS_KEY`, `DOCUMENT_S3_SECRET_KEY` | **need real values** | generate fresh; both secrets ≥ 8 characters (MinIO's floor) |
+| `DOCUMENT_S3_ORPHAN_ACCESS_KEY`, `DOCUMENT_S3_ORPHAN_SECRET_KEY` | keys present, may be empty | the by-hand orphan pass only; held by no always-on container |
+| `S3_PUBLIC_BUCKET`, `PUBLIC_ASSET_BASE_URL` | defaults are right | `PUBLIC_ASSET_BASE_URL` must be exactly `https://<EDGE_HOST>/<bucket>` |
+| `ASSET_PURGE_RETENTION_DAYS`, `DOCUMENT_ORPHAN_SWEEP_ENABLED`, `DOCUMENT_ORPHAN_SWEEP_DRY_RUN` | defaults are right | `30`, `false`, `true` |
+| `BILLING_TAX_CODE`, `BILLING_TAX_JURISDICTION` | keys present, empty is the honest default | empty = the billing run writes no tax line; set both only once a `billing.tax_rates` row exists for them ("The billing run", below) |
+| `ADMIN_GATEWAY_HOP_KEY` | **needs a real value, and `auth` will not start without it** | `openssl rand -hex 32`, at least 32 bytes and **different from `INTERNAL_SERVICE_TOKEN`** (preflight's secret-strength check refuses a weak or reused one). See "ADMIN_GATEWAY_HOP_KEY — auth refuses to start without it" under Operator MFA |
+
+`last-ok` — `${EDGE_STATE_DIR:-/srv/opsgrids/state}/edge-budget.last-ok`, written by `remote.sh
+record-budget` after each healthy deploy — is **informational only**: preflight prints it ("last
+successful deploy priced at …") and never reads it for a verdict. Recovery after a failed health
+check needs nothing special: the ceiling is `.env`'s and does not move.
+
+**Every product this box sells must have its profile listed explicitly in `EDGE_PROFILES` or
+`COMPOSE_PROFILES` — neither is ever computed for you (M4, review round 1).** An earlier version
+computed `COMPOSE_PROFILES` from the catalogue's own activations when neither was set. That was
+removed: `docker compose up` does not stop a container whose profile is no longer listed, so a
+computed value never actually changed what ran — it only changed what preflight *believed* was
+running. Write the full list by hand and keep it current.
+
+`preflight.sh` still asks the catalogue two related, but separate, questions, both only once
+Postgres exists:
+- **Commercial listing agreement**: an `available` product with no profile enabled is a 504 the
+  customer finds — **refused**.
+- **Real-customer-impact advisory**: a product with at least one activation — `trial`, `active`
+  **or `suspended`** (a suspended one flips back to `active` the moment a payment lands, onto a
+  service this box would not be running: a paying customer returning to a 504) — and never an
+  `e2e-…` test organization, whose profile is not enabled is **refused**, because turning it off
+  would take a paying customer's product away. A profile that is enabled, has no activations, and
+  is not even sold in the catalogue is reported as **information** only, safe to consider
+  trimming, never forced. If the activations query itself fails, that is a **warning**, never
+  silently "zero activations".
+
+A container running with no `memory-budget.json` entry (a hotfix on the box, a compose file edited
+by hand) is priced as `kinds.background` and named in a warning — never treated as free.
+
+Never raise `hard_budget_percent` in `memory-budget.json` to make a refuse go away — that number is
+the line past which the kernel starts reclaiming from Postgres, RabbitMQ or Redis instead of an
+idle API container, and moving it does not move that fact.
+
+`tests/infra/test_preflight_memory.py` runs the real `preflight.sh` and `remote.sh` against a fake
+`docker` on `PATH` and pins each of the above; `tests/infra/test_compose_memory_budget.py`
+(`make test-infra`) is the CI check that every compose service has a budget entry, and
+`tests/infra/test_planned_headroom.py` that the RUNBOOK's worked example below is the number
+preflight would print. Its worst-case test (`test_every_sellable_profile_at_once_is_refused_not_
+silently_allowed`) *expects* a refuse for every profile at once, which is why `.env.example`'s
+`COMPOSE_PROFILES` ships empty rather than "everything on."
+
+### The three sweeps that live inside their API now: how to see them, and their gauges
+
+`operations` (stock reconciliation), `storefront` (custom-domain verification) and `document`
+(retention purge) run their sweep as a background task inside their own API container — there is
+no `*-cron` container to `ps`. A sweep that dies or fails every tick leaves the API answering
+healthily, so each API's own `/metrics` (reachable only on the compose `back` network) carries,
+per sweep, labelled `sweep="<log-event prefix>"`:
+
+| Gauge | Meaning | Labels |
+|---|---|---|
+| `sweep_alive` | 1 while the sweep's task is running, 0 once it has exited — or if it was never started because its precondition failed | `inventory.reconcile`, `storefront.domain.sweep`, `document.sweep` |
+| `sweep_consecutive_failures` | failed ticks in a row (document also counts a tick where every purge attempt failed) | same |
+| `sweep_last_success_timestamp_seconds` | Unix time of the last good tick; `0` = none since the process started | same |
+
+These are for the **ops-monitor follow-up** (an alert on `sweep_alive == 0`, on a climbing
+`sweep_consecutive_failures`, or on `time() - sweep_last_success_timestamp_seconds` beyond a few
+poll intervals); nothing reads them yet, and this slice deliberately does not edit ops-monitor.
+Until then: a sweep that exits by itself logs `supervise.background_sweep_exited` at **error**
+(`make edge-logs SERVICE=<api> | grep background_sweep_exited`), and a sweep whose precondition
+failed at startup logs `<sweep>.not_started` at error while **the API still starts** — a
+misconfigured outbox role must cost a nightly report, never the customer-facing API.
+
+Each in-API sweep runs on its own one-connection database engine (a bulkhead), so it can neither
+take one of the API's 3 + 2 request-pool connections nor be starved by them — measured cost: one
+extra Postgres connection per API, opened lazily.
+
+### Rolling out this release on the box
+
+What changes on the box: `--remove-orphans` removes **`approval-cron` and `subscription-cron`** —
+the only two services that are running on the production ref and no longer exist in the file
+(`notification-cron`, `operations-cron` and `document-cron` never reached this box, and
+`storefront-cron` sat behind the unused `sweep` profile; a *deleted* service is an orphan, a merely
+profile-disabled one is not, which is why preflight prices what is running). Eight containers are
+added (717 MB), and `approval-worker`/`notification-worker` gain a stricter supervisor.
+
+**`up` is not staged, and this release lands ~+540 MB at once on a box already swapping** (~+450 MB
+at the old prices). So, for this one deploy:
+
+```bash
+# 0. The owner decision above — resize, de-list, or set EDGE_BUDGET_ACCEPTED_MB — BEFORE deploying.
+#    Add the 22 new keys (20 must be present; EDGE_PROFILES and EDGE_BUDGET_ACCEPTED_MB may be
+#    absent) from the table above, and confirm COMPOSE_PROFILES lists every product sold.
+#    Then, on the box, for this deploy only (and remove the line afterwards):
+#        echo 'EDGE_UP_PARALLEL_LIMIT=2' >> infrastructure/edge/.env
+
+# 1. Read-only rehearsal: nothing changes on the box.
+make edge-preflight HOST=… CONFIRM=…
+#    Look for:  warn  memory budget (post-deploy: …): 4581M against 3862M MemTotal: 719M over MemTotal (118.6%)
+#                     — OVER THE HARD BUDGET (100% = 3862M), accepted: EDGE_BUDGET_ACCEPTED_MB=4581 covers it.
+#    (or the FAIL line naming what to set). A FAIL for "product(s) with active organizations have
+#    no service running" means a profile is missing from COMPOSE_PROFILES — fix that first.
+
+# 2. Deploy in a quiet window — off-peak, nobody mid-import. In a second session on the box watch
+#    the swap columns while it runs:   vmstat 5      (si/so climbing and staying up = thrash)
+make deploy HOST=… CONFIRM=…
+
+# 3. Verify the merged sweeps started — logs, not `docker compose ps`:
+C="docker compose -f compose.prod.yml --env-file .env"
+$C logs --tail 200 notification-worker | grep -E 'notification.worker.starting|notification.cron.started'
+$C logs --tail 200 operations | grep inventory.reconcile.started
+$C logs --tail 200 storefront | grep storefront.domain.sweep.started
+$C logs --tail 200 document   | grep document.sweep.started
+#    A missing line means that container's RUN_SWEEPS_IN_API is not true, its sweep's precondition
+#    failed (look for `<sweep>.not_started`), or the container restarted since — check `printenv`.
+
+# 4. Confirm the two crons are gone and the recorded number moved:
+$C ps | grep -c -- '-cron'                                         # 0
+cat "${EDGE_STATE_DIR:-/srv/opsgrids/state}/edge-budget.last-ok"     # informational only
+```
+
+**There is no automatic rollback.** If `health` does not settle within `HEALTH_TIMEOUT` (600 s) the
+deploy exits non-zero with the containers as they are — no `record_ref`, nothing undone. On a box
+this tight a slow start is expected (containers importing on two cores while swapping); read the
+unhealthy list before deciding. The rollback is the operator's: `make edge-rollback HOST=…
+CONFIRM=…`.
+
+**Rollback — and why this release's is not clean.** `make edge-rollback` redeploys the previous good
+ref (`47143a0`): its compose file recreates `approval-cron` and `subscription-cron`, and
+`--remove-orphans` removes the eight containers this release added (the previous image ignores
+`RUN_SWEEPS_IN_API`). This slice changes no schema, and a sweep briefly running in two places
+during either direction is safe (each is idempotent or claims its rows with `SKIP LOCKED`). **But
+`47143a0` predates the MFA reseal** that `remote.sh migrate` runs in this release (Operator MFA,
+above): once the factors are sealed, a ref from before it cannot read them, and *every* MFA
+sign-in is a 500 until you roll forward again — the warning under "Roll back a bad deploy" applies
+to this deploy in full, and applies from the moment `migrate` finishes, i.e. before `up`. So for
+this release: **prefer rolling forward with a fix**; if you must go back, expect MFA sign-in to be
+down for the duration and say so. That is one more reason to settle the memory decision and the
+`.env` keys *before* deploying — the deploy has a point of no easy return that a slow `up` does not
+help with. If the rollback target predates the *explicit-profiles* change and this box's
+`COMPOSE_PROFILES` is not the full list, write it back by hand first — the older `remote.sh` may
+still expect a computed default that no longer exists.
 
 ---
 
@@ -1348,11 +1614,11 @@ destructive and every merchant is down while it runs. Announce it, then:
 cd /srv/opsgrids/repo/infrastructure/edge
 C="docker compose -f compose.prod.yml --env-file .env"
 
-$C stop auth account product storefront storefront-cron app-gateway   # stop writing
+$C stop auth account product storefront app-gateway   # stop writing
 # Keep Caddy up: buyers get an error page from the origin, not a TLS failure.
 gunzip -c /srv/opsgrids/backups/<chosen>.sql.gz | \
   $C exec -T postgres psql -v ON_ERROR_STOP=1 -U opsgrids -d opsgrids
-$C start auth account product storefront storefront-cron app-gateway
+$C start auth account product storefront app-gateway
 ./remote.sh migrate      # re-applies grants and brings the schema to head
 ./remote.sh health
 ```
@@ -1446,20 +1712,18 @@ Named here so nobody discovers them during an incident:
   Every other outbox also fills silently. `approval`, `subscription` and `storefront` have no
   entrypoint that starts their relay at all (their `bin/cron` correctly runs a sweep, and
   there is no `bin/relay`), so even with a broker those three would not publish.
-- **No custom-domain sweep, so no merchant custom domain can go live.** `storefront-cron`
-  runs `app/cron.py`, and that module was never written (ADR-0012 §6 was designed, not
-  built). The container sits behind the `sweep` compose profile and is not started; a claim a
-  merchant makes stays `unverified` forever, and the origin and the issuance gate both refuse
-  an unverified name, by design. **`<slug>.stores.opsgrids.com` is unaffected** — it needs no
-  sweep. Building the sweep is the next storefront slice; when it lands, start it with
-  `docker compose -f compose.prod.yml --env-file .env --profile sweep up -d storefront-cron`
-  and drop the profile from the compose file.
+- **Resolved: the custom-domain sweep is built** (ADR-0012 §6, `services/storefront/app/cron.py`)
+  and, since the memory-headroom slice's fix round 2, runs as a supervised background task
+  inside the `storefront` API container (`RUN_SWEEPS_IN_API`) — there is no `storefront-cron`
+  container any more. A merchant's claim advances `unverified` → `verified` on the sweep's own
+  schedule; if one sits at `pending` forever, see "A merchant's domain says pending forever"
+  above. **`<slug>.stores.opsgrids.com` is unaffected** — it needs no sweep.
 - **No merchant admin SPA on this box.** The edge serves the anonymous buyer bundle only. The
   API is reachable at `https://<EDGE_HOST>/api/…`; the merchant console is ADR-0001's and is
   served elsewhere.
 - **Resolved: `document` and `minio` are on this box, behind the `storefront` profile** (see
   "Document and MinIO" above), **and resolved: ADR-0009 §8's purge sweep is built and
-  deployed** as `document-cron` (see "The purge sweep" above) — a soft-deleted asset's object
+  deployed**, inside the `document` API container (see "The purge sweep" above) — a soft-deleted asset's object
   is actually removed from the bucket 30 days after removal, and quota accounting no longer
   drifts from reality forever. What is still off by default: §9's orphan-object pass
   (`DOCUMENT_ORPHAN_SWEEP_ENABLED`) — built, and safe to turn on, but left disabled until an
@@ -1478,7 +1742,7 @@ Named here so nobody discovers them during an incident:
 |---|---|
 | After every deploy | `make edge-status` — everything up, disk sane, `ops-monitor`'s own `/status` |
 | Daily | The `ops-monitor` all-quiet digest arrives (dead-man's switch) — if a day goes by with neither a digest nor an alert, the monitor itself may be stuck |
-| Weekly | Caddy log for ACME errors; `storefront-cron` alive; disk |
+| Weekly | Caddy log for ACME errors; `storefront.domain.sweep.started` present in the `storefront` log since its last start; disk |
 | Monthly | `apt-get update && apt-get upgrade` and **a planned reboot window** — kernel updates are a full outage, so choose when rather than having it chosen for you |
 | Quarterly | The restore drill above. A backup nobody has restored is a hypothesis |
 | When a merchant asks about uptime in writing | Stop. That is ADR-0012's stated trigger to move off one box |

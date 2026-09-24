@@ -246,5 +246,8 @@ class OrphanScanner(ObjectStore):
 
 @lru_cache(maxsize=1)
 def get_orphan_scanner() -> OrphanScanner:
-    """One scanner per process, built lazily — used only by `app/cron.py`, never by the API."""
+    """One scanner per process, built lazily — used only by `app/cron.py`, and only in a manual
+    `docker compose run … ./bin/cron` with the orphan credential supplied for that one run: the
+    API process never runs the orphan pass (`app/main.py`'s `_start_purge_sweep` pins
+    `orphan_enabled=False`), so it never needs — or holds — the credential."""
     return OrphanScanner(settings())

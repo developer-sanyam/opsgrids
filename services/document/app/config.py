@@ -79,8 +79,11 @@ class Settings(ServiceSettings):
     asset_purge_retention_days: int = 30
 
     # --- the orphan sweep (ADR-0009 §9 addendum) -----------------------------------
-    #: A second, list-capable MinIO credential, held only by `document-cron` — never by the
-    #: API process, which never calls `ListBucket` (`app/storage.py`). Optional for the same
+    #: A second, list-capable MinIO credential, held by **no always-on container** — only ever
+    #: handed to a one-off `docker compose run --rm --no-deps document ./bin/cron` an operator
+    #: starts by hand (the purge sweep runs inside the API without it; `document-cron` no longer
+    #: exists) — never by the API process, which never calls `ListBucket` (`app/storage.py`).
+    #: Optional for the same
     #: reason `s3_access_key` is: absent, `OrphanScanner` simply cannot build a client and the
     #: orphan pass of the sweep is skipped, which is the safe direction to be wrong in.
     s3_orphan_access_key: SecretStr | None = None
@@ -102,6 +105,12 @@ class Settings(ServiceSettings):
     #: A circuit breaker independent of the age check and the row lookup: however wrong
     #: discovery is on some future day, one tick can never remove more than this many objects.
     orphan_sweep_max_deletes_per_tick: int = 100
+    #: Runs the purge sweep as a supervised background task inside the API process itself
+    #: instead of `document-cron`'s own container (the memory-headroom slice's fix round 2 —
+    #: see `operations.app.config.Settings.run_sweeps_in_api`'s own comment for the full
+    #: argument). Off by default everywhere except the edge box's own `.env`; `bin/cron` still
+    #: runs the sweep standalone for local debugging either way.
+    run_sweeps_in_api: bool = False
 
 
 def settings() -> Settings:

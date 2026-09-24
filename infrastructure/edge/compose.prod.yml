@@ -1,15 +1,23 @@
 # The production edge — one Linux VM, ADR-0012 §1.
 #
 # Every product this platform sells can run here, one compose profile per product (ADR-0013
-# §5). That is 45 containers with every profile on (down from 46: ADR-0013's memory-budget
-# erratum, 2026-09-23, folded subscription's and approval's `bin/cron` sweep into their
-# `bin/worker` the way `notification/app/worker.py` already combines two consumers), plus
-# Postgres, Redis, RabbitMQ and Caddy. This is not "five service containers" and not "~35
-# processes" — that described slice 1, one profile in, and stayed in comments long after it
-# stopped being true. `memory-budget.json` in this directory is the source of truth for what
-# each container actually costs; `preflight.sh` sums it against the box's live MemTotal and
-# refuses a deploy whose enabled `COMPOSE_PROFILES` do not fit (see the erratum for why the box
-# does not grow to meet them instead — the owner will not resize it).
+# §5). Count it with `docker compose -f compose.prod.yml --env-file .env config --services |
+# wc -l` for every profile enabled, not from a number in this comment — a "down from N"
+# narrative here has drifted from the real count on more than one past revision (this line has
+# been wrong before; do not repeat that by trusting arithmetic over the tool). `bin/worker`
+# folding a service's own `bin/cron` sweep into itself (`subscription`, `approval`,
+# `notification`) and a service's own API container absorbing its sweep as a supervised
+# background task instead of a separate `*-cron` container (`operations`, `storefront`,
+# `document` — the memory-headroom slice's fix round 2, 2026-09-24) are both real container
+# reductions, in `memory-budget.json`'s own history, not restated here as a running total.
+# `memory-budget.json` in this directory is the source of truth for what each container
+# actually costs; `preflight.sh` sums it against the box's live MemTotal and the containers
+# actually running (not just what is configured — orphaned containers from a disabled profile
+# still cost real memory) and refuses a deploy that does not fit (see ADR-0013's memory-budget
+# erratum for why the box does not grow to meet the container count instead — the owner will
+# not resize it). The measurement behind `memory-budget.json`'s numbers is real, not estimated:
+# see ADR-0013's memory-headroom addendum and its two fix-round reviews for the method and the
+# table.
 #
 # Read `RUNBOOK.md` before touching this file on a box that is serving. Once one real domain
 # points at this address there is a production and there is no second box.
@@ -116,11 +124,12 @@ x-service-common: &service-common
     redis:
       condition: service_healthy
   # A fuse, not a budget: with no limit anywhere the kernel picks the out-of-memory victim, and
-  # the largest process on this box is Postgres. An API here idles at 70–100 MB
-  # (`memory-budget.json`'s `kinds.api`, 85 MB expected) — 320m was more than 3x that with
-  # nothing to show for the extra headroom, so ADR-0013's memory-budget erratum (2026-09-23)
-  # brought it down to 256m: still 3x expected idle, and 26 containers at the old ceiling
-  # versus this one cost 1.7 GB of fuse this box does not have to spend.
+  # the largest process on this box is Postgres. An API here idles at ~92–102 MiB measured
+  # (`memory-budget.json`'s `kinds.api`, 98 expected — re-priced from 85 in the memory-headroom
+  # slice's review round 3, from the real images) — 320m was more than 3x that with nothing to
+  # show for the extra headroom, so ADR-0013's memory-budget erratum (2026-09-23) brought it
+  # down to 256m: ~2.6x expected idle, and 26 containers at the old ceiling versus this one
+  # cost 1.7 GB of fuse this box does not have to spend.
   mem_limit: 256m
 
 # A background process of a service: a consumer (`bin/worker`), an outbox relay (`bin/relay`)
@@ -138,9 +147,12 @@ x-background: &background
       condition: service_healthy
     rabbitmq:
       condition: service_healthy
-  # Same reasoning as the API fuse above, for the smaller number: a consumer or a sweep idles
-  # at 35–50 MB (`memory-budget.json`'s `kinds.background`, 42 MB expected — the edge-relay
-  # comment below measured its idle consumers at ~35 MB each). 192m is still 4–5x that.
+  # A consumer or a sweep idles at ~85–92 MiB measured (`memory-budget.json`'s
+  # `kinds.background`, 90 expected — corrected by the memory-headroom slice: the original
+  # 35-50 MB here was never actually measured, and building the real images against an isolated
+  # Postgres/Redis/RabbitMQ showed a background process costs about the same as an API one, not
+  # a fraction of it — see memory-budget.json's own header for the method). 192m is ~2.1x that,
+  # a smaller multiple than it looked when the price was 42, but still a real fuse.
   mem_limit: 192m
   networks:
     - back
@@ -446,7 +458,10 @@ services:
       # bucket's own policy out from under `minio-init`.
       DOCUMENT_S3_ACCESS_KEY: ${DOCUMENT_S3_ACCESS_KEY}
       DOCUMENT_S3_SECRET_KEY: ${DOCUMENT_S3_SECRET_KEY}
-      # The second scoped credential, held only by `document-cron` (ADR-0009 §9 addendum):
+      # The second scoped credential, held by no always-on container (ADR-0009 §9 addendum) — only
+      # ever handed to a one-off `docker compose run --rm --no-deps document ./bin/cron` an operator
+      # starts by hand for an orphan scan (the purge sweep itself runs inside the `document` API now,
+      # without it; see `document`'s own block, below):
       # `s3:ListBucket` plus `s3:DeleteObject`, so the orphan sweep can list the bucket and
       # remove what it finds. The API's own `document` container never receives this
       # credential and never calls `ListBucket` (`app/storage.py`'s `ObjectStore` vs.
@@ -517,9 +532,9 @@ services:
 
         # The orphan sweep's own user (ADR-0009 §9 addendum): `s3:ListBucket` on the bucket
         # itself plus `s3:DeleteObject` on its objects — the one capability the write-path
-        # user above deliberately does not hold. `document-cron` is the only process this
-        # credential is ever handed to (`compose.prod.yml`'s `document-cron`, below); the API
-        # container reads only `DOCUMENT_S3_ACCESS_KEY`/`_SECRET_KEY`.
+        # user above deliberately does not hold. No always-on container is ever handed this
+        # credential — only a one-off `docker compose run` an operator starts by hand for an orphan
+        # scan; the API container reads only `DOCUMENT_S3_ACCESS_KEY`/`_SECRET_KEY`.
         mc admin user add og "$$DOCUMENT_S3_ORPHAN_ACCESS_KEY" "$$DOCUMENT_S3_ORPHAN_SECRET_KEY"
         cat > /tmp/document-orphan-sweep.json <<JSON
         {
@@ -604,6 +619,16 @@ services:
       - back
 
   # The Storefront product: profile `storefront` (ADR-0013 §5), like every sellable product.
+  #
+  # **`storefront-cron` no longer exists as its own container (the memory-headroom slice's fix
+  # round 2).** The domain sweep (ADR-0012 §6: the three probes, the state machine, the release
+  # of expired claims) now runs as a supervised background task inside this same process —
+  # `RUN_SWEEPS_IN_API` below, `app/main.py`'s own `_startup`/`_shutdown` hooks,
+  # `DomainSweep.run()`'s own poisoned-step guard (fixed in the same round: it never had one
+  # before, because a container crashing and being restarted by `restart: unless-stopped` was
+  # an acceptable failure mode for a standalone sweep and is not for a request-serving API). Same
+  # image, same code, no cross-schema access — `docker compose ps` no longer answers "is anything
+  # checking the domains" on its own; `docker compose logs storefront | grep domain.sweep` does.
   storefront:
     <<: *service-common
     profiles: ['storefront']
@@ -623,45 +648,17 @@ services:
       # so it defaults to empty and the routing probe then accepts whatever `EDGE_HOST` resolves to.
       EDGE_HOST: ${EDGE_HOST}
       EDGE_RESERVED_IP: ${EDGE_RESERVED_IP:-}
+      # On, by this default, on the edge; off everywhere `.env` does not say otherwise — this is
+      # the one container this box runs of this service, so "on" here can never mean two copies
+      # of the sweep running at once. Where the certificate probe dials (SNI set to the domain
+      # under test) is `Settings.tls_probe_host`/`_port`'s own default (`caddy`:443) — the exact
+      # value `storefront-cron` used to set explicitly, so this needs no new env var to match it.
+      RUN_SWEEPS_IN_API: ${RUN_SWEEPS_IN_API:-true}
     networks:
       # `front` as well as `back`: Caddy calls this container directly for the on-demand TLS
-      # ask endpoint, deliberately bypassing the gateway (ADR-0012 §5).
+      # ask endpoint, deliberately bypassing the gateway (ADR-0012 §5); the sweep's own TLS probe
+      # now dials Caddy from inside this same container, on the same `front` network.
       - front
-      - back
-
-  # The sweep (ADR-0012 §6): the three probes, the state machine, and the release of claims that
-  # expired. Its own process, because a poll loop must not share a pool with request traffic —
-  # and its own container so `docker compose ps` answers "is anything checking the domains"
-  # without reading code.
-  #
-  # `bin/cron` runs `python -m app.cron` and refuses to start at all (exit 78) if that module is
-  # missing from the image — the scaffold's `python -m app.relay` would otherwise be a process
-  # that looks healthy while no domain is ever checked and nothing errors, and that failure mode
-  # is exactly why the check exists rather than trusting this comment.
-  #
-  # Same profile as `storefront` rather than its own `sweep` profile: a box that sells the
-  # storefront product always needs the sweep running, and a box that does not sell it never
-  # needs a cron container that would find nothing to check.
-  storefront-cron:
-    <<: *service-common
-    profiles: ['storefront']
-    image: opsgrids-edge/storefront
-    command: ['./bin/cron']
-    environment:
-      <<: *service-env
-      STORE_SLUG_CACHE_SECONDS: ${STORE_SLUG_CACHE_SECONDS:-300}
-      EDGE_HOST: ${EDGE_HOST}
-      EDGE_RESERVED_IP: ${EDGE_RESERVED_IP:-}
-      # Where the certificate probe dials, SNI set to the domain under test — Caddy on the
-      # `front` network, never out through the internet (ADR-0012 §6). The compose service name
-      # doubles as its own DNS name on the network, so this needs no value from `.env`.
-      TLS_PROBE_HOST: caddy
-      TLS_PROBE_PORT: '443'
-    # No healthcheck: the image's is an HTTP probe against a port this process does not open.
-    healthcheck:
-      disable: true
-    networks:
-      - front # the certificate probe handshakes against Caddy with SNI set (ADR-0012 §6)
       - back
 
   app-gateway:
@@ -729,8 +726,8 @@ services:
   # under the bind mount below, never the database — it has to keep working when Postgres is
   # the thing it is watching.
   #
-  # `front` as well as `back`, the same shape `storefront-cron`'s certificate probe already
-  # uses and for the identical reason: the certificate-expiry check handshakes against Caddy on
+  # `front` as well as `back`, the same shape `storefront`'s in-process certificate probe
+  # (the domain sweep, which used to be `storefront-cron`) uses and for the identical reason: the certificate-expiry check handshakes against Caddy on
   # `front` with SNI set (see `checks.check_cert_expiry`). This is network *reachability*, not
   # exposure — nothing publishes this container's port, and neither the Caddyfile nor either
   # gateway's route table ever names it (`tests/infra/test_metrics_never_routed.py` is the
@@ -818,7 +815,7 @@ services:
       start_period: 30s
     mem_limit: 128m
     networks:
-      - front # the certificate probe handshakes against Caddy with SNI set (same as storefront-cron)
+      - front # the certificate probe handshakes against Caddy with SNI set (same as storefront's sweep)
       - back
     depends_on:
       postgres:
@@ -985,20 +982,16 @@ services:
       - back
 
   # notification's `bin/worker` runs its two consumers (events → messages, and the dispatcher)
-  # in one process; see services/notification/app/worker.py.
+  # and the campaign send driver (app/cron.py's CampaignDriver) in one process; see
+  # services/notification/app/worker.py. Two containers used to run this — `notification-worker`
+  # on the consumers and `notification-cron` on the driver — at 192m apiece for processes that
+  # are each idle almost all the time (ADR-0013's memory-budget erratum, 2026-09-23), the same
+  # shape `subscription-worker` and `approval-worker` already collapsed. `bin/cron` is unchanged
+  # and still runs `app.cron` standalone for local debugging; only `bin/worker` moved.
   notification-worker:
     <<: *background
     image: opsgrids-edge/notification
     command: ['./bin/worker']
-    environment: *notification-env
-
-  # The campaign send driver (app/cron.py). Its own process for the same reason every other
-  # sweep here is: a poll loop must not share a pool with request traffic, and `docker compose
-  # ps` should answer "is anything sending campaigns" without reading code.
-  notification-cron:
-    <<: *background
-    image: opsgrids-edge/notification
-    command: ['./bin/cron']
     environment: *notification-env
 
   # ---------------------------------------------------------------- document (platform asset store; ADR-0009)
@@ -1012,8 +1005,8 @@ services:
   # `edge-relay` below). An idle worker holding an open broker channel for nothing is 30 MB this
   # box does not have to give away.
   #
-  # `bin/cron` runs the purge sweep (ADR-0009 §8, and its 2026-09-23 addendum's §9 orphan
-  # pass) — see `document-cron`, below, for that container. This block is the API only.
+  # The purge sweep (ADR-0009 §8) runs inside this container now (`RUN_SWEEPS_IN_API`, below —
+  # `document-cron` no longer exists); `bin/cron` still runs it, and the orphan pass (§9), by hand.
   document:
     <<: *service-common
     profiles: ['storefront']
@@ -1025,12 +1018,17 @@ services:
     # value is total memory+swap, so setting it equal to `mem_limit` allows none). Every other
     # service here inherits Docker's default of roughly double `mem_limit` in swap, which is
     # the right choice for a mostly-idle API — but `document` is the one process on this box
-    # that decodes attacker-sized images (ADR-0009 §5, §11), and swapping a 300+ MB spike onto
-    # this already-swapping 2 vCPU / 3.8 GB box turns one large upload into a slow box for
+    # that decodes attacker-sized images (ADR-0009 §5, §11), and swapping a spike onto this
+    # already-swapping 2 vCPU / 3.8 GB box turns one large upload into a slow box for
     # everyone. Failing fast with an OOM kill (`docker compose logs document` shows exit 137;
     # `restart: unless-stopped` brings it back, and the request that caused it gets a 503
     # rather than a slow death for the whole VM) is the trade this container should make.
-    memswap_limit: 320m
+    #
+    # Must equal the `mem_limit` it inherits from `*service-common` (256m). It said 320m — the
+    # value that *was* the common limit until ADR-0013's memory-budget erratum lowered it to 256m
+    # — which silently allowed 64 MB of swap while this comment claimed none (round 3, LOW);
+    # `tests/infra/test_compose_memory_budget.py` pins the equality so the two cannot drift again.
+    memswap_limit: 256m
     environment:
       <<: *service-env
       # Reached over the compose network, never through Caddy: writes and deletes never need
@@ -1042,13 +1040,26 @@ services:
       # and `s3:DeleteObject` on this one bucket's objects, nothing else. A compromised or
       # merely buggy `document` process can no longer list the bucket, touch a second bucket,
       # or rewrite this bucket's own anonymous-read policy — the blast radius the root
-      # credential used to hand it for free.
+      # credential used to hand it for free. **Deliberately not extended to the orphan
+      # credential even though the purge sweep now runs in this same process** — see
+      # `app/main.py:_start_purge_sweep`'s own docstring for why that stays a tenancy line, not
+      # a config flag.
       S3_ACCESS_KEY: ${DOCUMENT_S3_ACCESS_KEY}
       S3_SECRET_KEY: ${DOCUMENT_S3_SECRET_KEY}
+      ASSET_PURGE_RETENTION_DAYS: ${ASSET_PURGE_RETENTION_DAYS:-30}
       # The absolute address returned as `AssetOut.public_url` for the editor's own immediate
       # preview only (never persisted — ADR-0009 §6). Must be a host Caddy actually proxies
       # `/opsgrids-public/*` on; see `.env.example`.
       PUBLIC_ASSET_BASE_URL: ${PUBLIC_ASSET_BASE_URL}
+      # **`document-cron` no longer exists as its own container (the memory-headroom slice's
+      # fix round 2).** The purge sweep (ADR-0009 §8) now runs as a supervised background task
+      # inside this process — `app/main.py`'s own `_start_purge_sweep`/`_stop_purge_sweep`, the
+      # already-guarded `PurgeSweep.run()` unchanged. The orphan scan (ADR-0009's 2026-09-23
+      # addendum's §9) is deliberately NOT included here — see the docstring above for why —
+      # and still runs only by hand: `docker compose run --rm --no-deps document ./bin/cron`
+      # with `ORPHAN_SWEEP_ENABLED`/`S3_ORPHAN_ACCESS_KEY`/`S3_ORPHAN_SECRET_KEY` supplied for
+      # that one invocation, never as a value in this block.
+      RUN_SWEEPS_IN_API: ${RUN_SWEEPS_IN_API:-true}
     depends_on:
       postgres:
         condition: service_healthy
@@ -1059,53 +1070,19 @@ services:
     networks:
       - back
 
-  # The purge sweep (ADR-0009 §8, and its 2026-09-23 addendum's §9 orphan pass). Its own
-  # process for the same reason every other sweep here is: a poll loop must not share a pool
-  # with request traffic, and `docker compose ps` should answer "is anything purging assets"
-  # without reading code. Same profile as `document` — a box that runs the asset store always
-  # needs its own housekeeping, and a box that does not sell Storefront never needs a cron
-  # container that would find nothing to purge.
-  #
-  # Two credentials, deliberately not one: `S3_ACCESS_KEY`/`_SECRET_KEY` are the same
-  # write-only pair the `document` API holds, for the row-purge pass's own `DeleteObject`
-  # call; `S3_ORPHAN_ACCESS_KEY`/`_SECRET_KEY` are the second, list-capable pair `minio-init`
-  # creates above, held **only** by this container. `document`'s own API process never
-  # receives the orphan credential and never calls `ListBucket` — ADR-0009 §3's tenancy
-  # argument depends on nothing on the request path being able to enumerate the bucket.
-  document-cron:
-    <<: *background
-    profiles: ['storefront']
-    image: opsgrids-edge/document
-    command: ['./bin/cron']
-    environment:
-      <<: *service-env
-      S3_ENDPOINT_URL: http://minio:9000
-      S3_FORCE_PATH_STYLE: 'true'
-      S3_PUBLIC_BUCKET: ${S3_PUBLIC_BUCKET:-opsgrids-public}
-      S3_ACCESS_KEY: ${DOCUMENT_S3_ACCESS_KEY}
-      S3_SECRET_KEY: ${DOCUMENT_S3_SECRET_KEY}
-      S3_ORPHAN_ACCESS_KEY: ${DOCUMENT_S3_ORPHAN_ACCESS_KEY:-}
-      S3_ORPHAN_SECRET_KEY: ${DOCUMENT_S3_ORPHAN_SECRET_KEY:-}
-      ASSET_PURGE_RETENTION_DAYS: ${ASSET_PURGE_RETENTION_DAYS:-30}
-      # Off, and reporting-only even once on — see `app/config.py`'s own docstring for why an
-      # automated, bucket-wide delete earns that much caution before an operator trusts it
-      # with a real `DeleteObject`. Both flip independently, from `.env`, with no image change.
-      ORPHAN_SWEEP_ENABLED: ${DOCUMENT_ORPHAN_SWEEP_ENABLED:-false}
-      ORPHAN_SWEEP_DRY_RUN: ${DOCUMENT_ORPHAN_SWEEP_DRY_RUN:-true}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-
   # ---------------------------------------------------------------- products behind profiles
   # One profile per sellable product (ADR-0013 §5). COMPOSE_PROFILES in the box's .env turns a
   # profile on; the catalogue's `status` says whether the product is sold; preflight refuses a
   # deploy where the two disagree. `operations` is the Inventory product.
+  # **`operations-cron` no longer exists as its own container (the memory-headroom slice's fix
+  # round 2).** The nightly stock ledger <-> balance reconciliation (ADR-0014 §3) now runs as a
+  # supervised background task inside this process (`app/main.py`'s own
+  # `_start_reconcile_sweep`/`_stop_reconcile_sweep`; `ReconcileSweep` gained the same
+  # poisoned-step guard every other sweep folded into an API now has). Records and alerts on
+  # drift (`inventory.reconcile.drift` at error level, an `inventory_discrepancies` row, an
+  # `operations.inventory.inconsistency_detected` event); never repairs it. Discovery runs on
+  # the outbox role, which holds `SELECT (organization_id)` on the ledger tables and nothing
+  # more — the same role this container's own `edge-relay` dependency already assumes exists.
   operations:
     <<: *service-common
     profiles: ['inventory']
@@ -1113,20 +1090,14 @@ services:
     build:
       context: ../..
       dockerfile: services/operations/Dockerfile
-    environment: *service-env
+    environment:
+      <<: *service-env
+      # On, by this default, on the edge; off everywhere `.env` does not say otherwise — this
+      # is the one container this box runs of this service, so "on" here can never mean two
+      # copies of the reconciliation sweep running at once.
+      RUN_SWEEPS_IN_API: ${RUN_SWEEPS_IN_API:-true}
     networks:
       - back
-
-  # The nightly stock ledger ↔ balance reconciliation (ADR-0014 §3). Records and alerts on
-  # drift (`inventory.reconcile.drift` at error level, an `inventory_discrepancies` row, an
-  # `operations.inventory.inconsistency_detected` event); never repairs it. Discovery runs on
-  # the outbox role, which holds `SELECT (organization_id)` on the ledger tables and nothing more.
-  operations-cron:
-    <<: *background
-    profiles: ['inventory']
-    image: opsgrids-edge/operations
-    command: ['./bin/cron']
-    environment: *service-env
 
   # ---------------------------------------------------------------- the other products
   # One compose profile per product, named after the product's catalogue key (ADR-0013 §5), so

@@ -174,8 +174,9 @@ SELECT i.id, i.sku, i.on_hand, COALESCE(SUM(m.quantity_delta), 0) AS ledger
 HAVING i.on_hand <> COALESCE(SUM(m.quantity_delta), 0);
 ```
 
-Deploy order: migrate → `operations` API → `operations-cron` (new container, `inventory`
-profile) → the Operations SPA. The SPA must go **after** the API: it reads `on_hand_qty` and the
+Deploy order: migrate → `operations` API (the reconciler sweep runs inside it as a supervised
+background task, `RUN_SWEEPS_IN_API`; it was its own `operations-cron` container until ADR-0013's
+fix round 2) → the Operations SPA. The SPA must go **after** the API: it reads `on_hand_qty` and the
 movement `quantity`, which the old API does not send. The old SPA keeps working against the new
 API, since every field it reads is still there.
 

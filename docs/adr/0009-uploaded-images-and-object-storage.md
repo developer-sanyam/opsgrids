@@ -821,6 +821,13 @@ addendum above records that as the same date this one carries. This addendum is 
 `services/document/app/cron.py`, wired to `bin/cron` in place of the scaffold's `app/relay`,
 and a second container, `document-cron`, in `infrastructure/edge/compose.prod.yml`.
 
+> **Superseded in part, 2026-09-24 (ADR-0013, fix round 2).** `document-cron` no longer exists as
+> a container: the purge sweep runs as a background task inside the `document` API process
+> (`RUN_SWEEPS_IN_API`), with the orphan pass **disabled there unconditionally**. The credential
+> discipline below is unchanged and, if anything, stricter — no always-on container holds the
+> orphan credential; an operator hands it to a one-off `docker compose run --rm --no-deps
+> document ./bin/cron` when an orphan scan is wanted.
+
 **§8 is implemented as designed, with the discipline the ADR named.** Discovery — which
 organizations have assets whose `deleted_at` is past `ASSET_PURGE_RETENTION_DAYS` (a setting,
 default 30, not the module constant §8 implied) — runs cross-tenant on the BYPASSRLS outbox
@@ -853,8 +860,8 @@ second flag off deliberately.
 **The credential §9 asked for, built exactly as narrow as it needs to be.** A second MinIO user,
 created idempotently by `minio-init` alongside the existing write-only one:
 `s3:ListBucket` on the bucket plus `s3:DeleteObject` on its objects, nothing else, and handed
-to **`document-cron` only** — the `document` API container's own environment carries no trace
-of it. `services/document/app/storage.py`'s `ObjectStore` (the write path) and `OrphanScanner`
+to **`document-cron` only** (as of 2026-09-24, to a manual one-off run of `bin/cron` and nothing
+always-on) — the `document` API container's own environment carries no trace of it. `services/document/app/storage.py`'s `ObjectStore` (the write path) and `OrphanScanner`
 (the sweep's own class, used only from `app/cron.py`) are two separate boto3 clients for exactly
 this reason: nothing on the request path must ever be capable of `ListBucket`, because that
 capability is the one thing ADR-0009 §3's whole tenancy argument depends on nobody having.
@@ -883,7 +890,8 @@ the application logic does.
 `services/document/app/config.py` and stays `false` in `infrastructure/edge/compose.prod.yml`
 until an operator sets `DOCUMENT_S3_ORPHAN_ACCESS_KEY`/`_SECRET_KEY` and flips it, per the
 runbook's own new section. §8's row-purge sweep carries no such flag and is on unconditionally
-once `document-cron` is deployed — its failure mode (a soft-deleted object staying public a
+once the sweep runs (originally as `document-cron`; since 2026-09-24 inside the `document` API
+container) — its failure mode (a soft-deleted object staying public a
 little longer) is bounded and already-accepted by §7; the orphan pass's failure mode (deleting
 an object a request-in-flight might still need) is the one this addendum's caution is about,
 even though the 24-hour margin makes it very unlikely in practice.

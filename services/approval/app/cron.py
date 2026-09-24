@@ -50,6 +50,7 @@ from platform_core.db import (
     session_scope,
 )
 from platform_core.logging import get_logger
+from platform_core.supervise import GuardedSweep
 
 log = get_logger("approval.cron")
 
@@ -81,12 +82,20 @@ class SweepReport:
         return self.escalated
 
 
-class EscalationSweep:
+class EscalationSweep(GuardedSweep):
     """Drains the due SLA escalations, one pass at a time. See the module docstring.
 
     Constructed with its two session factories rather than reaching for the module-level engines,
     for the same reason every other seam in this codebase is injected: a test drives real
     PostgreSQL through the same code the process runs, with no clock and no engine patched.
+
+    `run()` is `GuardedSweep`'s own (memory-headroom slice, 2026-09-23 fix round): discovery
+    (`tick()`'s own `due_escalation_steps` read) raising — a DB restart, a deadlock — used to
+    propagate straight out of the old inline loop below and, since `app/worker.py` shares one
+    process between this sweep and the hierarchy/regularization consumer, would have taken that
+    consumer down too. The per-candidate guard in `_escalate` (one organization's own escalation
+    raising) is unchanged and still this class's own — `GuardedSweep` only wraps the *whole tick*,
+    the failure mode that was never guarded at all.
     """
 
     def __init__(
@@ -98,35 +107,27 @@ class EscalationSweep:
         batch_size: int = 100,
         poll_interval: float = 60.0,
     ) -> None:
+        super().__init__(poll_interval=poll_interval)
         self._discovery_factory = discovery_factory
         self._work_scope = work_scope
         self._per_org_cap = per_org_cap
         self._batch_size = batch_size
-        self._poll_interval = poll_interval
-        self._stop = False
 
-    def stop(self) -> None:
-        self._stop = True
+    @property
+    def _log_name(self) -> str:
+        return "approval.sweep"
 
-    async def run(self) -> None:
-        log.info(
-            "approval.sweep.started",
-            poll_interval=self._poll_interval,
-            per_org_cap=self._per_org_cap,
-            batch_size=self._batch_size,
-        )
-        while not self._stop:
-            report = await self.tick()
-            if report.acted or report.skipped or report.failed:
-                log.info(
-                    "approval.sweep.pass",
-                    considered=report.considered,
-                    escalated=report.escalated,
-                    unassigned=report.unassigned,
-                    skipped=report.skipped,
-                    failed=report.failed,
-                )
-            await asyncio.sleep(self._poll_interval)
+    async def on_tick_success(self, result: SweepReport) -> None:
+        report = result
+        if report.acted or report.skipped or report.failed:
+            log.info(
+                "approval.sweep.pass",
+                considered=report.considered,
+                escalated=report.escalated,
+                unassigned=report.unassigned,
+                skipped=report.skipped,
+                failed=report.failed,
+            )
 
     async def tick(self, now: datetime | None = None) -> SweepReport:
         """One pass: discover due steps, then escalate each under its own tenant binding.

@@ -34,12 +34,79 @@ source lib/rebuild-decision.sh
 source lib/health-check.sh
 # shellcheck source=lib/role-reconcile.sh
 source lib/role-reconcile.sh
+# shellcheck source=lib/active-profiles.sh
+source lib/active-profiles.sh
+# shellcheck source=lib/memory-budget.sh
+source lib/memory-budget.sh
 # shellcheck source=lib/numeric-id.sh
 source lib/numeric-id.sh
 # shellcheck source=lib/mfa-reseal.sh
 source lib/mfa-reseal.sh
 
 COMPOSE=(docker compose -f compose.prod.yml --env-file .env)
+
+# The value of KEY in `.env` read the way bash's `.` (preflight.sh sources the file) and docker
+# compose both read it: the LAST assignment wins; a quoted value is what is between its quotes
+# (whatever follows the closing quote, an inline comment included, is dropped); an unquoted
+# value's ` # comment` is dropped; spaces and a CR are removed. The first version of this read took
+# the FIRST line and kept an inline comment — so `COMPOSE_PROFILES=inventory # sold`, or an
+# operator appending a corrected line at the bottom of the file, made this script judge and export
+# a different profile list than preflight had checked, and `EDGE_UP_PARALLEL_LIMIT=2 # this deploy
+# only` fell back to 4. KEY is always one of this file's own constant names, never operator input.
+dotenv_get() {
+	local raw
+	raw=$(sed -n "s/^$1=//p" .env | tail -n 1)
+	raw=${raw%$'\r'}
+	case "$raw" in
+	\"*)
+		raw=${raw#\"}
+		raw=${raw%%\"*}
+		;;
+	\'*)
+		raw=${raw#\'}
+		raw=${raw%%\'*}
+		;;
+	*)
+		raw=$(printf '%s' "$raw" | sed -e 's/^[[:space:]]\{1,\}#.*$//' -e 's/[[:space:]]\{1,\}#.*$//')
+		;;
+	esac
+	printf '%s' "$raw" | tr -d ' \r'
+}
+
+# EDGE_PROFILES/COMPOSE_PROFILES precedence (`resolve_declared_profiles`, lib/active-profiles.sh)
+# — the same shared rule preflight.sh applies, so what preflight checked is what this actually
+# runs. **This used to also compute COMPOSE_PROFILES from the catalogue's own activations when
+# both were unset (H2, the memory-headroom slice's 2026-09-23 fix round removed it):** `docker
+# compose up` does not stop a container whose profile was silently removed, so a computed value
+# here never actually changed what was running — only what this script *believed* was running,
+# which is worse than leaving it alone. Neither set now means exactly what it says: core only. A
+# human decides what runs and writes it down.
+resolve_profiles() {
+	[ -f .env ] || return 0
+	local edge_profiles compose_profiles resolved
+	edge_profiles=$(dotenv_get EDGE_PROFILES)
+	compose_profiles=$(dotenv_get COMPOSE_PROFILES)
+	resolved=$(resolve_declared_profiles "$edge_profiles" "$compose_profiles")
+	# `COMPOSE_PROFILES=*` is valid for compose itself; expand it here (as preflight.sh does) so
+	# every script judges the same explicit list. `config --profiles` reads the compose file only.
+	case ",$resolved," in
+	*",*,"*)
+		local all_profiles
+		all_profiles=$(docker compose -f compose.prod.yml --env-file .env config --profiles | tr '\n' ',' | sed 's/,$//') || return 1
+		resolved=$(expand_profile_wildcard "$resolved" "$all_profiles")
+		;;
+	esac
+	# Always exported — not only when EDGE_PROFILES overrides (round 3, LOW): an exported shell
+	# variable is what "${COMPOSE[@]}" resolves ahead of the COMPOSE_PROFILES line `--env-file
+	# .env` would otherwise supply, so exporting the value this function just resolved is what makes
+	# preflight.sh and this script provably the same list, whichever key it came from, quoted or
+	# not. (Exporting an identical value is free; not exporting one that differs is the bug.)
+	export COMPOSE_PROFILES="$resolved"
+	if [ -n "$edge_profiles" ]; then
+		echo "profiles: EDGE_PROFILES set — running $COMPOSE_PROFILES"
+	fi
+}
+resolve_profiles
 
 # What the gateway's container is keyed on (see ROUTES_SHA in compose.prod.yml): the content of
 # the route table at this ref. Exported so every compose call below renders the same value.
@@ -73,7 +140,7 @@ assert_host() {
 		exit 2
 	fi
 	local actual
-	actual=$(sed -n 's/^EDGE_HOST=//p' .env | head -1 | tr -d '"'"'"' \r')
+	actual=$(dotenv_get EDGE_HOST)
 	if [ "$actual" != "$claimed" ]; then
 		echo "assert-host: REFUSING." >&2
 		echo "  You asked to deploy to: $claimed" >&2
@@ -246,13 +313,33 @@ ensure_ops_monitor_state_dir() {
 	echo "ops-monitor state dir: $state_dir owned by $uid:$gid"
 }
 
+# How many containers `up` starts at once. Four by default; `EDGE_UP_PARALLEL_LIMIT` — in the
+# environment, or as a line in `.env` (ssh does not carry an operator's shell environment across,
+# and `make deploy` runs this over ssh) — overrides it. Anything that is not a positive whole
+# number falls back to four rather than reaching compose. The release that merged ops-monitor,
+# CRM lead/customer-worker and the document/scheduler/leave services lands ~+450 MB at once on a
+# box already swapping: the RUNBOOK's rollout section asks for `2` on that deploy.
+up_parallel_limit() {
+	local value="${EDGE_UP_PARALLEL_LIMIT:-}"
+	if [ -z "$value" ] && [ -f .env ]; then
+		value=$(dotenv_get EDGE_UP_PARALLEL_LIMIT)
+	fi
+	case "$value" in
+	'' | *[!0-9]* | 0) value=4 ;;
+	esac
+	echo "$value"
+}
+
 up() {
 	log "recreating containers (brief downtime for anything that changed)"
 	ensure_ops_monitor_state_dir
-	# Four at a time. Unbounded, a deploy that touches the shared environment starts every
-	# container at once, and ~59 Python interpreters importing SQLAlchemy on two cores is a
+	# Four at a time by default. Unbounded, a deploy that touches the shared environment starts
+	# every container at once, and ~59 Python interpreters importing SQLAlchemy on two cores is a
 	# load average of 7 and health checks timing out for no reason but the stampede.
-	COMPOSE_PARALLEL_LIMIT=4 "${COMPOSE[@]}" up -d --remove-orphans
+	local parallel_limit
+	parallel_limit=$(up_parallel_limit)
+	echo "up: starting ${parallel_limit} containers at a time, profiles: ${COMPOSE_PROFILES:-<none: core only>}"
+	COMPOSE_PARALLEL_LIMIT="$parallel_limit" "${COMPOSE[@]}" up -d --remove-orphans
 	# The Caddyfile arrives through a bind mount (of its directory — a file mount follows the
 	# inode and keeps serving the pre-checkout file), so editing it changes nothing compose
 	# can see: `up` leaves the container, and the config it loaded at start, exactly as it
@@ -352,6 +439,46 @@ record_ref() {
 	echo "$sha" >"$STATE_DIR/last-good-ref"
 	printf '%s %s\n' "$(date -u +%FT%TZ)" "$sha" >>"$STATE_DIR/deploy-log"
 	echo "recorded good ref: $sha"
+	record_budget
+}
+
+# What this box was priced at the last time a deploy went healthy — **informational only**
+# (B2, review round 2). It used to be the number `preflight.sh` compared a future deploy against
+# (a "grandfather" ratchet), which meant the last deploy to happen to succeed silently set the bar
+# for the next one and nobody ever actually decided anything. The bar is now
+# `EDGE_BUDGET_ACCEPTED_MB` in `.env` (the owner's explicit ceiling — see RUNBOOK.md, 'the memory
+# budget'), which is static; this file is only printed by preflight for reference, so a deploy that
+# failed health can never lower anything and recovery after one needs nothing special.
+#
+# Priced by `post_deploy_compute` (lib/memory-budget.sh) — the same function preflight's gate uses,
+# so the two can never disagree about what a box is worth. Written atomically (temp file in the
+# same directory, then `mv`): a reader never sees a half-written number. L8: every reason this is
+# skipped is said out loud, on stderr — a `return 0` with no message would look identical to a
+# recording that worked, and the "last successful deploy priced at" line would quietly go stale.
+record_budget() {
+	local budget_file="memory-budget.json" tmp
+	if [ ! -f "$budget_file" ]; then
+		echo "record-budget: no $budget_file — not recorded" >&2
+		return 0
+	fi
+	if ! command -v python3 >/dev/null 2>&1; then
+		echo "record-budget: no python3 on this box — not recorded" >&2
+		return 0
+	fi
+	if ! post_deploy_compute "$budget_file" || [ -z "${POST_DEPLOY_MB:-}" ]; then
+		echo "record-budget: could not price the running box (${POST_DEPLOY_ERROR:-no reason given}) — not recorded" >&2
+		return 0
+	fi
+	if ! mkdir -p "$STATE_DIR" || ! tmp=$(mktemp "$STATE_DIR/.edge-budget.last-ok.XXXXXX"); then
+		echo "record-budget: cannot write to $STATE_DIR — not recorded" >&2
+		return 0
+	fi
+	if echo "$POST_DEPLOY_MB" >"$tmp" && mv -f "$tmp" "$STATE_DIR/edge-budget.last-ok"; then
+		echo "recorded memory budget: ${POST_DEPLOY_MB}M (informational — the gate is EDGE_BUDGET_ACCEPTED_MB, not this)"
+	else
+		rm -f "$tmp"
+		echo "record-budget: could not write $STATE_DIR/edge-budget.last-ok — not recorded" >&2
+	fi
 }
 
 # The ref to roll back TO: the most recent one that served before the one serving now.
@@ -394,6 +521,7 @@ deploy)
 	record_ref
 	;;
 previous-ref) previous_ref ;;
+record-budget) record_budget ;;
 last-good-ref) good_ref ;;
 reconcile-permissions) reconcile_permissions "${2:-}" "${3:-}" ;;
 backup) ./backup.sh ;;
@@ -434,7 +562,7 @@ compose)
 	"${COMPOSE[@]}" "$@"
 	;;
 *)
-	echo "usage: remote.sh {assert-host <host>|preflight|build|validate|migrate|reconcile-roles|up|health|deploy|previous-ref|backup|status|logs [lines] [svc]|compose ...}" >&2
+	echo "usage: remote.sh {assert-host <host>|preflight|build|validate|migrate|reconcile-roles|up|health|deploy|previous-ref|record-budget|backup|status|logs [lines] [svc]|compose ...}" >&2
 	exit 64
 	;;
 esac

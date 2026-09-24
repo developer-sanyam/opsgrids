@@ -65,19 +65,174 @@ optional_empty="$optional_empty DOCUMENT_S3_ORPHAN_ACCESS_KEY DOCUMENT_S3_ORPHAN
 # Empty is the honest state for a deployment not yet registered for tax: the billing run then
 # writes no tax line (ADR-0005 addendum, 2026-09-23).
 optional_empty="$optional_empty BILLING_TAX_CODE BILLING_TAX_JURISDICTION"
+# EDGE_PROFILES is an explicit, optional override for COMPOSE_PROFILES (see the note below) —
+# most boxes never set it; COMPOSE_PROFILES alone is the common case.
+optional_empty="$optional_empty EDGE_PROFILES"
+# EDGE_BUDGET_ACCEPTED_MB (B2, review round 2) — the owner's explicit memory-overcommit ceiling;
+# most boxes never need one at all (see the memory budget section, below).
+optional_empty="$optional_empty EDGE_BUDGET_ACCEPTED_MB"
+# M5 (review round 2): these two keys may be entirely ABSENT from an existing box's .env, not
+# merely empty — `EDGE_PROFILES`/`EDGE_BUDGET_ACCEPTED_MB` did not exist when older boxes were
+# first stood up, and re-copying the whole of `.env.example` onto a live box just to add two
+# lines is exactly the kind of manual step this file exists to make unnecessary. Every other key
+# in `.env.example` staying required-present is deliberate: an absent key silently reverting to
+# whatever default `platform_core.config.ServiceSettings` happens to ship is the same class of
+# bug COMPOSE_PROFILES being merely empty already guards against, one layer further back.
+optional_absent="EDGE_PROFILES EDGE_BUDGET_ACCEPTED_MB"
+
+# `.env` is sourced as SHELL below, and this file exists to fail with a message, not with
+# whatever bash makes of a stray character. Checked on the RAW file, before it is sourced, and
+# nothing is sourced if a line is found:
+#
+#   * An unquoted value containing whitespace — `EDGE_PROFILES=inventory, storefront`,
+#     `OPS_ALERT_EMAIL=a and b` — is not one assignment: bash assigns the text before the first
+#     space and then RUNS the rest as a command (exit 127 "command not found" at best, with no
+#     FAILED footer; at worst something that exists). docker compose parses the same line as a
+#     single value, so the two would also disagree about what the box says.
+#   * An unquoted value containing a shell metacharacter — `; & | < > ( )`, a backtick, `$(` —
+#     is run, backgrounded or redirected the same way.
+#   * Text after a closing quote — `KEY="a" b` — is a second word.
+#   * CRLF line endings: bash keeps the carriage return on the end of every value it sources
+#     (`EDGE_HOST` would be `edge.opsgrids.com\r`), where docker compose strips it.
+#
+# Quoted values (`KEY="a b"`), a trailing space, an inline ` # comment` after a value, and
+# `export KEY=…` (checked like any assignment) are fine and are not flagged. A quoted value with a
+# backslash in it is left alone rather than second-guessed.
+env_problems=""
+env_crlf=""
+while IFS= read -r env_line || [ -n "$env_line" ]; do
+	case "$env_line" in
+	*$'\r')
+		env_crlf=1
+		env_line=${env_line%$'\r'}
+		;;
+	esac
+	env_line=${env_line#export }
+	case "$env_line" in
+	[A-Za-z_]*=*) ;;
+	*) continue ;;
+	esac
+	env_key=${env_line%%=*}
+	case "$env_key" in
+	*[!A-Za-z0-9_]*) continue ;;
+	esac
+	env_value=${env_line#*=}
+	case "$env_value" in
+	\"*)
+		# quoted: the shell reads it as one word, and so does compose — unless something follows
+		# the closing quote.
+		case "$env_value" in *\\*) continue ;; esac
+		env_rest=${env_value#\"}
+		case "$env_rest" in *\"*) ;; *) continue ;; esac
+		env_after=${env_rest#*\"}
+		;;
+	\'*)
+		case "$env_value" in *\\*) continue ;; esac
+		env_rest=${env_value#\'}
+		case "$env_rest" in *\'*) ;; *) continue ;; esac
+		env_after=${env_rest#*\'}
+		;;
+	*)
+		env_after=""
+		env_value=$(printf '%s' "$env_value" | sed -e 's/[[:space:]]\{1,\}#.*$//' -e 's/[[:space:]]\{1,\}$//')
+		case "$env_value" in
+		*[[:space:]]*)
+			env_problems="${env_problems}${env_key} in .env has an unquoted value containing whitespace — bash would run the words after the first space as a command. Quote the whole value: ${env_key}=\"…\""$'\n'
+			;;
+		*)
+			if printf '%s' "$env_value" | grep -Eq '[;&|<>()`]|\$\('; then
+				env_problems="${env_problems}${env_key} in .env has an unquoted value containing a shell metacharacter (; & | < > ( ) \` or \$( ) — bash would run, background or redirect it. Quote the whole value: ${env_key}=\"…\""$'\n'
+			fi
+			;;
+		esac
+		;;
+	esac
+	env_after=$(printf '%s' "$env_after" | sed -e 's/^[[:space:]]\{1,\}#.*$//' -e 's/^[[:space:]]\{1,\}$//')
+	if [ -n "$env_after" ]; then
+		env_problems="${env_problems}${env_key} in .env has text after its closing quote — bash reads it as a separate word (a command or an argument). Put the whole value inside the quotes: ${env_key}=\"…\""$'\n'
+	fi
+done <.env
+if [ -n "$env_crlf" ]; then
+	env_problems="${env_problems}.env has Windows (CRLF) line endings — bash keeps the carriage return on the end of every value it sources, where docker compose strips it, so the two would disagree. Convert it: sed -i 's/\\r\$//' .env"$'\n'
+fi
+if [ -n "$env_problems" ]; then
+	while IFS= read -r env_problem; do
+		[ -n "$env_problem" ] && bad "$env_problem"
+	done <<<"$env_problems"
+	echo "preflight: FAILED — nothing was changed (.env was not read: fix the line(s) above first)." >&2
+	exit 1
+fi
 
 set -a
 # shellcheck disable=SC1091 # .env is data, generated on the box from .env.example
 . ./.env
 set +a
 
+# ---------------------------------------------------------------- which profiles this box declares
+# EDGE_PROFILES, if set, is an explicit, authoritative override; COMPOSE_PROFILES otherwise —
+# `remote.sh` applies the identical precedence before invoking docker compose, so `declared_
+# profiles` below is what will actually be asked to run, not a guess.
+#
+# **Nothing here computes this value automatically any more (H2, the memory-headroom slice's
+# 2026-09-23 fix round).** The previous "zero-activation profile auto-off" fell back to
+# computing COMPOSE_PROFILES from the catalogue's own activations when both were unset — but
+# `docker compose up` does not stop a container whose profile was silently removed (an "orphan"
+# in compose's own vocabulary is a service no longer in the file at all, not one merely filtered
+# out by profile), so that computed value never actually changed what was running — only what
+# this script *believed* was running, which is a worse failure mode than doing nothing. A human
+# decides what runs and writes it down in `EDGE_PROFILES`/`COMPOSE_PROFILES`; the checks below
+# only ever advise about that decision, never make it.
+# shellcheck source=lib/active-profiles.sh
+. ./lib/active-profiles.sh
+declared_profiles=$(resolve_declared_profiles "${EDGE_PROFILES:-}" "${COMPOSE_PROFILES:-}")
+# `COMPOSE_PROFILES=*` ("every profile") is valid for docker compose and for ops-monitor, but the
+# advisories below match profile names one at a time, and a literal `*` matches none of them —
+# every sold product would read as unserved. Expanded here to the compose file's own profile
+# list; `bad` (not a silent fallback) if compose cannot list it.
+case ",${declared_profiles}," in
+*",*,"*)
+	if all_compose_profiles=$(docker compose -f compose.prod.yml --env-file .env config --profiles | tr '\n' ',' | sed 's/,$//') && [ -n "$all_compose_profiles" ]; then
+		declared_profiles=$(expand_profile_wildcard "$declared_profiles" "$all_compose_profiles")
+		ok "COMPOSE_PROFILES=* expanded to: $declared_profiles"
+	else
+		bad "COMPOSE_PROFILES contains '*' but 'docker compose config --profiles' could not list this file's profiles to expand it (compose's own error is above)"
+		declared_profiles=""
+	fi
+	;;
+esac
+if [ -n "${EDGE_PROFILES:-}" ]; then
+	ok "COMPOSE_PROFILES overridden by EDGE_PROFILES: $declared_profiles"
+fi
+# A profile name compose does not define enables nothing — silently: `COMPOSE_PROFILES=hrm` is
+# priced, judged and started as core only, and the products the box sells simply are not there.
+# Checked against the compose file's own list. (If compose cannot list its profiles the memory
+# row below fails closed on the same error, so nothing is skipped quietly here.)
+if [ -n "$declared_profiles" ] && known_profiles=$(docker compose -f compose.prod.yml --env-file .env config --profiles 2>/dev/null); then
+	for declared_profile in $(echo "$declared_profiles" | tr ',' ' '); do
+		case $'\n'"$known_profiles"$'\n' in
+		*$'\n'"$declared_profile"$'\n'*) ;;
+		*) bad "profile '$declared_profile' (from EDGE_PROFILES/COMPOSE_PROFILES) is not defined in compose.prod.yml, so it enables nothing. Defined: $(echo "$known_profiles" | tr '\n' ' ')" ;;
+		esac
+	done
+fi
+# Exported so every `docker compose` call below (and remote.sh's own, later) resolves the same
+# profile list this script just did — an exported shell variable takes precedence over the value
+# `--env-file .env` would otherwise read, which is what makes EDGE_PROFILES actually override
+# COMPOSE_PROFILES for compose itself, not just for this script's own arithmetic.
+export COMPOSE_PROFILES="$declared_profiles"
+
 missing=""
 placeholder=""
 for key in $required; do
 	value="${!key-__unset__}"
 	if [ "$value" = "__unset__" ]; then
-		missing="$missing $key"
-		continue
+		case " $optional_absent " in
+		*" $key "*) continue ;;
+		*)
+			missing="$missing $key"
+			continue
+			;;
+		esac
 	fi
 	if [ -z "$value" ]; then
 		case " $optional_empty " in
@@ -198,35 +353,156 @@ if docker info >/dev/null 2>&1; then ok "docker daemon responding"; else bad "do
 # to one and not the other fails there first, in CI, rather than surprising anyone here.
 budget_file="memory-budget.json"
 if [ ! -f "$budget_file" ]; then
-	echo "  warn  no $budget_file — memory budget check skipped" >&2
+	# The gate fails closed everywhere else (round 3): a budget it cannot read is not a budget it
+	# can skip. (`remote.sh record-budget` still skips — recording a number is not a verdict.)
+	bad "no $budget_file — the memory budget cannot be judged"
 elif ! command -v python3 >/dev/null 2>&1; then
-	echo "  warn  no python3 on this box — memory budget check skipped" >&2
+	bad "no python3 on this box — the memory budget cannot be priced or judged"
 else
-	expected_mb=$(python3 lib/memory_budget_totals.py "$budget_file" "${COMPOSE_PROFILES:-}") || {
-		bad "could not compute the expected memory budget from $budget_file for COMPOSE_PROFILES=${COMPOSE_PROFILES:-}"
-		expected_mb=""
-	}
+	# B1 (review round 2): price the box this deploy is about to leave behind, not the one it
+	# found. `docker compose up` starts what a newly-enabled profile adds; it never tears down
+	# what a shrunk one no longer lists (H2). Pricing only what is *running* today would miss a
+	# profile this deploy is about to turn on; pricing only the *declared* profile list would
+	# miss an orphan a previous, incomplete change left behind. `post_deploy_compute`
+	# (lib/memory-budget.sh — the same function remote.sh's `record_budget` calls, so what a deploy
+	# is judged against and what gets recorded afterwards can never be priced two ways) takes the
+	# union of both: containers running today that the new compose file still defines, plus
+	# whatever the declared profiles configure. See lib/memory_budget_totals.py's
+	# `post_deploy_container_names` for the full argument and tests/infra/
+	# test_memory_budget_totals_containers.py::TestPostDeployContainerNames for the cases.
+	# shellcheck disable=SC1091  # sourced, not executed — see the file's own header
+	. ./lib/memory-budget.sh
+	expected_mb=""
+	if post_deploy_compute "$budget_file"; then
+		expected_mb="$POST_DEPLOY_MB"
+	else
+		# Fails closed (round 3, HIGH): a compose/docker failure used to yield an empty post-deploy
+		# set and a green "0M (0%)" line. Now it is a FAILED row that says why, and every memory
+		# line below is skipped — there is no total to judge.
+		bad "memory budget could not be priced — ${POST_DEPLOY_ERROR:-no reason given}. The gate refuses to pass on a total it could not compute."
+	fi
+	priced_as="post-deploy: running that the new compose still defines, plus declared profiles"
+
+	# M7: an unpriced but definitely-ours container (the label filter already scopes `docker ps`
+	# to this compose project) is a gap in memory-budget.json, not a foreign container to ignore
+	# — named here so it gets fixed; priced conservatively above (kinds.background) rather than
+	# as free.
+	if [ -n "${POST_DEPLOY_UNPRICED:-}" ]; then
+		echo "  warn  container(s) with no memory-budget.json entry, priced as an estimate (kinds.background): ${POST_DEPLOY_UNPRICED} — add them to memory-budget.json's 'containers'." >&2
+	fi
+	# A ceiling that is not a plain whole number of MB is a typo, not a decision — said out loud
+	# rather than silently ignored (it is treated as unset below, so the deploy would refuse).
+	case "${EDGE_BUDGET_ACCEPTED_MB:-}" in
+	*[!0-9]* | 0?*) bad "EDGE_BUDGET_ACCEPTED_MB (${EDGE_BUDGET_ACCEPTED_MB}) must be a whole number of megabytes (no sign, unit or leading zero)" ;;
+	esac
+
+	# Read from the budget file itself rather than hardcoded here — this file's own
+	# `host.soft_budget_percent`/`hard_budget_percent`/`max_accepted_percent` is what `tests/infra/
+	# test_compose_memory_budget.py` pins, and a hardcoded copy here would silently drift from
+	# it the next time any of them changes.
+	soft_percent=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['host']['soft_budget_percent'])" "$budget_file")
+	hard_percent=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['host']['hard_budget_percent'])" "$budget_file")
+	max_accepted_percent=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['host']['max_accepted_percent'])" "$budget_file")
 	if [ -n "$expected_mb" ]; then
-		mem_total_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo "")
-		if [ -n "$mem_total_kb" ]; then
-			# shellcheck disable=SC1091  # sourced, not executed — see the file's own header
-			. ./lib/memory-budget.sh
-			verdict_line=$(memory_budget_verdict "$mem_total_kb" "$expected_mb" 80 100)
+		mem_total_kb=$(awk '/^MemTotal:/ {print $2}' "${EDGE_MEMINFO_FILE:-/proc/meminfo}" 2>/dev/null || echo "")
+		if ! [[ "$mem_total_kb" =~ ^[1-9][0-9]*$ ]]; then
+			# Same principle as post_deploy_compute: no reading is not "fine". (This used to warn
+			# and skip — the one branch of the gate that still failed open.)
+			bad "could not read MemTotal from ${EDGE_MEMINFO_FILE:-/proc/meminfo} — the memory budget cannot be judged"
+		else
+			verdict_line=$(memory_budget_verdict "$mem_total_kb" "$expected_mb" "$soft_percent" "$hard_percent")
 			verdict=${verdict_line%% *}
 			percent=${verdict_line#* }
 			mem_total_mb=$((mem_total_kb / 1024))
-			case "$verdict" in
-			ok) ok "memory budget: ${expected_mb}M expected of ${mem_total_mb}M MemTotal (${percent}%)" ;;
-			warn)
-				echo "  warn  memory budget: ${expected_mb}M expected of ${mem_total_mb}M MemTotal (${percent}%)" >&2
-				echo "        — over the 80% soft line. Still deploying; see RUNBOOK.md, 'the memory budget'." >&2
-				;;
-			refuse)
-				bad "memory budget: ${expected_mb}M expected of ${mem_total_mb}M MemTotal (${percent}%) — over the hard budget. Trim COMPOSE_PROFILES or consolidate a service before deploying (ADR-0013's memory-budget erratum)."
+			cap_mb=$((mem_total_mb * max_accepted_percent / 100))
+			hard_mb=$((mem_total_mb * hard_percent / 100))
+			usage=$(describe_budget_usage "$expected_mb" "$mem_total_mb")
+
+			# B2/H3/H4 (review round 2): an explicit owner ceiling replaces the previous
+			# grandfather-vs-last-ok ratchet. `EDGE_BUDGET_ACCEPTED_MB` in `.env`, if set, is the
+			# total (MB) the owner has actually looked at the projection and agreed to run at —
+			# `apply_accepted_ceiling` (lib/memory-budget.sh) downgrades an over-hard-line verdict
+			# to a loud warning only when this deploy is at or under that number. No ceiling set:
+			# today's behaviour, unchanged — refuse. See RUNBOOK.md, 'the memory budget' for the
+			# decision this asks the owner to make before the first deploy that needs it.
+			#
+			# Round 3 (M5): the ceiling has an upper bound, `host.max_accepted_percent` of MemTotal.
+			# A ceiling above it is a FAILED row (a `38940` for `3894` typo would otherwise be a
+			# blank cheque) and is ignored for the verdict; and no ceiling — however correct — can
+			# cover a total above it.
+			accepted="${EDGE_BUDGET_ACCEPTED_MB:-}"
+			accepted_effective=""
+			case "$accepted" in
+			'' | *[!0-9]* | 0?*) ;; # unset, or already reported above
+			*)
+				# `${#accepted} -gt 7`: a twenty-digit value overflows bash's integer arithmetic and
+				# compares as a negative number — seven digits is already ten terabytes.
+				if [ "${#accepted}" -gt 7 ] || [ "$accepted" -gt "$cap_mb" ]; then
+					bad "EDGE_BUDGET_ACCEPTED_MB (${accepted}M) is above the ${max_accepted_percent}% cap (${cap_mb}M of ${mem_total_mb}M MemTotal) — a typo? The ceiling is the exact post-deploy total preflight printed for this commit (RUNBOOK.md, 'the memory budget'), and it never legitimately exceeds the cap."
+				else
+					accepted_effective="$accepted"
+				fi
 				;;
 			esac
-		else
-			echo "  warn  could not read /proc/meminfo — memory budget check skipped" >&2
+			final_line=$(apply_accepted_ceiling "$verdict" "$percent" "$expected_mb" "$accepted_effective" "$cap_mb")
+			final_verdict=${final_line%% *}
+
+			case "$final_verdict" in
+			ok) ok "memory budget ($priced_as): $usage" ;;
+			warn)
+				echo "  warn  memory budget ($priced_as): $usage" >&2
+				if [ "$verdict" = "refuse" ]; then
+					echo "        — OVER THE HARD BUDGET (${hard_percent}% = ${hard_mb}M), accepted: EDGE_BUDGET_ACCEPTED_MB=${accepted} covers it." >&2
+					echo "        This box is overcommitted by owner decision — more RAM (a VM resize) or de-listing" >&2
+					echo "        a product would bring it back under the hard line. Still deploying — see" >&2
+					echo "        RUNBOOK.md, 'the memory budget'." >&2
+				else
+					echo "        — over the ${soft_percent}% soft line. Still deploying; see RUNBOOK.md, 'the memory budget'." >&2
+				fi
+				;;
+			refuse)
+				if [ "$expected_mb" -gt "$cap_mb" ]; then
+					bad "memory budget ($priced_as): $usage — over the absolute cap (${max_accepted_percent}% of MemTotal = ${cap_mb}M), which no EDGE_BUDGET_ACCEPTED_MB can cover. De-list a product (COMPOSE_PROFILES/EDGE_PROFILES), consolidate a service, or resize the VM."
+				elif [ -n "$accepted_effective" ]; then
+					bad "memory budget ($priced_as): $usage — over the hard budget AND over the owner-accepted ceiling (EDGE_BUDGET_ACCEPTED_MB=${accepted}M, $((expected_mb - accepted))M short). Raise the accepted ceiling (a deliberate decision, not a default) or trim COMPOSE_PROFILES/EDGE_PROFILES or consolidate a service."
+				elif [ -n "$accepted" ]; then
+					bad "memory budget ($priced_as): $usage — over the hard budget, and the EDGE_BUDGET_ACCEPTED_MB in .env was rejected (see above), so nothing accepts it."
+				else
+					bad "memory budget ($priced_as): $usage — over the hard budget, and no EDGE_BUDGET_ACCEPTED_MB is set in .env. Set it after reading the projection (RUNBOOK.md, 'the memory budget'), trim COMPOSE_PROFILES/EDGE_PROFILES, or consolidate a service."
+				fi
+				;;
+			esac
+
+			# The ceiling is a decision record — exactly the printed total for the commit being
+			# deployed (RUNBOOK.md) — so any slack, or a ceiling this deploy does not need, is worth
+			# saying: it is an overcommit the owner agreed to that this deploy is not asking for.
+			if [ -n "$accepted_effective" ]; then
+				if [ "$verdict" = "refuse" ] && [ "$expected_mb" -le "$accepted_effective" ] && [ "$accepted_effective" -gt "$expected_mb" ]; then
+					echo "  info  EDGE_BUDGET_ACCEPTED_MB (${accepted_effective}M) is $((accepted_effective - expected_mb))M above this deploy's total (${expected_mb}M) — slack the owner accepted but this commit does not use; set it to ${expected_mb} so the file records what was actually decided."
+				elif [ "$verdict" != "refuse" ]; then
+					echo "  info  EDGE_BUDGET_ACCEPTED_MB (${accepted_effective}M) is set but not needed: this deploy is under the hard line (${expected_mb}M against ${hard_mb}M) — clear it, so a future deploy that does go over is not silently pre-approved."
+				fi
+			fi
+
+			# Informational only, from here on — L8: `record_budget` (remote.sh) writes this
+			# after every healthy deploy; printed for reference, never read by the verdict above.
+			last_ok_file="${EDGE_STATE_DIR:-/srv/opsgrids/state}/edge-budget.last-ok"
+			if [ -f "$last_ok_file" ]; then
+				last_ok_mb=$(tr -d '[:space:]' <"$last_ok_file" 2>/dev/null || echo "")
+				case "$last_ok_mb" in '' | *[!0-9]*) ;; *) echo "  info  last successful deploy priced at: ${last_ok_mb}M (informational only — not used in the verdict above)" ;; esac
+			fi
+
+			# Informational only — never gates a deploy, and never mixed into $expected_mb above:
+			# a backlog placeholder in memory-budget.json's `planned` key must not be able to fail
+			# a real deploy. This is what tells whoever is watching a deploy whether the box is
+			# still projected to have room for what is coming, not just for what is running now.
+			# Projected on top of *this deploy's own* total, not a fresh profile-list one.
+			core_mb=$(python3 lib/memory_budget_totals.py "$budget_file" --profiles "") || core_mb=""
+			core_planned_mb=$(python3 lib/memory_budget_totals.py "$budget_file" --profiles "" --with-planned) || core_planned_mb=""
+			if [ -n "$core_mb" ] && [ -n "$core_planned_mb" ] && [ "$core_planned_mb" -gt "$core_mb" ]; then
+				projected_mb=$((expected_mb + core_planned_mb - core_mb))
+				echo "  info  projected with the planned backlog too: $(describe_budget_usage "$projected_mb" "$mem_total_mb") — see memory-budget.json's 'planned' key"
+			fi
 		fi
 	fi
 fi
@@ -280,6 +556,25 @@ else
 	ok "ops-monitor alerts email: $OPS_ALERT_EMAIL"
 fi
 
+# The operations reconcile sweep, storefront's custom-domain sweep and document's purge sweep run
+# inside their own API containers (`RUN_SWEEPS_IN_API`, compose.prod.yml defaults it to `true`;
+# ADR-0013 fix round 2). Anything else in `.env` turns them OFF, and — since the `*-cron`
+# containers that used to carry them no longer exist — nothing runs them at all: no stock
+# reconciliation, no domain verification, no purge of soft-deleted uploads past their retention
+# window, with every container healthy. Loud, not fatal: an operator may be stopping a sweep on
+# purpose for a maintenance window, but never by accident.
+# Read the way the services read it (pydantic's bool: true/True/1/yes/on/y/t, any case) — a
+# `True` in `.env` turns the sweeps ON and must not be warned about as off.
+sweeps_flag=$(printf '%s' "${RUN_SWEEPS_IN_API:-true}" | tr '[:upper:]' '[:lower:]')
+case "$sweeps_flag" in
+true | 1 | yes | on | y | t) ok "in-API sweeps enabled (operations reconcile, storefront domains, document purge)" ;;
+*)
+	echo "  warn  RUN_SWEEPS_IN_API=${RUN_SWEEPS_IN_API}: the operations, storefront and document sweeps are OFF and" >&2
+	echo "        no separate cron container exists to run them — nothing reconciles stock, verifies" >&2
+	echo "        custom domains or purges deleted uploads until it is 'true' again." >&2
+	;;
+esac
+
 # ops-monitor's own state subdirectory (C10, M2): it runs as the `product` image's baked-in
 # non-root user, not `deploy`, so it can only write there if `remote.sh up`'s
 # `ensure_ops_monitor_state_dir` has already chowned it to that uid. A mismatch here means the
@@ -323,12 +618,12 @@ while read -r site; do
 	*) bad "the Caddyfile serves $site but TLS_PLATFORM_HOSTS does not list it: no certificate will be issued" ;;
 	esac
 # Process substitution, not a pipe: `bad` must set `failed` in this shell, not in a subshell.
-done < <(sed -n 's#^https://\([a-z0-9.-]*\) {$#\1#p' caddy/Caddyfile)
+done < <(sed -n 's#^https://\([a-z0-9.-]\{1,\}\) {$#\1#p' caddy/Caddyfile)
 
 # A prefix in the route table whose upstream is not among this box's services is a hung
 # connection and a 504 for whoever calls it. Product routes are covered by the catalogue check
 # below; this catches the ones with no product key (approvals runs only with the hrms profile).
-running_services=" $(docker compose -f compose.prod.yml --env-file .env config --services 2>/dev/null | tr '\n' ' ') "
+running_services=" $(docker compose -f compose.prod.yml --env-file .env config --services 2>/dev/null | tr '\n' ' ' || true) "
 while read -r upstream; do
 	case "$running_services" in
 	*" $upstream "*) ;;
@@ -346,18 +641,23 @@ while read -r upstream; do
 	esac
 done < <(grep -oE 'reverse_proxy [a-z-]+:[0-9]+' caddy/Caddyfile | awk '{print $2}' | cut -d: -f1 | sort -u)
 
-# The catalogue says which products are sold; COMPOSE_PROFILES says which product services
-# run. They must agree (ADR-0013 §5): an `available` product with no service behind it is a
-# 504 the customer finds. Only checkable once Postgres exists — on the first deploy it does
-# not, and the row comes from a migration that has not run yet.
-profile_for() {
-	case "$1" in
-	operations) echo inventory ;;
-	storefront) echo storefront ;;
-	hrms|crm|pulseboard|projects|support|marketing|finance|itsm) echo "$1" ;;
-	*) echo "" ;;
-	esac
-}
+# The catalogue says which products are sold; COMPOSE_PROFILES/EDGE_PROFILES says which
+# product services run. Two independent questions get asked here, both only checkable once
+# Postgres exists (on the first deploy it does not, and the rows come from migrations that have
+# not run yet):
+#
+#   1. Commercial listing agreement (ADR-0013 §5, unchanged by this fix round): an `available`
+#      product with no service behind it is a 504 the customer finds.
+#   2. Real-customer-impact advisory (H2, the memory-headroom slice's 2026-09-23 fix round,
+#      replacing the previous "zero-activation profile auto-off" — see the note above
+#      `declared_profiles` for why that auto-off was removed rather than fixed in place): a
+#      product with at least one real activation whose profile this box does not run is refused
+#      outright — turning that profile off would take a paying customer's product away, silently,
+#      the moment this deploy lands. A profile that is on, has zero activations, AND is not even
+#      sold in the catalogue is reported as information only: safe to consider trimming, never
+#      forced.
+#
+# `profile_for`/`key_for_profile` came from lib/active-profiles.sh, sourced above.
 if docker compose -f compose.prod.yml --env-file .env ps --status running postgres 2>/dev/null | grep -q postgres; then
 	catalogue_rc=0
 	available=$(docker compose -f compose.prod.yml --env-file .env exec -T postgres \
@@ -365,7 +665,12 @@ if docker compose -f compose.prod.yml --env-file .env ps --status running postgr
 	# An empty answer and a failed question look the same to the loop below, and a green line
 	# for a check that never ran is worse than no check.
 	[ "$catalogue_rc" -eq 0 ] || bad "could not read the product catalogue (psql exit $catalogue_rc): the catalogue/profile agreement is unverified"
-	enabled=",${COMPOSE_PROFILES:-},"
+	# psql prints one key per line; the `case` matches below need them space-separated. Matching
+	# `" $available "` against newline-separated output only ever found the FIRST key, so with two
+	# or more sold products the advisory told the owner sold products were "not sold — safe to trim".
+	available_set=" $(printf '%s\n' "$available" | tr '\n' ' ') "
+
+	enabled=",${declared_profiles},"
 	sold_unserved=""
 	for key in $available; do
 		profile=$(profile_for "$key")
@@ -376,18 +681,73 @@ if docker compose -f compose.prod.yml --env-file .env ps --status running postgr
 		esac
 	done
 	if [ -z "$sold_unserved" ]; then ok "every product the catalogue sells has its service profile enabled"; else
-		bad "sold in the catalogue but no service will run for it:$sold_unserved — add the profile to COMPOSE_PROFILES or set the product to 'soon'"; fi
-	for profile in $(echo "${COMPOSE_PROFILES:-}" | tr ',' ' '); do
-		key=""
-		case "$profile" in inventory) key=operations ;; storefront) key=storefront ;; hrms|crm|pulseboard|projects|support|marketing|finance|itsm) key=$profile ;; esac
+		bad "sold in the catalogue but no service will run for it:$sold_unserved — add the profile to COMPOSE_PROFILES/EDGE_PROFILES or set the product to 'soon'"; fi
+	for profile in $(echo "$declared_profiles" | tr ',' ' '); do
+		key=$(key_for_profile "$profile")
 		[ -n "$key" ] || continue
-		case " $available " in
+		case "$available_set" in
 		*" $key "*) ;;
 		*) echo "  warn  profile '$profile' runs but the catalogue does not sell '$key' yet (status is not 'available')" >&2 ;;
 		esac
 	done
+
+	# ---- the real-customer-impact advisory (H2/H3) ----
+	# L12 (review round 2, corrected in round 3): an activation counts when the customer is, or
+	# is about to be again, served by it — `trial`, `active` **and `suspended`**. The round-2
+	# version dropped `suspended` on the reasoning that nobody is served for one; the re-review
+	# pointed out what that misses: `product.project_subscription` flips a suspended activation
+	# back to `active` the moment a payment lands, onto a service this box would by then not be
+	# running — a paying customer returning to a 504. (`product.activations.status` is only ever
+	# `trial | active | suspended`, so this list is every status a row can have; it is spelled out
+	# so a future terminal status has to be added deliberately.) Never an end-to-end test
+	# organization (`e2e/conftest.py` names every one it creates `e2e-…`; a seeded test org must
+	# not be the reason a real product profile looks "in use", or a real customer-impact refusal
+	# fire over a fixture). Read-only, across schemas, as the box's own superuser — there is no
+	# foreign key between the two, only this join.
+	activations_rc=0
+	activated_keys=$(docker compose -f compose.prod.yml --env-file .env exec -T postgres \
+		psql -U opsgrids -d opsgrids -Atc "select distinct a.product_key from product.activations a where a.status in ('trial','active','suspended') and not exists (select 1 from account.organizations o where o.id = a.organization_id and o.slug like 'e2e-%')" 2>/dev/null) || activations_rc=$?
+	if [ "$activations_rc" -ne 0 ]; then
+		# H3: a query failure is not evidence of zero activations — it is evidence of nothing at
+		# all, and must never be read as "safe to turn this profile off". Skipped with a warning,
+		# not silently treated as an empty result.
+		echo "  warn  could not read product.activations (psql exit $activations_rc): the activation advisory is skipped this deploy — this is NOT the same as zero activations" >&2
+	else
+		# shellcheck disable=SC2086 # word-splitting activated_keys (one product key per line) on purpose
+		activated_list=$(activated_profiles $activated_keys)
+		activated_set=" $(echo "$activated_list" | tr '\n' ' ') "
+
+		unserved_customers=""
+		for profile in $activated_list; do
+			case "$enabled" in
+			*",$profile,"*) ;;
+			*) unserved_customers="$unserved_customers $profile" ;;
+			esac
+		done
+		if [ -z "$unserved_customers" ]; then
+			ok "every profile with a real activation is enabled"
+		else
+			bad "product(s) with active organizations have no service running — customers would lose access: profile(s)$unserved_customers. Add to COMPOSE_PROFILES/EDGE_PROFILES; do not remove a profile with a real activation."
+		fi
+
+		unused_and_unsold=""
+		for profile in $(echo "$declared_profiles" | tr ',' ' '); do
+			case "$activated_set" in
+			*" $profile "*) continue ;; # has at least one activation — not the same signal
+			esac
+			key=$(key_for_profile "$profile")
+			[ -n "$key" ] || continue
+			case "$available_set" in
+			*" $key "*) continue ;; # still commercially listed, just no takers yet
+			esac
+			unused_and_unsold="$unused_and_unsold $profile"
+		done
+		if [ -n "$unused_and_unsold" ]; then
+			echo "  info  profile(s) enabled with zero activations and not sold in the catalogue:$unused_and_unsold — costing a container group for nothing; safe to consider trimming (never forced)." >&2
+		fi
+	fi
 else
-	echo "  warn  Postgres not running yet: the catalogue/profile agreement check is skipped on this deploy" >&2
+	echo "  warn  Postgres not running yet: the catalogue/profile agreement and activation checks are skipped on this deploy" >&2
 fi
 
 # ---------------------------------------------------------------- the web root

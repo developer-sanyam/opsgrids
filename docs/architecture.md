@@ -349,7 +349,16 @@ main → (api | consumers | relay | cron) → services → selectors → (schema
 Nothing imports upward, and no cycles. `make boundaries` fails the build otherwise.
 
 **Three entrypoints** per service: `bin/api` (uvicorn), `bin/worker` (consumers), `bin/cron`
-(scheduled sweeps). Each runs as its own process, so a slow broker cannot block an API request.
+(scheduled sweeps). Each is its own process, so a slow broker cannot block an API request.
+
+**Where the edge runs each one is a memory decision, not a rule** (ADR-0013's memory-headroom
+addendum): on the one-box edge a process costs ~90-100 MiB whatever it does, so `subscription`,
+`approval` and `notification` fold their `bin/cron` sweep into their `bin/worker`, and
+`operations`, `storefront` and `document` — which have no worker — run theirs as a supervised
+background task **inside their API process** (`Settings.run_sweeps_in_api`, off by default and
+on in the edge compose file; on its own one-connection database engine so it cannot take a
+request's connection). `bin/cron` still runs any of them standalone, and is how an operator
+runs one by hand.
 
 Every service also carries `OutboxEvent`, `ProcessedEvent` and `AuditLog` on its own schema.
 

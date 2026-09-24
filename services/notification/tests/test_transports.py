@@ -10,6 +10,7 @@ transport, so the status-code mapping is tested without a network.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import smtplib
 from typing import ClassVar
@@ -450,3 +451,72 @@ async def test_send_batch_records_a_refusal_without_raising() -> None:
     failing = transports.RecordingTransport(fail_with=transports.TransportRefused("550 no"))
     results = await transports.send_batch(failing, [_message("a@b.com")])
     assert isinstance(results[0], transports.TransportRefused)
+
+
+# ------------------------------------------------------- SmtpTransport's executor (M7)
+
+
+async def test_send_many_uses_the_process_default_executor_when_none_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The platform's own shared transport (built once in `app/worker.py`, used by the
+    dispatcher for a single password-reset or notification send) must land on the default
+    pool — passing no executor at all is what makes that true."""
+    monkeypatch.setattr(smtplib, "SMTP", _FakeSmtp)
+    transport = _smtp_transport()
+    captured: dict[str, object] = {}
+
+    class _RecordingLoop:
+        async def run_in_executor(self, executor: object, func: object, *args: object) -> object:
+            captured["executor"] = executor
+            return func(*args)  # type: ignore[operator]
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _RecordingLoop())
+    await transport.send_many([_message("a@b.com")])
+    assert captured["executor"] is None
+
+
+async def test_send_many_uses_the_executor_it_was_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A campaign's transport (`app/services.py:campaign_transport`) is built with
+    `CAMPAIGN_SMTP_EXECUTOR` — this is the seam that proves the value actually reaches the
+    blocking call, not just the constructor."""
+    monkeypatch.setattr(smtplib, "SMTP", _FakeSmtp)
+    sentinel_executor = object()
+    transport = transports.SmtpTransport(
+        host="smtp.example.com",
+        port=587,
+        username="u",
+        password="p",
+        use_tls=True,
+        timeout=1.0,
+        from_address="from@example.com",
+        executor=sentinel_executor,  # type: ignore[arg-type]
+    )
+    captured: dict[str, object] = {}
+
+    class _RecordingLoop:
+        async def run_in_executor(self, executor: object, func: object, *args: object) -> object:
+            captured["executor"] = executor
+            return func(*args)  # type: ignore[operator]
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _RecordingLoop())
+    await transport.send_many([_message("a@b.com")])
+    assert captured["executor"] is sentinel_executor
+
+
+def test_campaign_smtp_executor_is_a_small_dedicated_pool() -> None:
+    """A big campaign must never be able to hold every thread the process's default pool has —
+    see `transports.CAMPAIGN_SMTP_EXECUTOR`'s own docstring for why 2, specifically."""
+    assert transports.CAMPAIGN_SMTP_EXECUTOR._max_workers == 2
+
+
+def test_campaign_transport_uses_the_dedicated_executor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`services.campaign_transport` — the campaign driver's own path — must pass
+    `CAMPAIGN_SMTP_EXECUTOR`; `services.send_test`'s interactive path must not, so a running
+    campaign can never make an operator's "send a test" button hang behind it."""
+    import inspect
+
+    from app import services
+
+    source = inspect.getsource(services.campaign_transport)
+    assert "CAMPAIGN_SMTP_EXECUTOR" in source

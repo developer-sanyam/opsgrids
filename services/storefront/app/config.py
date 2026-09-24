@@ -118,6 +118,12 @@ class Settings(ServiceSettings):
     #: tick unbounded (ADR-0012 §6). At ≤50 merchants platform-wide this is generous headroom,
     #: not a real ceiling.
     domain_sweep_batch_size: int = 20
+    #: Runs the custom-domain sweep as a supervised background task inside the API process
+    #: itself instead of `storefront-cron`'s own container (the memory-headroom slice's fix
+    #: round 2 — see `operations.app.config.Settings.run_sweeps_in_api`'s own comment for the
+    #: full argument). Off by default everywhere except the edge box's own `.env`; `bin/cron`
+    #: still runs the sweep standalone for local debugging either way.
+    run_sweeps_in_api: bool = False
 
 
 def assert_directory_role_configured(cfg: Settings) -> None:

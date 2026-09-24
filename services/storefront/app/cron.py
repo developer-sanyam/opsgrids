@@ -74,6 +74,7 @@ from platform_core.db import (
     session_scope,
 )
 from platform_core.logging import get_logger
+from platform_core.supervise import register_sweep_health
 
 log = get_logger("storefront.cron")
 
@@ -123,18 +124,24 @@ class DomainSweep:
         probes: ProbeSet | None = None,
         batch_size: int = 20,
         poll_interval: float = 60.0,
+        max_backoff: float = 3600.0,
     ) -> None:
         self._discovery_factory = discovery_factory
         self._work_scope = work_scope
         self._probes = probes or default_probe_set()
         self._batch_size = batch_size
         self._poll_interval = poll_interval
+        self._max_backoff = max_backoff
         # An `Event` rather than a plain flag: `run()`'s sleep between ticks is a `wait()` on
         # this, so `stop()` interrupts it immediately instead of waiting out the rest of a
         # (possibly 60 s) poll interval before the loop condition is re-checked — the "clean
         # SIGTERM shutdown" the loop exists to have, not merely a flag nothing ever reads
         # promptly.
         self._stop_event = asyncio.Event()
+        #: The three numbers `/metrics` exposes for an in-API sweep (`sweep_alive`,
+        #: `sweep_consecutive_failures`, `sweep_last_success_timestamp_seconds`) — see
+        #: `platform_core.supervise.SweepHealth`. Named after the log-event prefix.
+        self.health = register_sweep_health("storefront.domain.sweep")
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -145,8 +152,36 @@ class DomainSweep:
             poll_interval=self._poll_interval,
             batch_size=self._batch_size,
         )
+        # Whole-tick guard (the memory-headroom slice's fix round 2): `tick()`'s own per-
+        # organization loop already isolates one organization's failure from the rest of its
+        # pass (the module docstring's "a check that cannot run never takes a domain off the
+        # air"), but discovery itself — the `SELECT DISTINCT organization_id` above it — was
+        # never guarded, and this sweep now also runs as a supervised background task inside
+        # the `storefront` API process itself, not only its own `storefront-cron` container: an
+        # unguarded discovery failure here would take the storefront API down with it, not just
+        # this sweep.
+        # Starts at `min(poll_interval, max_backoff)`, not the bare poll interval — the same fix
+        # `GuardedSweep` got: a poll interval above the cap must not make the *first* retry wait
+        # the whole interval.
+        initial_backoff = min(self._poll_interval, self._max_backoff)
+        backoff = initial_backoff
         while not self._stop_event.is_set():
-            report = await self.tick()
+            try:
+                report = await self.tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.health.record_failure()
+                log.exception(
+                    "storefront.domain.sweep.tick_failed",
+                    consecutive_failures=self.health.consecutive_failures,
+                )
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=backoff)
+                backoff = min(backoff * 2, self._max_backoff)
+                continue
+            backoff = initial_backoff
+            self.health.record_success()
             if report.acted or report.failed:
                 log.info(
                     "storefront.domain.sweep.pass",

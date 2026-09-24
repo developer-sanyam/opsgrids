@@ -18,6 +18,7 @@ import base64
 import hashlib
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from html import escape as html_escape
@@ -58,6 +59,7 @@ from app.models import (
 from app.models import InboundMessage as InboundMessageRow
 from app.targets import TargetResolver
 from app.transports import (
+    CAMPAIGN_SMTP_EXECUTOR,
     LogTransport,
     Outgoing,
     Receipt,
@@ -2615,6 +2617,7 @@ async def _transport_for_connection(
     *,
     from_address: str,
     resolver: dns_check.Resolver | None = None,
+    executor: ThreadPoolExecutor | None = None,
 ) -> Transport:
     """The transport this connection describes, credential unsealed for the send.
 
@@ -2631,6 +2634,10 @@ async def _transport_for_connection(
     returned rather than the name — a third lookup, made by the socket layer instead of by this
     guard, is exactly the gap a rebinding attack needs. `google` and `microsoft` connections
     carry a fixed, trusted host and skip both checks, the same as at creation.
+
+    `executor` is `None` (the process's default pool) unless the caller passes
+    `transports.CAMPAIGN_SMTP_EXECUTOR` — see that constant's own docstring for why a campaign's
+    sends must never share a pool with a single, latency-sensitive send like a password reset.
     """
     cfg = settings()
     dial_host = connection.host
@@ -2658,6 +2665,7 @@ async def _transport_for_connection(
         use_tls=connection.use_tls,
         timeout=cfg.smtp_timeout_seconds,
         from_address=from_address,
+        executor=executor,
     )
 
 
@@ -3959,10 +3967,18 @@ async def campaign_transport(connection: EmailConnection, sender: Sender) -> Tra
     which is the platform's "send nothing real" switch and is honoured here as everywhere: a
     staging deploy must not mail real audiences because a customer's credential happened to be
     in its database.
+
+    Sends on `transports.CAMPAIGN_SMTP_EXECUTOR`, not the process's default pool — see that
+    constant's own docstring. This is the only caller of `_transport_for_connection` that passes
+    it: `send_test`'s own call (below) is a single, interactive, low-volume send and stays on the
+    default pool on purpose, so a large campaign already in flight can never make an operator's
+    "send a test" button hang behind it.
     """
     if settings().email_transport == "log":
         return LogTransport("email")
-    return await _transport_for_connection(connection, from_address=sender.address)
+    return await _transport_for_connection(
+        connection, from_address=sender.address, executor=CAMPAIGN_SMTP_EXECUTOR
+    )
 
 
 @dataclass(frozen=True, slots=True)

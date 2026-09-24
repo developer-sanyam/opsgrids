@@ -35,6 +35,7 @@ from platform_core.db import (
     session_scope,
 )
 from platform_core.logging import get_logger
+from platform_core.supervise import GuardedSweep
 
 log = get_logger("operations.cron")
 
@@ -62,9 +63,20 @@ class SweepReport:
     failed: int = 0
 
 
-class ReconcileSweep:
+class ReconcileSweep(GuardedSweep):
     """One pass reconciles every organization that holds stock. Injected session factories, so a
-    test drives the real code against real PostgreSQL with nothing patched."""
+    test drives the real code against real PostgreSQL with nothing patched.
+
+    `run()` is `GuardedSweep`'s own (the memory-headroom slice's fix round 2): this sweep now
+    also runs as a supervised background task inside the `operations` API process itself
+    (`app/main.py`, gated on `Settings.run_sweeps_in_api`), where an unguarded discovery failure
+    propagating out of the old inline loop below would have taken the customer-facing API down
+    with it — not just this sweep. `reconcile_organization` is read-mostly and append-only
+    (findings, never a repair), so two overlapping passes — the standalone `bin/cron` and the
+    in-API copy, or two concurrent in-API replicas — cost at most a duplicate finding row, never
+    a wrong one; the edge itself runs exactly one `operations` replica, so that never happens
+    there in practice.
+    """
 
     def __init__(
         self,
@@ -73,19 +85,13 @@ class ReconcileSweep:
         work_scope: WorkScope,
         interval: float = DEFAULT_INTERVAL_SECONDS,
     ) -> None:
+        super().__init__(poll_interval=interval)
         self._discovery_factory = discovery_factory
         self._work_scope = work_scope
-        self._interval = interval
-        self._stop = False
 
-    def stop(self) -> None:
-        self._stop = True
-
-    async def run(self) -> None:
-        log.info("inventory.reconcile.started", interval=self._interval)
-        while not self._stop:
-            await self.tick()
-            await asyncio.sleep(self._interval)
+    @property
+    def _log_name(self) -> str:
+        return "inventory.reconcile"
 
     async def tick(self) -> SweepReport:
         report = SweepReport(run_id=uuid.uuid4())

@@ -15,6 +15,7 @@ from sqlalchemy import Column, DateTime, Integer, MetaData, Table
 
 from platform_core.app import create_app
 from platform_core.config import ServiceSettings
+from platform_core.supervise import register_sweep_health, reset_sweep_health
 
 _OUTBOX_TABLE = Table(
     "outbox",
@@ -87,6 +88,15 @@ def _app(**kwargs: Any) -> FastAPI:
     return create_app(_Settings(), title="probe", **kwargs)
 
 
+@pytest.fixture(autouse=True)
+def _clean_sweep_registry():  # type: ignore[no-untyped-def]
+    """Sweeps register process-wide; a sweep constructed by another test must not leak into a
+    `/metrics` body compared here."""
+    reset_sweep_health()
+    yield
+    reset_sweep_health()
+
+
 class TestMetricsRoute:
     async def test_without_a_database_reports_nothing(
         self, monkeypatch: pytest.MonkeyPatch
@@ -129,6 +139,33 @@ class TestMetricsRoute:
 
         text = await _get(_app(), "/metrics")
         assert "# TYPE db_pool_in_use gauge" in text
+
+    async def test_an_in_process_sweep_reports_its_three_gauges(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Round 3, MEDIUM: an in-API sweep that died or kept failing was visible only in logs
+        while the API answered healthily. Its state is on `/metrics` now, for ops-monitor to
+        page on."""
+        monkeypatch.setattr("platform_core.app.init_engine", lambda *a, **k: None)
+        monkeypatch.setattr("platform_core.app.assert_app_role", _noop)
+        monkeypatch.setattr("platform_core.app.get_engine", lambda: _FakeEngine(in_use=0))
+        health = register_sweep_health("inventory.reconcile")
+        health.alive = True
+        health.record_failure()
+        health.record_failure()
+
+        text = await _get(_app(), "/metrics")
+        assert 'sweep_alive{sweep="inventory.reconcile"} 1.0' in text
+        assert 'sweep_consecutive_failures{sweep="inventory.reconcile"} 2.0' in text
+        assert 'sweep_last_success_timestamp_seconds{sweep="inventory.reconcile"} 0.0' in text
+        assert "# TYPE sweep_alive gauge" in text
+        assert "# HELP sweep_consecutive_failures" in text
+
+    async def test_an_api_with_no_sweep_exposes_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("platform_core.app.init_engine", lambda *a, **k: None)
+        monkeypatch.setattr("platform_core.app.assert_app_role", _noop)
+        monkeypatch.setattr("platform_core.app.get_engine", lambda: _FakeEngine(in_use=0))
+        assert "sweep_" not in await _get(_app(), "/metrics")
 
 
 async def _noop(*args: Any, **kwargs: Any) -> None:
