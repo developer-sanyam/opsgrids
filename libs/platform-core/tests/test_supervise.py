@@ -8,8 +8,10 @@ whose `tick()` is scripted, the same "fake the loop, drive the real supervision 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 import structlog
@@ -23,6 +25,7 @@ from platform_core.supervise import (
     register_sweep_health,
     reset_sweep_health,
     run_supervised,
+    run_supervised_forever,
     start_background_sweep,
     stop_background_sweep,
     sweep_health_samples,
@@ -459,3 +462,104 @@ class TestBackgroundSweepIsLoudWhenItDies:
         task = start_background_sweep(dies(), name="dead.sweep")
         await asyncio.wait({task})
         await stop_background_sweep(task)  # the lifespan's shutdown must not fail with it
+
+
+class TestRunSupervisedForever:
+    """The worker-folding follow-up's own primitive: what a folded worker's group is wrapped in
+    before it is handed to `start_background_sweep`, so a crashed loop restarts with backoff
+    instead of ending the group (and, through `start_background_sweep`'s own contract, silently
+    staying dead) for good."""
+
+    async def test_a_crashed_group_is_rebuilt_and_restarted_after_a_backoff(self) -> None:
+        attempts: list[int] = []
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        restarted_at: float | None = None
+
+        def build() -> dict[str, Any]:
+            attempt = len(attempts)
+            attempts.append(attempt)
+
+            async def one_loop() -> None:
+                nonlocal restarted_at
+                if attempt == 0:
+                    raise RuntimeError("boom")
+                restarted_at = loop.time()
+                await asyncio.sleep(60)
+
+            return {"loop": one_loop()}
+
+        backoff = 0.05
+        task = asyncio.ensure_future(
+            run_supervised_forever(build, name="probe.group", initial_backoff=backoff)
+        )
+        for _ in range(200):
+            if len(attempts) >= 2:
+                break
+            await asyncio.sleep(0.01)
+
+        assert len(attempts) == 2, "the group must be rebuilt (a fresh coroutine) on restart"
+        assert restarted_at is not None
+        # Real time, not exact: the point is that the restart waited roughly `initial_backoff`
+        # rather than looping immediately (a crash-loop that would starve the event loop and spam
+        # logs), not that it waited exactly that long.
+        assert restarted_at - started_at >= backoff * 0.5
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    async def test_a_returned_loop_also_triggers_a_restart_not_just_a_raised_one(self) -> None:
+        attempts: list[int] = []
+
+        def build() -> dict[str, Any]:
+            attempt = len(attempts)
+            attempts.append(attempt)
+
+            async def loop() -> None:
+                if attempt == 0:
+                    return  # LoopExited, not an exception — must restart all the same
+                await asyncio.sleep(60)
+
+            return {"loop": loop()}
+
+        task = asyncio.ensure_future(
+            run_supervised_forever(build, name="probe.group", initial_backoff=0.01)
+        )
+        for _ in range(200):
+            if len(attempts) >= 2:
+                break
+            await asyncio.sleep(0.01)
+        assert len(attempts) == 2
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    async def test_cancellation_of_the_supervisor_itself_is_never_swallowed(self) -> None:
+        async def loop() -> None:
+            await asyncio.sleep(60)
+
+        task = asyncio.ensure_future(
+            run_supervised_forever(lambda: {"loop": loop()}, name="probe.group")
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    async def test_a_healthy_group_never_restarts(self) -> None:
+        attempts: list[int] = []
+
+        def build() -> dict[str, Any]:
+            attempts.append(len(attempts))
+
+            async def loop() -> None:
+                await asyncio.sleep(60)
+
+            return {"loop": loop()}
+
+        task = asyncio.ensure_future(run_supervised_forever(build, name="probe.group"))
+        await asyncio.sleep(0.05)
+        assert attempts == [0]
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task

@@ -1043,8 +1043,13 @@ services:
   # EDGE_PROFILES (RUNBOOK, "Turning on the admin console"). Reaches catalog, subscription and
   # billing over their internal APIs, and account-service's own staff-only directory route
   # (never a gateway) — the same service-to-service shape every internal caller on this box uses.
+  #
+  # Runs its own event consumer (app/consumers.py, queue `console.events`) as a supervised
+  # background task since the worker-folding follow-up to the memory-headroom slice folded
+  # `console-worker` into it — RUN_CONSUMERS_IN_API (on by default, `x-service-env` above).
   console:
     <<: *service-common
+    stop_grace_period: 30s
     profiles: ['admin']
     image: opsgrids-edge/console
     build:
@@ -1064,9 +1069,13 @@ services:
   # (app/consumers.py, queue `console.events`). No `console-relay`: console currently publishes
   # nothing of its own (app/relay.py is kept from the scaffold for `/health/outbox` parity only),
   # so a relay here would have an empty table to drain forever.
+  #
+  # Off by default — see `account-worker`'s own comment. `profiles: ['split-workers']` replaces
+  # `['admin']` here: the consumer now runs inside `console`'s own API process
+  # (`services/console/app/main.py`); this container is the `split-workers` rollback.
   console-worker:
     <<: *background
-    profiles: ['admin']
+    profiles: ['split-workers']
     image: opsgrids-edge/console
     command: ['./bin/worker']
     environment:
@@ -1528,9 +1537,18 @@ services:
   # for a second idle container doing work this light. Named literally `scheduler` — matching the
   # schema name — so `remote.sh`'s per-service migration gating (`configured_services`) finds it
   # the same way it finds every other service that owns a schema.
+  #
+  # Also behind `split-workers`: `finance-worker` (below) depends on this service existing, and
+  # that container now runs behind `split-workers` rather than `finance` (the worker-folding
+  # follow-up to the memory-headroom slice). Without this, `docker compose config` refuses the
+  # whole file the moment `split-workers` is the only profile active — a service cannot depend on
+  # one no active profile defines — even though the two are only ever turned on together in
+  # practice (the rollback for a box that already sells `finance`). Turning on `split-workers`
+  # alone, with no product profile active, now starts `scheduler` too — harmlessly idle, the same
+  # trade every other `*-worker` container behind this profile already makes.
   scheduler:
     <<: *background
-    profiles: ['finance']
+    profiles: ['finance', 'split-workers']
     image: opsgrids-edge/scheduler
     build:
       context: ../..

@@ -1033,18 +1033,21 @@ that box.
 
 4. **`EDGE_BUDGET_ACCEPTED_MB`.** Run `preflight.sh` after steps 2-3 (before `deploy`, which runs
    it for you anyway) and read what it prints for the post-deploy total. The admin profile itself
-   prices at **286 MB** (`memory_budget_totals.py memory-budget.json --profiles admin` — two `api`
-   containers at 98 MB and one `background` at 90 MB, `kinds.api`/`kinds.background`'s own
-   figures): added to whatever this box already runs, e.g. `inventory` alone
-   (2315 MB → **2601 MB**, 67.4% of the documented 3862 MB box — comfortably under the 85% soft
-   line) or every sellable profile at once
-   (4581 MB, per this file's own "what this release costs" table → **4867 MB**, 126.0% —
-   **over the 4827 MB / 125% absolute ceiling preflight enforces, which no
-   `EDGE_BUDGET_ACCEPTED_MB` can cover**). Which of those you are near depends entirely on what
-   this box already sells — read the number `preflight.sh` prints for *your* `COMPOSE_PROFILES`,
-   do not assume either figure above, and if it refuses outright at the absolute ceiling the fix
-   is de-listing or consolidating a product first, not raising the accepted number past what it
-   will let you.
+   now prices at **197 MB** (`memory_budget_totals.py memory-budget.json --profiles admin` minus
+   the always-on core total below — down from 286 MB: `console` folds `console-worker`'s one
+   event consumer in the same way the worker-folding follow-up folded ten product services' own
+   workers in, `RUN_CONSUMERS_IN_API`, so it is one `api_with_worker` container (99 MB) plus
+   `admin-gateway`'s plain `api` (98 MB), not two `api` containers and a separate `background`
+   one): added to whatever this box already runs, e.g. `inventory` alone
+   (1870 MB with the worker fold applied → **2067 MB**, 53.5% of the documented 3862 MB box —
+   comfortably under the 85% soft line) or every sellable profile at once
+   (3691 MB, per this file's own "what this release costs" table → **3888 MB**, 100.7% — just
+   over the 100% hard line, and comfortably under the 4827 MB / 125% absolute ceiling preflight
+   enforces: `EDGE_BUDGET_ACCEPTED_MB=3888` covers it, `warn`ing rather than refusing). Which of
+   those you are near depends entirely on what this box already sells — read the number
+   `preflight.sh` prints for *your* `COMPOSE_PROFILES`, do not assume either figure above, and if
+   it refuses outright at the absolute ceiling the fix is de-listing or consolidating a product
+   first, not raising the accepted number past what it will let you.
 
 5. **Deploy.**
    ```bash

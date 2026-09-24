@@ -52,6 +52,18 @@ def _clean_sweep_registry():  # type: ignore[no-untyped-def]
     reset_sweep_health()
 
 
+@pytest.fixture(autouse=True)
+def _restore_session_scope():  # type: ignore[no-untyped-def]
+    """`use_session_scope` mutates `app.consumers`' module-level `_session_scope` — process-wide,
+    not test-scoped. Left pointed at a fake `("bulkhead", engine)` tuple after this test, the next
+    test in the same process (any test, in any file, that happens to run later — pytest collects
+    alphabetically, so a real integration test can be the one that pays for this) would call it as
+    a callable and get `TypeError: 'tuple' object is not callable` instead of a session, for a
+    reason with nothing to do with what it was testing. Restored here, every time."""
+    yield
+    main.consumers.use_session_scope(main.consumers._default_session_scope)
+
+
 @pytest.fixture
 def engines(monkeypatch: pytest.MonkeyPatch) -> list[_FakeEngine]:
     created: list[_FakeEngine] = []
