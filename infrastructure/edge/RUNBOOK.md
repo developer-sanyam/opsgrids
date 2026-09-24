@@ -420,6 +420,21 @@ If step 2 returns 502, `minio` did not start — check `COMPOSE_PROFILES` and
 `make edge-status`). If step 1 returns 403 for an organization that existed before this deploy,
 the permission reconcile (step 5 above) has not run yet.
 
+**MinIO's memory (2026-09-25).** If `minio` is 502ing and `minio-init` is looping on "connection
+refused", check for an OOM crash loop before anything else: `docker inspect
+opsgrids-edge-minio-1 --format '{{.State.OOMKilled}} {{.RestartCount}}'` and `docker events
+--filter container=opsgrids-edge-minio-1` (look for `oom` → `die 137` → `start` on repeat — this
+is what failed `remote.sh health` in production on 2026-09-25, about once a minute, at the old
+128 MiB `mem_limit`). The Go runtime does not read the cgroup limit on its own, so an idle bucket
+can climb to within a few MiB of `mem_limit` and get OOM-killed before its own GC ever runs. The
+fix already shipped: `mem_limit: 256m` plus `GOMEMLIMIT=192MiB` (compose.prod.yml) so the Go GC
+targets a ceiling below the cgroup limit instead of the OOM killer picking the victim — see
+`memory-budget.json`'s `datastores.minio.source` for the production evidence and the local
+repro/proof numbers. If it is still OOM-killing at 256 MiB, the bucket has outgrown this box's
+fuse (a lot more objects, or listing/console traffic this profile was never priced for) — raise
+`mem_limit` and `GOMEMLIMIT` together (keep GOMEMLIMIT roughly 64 MiB under `mem_limit`), re-price
+`datastores.minio` in `memory-budget.json`, and re-run `tests/infra` before deploying the change.
+
 #### The purge sweep (ADR-0009 §8, and its 2026-09-23 addendum's §9)
 
 **`document-cron` no longer exists as a container (the memory-headroom slice's fix round 2,
@@ -1041,9 +1056,9 @@ that box.
    one): added to whatever this box already runs, e.g. `inventory` alone
    (1870 MB with the worker fold applied → **2067 MB**, 53.5% of the documented 3862 MB box —
    comfortably under the 85% soft line) or every sellable profile at once
-   (3691 MB, per this file's own "what this release costs" table → **3888 MB**, 100.7% — just
+   (3747 MB, per this file's own "what this release costs" table → **3944 MB**, 102.1% — just
    over the 100% hard line, and comfortably under the 4827 MB / 125% absolute ceiling preflight
-   enforces: `EDGE_BUDGET_ACCEPTED_MB=3888` covers it, `warn`ing rather than refusing). Which of
+   enforces: `EDGE_BUDGET_ACCEPTED_MB=3944` covers it, `warn`ing rather than refusing). Which of
    those you are near depends entirely on what this box already sells — read the number
    `preflight.sh` prints for *your* `COMPOSE_PROFILES`, do not assume either figure above, and if
    it refuses outright at the absolute ceiling the fix is de-listing or consolidating a product
@@ -1494,7 +1509,7 @@ vmstat 5 3        # the si / so columns: swap-in / swap-out per second
 1. **Scale the release.** The real sum is the measured cost of whatever `preflight.sh` prices for
    the box's own declared profiles right now — read it off `make edge-preflight`'s own output, not
    off any number printed in this file, which is a worked example for the ten-profile-plus-`admin`
-   case (3888 MB) as of this commit, not a live figure. If the box's real measured sum is higher
+   case (3944 MB) as of this commit, not a live figure. If the box's real measured sum is higher
    than what preflight prices, the release is about **preflight's figure x measured / preflight's
    figure** — the arm64 prices this repository ships are the best available, not the box's own.
 2. **If that scaled figure is above 4827 MB (the 125% cap), do not write a ceiling.** Preflight
@@ -1516,17 +1531,17 @@ hard line 3862, cap 4827):
 | profiles enabled | this profile adds | cumulative total | of MemTotal |
 |---|---|---|---|
 | core (auth … ops-monitor, no profile) | — | 1772 | 45.9% |
-| + storefront | 256 | 2028 | 52.5% |
-| + inventory | 98 | 2126 | 55.1% |
-| + hrms | 395 | 2521 | 65.3% |
-| + crm | 295 | 2816 | 72.9% |
-| + pulseboard | 294 | 3110 | 80.5% |
-| + projects | 98 | 3208 | 83.1% |
-| + support | 98 | 3306 | 85.6% |
-| + marketing | 98 | 3404 | 88.1% |
-| + finance | 189 | 3593 | 93.0% |
-| **+ itsm — all ten, what this box declares** | 98 | **3691** | **95.6% — under the hard line, still over the soft one** |
-| + every `planned` backlog item (+956) | | 4647 | 120.3% |
+| + storefront | 312 | 2084 | 54.0% |
+| + inventory | 98 | 2182 | 56.5% |
+| + hrms | 395 | 2577 | 66.7% |
+| + crm | 295 | 2872 | 74.4% |
+| + pulseboard | 294 | 3166 | 82.0% |
+| + projects | 98 | 3264 | 84.5% |
+| + support | 98 | 3362 | 87.1% |
+| + marketing | 98 | 3460 | 89.6% |
+| + finance | 189 | 3649 | 94.5% |
+| **+ itsm — all ten, what this box declares** | 98 | **3747** | **97.0% — under the hard line, still over the soft one** |
+| + every `planned` backlog item (+956) | | 4703 | 121.8% |
 
 **This is the worker-folding follow-up's own effect, on top of the memory-headroom slice's
 release** (which priced the same ten profiles at 4581 MB / 118.6% — over the hard line, 719 MB
@@ -1539,8 +1554,14 @@ profile as the rollback — see "Rolling back the worker fold", below) removes t
 `kinds.background`'s 90 MB (900 MB) and adds back only ten containers' worth of
 `kinds.api_with_worker` minus `kinds.api` (99 - 98 = 1 MB each, 10 MB) — **net -890 MB, from
 4581 to 3691, 118.6% to 95.6%.** The ten-profile scenario no longer needs an owner decision on
-its own (see below); it is still tight, at 95.6%, which is honest for "sell everything this
-platform can sell on this box," not a bug.
+its own (see below); it is still tight, which is honest for "sell everything this platform can
+sell on this box," not a bug.
+
+**The minio-memory fix (2026-09-25) adds +56 MB on top of that**, bringing the real ten-profile
+total to **3747 MB / 97.0%** (table above). minio's own price moved from a never-measured 60 MB
+guess to 116 MB, the real RSS production showed right before its 128 MiB `mem_limit` OOM-killed
+it about once a minute — see "MinIO's memory (2026-09-25)" below and `memory-budget.json`'s own
+`datastores.minio.source`. Still comfortably under the 100% hard line and the 125% / 4827 MB cap.
 
 Where the box is today, priced the ten profiles the way `preflight.sh` actually prices a running
 box (`post_deploy_compute`, not the projection table above) will read differently from either
@@ -1550,29 +1571,29 @@ figure until this release is actually deployed — read `make edge-status` and t
 ### The owner decision: `EDGE_BUDGET_ACCEPTED_MB` (B2, review round 2; restated round 3; the
 worker-folding follow-up moved the ten-profile figure under the hard line, 2026-09-24)
 
-**The ten profiles alone no longer need a ceiling.** At 3691 MB / 95.6% they are under the 100%
+**The ten profiles alone no longer need a ceiling.** At 3747 MB / 97.0% they are under the 100%
 hard line (though still over the 85% soft one — `preflight` warns, and proceeds, with no
 `EDGE_BUDGET_ACCEPTED_MB` set at all). If the owner wants an explicit ceiling anyway, silencing
 the warn rather than reading past it on every deploy, the ten-profile figure alone is
-`EDGE_BUDGET_ACCEPTED_MB=3691` — but nothing requires it now. A ceiling is only a live question
+`EDGE_BUDGET_ACCEPTED_MB=3747` — but nothing requires it now. A ceiling is only a live question
 again once something is added on top — the `admin` profile (admin-gateway + console, console-worker folded into console
 the same way this release folds the ten product workers in: +98 + 99 = 197 MB) brings the total to
-**3888 MB / 100.7%** — just over the hard line — or once enough of the `planned` backlog above
+**3944 MB / 102.1%** — just over the hard line — or once enough of the `planned` backlog above
 lands. Nothing in a repository can shrink either scenario to fit on its own; what can change is
 which of three things the owner chooses:
 
 1. **Resize the VM** — the only option that adds headroom rather than redistributing it. The
    memory erratum (ADR-0013) recorded that the owner would not resize this box; worth asking again
-   now that ten profiles plus `admin` is only 26 MB over the hard line (100.7%) and comfortably
+   now that ten profiles plus `admin` is only 82 MB over the hard line (102.1%) and comfortably
    under the 125% cap (4827 MB) either way. An 8 GB VM (~7.7 GB MemTotal) puts the ten profiles
-   near 48% and the whole planned backlog near 82%.
+   near 49% and the whole planned backlog near 82%.
 2. **De-list products** — drop their profiles from `COMPOSE_PROFILES`, *after* confirming with the
    catalogue that no organization has a live activation of them (preflight refuses otherwise: a
    paying customer would lose their product). The "adds" column above is what each one frees.
 3. **Accept a deliberate overcommit** — set `EDGE_BUDGET_ACCEPTED_MB` in `.env` to the number
    preflight's own projection printed for the deploy actually being made (ten profiles plus
-   `admin`: `EDGE_BUDGET_ACCEPTED_MB=3888`), *after reading it*. Understand what it means: the
-   working set exceeds RAM by a little (26 MB at 100.7%), the kernel decides which pages live in
+   `admin`: `EDGE_BUDGET_ACCEPTED_MB=3944`), *after reading it*. Understand what it means: the
+   working set exceeds RAM by a little (82 MB at 102.1%), the kernel decides which pages live in
    swap, and the box swaps a little more than it otherwise would. A deploy over the hard line then
    warns, loudly, naming the overcommit in MB and to one decimal, instead of refusing; a deploy
    asking for even one MB more than the ceiling still refuses.

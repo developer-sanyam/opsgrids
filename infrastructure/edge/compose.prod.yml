@@ -420,6 +420,14 @@ services:
       # No console in production: nothing here ever needs to browse the bucket by hand, and the
       # console is a second HTTP surface to secure for zero use.
       MINIO_BROWSER: 'off'
+      # 128m OOM-killed this container roughly once a minute in production (2026-09-25): the Go
+      # runtime does not read the cgroup limit on its own and only gives memory back to the OS on
+      # its own schedule, so idle RSS climbed past 116 MiB of a 128 MiB cap within seconds of boot
+      # and the kernel killed it before the GC ever had a reason to run. GOMEMLIMIT is a *soft*
+      # limit Go's GC targets directly (distinct from GOGC, which is a growth-ratio trigger, not a
+      # ceiling) — set below mem_limit with headroom for goroutine stacks and the runtime itself,
+      # it makes the GC do the trimming instead of the OOM killer.
+      GOMEMLIMIT: 192MiB
     command: ['server', '/data']
     volumes:
       - minio_data:/data
@@ -429,9 +437,11 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
-    # A fuse (top-of-file arithmetic): one small bucket, no console, no listing traffic. Capped
-    # well below Postgres's share of this box's 3.8 GB.
-    mem_limit: 128m
+    # Raised from 128m to 256m (2026-09-25): 128m OOM-killed this container about once a minute in
+    # production (RestartCount 13 in ~15 min) — see the RUNBOOK's MinIO/memory section. GOMEMLIMIT
+    # above keeps steady-state RSS well under this ceiling; 256m is the fuse for a spike GOMEMLIMIT
+    # does not fully catch, not the number the process is expected to sit at.
+    mem_limit: 256m
     networks:
       - front
       - back
