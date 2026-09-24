@@ -48,11 +48,35 @@ class Settings(ServiceSettings):
     sso_clock_skew_seconds: int = 60
 
     # --- sessions -----------------------------------------------------------------
-    session_ttl_days: int = 30
+    #: The absolute lifetime of a session (`Session.expires_at`, `start_session`) — not how
+    #: long a *refresh token* lives (`refresh_token_ttl_seconds`, a sliding window that renews
+    #: on every rotation), but the hard ceiling on the session behind it that no amount of
+    #: refreshing may cross (owner decision, 2026-09-24: "signed in for 7 days, then a new
+    #: sign-in", in every app). `issue_for`/`_issue_operator` clamp every refresh token they
+    #: mint to whatever is left of this window, so a refresh late in the 7 days gets a
+    #: correspondingly short-lived successor rather than another full `refresh_token_ttl_
+    #: seconds` — the mechanism that actually makes this a hard cap and not just a longer
+    #: sliding window. Shared by the operator/staff path too (`start_session` is the one
+    #: function every session — tenant, operator, federated — is created through), so this
+    #: change caps staff sessions at 7 days as well, not only tenant ones.
+    session_ttl_days: int = 7
     #: Carries the refresh token: httpOnly, path-scoped to the auth routes, and Secure
     #: outside development. Never readable by JavaScript, which is the whole point.
     refresh_cookie_name: str = "opsgrids_refresh"
     refresh_cookie_domain: str | None = None
+    #: SSO topology addendum (ADR-0003): the refresh cookie is shared by every tab and every
+    #: product SPA open in the browser, but each tab refreshes on its own timer, and two of
+    #: them racing (a proactive refresh in one tab landing mid-flight of a 401 retry in
+    #: another) present the *same* refresh token to the server within milliseconds of each
+    #: other. `rotate_refresh`'s theft response — revoke the whole family — is correct
+    #: against a genuinely stolen token and wrong against this race: it would sign out a
+    #: person for opening the app in two tabs. A short grace window lets a token presented
+    #: again this soon after its own rotation mint a fresh access token instead of being
+    #: treated as reuse (M1 of the 2026-09-24 SSO review: marker-only, access-only — see
+    #: `services.py`); anything older than this still triggers
+    #: the family-wide revocation. 30s comfortably covers a race between two requests in
+    #: flight at once and is far too short to help an attacker who captured the token later.
+    refresh_reuse_grace_seconds: int = 30
 
     # --- MFA ------------------------------------------------------------------------
     #: M4 of the third-round security review: MAJOR 3's tolerant legacy-plaintext read

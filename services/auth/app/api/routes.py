@@ -65,7 +65,12 @@ from platform_core.auth import (
     require_operator,
 )
 from platform_core.db import get_session, get_tenant_session
-from platform_core.errors import NotFoundProblem, UnauthorizedProblem, ValidationProblem
+from platform_core.errors import (
+    ForbiddenProblem,
+    NotFoundProblem,
+    UnauthorizedProblem,
+    ValidationProblem,
+)
 
 router = APIRouter(tags=["auth"])
 wellknown = APIRouter(tags=["discovery"])
@@ -80,6 +85,23 @@ TenantSessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="fu
 #: Any authenticated operator, no role filter — `/auth/operator/me` answers "who am I", which
 #: every operator role may ask.
 OperatorPrincipalDep = Annotated[Principal, Depends(require_operator())]
+
+
+#: Every legitimate caller of `/auth/refresh` and `/auth/logout` — the shared client, same
+#: origin or cross-origin (ADR-0003 addendum) — sends this. A bare cross-site `<form>` POST
+#: cannot: forms carry no custom headers, only whatever the browser adds on its own, so this
+#: is what tells the two apart. SameSite=Lax alone is not enough here, because every
+#: `*.opsgrids.com` host — including a merchant's storefront — is the same *site* as
+#: `app.opsgrids.com`, and Lax still attaches the cookie to a same-site form post.
+CSRF_HEADER_NAME = "x-requested-with"
+CSRF_HEADER_VALUE = "opsgrids"
+
+
+def _assert_not_cross_site(request: Request) -> None:
+    """Refuse a request to a cookie-authenticated route that could not have been made by the
+    shared client — see `CSRF_HEADER_NAME`. Checked before the cookie is even read."""
+    if request.headers.get(CSRF_HEADER_NAME) != CSRF_HEADER_VALUE:
+        raise ForbiddenProblem("This request could not be verified.")
 
 
 def _set_refresh_cookie(response: Response, cfg: Settings, token: str) -> None:
@@ -100,7 +122,7 @@ def _set_refresh_cookie(response: Response, cfg: Settings, token: str) -> None:
     )
 
 
-def _token_out(issued: services.Issued) -> TokenOut:
+def _token_out(issued: services.Issued | services.AccessOnlyIssued) -> TokenOut:
     return TokenOut(
         access_token=issued.access_token,
         expires_in=issued.expires_in,
@@ -245,9 +267,12 @@ async def refresh(
 ) -> TokenOut:
     """Rotate the refresh token and mint a new access token.
 
-    Presenting a token that was already rotated ends the whole family — see
-    `services.rotate_refresh` for why that trade is the right one.
+    Presenting a token that was already rotated ends the whole family, unless it was spent
+    moments ago by rotation rather than theft — see `services.rotate_refresh`. A grace hit
+    answers with an access token only, and sets no cookie: the browser already holds the one
+    the *winning* rotation's response set, from this same host.
     """
+    _assert_not_cross_site(request)
     cfg = settings()
     raw = request.cookies.get(cfg.refresh_cookie_name)
     if not raw:
@@ -260,13 +285,15 @@ async def refresh(
         entitlements=entitlements,
         raw_token=raw,
     )
-    _set_refresh_cookie(response, cfg, issued.refresh_token)
+    if isinstance(issued, services.Issued):
+        _set_refresh_cookie(response, cfg, issued.refresh_token)
     return _token_out(issued)
 
 
 @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT, summary="Sign out")
 async def logout(request: Request, session: SessionDep, pair: KeyDep) -> Response:
     """Idempotent: signing out twice is not an error, and neither is a stale cookie."""
+    _assert_not_cross_site(request)
     cfg = settings()
     raw = request.cookies.get(cfg.refresh_cookie_name)
     if raw:
@@ -561,7 +588,9 @@ async def change_password(
 # returns is only accepted on `admin-gateway`, by audience.
 
 
-def _operator_token_out(issued: services.OperatorIssued) -> OperatorTokenOut:
+def _operator_token_out(
+    issued: services.OperatorIssued | services.OperatorAccessOnlyIssued,
+) -> OperatorTokenOut:
     return OperatorTokenOut(
         access_token=issued.access_token,
         expires_in=issued.expires_in,
@@ -771,12 +800,19 @@ async def reset_operator_staff_mfa(
 async def operator_refresh(
     request: Request, response: Response, session: SessionDep, pair: KeyDep
 ) -> OperatorTokenOut:
+    """`require_admin_hop` already refuses anything that did not arrive through
+    admin-gateway's signed hop, which a forged cross-site request cannot produce — but the
+    same CSRF header every tenant cookie-authenticated route requires is checked here too
+    (MINOR 1 of the 2026-09-24 SSO review), so the two routes stay consistent rather than one
+    silently relying on a defence the other does not also carry."""
+    _assert_not_cross_site(request)
     cfg = settings()
     raw = request.cookies.get(cfg.refresh_cookie_name)
     if not raw:
         raise UnauthorizedProblem("No session to refresh")
     issued = await services.operator_rotate_refresh(session, cfg=cfg, pair=pair, raw_token=raw)
-    _set_refresh_cookie(response, cfg, issued.refresh_token)
+    if isinstance(issued, services.OperatorIssued):
+        _set_refresh_cookie(response, cfg, issued.refresh_token)
     return _operator_token_out(issued)
 
 
@@ -789,6 +825,7 @@ async def operator_refresh(
 async def operator_logout(request: Request, session: SessionDep, pair: KeyDep) -> Response:
     """Idempotent. Shares `services.logout`, which touches only the session and refresh
     tables — no directory, so it ends an operator session as cleanly as a tenant one."""
+    _assert_not_cross_site(request)
     cfg = settings()
     raw = request.cookies.get(cfg.refresh_cookie_name)
     if raw:

@@ -264,3 +264,177 @@ Organization identity reads admit all three roles, because an operator support t
 starts with "what does this account look like" before anyone knows whether it is a billing or a
 catalog question; financial reads (metrics, subscriptions, usage, the credit ledger) and the
 audit trail do not, per the table above.
+
+---
+
+## Addendum 2026-09-24 — single sign-on across the app hosts, without a domain-wide cookie
+
+ADR-0001 gives every product one hostname. Decision 3 of ADR-0000 gives every session a
+short-lived (900s) access token and a long-lived refresh token in an httpOnly cookie
+(`services/auth/app/api/routes.py::_set_refresh_cookie`). Nothing before this addendum connected
+those two facts to what a person actually experiences: the access token expiring every ~15
+minutes signed them out of whatever app they were in, in every open tab, because the shared web
+client (`@opsgrids/client`) never called `/api/v1/auth/refresh` — a 401 went straight to the
+unauthorized handler and the guard's redirect to `/login`. And because each product SPA has its
+own `/login`, a session on one app bought nothing on the next: eleven separate sign-ins for one
+person at one organization.
+
+**1. Silent refresh is the client's job, not a server change.** `@opsgrids/client` now tries
+exactly one single-flight `POST /auth/refresh` on a 401 (via `auth/refresh.ts`), retries the
+original request once, and only signs out if the refresh itself fails. The same function runs
+proactively ~60s ahead of the access token's own `exp` (decoded client-side, `auth/token.ts` —
+never trusted for anything but *when to ask again*) and once on boot when no token is held in
+memory, so a reload or a brand-new tab restores the session instead of bouncing to `/login`. This
+alone fixes the 15-minute sign-out, in every app, because every app already depends on this one
+package.
+
+**2. The refresh cookie stays host-only on `app.opsgrids.com` — deliberately not a
+`.opsgrids.com` cookie.** A domain-wide cookie is the obvious shortcut and the wrong one: the
+same registrable domain also carries every merchant's storefront (`*.stores.opsgrids.com`,
+ADR-0012), and a merchant page is never supposed to be able to read or ride on a platform
+session, including through a stored-XSS path the Caddyfile's own MinIO-serving comments already
+flag as a live concern for this registrable domain. A host-only cookie put down on `app.opsgrids.com`
+never reaches a storefront host at all, regardless of what runs there. The cost is that every
+*other* product SPA cannot refresh same-origin — so:
+
+- Every product SPA except the dashboard and the storefront buyer bundle calls
+  `https://app.opsgrids.com/api/v1/auth/refresh` and `/auth/logout` **cross-origin**
+  (`auth/origin.ts`'s `configureAuthOrigin`, set from `VITE_AUTH_ORIGIN`, baked in at build time
+  by `infrastructure/edge/publish-web.sh` from the box's own `APP_BASE_URL` — the same host,
+  never a second config key that could drift from it). The cookie still rides along: two hosts
+  under `opsgrids.com` are cross-*origin* but same-*site*, and `SameSite=Lax` only withholds a
+  cookie on a genuinely cross-*site* request.
+- A product app's own `/login` route (`RedirectToCentralLogin` in `@opsgrids/client`) sends the
+  browser to `https://app.opsgrids.com/login?next=<its own URL>` instead of rendering a form —
+  sign-in only ever happens on the one host the cookie can be set from.
+- The dashboard's login screen redirects back to `next` only after checking it against
+  `isAllowedRedirectTarget` (`@opsgrids/client`'s `sso/platformHosts.ts`): an absolute `https://`
+  URL, no port, no userinfo, whose host is *exactly* one of the platform's own app hosts. Every
+  other shape — a storefront subdomain, a merchant's custom domain, `javascript:`, a
+  protocol-relative value, a userinfo trick — is silently ignored in favour of the ordinary
+  in-app destination. `tests/infra/test_sso_redirect_allowlist.py` pins that host list against
+  the Caddyfile's named sites and `TLS_PLATFORM_HOSTS`, so it cannot drift from what is actually
+  deployed without a failing test naming which side moved.
+- Logging out from any app calls the same cross-origin `/auth/logout`, so every other open tab
+  and app fails its next refresh and lands back on `/login` — one logout ends the session
+  everywhere, the same property a single `sid` already gave organization switching (§ above,
+  `services/auth`'s session model).
+
+**3. CORS for those two routes is narrow, not a widened `CORS_ORIGINS`.**
+`ServiceSettings.auth_refresh_cors_origins` (`platform_core.config`) is a second allow-list,
+consulted only for `/api/v1/auth/refresh` and `/api/v1/auth/logout`
+(`platform_core.app.AUTH_CROSS_ORIGIN_PATHS`, `_PathScopedCorsMiddleware`); every other route on
+app-gateway still answers only `CORS_ORIGINS` (`https://app.opsgrids.com` in production).
+Widening `CORS_ORIGINS` itself was rejected: it would let every product origin make a
+*credentialed* call to any route the gateway fronts, not just the two that need it — a strictly
+bigger blast radius for a page compromised on one of those origins. Storefront hosts and custom
+domains must never appear in either list.
+
+**4. A short reuse-grace window on refresh rotation, because the cookie is shared by every tab.**
+`rotate_refresh` (`services/auth/app/services.py`) already rotates the refresh token and treats
+a spent one turning up again as theft — revoking the whole family. That is correct against an
+attacker and wrong against two tabs sharing one cookie: a proactive refresh in one landing
+mid-flight of a 401 retry in another presents the *same* token within milliseconds of each
+other, and the loser would previously have been signed out along with the winner. A refresh
+token presented again within `refresh_reuse_grace_seconds` (30s) of its own rotation — and only
+while its family is still live, never once revoked — mints a **fresh access token only** for the
+second presenter, after re-deriving and re-validating the session, the user and the membership
+from the spent token's own row (the same checks a fresh rotation runs); anything older, a
+revoked family, or a cache miss (Redis degrades to the stricter path, same as every other soft
+cache here), still reads as reuse. See the 2026-09-24 fix-round addendum below for why this is
+marker-only rather than a cached successor pair, which is what it originally was.
+
+**5. CSRF on the two cookie-authenticated routes.** `/auth/refresh` and `/auth/logout` are the
+only routes a browser will act on using nothing but the cookie — every other route needs a
+bearer token a cross-site page cannot attach. Because a storefront host is same-*site* with
+`app.opsgrids.com`, `SameSite=Lax` alone does not stop a bare `<form>` POST from a compromised or
+malicious storefront page from carrying the cookie there. Both routes now require
+`X-Requested-With: opsgrids` (`services/auth/app/api/routes.py::_assert_not_cross_site`) before
+touching the cookie — a header a plain form cannot add, whatever site it is served from.
+
+**Why not just widen the cookie and skip 2–5:** considered and rejected for the reason in §2 —
+the registrable domain is shared with every merchant's storefront, and there is no scope
+narrower than "every subdomain" a cookie's `Domain` attribute can express. Centralising refresh
+on the one host that already holds the cookie, and treating every other origin's access to it as
+an explicit, narrow, audited exception, keeps the blast radius of a compromised product SPA (or
+storefront) to that one SPA rather than to the platform session itself.
+
+---
+
+## Addendum 2026-09-24 (fix round 1) — an independent review of the addendum above, and its
+findings
+
+The SSO design above shipped with a working loop, a working logout that silently never reached
+the server, and a grace cache holding plaintext tokens in a shared Redis. None of the three were
+caught by the tests the addendum above was built against, because each one only breaks a path
+those tests happened not to exercise — a session that is already valid when `/login` renders, a
+cross-origin `Authorization` header a same-origin test never sends, a successful rotation nobody
+inspected the cache for. Recorded here so the shape of what was missed is not just the fix:
+
+**B1 — the redirect loop.** `RequireAuth` kept the page a person was headed to only in router
+state; `RedirectToCentralLogin` built `next` from `window.location.href`, which by the time it
+renders is already `/login`, and fired regardless of session status. A refresh that *succeeded*
+on the product app's own `/login` still bounced to the dashboard, which — correctly reporting
+signed in — sent the browser straight back. Fixed by making the component status-aware
+(`loading`/`error` hold, `authenticated` navigates internally, only `unauthenticated` redirects,
+and only with `next` built from the wanted page in router state), by having the dashboard refuse
+a `next` whose path is itself `/login`, and by a sessionStorage hand-off counter that shows a
+recovery screen after two redirects to the dashboard within a minute — a backstop for a cause
+not already closed above, since the known ones no longer reach it.
+
+**A new `AuthProvider` status, `error`,** exists because of this: a network failure or a
+cross-origin refresh CORS refused outright is not the same fact as a definite "you are signed
+out", and treating it as one is what turned a transient failure into exactly this loop. `error`
+renders a retry screen in both `RequireAuth` and `RedirectToCentralLogin`, never a redirect.
+
+**B2 — logout that never reached the server.** `authApi.logout()` went through the same
+`apiRequest` every authenticated call does, which attaches `Authorization: Bearer …` by default.
+The scoped CORS preflight for `/auth/logout` allows only `Content-Type` and `X-Requested-With` —
+so the browser refused the preflight outright, the request never left the browser, and the
+`try { await authApi.logout() } catch {}` around it in `AuthProvider.logout` swallowed that
+silently. `logout()` (and `refresh()`) now pass `auth: false`: neither needs a bearer token to
+say who is signing out, the cookie already says.
+
+**M1 — the grace cache held plaintext tokens.** The grace window's Redis entry, keyed by the
+spent token's `jti`, held the *live successor refresh token and access token* — in cleartext, in
+a Redis with no password, reachable from every one of the ~34 service containers on the compose
+network, AOF-persisted to disk. Redesigned to marker-only: `auth:refresh_grace:{sha256(jti)}`
+holds a bare presence flag, and a grace hit re-derives the session/user/membership from the spent
+token's own row and mints a fresh access token — no refresh token, no `Set-Cookie` — rather than
+handing back anything that was ever written to Redis. The accepted cost changes with it: a thief
+who also replays within the 30-second window now gets one 15-minute access token, not the
+session's own refresh chain.
+
+**MINOR — a genuinely concurrent first rotation could fork the family.** Two simultaneous
+presentations of the same still-*unspent* token could both read `is_spent = False` before either
+committed, and both mint a successor. `rotate_refresh` now takes the row with
+`SELECT … FOR UPDATE`; the loser's transaction blocks until the winner commits, then sees the
+token already spent and takes the grace path above instead of forking anything.
+
+**MINOR — CORS and rate-limiting hardening.** `auth_refresh_cors_origins` now refuses `*`, plain
+`http://`, a path/query/userinfo, and any `stores.opsgrids.com` host at startup — Starlette's own
+`CORSMiddleware` echoes back any origin, with credentials, once a wildcard is configured, so this
+was a live misconfiguration risk, not a theoretical one; app-gateway refuses to start in a real
+deployment with the list empty. Separately: `request.client.host` behind Caddy was always
+Caddy's own compose-network address (nothing sets `--forwarded-allow-ips`), so the anonymous
+rate limiter on `/auth/login` and password reset keyed every visitor into one shared bucket.
+`platform_core.proxy_headers.TrustForwardedForFromPrivatePeers` corrects `request.client.host`
+from `X-Forwarded-For`, but only when the immediate peer is a private-network address — the one
+Caddy always is in this topology — never from an untrusted or unproxied caller.
+
+---
+
+## Addendum 2026-09-24 — the session's own absolute lifetime is 7 days, not 30
+
+Owner decision: a person stays signed in for 7 days and then has to sign in again, in every app
+including the storefront console, however active they were in between. `session_ttl_days`
+(`services/auth/app/config.py`) moved from 30 to 7 to say so, but the number alone does nothing
+without a second change: `refresh_token_ttl_seconds` (platform_core, 7 days, unchanged) is a
+*sliding* window that renews on every rotation, and rotating it against an unrelated absolute cap
+would let a person who refreshes often outlive that cap indefinitely. `_refresh_ttl_seconds`
+(`services.py`) is what actually closes that gap — every refresh token `issue_for`/
+`_issue_operator` mint is clamped to whichever is shorter, its own sliding TTL or whatever is
+left of the session's `expires_at`, so a rotation on day 6 gets a successor good for about a day,
+not another full week. `start_session` is the one function every session — tenant, operator,
+federated — is created through, so the operator/staff path shares this cap unchanged; nothing
+about MFA enforcement or the staff role model moved.

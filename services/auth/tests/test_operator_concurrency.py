@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import jwt
 import pytest
@@ -31,9 +32,15 @@ from sqlalchemy.ext.asyncio import (
 
 from app import services
 from app.config import settings
-from app.models import SCHEMA, Session
+from app.models import SCHEMA, RefreshToken, Session
 from platform_core.errors import UnauthorizedProblem
-from tests.test_operator import STAFF_EMAIL, STAFF_PASSWORD, _issue_code, _make_staff
+from tests.test_operator import (
+    STAFF_EMAIL,
+    STAFF_PASSWORD,
+    _enrol_operator_mfa,
+    _issue_code,
+    _make_staff,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -127,3 +134,90 @@ class TestMfaVerifiedClaimRace:
             await engine.dispose()
 
         assert sorted(results) == [False, True], f"exactly one claim must win, got {results!r}"
+
+
+def _jti(raw: str) -> str:
+    return jwt.decode(raw, options={"verify_signature": False})["jti"]
+
+
+class TestOperatorRefreshGraceWindow:
+    """The operator side of M1 and MINOR 3 of the 2026-09-24 SSO review — `operator_rotate_
+    refresh` shares `rotate_refresh`'s marker-only grace window and row lock verbatim; this is
+    what proves "operator path identical" rather than assuming it from reading the same code."""
+
+    async def test_a_grace_hit_answers_access_only_and_stores_no_token_in_redis(
+        self, session, cfg, pair, redis
+    ) -> None:
+        await _make_staff(session)
+        issued, _codes, _secret, _step = await _enrol_operator_mfa(session, cfg, pair)
+        await session.commit()
+        spent = issued.refresh_token
+
+        winner = await services.operator_rotate_refresh(
+            session, cfg=cfg, pair=pair, raw_token=spent
+        )
+        assert isinstance(winner, services.OperatorIssued)
+
+        marker_values = [v for k, v in redis.store.items() if k.startswith("auth:refresh_grace:")]
+        assert len(marker_values) == 1
+        assert winner.access_token not in marker_values[0]
+        assert winner.refresh_token not in marker_values[0]
+        assert f"auth:refresh_grace:{_jti(spent)}" not in redis.store
+
+        grace = await services.operator_rotate_refresh(session, cfg=cfg, pair=pair, raw_token=spent)
+        assert isinstance(grace, services.OperatorAccessOnlyIssued)
+        assert not hasattr(grace, "refresh_token")
+        assert grace.access_token != winner.access_token
+        assert grace.staff_id == winner.staff_id
+
+    async def test_a_revoked_operator_family_never_gets_the_grace_window(
+        self, session, cfg, pair, redis
+    ) -> None:
+        await _make_staff(session)
+        issued, _codes, _secret, _step = await _enrol_operator_mfa(session, cfg, pair)
+        await session.commit()
+        spent = issued.refresh_token
+
+        winner = await services.operator_rotate_refresh(
+            session, cfg=cfg, pair=pair, raw_token=spent
+        )
+        assert isinstance(winner, services.OperatorIssued)
+
+        # The thief replays the captured token, well outside any legitimate two-tabs shape —
+        # simulated here directly, the same way `test_signin.py`'s tenant equivalent does, by
+        # pushing `rotated_at` back past the grace window rather than waiting on a real clock.
+        stored = await session.get(RefreshToken, _jti(spent))
+        assert stored is not None
+        stored.rotated_at = datetime.now(UTC) - timedelta(
+            seconds=cfg.refresh_reuse_grace_seconds + 1
+        )
+        await session.commit()
+
+        with pytest.raises(UnauthorizedProblem, match="security reasons"):
+            await services.operator_rotate_refresh(session, cfg=cfg, pair=pair, raw_token=spent)
+
+    async def test_two_truly_concurrent_first_rotations_do_not_fork_the_operator_family(
+        self, session, cfg, pair, redis
+    ) -> None:
+        await _make_staff(session)
+        issued, _codes, _secret, _step = await _enrol_operator_mfa(session, cfg, pair)
+        await session.commit()
+        captured = issued.refresh_token
+
+        second, engine = await _second_session()
+        try:
+
+            async def _rotate(s: AsyncSession) -> object:
+                return await services.operator_rotate_refresh(
+                    s, cfg=cfg, pair=pair, raw_token=captured
+                )
+
+            results = await asyncio.gather(_rotate(session), _rotate(second))
+        finally:
+            await second.close()
+            await engine.dispose()
+
+        refreshed = [r for r in results if isinstance(r, services.OperatorIssued)]
+        access_only = [r for r in results if isinstance(r, services.OperatorAccessOnlyIssued)]
+        assert len(refreshed) == 1
+        assert len(access_only) == 1

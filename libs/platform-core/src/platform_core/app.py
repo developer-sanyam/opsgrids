@@ -32,11 +32,61 @@ from platform_core.db import (
 from platform_core.errors import register_error_handlers
 from platform_core.logging import RequestContextMiddleware, configure_logging, get_logger
 from platform_core.metrics import Sample, render
+from platform_core.proxy_headers import TrustForwardedForFromPrivatePeers
 from platform_core.supervise import (
     SWEEP_METRICS_HELP,
     SWEEP_METRICS_TYPES,
     sweep_health_samples,
 )
+
+#: The two cookie-authenticated auth routes a product SPA other than the dashboard calls
+#: cross-origin, straight to `app.opsgrids.com` (ADR-0003 addendum) — see
+#: `ServiceSettings.auth_refresh_cors_origins`.
+AUTH_CROSS_ORIGIN_PATHS = frozenset({"/api/v1/auth/refresh", "/api/v1/auth/logout"})
+
+
+class _PathScopedCorsMiddleware:
+    """Two independent `CORSMiddleware`s in front of the same app, chosen by path.
+
+    `CORSMiddleware` itself has no notion of "these origins, but only for these routes" — it
+    is configured once for the whole app. Every product SPA's origin needs exactly that
+    though: allowed, with credentials, to call `/api/v1/auth/refresh` and `/api/v1/auth/logout`
+    (the only two routes it ever reaches cross-origin), and allowed nowhere else on this
+    gateway. Wrapping the *same* downstream app in two `CORSMiddleware` instances and picking
+    one per request gets that without reimplementing preflight handling.
+    """
+
+    def __init__(
+        self,
+        app: Any,
+        *,
+        default_origins: list[str],
+        scoped_paths: frozenset[str],
+        scoped_origins: list[str],
+    ) -> None:
+        self._scoped_paths = scoped_paths
+        self._default = CORSMiddleware(
+            app,
+            allow_origins=default_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=["X-Request-ID", "X-Correlation-ID"],
+        )
+        self._scoped = CORSMiddleware(
+            app,
+            allow_origins=scoped_origins,
+            allow_credentials=True,
+            allow_methods=["POST"],
+            allow_headers=["Content-Type", "X-Requested-With"],
+        )
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "http" and scope["path"] in self._scoped_paths:
+            await self._scoped(scope, receive, send)
+        else:
+            await self._default(scope, receive, send)
+
 
 _METRICS_HELP = {
     "outbox_pending": "Unpublished rows in this service's outbox.",
@@ -207,6 +257,7 @@ def create_app(
     database: bool = True,
     redis: bool = False,
     outbox_model: type[Any] | None = None,
+    trust_forwarded_for: bool = False,
 ) -> FastAPI:
     """Assemble a service.
 
@@ -218,6 +269,13 @@ def create_app(
     request that touched it — and its tests passed, because they injected a fake client
     directly. Making the dependency a parameter means forgetting it is a visible omission
     at the call site instead of a crash in production.
+
+    `trust_forwarded_for` (M2(b) of the 2026-09-24 SSO review): rewrites `request.client.host`
+    to the real visitor's address from `X-Forwarded-For`, but only when the immediate peer is a
+    private-network address — Caddy, the one reverse proxy production puts in front of a public
+    gateway (ADR-0012). `False` everywhere else: a service nothing proxies to directly has no
+    peer to trust in the first place, and turning this on for one that is reachable some other
+    way would let whoever *is* the immediate peer forge an address by simply adding the header.
     """
     configure_logging(
         settings.service_name, level=settings.log_level, json_output=settings.log_json
@@ -275,14 +333,27 @@ def create_app(
     app.state.settings = settings
 
     app.add_middleware(RequestContextMiddleware)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["X-Request-ID", "X-Correlation-ID"],
-    )
+    if settings.auth_refresh_cors_origins:
+        app.add_middleware(
+            _PathScopedCorsMiddleware,
+            default_origins=settings.cors_origins,
+            scoped_paths=AUTH_CROSS_ORIGIN_PATHS,
+            scoped_origins=settings.auth_refresh_cors_origins,
+        )
+    else:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=["X-Request-ID", "X-Correlation-ID"],
+        )
+    if trust_forwarded_for:
+        # Added last, deliberately: `add_middleware` prepends, so the last one added ends up
+        # outermost — this corrects `scope["client"]` before anything else added above (or any
+        # route handler) ever reads it.
+        app.add_middleware(TrustForwardedForFromPrivatePeers)
 
     register_error_handlers(app)
     app.include_router(

@@ -53,6 +53,12 @@ app="${APP:-buyer}"
 # build_script its package.json script
 # dist_dir     where that script writes, relative to app_dir
 # entry        a file whose presence proves the entry point exists (refused otherwise)
+# `app_host` is the Caddy hostname each app is actually published under (unset for `buyer`,
+# which is every store's own hostname; for `dashboard`; and for `internal`, the staff console —
+# all three are excluded from the AUTH_REFRESH_CORS_ORIGINS check below on purpose, see there).
+# It is what that check compares against the box's own `.env`, so it has to be exactly the host
+# `platformHosts.ts` and the Caddyfile name, not the logical `$app` value this script's own case
+# statement keys on.
 case "$app" in
 buyer)
 	app_dir="$repo_root/frontend/product-storefront"
@@ -67,81 +73,81 @@ dashboard)
 	entry="index.html"
 	;;
 operations)
-	# The Inventory product's app, ops.opsgrids.com (ADR-0013 slice 3).
 	app_dir="$repo_root/frontend/product-operations"
 	build_script="build"
 	dist_dir="dist"
 	entry="index.html"
+	app_host="ops.opsgrids.com"
 	;;
 hrms)
-	# OpsGrids People: people.opsgrids.com.
 	app_dir="$repo_root/frontend/product-hrms"
 	build_script="build"
 	dist_dir="dist"
 	entry="index.html"
+	app_host="people.opsgrids.com"
 	;;
 crm)
-	# OpsGrids Revenue: revenue.opsgrids.com.
 	app_dir="$repo_root/frontend/product-crm"
 	build_script="build"
 	dist_dir="dist"
 	entry="index.html"
+	app_host="revenue.opsgrids.com"
 	;;
 pulseboard)
-	# PulseBoard: pulse.opsgrids.com.
 	app_dir="$repo_root/frontend/product-pulseboard"
 	build_script="build"
 	dist_dir="dist"
 	entry="index.html"
+	app_host="pulse.opsgrids.com"
 	;;
 projects)
-	# OpsGrids Projects: projects.opsgrids.com.
 	app_dir="$repo_root/frontend/product-projects"
 	build_script="build"
 	dist_dir="dist"
 	entry="index.html"
+	app_host="projects.opsgrids.com"
 	;;
 support)
-	# OpsGrids Support: support.opsgrids.com.
 	app_dir="$repo_root/frontend/product-support"
 	build_script="build"
 	dist_dir="dist"
 	entry="index.html"
+	app_host="support.opsgrids.com"
 	;;
 marketing)
-	# OpsGrids Marketing: marketing.opsgrids.com.
 	app_dir="$repo_root/frontend/product-marketing"
 	build_script="build"
 	dist_dir="dist"
 	entry="index.html"
+	app_host="marketing.opsgrids.com"
 	;;
 finance)
-	# OpsGrids Finance: finance.opsgrids.com.
 	app_dir="$repo_root/frontend/product-finance"
 	build_script="build"
 	dist_dir="dist"
 	entry="index.html"
+	app_host="finance.opsgrids.com"
 	;;
 itsm)
-	# OpsGrids IT: it.opsgrids.com.
 	app_dir="$repo_root/frontend/product-itsm"
 	build_script="build"
 	dist_dir="dist"
 	entry="index.html"
+	app_host="it.opsgrids.com"
 	;;
 storefront)
-	# OpsGrids Storefront: store.opsgrids.com.
 	app_dir="$repo_root/frontend/product-storefront"
 	build_script="build"
 	dist_dir="dist"
 	entry="index.html"
+	app_host="store.opsgrids.com"
 	;;
 engage)
-	# OpsGrids Engage: engage.opsgrids.com.
 	app_dir="$repo_root/frontend/product-engage"
 	build_script="build"
 	dist_dir="dist"
 	entry="index.html"
+	app_host="engage.opsgrids.com"
 	;;
 internal)
 	# The operator/staff console: admin.opsgrids.com. Its own audience and its own gateway
@@ -235,28 +241,50 @@ MISSING
 		exit 1
 	fi
 
+	# Mirrors `remote.sh`'s own `dotenv_get` parsing exactly (MINOR 4 of the 2026-09-24 SSO
+	# review) — quoted value is what is between the quotes, an unquoted value's trailing
+	# ` # comment` is dropped, a CR and spaces are stripped — so a value read here for
+	# publishing is judged exactly the way the box's own deploy scripts read the same key, not a
+	# second, slightly different reading that could disagree with them. `tail -n 1` on the raw
+	# `sed` capture below is the other half: the LAST assignment in the file wins, matching
+	# `dotenv_get`, not the first.
+	_dotenv_value() {
+		local raw="$1"
+		raw=${raw%$'\r'}
+		case "$raw" in
+		\"*)
+			raw=${raw#\"}
+			raw=${raw%%\"*}
+			;;
+		\'*)
+			raw=${raw#\'}
+			raw=${raw%%\'*}
+			;;
+		*)
+			raw=$(printf '%s' "$raw" | sed -e 's/^[[:space:]]\{1,\}#.*$//' -e 's/[[:space:]]\{1,\}#.*$//')
+			;;
+		esac
+		printf '%s' "$raw" | tr -d ' \r'
+	}
+
+	# The scheme, host and port only — an origin, never a base URL with a path. `APP_BASE_URL`
+	# is documented as one (`.env.example`: "used in emails and links"), so a value with a path
+	# is legitimate there and simply not what `VITE_AUTH_ORIGIN` needs: only the origin.
+	_origin_of() {
+		printf '%s' "$1" | sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://[^/?#]+).*#\1#'
+	}
+
 	# `buyer` and `storefront` are the two entry points that ever render an uploaded image
 	# (ADR-0009 §6, `theme/render/assetSrc.ts`). Vite bakes `import.meta.env.VITE_*` in at build
 	# time from the shell's own environment, so this has to be read from the box's `.env` here,
 	# on the laptop doing the build, not set anywhere on the box itself. Left unset, the resolver
 	# falls back to same-origin — `/{org}/{asset}` at the bundle's own root — which is NOT where
 	# Caddy proxies the bucket (`/opsgrids-public/*`), so every uploaded image would 404 on a
-	# live store while the upload itself kept succeeding: the quiet-failure shape this platform
-	# specifically tries not to ship.
+	# live store while the upload itself kept succeeding.
 	case "$app" in
 	buyer | storefront)
-		asset_base=$(ssh_box "sed -n 's/^PUBLIC_ASSET_BASE_URL=//p' '$repo/infrastructure/edge/.env' | head -1")
-		# A value read over ssh from a file that started life on a human's laptop can carry a
-		# trailing `\r` (a `.env` ever touched on Windows, or a paste through a CRLF-preserving
-		# terminal) or a pair of quotes a human added out of habit. Left in, either lands
-		# verbatim inside Vite's baked-in `VITE_ASSET_BASE_URL` — a broken image URL with
-		# nothing that errors anywhere, the exact quiet-failure shape this whole check exists to
-		# catch for the *empty* case and must not reintroduce for the *malformed* one.
-		asset_base=$(printf '%s' "$asset_base" | tr -d '\r')
-		asset_base=${asset_base#\"}
-		asset_base=${asset_base%\"}
-		asset_base=${asset_base#\'}
-		asset_base=${asset_base%\'}
+		asset_base=$(ssh_box "sed -n 's/^PUBLIC_ASSET_BASE_URL=//p' '$repo/infrastructure/edge/.env' | tail -n 1")
+		asset_base=$(_dotenv_value "$asset_base")
 		if [ -z "$asset_base" ]; then
 			echo "refusing to publish: PUBLIC_ASSET_BASE_URL is empty in the box's .env." >&2
 			echo "  Every uploaded image would 404 on the live store. Set it (infrastructure/edge/.env.example)" >&2
@@ -277,6 +305,62 @@ MISSING
 		;;
 	*)
 		echo "building $app with node $node_major"
+		;;
+	esac
+
+	# ADR-0003 addendum: every product SPA except the dashboard and the buyer bundle centralises
+	# its silent refresh and logout against `app.opsgrids.com` — the one host the refresh cookie
+	# lives on. Baked in at build time the same way `VITE_ASSET_BASE_URL` is above, and read from
+	# the box's existing `APP_BASE_URL` rather than a second config key that could quietly drift
+	# from it: they name the same host on purpose. `dashboard` never sets this — the cookie
+	# already lives on its own origin — and `buyer` carries no auth code to configure at all.
+	# `internal` (the staff console, admin.opsgrids.com) is the third exception: it authenticates
+	# operators against admin-gateway's own same-origin refresh, never the tenant cookie this
+	# whole block exists to centralise, so it gets neither VITE_AUTH_ORIGIN nor the
+	# AUTH_REFRESH_CORS_ORIGINS check below — admin.opsgrids.com must never be added to that
+	# tenant-only allow-list (see infrastructure/edge/.env.example).
+	case "$app" in
+	buyer | dashboard | internal) ;;
+	*)
+		auth_origin=$(ssh_box "sed -n 's/^APP_BASE_URL=//p' '$repo/infrastructure/edge/.env' | tail -n 1")
+		auth_origin=$(_dotenv_value "$auth_origin")
+		auth_origin=$(_origin_of "$auth_origin")
+		if [ -z "$auth_origin" ]; then
+			echo "refusing to publish: APP_BASE_URL is empty in the box's .env." >&2
+			echo "  $app would build defaulting to same-origin refresh, which is wrong for every" >&2
+			echo "  app but the dashboard — sign-in would never survive a reload. Set it and" >&2
+			echo "  deploy before publishing $app." >&2
+			exit 1
+		fi
+		case "$auth_origin" in
+		https://*) ;;
+		*)
+			echo "refusing to publish: APP_BASE_URL on the box is not an https:// URL." >&2
+			exit 1
+			;;
+		esac
+		export VITE_AUTH_ORIGIN="$auth_origin"
+		echo "  VITE_AUTH_ORIGIN=$auth_origin"
+
+		# MINOR 4 of the 2026-09-24 SSO review: publishing an app whose own host is not in
+		# AUTH_REFRESH_CORS_ORIGINS would ship a build that signs in fine (the /login hand-off
+		# to the dashboard is a same-site navigation, not a CORS-gated fetch) and then fails
+		# its very first silent refresh — the browser's own CORS check refuses the preflight,
+		# and the client can only report that as its generic "error" outcome. Catch it here,
+		# where the fix is a one-line edit to the box's .env, not a support ticket later.
+		auth_refresh_cors_origins=$(ssh_box "sed -n 's/^AUTH_REFRESH_CORS_ORIGINS=//p' '$repo/infrastructure/edge/.env' | tail -n 1")
+		auth_refresh_cors_origins=$(_dotenv_value "$auth_refresh_cors_origins")
+		case ",$auth_refresh_cors_origins," in
+		*",https://$app_host,"*) ;;
+		*)
+			echo "refusing to publish $app: https://$app_host is not in the box's" >&2
+			echo "  AUTH_REFRESH_CORS_ORIGINS (infrastructure/edge/.env). Add it — comma-separated," >&2
+			echo "  alongside the other product app hosts, never a storefront host — and deploy" >&2
+			echo "  before publishing $app, or every session on this app will fail to survive" >&2
+			echo "  a reload once its access token expires." >&2
+			exit 1
+			;;
+		esac
 		;;
 	esac
 	(cd "$repo_root/frontend" && pnpm install --frozen-lockfile)

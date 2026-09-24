@@ -105,3 +105,60 @@ class TestJwks:
         assert settings().refresh_cookie_name in set_cookie
         assert "httponly" in set_cookie
         assert "path=/api/v1/auth" in set_cookie
+
+
+class TestCsrfOnCookieAuthenticatedRoutes:
+    """`/auth/refresh` and `/auth/logout` are the two routes a browser will act on using only
+    the refresh cookie — no bearer token, no header CORS would ever have forced a preflight
+    for on a *same*-site request. A bare cross-site `<form>` POST from anywhere under
+    `*.opsgrids.com` — a merchant's storefront included — carries the cookie under
+    `SameSite=Lax` but can never add `X-Requested-With`, so the header is what tells a forged
+    submission from the shared client apart.
+    """
+
+    async def _login(self, client: AsyncClient) -> None:
+        from tests.conftest import PASSWORD
+
+        response = await client.post(
+            "/api/v1/auth/login", json={"email": "sam@example.com", "password": PASSWORD}
+        )
+        assert response.status_code == 200, response.text
+
+    async def test_refresh_without_the_header_is_refused(
+        self, client: AsyncClient, registered
+    ) -> None:
+        await self._login(client)
+
+        forged = await client.post("/api/v1/auth/refresh")
+        assert forged.status_code == 403, forged.text
+        assert forged.headers["content-type"].startswith("application/problem+json")
+
+        # Nothing was spent: the legitimate client can still refresh normally afterward.
+        genuine = await client.post(
+            "/api/v1/auth/refresh", headers={"X-Requested-With": "opsgrids"}
+        )
+        assert genuine.status_code == 200, genuine.text
+
+    async def test_logout_without_the_header_is_refused(
+        self, client: AsyncClient, registered
+    ) -> None:
+        await self._login(client)
+
+        forged = await client.post("/api/v1/auth/logout")
+        assert forged.status_code == 403, forged.text
+
+        # The session survived the forged attempt.
+        genuine = await client.post(
+            "/api/v1/auth/refresh", headers={"X-Requested-With": "opsgrids"}
+        )
+        assert genuine.status_code == 200, genuine.text
+
+    async def test_the_header_alone_is_enough_to_log_out(
+        self, client: AsyncClient, registered
+    ) -> None:
+        await self._login(client)
+
+        response = await client.post(
+            "/api/v1/auth/logout", headers={"X-Requested-With": "opsgrids"}
+        )
+        assert response.status_code == 204, response.text
