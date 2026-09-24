@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import { Can } from "@opsgrids/client";
-import { SendIcon } from "@opsgrids/ui";
+import { MailIcon, SendIcon } from "@opsgrids/ui";
 
 import { sendCampaign } from "@/api/client";
 import type { CampaignOut } from "@/api/types";
@@ -10,7 +10,8 @@ import { formatNumber } from "@/lib/format";
 import type { ResolvedLists } from "@/lib/refs";
 import { explainSendFailure } from "@/lib/sendGate";
 import type { GateField, GateNext, SendGateReason } from "@/lib/sendGate";
-import { Button, Card, ConfirmDialog, InlineAlert } from "@/ui";
+import { Button, Card, ConfirmDialog, InlineAlert, useAnnounce } from "@/ui";
+import { CampaignTestSendDialog } from "./CampaignTestSendDialog";
 
 /**
  * The send gate, from the customer's side.
@@ -100,9 +101,11 @@ export function CampaignSendPanel({
   onSent: (campaign: CampaignOut) => void;
   onFocusField: (field: GateField) => void;
 }) {
+  const announce = useAnnounce();
   const [confirming, setConfirming] = useState(false);
   const [pending, setPending] = useState(false);
   const [reason, setReason] = useState<SendGateReason | null>(null);
+  const [testing, setTesting] = useState(false);
 
   async function send() {
     if (pending) return;
@@ -160,7 +163,7 @@ export function CampaignSendPanel({
           ) : null}
         </div>
 
-        <div className="flex flex-col items-start gap-2">
+        <div className="flex flex-wrap items-start gap-2">
           <Button
             onClick={() => {
               setReason(null);
@@ -171,9 +174,18 @@ export function CampaignSendPanel({
           >
             Send campaign
           </Button>
+          <Button
+            variant="outline"
+            onClick={() => setTesting(true)}
+            disabled={dirty}
+            leadingIcon={<MailIcon className="size-4" />}
+          >
+            Send a preview
+          </Button>
           {dirty ? (
-            <span className="text-xs text-muted">
-              Save your changes first — sending uses the saved draft, not what is on screen.
+            <span className="w-full text-xs text-muted">
+              Save your changes first — sending (and testing) uses the saved draft, not what is on
+              screen.
             </span>
           ) : null}
         </div>
@@ -189,6 +201,17 @@ export function CampaignSendPanel({
         confirmLabel="Send campaign"
         pendingLabel="Sending…"
         pending={pending}
+      />
+
+      <CampaignTestSendDialog
+        open={testing}
+        campaignId={campaign.id}
+        campaignName={campaign.name}
+        onClose={() => setTesting(false)}
+        onSent={(message) => {
+          setTesting(false);
+          announce(message);
+        }}
       />
     </Card>
   );

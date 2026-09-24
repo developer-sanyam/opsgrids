@@ -27,6 +27,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import dns_check, selectors, services, webhooks
+from app import domain as _rules
 from app.domain import UnsubscribeTarget
 from app.models import (
     Campaign,
@@ -46,6 +47,7 @@ from app.schemas import (
     CampaignRecipientOut,
     CampaignStats,
     CampaignStatus,
+    CampaignTestSendOut,
     ConnectionIn,
     ConnectionOut,
     ContactImportIn,
@@ -66,11 +68,14 @@ from app.schemas import (
     DnsRecordOut,
     DomainIn,
     DomainOut,
+    DomainPatch,
     ListMembersIn,
     ListMembersOut,
     RecipientStatus,
     SenderIn,
     SenderOut,
+    SetupOut,
+    SetupStepOut,
     SuppressionIn,
     SuppressionOut,
     SuppressionReason,
@@ -204,12 +209,40 @@ def _whatsapp_connection_out(row: ProviderAccount) -> WhatsAppConnectionOut:
     )
 
 
-def _domain_out(row: EmailDomain) -> DomainOut:
+def _domain_out(row: EmailDomain, connection: EmailConnection | None) -> DomainOut:
+    """`connection` names the organization's *current* provider, fetched once per request by the
+    caller (a list of domains shares one connection read) — never the domain's own history: the
+    record set shown is what this domain needs **now**, not what it needed under a provider this
+    organization may have already switched away from.
+
+    A domain that has never been checked (`records` empty) still has to show the customer
+    something to publish before they can even press *verify* — so with a connection in hand this
+    previews `domain.expected_records` as all `missing`, the honest "nothing found yet" state for
+    records nobody has looked up. With no connection at all there is nothing to preview, and the
+    empty list is exactly the "connect your email provider first" signal the setup screen shows.
+    """
+    if row.records:
+        records = row.records
+    elif connection is not None:
+        records = [
+            {**record, "status": "missing"}
+            for record in _rules.expected_records(
+                row.domain,
+                connection_kind=connection.kind,
+                dkim_selector=row.dkim_selector,
+                spf_include=row.spf_include,
+            )
+        ]
+    else:
+        records = []
     return DomainOut(
         id=str(row.id),
         domain=row.domain,
         status=row.status,
-        records=[DnsRecordOut(**record) for record in row.records],
+        connection_kind=connection.kind if connection else None,
+        dkim_selector=row.dkim_selector,
+        spf_include=row.spf_include,
+        records=[DnsRecordOut(**record) for record in records],
         last_checked_at=row.last_checked_at,
         created_at=row.created_at,
     )
@@ -425,6 +458,26 @@ async def replace_whatsapp(
     return _whatsapp_connection_out(row)
 
 
+# --------------------------------------------------------------------- setup checklist
+
+
+@router.get(
+    "/engage/setup",
+    response_model=SetupOut,
+    summary="The get-started checklist: five steps, and where each one stands",
+    dependencies=[Entitled],
+)
+async def get_setup(session: SessionDep, ctx: ConnectionRead) -> SetupOut:
+    """Gated on the same permission as reading the connection — the first of the five steps —
+    rather than a new one of its own: this is a summary of facts every one of the five
+    permissions below already lets someone read individually, and the whole point of the
+    checklist is to be the one screen that does not make an organization's first user collect
+    five grants before they can see where they stand.
+    """
+    steps = await selectors.setup_checklist(session, ctx)
+    return SetupOut(steps=[SetupStepOut(**step) for step in steps])
+
+
 # --------------------------------------------------------------------- sending domains
 
 
@@ -442,21 +495,58 @@ async def list_domains(
 ) -> Page[DomainOut]:
     stmt = selectors.domains_stmt(ctx, status=domain_status)
     rows, total = await paginate(session, stmt, params)
-    return Page.build([_domain_out(r) for r in rows], total=total, params=params)
+    connection = await selectors.get_connection(session, ctx.organization_id)
+    return Page.build([_domain_out(r, connection) for r in rows], total=total, params=params)
 
 
 @router.post(
     "/engage/domains",
     response_model=DomainOut,
     status_code=status.HTTP_201_CREATED,
-    summary="Add a sending domain and generate its DNS records",
+    summary="Add a sending domain",
     dependencies=[Entitled],
 )
 async def add_domain(
     body: DomainIn, session: SessionDep, ctx: DomainWrite, request: Request
 ) -> DomainOut:
     row = await services.create_domain(session, ctx, domain=body.domain, request=request)
-    return _domain_out(row)
+    connection = await selectors.get_connection(session, ctx.organization_id)
+    return _domain_out(row, connection)
+
+
+@router.patch(
+    "/engage/domains/{domain_id}",
+    response_model=DomainOut,
+    summary="Edit a domain's DKIM selector or SMTP SPF include",
+    dependencies=[Entitled],
+)
+async def edit_domain(
+    domain_id: uuid.UUID, body: DomainPatch, session: SessionDep, ctx: DomainWrite, request: Request
+) -> DomainOut:
+    row = await services.update_domain_settings(
+        session,
+        ctx,
+        domain_id=domain_id,
+        dkim_selector=body.dkim_selector,
+        spf_include=body.spf_include,
+        request=request,
+    )
+    connection = await selectors.get_connection(session, ctx.organization_id)
+    return _domain_out(row, connection)
+
+
+@router.delete(
+    "/engage/domains/{domain_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Delete a sending domain and its senders",
+    dependencies=[Entitled],
+)
+async def remove_domain(
+    domain_id: uuid.UUID, session: SessionDep, ctx: DomainWrite, request: Request
+) -> Response:
+    await services.delete_domain(session, ctx, domain_id=domain_id, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(
@@ -488,17 +578,25 @@ async def verify_domain(
 
     async with session.begin():
         await _bind()
-        loaded = await services.load_domain_for_check(session, ctx, domain_id=domain_id)
-        records = list(loaded.records)
+        loaded, connection = await services.load_domain_for_check(session, ctx, domain_id=domain_id)
+        domain_name = loaded.domain
+        dkim_selector = loaded.dkim_selector
+        spf_include = loaded.spf_include
+        connection_kind = connection.kind if connection else None
 
-    checked = await dns_check.check_records(records)
+    checked = await dns_check.check_domain_records(
+        domain_name,
+        connection_kind=connection_kind,
+        dkim_selector=dkim_selector,
+        spf_include=spf_include,
+    )
 
     async with session.begin():
         await _bind()
         row = await services.record_domain_check(
             session, ctx, domain_id=domain_id, checked=checked, request=request
         )
-    return _domain_out(row)
+    return _domain_out(row, connection)
 
 
 # --------------------------------------------------------------------- senders
@@ -1053,6 +1151,32 @@ async def remove_campaign(
 ) -> Response:
     await services.delete_campaign(session, ctx, campaign_id=campaign_id, request=request)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/engage/campaigns/{campaign_id}/test",
+    response_model=CampaignTestSendOut,
+    summary="Send a test copy of a campaign exactly as recipients would receive it",
+    dependencies=[Entitled],
+)
+async def send_campaign_test(
+    campaign_id: uuid.UUID,
+    body: TestSendIn,
+    session: SessionDep,
+    ctx: CampaignSend,
+    request: Request,
+) -> CampaignTestSendOut:
+    """Takes the send permission, not the write one: proving what a campaign would look like in
+    an inbox is close enough to sending it that a drafter without send rights should not be able
+    to preview it by mailing themselves a copy under a fixed name."""
+    await services.send_campaign_test(
+        session,
+        ctx,
+        campaign_id=campaign_id,
+        to_address=body.to_address,
+        request=request,
+    )
+    return CampaignTestSendOut(sent=True, to=body.to_address)
 
 
 @router.post(

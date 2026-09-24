@@ -192,6 +192,14 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "D3 #24, routed to notification: replace_connection, same dial-guard DNS resolution "
         "and same fix as connect_provider."
     ),
+    ("services/notification/app/api/engage.py", "send_campaign_test"): (
+        "Routed to notification, same unfixed shape as send_test_message (D3 #19): "
+        "services.send_campaign_test sends a real message through the campaign's sender's "
+        "Transport (SMTP) inside get_tenant_session's request-long transaction, and the caller "
+        "waits on the provider's answer by design. Fix: claim (rate limit, load campaign, "
+        "sender and connection, commit), send with no transaction open, record the audit row in "
+        "a second short transaction."
+    ),
     # account's domain verification (P1, merged) and lead (CRM, merged) — found by the round-3
     # scanner, routed to their owners.
     ("services/account/app/api/routes.py", "verify_domain"): (
@@ -885,10 +893,10 @@ def test_a_call_before_the_session_is_first_used_is_not_inside_it() -> None:
 
 
 def test_notifications_dns_check_is_recognised_through_its_default_resolver() -> None:
-    """`check_records` binds `r = resolver or _default_resolver()` and resolves through `r` —
-    invisible to a scan that only looked at typed parameters."""
+    """`check_domain_records` binds `r = resolver or _default_resolver()` and resolves through
+    `r` — invisible to a scan that only looked at typed parameters."""
     reaches = _reaches_network(_collect_functions(_parse_all()))
-    assert "check_records" in reaches["notification"]
+    assert "check_domain_records" in reaches["notification"]
     found = _findings_in(
         "notification",
         "async def probe(session, ctx, domain_id):\n"

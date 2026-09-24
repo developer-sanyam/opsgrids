@@ -25,6 +25,7 @@ import {
   CONVERSATIONS,
   DOMAINS,
   SENDERS,
+  SETUP,
   SUPPRESSIONS,
   WHATSAPP_CONNECTION,
   WHATSAPP_TEMPLATES,
@@ -35,6 +36,7 @@ import type {
   CampaignPatch,
   CampaignRecipientOut,
   CampaignStatus,
+  CampaignTestSendOut,
   ConnectionIn,
   ConnectionOut,
   ContactImportOut,
@@ -53,6 +55,7 @@ import type {
   ConversationStatus,
   DomainIn,
   DomainOut,
+  DomainPatch,
   DomainStatus,
   ListMembersIn,
   ListMembersOut,
@@ -62,6 +65,7 @@ import type {
   RecipientStatus,
   SenderIn,
   SenderOut,
+  SetupOut,
   SuppressionIn,
   SuppressionOut,
   SuppressionReason,
@@ -109,6 +113,17 @@ function refuseWithoutService(action: string): never {
     `${action} needs the notification service, and this app is running on sample data. ` +
       "Set VITE_USE_FIXTURES=false to run against the gateway.",
   );
+}
+
+/* ---------------------------------- setup ---------------------------------- */
+
+/**
+ * The get-started checklist — `GET /engage/setup`. Five steps, each folded from the same rows
+ * every other Engage screen reads: nothing here is computed client-side.
+ */
+export async function getSetup(): Promise<SetupOut> {
+  if (USE_FIXTURES) return settle(SETUP);
+  return apiRequest<SetupOut>("/engage/setup");
 }
 
 /* ------------------------------- connection ------------------------------- */
@@ -203,6 +218,31 @@ export async function verifyDomain(domainId: string): Promise<DomainOut> {
   return apiRequest<DomainOut>(`/engage/domains/${encodeURIComponent(domainId)}/verify`, {
     method: "POST",
   });
+}
+
+/**
+ * Edit a domain's DKIM selector or SMTP SPF include — `PATCH /engage/domains/{domain_id}`.
+ *
+ * Either change resets the domain to `pending`: the records it needed under the old value say
+ * nothing about the new one, so a re-verify is required before it can send again.
+ */
+export async function editDomain(domainId: string, input: DomainPatch): Promise<DomainOut> {
+  if (USE_FIXTURES) refuseWithoutService("Editing a domain");
+  return apiRequest<DomainOut>(`/engage/domains/${encodeURIComponent(domainId)}`, {
+    method: "PATCH",
+    body: input,
+  });
+}
+
+/**
+ * Delete a sending domain and every sender on it — `DELETE /engage/domains/{domain_id}`.
+ *
+ * Refused (409) when a sender on this domain is used by a campaign that is not a draft or
+ * cancelled — that campaign's record of what it sent as is not this domain's to take away.
+ */
+export async function deleteDomain(domainId: string): Promise<void> {
+  if (USE_FIXTURES) refuseWithoutService("Deleting a domain");
+  await apiRequest<void>(`/engage/domains/${encodeURIComponent(domainId)}`, { method: "DELETE" });
 }
 
 /* --------------------------------- senders -------------------------------- */
@@ -617,6 +657,24 @@ export async function sendCampaign(campaignId: string): Promise<CampaignOut> {
   return apiRequest<CampaignOut>(`/engage/campaigns/${encodeURIComponent(campaignId)}/send`, {
     method: "POST",
   });
+}
+
+/**
+ * Send a test copy of a campaign exactly as recipients would receive it —
+ * `POST /engage/campaigns/{campaign_id}/test`.
+ *
+ * Domain verification is not required for this, unlike the real send: a test never reaches a
+ * real recipient, so it proves the content renders and the connection accepts a message.
+ */
+export async function sendCampaignTest(
+  campaignId: string,
+  input: TestSendIn,
+): Promise<CampaignTestSendOut> {
+  if (USE_FIXTURES) refuseWithoutService("Sending a campaign test");
+  return apiRequest<CampaignTestSendOut>(
+    `/engage/campaigns/${encodeURIComponent(campaignId)}/test`,
+    { method: "POST", body: input },
+  );
 }
 
 /** Cancel a campaign; recipients not yet sent are never sent —

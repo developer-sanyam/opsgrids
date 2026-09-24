@@ -43,14 +43,13 @@ export function connectionKindLabel(kind: ConnectionKind): string {
 
 /**
  * What each DNS record is for, in the customer's terms rather than the protocol's. They are
- * pasting these into a registrar, and `return_path` is not a sentence anybody can act on.
+ * pasting these into a registrar. No `return_path` or `tracking` label exists any more: OpsGrids
+ * publishes no mail infrastructure of its own, so neither record is ever generated.
  */
 const DNS_RECORD_LABELS: Record<DnsRecordKind, string> = {
   spf: "SPF — who may send as this domain",
   dkim: "DKIM — the signature on every message",
   dmarc: "DMARC — what to do with mail that fails the two above",
-  return_path: "Return path — where bounces go",
-  tracking: "Tracking — opens and clicks on your own domain",
 };
 
 export function dnsRecordLabel(kind: DnsRecordKind): string {

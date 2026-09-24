@@ -14,7 +14,7 @@ import { SendersPage } from "./Senders";
 
 /**
  * The gateway answers every `/engage` read with a `402` until the organization has Engage, and
- * that reached production as a red "Couldn't load your sending identity — engage is not active
+ * that reached production as a red "Couldn't load your setup checklist — engage is not active
  * for this organization" on the Overview of an owner who had done nothing wrong.
  *
  * What is pinned here: a `402` on any of the four screens is the not-active state, with the way
@@ -41,10 +41,11 @@ function failEveryRead(error: Error) {
   vi.spyOn(client, "getConnection").mockRejectedValue(error);
   vi.spyOn(client, "listDomains").mockRejectedValue(error);
   vi.spyOn(client, "listSenders").mockRejectedValue(error);
+  vi.spyOn(client, "getSetup").mockRejectedValue(error);
 }
 
 const SCREENS: { name: string; page: () => ReactElement; errorTitle: string }[] = [
-  { name: "Overview", page: () => <OverviewPage />, errorTitle: "Couldn't load your sending identity" },
+  { name: "Overview", page: () => <OverviewPage />, errorTitle: "Couldn't load your setup checklist" },
   { name: "Connections", page: () => <ConnectionPage />, errorTitle: "Couldn't load the connection" },
   { name: "Domains", page: () => <DomainsPage />, errorTitle: "Couldn't load your domains" },
   { name: "Senders", page: () => <SendersPage />, errorTitle: "Couldn't load your senders" },
@@ -109,7 +110,7 @@ describe("what is not a 402", () => {
     mount(<OverviewPage />);
 
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("Couldn't load your sending identity");
+    expect(alert.textContent).toContain("Couldn't load your setup checklist");
     expect(screen.queryByText(NOT_ACTIVE_TITLE)).toBeNull();
   });
 

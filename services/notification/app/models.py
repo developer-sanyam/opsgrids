@@ -656,9 +656,13 @@ class EmailConnection(Base, TenantBase):
 class EmailDomain(Base, TenantBase):
     """A domain an organization may send from, and the state of its DNS.
 
-    `records` is the generated record set — SPF, DKIM, DMARC, return-path, tracking — stored so
-    the setup screen can show the same values it showed yesterday rather than regenerating a
-    DKIM selector the customer has already pasted into their registrar.
+    `records` is the last checked record set — kind, type, fqdn, registrar name, value, status
+    and instruction, one entry per record `domain.expected_records` says this domain needs —
+    stored so the setup screen can show what DNS said the last time anyone asked rather than
+    nothing between visits. It is re-derived from the organization's *current* connection every
+    time `verify` runs (`services.record_domain_check`), never trusted as a frozen snapshot: a
+    provider switch means a different SPF include and a different DKIM shape, and the last
+    provider's "verified" must not quietly keep passing for the new one.
     """
 
     __tablename__ = "email_domains"
@@ -669,14 +673,25 @@ class EmailDomain(Base, TenantBase):
     records: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    #: The DKIM signing key, sealed by `platform_core.pii.seal`. Minted when the domain is
-    #: created, because its public half *is* the DKIM record's value — generating the record set
-    #: without a keypair publishes a record that can never verify.
-    #:
-    #: Nullable, like every sealed column here: there is no such thing as a default private key,
-    #: and a domain row whose key is missing must read as missing rather than as an empty
-    #: envelope that fails to open at signing time.
+    #: Unused since platform-managed sending was never built: nothing signs outgoing mail with
+    #: this key, so a domain created today never has one (`services.create_domain` leaves it
+    #: null). Kept — not dropped — because a destructive migration is not worth taking to remove
+    #: a nullable column with no reader left; see `c3a1ecc45df8_engage_dkim_signing_key`.
     dkim_private_key_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+
+    #: The DKIM selector this domain's TXT/CNAME records are published at — `google` by default,
+    #: matching Google Workspace's own default, and editable per domain because a customer
+    #: rotating their key or running a second selector needs to point this at the new one.
+    #: Required for `smtp`, where there is no sensible default: the selector is whatever the
+    #: customer's own provider assigned them.
+    dkim_selector: Mapped[str] = mapped_column(String(63), nullable=False, default="google")
+
+    #: The SPF include host a customer's own SMTP provider publishes — `amazonses.com`,
+    #: `sendgrid.net` — entered by them because this platform cannot know a self-hosted relay's
+    #: SPF host the way it knows Google's and Microsoft's. Null until they say it, and only
+    #: meaningful for an `smtp` connection; `google` and `microsoft` derive their SPF target from
+    #: the connection kind alone (`domain.spf_target`) and ignore this column entirely.
+    spf_include: Mapped[str | None] = mapped_column(String(255))
 
     __table_args__ = (
         UniqueConstraint("organization_id", "domain", name="uq_email_domain_org_domain"),

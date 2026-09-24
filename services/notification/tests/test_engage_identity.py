@@ -13,7 +13,6 @@ nobody has ever proven works.
 
 from __future__ import annotations
 
-import base64
 import contextlib
 import json
 import uuid
@@ -22,7 +21,6 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from cryptography.hazmat.primitives import serialization
 from sqlalchemy import select
 
 from app import models, services, whatsapp_provider
@@ -32,6 +30,7 @@ from app.transports import RecordingTransport, TransportRefused, TransportUnavai
 from platform_core.auth import Principal, Scope, ScopeContext, get_principal
 from platform_core.errors import (
     BusinessRuleProblem,
+    ConflictProblem,
     NotFoundProblem,
     RateLimitedProblem,
     UpstreamUnavailableProblem,
@@ -449,56 +448,36 @@ async def test_replacing_when_no_connection_exists_is_not_found(session, org_id)
             )
 
 
-async def test_creating_a_domain_mints_a_dkim_keypair(session, org_id) -> None:
-    """`dns_records_for` is pure and leaves the DKIM value empty for its caller to fill. This
-    is that caller: a domain created without a key publishes a record that can never verify,
-    which makes the whole setup flow decorative."""
+async def test_a_domain_with_no_connection_yet_has_nothing_to_publish(session, org_id) -> None:
+    """OpsGrids mints no keypair and publishes no mail infrastructure of its own — a domain has
+    nothing to check until the organization says how it sends."""
     async with session.begin():
         row = await services.create_domain(
             session, _ctx(org_id, "engage.setup.domain.write"), domain="company.com"
         )
 
-    dkim = next(r for r in row.records if r["kind"] == "dkim")
-    assert dkim["value"].startswith("v=DKIM1; k=rsa; p=")
-    # Decodes to a real SubjectPublicKeyInfo of the size verifiers expect, rather than to a
-    # plausible-looking string: a record that parses everywhere except at a verifier is exactly
-    # the failure this assertion exists to catch.
-    published = base64.b64decode(dkim["value"].split("p=", 1)[1])
-    assert serialization.load_der_public_key(published).key_size == 2048
-
-
-async def test_the_dkim_private_key_is_sealed(session, org_id) -> None:
-    async with session.begin():
-        row = await services.create_domain(
-            session, _ctx(org_id, "engage.setup.domain.write"), domain="company.com"
-        )
-
-    assert row.dkim_private_key_enc is not None
-    assert b"PRIVATE KEY" not in row.dkim_private_key_enc
-    assert "BEGIN PRIVATE KEY" in open_sealed(row.dkim_private_key_enc, settings=settings())
-
-
-async def test_the_dkim_selector_is_derived_rather_than_random(session, org_id) -> None:
-    """Stability is the point: the record set is stored so the setup screen shows the values it
-    showed yesterday, and a selector minted from a uuid would hand the customer a different
-    record to paste every time anything regenerated it."""
-    async with session.begin():
-        row = await services.create_domain(
-            session, _ctx(org_id, "engage.setup.domain.write"), domain="company.com"
-        )
-
-    dkim = next(r for r in row.records if r["kind"] == "dkim")
-    selector = dkim["host"].split("._domainkey.")[0]
-    assert selector == services.dkim_selector(org_id, "company.com")
-    assert selector != services.dkim_selector(org_id, "other.example.com")
+    assert row.records == []
+    assert row.dkim_private_key_enc is None
+    assert row.dkim_selector == "google"
+    assert row.spf_include is None
 
 
 async def test_a_domain_verifies_once_dns_publishes_every_required_record(session, org_id) -> None:
     ctx = _ctx(org_id, "engage.setup.domain.write")
     async with session.begin():
+        await services.create_connection(
+            session,
+            _ctx(org_id, "engage.setup.connection.write"),
+            kind="google",
+            username="info@company.com",
+            secret="app-password",  # pragma: allowlist secret
+        )
         row = await services.create_domain(session, ctx, domain="company.com")
 
-    published = {(r["host"], r["type"]): [r["value"]] for r in row.records if r["required"]}
+    published = {
+        ("company.com", "TXT"): ["v=spf1 include:_spf.google.com ~all"],
+        ("google._domainkey.company.com", "TXT"): ["v=DKIM1; k=rsa; p=AAA"],
+    }
     async with session.begin():
         checked = await services.verify_domain(
             session, ctx, domain_id=row.id, resolver=FakeResolver(published)
@@ -516,6 +495,13 @@ async def test_a_domain_publishing_nothing_stays_pending_and_announces_nothing(
     is staged on the transition and on nothing else."""
     ctx = _ctx(org_id, "engage.setup.domain.write")
     async with session.begin():
+        await services.create_connection(
+            session,
+            _ctx(org_id, "engage.setup.connection.write"),
+            kind="google",
+            username="info@company.com",
+            secret="app-password",  # pragma: allowlist secret
+        )
         row = await services.create_domain(session, ctx, domain="company.com")
 
     async with session.begin():
@@ -526,6 +512,22 @@ async def test_a_domain_publishing_nothing_stays_pending_and_announces_nothing(
     assert checked.status == "pending"
     assert checked.last_checked_at is not None
     assert await _events(session, services.EVT_DOMAIN_VERIFIED) == 0
+
+
+async def test_a_domain_with_no_connection_is_never_verified_by_a_check(session, org_id) -> None:
+    """`verify` with no provider connected performs no lookup and folds to `pending` — the
+    "connect your email provider first" state, never a false `verified`."""
+    ctx = _ctx(org_id, "engage.setup.domain.write")
+    async with session.begin():
+        row = await services.create_domain(session, ctx, domain="company.com")
+
+    async with session.begin():
+        checked = await services.verify_domain(
+            session, ctx, domain_id=row.id, resolver=FakeResolver({})
+        )
+
+    assert checked.status == "pending"
+    assert checked.records == []
 
 
 async def test_a_sender_on_an_unverified_domain_is_refused(session, org_id) -> None:
@@ -573,6 +575,194 @@ async def test_a_sender_is_created_unusable_on_a_verified_domain(
     assert sender.address == "sales@company.com"
     assert sender.usable is False
     assert await _events(session, services.EVT_SENDER_CREATED) == 1
+
+
+# --------------------------------------------------------------------- deleting a domain
+
+
+async def test_deleting_a_domain_removes_it_and_its_senders(
+    session, org_id, verified_domain
+) -> None:
+    async with session.begin():
+        sender = await services.create_sender(
+            session,
+            _ctx(org_id, "engage.setup.sender.write"),
+            domain_id=verified_domain.id,
+            name="Sales",
+            address="sales@company.com",
+        )
+    domain_id, sender_id = verified_domain.id, sender.id
+
+    async with session.begin():
+        await services.delete_domain(
+            session, _ctx(org_id, "engage.setup.domain.write"), domain_id=domain_id
+        )
+
+    assert await selectors_get_domain(session, org_id, domain_id) is None
+    assert await selectors_get_sender(session, org_id, sender_id) is None
+
+
+async def selectors_get_domain(session, org_id, domain_id):  # thin wrapper, kept local
+    from app import selectors
+
+    return await selectors.get_domain(session, org_id, domain_id)
+
+
+async def selectors_get_sender(session, org_id, sender_id):
+    from app import selectors
+
+    return await selectors.get_sender(session, org_id, sender_id)
+
+
+async def test_deleting_an_unknown_domain_is_not_found(session, org_id) -> None:
+    with pytest.raises(NotFoundProblem):
+        async with session.begin():
+            await services.delete_domain(
+                session, _ctx(org_id, "engage.setup.domain.write"), domain_id=ABSENT
+            )
+
+
+async def test_deleting_a_domain_used_by_a_sent_campaign_is_refused(
+    session, org_id, verified_domain
+) -> None:
+    """A sender's campaign history is not this domain's to take away — the same reasoning
+    `delete_list` already applies to a list a campaign addressed."""
+    async with session.begin():
+        sender = await services.create_sender(
+            session,
+            _ctx(org_id, "engage.setup.sender.write"),
+            domain_id=verified_domain.id,
+            name="News",
+            address="news@company.com",
+        )
+        session.add(
+            models.Campaign(
+                organization_id=org_id,
+                sender_id=sender.id,
+                name="Autumn",
+                subject="News",
+                html_body="",
+                text_body="Hello",
+                audience="all_sendable",
+                status="sent",
+            )
+        )
+    # Read before the failure: the rollback expires every loaded attribute, and reading one
+    # afterwards is a lazy refresh from a thread with no event loop to do it on.
+    sender_id = sender.id
+
+    with pytest.raises(ConflictProblem, match=r"news@company\.com"):
+        async with session.begin():
+            await services.delete_domain(
+                session,
+                _ctx(org_id, "engage.setup.domain.write"),
+                domain_id=verified_domain.id,
+            )
+
+    # Refused, not partially applied: the sender is still there.
+    assert await selectors_get_sender(session, org_id, sender_id) is not None
+
+
+async def test_deleting_a_domain_used_only_by_a_draft_or_cancelled_campaign_succeeds(
+    session, org_id, verified_domain
+) -> None:
+    async with session.begin():
+        sender = await services.create_sender(
+            session,
+            _ctx(org_id, "engage.setup.sender.write"),
+            domain_id=verified_domain.id,
+            name="News",
+            address="news@company.com",
+        )
+        session.add(
+            models.Campaign(
+                organization_id=org_id,
+                sender_id=sender.id,
+                name="Draft",
+                subject="News",
+                html_body="",
+                text_body="Hello",
+                audience="all_sendable",
+                status="draft",
+            )
+        )
+
+    async with session.begin():
+        await services.delete_domain(
+            session, _ctx(org_id, "engage.setup.domain.write"), domain_id=verified_domain.id
+        )
+
+    assert await selectors_get_domain(session, org_id, verified_domain.id) is None
+
+
+async def test_a_delete_route_refuses_a_caller_holding_only_the_read(client, org_id) -> None:
+    with as_principal(engage_caller(org_id, [f"{D_READ}:ORG"])):
+        response = await client.delete(f"{DOMAINS}/{ABSENT}")
+    assert response.status_code == 403
+
+
+async def test_deleting_another_organizations_domain_is_not_found(
+    client, admin_session, org_id
+) -> None:
+    other = uuid.uuid4()
+    async with admin_session.begin():
+        their_domain = models.EmailDomain(
+            organization_id=other, domain="theirs.example.com", status="verified"
+        )
+        admin_session.add(their_domain)
+        await admin_session.flush()
+        domain_id = their_domain.id
+
+    with as_principal(engage_caller(org_id, [f"{D_WRITE}:ORG"])):
+        response = await client.delete(f"{DOMAINS}/{domain_id}")
+    assert response.status_code == 404
+
+
+# --------------------------------------------------------------------- editing a domain
+
+
+async def test_editing_the_dkim_selector_resets_the_domain_to_pending(
+    session, org_id, verified_domain
+) -> None:
+    async with session.begin():
+        row = await services.update_domain_settings(
+            session,
+            _ctx(org_id, "engage.setup.domain.write"),
+            domain_id=verified_domain.id,
+            dkim_selector="rotated",
+            spf_include=None,
+        )
+
+    assert row.dkim_selector == "rotated"
+    assert row.status == "pending"
+
+
+async def test_an_smtp_spf_include_must_be_a_plain_hostname(
+    session, org_id, verified_domain
+) -> None:
+    with pytest.raises(ValidationProblem):
+        async with session.begin():
+            await services.update_domain_settings(
+                session,
+                _ctx(org_id, "engage.setup.domain.write"),
+                domain_id=verified_domain.id,
+                dkim_selector=None,
+                spf_include="not a hostname",
+            )
+
+
+async def test_editing_with_no_actual_change_leaves_status_untouched(
+    session, org_id, verified_domain
+) -> None:
+    async with session.begin():
+        row = await services.update_domain_settings(
+            session,
+            _ctx(org_id, "engage.setup.domain.write"),
+            domain_id=verified_domain.id,
+            dkim_selector="google",
+            spf_include=None,
+        )
+    assert row.status == "verified"
 
 
 # --------------------------------------------------------------------- the test-send gate
@@ -1416,9 +1606,11 @@ async def test_replacing_as_another_organization_does_not_touch_this_ones_connec
     assert theirs.secret_enc == b"their-sealed-envelope"
 
 
-async def test_adding_a_domain_returns_what_the_customer_has_to_publish(client, org_id) -> None:
-    """The record set is the point of the response. A setup screen that cannot show it leaves
-    the customer with a domain row and nothing to paste into their registrar."""
+async def test_adding_a_domain_with_no_connection_shows_nothing_to_publish_yet(
+    client, org_id
+) -> None:
+    """ "Connect your email provider first" — a domain has nothing to check DNS against before
+    the organization has said how it sends."""
     with as_principal(engage_caller(org_id, [f"{D_WRITE}:ORG"])):
         response = await client.post(DOMAINS, json={"domain": "Company.com"})
 
@@ -1426,17 +1618,36 @@ async def test_adding_a_domain_returns_what_the_customer_has_to_publish(client, 
     assert response.status_code == 201
     assert body["domain"] == "company.com"
     assert body["status"] == "pending"
-    assert {r["kind"] for r in body["records"]} == {
-        "spf",
-        "dkim",
-        "dmarc",
-        "return_path",
-        "tracking",
-    }
-    # The DKIM record carries the public half. The private half is sealed in the row and has no
-    # field on the way out — a signing key in a response body is a kit for forging this
-    # customer's mail.
+    assert body["connection_kind"] is None
+    assert body["records"] == []
+
+
+async def test_adding_a_domain_previews_the_records_its_connection_needs(client, org_id) -> None:
+    """The record set is the point of the response once a provider is connected. A setup screen
+    that cannot show it leaves the customer with a domain row and nothing to paste into their
+    registrar."""
+    with as_principal(engage_caller(org_id, [f"{C_WRITE}:ORG"])):
+        await client.post(
+            CONNECTION,
+            json={
+                "kind": "google",
+                "username": "info@company.com",
+                "secret": "app-password",  # pragma: allowlist secret
+            },
+        )
+    with as_principal(engage_caller(org_id, [f"{D_WRITE}:ORG"])):
+        response = await client.post(DOMAINS, json={"domain": "Company.com"})
+
+    body = response.json()
+    assert response.status_code == 201
+    assert body["domain"] == "company.com"
+    assert body["connection_kind"] == "google"
+    assert {r["kind"] for r in body["records"]} == {"spf", "dkim", "dmarc"}
+    assert all(r["status"] == "missing" for r in body["records"])
+    # No OpsGrids infrastructure of any kind: no bounce host, no tracking host, no signing key
+    # this platform minted.
     assert "PRIVATE KEY" not in response.text
+    assert "opsgrids.com" not in response.text.lower()
 
 
 async def test_the_domain_list_shows_what_was_added(client, org_id) -> None:

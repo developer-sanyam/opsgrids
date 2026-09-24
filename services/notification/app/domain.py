@@ -741,74 +741,337 @@ def transport_for(kind: str, username: str) -> TransportSettings:
     raise ValueError(f"Unknown connection kind {kind!r}")
 
 
-def dns_records_for(
-    domain_name: str, dkim_selector: str, tracking_host: str
-) -> list[dict[str, Any]]:
-    """The record set an organization must publish to send as `domain_name`.
+#: The provider's own SPF host, for the two connection kinds whose transport is fixed. `smtp`
+#: has no equivalent here — the customer's provider names its own, on the domain row
+#: (`spf_include`), because we cannot know a self-hosted relay's SPF host any more than we can
+#: know its submission host.
+_PROVIDER_SPF_TARGET: Final[dict[str, str]] = {
+    "google": "_spf.google.com",
+    "microsoft": "spf.protection.outlook.com",
+}
 
-    DMARC is `required=False` deliberately. It is the right thing to publish and the setup screen
-    recommends it, but a domain that has not got there yet still sends — refusing would block a
-    customer on a policy decision their security team may still be making.
+
+def spf_target(connection_kind: str, spf_include: str | None) -> str | None:
+    """The SPF include mechanism's target host for `connection_kind`, or None when it is not
+    yet knowable — an `smtp` connection whose customer has not named their provider's SPF host."""
+    if connection_kind in _PROVIDER_SPF_TARGET:
+        return _PROVIDER_SPF_TARGET[connection_kind]
+    if connection_kind == "smtp":
+        return spf_include or None
+    return None
+
+
+def expected_records(
+    domain_name: str,
+    *,
+    connection_kind: str | None,
+    dkim_selector: str,
+    spf_include: str | None = None,
+) -> list[dict[str, Any]]:
+    """The record set an organization must publish to send as `domain_name`, derived from *how
+    they currently send* rather than frozen at the moment the domain was added.
+
+    Real sending always goes through the customer's own provider, and each one proves SPF and
+    DKIM its own way — there is no OpsGrids mail infrastructure to publish a record for, and no
+    return-path or tracking host either: nothing on this platform signs mail with a key it
+    mints, processes a bounce envelope, or rewrites a link to count a click. `connection_kind is
+    None` (no provider connected yet) returns nothing to publish — there is nothing to verify
+    against until the organization says how it sends.
+
+    DMARC is `required=False` deliberately, for every provider: it is the right thing to publish
+    and the setup screen recommends it, but a domain whose security team has not settled a policy
+    yet still sends — refusing would block a customer on a decision that is not this platform's
+    to make for them.
     """
-    return [
-        {
-            "kind": "spf",
-            "type": "TXT",
-            "host": domain_name,
-            "value": "v=spf1 include:_spf.opsgrids.com ~all",
-            "required": True,
-            "verified": False,
-        },
-        {
-            "kind": "dkim",
-            "type": "TXT",
-            "host": f"{dkim_selector}._domainkey.{domain_name}",
-            # Empty because this module is pure and cannot mint a keypair. The writer that
-            # creates the domain generates the key and fills this in; a plausible-looking
-            # placeholder here would be a record that can never verify.
-            "value": "",
-            "required": True,
-            "verified": False,
-        },
+    if connection_kind not in ("google", "microsoft", "smtp"):
+        return []
+
+    records: list[dict[str, Any]] = []
+    target = spf_target(connection_kind, spf_include)
+    if target is None:
+        records.append(
+            {
+                "kind": "spf",
+                "type": "TXT",
+                "fqdn": domain_name,
+                "registrar_name": "@",
+                "value": "",
+                "suggested_value": None,
+                "required": True,
+                "instruction": (
+                    "Enter your email provider's SPF include below (for example "
+                    "amazonses.com), then publish and verify."
+                ),
+            }
+        )
+    else:
+        default_value = f"v=spf1 include:{target} ~all"
+        records.append(
+            {
+                "kind": "spf",
+                "type": "TXT",
+                "fqdn": domain_name,
+                "registrar_name": "@",
+                "value": default_value,
+                "suggested_value": default_value,
+                "required": True,
+                "instruction": (
+                    f"Publish one SPF TXT record at your domain's apex that includes {target}. "
+                    "A domain may have only one SPF record — if you already have one, add the "
+                    "include to it rather than publishing a second."
+                ),
+            }
+        )
+
+    if connection_kind == "google":
+        records.append(
+            {
+                "kind": "dkim",
+                "type": "TXT",
+                "fqdn": f"{dkim_selector}._domainkey.{domain_name}",
+                "registrar_name": f"{dkim_selector}._domainkey",
+                "value": "(generated by Google Workspace)",
+                "suggested_value": None,
+                "required": True,
+                "instruction": (
+                    "In the Google Admin console, go to Apps -> Google Workspace -> Gmail -> "
+                    "Authenticate email, generate a key, publish the TXT value it gives you "
+                    "here, then click Start authentication."
+                ),
+            }
+        )
+    elif connection_kind == "microsoft":
+        for selector in ("selector1", "selector2"):
+            records.append(
+                {
+                    "kind": "dkim",
+                    "type": "CNAME",
+                    "fqdn": f"{selector}._domainkey.{domain_name}",
+                    "registrar_name": f"{selector}._domainkey",
+                    "value": "(from Microsoft Defender)",
+                    "suggested_value": None,
+                    "required": True,
+                    "instruction": (
+                        "In the Microsoft Defender portal, go to Email authentication -> DKIM, "
+                        f"and publish the CNAME target it gives you for {selector}."
+                    ),
+                }
+            )
+    elif dkim_selector:
+        records.append(
+            {
+                "kind": "dkim",
+                "type": "TXT",
+                "fqdn": f"{dkim_selector}._domainkey.{domain_name}",
+                "registrar_name": f"{dkim_selector}._domainkey",
+                "value": "(from your email provider)",
+                "suggested_value": None,
+                "required": True,
+                "instruction": (
+                    "Publish your provider's DKIM record here — a TXT containing v=DKIM1, or "
+                    "the CNAME target they give you."
+                ),
+            }
+        )
+    else:
+        records.append(
+            {
+                "kind": "dkim",
+                "type": "TXT",
+                "fqdn": f"_domainkey.{domain_name}",
+                "registrar_name": "_domainkey",
+                "value": "",
+                "suggested_value": None,
+                "required": True,
+                "instruction": (
+                    "Enter your DKIM selector below, then publish your provider's record for it."
+                ),
+            }
+        )
+
+    records.append(
         {
             "kind": "dmarc",
             "type": "TXT",
-            "host": f"_dmarc.{domain_name}",
-            "value": "v=DMARC1; p=none; rua=mailto:dmarc@opsgrids.com",
+            "fqdn": f"_dmarc.{domain_name}",
+            "registrar_name": "_dmarc",
+            "value": f"v=DMARC1; p=none; rua=mailto:dmarc@{domain_name}",
+            "suggested_value": None,
             "required": False,
-            "verified": False,
-        },
-        {
-            "kind": "return_path",
-            "type": "CNAME",
-            "host": f"bounce.{domain_name}",
-            "value": "bounce.opsgrids.com",
-            "required": True,
-            "verified": False,
-        },
-        {
-            "kind": "tracking",
-            "type": "CNAME",
-            "host": tracking_host,
-            "value": "track.opsgrids.com",
-            "required": True,
-            "verified": False,
-        },
-    ]
+            "instruction": (
+                "Recommended: publish a DMARC policy so mailbox providers know what to do with "
+                "mail that fails SPF or DKIM. It never blocks sending."
+            ),
+        }
+    )
+    return records
 
 
 def fold_domain_status(records: list[dict[str, Any]]) -> str:
-    """`verified` when every required record passes; otherwise `pending`.
+    """`verified` when every required record's `status` is `verified`; otherwise `pending`.
 
     The `required` list is checked for emptiness before `all()`, not out of caution about an
     impossible input: a domain row exists from the moment a customer types the name, before its
-    records have been generated, and `all()` over nothing is True — which would mark a domain
-    that has proven nothing as ready to send.
+    records have ever been checked, and `all()` over nothing is True — which would mark a domain
+    that has proven nothing as ready to send. A domain with no connection yet has no expected
+    records at all (`expected_records` returns `[]`), which folds the same way for the same
+    reason.
     """
     required = [r for r in records if r.get("required")]
-    if required and all(r.get("verified") for r in required):
+    if required and all(r.get("status") == "verified" for r in required):
         return "verified"
     return "pending"
+
+
+# --------------------------------------------------------------------- SPF evaluation
+#
+# SPF is one TXT record at the domain's apex, and it is one of two things a bulk sender's DNS
+# absolutely must get right (the other is DKIM, evaluated per provider below). The rules here are
+# the actual RFC 7208 shape a customer's registrar panel has to satisfy: exactly one record,
+# containing the provider's include as its own whole mechanism token — not a prefix, not a
+# suffix, not a substring of a longer one.
+
+#: An `all` mechanism, with its optional qualifier: `-all`, `~all`, `?all`, `+all`, or bare `all`.
+_ALL_MECHANISM: Final = re.compile(r"^[-~?+]?all$", re.IGNORECASE)
+
+#: Mechanisms RFC 7208 §4.6.4 counts against the ten-lookup ceiling. `a` and `mx` are counted
+#: bare or with a domain-spec suffix (`a:example.com`, `mx/24`); the others always carry one.
+_LOOKUP_PREFIXES: Final = ("include:", "exists:", "redirect=")
+
+
+@dataclass(frozen=True, slots=True)
+class SpfResult:
+    """What one SPF check found, and what to do about it. `suggested_value` is **always**
+    populated — there is always something to publish or edit, even when nothing exists yet."""
+
+    status: str
+    message: str
+    suggested_value: str
+
+
+def _spf_lookup_count(record: str) -> int:
+    """How many of RFC 7208's ten permitted DNS lookups this record's mechanisms would spend."""
+    count = 0
+    for part in record.split()[1:]:
+        lowered = part.lower()
+        if (
+            lowered.startswith(_LOOKUP_PREFIXES)
+            or lowered in ("a", "mx")
+            or lowered.startswith(("a:", "a/", "mx:", "mx/"))
+        ):
+            count += 1
+    return count
+
+
+def _insert_before_all(record: str, token: str) -> str:
+    """`token` placed immediately before the `all` mechanism, so it takes effect before the
+    record's default action — appending after `all` would make it dead text SPF never reads."""
+    parts = record.split()
+    for i, part in enumerate(parts):
+        if _ALL_MECHANISM.match(part):
+            return " ".join([*parts[:i], token, *parts[i:]])
+    return " ".join([*parts, token])
+
+
+def _merge_spf(records: list[str], token: str) -> str:
+    """One record built from the union of every mechanism across `records`, plus `token` if none
+    of them already carry it, with a single trailing `~all` — the shape a customer publishes to
+    replace every one of several competing records with the one SPF allows."""
+    mechanisms: list[str] = []
+    seen: set[str] = set()
+    for record in records:
+        for part in record.split()[1:]:
+            if _ALL_MECHANISM.match(part):
+                continue
+            if part.lower() not in seen:
+                seen.add(part.lower())
+                mechanisms.append(part)
+    if token.lower() not in seen:
+        mechanisms.append(token)
+    return " ".join(["v=spf1", *mechanisms, "~all"])
+
+
+def evaluate_spf(txt_records: list[str], *, required_include: str) -> SpfResult:
+    """Fold a domain apex's published TXT answers into one SPF verdict.
+
+    Zero SPF-shaped records: `missing`. More than one: `multiple` — a domain may publish only
+    one, so this is refused rather than merged silently; the suggested value is what merging them
+    by hand would produce. Exactly one: `verified` iff it contains `include:<required_include>`
+    as its own mechanism token (never a substring of a longer one — `include:_spf.google.com.evil
+    .com` must not read as containing `include:_spf.google.com`); otherwise `mismatch`, with the
+    existing record edited in place rather than a second one to add.
+    """
+    candidates = [r.strip() for r in txt_records if r.strip().lower().startswith("v=spf1")]
+    token = f"include:{required_include}"
+
+    if not candidates:
+        return SpfResult(
+            status="missing",
+            message="No SPF record was found. Publish one at your domain's apex.",
+            suggested_value=f"v=spf1 {token} ~all",
+        )
+
+    if len(candidates) > 1:
+        return SpfResult(
+            status="multiple",
+            message=(
+                f"Your domain has {len(candidates)} SPF records; a domain may have only one. "
+                "Merge them into one."
+            ),
+            suggested_value=_merge_spf(candidates, token),
+        )
+
+    record = candidates[0]
+    mechanisms = {p.lower() for p in record.split()[1:]}
+    if token.lower() in mechanisms:
+        message = "Verified."
+        count = _spf_lookup_count(record)
+        if count > 10:
+            message += (
+                f" This record makes about {count} DNS lookups; RFC 7208 permits ten, so some "
+                "receivers may fail it outright."
+            )
+        return SpfResult(status="verified", message=message, suggested_value=record)
+
+    return SpfResult(
+        status="mismatch",
+        message="Edit your existing SPF record to this value — don't add a second one",
+        suggested_value=_insert_before_all(record, token),
+    )
+
+
+# --------------------------------------------------------------------- DKIM and DMARC evaluation
+#
+# Neither DKIM record's actual value is ours to know — the key is minted by the provider, not by
+# this platform, so what these check is existence and shape, never a specific published value.
+
+
+def _contains(records: list[str], marker: str) -> bool:
+    marker_lower = marker.lower()
+    return any(marker_lower in r.lower() for r in records)
+
+
+def evaluate_dkim_txt(records: list[str]) -> str:
+    """Google's shape: a TXT record at the selector that names `v=DKIM1`. `mismatch` (not
+    `missing`) when something is published there but it is not that — a customer who pasted the
+    wrong value needs to know a value arrived at all."""
+    if not records:
+        return "missing"
+    return "verified" if _contains(records, "v=DKIM1") else "mismatch"
+
+
+def evaluate_dkim_smtp(txt_records: list[str], cname_records: list[str]) -> str:
+    """A customer-run provider's shape: a TXT naming `v=DKIM1`, or a CNAME to wherever the
+    provider hosts the record — either satisfies it, since providers publish DKIM both ways."""
+    if _contains(txt_records, "v=DKIM1") or cname_records:
+        return "verified"
+    return "mismatch" if txt_records else "missing"
+
+
+def evaluate_dmarc(records: list[str]) -> bool:
+    """Whether any TXT at `_dmarc.<domain>` is a DMARC record. Recommended only — nothing folds
+    this into `fold_domain_status`'s required list, so its absence never blocks a send."""
+    return any(r.strip().lower().startswith("v=dmarc1") for r in records)
 
 
 # --------------------------------------------------------------------- engage unsubscribe links

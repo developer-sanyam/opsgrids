@@ -3,11 +3,6 @@
 The resolver is injected for the same reason the transports are: a test that asks the real DNS
 tests whoever owns that zone, not this code, and fails on a train. Every answer below was written
 down here.
-
-The rule under test is deliberately "is the expected value *in* the answer" rather than equality.
-Resolvers hand back a long TXT value in chunks, registrars wrap and append, and a DKIM public key
-is always over the 255-byte limit that forces the split — so equality would mean the one record
-that matters never verifies.
 """
 
 from __future__ import annotations
@@ -20,7 +15,7 @@ import pytest
 
 from app import dns_check
 
-SPF = "v=spf1 include:_spf.opsgrids.com ~all"
+SPF = "v=spf1 include:_spf.google.com ~all"
 
 
 class FakeResolver:
@@ -33,127 +28,207 @@ class FakeResolver:
         return self._answers.get((host, rtype), [])
 
 
-def _spf_record(**overrides: Any) -> dict[str, Any]:
-    record: dict[str, Any] = {
-        "kind": "spf",
-        "type": "TXT",
-        "host": "company.com",
-        "value": SPF,
-        "required": True,
-        "verified": False,
-    }
-    record.update(overrides)
-    return record
+# --------------------------------------------------------------------- normalize_domain_name
 
 
-# --------------------------------------------------------------------- check_records
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("company.com", "company.com"),
+        ("Company.COM", "company.com"),
+        ("  company.com  ", "company.com"),
+        ("company.com.", "company.com"),
+        ("https://opsgrids.com/", "opsgrids.com"),
+        ("http://company.com", "company.com"),
+        ("HTTPS://Company.COM/", "company.com"),
+        ("mail.company.co.uk", "mail.company.co.uk"),
+    ],
+)
+def test_normalizes_every_shape_a_customer_pastes(raw: str, expected: str) -> None:
+    assert dns_check.normalize_domain_name(raw) == expected
 
 
-async def test_a_published_txt_record_verifies() -> None:
-    out = await dns_check.check_records(
-        [_spf_record()], resolver=FakeResolver({("company.com", "TXT"): [SPF]})
+def test_a_unicode_name_is_idna_encoded() -> None:
+    assert dns_check.normalize_domain_name("café.com") == "xn--caf-dma.com"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        "   ",
+        "company.com/path",
+        "company.com:8080",
+        "user@company.com",
+        "company.com?x=1",
+        "company.com#frag",
+        "*.company.com",
+        "exa mple.com",
+        "127.0.0.1",
+        "[::1]",
+        "localhost",
+        "singlelabel",
+    ],
+)
+def test_refuses_anything_that_is_not_a_plain_domain(raw: str) -> None:
+    with pytest.raises(ValueError, match=dns_check.INVALID_DOMAIN_MESSAGE):
+        dns_check.normalize_domain_name(raw)
+
+
+def test_every_refusal_reads_the_same_sentence() -> None:
+    """A path, a port and a single label must not be distinguishable from the outside — that
+    distinction is exactly what a probe would use the error to learn."""
+    for raw in ("company.com/path", "company.com:8080", "singlelabel"):
+        try:
+            dns_check.normalize_domain_name(raw)
+        except ValueError as exc:
+            assert str(exc) == dns_check.INVALID_DOMAIN_MESSAGE
+        else:  # pragma: no cover - the parametrized test above already proves these raise
+            pytest.fail(f"{raw!r} did not raise")
+
+
+# --------------------------------------------------------------------- check_domain_records
+
+
+async def test_no_connection_performs_no_lookup_and_returns_nothing() -> None:
+    calls: list[tuple[str, str]] = []
+
+    class _Counting:
+        async def resolve(self, host: str, rtype: str) -> list[str]:
+            calls.append((host, rtype))
+            return []
+
+    out = await dns_check.check_domain_records(
+        "company.com",
+        connection_kind=None,
+        dkim_selector="google",
+        spf_include=None,
+        resolver=_Counting(),
     )
-    assert out[0]["verified"] is True
+    assert out == []
+    assert calls == []
 
 
-async def test_a_missing_record_does_not_verify() -> None:
-    out = await dns_check.check_records([_spf_record()], resolver=FakeResolver({}))
-    assert out[0]["verified"] is False
-
-
-async def test_a_different_value_at_the_same_name_does_not_verify() -> None:
-    """A domain that already carries someone else's SPF is the common case, not an edge one."""
-    out = await dns_check.check_records(
-        [_spf_record()],
-        resolver=FakeResolver({("company.com", "TXT"): ["v=spf1 include:_spf.google.com ~all"]}),
-    )
-    assert out[0]["verified"] is False
-
-
-async def test_a_value_the_registrar_has_padded_still_verifies() -> None:
-    out = await dns_check.check_records(
-        [_spf_record()], resolver=FakeResolver({("company.com", "TXT"): [f'"{SPF}" ']})
-    )
-    assert out[0]["verified"] is True
-
-
-async def test_a_record_with_no_value_yet_cannot_verify() -> None:
-    """DKIM is generated with an empty value until the keypair exists. An empty string is a
-    substring of every answer, so without this guard a domain with no key would read as verified
-    and mail would go out unsigned."""
-    dkim = {
-        "kind": "dkim",
-        "type": "TXT",
-        "host": "eng1._domainkey.company.com",
-        "value": "",
-        "required": True,
-        "verified": False,
-    }
-    out = await dns_check.check_records(
-        [dkim],
-        resolver=FakeResolver({("eng1._domainkey.company.com", "TXT"): ["v=DKIM1; k=rsa; p=AAA"]}),
-    )
-    assert out[0]["verified"] is False
-
-
-async def test_a_cname_is_asked_for_as_a_cname() -> None:
-    """The record's own type drives the lookup. Asking for the wrong type is how a correctly
-    configured domain reads as broken."""
-    return_path = {
-        "kind": "return_path",
-        "type": "CNAME",
-        "host": "bounce.company.com",
-        "value": "bounce.opsgrids.com",
-        "required": True,
-        "verified": False,
-    }
-    right = FakeResolver({("bounce.company.com", "CNAME"): ["bounce.opsgrids.com."]})
-    wrong = FakeResolver({("bounce.company.com", "TXT"): ["bounce.opsgrids.com."]})
-
-    assert (await dns_check.check_records([return_path], resolver=right))[0]["verified"] is True
-    assert (await dns_check.check_records([return_path], resolver=wrong))[0]["verified"] is False
-
-
-async def test_every_record_is_judged_on_its_own_answer() -> None:
-    records = [
-        _spf_record(),
+async def test_google_domain_verifies_when_both_records_are_published() -> None:
+    resolver = FakeResolver(
         {
-            "kind": "dmarc",
-            "type": "TXT",
-            "host": "_dmarc.company.com",
-            "value": "v=DMARC1; p=none",
-            "required": False,
-            "verified": False,
-        },
-    ]
-    out = await dns_check.check_records(
-        records, resolver=FakeResolver({("company.com", "TXT"): [SPF]})
+            ("company.com", "TXT"): [SPF],
+            ("google._domainkey.company.com", "TXT"): ["v=DKIM1; k=rsa; p=AAA"],
+        }
     )
-    assert [r["verified"] for r in out] == [True, False]
-
-
-async def test_a_record_that_verified_yesterday_can_stop_verifying() -> None:
-    """Verification is a fact about now. A customer who deletes the record must see that."""
-    out = await dns_check.check_records([_spf_record(verified=True)], resolver=FakeResolver({}))
-    assert out[0]["verified"] is False
-
-
-async def test_check_does_not_mutate_its_input() -> None:
-    records = [_spf_record()]
-    out = await dns_check.check_records(
-        records, resolver=FakeResolver({("company.com", "TXT"): [SPF]})
+    out = await dns_check.check_domain_records(
+        "company.com",
+        connection_kind="google",
+        dkim_selector="google",
+        spf_include=None,
+        resolver=resolver,
     )
-    assert records[0]["verified"] is False
-    assert out[0] is not records[0]
+    by_kind = {r["kind"]: r for r in out}
+    assert by_kind["spf"]["status"] == "verified"
+    assert by_kind["dkim"]["status"] == "verified"
+    assert by_kind["dmarc"]["status"] == "missing"
 
 
-async def test_the_rest_of_the_record_survives_the_check() -> None:
-    """The stored record set is what the setup screen shows. Dropping a field here would show the
-    customer a different DKIM selector from the one they already pasted into their registrar."""
-    out = await dns_check.check_records(
-        [_spf_record()], resolver=FakeResolver({("company.com", "TXT"): [SPF]})
+async def test_google_domain_stays_pending_with_nothing_published() -> None:
+    out = await dns_check.check_domain_records(
+        "company.com",
+        connection_kind="google",
+        dkim_selector="google",
+        spf_include=None,
+        resolver=FakeResolver({}),
     )
-    assert out[0] == _spf_record(verified=True)
+    by_kind = {r["kind"]: r for r in out}
+    assert by_kind["spf"]["status"] == "missing"
+    assert by_kind["dkim"]["status"] == "missing"
+
+
+async def test_microsoft_dkim_needs_both_selector_cnames() -> None:
+    resolver = FakeResolver(
+        {
+            ("company.com", "TXT"): ["v=spf1 include:spf.protection.outlook.com ~all"],
+            ("selector1._domainkey.company.com", "CNAME"): [
+                "selector1-company-com._domainkey.example.onmicrosoft.com."
+            ],
+        }
+    )
+    out = await dns_check.check_domain_records(
+        "company.com",
+        connection_kind="microsoft",
+        dkim_selector="google",
+        spf_include=None,
+        resolver=resolver,
+    )
+    dkim = {r["fqdn"]: r["status"] for r in out if r["kind"] == "dkim"}
+    assert dkim["selector1._domainkey.company.com"] == "verified"
+    assert dkim["selector2._domainkey.company.com"] == "missing"
+
+
+async def test_smtp_with_no_include_or_selector_never_looks_up_spf_or_dkim() -> None:
+    """Nothing to check until the customer has named their provider's SPF host and DKIM
+    selector — a lookup with an empty required value would be meaningless."""
+    calls: list[tuple[str, str]] = []
+
+    class _Counting:
+        async def resolve(self, host: str, rtype: str) -> list[str]:
+            calls.append((host, rtype))
+            return []
+
+    out = await dns_check.check_domain_records(
+        "company.com",
+        connection_kind="smtp",
+        dkim_selector="",
+        spf_include=None,
+        resolver=_Counting(),
+    )
+    by_kind = {r["kind"]: r for r in out}
+    assert by_kind["spf"]["status"] == "missing"
+    assert by_kind["dkim"]["status"] == "missing"
+    # DMARC is still checked — it does not depend on either customer-entered value.
+    assert calls == [("_dmarc.company.com", "TXT")]
+
+
+async def test_smtp_dkim_verifies_on_a_cname_too() -> None:
+    resolver = FakeResolver(
+        {
+            ("company.com", "TXT"): ["v=spf1 include:amazonses.com ~all"],
+            ("mysel._domainkey.company.com", "CNAME"): ["dkim.amazonses.com."],
+        }
+    )
+    out = await dns_check.check_domain_records(
+        "company.com",
+        connection_kind="smtp",
+        dkim_selector="mysel",
+        spf_include="amazonses.com",
+        resolver=resolver,
+    )
+    by_kind = {r["kind"]: r for r in out}
+    assert by_kind["spf"]["status"] == "verified"
+    assert by_kind["dkim"]["status"] == "verified"
+
+
+async def test_a_provider_switch_is_judged_against_the_new_provider_only() -> None:
+    """The same domain, checked once as `google` and once as `microsoft`: each check asks only
+    the questions its own provider requires — a Microsoft answer must not leak into a Google
+    verdict or vice versa."""
+    resolver = FakeResolver({("company.com", "TXT"): ["v=spf1 include:_spf.google.com ~all"]})
+    google_out = await dns_check.check_domain_records(
+        "company.com",
+        connection_kind="google",
+        dkim_selector="google",
+        spf_include=None,
+        resolver=resolver,
+    )
+    microsoft_out = await dns_check.check_domain_records(
+        "company.com",
+        connection_kind="microsoft",
+        dkim_selector="google",
+        spf_include=None,
+        resolver=resolver,
+    )
+    assert next(r for r in google_out if r["kind"] == "spf")["status"] == "verified"
+    # A record is published — it is just Google's, not Microsoft's — so this is a `mismatch`
+    # (something is there and wrong), not a `missing` (nothing is there at all).
+    assert next(r for r in microsoft_out if r["kind"] == "spf")["status"] == "mismatch"
 
 
 # --------------------------------------------------------------------- the dnspython adapter

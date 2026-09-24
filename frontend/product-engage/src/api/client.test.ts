@@ -4,9 +4,13 @@ import {
   addDomain,
   addSender,
   connectProvider,
+  deleteDomain,
+  editDomain,
   getConnection,
+  getSetup,
   listDomains,
   listSenders,
+  sendCampaignTest,
   sendTestMessage,
   verifyDomain,
 } from "./client";
@@ -99,6 +103,40 @@ describe("the engage paths", () => {
     expect(call(fetchMock)[0]).toBe(
       "/api/v1/engage/senders?size=200&domain_id=3f6a1c20-7d84-4e1b-9c53-0a2e8b74d611",
     );
+  });
+
+  it("edits a domain with PATCH and deletes it with DELETE, both at the same resource path", async () => {
+    const edited = stubFetch({});
+    await editDomain("b90d5e47-2c31-4a88-8f70-61d4c9a5e223", { dkim_selector: "rotated" });
+    const [editUrl, editInit] = call(edited);
+    expect(editUrl).toBe("/api/v1/engage/domains/b90d5e47-2c31-4a88-8f70-61d4c9a5e223");
+    expect(editInit.method).toBe("PATCH");
+    vi.unstubAllGlobals();
+
+    const deleteMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", deleteMock);
+    await deleteDomain("b90d5e47-2c31-4a88-8f70-61d4c9a5e223");
+    const [deleteUrl, deleteInit] = call(deleteMock);
+    expect(deleteUrl).toBe("/api/v1/engage/domains/b90d5e47-2c31-4a88-8f70-61d4c9a5e223");
+    expect(deleteInit.method).toBe("DELETE");
+  });
+
+  it("reads the get-started checklist from its own route", async () => {
+    const fetchMock = stubFetch({ steps: [] });
+    await getSetup();
+    const [url, init] = call(fetchMock);
+    expect(url).toBe("/api/v1/engage/setup");
+    expect(init.method).toBe("GET");
+  });
+
+  it("sends a campaign test to the campaign's own test route", async () => {
+    const fetchMock = stubFetch({ sent: true, to: "ops@vaayu-logistics.example.com" });
+    await sendCampaignTest("c1a2b3c4-1111-2222-3333-444455556666", {
+      to_address: "ops@vaayu-logistics.example.com",
+    });
+    const [url, init] = call(fetchMock);
+    expect(url).toBe("/api/v1/engage/campaigns/c1a2b3c4-1111-2222-3333-444455556666/test");
+    expect(init.method).toBe("POST");
   });
 
   it("sends the test message to the sender's own test route", async () => {

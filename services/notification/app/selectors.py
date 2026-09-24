@@ -421,6 +421,190 @@ async def get_sender_by_address(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def setup_checklist(session: AsyncSession, ctx: ScopeContext) -> list[dict[str, Any]]:
+    """The "get started" checklist: five steps, in the order an organization actually completes
+    them, each folded from the same rows every other Engage screen already reads — nothing here
+    is stored, and a step's status can never disagree with the screen it links to.
+
+    `blocked` names a step that cannot be started until an earlier one is: a domain has nothing
+    to verify against with no provider connected, a sender cannot be proven on a domain nobody
+    has verified, and a campaign has no sender to pick until one has passed its own test send.
+    """
+    org_id = ctx.organization_id
+    connection = await get_connection(session, org_id)
+    domains = (await session.execute(domains_stmt(ctx))).scalars().all()
+    senders = (await session.execute(senders_stmt(ctx))).scalars().all()
+    contact_count = int(
+        (
+            await session.execute(
+                select(func.count()).where(
+                    Contact.organization_id == org_id, Contact.deleted_at.is_(None)
+                )
+            )
+        ).scalar_one()
+    )
+    campaigns = (await session.execute(campaigns_stmt(ctx))).scalars().all()
+
+    steps: list[dict[str, Any]] = []
+
+    if connection is None:
+        steps.append(
+            {
+                "step": "connection",
+                "status": "todo",
+                "detail": "No email provider connected yet.",
+                "link": "/connection",
+            }
+        )
+    elif connection.status != "connected":
+        steps.append(
+            {
+                "step": "connection",
+                "status": "todo",
+                "detail": f"{connection.username} is disconnected.",
+                "link": "/connection",
+            }
+        )
+    else:
+        steps.append(
+            {
+                "step": "connection",
+                "status": "done",
+                "detail": f"Connected via {connection.kind}.",
+                "link": "/connection",
+            }
+        )
+
+    verified_domains = [d for d in domains if d.status == "verified"]
+    if connection is None:
+        steps.append(
+            {
+                "step": "domain",
+                "status": "blocked",
+                "detail": "Connect your email provider first.",
+                "link": "/domains",
+            }
+        )
+    elif not domains:
+        steps.append(
+            {
+                "step": "domain",
+                "status": "todo",
+                "detail": "No sending domain added yet.",
+                "link": "/domains",
+            }
+        )
+    elif not verified_domains:
+        steps.append(
+            {
+                "step": "domain",
+                "status": "todo",
+                "detail": f"{len(domains)} domain(s) added, none verified yet.",
+                "link": "/domains",
+            }
+        )
+    else:
+        steps.append(
+            {
+                "step": "domain",
+                "status": "done",
+                "detail": f"{len(verified_domains)} of {len(domains)} domain(s) verified.",
+                "link": "/domains",
+            }
+        )
+
+    usable_senders = [s for s in senders if s.usable]
+    if not verified_domains:
+        steps.append(
+            {
+                "step": "sender",
+                "status": "blocked",
+                "detail": "Verify a sending domain first.",
+                "link": "/senders",
+            }
+        )
+    elif not senders:
+        steps.append(
+            {
+                "step": "sender",
+                "status": "todo",
+                "detail": "No sender added yet.",
+                "link": "/senders",
+            }
+        )
+    elif not usable_senders:
+        steps.append(
+            {
+                "step": "sender",
+                "status": "todo",
+                "detail": f"{len(senders)} sender(s) added, none tested yet.",
+                "link": "/senders",
+            }
+        )
+    else:
+        steps.append(
+            {
+                "step": "sender",
+                "status": "done",
+                "detail": f"{len(usable_senders)} of {len(senders)} sender(s) usable.",
+                "link": "/senders",
+            }
+        )
+
+    steps.append(
+        {
+            "step": "contacts",
+            "status": "done" if contact_count else "todo",
+            "detail": (
+                f"{contact_count} contact(s) in your audience."
+                if contact_count
+                else "No contacts yet."
+            ),
+            "link": "/contacts",
+        }
+    )
+
+    sent_campaigns = [c for c in campaigns if c.status in ("sending", "sent")]
+    if not usable_senders:
+        steps.append(
+            {
+                "step": "campaign",
+                "status": "blocked",
+                "detail": "Add a usable sender first.",
+                "link": "/campaigns",
+            }
+        )
+    elif not campaigns:
+        steps.append(
+            {
+                "step": "campaign",
+                "status": "todo",
+                "detail": "No campaign created yet.",
+                "link": "/campaigns",
+            }
+        )
+    elif not sent_campaigns:
+        steps.append(
+            {
+                "step": "campaign",
+                "status": "todo",
+                "detail": f"{len(campaigns)} draft campaign(s), none sent yet.",
+                "link": "/campaigns",
+            }
+        )
+    else:
+        steps.append(
+            {
+                "step": "campaign",
+                "status": "done",
+                "detail": f"{len(sent_campaigns)} campaign(s) sent.",
+                "link": "/campaigns",
+            }
+        )
+
+    return steps
+
+
 # --------------------------------------------------------------------- engage audience
 
 
@@ -662,6 +846,25 @@ async def campaigns_using_list(session: AsyncSession, org_id: uuid.UUID, list_id
     stmt = select(func.count()).where(
         Campaign.organization_id == org_id,
         Campaign.list_id == list_id,
+        Campaign.deleted_at.is_(None),
+    )
+    return int((await session.execute(stmt)).scalar_one())
+
+
+async def campaigns_using_sender(
+    session: AsyncSession, org_id: uuid.UUID, sender_id: uuid.UUID
+) -> int:
+    """How many of this sender's campaigns are not a draft or cancelled — the count
+    `delete_domain` refuses to delete a sender (and so its domain) out from under.
+
+    Draft and cancelled are excluded because neither ever reached anyone: a draft's sender choice
+    is not yet a fact about mail that went out, and a cancelled send stopped before or during its
+    run with its own record of who it actually reached — deleting the sender changes neither.
+    """
+    stmt = select(func.count()).where(
+        Campaign.organization_id == org_id,
+        Campaign.sender_id == sender_id,
+        Campaign.status.notin_(("draft", "cancelled")),
         Campaign.deleted_at.is_(None),
     )
     return int((await session.execute(stmt)).scalar_one())

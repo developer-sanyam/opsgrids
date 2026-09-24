@@ -10,5 +10,8 @@ import type { DnsRecordOut } from "@/api/types";
  */
 export function requiredProgress(records: DnsRecordOut[]): { found: number; total: number } {
   const required = records.filter((record) => record.required);
-  return { found: required.filter((record) => record.verified).length, total: required.length };
+  return {
+    found: required.filter((record) => record.status === "verified").length,
+    total: required.length,
+  };
 }
