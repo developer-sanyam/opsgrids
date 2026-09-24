@@ -134,7 +134,7 @@ async def seed_signal(
                 lat=lat,
                 lng=lng,
                 accuracy_m=accuracy,
-                device_index=signals.device_index_for(device) if device else None,
+                device_index=signals.device_index_for(org_id, device) if device else None,
             )
         )
 

@@ -286,7 +286,16 @@ class SignalSettingsIn(BaseModel):
     detect_mock_location: bool = False
     detect_impossible_travel: bool = False
     detect_shared_device: bool = False
-    detect_ip_outside_allowed: bool = False
+    detect_ip_outside_allowed: bool = Field(
+        default=False,
+        description=(
+            "Flag a punch that came from outside every range in `allowed_cidrs`. "
+            "**The office-network rule applies only to punches declared as office.** The work mode "
+            "is the client's own claim, so a client that declares `remote` (or `field`, `hybrid`) "
+            "is not judged by this rule; it catches an office punch from the wrong network, not a "
+            "client that misstates where it is. Needs at least one range."
+        ),
+    )
     max_travel_speed_kmh: int = Field(default=900, ge=10, le=3000)
     shared_device_window_hours: int = Field(default=24, ge=1, le=168)
     #: Ranges an *office* punch may come from, e.g. `203.0.113.0/24`. Canonicalised and

@@ -94,9 +94,9 @@ def upgrade() -> None:
         sa.Column("mock_location", sa.Boolean(), nullable=True),
         sa.Column("user_agent_class", sa.String(length=20), nullable=True),
         sa.Column("ip_enc", sa.LargeBinary(), nullable=True),
-        sa.Column("ip_masked", sa.String(length=40), nullable=True),
+        sa.Column("ip_masked", sa.String(length=128), nullable=True),
         sa.Column("device_id_enc", sa.LargeBinary(), nullable=True),
-        sa.Column("device_id_masked", sa.String(length=40), nullable=True),
+        sa.Column("device_id_masked", sa.String(length=128), nullable=True),
         sa.Column("device_index", sa.String(length=64), nullable=True),
         sa.Column("id", sa.UUID(), nullable=False),
         sa.Column(

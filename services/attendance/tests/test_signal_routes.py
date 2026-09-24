@@ -1009,5 +1009,5 @@ class TestPunchInputs:
         me = uuid.uuid4()
         await seed_signal(session, org_id, me, ago=timedelta(hours=1), device=DEVICE_A)
         (signal,) = await all_signals(session)
-        assert signal.device_index == signals.device_index_for(DEVICE_A)
+        assert signal.device_index == signals.device_index_for(org_id, DEVICE_A)
         assert signal.employee_id == me

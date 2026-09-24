@@ -245,6 +245,7 @@ async def unmask_signal(
     session: SessionDep,
     ctx: AttendanceUnmask,
     request: Request,
+    response: Response,
 ) -> SignalUnmasked:
     """The single decrypting endpoint for punch signals. Guarded by the dangerous
     `read_sensitive` permission and a second-factor step-up, then re-scoped to this one punch: a
@@ -269,7 +270,12 @@ async def unmask_signal(
         team_owner_id=team_owner_id,
         location_code=record.location_code,
     )
-    return await signals.unmask_signal(session, ctx, signal, payload.fields, request=request)
+    revealed = await signals.unmask_signal(session, ctx, signal, payload.fields, request=request)
+    # A revealed address or device id must not be kept by a browser cache, a proxy or the
+    # back/forward store: the audit row says it was read once, and a stored copy would be read
+    # again unrecorded.
+    response.headers["Cache-Control"] = "no-store"
+    return revealed
 
 
 @router.get(
@@ -281,7 +287,12 @@ async def unmask_signal(
 async def read_signal_settings(session: SessionDep, ctx: ShiftWrite) -> SignalSettingsOut:
     """Administrators only (`shift.write:ORG`, the org time-admin permission): the thresholds and
     the allowed ranges tell a person exactly how to stay under them. An organization that has never
-    saved a setting reads back every rule off."""
+    saved a setting reads back every rule off.
+
+    Limit of the address rule, stated plainly: the office-network rule applies only to punches
+    declared as office. The work mode is the client's own claim, so declaring `remote` sidesteps
+    it; the rule catches an office punch from the wrong network, not a client that misstates its
+    work mode."""
     row = await selectors.get_signal_settings(session, ctx.organization_id)
     if row is None:
         return SignalSettingsOut()
@@ -299,7 +310,12 @@ async def put_signal_settings(
 ) -> SignalSettingsOut:
     """A full replacement — the same body always yields the same state — audited with the rules
     as they were and as they are. Every rule is observe-only: it can raise a flag and can never
-    refuse or alter a punch."""
+    refuse or alter a punch.
+
+    Limit of the address rule, stated plainly: the office-network rule applies only to punches
+    declared as office. The work mode is the client's own claim, so declaring `remote` sidesteps
+    it; the rule catches an office punch from the wrong network, not a client that misstates its
+    work mode."""
     row = await signals.put_settings(session, ctx, payload, request=request)
     return SignalSettingsOut.model_validate(row)
 

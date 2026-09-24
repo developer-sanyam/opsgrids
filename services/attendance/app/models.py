@@ -543,10 +543,14 @@ class PunchSignal(Base, TenantBase):
     mock_location: Mapped[bool | None] = mapped_column(Boolean)
     user_agent_class: Mapped[str | None] = mapped_column(String(20))
 
+    #: The masks are as wide as the longest value they can be made from. The platform's generic
+    #: mask keeps the input's length (bullets plus the last two characters), and the device id the
+    #: schema accepts is up to 128 characters (a SHA-256 hex digest is 64), so a narrower column
+    #: would fail the insert for an ordinary id. An address is at most 39 characters, well inside.
     ip_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
-    ip_masked: Mapped[str | None] = mapped_column(String(40))
+    ip_masked: Mapped[str | None] = mapped_column(String(128))
     device_id_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
-    device_id_masked: Mapped[str | None] = mapped_column(String(40))
+    device_id_masked: Mapped[str | None] = mapped_column(String(128))
     #: HMAC-SHA256 hex of the device id — see the class docstring. 64 hex characters.
     device_index: Mapped[str | None] = mapped_column(String(64))
 

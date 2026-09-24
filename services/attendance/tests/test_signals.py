@@ -473,7 +473,8 @@ class TestSharedDevice:
                     employee_id=other,
                     kind="check_in",
                     punched_at=datetime.now(UTC) - timedelta(minutes=5),
-                    device_index=signals.device_index_for(DEVICE_A),
+                    # The value org A itself would compute: only the tenant filter keeps it out.
+                    device_index=signals.device_index_for(org_id, DEVICE_A),
                 )
             )
 

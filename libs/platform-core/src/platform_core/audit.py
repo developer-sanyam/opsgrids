@@ -160,9 +160,15 @@ def _client_ip(request: Request | None) -> str | None:
     if not candidate:
         return None
     try:
-        return str(ipaddress.ip_address(candidate))
+        address = ipaddress.ip_address(candidate)
     except ValueError:
         return None
+    # `fe80::1%eth0` parses in Python and is refused by PostgreSQL's INET, so it would turn an
+    # audited request into a 500 by another route. A zone id names an interface on the sender's own
+    # host and is no routable client address; it is recorded as unknown.
+    if isinstance(address, ipaddress.IPv6Address) and address.scope_id:
+        return None
+    return str(address)
 
 
 def record_audit(

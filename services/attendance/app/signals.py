@@ -92,10 +92,19 @@ def seal_aad(organization_id: uuid.UUID, signal_id: uuid.UUID, field: str) -> by
     return f"attendance.punch_signal:{organization_id}:{signal_id}:{field}".encode()
 
 
-def device_index_for(device_id_hash: str) -> str:
+def device_index_for(organization_id: uuid.UUID, device_id_hash: str) -> str:
     """The keyed blind index the shared-device rule looks devices up by — never the device id
-    itself. Public so the rule's own tests seed rows the same way the write path does."""
-    return blind_index(device_id_hash, kind=_INDEX_KIND, settings=settings())
+    itself. Public so the rule's own tests seed rows the same way the write path does.
+
+    **Tied to the organization.** The organization id is part of what is keyed
+    (`blind_index` mixes its `kind` into the HMAC message), so one device yields a different index
+    in every tenant. Without that, the same phone — a person with two employers, a shared kiosk —
+    would carry the same value in every organization's `punch_signals`, and anyone with database or
+    backup access could link one person's employers by joining on it. The rule only ever asks the
+    question inside one organization, so nothing is lost by making the answer unlinkable across
+    them.
+    """
+    return blind_index(device_id_hash, kind=f"{_INDEX_KIND}:{organization_id}", settings=settings())
 
 
 def _rules_on(cfg: SignalSettings) -> bool:
@@ -191,11 +200,64 @@ async def record_punch(
     device_id_hash: str | None,
     request: Request | None,
 ) -> list[AttendanceFlag]:
-    """Store one punch's signals and flag it against the organization's rules.
+    """Store one punch's signals and flag it — **and never fail the punch while doing it**.
+
+    Observe-only is a promise about the whole stack, not only about the rules: a defect in the rule
+    engine, in sealing or in the insert must not be able to refuse, delay or half-write an
+    attendance record. So the work runs inside a SAVEPOINT (`begin_nested`): whatever it wrote
+    (the signal, its flags, the `attendance.flagged` audit row) is rolled back as one, the punch's
+    own rows — flushed before the savepoint opens — stay, and the outer transaction is still
+    usable. The failure is logged at error level with **codes only** (the exception's class and,
+    for a database error, its SQLSTATE) and never with `str(exc)`, which for a driver error can
+    carry the statement's parameters — an address, a device id. Returns the flags raised, or `[]`
+    on failure.
 
     Called from `services.check_in` and `services.check_out` inside the punch's own transaction, so
-    the evidence commits with the punch it describes or not at all. Returns the flags raised (the
-    punch's caller ignores them: the employee is never told, and the punch is not affected).
+    the evidence commits with the punch it describes or not at all.
+    """
+    try:
+        async with session.begin_nested():
+            return await _record_punch(
+                session,
+                ctx,
+                record,
+                kind=kind,
+                punched_at=punched_at,
+                lat=lat,
+                lng=lng,
+                accuracy_m=accuracy_m,
+                mock_location=mock_location,
+                device_id_hash=device_id_hash,
+                request=request,
+            )
+    except Exception as exc:
+        # `Exception`, deliberately not `BaseException`: cancellation and shutdown still propagate.
+        log.error(
+            "attendance.signals.failed",
+            organization_id=str(ctx.organization_id),
+            attendance_id=str(record.id),
+            kind=kind,
+            error_type=type(exc).__name__,
+            sqlstate=getattr(getattr(exc, "orig", None), "sqlstate", None),
+        )
+        return []
+
+
+async def _record_punch(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    record: AttendanceRecord,
+    *,
+    kind: str,
+    punched_at: datetime,
+    lat: Decimal | None,
+    lng: Decimal | None,
+    accuracy_m: Decimal | None,
+    mock_location: bool | None,
+    device_id_hash: str | None,
+    request: Request | None,
+) -> list[AttendanceFlag]:
+    """The work `record_punch` guards.
 
     The rules that need history run **before** this punch's own row is inserted — the previous
     located punch and the other users of a device are read while this one does not exist yet, so
@@ -208,7 +270,7 @@ async def record_punch(
     ip = parse_ip(_client_ip(request)) if request is not None else None
     ua_class = classify_user_agent(request.headers.get("user-agent") if request else None)
     pii_settings = settings()
-    device_index = device_index_for(device_id_hash) if device_id_hash else None
+    device_index = device_index_for(ctx.organization_id, device_id_hash) if device_id_hash else None
 
     reasons: dict[FlagReason, dict[str, Any]] = {}
 

@@ -231,11 +231,18 @@ def parse_ip(raw: str | None) -> str | None:
         address = ipaddress.ip_address(raw.strip())
     except ValueError:
         return None
-    # A dual-stack listener reports an IPv4 client as `::ffff:203.0.113.9`. Left in that form it
-    # would sit in a different address family from every IPv4 range and read as "outside" all of
-    # them, so it is folded back to the IPv4 address it is.
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
-        address = address.ipv4_mapped
+    if isinstance(address, ipaddress.IPv6Address):
+        # `fe80::1%eth0` parses in Python, but the suffix names an interface *on the sender's
+        # host*: it is not part of an address anything can route or match a range against,
+        # PostgreSQL's INET refuses it, and an arbitrarily long suffix would overflow the masked
+        # column. A link-local zone id is no usable client address, so it is no address at all.
+        if address.scope_id:
+            return None
+        # A dual-stack listener reports an IPv4 client as `::ffff:203.0.113.9`. Left in that form
+        # it would sit in a different address family from every IPv4 range and read as "outside"
+        # all of them, so it is folded back to the IPv4 address it is.
+        if address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
     return str(address)
 
 

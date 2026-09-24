@@ -1235,6 +1235,7 @@
           },
           "detect_ip_outside_allowed": {
             "default": false,
+            "description": "Flag a punch that came from outside every range in `allowed_cidrs`. **The office-network rule applies only to punches declared as office.** The work mode is the client's own claim, so a client that declares `remote` (or `field`, `hybrid`) is not judged by this rule; it catches an office punch from the wrong network, not a client that misstates where it is. Needs at least one range.",
             "title": "Detect Ip Outside Allowed",
             "type": "boolean"
           },
@@ -1283,6 +1284,7 @@
           },
           "detect_ip_outside_allowed": {
             "default": false,
+            "description": "Flag a punch that came from outside every range in `allowed_cidrs`. **The office-network rule applies only to punches declared as office.** The work mode is the client's own claim, so a client that declares `remote` (or `field`, `hybrid`) is not judged by this rule; it catches an office punch from the wrong network, not a client that misstates where it is. Needs at least one range.",
             "title": "Detect Ip Outside Allowed",
             "type": "boolean"
           },
@@ -1873,7 +1875,7 @@
     },
     "/api/v1/attendance/signal-settings": {
       "get": {
-        "description": "Administrators only (`shift.write:ORG`, the org time-admin permission): the thresholds and\nthe allowed ranges tell a person exactly how to stay under them. An organization that has never\nsaved a setting reads back every rule off.",
+        "description": "Administrators only (`shift.write:ORG`, the org time-admin permission): the thresholds and\nthe allowed ranges tell a person exactly how to stay under them. An organization that has never\nsaved a setting reads back every rule off.\n\nLimit of the address rule, stated plainly: the office-network rule applies only to punches\ndeclared as office. The work mode is the client's own claim, so declaring `remote` sidesteps\nit; the rule catches an office punch from the wrong network, not a client that misstates its\nwork mode.",
         "operationId": "read_signal_settings_api_v1_attendance_signal_settings_get",
         "responses": {
           "200": {
@@ -1893,7 +1895,7 @@
         ]
       },
       "put": {
-        "description": "A full replacement \u2014 the same body always yields the same state \u2014 audited with the rules\nas they were and as they are. Every rule is observe-only: it can raise a flag and can never\nrefuse or alter a punch.",
+        "description": "A full replacement \u2014 the same body always yields the same state \u2014 audited with the rules\nas they were and as they are. Every rule is observe-only: it can raise a flag and can never\nrefuse or alter a punch.\n\nLimit of the address rule, stated plainly: the office-network rule applies only to punches\ndeclared as office. The work mode is the client's own claim, so declaring `remote` sidesteps\nit; the rule catches an office punch from the wrong network, not a client that misstates its\nwork mode.",
         "operationId": "put_signal_settings_api_v1_attendance_signal_settings_put",
         "requestBody": {
           "content": {
