@@ -76,7 +76,7 @@ class TestComparisonWindow:
         assert comparison == domain.Window(date(2026, 2, 1), date(2026, 2, 28))
 
     def test_this_month_same_length_previous_month(self) -> None:
-        """"1-25 Sep -> 1-25 Aug"."""
+        """ "1-25 Sep -> 1-25 Aug"."""
         resolved = domain.resolve_period("this_month", today=date(2026, 9, 25))
         comparison = domain.comparison_window(resolved, "previous_period")
         assert comparison == domain.Window(date(2026, 8, 1), date(2026, 8, 25))
@@ -100,7 +100,9 @@ class TestComparisonWindow:
         resolved = domain.resolve_period(
             "this_quarter", today=date(2026, 6, 30), fiscal_year_start_month=1
         )
-        comparison = domain.comparison_window(resolved, "previous_period", fiscal_year_start_month=1)
+        comparison = domain.comparison_window(
+            resolved, "previous_period", fiscal_year_start_month=1
+        )
         assert comparison == domain.Window(date(2026, 1, 1), date(2026, 3, 31))
 
     def test_last_30_days_previous_period(self) -> None:

@@ -81,7 +81,9 @@ async def main() -> None:
     # before this raises, so the orchestrator restarts a process with no orphaned loop still
     # running against it (same reasoning as `services/approval/app/worker.py`).
     await run_supervised(
-        consumer=consumers.consumer.run(), snapshot=snapshot_sweep.run(), backfill=backfill_runner.run()
+        consumer=consumers.consumer.run(),
+        snapshot=snapshot_sweep.run(),
+        backfill=backfill_runner.run(),
     )
 
 

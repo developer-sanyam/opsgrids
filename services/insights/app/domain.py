@@ -236,9 +236,9 @@ def comparison_window(
 
     # custom
     if _is_whole_calendar_months(window):
-        months_spanned = (window.to.year - window.from_.year) * 12 + (
-            window.to.month - window.from_.month
-        ) + 1
+        months_spanned = (
+            (window.to.year - window.from_.year) * 12 + (window.to.month - window.from_.month) + 1
+        )
         prev_to = window.from_ - timedelta(days=1)
         prev_from = _add_months(window.from_, -months_spanned)
         return Window(prev_from, prev_to)

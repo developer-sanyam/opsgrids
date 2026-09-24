@@ -39,7 +39,12 @@ class TestUnauthenticated:
     async def test_series_requires_a_principal(self, client: AsyncClient) -> None:
         response = await client.get(
             "/api/v1/insights/series",
-            params={"metric": "revenue", "grain": "month", "from": "2026-01-01", "to": "2026-09-01"},
+            params={
+                "metric": "revenue",
+                "grain": "month",
+                "from": "2026-01-01",
+                "to": "2026-09-01",
+            },
         )
         assert response.status_code == 401
 
@@ -53,9 +58,7 @@ class TestUnauthenticated:
 
 
 class TestSummaryValidation:
-    async def test_unknown_metric_key_is_422(
-        self, client: AsyncClient, org_id: uuid.UUID
-    ) -> None:
+    async def test_unknown_metric_key_is_422(self, client: AsyncClient, org_id: uuid.UUID) -> None:
         with as_principal(principal_for(org_id)):
             response = await client.get(
                 "/api/v1/insights/summary", params={"metrics": "not_a_real_metric"}
@@ -124,7 +127,12 @@ class TestSummaryStates:
         with as_principal(principal_for(org_id)):
             response = await client.get(
                 "/api/v1/insights/summary",
-                params={"metrics": "revenue", "period": "custom", "from": "2026-09-01", "to": "2026-09-25"},
+                params={
+                    "metrics": "revenue",
+                    "period": "custom",
+                    "from": "2026-09-01",
+                    "to": "2026-09-25",
+                },
             )
         body = response.json()
         assert body["period"]["from"] == "2026-09-01"
@@ -132,7 +140,10 @@ class TestSummaryStates:
         assert body["comparison"]["key"] == "previous_period"
 
     async def test_scoping_reflects_the_callers_own_organization(
-        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID,
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
         other_org: uuid.UUID,
     ) -> None:
         """Cross-tenant: two organizations' profiles exist; a caller bound to `org_id` only ever
@@ -141,12 +152,18 @@ class TestSummaryStates:
             admin_session.add_all(
                 [
                     OrgProfile(
-                        organization_id=org_id, timezone="Asia/Kolkata", currency="INR",
-                        fiscal_year_start_month=4, source_updated_at=datetime.now(UTC),
+                        organization_id=org_id,
+                        timezone="Asia/Kolkata",
+                        currency="INR",
+                        fiscal_year_start_month=4,
+                        source_updated_at=datetime.now(UTC),
                     ),
                     OrgProfile(
-                        organization_id=other_org, timezone="America/New_York", currency="USD",
-                        fiscal_year_start_month=1, source_updated_at=datetime.now(UTC),
+                        organization_id=other_org,
+                        timezone="America/New_York",
+                        currency="USD",
+                        fiscal_year_start_month=1,
+                        source_updated_at=datetime.now(UTC),
                     ),
                 ]
             )
@@ -162,7 +179,12 @@ class TestSeries:
         with as_principal(principal_for(org_id)):
             response = await client.get(
                 "/api/v1/insights/series",
-                params={"metric": "nope", "grain": "month", "from": "2026-01-01", "to": "2026-09-01"},
+                params={
+                    "metric": "nope",
+                    "grain": "month",
+                    "from": "2026-01-01",
+                    "to": "2026-09-01",
+                },
             )
         assert response.status_code == 422
 
@@ -173,7 +195,9 @@ class TestSeries:
             response = await client.get(
                 "/api/v1/insights/series",
                 params={
-                    "metric": "overdue_tasks", "grain": "day", "from": "2026-09-01",
+                    "metric": "overdue_tasks",
+                    "grain": "day",
+                    "from": "2026-09-01",
                     "to": "2026-09-25",
                 },
             )
@@ -186,7 +210,10 @@ class TestSeries:
             response = await client.get(
                 "/api/v1/insights/series",
                 params={
-                    "metric": "revenue", "grain": "day", "from": "2026-01-01", "to": "2026-09-25",
+                    "metric": "revenue",
+                    "grain": "day",
+                    "from": "2026-01-01",
+                    "to": "2026-09-25",
                 },
             )
         assert response.status_code == 422
@@ -202,7 +229,9 @@ class TestSeries:
             response = await client.get(
                 "/api/v1/insights/series",
                 params={
-                    "metric": "revenue", "grain": "month", "from": "2026-01-01",
+                    "metric": "revenue",
+                    "grain": "month",
+                    "from": "2026-01-01",
                     "to": "2026-09-01",
                 },
             )
@@ -241,9 +270,7 @@ class TestRankings:
         self, client: AsyncClient, org_id: uuid.UUID
     ) -> None:
         with as_principal(principal_for(org_id, perms=["crm.pipeline.deal.read:ORG"])):
-            response = await client.get(
-                "/api/v1/insights/rankings", params={"board": "sales_reps"}
-            )
+            response = await client.get("/api/v1/insights/rankings", params={"board": "sales_reps"})
         assert response.status_code == 200
         body = response.json()
         assert body["board"] == "sales_reps"
@@ -257,9 +284,7 @@ class TestRankings:
         with as_principal(
             principal_for(org_id, entitlements=["crm"], perms=["crm.pipeline.deal.read:ORG"])
         ):
-            response = await client.get(
-                "/api/v1/insights/rankings", params={"board": "sales_reps"}
-            )
+            response = await client.get("/api/v1/insights/rankings", params={"board": "sales_reps"})
         body = response.json()
         assert body["state"] == "unavailable"
         assert body["scope"] == "ORG"

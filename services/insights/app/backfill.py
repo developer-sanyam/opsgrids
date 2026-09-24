@@ -334,12 +334,21 @@ async def run_backfill(
         while True:
             page_requested_at = datetime.now(UTC)
             page = await _fetch_page_with_retry(
-                source, settings, client,
-                organization_id=organization_id, cursor=cursor, limit=settings.backfill_page_size,
+                source,
+                settings,
+                client,
+                organization_id=organization_id,
+                cursor=cursor,
+                limit=settings.backfill_page_size,
             )
             applied = await _advance_page(
-                work_scope, organization_id=organization_id, run_id=run_id, source=source,
-                rows=page.rows, next_cursor=page.next_cursor, page_requested_at=page_requested_at,
+                work_scope,
+                organization_id=organization_id,
+                run_id=run_id,
+                source=source,
+                rows=page.rows,
+                next_cursor=page.next_cursor,
+                page_requested_at=page_requested_at,
             )
             report.rows_upserted += applied
             cursor = page.next_cursor
@@ -350,20 +359,32 @@ async def run_backfill(
         report.failed = True
         log.error(
             "insights.backfill.run_failed",
-            organization_id=str(organization_id), entity=entity, run_id=str(run_id),
+            organization_id=str(organization_id),
+            entity=entity,
+            run_id=str(run_id),
             error=str(exc)[:300],
         )
         await _finish_run(
-            work_scope, organization_id=organization_id, run_id=run_id, status="failed",
-            now=now, next_attempt_at=now + RETRY_AFTER_FAILURE, last_error=str(exc), cursor=cursor,
+            work_scope,
+            organization_id=organization_id,
+            run_id=run_id,
+            status="failed",
+            now=now,
+            next_attempt_at=now + RETRY_AFTER_FAILURE,
+            last_error=str(exc),
+            cursor=cursor,
         )
         return report
 
     report.completed = True
-    await _finish_run(work_scope, organization_id=organization_id, run_id=run_id, status="done", now=now)
+    await _finish_run(
+        work_scope, organization_id=organization_id, run_id=run_id, status="done", now=now
+    )
     log.info(
         "insights.backfill.run_completed",
-        organization_id=str(organization_id), entity=entity, run_id=str(run_id),
+        organization_id=str(organization_id),
+        entity=entity,
+        run_id=str(run_id),
         rows_upserted=report.rows_upserted,
     )
     return report
@@ -479,8 +500,14 @@ class BackfillRunner(GuardedSweep):
 
         async with self._http_client_factory() as client:
             return await run_backfill(
-                self._settings, work_scope=self._work_scope, organization_id=organization_id,
-                run_id=run_id, entity=entity, source=source, start_cursor=None, client=client,
+                self._settings,
+                work_scope=self._work_scope,
+                organization_id=organization_id,
+                run_id=run_id,
+                entity=entity,
+                source=source,
+                start_cursor=None,
+                client=client,
                 now=now,
             )
 
@@ -496,7 +523,9 @@ async def _cli_sync_all(settings: Settings, work_scope: WorkScope) -> None:
     )
 
 
-async def _cli_enqueue_org(settings: Settings, work_scope: WorkScope, organization_id: uuid.UUID) -> None:
+async def _cli_enqueue_org(
+    settings: Settings, work_scope: WorkScope, organization_id: uuid.UUID
+) -> None:
     """`bin/backfill --org <id> [--entity ...]`: a fresh `manual` run for every registered
     entity (or just the one named), reset to attempt 0 so it runs regardless of an earlier
     failure streak."""
@@ -514,7 +543,9 @@ async def _cli_enqueue_org(settings: Settings, work_scope: WorkScope, organizati
     print(f"enqueued {len(entities)} manual run(s) for {organization_id}")  # noqa: T201
 
 
-async def _cli_verify(settings: Settings, discovery_factory: async_sessionmaker[AsyncSession]) -> None:
+async def _cli_verify(
+    settings: Settings, discovery_factory: async_sessionmaker[AsyncSession]
+) -> None:
     """`bin/backfill --verify`: per-organization fact counts next to the sources' own figures
     (ADR-0020 §3). I1 has no fact table, so this reports what it can — `org_profile` presence —
     and I2+ extend it with the real parity checks their own fact tables need."""
@@ -522,11 +553,11 @@ async def _cli_verify(settings: Settings, discovery_factory: async_sessionmaker[
     async with discovery_factory() as session:
         from app.models import OrgProfile
 
-        synced = (
-            await session.execute(select(OrgProfile.organization_id))
-        ).scalars().all()
+        synced = (await session.execute(select(OrgProfile.organization_id))).scalars().all()
     synced_ids = {str(oid) for oid in synced}
-    missing = [org.organization_id for org in organizations if org.organization_id not in synced_ids]
+    missing = [
+        org.organization_id for org in organizations if org.organization_id not in synced_ids
+    ]
     print(  # noqa: T201
         f"organizations={len(organizations)} org_profile_rows={len(synced_ids)} "
         f"missing_profile={len(missing)}"

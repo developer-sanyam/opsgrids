@@ -98,9 +98,15 @@ class TestResumability:
 
         now = datetime.now(UTC)
         report = await run_backfill(
-            settings=settings_factory(), work_scope=work_scope, organization_id=org_id, run_id=run_id,
-            entity="test.widgets", source=source, start_cursor=None,
-            client=httpx.AsyncClient(), now=now,
+            settings=settings_factory(),
+            work_scope=work_scope,
+            organization_id=org_id,
+            run_id=run_id,
+            entity="test.widgets",
+            source=source,
+            start_cursor=None,
+            client=httpx.AsyncClient(),
+            now=now,
         )
         assert report.failed is True
         assert report.rows_upserted == 1
@@ -110,9 +116,9 @@ class TestResumability:
         # it via a different connection (`work_scope`, inside `run_backfill`).
         refreshed = (
             await session.execute(
-                select(BackfillRun).where(BackfillRun.id == run_id).execution_options(
-                    populate_existing=True
-                )
+                select(BackfillRun)
+                .where(BackfillRun.id == run_id)
+                .execution_options(populate_existing=True)
             )
         ).scalar_one()
         assert refreshed.status == "failed"
@@ -122,22 +128,26 @@ class TestResumability:
         assert refreshed.next_attempt_at >= now + timedelta(minutes=55)
 
         # Resume: a fresh source, page 1 no longer fails, starting from the persisted cursor.
-        resumed_source = FakeSource(
-            pages={1: ExportPage(rows=[{"id": "b"}], next_cursor=None)}
-        )
+        resumed_source = FakeSource(pages={1: ExportPage(rows=[{"id": "b"}], next_cursor=None)})
         second_report = await run_backfill(
-            settings=settings_factory(), work_scope=work_scope, organization_id=org_id, run_id=run_id,
-            entity="test.widgets", source=resumed_source, start_cursor=refreshed.cursor,
-            client=httpx.AsyncClient(), now=datetime.now(UTC),
+            settings=settings_factory(),
+            work_scope=work_scope,
+            organization_id=org_id,
+            run_id=run_id,
+            entity="test.widgets",
+            source=resumed_source,
+            start_cursor=refreshed.cursor,
+            client=httpx.AsyncClient(),
+            now=datetime.now(UTC),
         )
         assert second_report.completed is True
         assert second_report.rows_upserted == 1  # only the resumed page, not page 0 again
 
         final = (
             await session.execute(
-                select(BackfillRun).where(BackfillRun.id == run_id).execution_options(
-                    populate_existing=True
-                )
+                select(BackfillRun)
+                .where(BackfillRun.id == run_id)
+                .execution_options(populate_existing=True)
             )
         ).scalar_one()
         assert final.status == "done"
@@ -183,14 +193,23 @@ class TestEnqueueMissingRuns:
     ) -> None:
         registry = {"test.a": object(), "test.b": object()}
         enqueued = await enqueue_missing_runs(
-            registry=registry, discovery_factory=discovery_sessionmaker, work_scope=work_scope,
-            organization_ids=[org_id], reconcile_after=timedelta(days=7),
+            registry=registry,
+            discovery_factory=discovery_sessionmaker,
+            work_scope=work_scope,
+            organization_ids=[org_id],
+            reconcile_after=timedelta(days=7),
             now=datetime.now(UTC),
         )
         assert enqueued == 2
         rows = (
-            await session.execute(select(BackfillRun).where(BackfillRun.organization_id == org_id))
-        ).scalars().all()
+            (
+                await session.execute(
+                    select(BackfillRun).where(BackfillRun.organization_id == org_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
         assert {row.entity for row in rows} == {"test.a", "test.b"}
         assert all(row.kind == "initial" for row in rows)
 
@@ -204,15 +223,21 @@ class TestEnqueueMissingRuns:
         async with work_scope(org_id) as scoped_session:
             scoped_session.add(
                 BackfillRun(
-                    organization_id=org_id, entity="test.a", kind="initial", status="done",
+                    organization_id=org_id,
+                    entity="test.a",
+                    kind="initial",
+                    status="done",
                     finished_at=datetime.now(UTC),
                 )
             )
 
         registry = {"test.a": object()}
         enqueued = await enqueue_missing_runs(
-            registry=registry, discovery_factory=discovery_sessionmaker, work_scope=work_scope,
-            organization_ids=[org_id], reconcile_after=timedelta(days=7),
+            registry=registry,
+            discovery_factory=discovery_sessionmaker,
+            work_scope=work_scope,
+            organization_ids=[org_id],
+            reconcile_after=timedelta(days=7),
             now=datetime.now(UTC),
         )
         assert enqueued == 0
@@ -227,23 +252,33 @@ class TestEnqueueMissingRuns:
         async with work_scope(org_id) as scoped_session:
             scoped_session.add(
                 BackfillRun(
-                    organization_id=org_id, entity="test.a", kind="initial", status="done",
+                    organization_id=org_id,
+                    entity="test.a",
+                    kind="initial",
+                    status="done",
                     finished_at=datetime.now(UTC) - timedelta(days=10),
                 )
             )
 
         registry = {"test.a": object()}
         enqueued = await enqueue_missing_runs(
-            registry=registry, discovery_factory=discovery_sessionmaker, work_scope=work_scope,
-            organization_ids=[org_id], reconcile_after=timedelta(days=7),
+            registry=registry,
+            discovery_factory=discovery_sessionmaker,
+            work_scope=work_scope,
+            organization_ids=[org_id],
+            reconcile_after=timedelta(days=7),
             now=datetime.now(UTC),
         )
         assert enqueued == 1
         rows = (
-            await session.execute(
-                select(BackfillRun).where(
-                    BackfillRun.organization_id == org_id, BackfillRun.kind == "reconcile"
+            (
+                await session.execute(
+                    select(BackfillRun).where(
+                        BackfillRun.organization_id == org_id, BackfillRun.kind == "reconcile"
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(rows) == 1

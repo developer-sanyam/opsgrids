@@ -43,10 +43,14 @@ async def test_org_profile_is_isolated(
 
     # The admin (BYPASSRLS) session proves the row is really there.
     admin_rows = (
-        await admin_session.execute(
-            select(OrgProfile).where(OrgProfile.organization_id == other_org)
+        (
+            await admin_session.execute(
+                select(OrgProfile).where(OrgProfile.organization_id == other_org)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(admin_rows) == 1
 
 
@@ -76,8 +80,12 @@ async def test_daily_snapshots_is_isolated(
     async with admin_session.begin():
         admin_session.add(
             DailySnapshot(
-                organization_id=other_org, metric="pipeline_value", dimension="INR",
-                day=date(2026, 9, 25), value=100, currency="INR",
+                organization_id=other_org,
+                metric="pipeline_value",
+                dimension="INR",
+                day=date(2026, 9, 25),
+                value=100,
+                currency="INR",
                 captured_at=datetime.now(UTC),
             )
         )
@@ -92,7 +100,9 @@ async def test_metric_coverage_is_isolated(
     async with admin_session.begin():
         admin_session.add(
             MetricCoverage(
-                organization_id=other_org, metric="pipeline_value", history_from=None,
+                organization_id=other_org,
+                metric="pipeline_value",
+                history_from=None,
                 basis="first_capture",
             )
         )

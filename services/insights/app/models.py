@@ -223,7 +223,9 @@ class BackfillRun(Base):
     #: `{"after_updated_at": "...", "after_id": "..."}`, advanced in the same transaction as the
     #: page's upserts (data-model.md §1.1) — a crash resumes from the last page that committed.
     cursor: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
-    rows_upserted: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    rows_upserted: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     rows_swept: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     next_attempt_at: Mapped[datetime] = mapped_column(

@@ -31,8 +31,14 @@ class FakeCapture:
     ) -> None:
         self.calls.append(organization_id)
         await services.upsert_daily_snapshot(
-            session, organization_id=organization_id, metric=self.metric, dimension="",
-            day=day, value=42, currency=None, captured_at=now,
+            session,
+            organization_id=organization_id,
+            metric=self.metric,
+            dimension="",
+            day=day,
+            value=42,
+            currency=None,
+            captured_at=now,
         )
 
 
@@ -55,14 +61,19 @@ async def test_captures_for_every_discovered_organization(
     async with work_scope(org_id) as scoped_session:
         scoped_session.add(
             OrgProfile(
-                organization_id=org_id, timezone="Asia/Kolkata", currency="INR",
-                fiscal_year_start_month=4, source_updated_at=datetime.now(UTC),
+                organization_id=org_id,
+                timezone="Asia/Kolkata",
+                currency="INR",
+                fiscal_year_start_month=4,
+                source_updated_at=datetime.now(UTC),
             )
         )
 
     capture = FakeCapture()
     sweep = SnapshotSweep(
-        poll_interval=3600.0, discovery_factory=discovery_sessionmaker, work_scope=work_scope,
+        poll_interval=3600.0,
+        discovery_factory=discovery_sessionmaker,
+        work_scope=work_scope,
         captures=(capture,),
     )
     report = await sweep.tick()
@@ -75,9 +86,7 @@ async def test_captures_for_every_discovered_organization(
     from app.models import DailySnapshot
 
     row = (
-        await session.execute(
-            select(DailySnapshot).where(DailySnapshot.organization_id == org_id)
-        )
+        await session.execute(select(DailySnapshot).where(DailySnapshot.organization_id == org_id))
     ).scalar_one()
     assert row.value == 42
     assert row.metric == "test_metric"
@@ -91,8 +100,11 @@ async def test_a_failing_capture_does_not_stop_the_sweep(
     async with work_scope(org_id) as scoped_session:
         scoped_session.add(
             OrgProfile(
-                organization_id=org_id, timezone="Asia/Kolkata", currency="INR",
-                fiscal_year_start_month=4, source_updated_at=datetime.now(UTC),
+                organization_id=org_id,
+                timezone="Asia/Kolkata",
+                currency="INR",
+                fiscal_year_start_month=4,
+                source_updated_at=datetime.now(UTC),
             )
         )
 
@@ -104,7 +116,9 @@ async def test_a_failing_capture_does_not_stop_the_sweep(
 
     good = FakeCapture(metric="good")
     sweep = SnapshotSweep(
-        poll_interval=3600.0, discovery_factory=discovery_sessionmaker, work_scope=work_scope,
+        poll_interval=3600.0,
+        discovery_factory=discovery_sessionmaker,
+        work_scope=work_scope,
         captures=(BrokenCapture(), good),
     )
     report = await sweep.tick()

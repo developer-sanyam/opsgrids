@@ -28,7 +28,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import access, domain
 from app.models import OrgProfile
 from app.schemas import (
-    ComparisonOut,
     MetricOut,
     PeriodOut,
     RankingsOut,
@@ -58,9 +57,7 @@ def org_currency(profile: OrgProfile | None) -> str:
 
 def org_fiscal_year_start_month(profile: OrgProfile | None) -> int:
     return (
-        profile.fiscal_year_start_month
-        if profile is not None
-        else DEFAULT_FISCAL_YEAR_START_MONTH
+        profile.fiscal_year_start_month if profile is not None else DEFAULT_FISCAL_YEAR_START_MONTH
     )
 
 
@@ -99,7 +96,9 @@ def _scope_label(gate: access.Gate) -> str:
 
 
 def _period_out(key: str, window: domain.Window) -> PeriodOut:
-    return PeriodOut(key=key, from_date=window.from_, to=window.to, label=domain.window_label(window))
+    return PeriodOut(
+        key=key, from_date=window.from_, to=window.to, label=domain.window_label(window)
+    )
 
 
 def _summary_metric(principal: Principal, key: str) -> MetricOut:
@@ -176,16 +175,25 @@ async def build_series(
     now = datetime.now(UTC)
     if gate.state == "not_active":
         return SeriesOut(
-            as_of=now, timezone=timezone, metric=metric, state="not_active",
-            grain=grain, product_key=gate.product_key,  # type: ignore[arg-type]
+            as_of=now,
+            timezone=timezone,
+            metric=metric,
+            state="not_active",
+            grain=grain,
+            product_key=gate.product_key,  # type: ignore[arg-type]
         )
     if gate.state == "no_access":
         return SeriesOut(
             as_of=now, timezone=timezone, metric=metric, state="no_access", grain=grain
         )  # type: ignore[arg-type]
     return SeriesOut(
-        as_of=now, timezone=timezone, metric=metric, state="unavailable", grain=grain,  # type: ignore[arg-type]
-        scope=_scope_label(gate), unit=spec.unit,
+        as_of=now,
+        timezone=timezone,
+        metric=metric,
+        state="unavailable",
+        grain=grain,  # type: ignore[arg-type]
+        scope=_scope_label(gate),
+        unit=spec.unit,
     )
 
 
@@ -214,8 +222,12 @@ async def build_rankings(
     if gate.state == "no_access":
         return RankingsOut(as_of=now, board=board, state="no_access")
     return RankingsOut(
-        as_of=now, board=board, state="unavailable", scope=_scope_label(gate),
-        period=_period_out(resolved.key, resolved.window), currency=currency,
+        as_of=now,
+        board=board,
+        state="unavailable",
+        scope=_scope_label(gate),
+        period=_period_out(resolved.key, resolved.window),
+        currency=currency,
     )
 
 

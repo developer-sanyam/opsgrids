@@ -136,7 +136,9 @@ async def work_scope(discovery_engines: tuple[Any, Any]) -> Any:
 
 
 @pytest_asyncio.fixture
-async def discovery_sessionmaker(discovery_engines: tuple[Any, Any]) -> async_sessionmaker[AsyncSession]:
+async def discovery_sessionmaker(
+    discovery_engines: tuple[Any, Any],
+) -> async_sessionmaker[AsyncSession]:
     discovery_engine, _work_engine = discovery_engines
     return async_sessionmaker(discovery_engine, expire_on_commit=False)
 

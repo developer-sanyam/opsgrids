@@ -69,7 +69,7 @@ def _parse_products(raw: str | None) -> set[str] | None:
     "/insights/summary",
     response_model=SummaryOut,
     response_model_exclude_none=True,
-    summary="KPI values and their comparisons"
+    summary="KPI values and their comparisons",
 )
 async def summary(
     session: SessionDep,
@@ -83,8 +83,13 @@ async def summary(
     metric_keys = _parse_metric_keys(metrics)
     try:
         return await selectors.build_summary(
-            session, principal, metric_keys=metric_keys, period=period, compare=compare,
-            from_=from_, to=to,
+            session,
+            principal,
+            metric_keys=metric_keys,
+            period=period,
+            compare=compare,
+            from_=from_,
+            to=to,
         )
     except domain.InvalidPeriodError as exc:
         raise ValidationProblem(str(exc)) from exc
@@ -123,7 +128,7 @@ async def series(
     "/insights/activity",
     response_model=ActivityOut,
     response_model_exclude_none=True,
-    summary="Cross-product recent activity"
+    summary="Cross-product recent activity",
 )
 async def activity(
     session: SessionDep,
@@ -150,7 +155,7 @@ async def activity(
     "/insights/rankings",
     response_model=RankingsOut,
     response_model_exclude_none=True,
-    summary="Team performance and top items"
+    summary="Team performance and top items",
 )
 async def rankings(
     session: SessionDep,

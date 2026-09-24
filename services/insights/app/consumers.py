@@ -168,7 +168,9 @@ async def ensure_queue_bound(amqp_url: str) -> None:
     connection = await aio_pika.connect_robust(amqp_url)
     try:
         channel = await connection.channel()
-        exchange = await channel.declare_exchange(EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True)
+        exchange = await channel.declare_exchange(
+            EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True
+        )
         dlx = await channel.declare_exchange(DLX, aio_pika.ExchangeType.TOPIC, durable=True)
         dlq = await channel.declare_queue(f"{QUEUE_NAME}.dlq", durable=True)
         await dlq.bind(dlx, routing_key="#")
