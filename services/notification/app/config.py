@@ -146,7 +146,8 @@ class Settings(ServiceSettings):
     #: How long a dispatcher's claim (`sending`) is trusted before the recovery sweep settles it
     #: as a failed attempt. It must comfortably outlast one real send, so a slow provider is never
     #: raced with itself — `model_post_init` refuses anything under six times the longest
-    #: transport timeout (an SMTP send is several round trips, each with its own timeout).
+    #: transport timeout (an SMTP send is a dozen or so timed reads — greeting, EHLO, STARTTLS and
+    #: the handshake, EHLO again, AUTH, MAIL, RCPT, DATA, end of data, QUIT — plus DNS).
     dispatch_claim_lease_seconds: int = domain.DEFAULT_CLAIM_LEASE_SECONDS
     #: After the sweep queues a message whose backoff is over, how long before it queues it again
     #: if nobody has claimed it. Only ever matters when a queued event is lost; a claim ends it.
@@ -186,11 +187,11 @@ class Settings(ServiceSettings):
                 "dispatch_retry_base_seconds must be positive and no greater than "
                 "dispatch_retry_max_seconds"
             )
-        slowest_send = 6 * max(self.smtp_timeout_seconds, self.whatsapp_timeout_seconds)
+        slowest_send = 15 * max(self.smtp_timeout_seconds, self.whatsapp_timeout_seconds)
         if self.dispatch_claim_lease_seconds < slowest_send + 60:
             raise ValueError(
                 f"dispatch_claim_lease_seconds ({self.dispatch_claim_lease_seconds}) must be at "
-                f"least 6x the longest transport timeout plus a minute ({slowest_send + 60:.0f}): "
+                f"least 15x the longest transport timeout plus a minute ({slowest_send + 60:.0f}): "
                 "a lease shorter than one real send would let the recovery sweep settle a "
                 "message that is still being sent, and it would be sent twice"
             )

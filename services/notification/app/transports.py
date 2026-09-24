@@ -66,6 +66,20 @@ class TransportUnavailable(TransportError):
     """The provider could not take it now. Retrying is reasonable."""
 
 
+class TransportOutcomeUnknown(TransportError):
+    """The provider may or may not have taken the message, and nothing here can tell.
+
+    **Not retried.**
+
+    A request that was sent and whose answer never came back — a read timeout, a connection reset
+    after the write, a 5xx from a gateway in front of the real service. For a provider with no
+    idempotency key a second attempt is a second message, and for WhatsApp a billed one. Neither a
+    `TransportRefused` (it did not say no) nor a `TransportUnavailable` (it did not provably say
+    nothing): the dispatcher fails the attempt as `outcome_unknown`, publishes `message.failed`
+    and leaves a person to check the provider and resend by hand.
+    """
+
+
 class TransportTlsError(TransportUnavailable):
     """The server's certificate did not verify, so nothing — no credential, no message — was sent.
 
@@ -349,6 +363,14 @@ def _describe_smtp_error(exc: BaseException) -> str:
     parts = [type(exc).__name__]
     if isinstance(exc, smtplib.SMTPRecipientsRefused):
         parts.extend(str(code) for code in sorted({reply[0] for reply in exc.recipients.values()}))
+    elif isinstance(exc, ssl.SSLError):
+        # OpenSSL's own identifier for what went wrong (`WRONG_VERSION_NUMBER` when a STARTTLS
+        # port is spoken to as implicit TLS, or the reverse) — not `errno`, which for a TLS error
+        # is an SSL library code that `errno.errorcode` maps to something unrelated (`EPERM`).
+        # Checked for shape before it is repeated, so it can never be text the server chose.
+        reason = exc.reason
+        if isinstance(reason, str) and re.fullmatch(r"[A-Z0-9_]{1,64}", reason):
+            parts.append(reason)
     else:
         code = getattr(exc, "smtp_code", None)
         if isinstance(code, int):
@@ -370,8 +392,14 @@ class WhatsAppCloudTransport:
     definition outside, so it must be a template. A free-text send there is refused with a 4xx,
     classified permanent below, which is honest but still undelivered.
 
-    4xx is refused, 5xx and timeouts are unavailable. 429 is deliberately *unavailable*: rate
-    limiting is the one 4xx that time does fix.
+    **Retry only what provably never reached Meta.** Meta has no idempotency key and a template
+    message is billed, so a second send after an attempt whose outcome is unknown is a second
+    message the customer gets and the organization pays for. A connection that could not be made
+    (`ConnectError`, `ConnectTimeout`), a pool with no free connection (`PoolTimeout`) and a 429
+    (Meta said "not now" before doing anything) are `TransportUnavailable`: nothing was sent, so
+    trying again is safe. A read timeout, a reset or protocol error after the request went out,
+    and any 5xx are `TransportOutcomeUnknown`: the request may have been accepted. Other 4xx are
+    refused — Meta looked and said no — and a 2xx is a success whatever its body looks like.
     """
 
     name = "whatsapp_cloud"
@@ -415,17 +443,38 @@ class WhatsAppCloudTransport:
             # text is not carried: this string lands in `Delivery.detail`, `Message.last_error`,
             # the `message.failed` event on the bus and a log line, and nothing an HTTP client
             # wrote about a failed request belongs in any of them.
-            raise TransportUnavailable(f"whatsapp request failed: {type(exc).__name__}") from exc
+            if isinstance(exc, _NEVER_REACHED_META):
+                raise TransportUnavailable(
+                    f"whatsapp request failed: {type(exc).__name__}"
+                ) from exc
+            raise TransportOutcomeUnknown(f"outcome_unknown {type(exc).__name__}") from exc
 
-        if response.status_code == 429 or response.status_code >= 500:
+        if response.status_code == 429:
             raise TransportUnavailable(_meta_error(response))
+        if response.status_code >= 500:
+            raise TransportOutcomeUnknown(f"outcome_unknown {_meta_error(response)}")
         if response.status_code >= 400:
             raise TransportRefused(_meta_error(response))
 
-        body = response.json()
-        messages = body.get("messages") or [{}]
-        return Receipt(provider=self.name, provider_message_id=messages[0].get("id"))
+        # A 2xx is Meta accepting the message. A body that will not parse is not a reason to say
+        # it failed: that would be retried as a transient failure and send it again.
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        messages = body.get("messages") if isinstance(body, dict) else None
+        first = messages[0] if isinstance(messages, list) and messages else {}
+        message_id = first.get("id") if isinstance(first, dict) else None
+        return Receipt(
+            provider=self.name,
+            provider_message_id=str(message_id) if message_id else None,
+        )
 
+
+#: The `httpx` failures that happen before a request could have been received: the connection was
+#: never made, or never obtained. Anything else that goes wrong on the wire may have happened
+#: after Meta had the request.
+_NEVER_REACHED_META = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 
 #: Meta's own error `type`s are identifiers (`OAuthException`, `GraphMethodException`); anything
 #: that is not one is not repeated.

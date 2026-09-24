@@ -64,7 +64,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app import selectors, services
+from app import domain, selectors, services
 from app.config import settings
 from app.transports import Receipt, TransportError, send_batch
 from platform_core.db import (
@@ -299,6 +299,8 @@ class RecoveryReport:
     #: A message whose own write raised. Counted rather than propagated, for the reason
     #: `CampaignDriver`'s `failed` is: one row's fault must not stall every other message.
     failed: int = 0
+    #: A message the sweep failed on `domain.MAX_REDRIVE_FAILURES` passes in a row and gave up on.
+    parked: int = 0
 
 
 class DispatchRecovery(GuardedSweep):
@@ -343,6 +345,10 @@ class DispatchRecovery(GuardedSweep):
         self._retry_max_seconds = retry_max_seconds
         self._requeue_lease_seconds = requeue_lease_seconds
         self._limit = limit
+        #: Consecutive passes on which acting on a message raised, kept in memory only — the same
+        #: trade `CampaignDriver`'s backoff makes: a restart forgets it and costs at most a few
+        #: more attempts before the cap is reached again, never a lost message.
+        self._failure_streak: dict[uuid.UUID, int] = {}
 
     @property
     def _log_name(self) -> str:
@@ -358,6 +364,7 @@ class DispatchRecovery(GuardedSweep):
                 gave_up=result.gave_up,
                 skipped=result.skipped,
                 failed=result.failed,
+                parked=result.parked,
             )
 
     async def tick(self, now: datetime | None = None) -> RecoveryReport:
@@ -391,7 +398,9 @@ class DispatchRecovery(GuardedSweep):
                     error_type=type(exc).__name__,
                 )
                 report.failed += 1
+                await self._after_failure(organization_id, message_id, at, report)
                 continue
+            self._failure_streak.pop(message_id, None)
             if outcome == "requeued":
                 report.requeued += 1
             elif outcome == "reclaimed":
@@ -401,6 +410,53 @@ class DispatchRecovery(GuardedSweep):
             else:
                 report.skipped += 1
         return report
+
+    async def _after_failure(
+        self,
+        organization_id: uuid.UUID,
+        message_id: uuid.UUID,
+        at: datetime,
+        report: RecoveryReport,
+    ) -> None:
+        """What to do about a message whose write raised, so it cannot sit at the head of every
+        pass — the order is oldest `retry_at` first, and a due row that keeps its `retry_at` is
+        found again ahead of every live message behind it, until `limit` of them starve the sweep.
+
+        Push its `retry_at` out by the ordinary backoff, in a fresh transaction (the one that
+        raised has rolled back). After `MAX_REDRIVE_FAILURES` passes in a row give it up instead:
+        `failed`, `message.failed` published, an alert logged. This cleanup can itself fail — the
+        database that made the first write raise may still be down — and then the streak stands and
+        the next pass tries again; nothing here may take the sweep down.
+        """
+        streak = self._failure_streak.get(message_id, 0) + 1
+        self._failure_streak[message_id] = streak
+        try:
+            async with self._work_scope(organization_id) as session:
+                if streak >= domain.MAX_REDRIVE_FAILURES:
+                    if await services.park_unrecoverable(
+                        session, organization_id=organization_id, message_id=message_id, now=at
+                    ):
+                        report.parked += 1
+                    self._failure_streak.pop(message_id, None)
+                else:
+                    await services.defer_redrive(
+                        session,
+                        organization_id=organization_id,
+                        message_id=message_id,
+                        until=at
+                        + domain.retry_delay(
+                            streak,
+                            base_seconds=self._retry_base_seconds,
+                            max_seconds=self._retry_max_seconds,
+                        ),
+                    )
+        except Exception as exc:
+            log.error(
+                "notification.dispatch_recovery.cleanup_failed",
+                organization_id=str(organization_id),
+                message_id=str(message_id),
+                error_type=type(exc).__name__,
+            )
 
 
 async def main() -> None:

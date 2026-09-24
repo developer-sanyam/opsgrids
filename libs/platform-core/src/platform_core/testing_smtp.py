@@ -67,36 +67,65 @@ def issue(
     certificate an attacker on the path would present. Otherwise it is signed by a fresh CA whose
     PEM is written alongside, for the test to trust.
     """
+    # Python 3.13's default context turns on `VERIFY_X509_STRICT`, which — unlike 3.12's — rejects
+    # a chain missing `KeyUsage`/`SubjectKeyIdentifier`/`AuthorityKeyIdentifier`. A minimal CA and
+    # leaf (`BasicConstraints`/`SubjectAlternativeName` alone) verified on 3.12 and failed silently
+    # different on 3.13: every test here must pass on both.
     now = dt.datetime.now(dt.UTC)
     ca_key = ec.generate_private_key(ec.SECP256R1())
+    ca_public_key = ca_key.public_key()
     ca_cert = (
         x509.CertificateBuilder()
         .subject_name(_name("test ca"))
         .issuer_name(_name("test ca"))
-        .public_key(ca_key.public_key())
+        .public_key(ca_public_key)
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - dt.timedelta(days=1))
         .not_valid_after(now + dt.timedelta(days=2))
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_public_key), critical=False)
         .sign(ca_key, hashes.SHA256())
     )
     key = ec.generate_private_key(ec.SECP256R1())
+    leaf_public_key = key.public_key()
     sans: list[x509.GeneralName] = []
     for name in names:
         try:
             sans.append(x509.IPAddress(ipaddress.ip_address(name)))
         except ValueError:
             sans.append(x509.DNSName(name))
-    signer_key, issuer = (key, _name(names[0])) if self_signed else (ca_key, ca_cert.subject)
+    if self_signed:
+        signer_key, issuer, authority_public_key = key, _name(names[0]), leaf_public_key
+    else:
+        signer_key, issuer, authority_public_key = ca_key, ca_cert.subject, ca_public_key
     cert = (
         x509.CertificateBuilder()
         .subject_name(_name(names[0]))
         .issuer_name(issuer)
-        .public_key(key.public_key())
+        .public_key(leaf_public_key)
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - dt.timedelta(days=1))
         .not_valid_after(now + dt.timedelta(days=2))
         .add_extension(x509.SubjectAlternativeName(sans), critical=False)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(leaf_public_key), critical=False)
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(authority_public_key),
+            critical=False,
+        )
         .sign(signer_key, hashes.SHA256())
     )
     return Issued(

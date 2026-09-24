@@ -199,10 +199,22 @@ retrying. A row that remembers its own next attempt needs none of that. If the s
 core later, `record_failure`'s `retry_at` can become a `schedule_event` with no schema change.
 
 *Messages already stuck.* The migration does not touch them: mailing customers something that was
-owed them weeks ago is a decision, not a side effect. Rows the old defect left `pending` with
-`attempts > 0` and no `retry_at` can be released deliberately, per organization, with
-`UPDATE notification.messages SET retry_at = now() WHERE organization_id = '…' AND state =
-'pending' AND attempts > 0 AND retry_at IS NULL;` — the sweep picks them up on its next pass.
+owed them weeks ago is a decision, not a side effect. Two shapes, both from the same defect, and
+both release the same way — set `retry_at` and let the recovery sweep do the rest on its next pass:
+
+* `pending` with `attempts > 0` and no `retry_at` — a message whose send failed once, went back to
+  `pending`, and nothing ever queued it again:
+  `UPDATE notification.messages SET retry_at = now() WHERE organization_id = '…' AND state =
+  'pending' AND attempts > 0 AND retry_at IS NULL;`
+* `sending` with no `retry_at` — a rarer, older shape: a dispatcher claimed the message, the
+  process died before recording an outcome, and the row was left visible rather than swept back
+  (the stance this slice's `redrive_message` replaces). The sweep treats a `sending` row it finds
+  due exactly like a lapsed claim: it is settled as an interrupted attempt and retried, which is
+  at-least-once for email — if the original send in fact reached the provider, the customer
+  receives it a second time, under the same `Message-ID` most mailboxes fold. That is worth
+  knowing before running the release, not a silent side effect of it:
+  `UPDATE notification.messages SET retry_at = now() WHERE organization_id = '…' AND state =
+  'sending' AND retry_at IS NULL;`
 
 ## 5. Constraints carried from the platform
 

@@ -24,7 +24,14 @@ from sqlalchemy import func, select, update
 from app import consumers, models, selectors, services
 from app.config import settings
 from app.main import app
-from app.transports import Outgoing, Receipt, RecordingTransport, Transport, TransportRefused
+from app.transports import (
+    Outgoing,
+    Receipt,
+    RecordingTransport,
+    Transport,
+    TransportRefused,
+    TransportTlsError,
+)
 from app.transports import send_batch as transport_send_batch
 from platform_core.auth import Principal, Scope, get_principal
 from platform_core.db import dispose_engine, init_engine
@@ -1067,6 +1074,62 @@ async def test_no_connected_provider_pauses_the_campaign(session, org_id, worker
     assert reloaded.status == "paused"
     assert "provider" in reloaded.pause_reason.lower()
     assert reloaded.paused_at is not None
+
+
+async def test_a_certificate_failure_pauses_the_campaign_visibly(
+    session, org_id, worker_engine
+) -> None:
+    """`TransportTlsError` is a kind of `TransportUnavailable` — a bare backoff would retry it
+    silently forever, since every recipient in the campaign fails identically and no amount of
+    waiting fixes a certificate. It gets the same visible `paused` state a missing provider or an
+    unusable sender already does."""
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "a@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    await _send(session, org_id, campaign_id)
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
+
+    transport = RecordingTransport(
+        fail_with=TransportTlsError("TLS certificate verification failed (code 18)")
+    )
+    outcome = await _drain(session, org_id, campaign_id, transport=transport)
+
+    assert outcome == "unavailable"
+    reloaded = await _reload(session, campaign_id)
+    assert reloaded.status == "paused"
+    assert "certificate" in reloaded.pause_reason.lower()
+    assert reloaded.paused_at is not None
+    # Never the handshake's own detail — the transport already keeps that out, and the reason
+    # here is a fixed sentence regardless.
+    assert "code 18" not in reloaded.pause_reason
+
+    # The recipient itself is released, not failed: once the connection is fixed the campaign
+    # picks the same recipient back up rather than having recorded it undeliverable.
+    (recipient,) = await _recipients_by_id(session, campaign_id)
+    assert recipient.status == "queued"
+
+
+async def test_an_ordinary_outage_does_not_pause_the_campaign(
+    session, org_id, worker_engine
+) -> None:
+    """The contrast: a plain `TransportUnavailable` (a timeout, a refused connection) is exactly
+    the transient case the driver's in-memory backoff already handles — it must not also flip the
+    campaign to `paused`, or every ordinary blip would need an operator to resume it."""
+    from app.transports import TransportUnavailable
+
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "a@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    await _send(session, org_id, campaign_id)
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
+
+    transport = RecordingTransport(fail_with=TransportUnavailable("connection reset"))
+    outcome = await _drain(session, org_id, campaign_id, transport=transport)
+
+    assert outcome == "unavailable"
+    reloaded = await _reload(session, campaign_id)
+    assert reloaded.status == "sending"
+    assert reloaded.pause_reason == ""
 
 
 async def test_a_route_that_comes_back_resumes_on_its_own(session, org_id, worker_engine):

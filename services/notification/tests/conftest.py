@@ -19,7 +19,9 @@ from __future__ import annotations
 import sys
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -31,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.config import settings
+from app.cron import DispatchRecovery
 from app.main import app
 from app.models import SCHEMA
 from platform_core.cache import close_redis, init_redis
@@ -203,3 +206,43 @@ async def seed_automation(session: AsyncSession, org_id: uuid.UUID) -> None:
             category="operational",
             recipient_path="requester_email",
         )
+
+
+@pytest_asyncio.fixture
+async def sweep_engines(session: AsyncSession) -> AsyncIterator[tuple[Any, Any]]:
+    """Discovery on the outbox DSN (BYPASSRLS, column-level SELECT on `messages`) and work on the
+    app DSN — wired as `app/cron.py`'s `main()` wires them. Using the real outbox role proves the
+    grant in `migrations/env.py` is what lets the sweep see anything at all."""
+    cfg = settings()
+    discovery = create_async_engine(cfg.outbox_dsn, connect_args=_connect_args())
+    work = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
+    yield discovery, work
+    await discovery.dispose()
+    await work.dispose()
+
+
+@pytest_asyncio.fixture
+async def recovery(sweep_engines: tuple[Any, Any]) -> DispatchRecovery:
+    discovery_engine, work_engine = sweep_engines
+    discovery = async_sessionmaker(discovery_engine, expire_on_commit=False)
+    work_maker = async_sessionmaker(work_engine, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def work_scope(organization_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
+        async with work_maker() as s, s.begin():
+            await s.execute(
+                text(f"SELECT set_config('{TENANT_GUC}', :org, true)"),
+                {"org": str(organization_id)},
+            )
+            yield s
+
+    cfg = settings()
+    return DispatchRecovery(
+        discovery_factory=discovery,
+        work_scope=work_scope,
+        max_attempts=cfg.dispatch_max_attempts,
+        retry_base_seconds=cfg.dispatch_retry_base_seconds,
+        retry_max_seconds=cfg.dispatch_retry_max_seconds,
+        requeue_lease_seconds=cfg.dispatch_requeue_lease_seconds,
+        poll_interval=1.0,
+    )

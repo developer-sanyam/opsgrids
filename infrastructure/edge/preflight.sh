@@ -267,6 +267,16 @@ if [ -z "$secret_problems" ]; then ok "secrets are long enough and distinct"; el
 	while IFS= read -r problem; do bad "$problem"; done <<<"$secret_problems"
 fi
 
+# notification-service's own two boot-time refusals (NOTIF-A), checked here for the same reason:
+# SMTP_USE_TLS and SMTP_USE_SSL both true, and EMAIL_TRANSPORT=smtp with a credential set and
+# neither flag true — either stops the notification worker from starting at all.
+# shellcheck disable=SC1091  # sourced, not executed — see the file's own header
+. ./lib/smtp-tls.sh
+smtp_tls_problems_found=$(smtp_tls_problems)
+if [ -z "$smtp_tls_problems_found" ]; then ok "SMTP_USE_TLS/SMTP_USE_SSL are a combination notification-service will start with"; else
+	while IFS= read -r problem; do bad "$problem"; done <<<"$smtp_tls_problems_found"
+fi
+
 # EDGE_RESERVED_IP is allowed empty (a box with no floating IP yet), but if it is set it must be
 # a real address: an address in one of RFC 5737's three documentation ranges (192.0.2.0/24,
 # 198.51.100.0/24, 203.0.113.0/24 — the ADR's own worked examples use 198.51.100.7) reaches

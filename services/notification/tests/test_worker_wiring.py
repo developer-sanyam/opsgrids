@@ -116,3 +116,52 @@ async def test_campaign_smtp_executor_is_shut_down_even_when_run_supervised_rais
         await worker.main()
 
     assert shutdown_calls == [{"wait": False, "cancel_futures": True}]
+
+
+async def test_the_recovery_sweeps_discovery_is_the_outbox_sessionmaker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The silent-stall shape (CLAUDE.md): discovery is cross-tenant, and under the app role with
+    no tenant bound it selects nothing — a `DispatchRecovery` built on the wrong sessionmaker
+    looks exactly like a healthy, idle sweep while every message that ever fails once sits
+    `pending` forever. Pinned on the object identity `main()` actually passes, not on a mock that
+    would pass whatever it was told to."""
+
+    async def _noop(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(worker, "assert_app_role", _noop)
+    monkeypatch.setattr(worker, "assert_outbox_role", _noop)
+    monkeypatch.setattr(worker, "init_engine", lambda cfg: object())
+    monkeypatch.setattr(worker, "init_outbox_engine", lambda cfg: None)
+    monkeypatch.setattr(worker, "get_outbox_engine", lambda: object())
+
+    outbox_sessionmaker = object()
+    monkeypatch.setattr(worker, "get_outbox_sessionmaker", lambda: outbox_sessionmaker)
+    monkeypatch.setattr(worker.consumers, "register", lambda *a, **kw: None)
+    monkeypatch.setattr(worker.dispatcher, "register", lambda *a, **kw: None)
+
+    captured: dict[str, Any] = {}
+
+    async def fake_run_supervised(**named_coroutines: Any) -> None:
+        captured.update(named_coroutines)
+        for coro in named_coroutines.values():
+            coro.close()
+
+    monkeypatch.setattr(worker, "run_supervised", fake_run_supervised)
+    monkeypatch.setattr(worker.CAMPAIGN_SMTP_EXECUTOR, "shutdown", lambda **kwargs: None)
+
+    built: list[worker.DispatchRecovery] = []
+    real_init = worker.DispatchRecovery.__init__
+
+    def spy_init(self: worker.DispatchRecovery, **kwargs: Any) -> None:
+        built.append(self)
+        real_init(self, **kwargs)
+
+    monkeypatch.setattr(worker.DispatchRecovery, "__init__", spy_init)
+
+    await worker.main()
+
+    assert "dispatch_recovery" in captured
+    (recovery,) = built
+    assert recovery._discovery_factory is outbox_sessionmaker

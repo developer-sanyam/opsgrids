@@ -227,6 +227,37 @@ def test_a_transport_that_would_send_credentials_unencrypted_cannot_be_built() -
         )
 
 
+async def test_smtp_transport_refuses_login_over_an_unencrypted_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`SmtpTransport.__init__` already refuses `tls_mode="none"` with a credential — this is the
+    other place that guard has to hold: a connection **opened** as `starttls`/`ssl` that somehow
+    negotiates down, or a caller that changes `_tls_mode` after construction, must still have
+    `smtp_tls.login` refuse it, over a real socket rather than a mock."""
+    with fake_smtp.running("plain") as (server, _):
+        transport = transports.SmtpTransport(
+            host=LOOPBACK,
+            port=server.port,
+            username=None,
+            password=None,
+            tls_mode="starttls",
+            timeout=5.0,
+            from_address="from@example.com",
+        )
+        # Bypasses the constructor guard on purpose: this pins `smtp_tls.login` itself, not the
+        # earlier check.
+        transport._username = "user"
+        transport._password = "s3cret"
+        transport._tls_mode = "none"
+
+        results = await transport.send_many([_message()])
+
+    assert len(results) == 1
+    assert isinstance(results[0], transports.TransportRefused)
+    assert "unencrypted" in str(results[0])
+    assert server.connections[0].auth_seen is False
+
+
 async def test_no_encryption_is_still_possible_without_a_credential() -> None:
     """A local relay that authenticates by network position: not made impossible."""
     with fake_smtp.running("plain") as (server, _):
@@ -257,6 +288,26 @@ async def test_a_recipient_refusal_does_not_carry_the_servers_words(
         ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused")
     ) == ("ConnectionRefusedError ECONNREFUSED")
     assert transports._describe_smtp_error(ValueError("secret header value")) == "ValueError"
+
+
+def test_a_tls_mode_port_mismatch_reports_the_openssl_reason_not_an_unrelated_errno() -> None:
+    """`ssl.SSLError.errno` mapped through `errno.errorcode` for a TLS error reads as `EPERM` —
+    a real but unrelated OS error name. `exc.reason` (OpenSSL's own identifier, e.g.
+    `WRONG_VERSION_NUMBER` for speaking implicit TLS to a STARTTLS port) is what actually
+    describes it, and it is checked for shape before being repeated."""
+    mismatch = ssl.SSLError(1, "[SSL: WRONG_VERSION_NUMBER] wrong version number")
+    mismatch.reason = "WRONG_VERSION_NUMBER"
+    described = transports._describe_smtp_error(mismatch)
+    assert described == "SSLError WRONG_VERSION_NUMBER"
+    assert "EPERM" not in described
+
+
+def test_an_sslerror_with_no_shape_like_reason_is_not_repeated() -> None:
+    """A body that put something other than an OpenSSL identifier in `reason` still cannot get
+    text through — the value is checked against the identifier shape first."""
+    hostile = ssl.SSLError(1, "generic failure")
+    hostile.reason = "the server said: h@northwind.example.com"
+    assert transports._describe_smtp_error(hostile) == "SSLError"
 
 
 # --------------------------------------------------------------------- the modes that may be used

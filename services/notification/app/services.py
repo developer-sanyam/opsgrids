@@ -450,7 +450,12 @@ async def stage_message(
     an absent row is indistinguishable from a rule that never fired.
 
     Nothing here touches a network. The message is committed as `pending` and the dispatcher
-    picks it up from the queued event.
+    picks it up from the queued event. `retry_at` is set to the end of the requeue lease: if that
+    first event is lost — dead-lettered after the consumer's own retries, say — the recovery sweep
+    queues the message again instead of leaving it `pending` with nothing that will ever look at
+    it. A claim clears it, so in the ordinary case it is never reached; if the dispatcher is merely
+    slow, the duplicate event the sweep publishes is stale by the time it arrives
+    (`claim_for_send`'s `expected_attempts`) and does nothing.
     """
     if dedupe_key and await selectors.find_by_dedupe_key(session, organization_id, dedupe_key):
         log.info("notification.deduplicated", dedupe_key=dedupe_key, rule=rule_code)
@@ -474,6 +479,11 @@ async def stage_message(
         dedupe_key=dedupe_key,
         provider_template_code=provider_template_code,
         provider_template_payload=provider_template_payload,
+        retry_at=(
+            None
+            if suppressed
+            else datetime.now(UTC) + timedelta(seconds=settings().dispatch_requeue_lease_seconds)
+        ),
     )
     session.add(message)
     await session.flush()
@@ -502,7 +512,15 @@ def _publish_queued(
 ) -> None:
     """Stage the event that makes the dispatcher send `message`. One shape for both callers — a
     message being staged for the first time, and one whose retry has fallen due
-    (`redrive_message`) — so the dispatcher cannot tell them apart and does not need to."""
+    (`redrive_message`) — so the dispatcher cannot tell them apart and does not need to.
+
+    **`attempts` is the message's attempt count when the event was made**, and the claim refuses an
+    event whose count is no longer the message's (`claim_for_send`'s `expected_attempts`): an event
+    is an invitation to make the *next* attempt, and once that attempt has been made, or another
+    event has made it, this one is stale. Without it the sweep's requeue lease could publish a
+    second event for a message whose first is still queued, and each extra event would burn an
+    attempt at once, ignoring the backoff.
+    """
     publish_event(
         session,
         OutboxEvent,
@@ -515,6 +533,7 @@ def _publish_queued(
             "message_id": str(message.id),
             "channel": message.channel,
             "category": message.category,
+            "attempts": message.attempts,
         },
         causation_id=causation_id,
         actor=actor,
@@ -859,10 +878,16 @@ async def claim_for_send(
     organization_id: uuid.UUID,
     message_id: uuid.UUID,
     lease_seconds: int = domain.DEFAULT_CLAIM_LEASE_SECONDS,
+    expected_attempts: int | None = None,
     now: datetime | None = None,
 ) -> Message | None:
     """Move one message `pending` → `sending`, count the attempt and take a lease on the claim.
     Returns None if unclaimable.
+
+    `expected_attempts` is the attempt count the queued event was made at (`_publish_queued`). An
+    event for an attempt somebody else has already made is stale and claims nothing. An event
+    carrying no count — one already in flight from before the field existed — is honoured as it
+    always was.
 
     Unclaimable covers every benign race: already sent, suppressed after the event was queued,
     out of attempts, or claimed by another dispatcher. Returning None rather than raising keeps a
@@ -880,6 +905,15 @@ async def claim_for_send(
     if message is None:
         return None
     if message.state != domain.STATE_PENDING:
+        return None
+    if expected_attempts is not None and message.attempts != expected_attempts:
+        log.info(
+            "dispatch.stale_event",
+            organization_id=str(organization_id),
+            message_id=str(message.id),
+            event_attempts=expected_attempts,
+            attempts=message.attempts,
+        )
         return None
 
     # Suppression is checked again here, not only at render time. A recipient can opt out
@@ -908,32 +942,78 @@ async def record_sent(
     *,
     organization_id: uuid.UUID,
     message_id: uuid.UUID,
+    attempt: int,
     provider: str,
     provider_message_id: str | None,
 ) -> None:
-    """Mark a message sent and append the winning attempt to its ledger."""
-    message = await selectors.get_message(session, organization_id, message_id)
+    """Mark a message sent and append the winning attempt to its ledger.
+
+    `attempt` is the attempt this dispatcher claimed. Normally it is still the message's current
+    claim and this is the ordinary win. But a send can outlive its lease: the sweep has by then
+    settled the claim as interrupted and queued another attempt, or another dispatcher has one in
+    flight. **None of that changes what happened** — the provider took the message — so the
+    outcome is recorded whatever state the row is in: it becomes `sent`, its `retry_at` is
+    cleared (so the queued retry finds it sent and does nothing) and `message.sent` is published.
+    Only a row already `sent` or beyond, or suppressed, is left alone.
+
+    The row is locked, waiting its turn rather than skipping: this outcome must land. The ledger
+    row is inserted `ON CONFLICT DO NOTHING` on `(message_id, attempt_no)`: if the sweep already
+    wrote that attempt as interrupted, the ledger keeps its row (it is append-only) and the
+    message row carries the truth — `sent_at` and `provider_message_id`.
+    """
+    message = await selectors.get_message(
+        session, organization_id, message_id, for_update=True, skip_locked=False
+    )
     if message is None:  # pragma: no cover - the row was read moments earlier
         return
 
+    if message.state in (
+        domain.STATE_SENT,
+        domain.STATE_DELIVERED,
+        domain.STATE_READ,
+        domain.STATE_SUPPRESSED,
+    ):
+        log.info(
+            "dispatch.late_success_ignored",
+            organization_id=str(organization_id),
+            message_id=str(message.id),
+            attempt=attempt,
+            state=message.state,
+        )
+        return
+
+    if message.state != domain.STATE_SENDING or message.attempts != attempt:
+        log.warning(
+            "dispatch.late_success",
+            organization_id=str(organization_id),
+            message_id=str(message.id),
+            attempt=attempt,
+            state=message.state,
+            attempts=message.attempts,
+        )
+
+    now = datetime.now(UTC)
     message.state = domain.STATE_SENT
-    message.sent_at = datetime.now(UTC)
+    message.sent_at = now
     message.retry_at = None
     message.provider_message_id = provider_message_id
     message.last_error = None
     message.updated_by = SYSTEM_ACTOR
 
-    session.add(
-        Delivery(
+    await session.execute(
+        pg_insert(Delivery)
+        .values(
+            id=uuid.uuid4(),
             organization_id=organization_id,
             created_by=SYSTEM_ACTOR,
             message_id=message.id,
-            attempt_no=message.attempts,
+            attempt_no=attempt,
             provider=provider,
             outcome="sent",
             detail=None,
-            at=datetime.now(UTC),
+            at=now,
         )
+        .on_conflict_do_nothing(constraint="uq_deliveries_message_attempt")
     )
     await session.flush()
 
@@ -965,15 +1045,29 @@ async def record_failure(
     *,
     organization_id: uuid.UUID,
     message_id: uuid.UUID,
+    attempt: int,
     provider: str,
     error: str,
     permanent: bool,
     max_attempts: int,
+    reason: str | None = None,
     retry_base_seconds: float = domain.DEFAULT_RETRY_BASE_SECONDS,
     retry_max_seconds: float = domain.DEFAULT_RETRY_MAX_SECONDS,
     now: datetime | None = None,
 ) -> None:
     """Append the failed attempt and decide what happens to the message next.
+
+    **Fenced by `attempt`.** It is the attempt this dispatcher claimed, and it may act only while
+    that attempt is still the message's current claim: `sending`, at that count. A send that ran
+    past its lease has had its claim settled by the sweep, and another attempt may be in flight —
+    a stale failure that flipped the message back to `pending` would put it in line to be sent a
+    second time on top of one already under way. Such an outcome is logged
+    (`dispatch.late_failure_ignored`) and changes nothing; the row is locked, waiting its turn, so
+    what is compared is what is committed.
+
+    `reason` names a terminal failure for whoever reads `message.failed`: `refused`,
+    `retries_exhausted` (the default for a transient failure that ran out of attempts) or
+    `outcome_unknown`.
 
     A permanent refusal goes straight to `failed` — retrying an address the provider will never
     accept only delays the moment somebody looks at it. A transient failure returns to `pending`
@@ -983,8 +1077,20 @@ async def record_failure(
     when the dispatcher finished with it, and a redelivery of it would find its
     `processed_events` row and stop. Out of attempts is `failed` with an alert.
     """
-    message = await selectors.get_message(session, organization_id, message_id)
+    message = await selectors.get_message(
+        session, organization_id, message_id, for_update=True, skip_locked=False
+    )
     if message is None:  # pragma: no cover
+        return
+    if message.state != domain.STATE_SENDING or message.attempts != attempt:
+        log.warning(
+            "dispatch.late_failure_ignored",
+            organization_id=str(organization_id),
+            message_id=str(message.id),
+            attempt=attempt,
+            state=message.state,
+            attempts=message.attempts,
+        )
         return
     await _settle_failed_attempt(
         session,
@@ -992,6 +1098,7 @@ async def record_failure(
         provider=provider,
         error=error,
         permanent=permanent,
+        reason=reason,
         max_attempts=max_attempts,
         retry_base_seconds=retry_base_seconds,
         retry_max_seconds=retry_max_seconds,
@@ -1010,6 +1117,7 @@ async def _settle_failed_attempt(
     retry_base_seconds: float,
     retry_max_seconds: float,
     now: datetime,
+    reason: str | None = None,
 ) -> bool:
     """The one place a failed attempt is turned into a next step — for a failure the dispatcher
     saw (`record_failure`) and for a claim it never got to record (`redrive_message`). Returns
@@ -1051,7 +1159,20 @@ async def _settle_failed_attempt(
         )
         return True
 
-    if not permanent:
+    failure_reason = reason or ("refused" if permanent else "retries_exhausted")
+    if failure_reason == "outcome_unknown":
+        # The provider may have taken the message and the answer was lost. It is not retried —
+        # a second send would be a second message, and a WhatsApp template costs money — so a
+        # person is told, and can resend by hand once they have looked. Ids only.
+        log.error(
+            "notification.message.outcome_unknown",
+            organization_id=str(message.organization_id),
+            message_id=str(message.id),
+            channel=message.channel,
+            attempts=message.attempts,
+            hint="the provider may have accepted this message; check before resending by hand",
+        )
+    elif not permanent:
         # Out of attempts on a failure that might have passed: a person may need to look. Ids
         # and counts only — no address, no provider text (`last_error` holds what the transport
         # chose to say, and it is on the row for whoever comes looking).
@@ -1076,6 +1197,7 @@ async def _settle_failed_attempt(
             "channel": message.channel,
             "attempts": message.attempts,
             "last_error": message.last_error,
+            "reason": failure_reason,
         },
         actor={"type": "system", "id": SYSTEM_ACTOR},
     )
@@ -1100,25 +1222,43 @@ async def redrive_message(
     write** (`app/cron.py`), one message, one transaction, under the message's own tenant.
 
     `pending` — its backoff is over. The queued event is published (through the outbox, so it
-    leaves only once this commits) and `retry_at` moves out by `requeue_lease_seconds`: a claim
-    clears it, and if the event is lost instead the sweep publishes another when it lapses, so a
-    message is never stranded between "waiting" and "claimed".
+    leaves only once this commits, stamped with the attempt count it was made at) and `retry_at`
+    moves out by `requeue_lease_seconds`: a claim clears it, and if the event is lost instead the
+    sweep publishes another when it lapses, so a message is never stranded between "waiting" and
+    "claimed". A second event for the same attempt is stale once the first has claimed it
+    (`claim_for_send`), so publishing one costs nothing.
 
     `sending` — the dispatcher's lease lapsed without an outcome. Whatever it was doing, it is
     not doing it any more, so the claim is settled as a failed attempt (`INTERRUPTED_ATTEMPT`) and
     the message goes through the same retry-or-give-up decision as any other failure. **This is
-    at-least-once, on purpose:** if the process died *after* the provider accepted the message
-    and before the outcome was recorded, the customer gets a second copy. The alternative is a
-    row that stays `sending` forever and a password reset that never arrives; a duplicate is the
-    lesser harm, and attempts stay bounded because the claim already counted this one.
+    at-least-once for email, on purpose:** if the process died *after* the provider accepted the
+    message and before the outcome was recorded, the customer gets a second copy — under the same
+    `Message-ID`, which most mailboxes fold. The alternative is a row that stays `sending`
+    forever and a password reset that never arrives. Attempts stay bounded because the claim
+    already counted this one. **WhatsApp is not retried**: Meta has no idempotency key and a
+    template is billed, so a claim that lapsed is an outcome nobody knows, and the message is
+    failed as `outcome_unknown` for a person to resolve.
 
     The row is locked, skipping one a dispatcher holds this instant: that message is being dealt
-    with, and the sweep looks again next pass. Anything not due is `not_due`, changed only to drop
-    a `retry_at` that a message in a state nobody sweeps should not have.
+    with, and the sweep looks again next pass. Anything not due is `not_due`. A message the reads
+    cannot see (soft-deleted) has its `retry_at` cleared by a direct update, so it is not found
+    again on every pass; a `retry_at` on a message in a state nobody sweeps is cleared likewise.
     """
     now = now or datetime.now(UTC)
     message = await selectors.get_message(session, organization_id, message_id, for_update=True)
-    if message is None or message.retry_at is None or message.retry_at > now:
+    if message is None:
+        await session.execute(
+            update(Message)
+            .where(
+                Message.id == message_id,
+                Message.organization_id == organization_id,
+                Message.deleted_at.is_not(None),
+                Message.retry_at.is_not(None),
+            )
+            .values(retry_at=None)
+        )
+        return "not_due"
+    if message.retry_at is None or message.retry_at > now:
         return "not_due"
 
     if message.state == domain.STATE_PENDING:
@@ -1141,12 +1281,14 @@ async def redrive_message(
             message_id=str(message.id),
             attempt=message.attempts,
         )
+        unknowable = message.channel == "whatsapp"
         retried = await _settle_failed_attempt(
             session,
             message,
             provider="dispatcher",
             error=INTERRUPTED_ATTEMPT,
-            permanent=False,
+            permanent=unknowable,
+            reason="outcome_unknown" if unknowable else None,
             max_attempts=max_attempts,
             retry_base_seconds=retry_base_seconds,
             retry_max_seconds=retry_max_seconds,
@@ -1157,6 +1299,77 @@ async def redrive_message(
     message.retry_at = None
     await session.flush()
     return "not_due"
+
+
+async def park_unrecoverable(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    message_id: uuid.UUID,
+    now: datetime | None = None,
+) -> bool:
+    """Give up on a message the recovery sweep has failed on `MAX_REDRIVE_FAILURES` passes in a
+    row: `failed`, `retry_at` cleared, `message.failed` published (`recovery_failed`) and an alert
+    logged. Its own small transaction, and deliberately not `_settle_failed_attempt` — the thing
+    that keeps raising may well be inside that. Returns whether a message was parked (a row a
+    dispatcher holds, or already resolved, is left alone)."""
+    now = now or datetime.now(UTC)
+    message = await selectors.get_message(session, organization_id, message_id, for_update=True)
+    if message is None or message.state not in (domain.STATE_PENDING, domain.STATE_SENDING):
+        return False
+    message.state = domain.STATE_FAILED
+    message.retry_at = None
+    message.last_error = "recovery failed repeatedly"
+    message.updated_by = SYSTEM_ACTOR
+    await session.flush()
+    log.error(
+        "notification.message.recovery_gave_up",
+        organization_id=str(message.organization_id),
+        message_id=str(message.id),
+        channel=message.channel,
+        attempts=message.attempts,
+        hint="the recovery sweep failed on this message repeatedly; it is `failed` now",
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=message.organization_id,
+        event_type=EVT_MESSAGE_FAILED,
+        aggregate_type="message",
+        aggregate_id=message.id,
+        payload={
+            "organization_id": str(message.organization_id),
+            "message_id": str(message.id),
+            "channel": message.channel,
+            "attempts": message.attempts,
+            "last_error": message.last_error,
+            "reason": "recovery_failed",
+        },
+        actor={"type": "system", "id": SYSTEM_ACTOR},
+    )
+    return True
+
+
+async def defer_redrive(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    message_id: uuid.UUID,
+    until: datetime,
+) -> None:
+    """Push a message's `retry_at` out to `until`, changing nothing else. What the sweep does when
+    acting on a message raised: the row would otherwise be found again on the very next pass, at the
+    head of the oldest-first order, ahead of every live message behind it."""
+    await session.execute(
+        update(Message)
+        .where(
+            Message.id == message_id,
+            Message.organization_id == organization_id,
+            Message.retry_at.is_not(None),
+            Message.state.in_((domain.STATE_PENDING, domain.STATE_SENDING)),
+        )
+        .values(retry_at=until)
+    )
 
 
 # --------------------------------------------------------------------- provider receipts
@@ -4627,11 +4840,20 @@ async def record_campaign_batch(
     waiting out its claim lease) so the very next successful tick resends it — at-least-once,
     the same guarantee the shared consumer's batches always gave, just resumable across a crash
     instead of bounded by one broker redelivery.
+
+    A `TransportTlsError` gets that same release, but is not a blip a backoff will outlast: the
+    connection's certificate does not verify, and every recipient in the campaign will fail the
+    same way until an operator fixes the connection. Left as an ordinary `TransportUnavailable`
+    this would back off, retry, back off again — invisible unless someone reads the logs — so it
+    also pauses the campaign (`Campaign.status`, `pause_reason`), the same visible state a missing
+    provider or an unusable sender already gets. `resume_campaign` (an operator's explicit "try
+    again") clears it.
     """
     ids = [rid for rid, _, _ in resolved] + [rid for rid, _ in sent]
     rows = await selectors.recipients_by_id(session, organization_id, campaign_id, ids)
     now = datetime.now(UTC)
     any_unavailable = False
+    tls_failure = False
 
     for recipient_id, status, note in resolved:
         row = rows.get(recipient_id)
@@ -4658,10 +4880,13 @@ async def record_campaign_batch(
             row.claimed_at = None
         else:
             any_unavailable = True
+            if isinstance(outcome, TransportTlsError):
+                tls_failure = True
             log.warning(
                 "engage.campaign.unavailable",
                 campaign_id=str(campaign_id),
                 recipient_id=str(recipient_id),
+                tls=tls_failure,
             )
             # Released rather than left `sending`: the driver's backoff (not this row's lease)
             # is what paces the retry, so the row itself should look immediately retryable.
@@ -4672,4 +4897,11 @@ async def record_campaign_batch(
     campaign = await selectors.get_campaign(session, organization_id, campaign_id)
     if campaign is not None:
         await _fold_campaign_counts(session, campaign)
+        if tls_failure:
+            await _pause_campaign(
+                session,
+                campaign,
+                "The mail server's certificate could not be verified. Check the connection's "
+                "host and certificate, then resume the campaign.",
+            )
     return any_unavailable

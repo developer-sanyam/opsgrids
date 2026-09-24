@@ -1133,7 +1133,10 @@ async def test_the_connection_route_refuses_a_tls_mode_it_does_not_know(client, 
 async def test_the_connection_route_reports_how_the_connection_is_secured(client, org_id) -> None:
     """A named provider is STARTTLS whatever the caller sent: like `host` and `port`, how it is
     secured is the provider's to say. The answer is on the response so the setup screen can show
-    it."""
+    it. `none` is not offered on this schema at all (MINOR 12: every connection carries a
+    credential, and an unencrypted one is always refused) — `ssl` is what proves the ignore-the-
+    caller rule here, since it is a real, otherwise-valid choice for `smtp` that `google` must
+    still refuse to honour."""
     with as_principal(engage_caller(org_id, [f"{C_WRITE}:ORG"])):
         response = await client.post(
             CONNECTION,
@@ -1141,11 +1144,28 @@ async def test_the_connection_route_reports_how_the_connection_is_secured(client
                 "kind": "google",
                 "username": "ops@company.com",
                 "secret": "x",  # pragma: allowlist secret
-                "tls_mode": "none",
+                "tls_mode": "ssl",
             },
         )
     assert response.status_code == 201
     assert response.json()["tls_mode"] == "starttls"
+
+
+async def test_the_connection_route_refuses_none_as_a_tls_mode(client, org_id) -> None:
+    """`none` never reaches the writer: every connection here carries a username and password,
+    and an unencrypted one is always refused, so the schema does not offer it as a choice."""
+    with as_principal(engage_caller(org_id, [f"{C_WRITE}:ORG"])):
+        response = await client.post(
+            CONNECTION,
+            json={
+                "kind": "smtp",
+                "username": "ops@company.com",
+                "secret": "x",  # pragma: allowlist secret
+                "host": "mail.example.com",
+                "tls_mode": "none",
+            },
+        )
+    assert response.status_code == 422
 
 
 async def test_a_test_send_to_a_server_whose_certificate_will_not_verify_says_so(

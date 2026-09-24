@@ -77,7 +77,11 @@ def grant_message_sweep_reader(connection: Connection) -> None:
     `subject`, `body` or `provider_template_payload`.
 
     Idempotent and called after **every** alembic run: `REVOKE` first and `GRANT` again only if the
-    table still exists, so a downgrade that drops it takes the privilege with it.
+    table still exists, so a downgrade that drops it takes the privilege with it — and only for
+    the columns that exist **at this revision**. `retry_at` arrives with a later migration than the
+    table, and this runs after a downgrade too: a grant that named it unconditionally would fail
+    with `UndefinedColumn` on every downgrade below that migration, after its DDL had committed
+    (`services/finance/migrations/env.py` does the same for the same reason).
     """
     reader = cfg.db_outbox_role
     if not reader:
@@ -90,12 +94,71 @@ def grant_message_sweep_reader(connection: Connection) -> None:
         text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.messages"}
     ).scalar():
         connection.execute(text(f'REVOKE ALL ON "{SCHEMA}"."messages" FROM "{reader}"'))
-        connection.execute(
-            text(
-                "GRANT SELECT (organization_id, id, state, retry_at) "
-                f'ON "{SCHEMA}"."messages" TO "{reader}"'
-            )
+        present = set(
+            connection.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = :s AND table_name = 'messages'"
+                ),
+                {"s": SCHEMA},
+            ).scalars()
         )
+        granted = ", ".join(
+            c for c in ("organization_id", "id", "state", "retry_at") if c in present
+        )
+        if granted:
+            connection.execute(
+                text(f'GRANT SELECT ({granted}) ON "{SCHEMA}"."messages" TO "{reader}"')
+            )
+    connection.commit()
+
+
+def grant_directory_reader_email_connections(connection: Connection) -> None:
+    """Column-level `SELECT` on `email_connections` for `opsgrids_notification_directory` — the
+    BYPASSRLS, SELECT-only role notification already uses for the one cross-tenant read that has
+    to happen before a tenant is known (the WhatsApp webhook's phone-number-id lookup, granted
+    table-wide on `provider_accounts` by `a4b7c9e1f206`).
+
+    `tools/probe_smtp_connections.py` (NOTIF-A) is the reader: a pre-deploy, read-only TLS
+    handshake check across every organization's `smtp` connection, which by construction needs a
+    cross-tenant read the same way enumerating organizations does
+    (`tools/reconcile_permissions.py`'s own reasoning) — and the alternative, the admin role, is
+    BYPASSRLS *and* owner of the whole schema, a far wider surface than eight non-secret columns
+    need. Column-level rather than table-wide like the `provider_accounts` grant: a table-wide
+    grant here would eventually include `secret_enc` and `username`, exactly the columns this role
+    must never be able to read. `organization_id`, `id`, `kind`, `host`, `port`, `use_tls`,
+    `tls_mode`, `status` — never `username` or `secret_enc`.
+
+    Idempotent and called after **every** alembic run, the same shape as
+    `grant_message_sweep_reader`: `REVOKE` first and grant only the columns that exist at this
+    revision, so a downgrade never leaves a grant naming a column an earlier schema lacks.
+    """
+    reader = cfg.db_directory_role
+    if not reader:
+        return
+    if not connection.execute(
+        text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": reader}
+    ).scalar():
+        return
+    if connection.execute(
+        text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.email_connections"}
+    ).scalar():
+        connection.execute(text(f'REVOKE ALL ON "{SCHEMA}"."email_connections" FROM "{reader}"'))
+        present = set(
+            connection.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = :s AND table_name = 'email_connections'"
+                ),
+                {"s": SCHEMA},
+            ).scalars()
+        )
+        wanted = ("organization_id", "id", "kind", "host", "port", "use_tls", "tls_mode", "status")
+        granted = ", ".join(c for c in wanted if c in present)
+        if granted:
+            connection.execute(
+                text(f'GRANT SELECT ({granted}) ON "{SCHEMA}"."email_connections" TO "{reader}"')
+            )
     connection.commit()
 
 
@@ -131,6 +194,7 @@ def do_run_migrations(connection: Connection) -> None:
     apply_schema_grants(connection, SCHEMA, cfg.db_app_role, outbox_role=cfg.db_outbox_role)
     grant_campaign_sweep_reader(connection)
     grant_message_sweep_reader(connection)
+    grant_directory_reader_email_connections(connection)
 
 
 async def run_async_migrations() -> None:

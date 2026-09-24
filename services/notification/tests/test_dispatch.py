@@ -98,6 +98,7 @@ async def test_recording_a_send_writes_the_attempt_and_the_event(session, org_id
             session,
             organization_id=org_id,
             message_id=message.id,
+            attempt=1,
             provider="recording",
             provider_message_id="rec-1",
         )
@@ -132,6 +133,7 @@ async def test_a_transient_failure_returns_the_message_to_pending(session, org_i
             session,
             organization_id=org_id,
             message_id=message.id,
+            attempt=1,
             provider="smtp",
             error="connection reset",
             permanent=False,
@@ -157,6 +159,7 @@ async def test_a_permanent_refusal_fails_immediately(session, org_id) -> None:
             session,
             organization_id=org_id,
             message_id=message.id,
+            attempt=1,
             provider="whatsapp_cloud",
             error="not a WhatsApp user",
             permanent=True,
@@ -171,7 +174,7 @@ async def test_a_transient_failure_stops_retrying_once_attempts_are_spent(sessio
     """Bounded rather than infinite: a queue that never drains hides the messages that could
     still be sent."""
     message = await _stage_one(session, org_id)
-    for _ in range(2):
+    for attempt in (1, 2):
         async with session.begin():
             await services.claim_for_send(session, organization_id=org_id, message_id=message.id)
         async with session.begin():
@@ -179,6 +182,7 @@ async def test_a_transient_failure_stops_retrying_once_attempts_are_spent(sessio
                 session,
                 organization_id=org_id,
                 message_id=message.id,
+                attempt=attempt,
                 provider="smtp",
                 error="timeout",
                 permanent=False,
@@ -204,6 +208,7 @@ async def test_the_delivery_ledger_is_append_only(session, org_id) -> None:
             session,
             organization_id=org_id,
             message_id=message.id,
+            attempt=1,
             provider="smtp",
             error="first",
             permanent=False,
@@ -216,6 +221,7 @@ async def test_the_delivery_ledger_is_append_only(session, org_id) -> None:
             session,
             organization_id=org_id,
             message_id=message.id,
+            attempt=2,
             provider="smtp",
             provider_message_id=None,
         )

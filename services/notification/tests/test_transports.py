@@ -117,11 +117,17 @@ async def test_whatsapp_4xx_is_permanent(monkeypatch: pytest.MonkeyPatch) -> Non
         await _send_against(handler, monkeypatch)
 
 
-async def test_whatsapp_5xx_is_transient(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_whatsapp_5xx_is_an_unknown_outcome_not_a_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gateway error can come from in front of a service that had already accepted the message.
+    With no idempotency key a retry is a second message, so a 5xx is not retried
+    (`test_dispatch_fencing.py` has the whole classification)."""
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, text="try later")
 
-    with pytest.raises(transports.TransportUnavailable):
+    with pytest.raises(transports.TransportOutcomeUnknown):
         await _send_against(handler, monkeypatch)
 
 
@@ -210,11 +216,11 @@ async def test_whatsapp_failure_without_an_envelope_carries_the_status_only(
     the status is all there is to say."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(503, content=body)
+        return httpx.Response(400, content=body)
 
-    with pytest.raises(transports.TransportUnavailable) as excinfo:
+    with pytest.raises(transports.TransportRefused) as excinfo:
         await _send_against(handler, monkeypatch)
-    assert str(excinfo.value) == "HTTP 503"
+    assert str(excinfo.value) == "HTTP 400"
 
 
 async def test_whatsapp_error_fields_are_repeated_only_when_they_are_what_they_claim_to_be(

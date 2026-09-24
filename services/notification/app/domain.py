@@ -688,6 +688,11 @@ DEFAULT_RETRY_MAX_SECONDS: Final = 3600.0
 DEFAULT_CLAIM_LEASE_SECONDS: Final = 600
 DEFAULT_REQUEUE_LEASE_SECONDS: Final = 300
 
+#: How many passes in a row the recovery sweep may fail on one message before it stops trying and
+#: gives the message up (`services.park_unrecoverable`). A message whose write raises every time is
+#: a bug, not weather; retrying it for ever would keep it at the head of every pass.
+MAX_REDRIVE_FAILURES: Final = 5
+
 
 def should_retry(attempts: int, *, max_attempts: int) -> bool:
     """Whether a failed message is worth claiming again.

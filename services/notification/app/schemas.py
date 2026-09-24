@@ -254,6 +254,11 @@ ConnectionStatus = Literal["connected", "disconnected"]
 #: byte, or not at all. `none` is a value a caller can name and the writer will refuse whenever a
 #: credential is set — see `domain.resolve_tls_mode`.
 ConnectionTlsMode = Literal["starttls", "ssl", "none"]
+#: What a caller may ask for. `none` is not offered: every connection carries a username and
+#: password, and an unencrypted one is refused for that reason (`domain.resolve_tls_mode` keeps the
+#: refusal for any path that reaches it without this schema). It stays in `ConnectionTlsMode`
+#: because a row read back can be described as one — it must be reportable, never a 500.
+ConnectionTlsModeIn = Literal["starttls", "ssl"]
 DomainStatus = Literal["pending", "verified", "failed"]
 DnsRecordKind = Literal["spf", "dkim", "dmarc", "return_path", "tracking"]
 
@@ -287,10 +292,10 @@ class ConnectionIn(BaseModel):
     #: How to secure the connection. Only an `smtp` connection has a choice: leave it out and it
     #: follows the port — implicit TLS on 465, STARTTLS on any other. A named provider
     #: (`google`, `microsoft`) is always what that provider offers, and this is ignored for the
-    #: same reason `host` is. `none` is refused whenever the connection carries a username and
-    #: password, which every connection here does — the server's certificate is verified either
-    #: way, so a host with a self-signed certificate is not a valid submission host.
-    tls_mode: ConnectionTlsMode | None = None
+    #: same reason `host` is. There is no unencrypted choice: every connection carries a username
+    #: and password. The server's certificate is verified either way, so a host with a
+    #: self-signed certificate is not a valid submission host.
+    tls_mode: ConnectionTlsModeIn | None = None
 
 
 class ConnectionOut(BaseModel):

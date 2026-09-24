@@ -137,18 +137,25 @@ async def get_message(
     message_id: uuid.UUID,
     *,
     for_update: bool = False,
+    skip_locked: bool = True,
 ) -> Message | None:
-    """One message. `for_update` takes the row lock, **skipping** a row somebody else holds — the
-    recovery sweep's shape: a message a dispatcher is claiming this instant is not one the sweep
-    should be settling, so it gets `None` and looks again next pass. `populate_existing` so the
-    values compared under the lock are the committed ones, not a copy this session read earlier."""
+    """One message. `for_update` takes the row lock; `populate_existing` so the values compared
+    under it are the committed ones, not a copy this session read earlier.
+
+    `skip_locked` (the default with `for_update`) **skips** a row somebody else holds and returns
+    `None` — the shape for a caller that has nothing to add to a message another transaction is
+    dealing with this instant: the recovery sweep, and a dispatcher's claim. A caller that must
+    act on the row whatever else touches it — recording what a send did — passes
+    `skip_locked=False` and waits its turn."""
     stmt = select(Message).where(
         Message.id == message_id,
         Message.organization_id == org_id,
         Message.deleted_at.is_(None),
     )
     if for_update:
-        stmt = stmt.with_for_update(skip_locked=True).execution_options(populate_existing=True)
+        stmt = stmt.with_for_update(skip_locked=skip_locked).execution_options(
+            populate_existing=True
+        )
     return (await session.execute(stmt)).scalar_one_or_none()
 
 

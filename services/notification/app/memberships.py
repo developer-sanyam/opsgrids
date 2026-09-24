@@ -68,7 +68,8 @@ async def membership_is_active(
     try:
         response = await client.get(url, headers=headers)
     except httpx.HTTPError as exc:
-        log.warning("memberships.unreachable", reason=str(exc))
+        # The type, never the text: an `httpx` message can carry the URL and what was in it.
+        log.warning("memberships.unreachable", error_type=type(exc).__name__)
         return False
     finally:
         if owns_client:

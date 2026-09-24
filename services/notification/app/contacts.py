@@ -92,7 +92,8 @@ async def resolve_contact_by_phone(
     try:
         response = await client.post(url, json={"phone": phone}, headers=headers)
     except httpx.HTTPError as exc:
-        log.warning("contacts.unreachable", reason=str(exc))
+        # The type, never the text: an `httpx` message can carry the URL and what was in it.
+        log.warning("contacts.unreachable", error_type=type(exc).__name__)
         return _UNREACHABLE
     finally:
         if owns_client:
