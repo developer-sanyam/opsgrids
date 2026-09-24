@@ -680,31 +680,44 @@ services:
       # product's app answered "No route for /api/v1/…" until something else forced a
       # recreate. `remote.sh` exports the file's hash; a changed table is a changed container.
       ROUTES_SHA: ${ROUTES_SHA:-unset}
-      # Whose `X-Forwarded-For` this gateway believes — Caddy's, and nobody else's. Without it
-      # the socket peer of every request is Caddy's address on `front`, so the anonymous
-      # per-address rate limit counts the whole internet as one caller (and it is the only
-      # brake on unauthenticated password and one-time-code guessing before a per-account lockout
-      # has anything to count). Caddy overwrites the header with the address it accepted the
-      # connection from (caddy/Caddyfile, `handle /api/*`), so the value is never client-chosen;
-      # the gateway reads it only when the peer is inside this list, from the right.
+      # Which peers this gateway believes about *who called* (`X-Forwarded-For`). Without it the
+      # socket peer of every request is Caddy's address on `front`, so the anonymous per-address
+      # rate limit counts the whole internet as one caller (and it is the only brake on
+      # unauthenticated password and one-time-code guessing before a per-account lockout has
+      # anything to count). Caddy overwrites the header with the address it accepted the
+      # connection from (caddy/Caddyfile, `handle /api/*`), so what arrives from Caddy is never
+      # client-chosen; the gateway reads it only when the connecting peer is inside this list, from
+      # the right, and forwards the one address it resolved.
+      #
+      # **The trust boundary is this whole range, not Caddy.** The default is the three private
+      # ranges because `front`'s subnet is allocated from Docker's own pool and is not fixed; that
+      # makes every container on `front` and `back` a trusted proxy, and one that is compromised
+      # can name any caller and burn that address's rate-limit allowance (the accepted residual).
+      # Only Caddy publishes a port, so nothing outside the compose networks can be a peer at all.
+      # RUNBOOK.md, "Narrowing the trusted proxy set", reduces it to Caddy's own address.
+      #
+      # Two things about *empty*: here `:-` turns an empty or unset `.env` value into the default
+      # below, so there is no way to say "trust nobody" on the box (the service default — nobody —
+      # applies only where the variable is absent altogether, e.g. `make run`). And the gateway
+      # refuses anything outside private, loopback, link-local or unique-local space at boot.
       #
       # This service ONLY (`tests/infra/test_gateway_trusted_proxies.py` pins it): a service
       # behind the gateway sees the gateway as its peer, and trusting `X-Forwarded-For` anywhere
-      # else would let a caller name its own address. The default is the three private ranges,
-      # because compose allocates `front` from Docker's own pool and its subnet is not fixed —
-      # and nothing outside the compose networks can reach this container's port (only Caddy
-      # publishes one). Narrow it to the exact subnet if the box's Docker is configured
-      # otherwise: RUNBOOK.md, "rate limiting behind Caddy". Empty means "trust nobody" and puts
-      # the limiter back on Caddy's address (the gateway logs `gateway.no_trusted_proxies`).
+      # else would let a caller name its own address.
       TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
-      # The ceiling over ALL unauthenticated requests together, per minute, on top of the
-      # per-address limit; and the provider-webhook buckets. Empty falls through to the
-      # service's own default (`services/app-gateway/app/config.py`) rather than repeating a
-      # number here that would drift from it.
+      # The anonymous limits: per address, the ceiling over the credential endpoints (sign-in,
+      # codes, reset, sign-up, invitations), the separate and larger one over everything else
+      # public; a webhook's only limit (rejected deliveries per address); and the guard on bodies
+      # that unauthenticated callers send slowly (a read deadline and how many may be in flight).
+      # Empty falls through to the service's own default (`services/app-gateway/app/config.py`)
+      # rather than repeating a number here that would drift from it — and never means "off".
       ANONYMOUS_RATE_LIMIT_PER_MINUTE: ${ANONYMOUS_RATE_LIMIT_PER_MINUTE:-}
       ANONYMOUS_GLOBAL_RATE_LIMIT_PER_MINUTE: ${ANONYMOUS_GLOBAL_RATE_LIMIT_PER_MINUTE:-}
-      WEBHOOK_RATE_LIMIT_PER_MINUTE: ${WEBHOOK_RATE_LIMIT_PER_MINUTE:-}
-      WEBHOOK_GLOBAL_RATE_LIMIT_PER_MINUTE: ${WEBHOOK_GLOBAL_RATE_LIMIT_PER_MINUTE:-}
+      ANONYMOUS_CONTENT_GLOBAL_RATE_LIMIT_PER_MINUTE: ${ANONYMOUS_CONTENT_GLOBAL_RATE_LIMIT_PER_MINUTE:-}
+      WEBHOOK_FAILURE_LIMIT_PER_MINUTE: ${WEBHOOK_FAILURE_LIMIT_PER_MINUTE:-}
+      UNAUTH_BODY_READ_TIMEOUT_SECONDS: ${UNAUTH_BODY_READ_TIMEOUT_SECONDS:-}
+      UNAUTH_BODY_MAX_CONCURRENT_PER_ADDRESS: ${UNAUTH_BODY_MAX_CONCURRENT_PER_ADDRESS:-}
+      UNAUTH_BODY_MAX_CONCURRENT_GLOBAL: ${UNAUTH_BODY_MAX_CONCURRENT_GLOBAL:-}
     volumes:
       - ./routes.prod.json:/opt/opsgrids/routes.prod.json:ro
     networks:

@@ -1244,18 +1244,48 @@ closed** (Redis down means 503, not "allowed"):
 
 | Bucket | Counts | Default | Setting (`.env`, all optional) |
 |---|---|---|---|
-| `rl:anon:<address>` | one caller's unauthenticated requests (sign-in, password reset, sign-up, storefront buyer calls, unsubscribe) | 60/min | `ANONYMOUS_RATE_LIMIT_PER_MINUTE` |
-| `rl:anon-global` | **every** unauthenticated request together, on top of the per-address one | 6000/min | `ANONYMOUS_GLOBAL_RATE_LIMIT_PER_MINUTE` (`0` disables) |
-| `rl:hook:<path>:<address>` | one address's deliveries to one webhook path | 600/min | `WEBHOOK_RATE_LIMIT_PER_MINUTE` |
-| `rl:hook:<path>` | every address, one webhook path | 3000/min | `WEBHOOK_GLOBAL_RATE_LIMIT_PER_MINUTE` (`0` disables) |
+| `rl:anon:<address>` | one caller's unauthenticated requests (sign-in, password reset, sign-up, storefront buyer calls, unsubscribe) | 60/min | `ANONYMOUS_RATE_LIMIT_PER_MINUTE` (at least 1) |
+| `rl:anon-global` | every caller together, on the **credential** endpoints: sign-in, MFA verify, password forgot/reset, sign-up, accept-invitation | 6000/min | `ANONYMOUS_GLOBAL_RATE_LIMIT_PER_MINUTE` (`0` disables) |
+| `rl:anon-content-global` | every caller together, on the rest of the public surface: storefront catalogue/enquiry/store-context/serviceability, the unsubscribe link, session refresh/logout/select-org, SSO | 60000/min | `ANONYMOUS_CONTENT_GLOBAL_RATE_LIMIT_PER_MINUTE` (`0` disables) |
+| `rl:hook-fail:<path>:<address>` | one address's **rejected** webhook deliveries (the service answered 400, 401, 403 or 422) on one path | 60/min | `WEBHOOK_FAILURE_LIMIT_PER_MINUTE` (at least 1) |
 
-Every 429 carries `Retry-After: 60`. The per-address 429 says "Too many requests"; the shared one
-says "Too many unauthenticated requests are arriving right now" (or "This endpoint is receiving
-too many requests" for a webhook) — that wording is how you tell a sign-in flood from one noisy
+An **empty** value in `.env` is "not set", never "off": compose passes `KEY=` through and the
+gateway falls back to the default. Only the two ceilings accept `0`, and mean it. A per-address
+limit of `0` would refuse every request, so the gateway refuses to start with one.
+
+The two ceilings are separate on purpose. With one shared ceiling, about a hundred storefront
+visitors at 60 requests a minute each spent all of it and no merchant anywhere could sign in; a
+sign-in flood could equally have taken every catalogue offline. Which side a public path is on is
+declared in `services/app-gateway/app/main.py` (`CREDENTIAL_PUBLIC_PATHS`, `CONTENT_PUBLIC_PATHS`)
+and a test fails if a public path is on neither.
+
+Every 429 carries `Retry-After: 60`. The per-address 429 says "Too many requests"; the credential
+ceiling says "Too many sign-in and account requests are arriving right now"; the content one "Too
+many requests are arriving right now" — that wording is how you tell a flood from one noisy
 client. Authenticated traffic is limited per user (`rl:user:<id>`, 300/min) and never touches the
 anonymous or webhook buckets, so a flood of strangers does not log anybody out. The per-address
-check runs first, so one address hammering the gateway can spend at most its own 60 of the shared
-ceiling.
+check runs first, so one address hammering the gateway can spend at most its own 60 of a ceiling.
+
+**Slow bodies.** The gateway buffers a request body whole before forwarding it, and a stranger
+chooses how long that takes: forty connections from one address, each sending 3 MiB of a WhatsApp
+body and then nothing, held 122 MiB of the container's 256 MiB. For every *unauthenticated*
+request the gateway buffers (a webhook or a public path; authenticated uploads are untouched):
+
+- the body must arrive within `UNAUTH_BODY_READ_TIMEOUT_SECONDS` (10) or the read is abandoned
+  with **408** and everything buffered is released;
+- one address may have `UNAUTH_BODY_MAX_CONCURRENT_PER_ADDRESS` (4) such requests in flight and
+  the gateway `UNAUTH_BODY_MAX_CONCURRENT_GLOBAL` (32) in total; past either, **503 with
+  `Retry-After: 5`** before a byte of the body is read. A slot is held until the response is on its
+  way, because the body stays in memory that long, and is released on every way out (response,
+  cap violation, timeout, disconnect, upstream failure). Buffered memory is therefore at most 32 ×
+  the largest body cap (3 MiB on the WhatsApp webhook) ≈ 96 MiB, whatever any caller does.
+
+Caddy has **no `read_body` timeout** on purpose: it applies to every request on the server and
+would break slow, legitimate document uploads on the authenticated paths. **Residual:** an attacker
+with many addresses can still occupy all 32 global slots for up to the read deadline at a time —
+memory stays bounded, and the cost is transient 503s that providers retry. Caddy does cap the two
+webhook bodies (`request_body { max_size }`, 256 KiB and 3 MiB, the same numbers as the route
+table), so an over-size body is a 413 before it reaches the gateway.
 
 ### How the gateway learns the caller's address
 
@@ -1272,25 +1302,71 @@ password and one-time-code guessing before a per-account lockout has anything to
    `TRUSTED_PROXY_CIDRS`**, and then reads it from the right: the first address that is not one of
    the trusted ranges. From any other peer the header is ignored, so nothing on the internet
    can pick its own bucket. IPv6 callers are counted per /64, IPv4-mapped addresses as IPv4.
-3. **Only app-gateway does this.** No other service reads it, and
+3. **The gateway then forwards exactly one `X-Forwarded-For`**: the address it resolved and
+   counted, on every request it proxies (anonymous, authenticated and webhook). The audit rows
+   services write read the *first* entry of that header, so without this a caller could be rate
+   limited as one address and audited as another. (admin-gateway trusts no proxy and keeps
+   forwarding the chain it was given.)
+4. **Only app-gateway does any of this.** No other service reads it, and
    `tests/infra/test_gateway_trusted_proxies.py` fails if the variable appears on another
    container.
 
-`compose.prod.yml` defaults `TRUSTED_PROXY_CIDRS` to `10.0.0.0/8,172.16.0.0/12,192.168.0.0/16`:
-Docker allocates the `front` network from its own private pool, so its subnet is not fixed, and
-only Caddy publishes a port — nothing outside the compose networks can be a peer of the gateway
-at all. To narrow it to exactly the `front` network:
+**What `TRUSTED_PROXY_CIDRS` trusts is a range, not Caddy.** `compose.prod.yml` defaults it to
+`10.0.0.0/8,172.16.0.0/12,192.168.0.0/16`, because Docker allocates the `front` network from its own
+private pool and its subnet is not fixed. That makes **every container on `front` and `back` a
+trusted proxy**: a compromised one can send `X-Forwarded-For: <victim>` and spend that address's
+rate-limit allowance until the victim, arriving through Caddy, is refused. That is an accepted
+residual of the default — it takes a compromised container, which already sits inside the trust
+boundary, and only Caddy publishes a port, so nothing outside the compose networks can be a peer at
+all — and it is closed by narrowing the range to Caddy's own address (next section). The test
+`test_accepted_residual_a_rogue_peer_can_burn_a_victims_bucket` documents it.
+
+A value the gateway will not accept stops it booting with a message naming the entry: anything
+that is not a subnet of a private (`10/8`, `172.16/12`, `192.168/16`), loopback, link-local or
+unique-local (`fc00::/7`) range — so `0.0.0.0/0`, `0.0.0.0/1` + `128.0.0.0/1`, `2000::/3` and a
+public `/32` are all refused — and anything that is not an address or a CIDR.
+
+**Empty does not mean "trust nobody" on the box.** In `compose.prod.yml` the value is
+`${TRUSTED_PROXY_CIDRS:-…}`, and `:-` turns an empty or missing line in `.env` into the private-range
+default. There is no way to say "trust nobody" on the box; the service's own default (nobody) only
+applies when the variable is absent altogether, as in `make run`. A gateway that trusts nobody logs
+`gateway.no_trusted_proxies` in production and counts Caddy's address as the caller.
+
+### Narrowing the trusted proxy set
+
+To trust only Caddy, read its address on the `front` network and set `TRUSTED_PROXY_CIDRS` to that
+`/32`. From a shell on the box, in the directory that holds `compose.prod.yml` and `.env`:
 
 ```bash
-docker network inspect opsgrids-edge_front --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'
-#   e.g. 172.18.0.0/16 — then add  TRUSTED_PROXY_CIDRS=172.18.0.0/16  to .env and redeploy
-#   (`make deploy …`, above). The subnet is fixed for the life of the network, but a
-#   `docker compose down` followed by `up` may allocate a different one; re-check after a rebuild.
+# Caddy's address on the `front` network (the compose project is `opsgrids-edge`):
+docker inspect -f '{{(index .NetworkSettings.Networks "opsgrids-edge_front").IPAddress}}' \
+  "$(docker compose -f compose.prod.yml --env-file .env ps -q caddy)"
+#   e.g. 172.18.0.2
+
+# The same, read off the network rather than the container (every attached container):
+docker network inspect opsgrids-edge_front \
+  --format '{{range .Containers}}{{.Name}} {{.IPv4Address}}{{"\n"}}{{end}}'
+#   opsgrids-edge-caddy-1 172.18.0.2/16   ← Caddy
+#   opsgrids-edge-app-gateway-1 172.18.0.3/16
 ```
 
-A malformed entry, or `0.0.0.0/0` / `::/0` (which would let any client choose its bucket), stops
-the gateway booting with a message naming the value. An empty value means "trust nobody": safe,
-but the limiter is back on Caddy's address, and the gateway logs `gateway.no_trusted_proxies`.
+Then in `.env`:
+
+```bash
+TRUSTED_PROXY_CIDRS=172.18.0.2/32
+```
+
+and redeploy (`make deploy …`, above). Verify with the check below: the keys must still carry
+visitors' addresses. **Compose assigns addresses dynamically**, so Caddy's may change when its
+container is recreated (a `down` followed by `up`, an image bump); if it does, the gateway stops
+believing Caddy, **fails safe** — the limiter goes back to counting Caddy's address, one bucket for
+everyone — and the `redis-cli` check shows `rl:anon:172.x.x.x`. Re-run the two commands above after
+any deploy that recreates Caddy until the network has a fixed subnet (owner decision, below).
+
+*Owner hardening, not done here:* give the `front` network a dedicated fixed subnet and Caddy a fixed
+address in it, and set `TRUSTED_PROXY_CIDRS` to that one `/32` permanently. It was left out because
+adding a subnet to an existing network can fail a deploy on a live box, and that needs someone at the
+box.
 
 **Check it after any deploy that touches the edge** — from a shell on the box, after making one
 anonymous request from outside (for example `curl -s https://<edge>/api/v1/auth/login -d '{}'`):
@@ -1317,22 +1393,59 @@ gateway still gets one address. That is a deliberate design change; the Caddyfil
 handshake — and POST) are the only unauthenticated routes that are not the sign-in or buyer
 surface. They carry no bearer token: the provider signs the body and payment / notification
 verify that signature over the exact bytes the gateway forwards. The gateway declares them
-public **by exact path and method** (`WEBHOOK_PUBLIC_PATHS`), counts them in their own buckets
-(above), caps the body (Razorpay 256 KiB, Meta 3 MiB — set per route in `routes.prod.json`; a
-larger body is a 413 before it is buffered), and drops cookies, `Authorization`, `Origin` and
-`Referer` on the way in and any `Set-Cookie` / `Access-Control-*` on the way out. What to give
-the provider:
+public **by exact path and method** (`WEBHOOK_PUBLIC_PATHS`), caps the body (Razorpay 256 KiB,
+Meta 3 MiB — set per route in `routes.prod.json`, and mirrored by Caddy's `request_body`; a larger
+body is a 413 before it is buffered), guards the body read (the slow-body limits above), and
+forwards them **without** the cookie, `Authorization`, `Origin` and `Referer` a browser session
+would carry, dropping any `Set-Cookie` / `Access-Control-*` the service sets on the way back.
+
+**What it does not do about CORS:** the gateway's own CORS middleware (the one every service gets
+from `create_app`) still wraps the route. A request that carries an allowed first-party `Origin`
+(`app.opsgrids.com` and the other product hosts) gets that origin's `Access-Control-Allow-Origin` /
+`-Credentials` headers on the response, and a preflight `OPTIONS` from one is answered by the
+middleware without being forwarded. Providers are servers and send no `Origin`, so nothing changes
+for them; a webhook is not a page and nothing on the path answers as one. What the service sees is
+still stripped of every cookie and credential.
+
+What to give the provider:
 
 - Razorpay dashboard → Webhooks: `https://<EDGE_HOST>/api/v1/webhooks/razorpay`, the secret in
   `RAZORPAY_WEBHOOK_SECRET`.
 - Meta app → WhatsApp → Configuration: callback `https://<EDGE_HOST>/api/v1/webhooks/whatsapp`,
   verify token `WHATSAPP_VERIFY_TOKEN`, signed with `WHATSAPP_APP_SECRET`.
 
-Symptoms: a provider dashboard showing **401** means the path is not in `WEBHOOK_PUBLIC_PATHS`
-(the gateway is asking for a bearer token); **404** means the route is missing from
+**The only limit on a webhook is its own address's rejected deliveries.** Before a delivery is
+forwarded the gateway *reads* `rl:hook-fail:<path>:<address>`; after the service answers it adds
+one to it only when the answer was **400, 401, 403 or 422** (a bad or missing signature, a wrong
+verify token on Meta's handshake, a body that cannot be attributed). A delivery that works (2xx) or
+that fails on our side (5xx, a timeout, an unreachable service) spends nothing. There is **no
+ceiling over all addresses and no bucket of total requests** on a webhook path, so nothing a
+stranger does can use up a bucket that a genuine delivery from another address needs: five
+addresses posting bad signatures used to be enough to 429 every real Razorpay and Meta delivery for
+most of each minute, and a provider disables a webhook that fails for about a day.
+
+What can and cannot cause a **429** on a webhook path now: only *this address* having had 60 (by
+default) deliveries rejected on *this path* in the current minute. A different address is never
+refused for it, and neither is the same address on the other path. If a provider's dashboard shows
+429s, that address is being rejected — wrong secret in `.env`, a stale verify token, or something
+hostile behind it — and the fix is the rejection, not the limit. The provider retries and the
+window rolls every minute, but a *sustained* 429 is a delivery that is not arriving: treat it as an
+outage of that webhook, not as a harmless redelivery.
+
+**Residual risk, and its mitigation.** A signature is an HMAC checked before any database
+statement, so unsigned traffic is cheap to refuse — and, with no shared ceiling, unlimited from as
+many addresses as an attacker has: it costs CPU in the gateway and the service, bounded by the
+slots above, not availability of the genuine path. The real mitigation is to allow-list the
+providers' published source ranges at Caddy or the provider-side firewall (Razorpay and Meta each
+publish theirs); that is the owner's to configure, and the gateway does not depend on it.
+
+Symptoms on a provider dashboard: **401** on every delivery means the path is not in
+`WEBHOOK_PUBLIC_PATHS` (the gateway is asking for a bearer token) — or the service's own signature
+check, which also answers 401 for a wrong secret; **404** means the route is missing from
 `routes.prod.json` or the owning service does not serve the path; **413** is the body cap;
-**429** is a bucket above — providers retry, so a 429 is a redelivery, not a lost event; **400/401
-from the service itself** is the signature (wrong secret). `tests/infra/test_route_table_parity.py`
+**408** is a body that did not arrive within the read deadline; **429** is the failure bucket
+above; **503** with `Retry-After: 5` is the body slots being full or Redis being unreachable
+(providers retry a 503, and it costs the address nothing). `tests/infra/test_route_table_parity.py`
 fails a build in which a `/api/v1/webhooks/*` route exists in prod but is not public in the
 gateway or is missing from the dev table.
 

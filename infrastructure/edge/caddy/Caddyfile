@@ -96,7 +96,29 @@
 	# A deploy that recreates the gateway leaves a few seconds where the dial fails. Caddy
 	# retries a failed *dial* — never a request the gateway received — so holding the request
 	# for up to 20s turns that window into a slow answer instead of a 502, for POSTs too.
+	#
+	# The two provider webhooks are unauthenticated and their bodies are buffered whole by the
+	# gateway, so Caddy refuses one over the size the route allows (413) before it is proxied at
+	# all: the same numbers as `max_body_bytes` in routes.prod.json (Razorpay 256 KiB; Meta
+	# documents up to 3 MB, so 3 MiB), which tests/infra/test_gateway_trusted_proxies.py holds
+	# equal. The gateway enforces the same caps itself and is the authority; this is the second
+	# fence, and it is checked against the pinned Caddy (`request_body` with a named matcher, 413
+	# on a body over `max_size`, other paths untouched).
+	#
+	# There is deliberately **no `read_body` timeout** here or in the global options. It applies to
+	# every request on the server and would break slow, legitimate document uploads on the
+	# authenticated paths. The slow-body risk on unauthenticated requests is bounded in the gateway
+	# instead: a read deadline and a cap on how many are in flight (RUNBOOK.md, "Rate limiting
+	# behind Caddy").
 	handle /api/* {
+		@razorpay_webhook path /api/v1/webhooks/razorpay
+		request_body @razorpay_webhook {
+			max_size 256KiB
+		}
+		@whatsapp_webhook path /api/v1/webhooks/whatsapp
+		request_body @whatsapp_webhook {
+			max_size 3MiB
+		}
 		reverse_proxy app-gateway:8000 {
 			lb_try_duration 20s
 			lb_try_interval 250ms
