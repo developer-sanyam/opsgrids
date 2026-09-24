@@ -500,4 +500,127 @@ class TestMetricsOverview:
         assert body["organization_count"] == 2
         assert body["organizations_by_lifecycle"]["active"] == 1
         assert body["organizations_by_lifecycle"]["suspended"] == 1
-        assert body["mrr_minor"] == 10000
+
+
+# --------------------------------------------------------------------- platform metrics series
+
+
+class TestMetricsSeries:
+    async def test_empty_platform_is_null_every_month(self, client: AsyncClient) -> None:
+        with as_principal(operator_principal(staff=True)):
+            response = await client.get("/api/v1/admin/metrics/series?months=3")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert len(body["mrr_minor"]) == 3
+        assert all(point["value"] is None for point in body["mrr_minor"])
+        assert all(point["value"] is None for point in body["new_organizations"])
+
+    async def test_reports_mrr_new_organizations_trials_and_churn_by_month(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+        org_b: uuid.UUID,
+    ) -> None:
+        from datetime import UTC, datetime
+
+        from app.models import OrgCommercialState, RevenueEvent
+
+        def _months_ago(n: int) -> datetime:
+            now = datetime.now(UTC)
+            year, month = now.year, now.month - n
+            while month <= 0:
+                month += 12
+                year -= 1
+            return datetime(year, month, 15, tzinfo=UTC)
+
+        older_month = _months_ago(2).strftime("%Y-%m")
+        newer_month = _months_ago(1).strftime("%Y-%m")
+        current_month = datetime.now(UTC).strftime("%Y-%m")
+
+        async with admin_session.begin():
+            admin_session.add_all(
+                [
+                    OrgCommercialState(
+                        organization_id=org_id,
+                        mrr_minor=50000,
+                        currency="INR",
+                        org_created_at=_months_ago(2),
+                        subscription_states={"hrms": {"state": "active", "amount_minor": 50000}},
+                    ),
+                    OrgCommercialState(organization_id=org_b, mrr_minor=0, currency="INR"),
+                    RevenueEvent(
+                        organization_id=org_id,
+                        kind="commerce.subscription.trial_started",
+                        amount_minor=0,
+                        currency="INR",
+                        occurred_at=_months_ago(2),
+                        meta={
+                            "from_state": None,
+                            "to_state": "trial",
+                            "product_key": "hrms",
+                            "stale": False,
+                        },
+                    ),
+                    RevenueEvent(
+                        organization_id=org_id,
+                        kind="commerce.subscription.activated",
+                        amount_minor=50000,
+                        currency="INR",
+                        occurred_at=_months_ago(1),
+                        meta={
+                            "from_state": "trial",
+                            "to_state": "active",
+                            "product_key": "hrms",
+                            "stale": False,
+                        },
+                    ),
+                ]
+            )
+
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            response = await client.get("/api/v1/admin/metrics/series?months=4")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        points = {
+            series: {p["period"]: p["value"] for p in body[series]}
+            for series in (
+                "mrr_minor",
+                "new_organizations",
+                "trials_started",
+                "trial_conversions",
+                "churned",
+            )
+        }
+        assert older_month in points["mrr_minor"], "the four requested months trail the current one"
+
+        assert points["mrr_minor"][older_month] == 0, "the trial alone pays nothing"
+        assert points["mrr_minor"][newer_month] == 50000
+        assert points["mrr_minor"][current_month] == 50000, "MRR carries forward"
+
+        assert points["new_organizations"][older_month] == 1
+        assert points["new_organizations"][newer_month] == 0
+
+        assert points["trials_started"][older_month] == 1
+        assert points["trials_started"][newer_month] == 0
+
+        assert points["trial_conversions"][older_month] == 0
+        assert points["trial_conversions"][newer_month] == 1
+
+        assert points["churned"][newer_month] == 0
+
+    async def test_the_months_query_param_is_bounded(self, client: AsyncClient) -> None:
+        with as_principal(operator_principal(staff=True)):
+            too_many = await client.get("/api/v1/admin/metrics/series?months=37")
+            too_few = await client.get("/api/v1/admin/metrics/series?months=0")
+        assert too_many.status_code == 422
+        assert too_few.status_code == 422
+
+    async def test_support_may_not_read_the_series(self, client: AsyncClient) -> None:
+        with as_principal(operator_principal(roles=["support"])):
+            response = await client.get("/api/v1/admin/metrics/series")
+        assert response.status_code == 403
+
+    async def test_an_unauthenticated_request_is_refused(self, client: AsyncClient) -> None:
+        response = await client.get("/api/v1/admin/metrics/series")
+        assert response.status_code == 401

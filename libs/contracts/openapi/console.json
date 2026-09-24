@@ -271,6 +271,67 @@
         "title": "MetricsOverviewOut",
         "type": "object"
       },
+      "MetricsSeriesOut": {
+        "description": "`GET /admin/metrics/series` \u2014 monthly account growth and commercial history, replayed\nfrom console's own append-only `revenue_events` (ADR-0004 \u00a74) plus the identity fold's\n`org_created_at`. Feeds the account-growth chart and every \"vs last month\" delta; each series\ncarries the same ordered list of periods, oldest first.",
+        "properties": {
+          "churned": {
+            "items": {
+              "$ref": "#/components/schemas/SeriesPointOut"
+            },
+            "title": "Churned",
+            "type": "array"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "mrr_minor": {
+            "items": {
+              "$ref": "#/components/schemas/SeriesPointOut"
+            },
+            "title": "Mrr Minor",
+            "type": "array"
+          },
+          "new_organizations": {
+            "items": {
+              "$ref": "#/components/schemas/SeriesPointOut"
+            },
+            "title": "New Organizations",
+            "type": "array"
+          },
+          "trial_conversions": {
+            "items": {
+              "$ref": "#/components/schemas/SeriesPointOut"
+            },
+            "title": "Trial Conversions",
+            "type": "array"
+          },
+          "trials_started": {
+            "items": {
+              "$ref": "#/components/schemas/SeriesPointOut"
+            },
+            "title": "Trials Started",
+            "type": "array"
+          }
+        },
+        "required": [
+          "currency",
+          "mrr_minor",
+          "new_organizations",
+          "trials_started",
+          "trial_conversions",
+          "churned"
+        ],
+        "title": "MetricsSeriesOut",
+        "type": "object"
+      },
       "OrgDetailOut": {
         "description": "One organization's detail: console's own commercial projection composed with the\ndirectory identity from account-service's staff-only route \u2014 never account's internal\nrouter, which authorizes no individual caller (see `app/directory_client.py`).\n\nThe directory fields are `None` only when account-service could not be reached in time\nfor a field that is not itself the presence check; a genuinely unknown organization is a\n404, not a row of nulls.",
         "properties": {
@@ -798,6 +859,32 @@
         "title": "ProductSubscriptionOut",
         "type": "object"
       },
+      "SeriesPointOut": {
+        "description": "One point on a monthly series. `value` is `None` for a month before this series has any\nvisibility at all \u2014 never `0`, which would claim a real, counted \"nothing happened\" that the\ndata cannot actually back (`app/domain.py::commercial_series`).",
+        "properties": {
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "period",
+          "value"
+        ],
+        "title": "SeriesPointOut",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -1139,6 +1226,53 @@
           }
         },
         "summary": "Platform metrics: org counts by lifecycle, MRR, trials and churn",
+        "tags": [
+          "console"
+        ]
+      }
+    },
+    "/api/v1/admin/metrics/series": {
+      "get": {
+        "operationId": "metrics_series_api_v1_admin_metrics_series_get",
+        "parameters": [
+          {
+            "description": "How many trailing calendar months to return, ending with the current one.",
+            "in": "query",
+            "name": "months",
+            "required": false,
+            "schema": {
+              "default": 12,
+              "description": "How many trailing calendar months to return, ending with the current one.",
+              "maximum": 36,
+              "minimum": 1,
+              "title": "Months",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsSeriesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Monthly MRR, new organizations, trials, conversions and churn",
         "tags": [
           "console"
         ]

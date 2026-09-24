@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import domain
 from app.models import AuditLog, OrgCommercialState, RevenueEvent, UsageSummary
 from app.schemas import OrgStateOut
 
@@ -201,6 +203,80 @@ async def platform_metrics(session: AsyncSession) -> dict[str, Any]:
         "churn_rate": (
             round(churned / (churned + active_count), 4) if (churned + active_count) else 0.0
         ),
+    }
+
+
+async def metrics_series(session: AsyncSession, *, months: int) -> dict[str, Any]:
+    """`GET /admin/metrics/series`'s whole payload: MRR, new organizations, trials started,
+    conversions and churn, one point per month for the last `months` calendar months.
+
+    Two independent sources, each shaped into a plain value before handing off to the pure
+    replay in `domain.py` (this module does the I/O; `domain.commercial_series` decides the
+    numbers): every subscription-lifecycle `revenue_events` row, oldest first, for the four
+    commercial series, and every organization's own `org_created_at` for the new-organizations
+    one — deliberately *not* from `revenue_events`, which never carries an organization's birth,
+    only what it bought (see `domain.new_organizations_by_month`).
+    """
+    period_keys = domain.month_sequence(end=datetime.now(UTC), months=months)
+
+    rows = (
+        (
+            await session.execute(
+                select(RevenueEvent)
+                .where(RevenueEvent.kind.in_(domain.SUBSCRIPTION_EVENTS))
+                .order_by(RevenueEvent.occurred_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    events = [
+        domain.RevenueEventRecord(
+            organization_id=str(row.organization_id),
+            kind=row.kind,
+            amount_minor=row.amount_minor,
+            occurred_at=row.occurred_at.isoformat(),
+            from_state=row.meta.get("from_state"),
+            to_state=row.meta.get("to_state"),
+            product_key=row.meta.get("product_key"),
+            stale=bool(row.meta.get("stale", False)),
+        )
+        for row in rows
+    ]
+    series = domain.commercial_series(events, period_keys)
+
+    created_ats = (
+        (
+            await session.execute(
+                select(OrgCommercialState.org_created_at).where(
+                    OrgCommercialState.org_created_at.is_not(None)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    new_organizations = domain.new_organizations_by_month(
+        [c.isoformat() for c in created_ats if c is not None], period_keys
+    )
+
+    _, currency = (
+        await session.execute(
+            select(
+                func.coalesce(func.sum(OrgCommercialState.mrr_minor), 0),
+                func.min(OrgCommercialState.currency),
+            )
+        )
+    ).one()
+
+    return {
+        "currency": currency,
+        "periods": period_keys,
+        "mrr_minor": series["mrr_minor"],
+        "trials_started": series["trials_started"],
+        "trial_conversions": series["trial_conversions"],
+        "churned": series["churned"],
+        "new_organizations": new_organizations,
     }
 
 

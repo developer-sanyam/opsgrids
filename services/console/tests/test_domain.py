@@ -13,7 +13,19 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.domain import apply_org_identity, apply_subscription_transition, recompute_snapshot
+from app.domain import (
+    ACTIVATED_KIND,
+    CANCELLED_KIND,
+    TRIAL_STARTED_KIND,
+    RevenueEventRecord,
+    apply_org_identity,
+    apply_subscription_transition,
+    commercial_series,
+    month_key,
+    month_sequence,
+    new_organizations_by_month,
+    recompute_snapshot,
+)
 
 T0 = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 
@@ -240,3 +252,193 @@ class TestOrgIdentity:
         assert applied is True
         assert country == "IN"
         assert created_at == _at(-100)
+
+
+class TestMonthSequence:
+    def test_the_last_n_months_end_with_the_given_month_oldest_first(self) -> None:
+        keys = month_sequence(end=datetime(2026, 3, 15, tzinfo=UTC), months=4)
+        assert keys == ["2025-12", "2026-01", "2026-02", "2026-03"]
+
+    def test_a_single_month_is_just_the_end_months_own_key(self) -> None:
+        assert month_sequence(end=datetime(2026, 1, 5, tzinfo=UTC), months=1) == ["2026-01"]
+
+    def test_month_key_pads_single_digit_months(self) -> None:
+        assert month_key(datetime(2026, 3, 1, tzinfo=UTC)) == "2026-03"
+
+
+def _event(
+    kind: str,
+    *,
+    org: str = "org-a",
+    product: str = "hrms",
+    to_state: str,
+    from_state: str | None,
+    amount_minor: int = 0,
+    occurred_at: str,
+    stale: bool = False,
+) -> RevenueEventRecord:
+    return RevenueEventRecord(
+        organization_id=org,
+        kind=kind,
+        amount_minor=amount_minor,
+        occurred_at=occurred_at,
+        from_state=from_state,
+        to_state=to_state,
+        product_key=product,
+        stale=stale,
+    )
+
+
+class TestNewOrganizationsByMonth:
+    def test_every_month_is_null_with_no_data_at_all(self) -> None:
+        result = new_organizations_by_month([], ["2026-01", "2026-02"])
+        assert result == {"2026-01": None, "2026-02": None}
+
+    def test_months_before_the_earliest_organization_are_null_not_zero(self) -> None:
+        result = new_organizations_by_month(
+            ["2026-02-10T00:00:00+00:00"], ["2026-01", "2026-02", "2026-03"]
+        )
+        assert result == {"2026-01": None, "2026-02": 1, "2026-03": 0}
+
+    def test_counts_more_than_one_organization_in_the_same_month(self) -> None:
+        result = new_organizations_by_month(
+            ["2026-01-01T00:00:00+00:00", "2026-01-20T00:00:00+00:00"],
+            ["2026-01"],
+        )
+        assert result == {"2026-01": 2}
+
+
+class TestCommercialSeries:
+    """`commercial_series` — MRR replayed from the transition log, and monthly counts of
+    trials/conversions/churn from the classification the live fold already recorded."""
+
+    def test_no_events_at_all_is_null_everywhere(self) -> None:
+        series = commercial_series([], ["2026-01", "2026-02"])
+        assert series["mrr_minor"] == {"2026-01": None, "2026-02": None}
+        assert series["trials_started"] == {"2026-01": None, "2026-02": None}
+        assert series["trial_conversions"] == {"2026-01": None, "2026-02": None}
+        assert series["churned"] == {"2026-01": None, "2026-02": None}
+
+    def test_months_before_the_first_transition_are_null(self) -> None:
+        events = [
+            _event(
+                ACTIVATED_KIND,
+                to_state="active",
+                from_state=None,
+                amount_minor=50000,
+                occurred_at="2026-02-10T00:00:00+00:00",
+            )
+        ]
+        series = commercial_series(events, ["2026-01", "2026-02", "2026-03"])
+        assert series["mrr_minor"]["2026-01"] is None
+        assert series["mrr_minor"]["2026-02"] == 50000
+        assert series["mrr_minor"]["2026-03"] == 50000, "MRR carries forward with no new events"
+
+    def test_mrr_rises_on_activation_and_falls_on_cancellation(self) -> None:
+        events = [
+            _event(
+                ACTIVATED_KIND,
+                to_state="active",
+                from_state=None,
+                amount_minor=50000,
+                occurred_at="2026-01-05T00:00:00+00:00",
+            ),
+            _event(
+                CANCELLED_KIND,
+                to_state="cancelled",
+                from_state="active",
+                amount_minor=0,
+                occurred_at="2026-02-05T00:00:00+00:00",
+            ),
+        ]
+        series = commercial_series(events, ["2026-01", "2026-02", "2026-03"])
+        assert series["mrr_minor"] == {"2026-01": 50000, "2026-02": 0, "2026-03": 0}
+        assert series["churned"] == {"2026-01": 0, "2026-02": 1, "2026-03": 0}
+
+    def test_a_renewal_at_the_same_price_does_not_inflate_mrr(self) -> None:
+        """A renewal re-sets the same product's entry to the same price — replay recomputes the
+        snapshot from the current entries, so it never double-counts a subscription across two
+        transitions the way summing every row's amount_minor would."""
+        events = [
+            _event(
+                ACTIVATED_KIND,
+                to_state="active",
+                from_state=None,
+                amount_minor=50000,
+                occurred_at="2026-01-05T00:00:00+00:00",
+            ),
+            _event(
+                "commerce.subscription.renewed",
+                to_state="active",
+                from_state="active",
+                amount_minor=50000,
+                occurred_at="2026-02-05T00:00:00+00:00",
+            ),
+        ]
+        series = commercial_series(events, ["2026-01", "2026-02"])
+        assert series["mrr_minor"] == {"2026-01": 50000, "2026-02": 50000}
+
+    def test_mrr_sums_across_organizations(self) -> None:
+        events = [
+            _event(
+                ACTIVATED_KIND,
+                org="org-a",
+                to_state="active",
+                from_state=None,
+                amount_minor=50000,
+                occurred_at="2026-01-05T00:00:00+00:00",
+            ),
+            _event(
+                ACTIVATED_KIND,
+                org="org-b",
+                to_state="active",
+                from_state=None,
+                amount_minor=30000,
+                occurred_at="2026-01-10T00:00:00+00:00",
+            ),
+        ]
+        series = commercial_series(events, ["2026-01"])
+        assert series["mrr_minor"]["2026-01"] == 80000
+
+    def test_trials_started_and_conversions_are_counted_by_month(self) -> None:
+        events = [
+            _event(
+                TRIAL_STARTED_KIND,
+                to_state="trial",
+                from_state=None,
+                occurred_at="2026-01-05T00:00:00+00:00",
+            ),
+            _event(
+                ACTIVATED_KIND,
+                to_state="active",
+                from_state="trial",
+                amount_minor=50000,
+                occurred_at="2026-02-05T00:00:00+00:00",
+            ),
+        ]
+        series = commercial_series(events, ["2026-01", "2026-02"])
+        assert series["trials_started"] == {"2026-01": 1, "2026-02": 0}
+        assert series["trial_conversions"] == {"2026-01": 0, "2026-02": 1}
+
+    def test_a_stale_transition_is_excluded_from_every_count(self) -> None:
+        """A DLQ replay recorded with `stale=True` must not be double-counted as a second
+        trial-conversion or churn, even though it still moves through the replay."""
+        events = [
+            _event(
+                ACTIVATED_KIND,
+                to_state="active",
+                from_state="trial",
+                amount_minor=50000,
+                occurred_at="2026-01-05T00:00:00+00:00",
+            ),
+            _event(
+                ACTIVATED_KIND,
+                to_state="active",
+                from_state="trial",
+                amount_minor=50000,
+                occurred_at="2026-01-01T00:00:00+00:00",
+                stale=True,
+            ),
+        ]
+        series = commercial_series(events, ["2026-01"])
+        assert series["trial_conversions"]["2026-01"] == 1

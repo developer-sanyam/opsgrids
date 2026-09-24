@@ -29,7 +29,7 @@ from collections.abc import AsyncIterator
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Depends, Header, status
+from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -44,11 +44,13 @@ from app.schemas import (
     LifecycleCountsOut,
     MetricsOut,
     MetricsOverviewOut,
+    MetricsSeriesOut,
     OrganizationPricingOut,
     OrganizationsOut,
     OrgDetailOut,
     OverrideIn,
     OverrideOut,
+    SeriesPointOut,
     ServiceInfo,
     SetPricingIn,
     SetPricingOut,
@@ -187,6 +189,44 @@ async def metrics_overview(
         **metrics,
         organization_count=sum(lifecycle.values()),
         organizations_by_lifecycle=LifecycleCountsOut(**lifecycle),
+    )
+
+
+#: Bounded the same way every other admin list here already is (`recent_audit`'s 200): a chart
+#: has no use for a decade of monthly points, and an unbounded value would mean replaying the
+#: entire revenue-events table further than any caller actually asked for.
+MAX_SERIES_MONTHS = 36
+
+
+@router.get(
+    "/admin/metrics/series",
+    response_model=MetricsSeriesOut,
+    summary="Monthly MRR, new organizations, trials, conversions and churn",
+)
+async def metrics_series(
+    session: DirectorySessionDep,
+    operator: OperatorBilling,
+    months: Annotated[
+        int,
+        Query(
+            ge=1,
+            le=MAX_SERIES_MONTHS,
+            description="How many trailing calendar months to return, ending with the current one.",
+        ),
+    ] = 12,
+) -> MetricsSeriesOut:
+    data = await selectors.metrics_series(session, months=months)
+
+    def _points(values: dict[str, int | None]) -> list[SeriesPointOut]:
+        return [SeriesPointOut(period=period, value=values[period]) for period in data["periods"]]
+
+    return MetricsSeriesOut(
+        currency=data["currency"],
+        mrr_minor=_points(data["mrr_minor"]),
+        new_organizations=_points(data["new_organizations"]),
+        trials_started=_points(data["trials_started"]),
+        trial_conversions=_points(data["trial_conversions"]),
+        churned=_points(data["churned"]),
     )
 
 

@@ -91,6 +91,30 @@ class MetricsOverviewOut(MetricsOut):
     organizations_by_lifecycle: LifecycleCountsOut
 
 
+class SeriesPointOut(BaseModel):
+    """One point on a monthly series. `value` is `None` for a month before this series has any
+    visibility at all — never `0`, which would claim a real, counted "nothing happened" that the
+    data cannot actually back (`app/domain.py::commercial_series`)."""
+
+    period: str
+    value: int | None
+
+
+class MetricsSeriesOut(BaseModel):
+    """`GET /admin/metrics/series` — monthly account growth and commercial history, replayed
+    from console's own append-only `revenue_events` (ADR-0004 §4) plus the identity fold's
+    `org_created_at`. Feeds the account-growth chart and every "vs last month" delta; each series
+    carries the same ordered list of periods, oldest first.
+    """
+
+    currency: str | None
+    mrr_minor: list[SeriesPointOut]
+    new_organizations: list[SeriesPointOut]
+    trials_started: list[SeriesPointOut]
+    trial_conversions: list[SeriesPointOut]
+    churned: list[SeriesPointOut]
+
+
 class OrgDetailOut(BaseModel):
     """One organization's detail: console's own commercial projection composed with the
     directory identity from account-service's staff-only route — never account's internal
