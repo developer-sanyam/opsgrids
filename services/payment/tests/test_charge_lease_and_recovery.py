@@ -72,6 +72,16 @@ async def _audit_actions(org_id: uuid.UUID, charge_id: uuid.UUID) -> list[str]:
         return list(rows)
 
 
+async def _events(org_id: uuid.UUID, charge_id: uuid.UUID) -> list[str]:
+    async with session_scope(organization_id=org_id) as s:
+        rows = await s.execute(
+            select(OutboxEvent.event_type)
+            .where(OutboxEvent.organization_id == org_id, OutboxEvent.aggregate_id == charge_id)
+            .order_by(OutboxEvent.created_at)
+        )
+        return list(rows.scalars())
+
+
 def _count_creates(provider: RazorpayProvider, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
     original = provider.charge
@@ -110,7 +120,7 @@ class TestAWebhookIsNeverRegressed:
         assert (await _read(org_id, charge.id)).state == "captured"
 
         async with session_scope(organization_id=org_id) as s:
-            await services.finalize_charge(s, charge.id, result)
+            await services.finalize_charge(s, charge.id, result, organization_id=org_id)
         stored = await _read(org_id, charge.id)
         assert stored.state == "captured"
         assert stored.provider_payment_id == result.provider_payment_id
@@ -121,6 +131,48 @@ class TestAWebhookIsNeverRegressed:
         assert actions.count("payment.charge.staged") == 1
         assert actions.count("payment.charge.created") == 1
 
+    async def test_a_real_shaped_capture_between_the_call_and_the_record_is_applied_not_unknown(
+        self, client: AsyncClient, session, provider: RazorpayProvider, org_id, engines
+    ) -> None:
+        """The race, in Razorpay's real wire shape (an id-less body, the event id in the header):
+        the provider call has returned and `finalize_charge` has not yet run, so the charge holds
+        no payment id. The capture must be **applied** — found by the stamped charge id, binding
+        the ids it carries — not answered as an unknown charge, and the recorder that follows must
+        neither undo it nor audit the provider's payment a second time."""
+        async with session_scope(organization_id=org_id) as s:
+            charge, needs_call = await services.stage_charge(
+                s, provider, _charge_in(org_id, "race-real-shape")
+            )
+        assert needs_call
+        result = services.call_provider_charge(provider, charge)  # called; not yet recorded
+
+        body = razorpay_webhook_body(
+            event="payment.captured",
+            provider_payment_id=result.provider_payment_id,
+            organization_id=org_id,
+            charge_id=charge.id,
+            order_id=result.provider_order_id,
+            body_id=False,
+        )
+        res = await client.post(
+            "/api/v1/webhooks/razorpay",
+            content=body,
+            headers={
+                "X-Razorpay-Signature": provider.sign(body),
+                "X-Razorpay-Event-Id": "evt_between_call_and_record",
+            },
+        )
+        assert res.status_code == 200 and res.json()["reconciled"] is True, res.text
+        assert res.json()["ignored_reason"] is None
+
+        async with session_scope(organization_id=org_id) as s:
+            done = await services.finalize_charge(s, charge.id, result, organization_id=org_id)
+        assert done.state == "captured"
+        assert (await _read(org_id, charge.id)).provider_payment_id == result.provider_payment_id
+        actions = await _audit_actions(org_id, charge.id)
+        assert actions.count("payment.charge.created") == 1
+        assert (await _events(org_id, charge.id)) == [domain.EVT_CAPTURED]
+
     async def test_a_second_recorder_neither_overwrites_nor_re_audits(
         self, provider: RazorpayProvider, org_id, engines
     ) -> None:
@@ -128,7 +180,7 @@ class TestAWebhookIsNeverRegressed:
             charge, _ = await services.stage_charge(s, provider, _charge_in(org_id, "race-2"))
         result = services.call_provider_charge(provider, charge)
         async with session_scope(organization_id=org_id) as s:
-            await services.finalize_charge(s, charge.id, result)
+            await services.finalize_charge(s, charge.id, result, organization_id=org_id)
 
         different = ChargeResult(
             provider="razorpay",
@@ -138,7 +190,7 @@ class TestAWebhookIsNeverRegressed:
             currency="USD",
         )
         async with session_scope(organization_id=org_id) as s:
-            await services.finalize_charge(s, charge.id, different)
+            await services.finalize_charge(s, charge.id, different, organization_id=org_id)
         stored = await _read(org_id, charge.id)
         assert stored.provider_payment_id == result.provider_payment_id
         actions = await _audit_actions(org_id, charge.id)
@@ -180,9 +232,13 @@ class TestOneCallAtATime:
             charge, _ = await services.stage_charge(s, provider, _charge_in(org_id, "lease-1"))
         later = datetime.now(UTC) + LATER
         async with session_scope(organization_id=org_id) as s:
-            first = await services.claim_charge_lease(s, charge.id, now=later)
+            first = await services.claim_charge_lease(
+                s, charge.id, organization_id=org_id, now=later
+            )
         async with session_scope(organization_id=org_id) as s:
-            second = await services.claim_charge_lease(s, charge.id, now=later)
+            second = await services.claim_charge_lease(
+                s, charge.id, organization_id=org_id, now=later
+            )
         assert first is not None and first.attempts == 2
         assert second is None
 

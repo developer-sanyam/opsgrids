@@ -8,9 +8,11 @@ schema rather than a shared public one.
 from __future__ import annotations
 
 import asyncio
+import warnings
 from logging.config import fileConfig
 
 from alembic import context
+from sqlalchemy import exc as sa_exc
 from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
@@ -19,6 +21,17 @@ from app.config import settings
 from app.models import SCHEMA, Base
 from app.selectors import SWEEP_READER_CHARGE_COLUMNS
 from platform_core.db import apply_schema_grants
+
+# `provider_events` carries a CHECK created `NOT VALID` on purpose (migration f6a7b8c9d1e2: the
+# table is append-only, so a legacy row keyed '' could never be corrected, and the constraint must
+# still apply). Postgres reflects such a constraint with dialect options that SQLAlchemy 2.0 then
+# warns it cannot validate, on every `alembic check` / autogenerate pass. Cosmetic; silenced by
+# message so no other SAWarning is.
+warnings.filterwarnings(
+    "ignore",
+    message=r"Can't validate argument '(dialect_options|not_valid)'",
+    category=sa_exc.SAWarning,
+)
 
 config = context.config
 if config.config_file_name is not None:

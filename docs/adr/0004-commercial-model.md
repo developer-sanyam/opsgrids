@@ -509,3 +509,282 @@ wire (real Razorpay HTTP) is out of scope here and belongs to the provider-integ
 exercised end to end in tests. A Stripe adapter forwards the key to Stripe's native idempotency
 header and may answer the two lookups trivially. The full claim/call/record contract is
 `docs/io-outside-transactions.md`.
+
+**The live adapter is bound by this, and there is a test that says so.** The Razorpay adapter is
+stubbed until B5g gives it live keys. When it does, it must implement exactly the contract above
+— `ensure_order` (`GET /orders?receipt=…`, `POST /orders` only if that found none), `find_order`
+(the GET alone, never a create), `find_payment` (`GET /orders/{id}/payments`, matched on
+`notes.charge_id`), `charge` only after that found none — and declare the connect and read
+timeout of each request it makes (`request_timeouts_seconds`), whose sum stays inside
+`provider_call_timeout_seconds`. That is not left to prose:
+`services/payment/tests/provider_contract.py::ProviderContract` is the same statement as tests —
+`ensure_order` is idempotent by receipt, `find_order` never creates, `find_payment` finds the
+payment made against its own Order, the provider call creates at most once per receipt however
+many times, and from however many processes, it is made, and the declared timeouts fit the budget.
+The stub passes it today; the live adapter's test module subclasses it and passes it unchanged
+before it can merge. `test_provider_contract.py` also runs each check against an adapter broken
+in the way the check guards against, and requires it to fail.
+
+## Addendum (2026-09-24) — webhook identity and permanent conditions (PAY-A)
+
+Two defects in how a verified Razorpay webhook was recorded, both invisible while the wire is
+stubbed and both fatal once real events flow. Neither changes §6's contract; both sit in the
+inbox (`provider_events`, insert-only) and the reconciliation in front of it.
+
+### The event id is a header, and the inbox never keys on `''`
+
+A real Razorpay body is `{entity: "event", account_id, event, contains, payload, created_at}` —
+**no top-level `id`**. The per-delivery event id is the `X-Razorpay-Event-Id` **header**. The
+adapter read it from the body and defaulted the missing value to `''`, so `(organization_id, '')`
+was the dedupe key of every event an organization received: the first was recorded, every later one
+was dropped as a "duplicate" and answered 200 — so Razorpay stopped retrying and the capture or
+failure was never reconciled, no `commerce.payment.*` event reached subscription, and dunning was
+never opened or recovered. The suite's own bodies synthesised an `id`, which is why nothing saw it.
+
+The id the inbox is idempotent on is now resolved in `domain.resolve_event_id`, in this order:
+
+1. the `X-Razorpay-Event-Id` header, if it is a usable id (printable ASCII, no whitespace, at
+   most 120 characters — the column — and not claiming the `derived:` prefix);
+2. an id the body itself carries (a fixture, or a future provider whose body has one);
+3. `derived:` + the SHA-256 of `(provider, event name, entity id, created_at)` — the body's own
+   identifying fields, the same on every redelivery of one event and different for a different
+   one. Derived only from all three; an id built from less would fold distinct events together.
+
+A webhook that yields none is **refused, 400, with no state change** — a delivery nothing tells
+apart from any other cannot be deduplicated. Genuine Razorpay deliveries always carry the header, so
+this is a hand-built or mangled request. The signature is still verified over the **raw body**
+before anything else, and a body that verified but is not a JSON object is refused the same way
+(`MalformedWebhook`, 400) rather than surfacing as a 500.
+
+The header is **not** covered by Razorpay's HMAC, which is over the body only. So it is a delivery
+id and nothing more, and two things follow.
+
+*A signed body filed under someone else's delivery id* — someone holding any genuine signed body for
+an organization (an intercepted delivery) could file it under the id of a delivery they expect next,
+and the real event, arriving under that id, would be acked `duplicate` and never applied. So the
+duplicate path **checks the row it collided with is this event**: it derives the identity of the
+stored signed body (event name, entity id, timestamp — which JSONB round-trips exactly, tested with
+nested numbers and unicode) and compares it with this delivery's. A true redelivery matches and is a
+plain duplicate on its header id. A different event is logged at error
+(`payment.webhook.event_id_reused`), re-keyed on **its own** derived id and processed; every later
+delivery of it, under either id, is then a plain duplicate. It can only be checked when this
+delivery has a derivable identity (all of event name, entity id and `created_at`, which every real
+Razorpay body carries).
+
+*Accepted residual (no code, no new column).* A body intercepted in flight can still be replayed
+under **fresh** delivery ids. That is state-safe — a redelivery of an outcome the charge already has
+is a no-op on the charge, emits nothing, and a conflicting body is a conflict again — but each replay
+adds an inbox row and, for a conflict, an audit row and an error line. It needs the raw signed bytes
+(Razorpay's signature carries no timestamp, so there is nothing to expire), and the cost is noise,
+not money. Bounding it would take a per-body uniqueness the design deliberately does not have. The
+same is true, and accepted for the same reason, of a genuine redelivery an operator cannot tell from
+a replay by watching the logs alone: `payment.webhook.event_id_reused` fires once per delivery that
+re-keys, and `payment.webhook.late_authorization` fires once per distinct delivery id of an
+`authorized` on a failed charge — a body resent enough times pages an operator that many times.
+Deduplicating the *alert* (rather than the event, which is already handled correctly) would need
+its own rate-limited channel; nothing here builds one, and the noise is a paging-policy question,
+not a payment-correctness one.
+
+The database now says the same thing: `provider_events` has
+`CHECK (length(provider_event_id) > 0)`, created **`NOT VALID`** — enforced on every new row,
+without failing an upgrade on a legacy `''` row, which the append-only trigger would make
+uncorrectable. Nothing depends on validating it.
+
+### A permanent condition is recorded and answered 200, never retried
+
+`_reconcile_charge` called `assert_legal`, and `ingest_webhook` raised for a body naming no
+organization. Both were a 422, rolled back whole by the route's transaction — the
+inbox row, the audit row and the state change together. Razorpay retries any non-2xx for days, so a
+webhook that could never succeed was redelivered until its window closed, **and the authentic
+evidence was kept nowhere**. A malformed organization id in `notes` was worse: a `ValueError`, a
+500. A status code is a promise that a retry can help; these are the cases where it cannot.
+
+`ingest_webhook` now records the inbox row and reconciles **inside a SAVEPOINT**. Reconciliation
+raises a typed verdict, `domain.WebhookNotApplied` (deliberately not a `ProblemError` — it cannot
+reach the HTTP layer), for each permanent condition. The SAVEPOINT rolls the attempt back — the
+inbox row and any partial write, provider ids included — and the event is recorded once more, with
+its outcome stated, because `provider_events` is insert-only and a disposition can only be written
+when the row is:
+
+| `disposition` | `disposition_reason` | Meaning | Operator action |
+|---|---|---|---|
+| `ignored` | `unknown_charge` | The `charge_id`/payment named is not this organization's (another tenant's is invisible under RLS) | none |
+| `conflict` | `illegal_transition` | An outcome the state machine forbids: `captured -> failed`, or `failed -> captured` that is **neither** a platform-decided failure **nor the same payment** the charge holds (below) | look — money may have moved |
+| `conflict` | `amount_mismatch` / `currency_mismatch` | The payment is not for the charge it names (integer minor units and ISO currency, exact) | look |
+| `conflict` | `provider_id_conflict` | The webhook names a payment id **other than the one this charge already holds**, or an id another charge of the organization holds. It does not drive the charge | look — the other payment may be money |
+
+`processed` is the default: reconciliation ran without meeting any of these (it may still have been
+a no-op — an intermediate event, a redelivered outcome). A reason code is a code, never free text,
+and never any part of the body.
+
+Each recorded case also writes an audit row `payment.webhook.ignored` (entity `provider_event`,
+`after` = the reason, the event's name and id, the charge's id and state, integer amounts or ISO
+currencies — nothing from the body) and one structured log line of the same name, at `error` for a
+`conflict` and `warning` for `ignored`. The answer is 200, with `ignored_reason` on the ack. A
+redelivery of an ignored event is deduplicated like any other: the first delivery kept its row.
+
+The identity checks run first, before the charge is touched, on every event that carries a payment
+entity (`captured`, `failed`, `authorized`). Amount and currency: a body that omits either is not a
+mismatch — what the provider does not say cannot contradict the charge. Payment id: an event about a
+payment **other than the one the charge already holds** never drives the charge (a second attempt on
+the same Order, a stray id) and is a `provider_id_conflict`; a charge that holds no id yet binds the
+first verified one, as before. Every by-id charge query (`get_charge`, `lock_charge`, the lease claim,
+the refund total) also filters on `organization_id` itself: the webhook's organization comes from a
+body, so RLS is the net and the predicate is the filter — a test runs the whole path on a BYPASSRLS
+session to prove it.
+
+### Late authorisation: `failed -> captured` for the same payment — **owner to confirm**
+
+D3 made `failed -> captured` legal for a failure the platform decided itself (`attempts_exhausted`,
+`lookup_unavailable`): the money moved, the record follows it. It left the provider's own failures
+final, on the reasoning that a failure Razorpay reported is Razorpay's word. That reasoning missed a
+real sequence: a bank's **late authorisation** reports the *same payment* `payment.failed` and later
+`payment.authorized` and `payment.captured`. The failure had already opened dunning; the capture was
+answered 200 `illegal_transition` and lost — the customer paid, stayed suspended, and was debited
+again by the dunning retry.
+
+So the D3 exemption is **extended**: `failed -> captured` is applied when the event's payment id is
+present and **equals the payment id the charge already held before this event** — the same payment —
+in addition to the two local failure reasons. It is audited under its own action,
+`payment.charge.captured_after_provider_failure` (the local variant keeps
+`payment.charge.captured_after_local_failure`), logged at error, and emits
+`commerce.payment.captured` exactly as a normal capture does, clearing `failure_reason`. It stays an
+`illegal_transition` conflict when the charge holds no payment id (nothing vouches whose money it is),
+and a capture naming a different id is a `provider_id_conflict`. The `authorized` step, which changes
+nothing, is logged at error as `payment.webhook.late_authorization` (and audited under that name) so
+an operator learns of it before the capture arrives; an `authorized` that follows a *capture* is
+ordinary reordering and is not alarmed.
+
+Subscription needs no change, and this was checked in code rather than assumed:
+`recover_on_payment_captured` is bound to **every** `commerce.payment.captured`, and
+`record_payment_captured` closes the open dunning cycle when the capture is for the cycle's invoice
+(`invoice_id` travels in the event) and returns the subscription to `active` from `past_due`, or from
+`suspended` when the suspension is dunning's and the cycle closed `grace_expired` for that invoice —
+which is exactly the D3 variant's path already.
+
+**Owner to confirm.** This reverses a stated D3 boundary in the customer's favour: money was taken,
+so the platform now recognises it rather than dunning against a paid customer. The cost is that the
+same payment id reported failed and then captured is trusted on Razorpay's word twice; a *second,
+different* payment on the same Order that succeeds (a customer retrying at checkout) is **not**
+recognised automatically and surfaces as a `provider_id_conflict` for an operator, because a charge
+holds one payment id and recording several is a decision this addendum does not take.
+
+> **OWNER DECISION (2026-09-24, PAY-A round 2).**
+> 1. **`failed -> captured` for the same payment is applied automatically.** The exemption above
+>    ships as described; it is not held back for a manual review step.
+> 2. **An invoice collected twice is alerted, never auto-corrected.** `payment.invoice.collected_twice`
+>    (below) is the whole answer at the code level: it is logged and audited, and an operator
+>    refunds the extra charge by hand, against the evidence the alert and the audit row leave. No
+>    code here issues a refund on its own.
+
+### An invoice collected twice: alerted, never auto-corrected
+
+Applying the exemption automatically opens a second way for one invoice to be collected twice, on
+top of the one dunning already guarded against (a retry reusing the failed charge's key would
+deduplicate into it and debit nobody, ADR-0004 §6). Now that a *stale* failed charge can come back
+to life on its own, two real charges can both capture the same invoice, in either order:
+
+* **The late capture lands after a retry already captured.** Charge X (provider-reported) fails;
+  dunning raises a fresh charge Y for the same invoice under its own key; Y captures normally. X's
+  late same-payment capture then applies exactly as designed — nothing about it is individually
+  wrong — and the invoice is now collected twice, with only X's own
+  `payment.charge.captured_after_provider_failure` line to notice from, which says nothing about Y.
+* **The retry is staged after the late capture already settled the invoice.** X's late capture
+  lands first; a dunning retry for Y, already scheduled before that happened, still arrives and
+  stages and debits Y — an ordinary-looking capture, no alert at all.
+
+Both are closed. **Detection**, in `services._detect_double_collection`, runs on *every* transition
+to `captured` — the ordinary path and both `_capture_after_failure` variants — and queries every
+other charge of the same `(organization_id, invoice_id)` already `captured`
+(`selectors.captured_charges_for_invoice`, `ix_charges_org_invoice`). Finding one logs
+`payment.invoice.collected_twice` at error and writes an audit row of the same action (entity
+`invoice`, `after` carrying `invoice_id`, `other_captured_charge_ids`, `amount_minor`, `currency`) —
+whichever order the two captures arrived in, and however many charges collected the invoice.
+**Nothing is refunded automatically**: the code's job stops at making the double collection visible
+and evidenced: a refund moves money back out, on a schedule and to a party the platform does not
+decide unilaterally, and mistargeting it (refunding the wrong one of two charges, or a customer who
+disputes the second debit before an operator gets to it) is worse than a bounded delay.
+
+**Prevention** closes the second ordering where prevention is still possible: `consumers.
+charge_on_dunning_retry` checks `captured_charges_for_invoice` for the retry's invoice **before**
+`stage_charge`, and if the invoice is already captured, logs `dunning.retry.invoice_already_paid`
+and marks the event processed without staging or debiting anything. This is the one charge-creating
+path that needed it: `charge_on_invoice_finalized` and the internal charge route both derive their
+idempotency key from the invoice itself, so a redelivery or a second request for an already-charged
+invoice returns the existing (already captured) charge and calls the provider again for it —
+`stage_charge`'s own `ON CONFLICT DO NOTHING` refuses the second row before any guard would need to.
+Only the dunning ladder mints a **fresh** key per attempt (by design — the same key would swallow
+the retry into the charge that already failed), which is exactly what removes that protection and
+is why this is the one path that needed an explicit check.
+
+**Rejected.** An automatic refund of the second charge — the platform cannot tell which of two
+captured charges for one invoice is "the extra one" without knowing which the customer expects to
+keep, and a wrong automatic refund is itself a support incident. Preventing the double collection at
+the reconciliation layer (refusing X's late capture once Y is known captured) — that would be
+turning genuine, verified money received back into an unresolved state, which is a worse outcome
+than a flagged double collection an operator clears. A single "invoice already settled" table
+checked by every path — the existing `(organization_id, invoice_id)` index already answers the
+question; a second source of the same fact is a second thing to keep in sync.
+
+A webhook that names **no usable organization** — a payment made on the same Razorpay account
+outside this platform, or a `notes.organization_id` that is not an id — has no tenant to record
+under (every table carries `organization_id`, and the GUC has nothing to bind). It is logged
+(`payment.webhook.unattributable`: the event's id and name, a `reason` code, and our own charge id
+when it is one — never the body) and answered 200, because the provider redelivering it can never
+make it attributable. That line is the whole trace of it, so its **level** carries the cause: a body
+with none of our notes (`no_platform_notes` — a payment made outside the platform) is `warning`;
+one that carries our own notes half-formed (`charge_named_without_organization`,
+`organization_id_malformed`) is `error`, because a platform-side bug malforming what it stamped
+would otherwise lose a real capture behind a 200.
+
+**What is non-2xx.** Only these: a bad signature (**400**, unchanged — and a signature of *any*
+bytes, non-ASCII included, is a 400, never a 500), a webhook that cannot be identified or read
+(**400**), and a *transient* failure to record it (**503**: the database was unreachable, refused
+the connection, was starting up or out of connections, or the pool was exhausted — SQLAlchemy's
+`OperationalError` and `InterfaceError`, the pool `TimeoutError`, a raw `OSError` from a refused or
+unroutable connect, and asyncpg's `PostgresConnectionError`, `CannotConnectNowError` and
+`TooManyConnectionsError`; the transaction rolls back whole, the event id is not burned, and the
+redelivery lands as a first delivery). Nothing else. A defect is deliberately **not** dressed as an
+outage: a `RuntimeError` is a 500, and an unrelated `IntegrityError` is the platform's **409**
+(`register_error_handlers` maps every integrity error to a conflict problem, constraint name kept
+out of the body). Both are non-2xx, so the provider retries and the defect is seen; neither is ever
+recorded as `ignored` and answered 200. Only the typed verdict is a permanent condition, and of the
+integrity errors only the two provider-id unique indexes are.
+
+**Seeing them.** There is no Prometheus counter: `/metrics` is `platform_core`'s shared surface with
+no per-service hook, and the platform's convention is that a metric is a query over append-only
+rows. So:
+
+```sql
+SELECT disposition, disposition_reason, count(*)
+FROM payment.provider_events
+WHERE disposition <> 'processed' AND received_at > now() - interval '1 day'
+GROUP BY 1, 2;
+```
+
+and an alert on the log event `payment.webhook.ignored` at level `error` (a `conflict`).
+
+**Rejected.** Answering these 4xx with a "please stop" header — Razorpay documents none, and a
+non-2xx is a retry by definition. Updating the inbox row after the fact — it is append-only, and
+weakening the trigger for one column would weaken it for all. Recording the row and *then*
+reconciling in the same statement order, without the SAVEPOINT — a partial reconcile (provider ids,
+an audit row) would survive a conflict. A blanket `except` around reconciliation — it would turn a
+defect into silently lost payments. A digest of the whole body as the fallback id — it changes
+whenever the provider re-serialises an otherwise identical event, where the chosen tuple does not.
+
+### For the live adapter (B5g): two things the stub cannot show
+
+Recorded here so they are not discovered in production.
+
+1. **`request_timeouts_seconds` is a sum, not a wall-clock bound.** It adds each request's connect
+   and read timeout, and `ProviderContract` holds that sum inside `provider_call_timeout_seconds`.
+   But an HTTP client's *read* timeout (httpx's is per chunk received) restarts every time bytes
+   arrive, so a slow trickle can outlast the sum. The live adapter therefore needs an **overall
+   per-call deadline** in addition to per-request timeouts — otherwise an abandoned call can still
+   be in flight after the lease lapses, which is the double create the budget exists to prevent.
+2. **The fee-bearer model may change what `amount` means.** With Razorpay's *customer bears the
+   fee* setting, a payment's `amount` may include the fee and so differ from the order amount. The
+   amount-mismatch check would then turn **every capture into a conflict** for such an account.
+   Confirm against Razorpay's live documentation before enabling the amount check for a fee-bearer
+   account, and consider a per-organization toggle (compare against the order amount, or skip the
+   amount and keep the currency check) if it is needed.

@@ -1,6 +1,6 @@
 """The charge state machine and the reconciliation mapping. Pure — no I/O, no session, no clock.
 
-Two things are decided here and nothing else:
+Three things are decided here and nothing else:
 
 1. **Is a charge move legal?** A charge is `created`, becomes `authorized`, and reaches a terminal
    `captured` or `failed`. `captured -> failed` is not a thing that can happen — a captured
@@ -13,21 +13,31 @@ Two things are decided here and nothing else:
    (ADR-0004 §5). An `authorized` intermediate emits nothing — it is not yet a fact anyone
    downstream acts on.
 
+3. **What identifies a webhook, and can it be reconciled?** The inbox is idempotent on an event
+   id that is never empty (`resolve_event_id`), and a verified webhook that contradicts what this
+   platform holds is a *permanent* condition, named by a stable reason code and raised as
+   `WebhookNotApplied` for the service to record — never as a retryable HTTP error.
+
 Kept pure so it is trivially testable and cannot grow a side effect: `services.py` is where the
 row, the audit entry and the outbox event are staged, all in one transaction.
 """
 
 from __future__ import annotations
 
+import hashlib
+import re
 from datetime import timedelta
+from typing import Any
 
 from app.models import (
     CHARGE_AUTHORIZED,
     CHARGE_CAPTURED,
     CHARGE_CREATED,
     CHARGE_FAILED,
+    INBOX_CONFLICT,
+    INBOX_IGNORED,
 )
-from platform_core.errors import BusinessRuleProblem
+from app.providers.base import WebhookEvent
 
 EVT_PREFIX = "commerce.payment."
 EVT_CAPTURED = EVT_PREFIX + "captured"
@@ -51,18 +61,12 @@ _OUTCOME_EVENT: dict[str, str] = {
 }
 
 
-class IllegalChargeTransition(BusinessRuleProblem):
-    """A charge move the state machine forbids — a 422, not a 500: the request was well-formed,
-    the lifecycle simply does not allow it."""
-
-
 def is_legal(from_state: str, to_state: str) -> bool:
+    """Whether the state machine allows the move. There is deliberately no `assert_legal` that
+    raises an HTTP error: the only caller that refuses a move is webhook reconciliation, and an
+    illegal move asserted by a *signed* webhook is a permanent condition to record
+    (`illegal_transition`), not a 422 the provider would redeliver for days."""
     return to_state in ALLOWED.get(from_state, frozenset())
-
-
-def assert_legal(from_state: str, to_state: str) -> None:
-    if not is_legal(from_state, to_state):
-        raise IllegalChargeTransition(f"cannot move a charge from {from_state!s} to {to_state!s}")
 
 
 def event_for_outcome(outcome_state: str) -> str | None:
@@ -99,3 +103,149 @@ def charge_retry_backoff(attempts: int) -> timedelta:
     attempts = max(1, attempts)
     wait: timedelta = CHARGE_RETRY_BASE * (2 ** (attempts - 1))
     return min(wait, CHARGE_RETRY_CEILING)
+
+
+# --- webhook identity -------------------------------------------------------------------
+
+#: `provider_events.provider_event_id` is `String(120)`.
+EVENT_ID_MAX_LENGTH = 120
+#: Printable ASCII, no whitespace — what a provider's event id is in practice, and safe to store,
+#: log and compare. Anything else is treated as "no id" and the next source is tried.
+_EVENT_ID_SHAPE = re.compile(r"[\x21-\x7e]+")
+#: Prefix of an id this platform derived, never one a provider or a header can supply: the two
+#: namespaces are disjoint by construction, so a header cannot pose as a derived key.
+DERIVED_EVENT_ID_PREFIX = "derived:"
+
+
+def usable_event_id(value: str | None) -> str | None:
+    """`value` as an inbox key, or None if it cannot be one: absent, blank, too long for the
+    column, not printable ASCII, or claiming the derived namespace. **Never the empty string.**"""
+    if value is None:
+        return None
+    candidate = value.strip()
+    if not candidate or len(candidate) > EVENT_ID_MAX_LENGTH:
+        return None
+    if _EVENT_ID_SHAPE.fullmatch(candidate) is None:
+        return None
+    if candidate.startswith(DERIVED_EVENT_ID_PREFIX):
+        return None
+    return candidate
+
+
+def derive_event_id(event: WebhookEvent) -> str | None:
+    """A stable id for a delivery that carries none: a digest of the body's own event name, the
+    entity it is about and the provider's timestamp — the same on every redelivery of the same
+    event, different for a different event. None unless all three are present: an id derived from
+    less would fold distinct events together, which is the failure this exists to prevent."""
+    if not event.event_name or not event.entity_id or event.created_at is None:
+        return None
+    material = "\x1f".join(
+        (event.provider, event.event_name, event.entity_id, str(event.created_at))
+    )
+    return DERIVED_EVENT_ID_PREFIX + hashlib.sha256(material.encode()).hexdigest()
+
+
+def resolve_event_id(*, header: str | None, event: WebhookEvent) -> str | None:
+    """The id a webhook is deduplicated on, or None if it has none — in which case the service
+    refuses it (400) rather than key it on ''.
+
+    In order: the transport's delivery id (Razorpay: `X-Razorpay-Event-Id`), then an id the body
+    itself carries, then `derive_event_id`. The header is **not** covered by the provider's HMAC —
+    only the body is — so it is a delivery id and nothing more: reconciliation is idempotent on the
+    charge's state regardless (a redelivery under a fresh id is a no-op), and the derived id is
+    computed from signed bytes only.
+    """
+    return (
+        usable_event_id(header)
+        or usable_event_id(event.provider_event_id)
+        or derive_event_id(event)
+    )
+
+
+# --- permanent webhook conditions --------------------------------------------------------
+
+#: The stable reason codes an inbox row (and its audit row and log line) carries. Codes, not
+#: messages: they are what an operator groups by, and they never hold a body or a person.
+REASON_UNATTRIBUTABLE = "unattributable"  # no usable organization in `notes` — logged, never stored
+REASON_UNKNOWN_CHARGE = "unknown_charge"
+REASON_ILLEGAL_TRANSITION = "illegal_transition"
+REASON_AMOUNT_MISMATCH = "amount_mismatch"
+REASON_CURRENCY_MISMATCH = "currency_mismatch"
+REASON_PROVIDER_ID_CONFLICT = "provider_id_conflict"
+
+
+class WebhookNotApplied(Exception):
+    """An authentic webhook that cannot be reconciled, and never will be. **Not** a `ProblemError`:
+    it must never reach the HTTP layer as a 4xx, because the provider would redeliver it for days
+    and nothing would be recorded. `ingest_webhook` catches it, rolls the attempt back to its
+    SAVEPOINT and records the inbox row as `disposition` with `reason` instead.
+
+    `facts` are small, PII-free values for the audit row (a state, a target, two amounts) — never a
+    body, never free text from the provider.
+    """
+
+    def __init__(self, disposition: str, reason: str, facts: dict[str, Any] | None = None) -> None:
+        super().__init__(reason)
+        self.disposition = disposition
+        self.reason = reason
+        self.facts: dict[str, Any] = facts or {}
+
+
+def unknown_charge() -> WebhookNotApplied:
+    return WebhookNotApplied(INBOX_IGNORED, REASON_UNKNOWN_CHARGE)
+
+
+def illegal_transition(from_state: str, to_state: str) -> WebhookNotApplied:
+    return WebhookNotApplied(
+        INBOX_CONFLICT,
+        REASON_ILLEGAL_TRANSITION,
+        {"charge_state": from_state, "asserted_state": to_state},
+    )
+
+
+def provider_id_conflict(held_payment_id: str, asserted_payment_id: str) -> WebhookNotApplied:
+    """A webhook about a *different* payment than the one the charge already holds. Both ids are
+    provider identifiers, not personal data, and are what an operator needs to find the other
+    payment at the provider."""
+    return WebhookNotApplied(
+        INBOX_CONFLICT,
+        REASON_PROVIDER_ID_CONFLICT,
+        {
+            "charge_provider_payment_id": held_payment_id,
+            "asserted_provider_payment_id": asserted_payment_id,
+        },
+    )
+
+
+def contradiction(
+    *,
+    charge_amount_minor: int,
+    charge_currency: str,
+    event_amount_minor: int | None,
+    event_currency: str | None,
+) -> WebhookNotApplied | None:
+    """The verdict on a webhook whose payment is not the charge it claims to settle: another
+    currency, or another amount. None when they agree, **or when the body does not say** — a field
+    the provider left out is not a mismatch, and inventing one would refuse a genuine capture.
+
+    Currency first: an amount in another currency is not comparable, so it is the more basic
+    contradiction. Money is integer minor units on both sides, so equality is exact."""
+    if event_currency is not None and event_currency.upper() != charge_currency.upper():
+        return WebhookNotApplied(
+            INBOX_CONFLICT,
+            REASON_CURRENCY_MISMATCH,
+            {
+                "charge_currency": charge_currency.upper(),
+                "asserted_currency": event_currency.upper(),
+            },
+        )
+    if event_amount_minor is not None and event_amount_minor != charge_amount_minor:
+        return WebhookNotApplied(
+            INBOX_CONFLICT,
+            REASON_AMOUNT_MISMATCH,
+            {
+                "charge_amount_minor": charge_amount_minor,
+                "asserted_amount_minor": event_amount_minor,
+            },
+        )
+    return None

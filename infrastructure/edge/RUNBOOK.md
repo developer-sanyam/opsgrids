@@ -1101,6 +1101,24 @@ finds them.
 domain's certificate (that is the claim row and the sweep, next section), and anything that
 needs a human's judgment rather than a threshold — this pages on symptoms, not root causes.
 
+**Payments: an invoice collected twice.** Not one of the six checks above — this is
+`payment-service`'s own structured log line, `payment.invoice.collected_twice` (ERROR), and an
+audit row of the same action in `payment.audit_logs` (ADR-0004, PAY-A round 2 — owner decision:
+same-payment `failed -> captured` is applied automatically; a double collection it or a dunning
+race causes is alerted, never auto-corrected). It fires when a bank's late authorisation settles
+an invoice a dunning retry already captured, in either order — two real charges, both genuinely
+captured at the provider, for one invoice.
+
+`make edge-logs HOST=… CONFIRM=… SERVICE=payment | grep payment.invoice.collected_twice` finds it.
+The audit row is the fuller record — from an admin/BYPASSRLS connection,
+`SELECT * FROM payment.audit_logs WHERE action = 'payment.invoice.collected_twice' ORDER BY at
+DESC` — and its `after` names the invoice, every *other* charge that also captured it, and the
+amount and currency each one collected. **Nothing here refunds anything automatically**, by
+design: confirm both charges at the provider (the Razorpay dashboard, by their
+`provider_payment_id`) and refund whichever one should not have collected, the same way any other
+refund reaches the customer — `payment`'s own refund path (`services.create_refund`) is exactly
+what to call once the charge to refund is decided.
+
 **If `ops-monitor` restart-loops instead of running:** it runs as the `product` image's own
 non-root user (never the `deploy` user's uid — those are not guaranteed to match on this box;
 Azure's own provisioning already takes uid 1000 for `azureuser`), and needs
