@@ -31,6 +31,7 @@ import type {
 import { resolveDepartment } from "@/data/departments";
 import { employmentLabel } from "@/lib/format";
 import { EmployeeForm } from "@/ui/EmployeeForm";
+import { LinkedMemberSection } from "@/ui/LinkedMemberSection";
 import { EmployeeStatusPill } from "@/ui";
 import { PersonRefBlock } from "@/ui/PersonRef";
 import { TransitionDialog } from "@/ui/TransitionDialog";
@@ -549,6 +550,7 @@ export function EmployeeDetailPage() {
         </div>
       </Card>
 
+      <LinkedMemberSection key={employee.id} employee={employee} />
       <PiiSection employee={employee} />
       <ReportsSection employeeId={employee.id} />
       <ApprovalChainSection employeeId={employee.id} firstName={firstName} />

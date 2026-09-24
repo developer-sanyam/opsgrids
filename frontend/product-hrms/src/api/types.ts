@@ -147,6 +147,39 @@ export interface Paged<T> {
   pages: number;
 }
 
+/* ------------------------------------------------------------------ members (the employee link) */
+
+/**
+ * Mirrors account-service `MemberOut` (`services/account/app/schemas.py`) — the parts the
+ * "Linked member" field on the employee page reads. `employee_id` is the authoritative link
+ * (ADR-0008 §1): the HR record this principal **is**, and the sole origin of the `sref` claim every
+ * `OWN`-scoped check in the estate resolves against. `email` is on the wire in the clear; this app
+ * only ever renders it masked (`@/lib/mask`).
+ */
+export interface MemberOut {
+  id: string;
+  user_id: string;
+  email: string;
+  full_name: string;
+  display_name: string | null;
+  job_title: string | null;
+  status: string;
+  is_owner: boolean;
+  org_unit_id: string | null;
+  manager_membership_id: string | null;
+  location_codes: string[];
+  employee_id: string | null;
+  roles: string[];
+  joined_at: string | null;
+  started_on: string | null;
+}
+
+/** `PATCH /members/{id}` — only the link. `null` unlinks; an absent key would leave it alone, so
+ *  this shape always carries the key (ADR-0008 §2). */
+export interface MemberLinkPatch {
+  employee_id: string | null;
+}
+
 /* ------------------------------------------------------------------ locations, organization */
 
 /** Mirrors account-service `LocationOut` — the zone-lookup source. */
