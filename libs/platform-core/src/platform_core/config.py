@@ -13,6 +13,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -198,6 +199,47 @@ class ServiceSettings(BaseSettings):
         if isinstance(v, str):
             return [item.strip() for item in v.split(",") if item.strip()]
         return v
+
+    @field_validator("auth_refresh_cors_origins", mode="after")
+    @classmethod
+    def _auth_refresh_cors_origins_are_narrow_and_real(cls, origins: list[str]) -> list[str]:
+        """MINOR 2 of the 2026-09-24 SSO review: this allow-list is credentialed CORS for a
+        cookie-authenticated route — a shape mistake here is not a typo that 404s, it is a
+        widened attack surface that answers 200. Every entry must be an exact `https://host`
+        origin: no `*` (Starlette's own `CORSMiddleware` echoes back *any* origin with
+        credentials once a wildcard is configured — there is no partial-wildcard reading of
+        this list that is safe), no plain `http://`, no path or query or fragment (an origin is
+        scheme+host+port, nothing else — a value that parses as more than that was probably
+        meant to be a route, not an origin), and never a storefront host: nothing under
+        `stores.opsgrids.com`, and never the bare registrable domain either, since merchant
+        storefronts are catch-all subdomains of it (ADR-0012 §2) and nothing there is meant to
+        hold a platform session.
+        """
+        for origin in origins:
+            if origin == "*":
+                raise ValueError(
+                    "auth_refresh_cors_origins must not contain '*' — combined with "
+                    "credentials, Starlette echoes back any caller's Origin verbatim"
+                )
+            parsed = urlsplit(origin)
+            if parsed.scheme != "https":
+                raise ValueError(
+                    f"auth_refresh_cors_origins entry {origin!r} must be an https:// origin"
+                )
+            if not parsed.hostname:
+                raise ValueError(f"auth_refresh_cors_origins entry {origin!r} has no host")
+            if parsed.path not in ("", "/") or parsed.query or parsed.fragment or parsed.username:
+                raise ValueError(
+                    f"auth_refresh_cors_origins entry {origin!r} must be a bare origin — "
+                    "scheme, host and port only, no path, query, fragment or userinfo"
+                )
+            host = parsed.hostname.lower()
+            if host == "stores.opsgrids.com" or host.endswith(".stores.opsgrids.com"):
+                raise ValueError(
+                    f"auth_refresh_cors_origins entry {origin!r} is a storefront host — "
+                    "nothing under stores.opsgrids.com may ever hold a platform session"
+                )
+        return origins
 
     @field_validator("admin_gateway_hop_key", mode="before")
     @classmethod

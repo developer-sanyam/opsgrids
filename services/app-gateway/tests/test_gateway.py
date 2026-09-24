@@ -13,8 +13,9 @@ from __future__ import annotations
 
 from functools import partial
 
+import httpx
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
 from platform_core.cache import permission_version_key
 from platform_core.gateway import PermissionResolver, Route, RouteTable
@@ -284,6 +285,52 @@ class TestRateLimiting:
         )
         assert response.status_code == 200
         assert any(k.startswith("rl:anon:") for k in redis.store)
+
+    async def test_two_visitors_behind_the_same_proxy_get_two_different_buckets(
+        self, client: AsyncClient, redis: FakeRedis, upstream: EchoUpstream
+    ) -> None:
+        """M2(b) of the 2026-09-24 SSO review: the test transport's own peer (loopback) is a
+        trusted address, the same shape Caddy's compose-network address is in production, so
+        `X-Forwarded-For` is honoured here exactly as it would be behind the real proxy — two
+        different forwarded addresses must land in two different buckets, not the one shared
+        bucket a fix-round-1 box would have put every visitor in."""
+        await client.post(
+            "/api/v1/auth/login",
+            json={"email": "a@example.com", "password": "x"},
+            headers={"X-Forwarded-For": "198.51.100.1"},
+        )
+        await client.post(
+            "/api/v1/auth/login",
+            json={"email": "a@example.com", "password": "x"},
+            headers={"X-Forwarded-For": "198.51.100.2"},
+        )
+        buckets = {k for k in redis.store if k.startswith("rl:anon:")}
+        bucket_for_1 = next((b for b in buckets if "198.51.100.1" in b), None)
+        bucket_for_2 = next((b for b in buckets if "198.51.100.2" in b), None)
+        assert bucket_for_1 is not None
+        assert bucket_for_2 is not None
+        assert bucket_for_1 != bucket_for_2
+
+    async def test_a_forwarded_header_from_a_non_private_peer_is_ignored(
+        self, redis: FakeRedis, upstream: EchoUpstream
+    ) -> None:
+        """A caller that reaches this process directly — not through Caddy — cannot widen its
+        own rate-limit bucket just by adding the header; only a trusted (private-network) peer's
+        `X-Forwarded-For` is ever believed."""
+        from app.main import app
+
+        app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(upstream.handler))
+        transport = ASGITransport(app=app, client=("203.0.113.9", 443))
+        async with AsyncClient(transport=transport, base_url="http://test") as direct:
+            response = await direct.post(
+                "/api/v1/auth/login",
+                json={"email": "a@example.com", "password": "x"},
+                headers={"X-Forwarded-For": "1.2.3.4"},
+            )
+        assert response.status_code == 200
+        buckets = [k for k in redis.store if k.startswith("rl:anon:")]
+        assert any("203.0.113.9" in b for b in buckets)
+        assert not any("1.2.3.4" in b for b in buckets)
 
 
 class TestPublicPaths:

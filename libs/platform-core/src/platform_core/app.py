@@ -32,6 +32,7 @@ from platform_core.db import (
 from platform_core.errors import register_error_handlers
 from platform_core.logging import RequestContextMiddleware, configure_logging, get_logger
 from platform_core.metrics import Sample, render
+from platform_core.proxy_headers import TrustForwardedForFromPrivatePeers
 from platform_core.supervise import (
     SWEEP_METRICS_HELP,
     SWEEP_METRICS_TYPES,
@@ -256,6 +257,7 @@ def create_app(
     database: bool = True,
     redis: bool = False,
     outbox_model: type[Any] | None = None,
+    trust_forwarded_for: bool = False,
 ) -> FastAPI:
     """Assemble a service.
 
@@ -267,6 +269,13 @@ def create_app(
     request that touched it — and its tests passed, because they injected a fake client
     directly. Making the dependency a parameter means forgetting it is a visible omission
     at the call site instead of a crash in production.
+
+    `trust_forwarded_for` (M2(b) of the 2026-09-24 SSO review): rewrites `request.client.host`
+    to the real visitor's address from `X-Forwarded-For`, but only when the immediate peer is a
+    private-network address — Caddy, the one reverse proxy production puts in front of a public
+    gateway (ADR-0012). `False` everywhere else: a service nothing proxies to directly has no
+    peer to trust in the first place, and turning this on for one that is reachable some other
+    way would let whoever *is* the immediate peer forge an address by simply adding the header.
     """
     configure_logging(
         settings.service_name, level=settings.log_level, json_output=settings.log_json
@@ -340,6 +349,11 @@ def create_app(
             allow_headers=["*"],
             expose_headers=["X-Request-ID", "X-Correlation-ID"],
         )
+    if trust_forwarded_for:
+        # Added last, deliberately: `add_middleware` prepends, so the last one added ends up
+        # outermost — this corrects `scope["client"]` before anything else added above (or any
+        # route handler) ever reads it.
+        app.add_middleware(TrustForwardedForFromPrivatePeers)
 
     register_error_handlers(app)
     app.include_router(
