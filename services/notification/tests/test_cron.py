@@ -104,10 +104,14 @@ async def driver(driver_engines: tuple[Any, Any]) -> CampaignDriver:
 
 
 async def _seed_sending_campaign(
-    session: AsyncSession, org_id: uuid.UUID, *emails: str
+    session: AsyncSession, org_id: uuid.UUID, *emails: str, expand: bool = True
 ) -> uuid.UUID:
-    """A campaign already `sending` with its audience already expanded — the state the shared
-    consumer's `expand_campaign_send` leaves behind, and the state the driver picks up from."""
+    """A campaign already `sending` — with its audience already expanded by default, the state
+    the shared consumer's `expand_campaign_send` normally leaves behind before the driver ever
+    sees the campaign. `expand=False` leaves it exactly as `request_send` alone does: staged,
+    `sending`, and never touched by an expansion — the state the driver finds it in when its own
+    tick lands before the consumer's, or when the event that would have run it is lost outright.
+    """
     domain = models.EmailDomain(organization_id=org_id, domain="company.com", status="verified")
     async with session.begin():
         session.add(domain)
@@ -158,10 +162,11 @@ async def _seed_sending_campaign(
     send = ctx_for(org_id, "engage.campaign.campaign.send", Scope.ORG)
     async with session.begin():
         await services.request_send(session, send, campaign_id=campaign_id)
-    async with session.begin():
-        await services.expand_campaign(
-            session, organization_id=org_id, campaign_id=campaign_id, batch_size=200
-        )
+    if expand:
+        async with session.begin():
+            await services.expand_campaign(
+                session, organization_id=org_id, campaign_id=campaign_id, batch_size=200
+            )
     return campaign_id
 
 
@@ -226,6 +231,49 @@ class TestOneCampaignsFailureIsContained:
 
         async with _org_bound_session(other_org) as other_session, other_session.begin():
             row = await other_session.get(models.Campaign, healthy)
+            assert row is not None and row.status == "sent"
+
+
+class TestSelfExpansion:
+    async def test_the_driver_expands_an_unexpanded_campaign_itself_and_still_sends_it(
+        self, session: AsyncSession, org_id: uuid.UUID, driver: CampaignDriver
+    ) -> None:
+        """The race, driven through the real `CampaignDriver`, not the service-level harness:
+        `request_send` has staged `send_requested`, and nothing has consumed it — the driver's
+        own tick is first to arrive. Before `expanded_at`, `claim_campaign_batch` saw zero
+        `queued`/`sending` rows here, which is exactly what "finished" looks like, and marked
+        this `sent` with nobody ever mailed. It must now expand the audience itself and actually
+        send to it, in this same tick."""
+        campaign_id = await _seed_sending_campaign(
+            session, org_id, "a@example.com", "b@example.com", expand=False
+        )
+
+        report = await driver.tick()
+
+        assert report.considered == 1
+        assert report.completed == 1
+
+        async with session.begin():
+            row = await session.get(models.Campaign, campaign_id, populate_existing=True)
+            assert row is not None
+            assert row.status == "sent"
+            assert row.expanded_at is not None
+            assert (row.recipient_count, row.sent_count) == (2, 2)
+
+    async def test_a_send_requested_event_that_never_arrives_does_not_strand_the_campaign(
+        self, session: AsyncSession, org_id: uuid.UUID, driver: CampaignDriver
+    ) -> None:
+        """The lost-event case is the same code path as a merely-late one: the driver does not
+        distinguish "the consumer has not run yet" from "the consumer never will" — it just
+        expands whenever it finds `expanded_at` still null, so a dead-lettered `send_requested`
+        costs this campaign nothing beyond however long it sat waiting for a tick."""
+        campaign_id = await _seed_sending_campaign(session, org_id, "a@example.com", expand=False)
+
+        report = await driver.tick()
+
+        assert report.completed == 1
+        async with session.begin():
+            row = await session.get(models.Campaign, campaign_id, populate_existing=True)
             assert row is not None and row.status == "sent"
 
 

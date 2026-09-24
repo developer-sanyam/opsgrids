@@ -148,7 +148,11 @@ async def _drain(
     """Sends batches for one campaign until it stops — the same claim/send/record loop
     `app.cron.CampaignDriver._drain` runs in production, against this test's own session
     instead of a second engine. Returns the final outcome (`done`, `stopped`, `capped`,
-    `paused`, `idle`, or `unavailable`)."""
+    `paused`, `idle`, or `unavailable`).
+
+    `expand`, like `app.cron._one_batch`, is answered by expanding the campaign ourselves — in
+    a transaction of its own, separate from the claim that asked for it — and looping straight
+    back in: the net for a `send_requested` event that has not run yet, or never will."""
     while True:
         async with session.begin():
             outcome, batch = await services.claim_campaign_batch(
@@ -159,6 +163,15 @@ async def _drain(
                 lease_seconds=lease_seconds,
                 transport=transport,
             )
+        if outcome == "expand":
+            async with session.begin():
+                await services.expand_campaign(
+                    session,
+                    organization_id=org_id,
+                    campaign_id=campaign_id,
+                    batch_size=batch_size,
+                )
+            continue
         if outcome != "claimed":
             return outcome
         assert batch is not None
@@ -281,6 +294,7 @@ async def test_campaign_draft_crud(client, session, org_id):
 
 async def test_a_campaign_past_draft_cannot_be_edited_or_deleted(client, session, org_id):
     sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "a@example.com")
     campaign_id = await _campaign(session, org_id, sender_id)
     await _send(session, org_id, campaign_id)
     with as_principal(caller(org_id, ALL)):
@@ -344,6 +358,49 @@ async def test_send_stages_one_event_and_sends_nothing_inline(client, session, o
     assert await _recipients(session, campaign_id) == {}
 
 
+async def test_send_refuses_an_all_sendable_audience_with_nobody_to_email(client, session, org_id):
+    """Without this gate, `request_send` moved the campaign to `sending` anyway, and it would
+    later settle as `sent` with `recipient_count == 0` and nothing ever mailed — the same
+    outward shape as the race `expanded_at` closes, just for a wholly different reason (no
+    audience at all, rather than one still being expanded)."""
+    sender_id = await _seed_identity(session, org_id)
+    # Deliberately no contacts at all.
+    campaign_id = await _campaign(session, org_id, sender_id)
+    with as_principal(caller(org_id, ALL)):
+        r = await client.post(f"{CAMPAIGNS}/{campaign_id}/send")
+    assert r.status_code == 422
+    assert r.json()["detail"] == "You have no contacts who can be emailed."
+    assert (await _reload(session, campaign_id)).status == "draft"
+
+
+async def test_send_refuses_a_list_audience_with_nobody_to_email(client, session, org_id):
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "not_on_the_list@example.com")
+    async with session.begin():
+        lst = await services.create_list(session, ctx_for(org_id, L_WRITE, Scope.ORG), name="Empty")
+    campaign_id = await _campaign(session, org_id, sender_id, list_id=lst.id)
+    with as_principal(caller(org_id, ALL)):
+        r = await client.post(f"{CAMPAIGNS}/{campaign_id}/send")
+    assert r.status_code == 422
+    assert r.json()["detail"] == "This list has no contacts who can be emailed."
+    assert (await _reload(session, campaign_id)).status == "draft"
+
+
+async def test_send_refuses_an_audience_that_is_entirely_suppressed(client, session, org_id):
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "gone@example.com")
+    async with session.begin():
+        await services.add_suppression(
+            session, ctx_for(org_id, S_WRITE, Scope.ORG), email="gone@example.com"
+        )
+    campaign_id = await _campaign(session, org_id, sender_id)
+    with as_principal(caller(org_id, ALL)):
+        r = await client.post(f"{CAMPAIGNS}/{campaign_id}/send")
+    assert r.status_code == 422
+    assert r.json()["detail"] == "You have no contacts who can be emailed."
+    assert (await _reload(session, campaign_id)).status == "draft"
+
+
 # --------------------------------------------------------------------- expansion (shared consumer)
 
 
@@ -392,6 +449,111 @@ async def test_expand_campaign_send_on_a_cancelled_campaign_is_a_no_op(
 
 
 # --------------------------------------------------------------------- the send driver
+
+
+async def test_the_driver_never_marks_a_campaign_sent_before_it_has_been_expanded(
+    session, org_id, worker_engine
+):
+    """The bug, isolated: `request_send` commits and stages `send_requested`, and the driver's
+    own tick lands before anything has consumed it. `claim_campaign_batch` sees a `sending`
+    campaign with zero `queued`/`sending` rows — before this fix, indistinguishable from
+    "finished", and marked `sent` with nobody ever mailed. It now answers `expand` instead, and
+    the campaign stays exactly `sending`."""
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "a@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    await _send(session, org_id, campaign_id)
+    # `consumers.expand_campaign_send` is deliberately never called here.
+
+    async with session.begin():
+        outcome, batch = await services.claim_campaign_batch(
+            session,
+            organization_id=org_id,
+            campaign_id=campaign_id,
+            batch_size=200,
+            lease_seconds=300,
+        )
+    assert (outcome, batch) == ("expand", None)
+    reloaded = await _reload(session, campaign_id)
+    assert reloaded.status == "sending"
+    assert reloaded.expanded_at is None
+
+
+async def test_the_driver_expands_itself_and_sends_the_whole_audience_when_no_event_ever_runs(
+    session, org_id, worker_engine
+):
+    """The repair, not just the guard: a `send_requested` event that is late — or dead-lettered
+    and never delivered at all — must not strand the campaign `sending` forever. The driver
+    notices it has never been expanded and does the expansion itself, in its own transaction,
+    then carries on to claim and send in the same drain."""
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "a@example.com", "b@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    await _send(session, org_id, campaign_id)
+
+    wire = RecordingTransport()
+    assert await _drain(session, org_id, campaign_id, transport=wire) == "done"
+
+    assert sorted(m.to_address for m in wire.sent) == ["a@example.com", "b@example.com"]
+    reloaded = await _reload(session, campaign_id)
+    assert reloaded.status == "sent"
+    assert reloaded.expanded_at is not None
+    assert (reloaded.recipient_count, reloaded.sent_count) == (2, 2)
+
+
+async def test_a_send_requested_event_after_the_driver_already_expanded_inserts_nothing_twice(
+    session, org_id, worker_engine
+):
+    """The other order of the same race: the driver wins and expands first, and the event this
+    campaign's own `request_send` staged shows up afterwards. `ON CONFLICT DO NOTHING` on
+    `(campaign_id, contact_id)` (already relied on for a redelivered event) makes the second
+    expansion insert nothing new, and `expanded_at` — set once — is left exactly as the driver
+    left it rather than bumped forward by a call that did no work."""
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "a@example.com", "b@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    await _send(session, org_id, campaign_id)
+
+    async with session.begin():
+        await services.expand_campaign(
+            session, organization_id=org_id, campaign_id=campaign_id, batch_size=200
+        )
+    first_expanded_at = (await _reload(session, campaign_id)).expanded_at
+    assert first_expanded_at is not None
+
+    # The event `request_send` staged, arriving after the driver already did the work.
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
+
+    statuses = await _recipients(session, campaign_id)
+    assert sorted(statuses.values()) == ["queued", "queued"]  # not four rows
+    assert (await _reload(session, campaign_id)).expanded_at == first_expanded_at
+
+
+async def test_two_concurrent_expansions_insert_each_recipient_once(session, admin_session, org_id):
+    """Two racing expanders — the driver's self-expansion and the consumer's own, or two workers
+    each running the driver — must not double up a recipient. `FOR KEY SHARE` in
+    `sendable_contacts` lets both read the same page of contacts at once; `ON CONFLICT DO
+    NOTHING` on `(campaign_id, contact_id)` is what then makes only one insert land per contact
+    when both try to write it."""
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "a@example.com", "b@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    await _send(session, org_id, campaign_id)
+
+    async def _expand(worker_session) -> None:
+        async with worker_session.begin():
+            await services.expand_campaign(
+                worker_session, organization_id=org_id, campaign_id=campaign_id, batch_size=200
+            )
+
+    # `session` (the app role, tenant-bound) and `admin_session` (BYPASSRLS) are two distinct
+    # connections, so this is a genuine race between two transactions — not two calls serialised
+    # on one.
+    await asyncio.gather(_expand(session), _expand(admin_session))
+
+    statuses = await _recipients(session, campaign_id)
+    assert sorted(statuses.values()) == ["queued", "queued"]  # one row per contact, not two
+    assert (await _reload(session, campaign_id)).expanded_at is not None
 
 
 async def test_the_driver_sends_the_whole_audience_with_unsubscribe_header_and_footer(
@@ -1055,6 +1217,12 @@ async def test_no_connected_provider_pauses_the_campaign(session, org_id, worker
     assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
 
     async with session.begin():
+        # The expansion above landed through the consumer's own session (`session_scope`, a
+        # separate connection) — not this test's `session`, which already holds the campaign in
+        # its identity map from `session.get()` above. With `expire_on_commit=False`, the plain
+        # `select` inside `claim_campaign_batch` would happily hand back that same, now-stale
+        # object — `expanded_at` still `None` — instead of what the consumer just committed.
+        session.expire_all()
         outcome, batch = await services.claim_campaign_batch(
             session,
             organization_id=org_id,
@@ -1078,6 +1246,7 @@ async def test_a_route_that_comes_back_resumes_on_its_own(session, org_id, worke
         row.status = "sending"
     assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
     async with session.begin():
+        session.expire_all()  # see the identical comment in the previous test
         await services.claim_campaign_batch(
             session,
             organization_id=org_id,
@@ -1116,6 +1285,7 @@ async def test_resume_endpoint_retries_now_and_refuses_a_non_paused_campaign(
         row.status = "sending"
     assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
     async with session.begin():
+        session.expire_all()  # see the comment in test_no_connected_provider_pauses_the_campaign
         await services.claim_campaign_batch(
             session,
             organization_id=org_id,

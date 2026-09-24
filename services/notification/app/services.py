@@ -3908,8 +3908,18 @@ async def request_send(
 
     409 when the campaign is not a draft (sent twice, or cancelled). 422 when it is a draft
     that may not go: no subject or body, a sender that never passed its test send, a domain
-    that fell out of verification, no connected provider, a missing list, or unsubscribe links
-    that cannot be signed — mail without a working unsubscribe link is not sent at all.
+    that fell out of verification, no connected provider, a missing list, an audience with
+    nobody sendable in it right now, or unsubscribe links that cannot be signed — mail without a
+    working unsubscribe link is not sent at all.
+
+    The "nobody sendable" check reads `selectors.sendable_contacts(..., limit=1)` rather than
+    trust `audience`/`list_id` alone: a list that exists can still hold only suppressed or
+    deleted contacts, and `all_sendable` can name an org with none at all. Catching that here,
+    before `status` ever moves to `sending`, is what keeps a campaign from completing as `sent`
+    with `recipient_count = 0` for a reason a human could have been told about up front instead —
+    contacts removed *after* this check still expand to nobody and still end up `sent` with zero
+    recipients (see `expand_campaign`'s own docstring), which is the one case this gate cannot
+    close because the audience has not shrunk yet when it runs.
     """
     row = await selectors.get_campaign(session, ctx.organization_id, campaign_id, lock=True)
     if row is None:
@@ -3946,6 +3956,14 @@ async def request_send(
         is None
     ):
         raise BusinessRuleProblem("The campaign's list no longer exists.")
+    if not await selectors.sendable_contacts(
+        session, ctx, limit=1, list_id=row.list_id if row.audience == "list" else None
+    ):
+        raise BusinessRuleProblem(
+            "This list has no contacts who can be emailed."
+            if row.audience == "list"
+            else "You have no contacts who can be emailed."
+        )
     if unsubscribe_key() is None:
         raise BusinessRuleProblem(
             "Unsubscribe links are not configured for this environment, so campaigns cannot "
@@ -4040,7 +4058,16 @@ async def expand_campaign(
 
     Keyset-paged through `selectors.sendable_contacts`, so suppressed addresses are never
     expanded at all. `ON CONFLICT DO NOTHING` on `(campaign_id, contact_id)` makes a redelivered
-    event, or two workers racing, insert each recipient once.
+    event, or two workers racing, insert each recipient once — see
+    `test_two_concurrent_expansions_insert_each_recipient_once` for the two-racer case, which
+    this and `sendable_contacts`'s own `FOR KEY SHARE` are what make safe.
+
+    Sets `Campaign.expanded_at` in this same transaction, even when nobody turned out to be
+    sendable — the send driver's own signal that expansion has actually happened, distinct from
+    `recipient_count`, which is legitimately zero both before expansion and after one that found
+    nobody to mail. Set once and left alone after that: a redelivered event or the driver's own
+    call onto an already-expanded campaign must not keep bumping it forward, since it marks when
+    the audience was first computed, not the last time anything here ran.
     """
     campaign = await selectors.get_campaign(session, organization_id, campaign_id)
     if campaign is None or campaign.status != "sending":
@@ -4084,6 +4111,8 @@ async def expand_campaign(
             .on_conflict_do_nothing(constraint="uq_campaign_recipient")
         )
         after = contacts[-1].id
+    if campaign.expanded_at is None:
+        campaign.expanded_at = datetime.now(UTC)
     await _fold_campaign_counts(session, campaign)
     return True
 
@@ -4342,7 +4371,7 @@ async def drop_erased_from_batch(
     return replace(batch, messages=kept, resolved=[*batch.resolved, *dropped])
 
 
-ClaimOutcome = Literal["claimed", "done", "stopped", "capped", "paused", "idle"]
+ClaimOutcome = Literal["claimed", "done", "stopped", "capped", "paused", "idle", "expand"]
 
 
 async def _pause_campaign(session: AsyncSession, campaign: Campaign, reason: str) -> None:
@@ -4500,6 +4529,16 @@ async def claim_campaign_batch(
     - `paused` — no connected provider or usable sender; the campaign was moved to `paused`
       (or already was), and `Campaign.pause_reason` says why.
     - `idle` — nothing claimable right now (another worker holds the rest); try again later.
+    - `expand` — this campaign is `sending` but `Campaign.expanded_at` is still null: the send
+      driver (`app/cron.py`'s `_one_batch`) should call `expand_campaign` itself, in its own
+      transaction, and then call this again. **Never `done`** in this state, whatever
+      `_claim_recipient_rows`/`_fold_campaign_counts` would otherwise say — an unexpanded
+      campaign always has zero `queued`/`sending` rows, which is indistinguishable from "finished"
+      by count alone. That confusion is the exact bug this column exists to close: a campaign
+      whose driver tick landed before `consumers.expand_campaign_send` had run (or after that
+      event was lost entirely) used to be marked `sent` with nobody ever mailed. Checked before
+      the connection/sender pause gate below, so a campaign is expanded before it can ever be
+      paused for a route problem that has nothing to do with whether its audience exists yet.
 
     Suppression is re-checked in one `IN (...)` query for the whole batch rather than one query
     per recipient. Building each message can fail without failing the batch: a row whose sealed
@@ -4508,6 +4547,8 @@ async def claim_campaign_batch(
     campaign = await selectors.get_campaign(session, organization_id, campaign_id)
     if campaign is None or campaign.status not in _DRIVER_ACTIVE:
         return "stopped", None
+    if campaign.expanded_at is None:
+        return "expand", None
 
     connection = await selectors.get_connection(session, organization_id, lock=True)
     sender = await selectors.get_sender(session, organization_id, campaign.sender_id)

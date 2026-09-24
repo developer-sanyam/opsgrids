@@ -48,6 +48,14 @@ describe("a 422 from the send gate", () => {
       next: { kind: "field", label: "Choose another list", field: "list" },
     },
     {
+      message: "You have no contacts who can be emailed.",
+      next: { kind: "link", label: "Open Contacts", to: "/contacts" },
+    },
+    {
+      message: "This list has no contacts who can be emailed.",
+      next: { kind: "link", label: "Open Contacts", to: "/contacts" },
+    },
+    {
       message:
         "Unsubscribe links are not configured for this environment, so campaigns cannot be sent.",
       next: null,

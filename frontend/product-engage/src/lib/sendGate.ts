@@ -76,6 +76,9 @@ function nextFor(message: string): { next: GateNext | null; hint: string | null 
   if (text.includes("list no longer exists")) {
     return { next: { kind: "field", label: "Choose another list", field: "list" }, hint: null };
   }
+  if (text.includes("no contacts who can be emailed")) {
+    return { next: { kind: "link", label: "Open Contacts", to: "/contacts" }, hint: null };
+  }
   if (text.includes("unsubscribe links are not configured") || text.includes("engage_public_api_base")) {
     return { next: null, hint: OPERATOR_HINT };
   }

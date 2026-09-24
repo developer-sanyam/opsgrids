@@ -9,6 +9,19 @@ queue while it did. `fan_out` now only expands the audience (`services.expand_ca
 returns; sending is this sweep's job, and it is not the shared consumer — a slow or stuck
 campaign here costs this process alone.
 
+**The consumer's expansion is the fast path; this driver is the net for a late or lost event.**
+`claim_campaign_batch` returns `expand` for a `sending` campaign whose `Campaign.expanded_at` is
+still null — a `send_requested` event that has not been delivered yet, or, on a dead-lettered
+message, never will be. `_one_batch` answers that by calling `services.expand_campaign` itself,
+in its own transaction, and looping straight back into `_drain` to claim and send in this same
+tick rather than wait on a consumer that a genuinely lost event would never satisfy.
+`claim_campaign_batch` never marks a campaign `sent` while `expanded_at` is null — see its
+docstring for the bug that guard closes: a campaign whose count of `queued`/`sending` rows looks
+exactly like "finished" before it has ever been given any rows to have.
+
+**Discovery: `due_campaigns` selects `sending`, not `sending, expanded`.** An unexpanded campaign
+is exactly what this driver exists to notice and fix, not what it should skip past.
+
 **The same claim-and-drain shape as `approval`'s escalation sweep and `subscription`'s dunning
 sweep**, which is the outbox relay's own shape applied a third time (ADR-0002's split):
 
@@ -212,6 +225,10 @@ class CampaignDriver(GuardedSweep):
                     report.batches_sent += 1
                     self._clear_backoff(campaign_id)
                     continue
+                if outcome == "expanded":
+                    # Not a sent batch — nothing reached a transport — so it does not count as
+                    # one; just carry on draining now that this campaign has an audience.
+                    continue
                 if outcome == "unavailable":
                     self._note_unavailable(campaign_id, at)
                     report.backed_off += 1
@@ -232,7 +249,8 @@ class CampaignDriver(GuardedSweep):
             report.failed += 1
 
     async def _one_batch(self, organization_id: uuid.UUID, campaign_id: uuid.UUID) -> str:
-        """Claim, send, record. Returns `sent_batch` (call again), `unavailable` (back off), or
+        """Claim, send, record. Returns `sent_batch` (call again), `expanded` (call again —
+        this campaign had never been expanded and now has been), `unavailable` (back off), or
         one of `claim_campaign_batch`'s own stopping outcomes (`done`/`stopped`/`capped`/
         `paused`/`idle`)."""
         async with self._work_scope(organization_id) as session:
@@ -243,6 +261,20 @@ class CampaignDriver(GuardedSweep):
                 batch_size=self._batch_size,
                 lease_seconds=self._lease_seconds,
             )
+        if outcome == "expand":
+            # The net for a `send_requested` event that has not been consumed yet, or never
+            # will be: expand the audience ourselves, in a transaction of its own — separate
+            # from the claim above (which wrote nothing) and from whatever claims a batch next
+            # — so this campaign's recipients exist and are visible to any other tick or process
+            # the instant this commits, whether or not the consumer ever runs at all.
+            async with self._work_scope(organization_id) as session:
+                await services.expand_campaign(
+                    session,
+                    organization_id=organization_id,
+                    campaign_id=campaign_id,
+                    batch_size=self._batch_size,
+                )
+            return "expanded"
         if outcome != "claimed" or batch is None:
             return outcome
 

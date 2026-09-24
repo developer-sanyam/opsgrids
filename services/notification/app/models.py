@@ -870,6 +870,15 @@ class Campaign(Base, TenantBase):
     #: route is not hammered every poll — and an operator's explicit resume clears it so the
     #: very next tick tries again.
     paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When `services.expand_campaign` last turned the audience into `queued` recipient rows.
+    #: Set once, in the same transaction as the inserts, even when nobody was sendable — the
+    #: send driver (`app/cron.py`) reads this as "has expansion actually happened yet", never
+    #: `recipient_count`, which is legitimately zero both before expansion and after an
+    #: audience that expanded to nobody. `claim_campaign_batch` refuses to mark a campaign
+    #: `sent` while this is null, and expands the campaign itself, in its own transaction,
+    #: rather than wait for a `send_requested` event that may be late or lost — see its
+    #: docstring for the race this closes.
+    expanded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     recipient_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     sent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

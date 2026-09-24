@@ -50,6 +50,7 @@ CAMPAIGNS = "/api/v1/engage/campaigns"
 K_WRITE = "engage.campaign.campaign.write"
 K_SEND = "engage.campaign.campaign.send"
 L_WRITE = "engage.audience.list.write"
+C_WRITE = "engage.audience.contact.write"
 ADDRESS = "news@company.com"
 
 #: `frontend/product-engage/src/lib/sendGate.ts`, from this file: tests/ -> notification/ ->
@@ -122,6 +123,13 @@ async def _identity(
                 )
             )
     return sender.id
+
+
+async def _contact(session, org_id: uuid.UUID, email: str = "reader@example.com") -> None:
+    """One sendable contact — a precondition every gate below except the audience ones needs
+    satisfied so it fails on its own gate rather than on the "nobody to email" one."""
+    async with session.begin():
+        await services.create_contact(session, ctx_for(org_id, C_WRITE, Scope.ORG), email=email)
 
 
 async def _draft(
@@ -209,13 +217,30 @@ async def _list_gone(session, org_id, monkeypatch) -> uuid.UUID:
     return campaign_id
 
 
-async def _no_unsubscribe_key(session, org_id, monkeypatch) -> uuid.UUID:
-    monkeypatch.setattr(services, "unsubscribe_key", lambda: None)
+async def _no_sendable_contacts(session, org_id, monkeypatch) -> uuid.UUID:
     return await _draft(session, org_id, await _identity(session, org_id))
 
 
+async def _no_sendable_contacts_in_list(session, org_id, monkeypatch) -> uuid.UUID:
+    sender_id = await _identity(session, org_id)
+    async with session.begin():
+        the_list = await services.create_list(
+            session, ctx_for(org_id, L_WRITE, Scope.ORG), name="Empty", description=""
+        )
+    return await _draft(session, org_id, sender_id, list_id=the_list.id)
+
+
+async def _no_unsubscribe_key(session, org_id, monkeypatch) -> uuid.UUID:
+    monkeypatch.setattr(services, "unsubscribe_key", lambda: None)
+    sender_id = await _identity(session, org_id)
+    await _contact(session, org_id)
+    return await _draft(session, org_id, sender_id)
+
+
 async def _public_base_unset(session, org_id, monkeypatch) -> uuid.UUID:
-    campaign_id = await _draft(session, org_id, await _identity(session, org_id))
+    sender_id = await _identity(session, org_id)
+    await _contact(session, org_id)
+    campaign_id = await _draft(session, org_id, sender_id)
     # A real environment with a real signing secret — so the unsubscribe-key gate passes — and the
     # default `localhost` API base, which is the misconfiguration `_check_public_base` exists for.
     misconfigured = services.settings().model_copy(
@@ -272,6 +297,18 @@ GATES = [
         _list_gone,
         "The campaign's list no longer exists.",
         "list no longer exists",
+    ),
+    Gate(
+        "no sendable contacts, all_sendable audience",
+        _no_sendable_contacts,
+        "You have no contacts who can be emailed.",
+        "no contacts who can be emailed",
+    ),
+    Gate(
+        "no sendable contacts, list audience",
+        _no_sendable_contacts_in_list,
+        "This list has no contacts who can be emailed.",
+        "no contacts who can be emailed",
     ),
     Gate(
         "unsubscribe links unconfigured",
