@@ -179,6 +179,10 @@ async def create_organization(
             "currency": org.currency,
             "country": org.country,
             "status": org.status,
+            # Added for console's identity fold (`app/domain.py::apply_org_identity`) so a
+            # customer created after console's own backfill still gets a real `created_at`
+            # instead of depending on a one-off script ever reaching it.
+            "created_at": org.created_at.isoformat(),
         },
     )
     return org
@@ -220,13 +224,14 @@ async def update_organization(
         payload={
             "organization_id": str(org.id),
             "changed": sorted(changes),
-            # `name` travels by value, not just by name-in-`changed`: console's directory fold
-            # (`services.fold_org_event` there) has no other route back to this row — it is a
-            # projection, not a cross-schema reader (ADR-0000 §10) — so the one identity field a
-            # patch can actually change has to ride on the event itself. `slug` never appears
-            # here because `OrganizationPatch` carries no slug field at all: it is fixed at
-            # `create_organization` and immutable thereafter.
+            # `name`/`country` travel by value, not just by name-in-`changed`: console's
+            # directory fold (`services.fold_org_event` there) has no other route back to this
+            # row — it is a projection, not a cross-schema reader (ADR-0000 §10) — so the
+            # identity fields a patch can actually change have to ride on the event itself.
+            # `slug` never appears here because `OrganizationPatch` carries no slug field at
+            # all: it is fixed at `create_organization` and immutable thereafter.
             "name": org.name if "name" in changes else None,
+            "country": org.country if "country" in changes else None,
         },
         actor=_actor(ctx),
     )

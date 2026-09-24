@@ -268,6 +268,78 @@ class TestOverrideDelegation:
         assert captured.calls == [], "an invalid override must not reach the owning service"
 
 
+# --------------------------------------------------------------------- organizations list
+
+
+class TestListOrganizations:
+    """`OrgStateOut`'s list fields (ui/backend-data-2): `lifecycle`, `country`, `created_at` —
+    the accounts list's Status/Region/Created filters."""
+
+    async def test_lists_lifecycle_country_and_created_at(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+        org_b: uuid.UUID,
+    ) -> None:
+        from datetime import UTC, datetime
+
+        from app.models import OrgCommercialState
+
+        async with admin_session.begin():
+            admin_session.add_all(
+                [
+                    OrgCommercialState(
+                        organization_id=org_id,
+                        mrr_minor=10000,
+                        currency="INR",
+                        country="IN",
+                        org_created_at=datetime(2025, 6, 1, tzinfo=UTC),
+                        subscription_states={"hrms": {"state": "active"}},
+                    ),
+                    OrgCommercialState(
+                        organization_id=org_b,
+                        mrr_minor=0,
+                        currency="INR",
+                        locked=True,
+                        subscription_states={"hrms": {"state": "active"}},
+                    ),
+                ]
+            )
+
+        with as_principal(operator_principal(staff=True)):
+            response = await client.get("/api/v1/admin/organizations")
+        assert response.status_code == 200, response.text
+        rows = {row["organization_id"]: row for row in response.json()["organizations"]}
+
+        active_row = rows[str(org_id)]
+        assert active_row["lifecycle"] == "active"
+        assert active_row["country"] == "IN"
+        created_at = datetime.fromisoformat(active_row["created_at"].replace("Z", "+00:00"))
+        assert created_at == datetime(2025, 6, 1, tzinfo=UTC)
+
+        suspended_row = rows[str(org_b)]
+        assert suspended_row["lifecycle"] == "suspended"
+        assert suspended_row["country"] is None
+        assert suspended_row["created_at"] is None
+
+    async def test_an_org_the_fold_has_never_touched_has_no_lifecycle_bucket(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        from app.models import OrgCommercialState
+
+        async with admin_session.begin():
+            admin_session.add(OrgCommercialState(organization_id=org_id, mrr_minor=0))
+
+        with as_principal(operator_principal(staff=True)):
+            response = await client.get("/api/v1/admin/organizations")
+        assert response.status_code == 200, response.text
+        row = next(
+            r for r in response.json()["organizations"] if r["organization_id"] == str(org_id)
+        )
+        assert row["lifecycle"] == "none"
+
+
 # --------------------------------------------------------------------- org detail composite
 
 

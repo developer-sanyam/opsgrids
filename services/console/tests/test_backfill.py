@@ -47,6 +47,8 @@ def _org_row(
     *,
     name: str = "Northwind Metals",
     slug: str = "northwind-metals",
+    country: str | None = "IN",
+    created_at: datetime | None = None,
     updated_at: datetime | None = None,
 ) -> dict[str, Any]:
     return {
@@ -54,6 +56,8 @@ def _org_row(
         "name": name,
         "slug": slug,
         "status": "active",
+        "country": country,
+        "created_at": (created_at or datetime(2025, 1, 1, tzinfo=UTC)).isoformat(),
         "updated_at": (updated_at or datetime.now(UTC)).isoformat(),
     }
 
@@ -149,6 +153,26 @@ class TestBackfillCreatesProjections:
         assert states[0].slug == "northwind-metals"
         assert states[0].subscription_states["hrms"]["state"] == "active"
         assert states[0].mrr_minor == 50000
+        assert states[0].country == "IN"
+        assert states[0].org_created_at == datetime(2025, 1, 1, tzinfo=UTC)
+
+    async def test_a_second_run_is_a_no_op_for_country_and_created_at_too(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        engine_ready: None,
+        directory_session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        org_row = _org_row(org_id)
+        first = await _run(monkeypatch, orgs=[org_row], subs_by_org={})
+        assert first.created == 1
+
+        second = await _run(monkeypatch, orgs=[org_row], subs_by_org={})
+        assert second.unchanged == 1, "an identical re-run must not report an update"
+
+        states = await selectors.all_org_states(directory_session)
+        assert states[0].country == "IN"
+        assert states[0].org_created_at == datetime(2025, 1, 1, tzinfo=UTC)
 
     async def test_an_organization_with_no_subscriptions_still_gets_its_identity(
         self,

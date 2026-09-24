@@ -176,32 +176,41 @@ async def fold_subscription_event(
 
 
 async def fold_org_event(session: AsyncSession, envelope: dict[str, Any]) -> None:
-    """Fold `core.org.{created,updated}` into the org snapshot's `name`/`slug`.
+    """Fold `core.org.{created,updated}` into the org snapshot's `name`/`slug`/`country`/
+    `org_created_at`.
 
     Payload (documented, from account-service; not imported — see `domain.ORG_EVENTS`):
-    `core.org.created` carries `organization_id`, `slug`, `name`; `core.org.updated` carries
-    `organization_id`, `changed`, and `name` when `"name" in changed` (`null` otherwise — `slug`
-    is immutable once set, so it never appears on an update). Ordering follows
-    `domain.apply_org_identity`: the event's own `occurred_at` must advance the projection's
-    stored `identity_synced_at`, so a redelivered create arriving after a later rename cannot
-    resurrect the old name.
+    `core.org.created` carries `organization_id`, `slug`, `name`, `country`, `created_at`;
+    `core.org.updated` carries `organization_id`, `changed`, and `name`/`country` when each is
+    `"in changed"` (`null` otherwise — `slug` and `created_at` are immutable once set, so neither
+    ever appears on an update). Ordering follows `domain.apply_org_identity`: the event's own
+    `occurred_at` must advance the projection's stored `identity_synced_at`, so a redelivered
+    create arriving after a later rename cannot resurrect the old name.
     """
     payload = envelope["payload"]
     organization_id = uuid.UUID(str(payload["organization_id"]))
     state_row = await _get_or_create_state(session, organization_id)
-    applied, name, slug = domain.apply_org_identity(
+    applied, name, slug, country, org_created_at = domain.apply_org_identity(
         current_name=state_row.name,
         current_slug=state_row.slug,
+        current_country=state_row.country,
+        current_created_at=(
+            state_row.org_created_at.isoformat() if state_row.org_created_at else None
+        ),
         current_synced_at=(
             state_row.identity_synced_at.isoformat() if state_row.identity_synced_at else None
         ),
         name=payload.get("name"),
         slug=payload.get("slug"),
+        country=payload.get("country"),
+        created_at=payload.get("created_at"),
         occurred_at=envelope.get("occurred_at"),
     )
     if applied:
         state_row.name = name
         state_row.slug = slug
+        state_row.country = country
+        state_row.org_created_at = _parse_dt(org_created_at)
         state_row.identity_synced_at = _occurred_at(envelope)
 
 
@@ -303,29 +312,41 @@ async def backfill_org_identity(
     name: str,
     slug: str,
     source_updated_at: datetime,
+    country: str | None = None,
+    org_created_at: datetime | None = None,
 ) -> bool:
     """The backfill's identity fold — `app/backfill.py`'s discovery-time counterpart to
     `fold_org_event`'s live-event one, sharing the same ordering guard
     (`domain.apply_org_identity`) so a real `core.org.updated` that lands after this snapshot was
     taken always wins, and re-running this against an unchanged organization is a no-op: the
     second run's `source_updated_at` is the same instant already stored in
-    `identity_synced_at`, which the guard reads as not advancing. Returns whether anything
-    changed, for the backfill's summary.
+    `identity_synced_at`, which the guard reads as not advancing. `country` and `org_created_at`
+    are optional so this stays callable exactly as before for a caller that only has name/slug —
+    account's own directory row always has both, but nothing here requires it. Returns whether
+    anything changed, for the backfill's summary.
     """
     state_row = await _get_or_create_state(session, organization_id)
-    applied, new_name, new_slug = domain.apply_org_identity(
+    applied, new_name, new_slug, new_country, new_created_at = domain.apply_org_identity(
         current_name=state_row.name,
         current_slug=state_row.slug,
+        current_country=state_row.country,
+        current_created_at=(
+            state_row.org_created_at.isoformat() if state_row.org_created_at else None
+        ),
         current_synced_at=(
             state_row.identity_synced_at.isoformat() if state_row.identity_synced_at else None
         ),
         name=name,
         slug=slug,
+        country=country,
+        created_at=org_created_at.isoformat() if org_created_at else None,
         occurred_at=source_updated_at.isoformat(),
     )
     if applied:
         state_row.name = new_name
         state_row.slug = new_slug
+        state_row.country = new_country
+        state_row.org_created_at = _parse_dt(new_created_at)
         state_row.identity_synced_at = source_updated_at
     return applied
 

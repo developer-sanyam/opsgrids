@@ -23,6 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AuditLog, OrgCommercialState, RevenueEvent, UsageSummary
+from app.schemas import OrgStateOut
 
 TRIAL_STARTED = "commerce.subscription.trial_started"
 ACTIVATED = "commerce.subscription.activated"
@@ -65,7 +66,7 @@ async def get_org_state(session: AsyncSession, organization_id: Any) -> OrgComme
 LIFECYCLE_BUCKETS = ("suspended", "active", "trial", "churned", "none")
 
 
-def _lifecycle_of(state: OrgCommercialState) -> str:
+def lifecycle_of(state: OrgCommercialState) -> str:
     if state.locked:
         return "suspended"
     statuses = {entry.get("state") for entry in state.subscription_states.values()}
@@ -82,8 +83,33 @@ async def lifecycle_counts(session: AsyncSession) -> dict[str, int]:
     """Organization counts by lifecycle bucket, for the platform metrics overview."""
     counts = dict.fromkeys(LIFECYCLE_BUCKETS, 0)
     for state in await all_org_states(session):
-        counts[_lifecycle_of(state)] += 1
+        counts[lifecycle_of(state)] += 1
     return counts
+
+
+def to_org_state_out(state: OrgCommercialState) -> OrgStateOut:
+    """Shape one commercial snapshot the way the operator list and detail composite render it —
+    `lifecycle` computed server-side (the same bucket `lifecycle_counts` uses, so the client never
+    reimplements the rule), plus the mirrored identity fields. Not a plain
+    `OrgStateOut.model_validate(state)`: the model's own `org_created_at` column is named to
+    avoid colliding with `TenantBase`'s bookkeeping `created_at`, so it is remapped explicitly
+    here rather than by an attribute-name coincidence.
+    """
+    return OrgStateOut(
+        organization_id=state.organization_id,
+        name=state.name,
+        slug=state.slug,
+        country=state.country,
+        lifecycle=lifecycle_of(state),
+        created_at=state.org_created_at,
+        mrr_minor=state.mrr_minor,
+        currency=state.currency,
+        active_products=state.active_products,
+        subscription_states=state.subscription_states,
+        trial_ends_at=state.trial_ends_at,
+        locked=state.locked,
+        updated_at=state.updated_at,
+    )
 
 
 async def all_usage(session: AsyncSession) -> Sequence[UsageSummary]:

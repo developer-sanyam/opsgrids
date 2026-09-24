@@ -122,6 +122,11 @@ class OrganizationSummaryOut(BaseModel):
     stay current (`id`, `slug`, `name`), plus `updated_at` so the caller can stamp its own fold
     with this row's own freshness rather than "now" — the same ordering guard a live
     `core.org.updated` event gets, applied to a snapshot instead of a transition.
+
+    `created_at` and `country` were added for console's Status/Region/Created list filters
+    (`services/console/app/backfill.py`) — both are immutable-enough (country rarely changes,
+    created_at never does) that the backfill folds them once and a live `core.org.*` event
+    keeps them current thereafter.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -130,6 +135,8 @@ class OrganizationSummaryOut(BaseModel):
     slug: str
     name: str
     status: str
+    country: str | None
+    created_at: datetime
     updated_at: datetime
 
 

@@ -142,7 +142,7 @@ class TestOrgIdentity:
     thinner signal of a `core.org.*` event or a backfill snapshot."""
 
     def test_the_first_sighting_always_applies(self) -> None:
-        applied, name, slug = apply_org_identity(
+        applied, name, slug, _country, _created_at = apply_org_identity(
             current_name=None,
             current_slug=None,
             current_synced_at=None,
@@ -154,7 +154,7 @@ class TestOrgIdentity:
         assert (name, slug) == ("Northwind Metals", "northwind-metals")
 
     def test_a_later_rename_overwrites_the_name(self) -> None:
-        applied, name, slug = apply_org_identity(
+        applied, name, slug, _country, _created_at = apply_org_identity(
             current_name="Old Name",
             current_slug="old-slug",
             current_synced_at=_at(0),
@@ -169,7 +169,7 @@ class TestOrgIdentity:
     def test_a_stale_source_is_dropped_untouched(self) -> None:
         """An event replayed after a later rename, or a backfill run against data already
         superseded by a real event, must not resurrect the old name."""
-        applied, name, slug = apply_org_identity(
+        applied, name, slug, _country, _created_at = apply_org_identity(
             current_name="New Name",
             current_slug="new-slug",
             current_synced_at=_at(10),
@@ -183,7 +183,7 @@ class TestOrgIdentity:
     def test_a_tie_does_not_reapply(self) -> None:
         """Re-running the backfill against unchanged source data — the same `updated_at` it wrote
         last time — must be a no-op, not a redundant write."""
-        applied, _name, _slug = apply_org_identity(
+        applied, _name, _slug, _country, _created_at = apply_org_identity(
             current_name="Northwind Metals",
             current_slug="northwind-metals",
             current_synced_at=_at(10),
@@ -196,7 +196,7 @@ class TestOrgIdentity:
     def test_an_update_with_no_name_leaves_the_stored_name_alone(self) -> None:
         """`core.org.updated`'s payload carries `name: null` when `name` was not in `changed` —
         this must not blank a name that was never touched."""
-        applied, name, slug = apply_org_identity(
+        applied, name, slug, _country, _created_at = apply_org_identity(
             current_name="Northwind Metals",
             current_slug="northwind-metals",
             current_synced_at=_at(0),
@@ -206,3 +206,37 @@ class TestOrgIdentity:
         )
         assert applied is True
         assert (name, slug) == ("Northwind Metals", "northwind-metals")
+
+    def test_country_and_created_at_fold_the_same_way_as_name(self) -> None:
+        applied, _name, _slug, country, created_at = apply_org_identity(
+            current_name="Northwind Metals",
+            current_slug="northwind-metals",
+            current_country=None,
+            current_created_at=None,
+            current_synced_at=None,
+            name="Northwind Metals",
+            slug="northwind-metals",
+            country="IN",
+            created_at=_at(-100),
+            occurred_at=_at(0),
+        )
+        assert applied is True
+        assert country == "IN"
+        assert created_at == _at(-100)
+
+    def test_an_update_with_no_country_leaves_the_stored_country_alone(self) -> None:
+        applied, _name, _slug, country, created_at = apply_org_identity(
+            current_name="Northwind Metals",
+            current_slug="northwind-metals",
+            current_country="IN",
+            current_created_at=_at(-100),
+            current_synced_at=_at(0),
+            name=None,
+            slug=None,
+            country=None,
+            created_at=None,
+            occurred_at=_at(10),
+        )
+        assert applied is True
+        assert country == "IN"
+        assert created_at == _at(-100)

@@ -340,6 +340,29 @@
             "title": "Active Products",
             "type": "array"
           },
+          "country": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
           "currency": {
             "anyOf": [
               {
@@ -350,6 +373,17 @@
               }
             ],
             "title": "Currency"
+          },
+          "lifecycle": {
+            "enum": [
+              "suspended",
+              "active",
+              "trial",
+              "churned",
+              "none"
+            ],
+            "title": "Lifecycle",
+            "type": "string"
           },
           "locked": {
             "title": "Locked",
@@ -411,6 +445,7 @@
         },
         "required": [
           "organization_id",
+          "lifecycle",
           "mrr_minor",
           "currency",
           "active_products",

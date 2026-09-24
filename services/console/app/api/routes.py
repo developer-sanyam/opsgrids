@@ -47,7 +47,6 @@ from app.schemas import (
     OrganizationPricingOut,
     OrganizationsOut,
     OrgDetailOut,
-    OrgStateOut,
     OverrideIn,
     OverrideOut,
     ServiceInfo,
@@ -115,7 +114,7 @@ async def list_organizations(
     states = await selectors.all_org_states(session)
     metrics = await selectors.platform_metrics(session)
     return OrganizationsOut(
-        organizations=[OrgStateOut.model_validate(s) for s in states],
+        organizations=[selectors.to_org_state_out(s) for s in states],
         metrics=MetricsOut(**metrics),
     )
 
@@ -170,7 +169,7 @@ async def get_organization_detail(
         status=str(directory.get("status", "unknown")),
         country=directory.get("country"),
         created_at=directory["created_at"],
-        commercial=OrgStateOut.model_validate(commercial) if commercial is not None else None,
+        commercial=selectors.to_org_state_out(commercial) if commercial is not None else None,
     )
 
 

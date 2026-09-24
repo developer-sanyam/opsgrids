@@ -173,27 +173,38 @@ def apply_org_identity(
     name: str | None,
     slug: str | None,
     occurred_at: str | None,
-) -> tuple[bool, str | None, str | None]:
+    current_country: str | None = None,
+    current_created_at: str | None = None,
+    country: str | None = None,
+    created_at: str | None = None,
+) -> tuple[bool, str | None, str | None, str | None, str | None]:
     """Fold one org-identity source (a `core.org.*` event, or a backfill snapshot stamped with
-    account's own `updated_at`) into the projection's `name`/`slug`.
+    account's own `updated_at`) into the projection's `name`/`slug`/`country`/`created_at`.
 
     Same ordering guard as `apply_subscription_transition`, over the same kind of thin,
     unordered-delivery-prone signal: a source whose `occurred_at` does not advance
     `current_synced_at` is dropped, so a `core.org.created` redelivered after a later rename (or
     a backfill run after a real rename event has already landed) cannot resurrect the old name.
-    `name`/`slug` of `None` (an update that did not touch this field, or a backfill row that
-    genuinely lacks one) leaves the corresponding current value alone rather than blanking it —
-    a PATCH cannot null a field account-service's own way, and neither can this.
+    Any of `name`/`slug`/`country`/`created_at` being `None` (an update that did not touch that
+    field, or a backfill row that genuinely lacks one) leaves the corresponding current value
+    alone rather than blanking it — a PATCH cannot null a field account-service's own way, and
+    neither can this. `created_at` is set once and, being a creation timestamp, never arrives a
+    second time with a different value in practice — it rides the same guard as the others only
+    so a stale replay can never touch anything, including a field it does carry.
 
-    Returns ``(applied, name, slug)`` — the fields to write, or the existing ones unchanged when
-    not applied.
+    Returns ``(applied, name, slug, country, created_at)`` — the fields to write, or the
+    existing ones unchanged when not applied. `created_at` travels as the ISO string the caller
+    gave it; parsing into a `datetime` for the column is the caller's job (`services.py`), same
+    as every other timestamp this module treats as an opaque ordering key.
     """
     if _is_stale({"occurred_at": current_synced_at}, occurred_at):
-        return False, current_name, current_slug
+        return False, current_name, current_slug, current_country, current_created_at
     return (
         True,
         name if name is not None else current_name,
         slug if slug is not None else current_slug,
+        country if country is not None else current_country,
+        created_at if created_at is not None else current_created_at,
     )
 
 

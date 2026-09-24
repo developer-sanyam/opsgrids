@@ -104,7 +104,21 @@ class OrgCommercialState(Base, TenantBase):
     #: `identity_synced_at` backs.
     name: Mapped[str | None] = mapped_column(String(200))
     slug: Mapped[str | None] = mapped_column(String(60))
-    #: The source row's own freshness for the two fields above — account's `Organization.updated_at`
+    #: Also mirrored from account, alongside `name`/`slug` — the Region filter and column on the
+    #: operator accounts list. `country` is a two-letter code, account's own `Organization.country`
+    #: shape; nullable for the same reason `name`/`slug` are: an organization neither the backfill
+    #: nor a live event has reached yet, or one that never set a country at all.
+    country: Mapped[str | None] = mapped_column(String(2))
+    #: The organization's creation time, mirrored once from account's `Organization.created_at`
+    #: (`core.org.created`, or the backfill's own discovery read) — never updated again, since
+    #: nothing about when an organization was created ever changes. Named `org_created_at`, not
+    #: `created_at`, because `TenantBase`'s own `created_at` already names this row's own
+    #: creation (when the projection first saw this organization at all) — a different moment
+    #: entirely for any organization the backfill reaches long after it signed up. Powers the
+    #: accounts list's Created column and filter. Nullable until the identity fold or the
+    #: backfill reaches this row, same as every other mirrored field here.
+    org_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The source row's own freshness for the fields above — account's `Organization.updated_at`
     #: for a backfill snapshot, or the folded event's own `occurred_at` for a live one. Distinct
     #: from `updated_at` below (this table's own write time, bumped on *any* column change,
     #: commercial or identity): comparing against `updated_at` would make a subscription

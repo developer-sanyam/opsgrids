@@ -33,6 +33,18 @@ class OrgStateOut(BaseModel):
     #: cross-tenant call per row.
     name: str | None = None
     slug: str | None = None
+    #: Same mirror, same nullability — the accounts list's Region filter and column.
+    country: str | None = None
+    #: The organization's creation time (account's `Organization.created_at`), mirrored the same
+    #: way — the accounts list's Created filter and column. Distinct from `updated_at` below,
+    #: which is this projection row's own last-write time.
+    created_at: datetime | None = None
+    #: The same bucket `GET /admin/metrics/overview`'s `organizations_by_lifecycle` counts,
+    #: computed server-side (`selectors.lifecycle_of`) so the accounts list's Status filter and
+    #: pill never reimplement the rule client-side: `suspended` (any subscription locked) beats
+    #: `active` (any subscription active) beats `trial` beats `churned` (history but nothing
+    #: live) beats `none` (the fold has never touched this organization).
+    lifecycle: Literal["suspended", "active", "trial", "churned", "none"]
     mrr_minor: int
     currency: str | None
     active_products: list[str]
