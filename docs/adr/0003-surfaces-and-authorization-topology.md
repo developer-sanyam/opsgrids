@@ -264,3 +264,66 @@ Organization identity reads admit all three roles, because an operator support t
 starts with "what does this account look like" before anyone knows whether it is a billing or a
 catalog question; financial reads (metrics, subscriptions, usage, the credit ledger) and the
 audit trail do not, per the table above.
+
+---
+
+## Addendum 2026-09-24 — the mobile audience (R31): what §6 fixes, and what it leaves open
+
+R31 asked for "the mobile token audience". This records why it has not been built: §6 fixes the
+*shape* and none of the choices an implementation has to make, and each of those choices is a
+security property, not a detail. Nothing was implemented under R31; the list below is the
+decision that has to be taken first. Until a customer asks for a native app (ADR-0013 §7 b), the
+responsive web apps are the mobile experience and none of this is on a critical path.
+
+**What the text fixes** (§6, its Consequences bullet, ADR-0000 §3). Mobile is an audience named in
+`aud`; it reaches the same `app-gateway` routes with the same `opsgrids-client` shapes; scope
+resolution, RLS and the 402 gate are unchanged; auth-service mints it, app-gateway accepts it, and
+"it costs a `GatewayPolicy` and an audience, not a service".
+
+**What the code does today**, so the open points below are stated against fact:
+
+- Every tenant access token carries `aud = "app"`. auth-service's minting functions take
+  `audience: str = "app"` and no route passes anything else, so **a client has no way to ask for a
+  different audience**. Operator tokens carry `"operator"` (`OPERATOR_AUDIENCE`), minted only by
+  `operator_login`.
+- `GatewayPolicy.audience` is **one string**, and the gateway verifies with
+  `decode_token(..., audience=policy.audience)`. `app-gateway` is `"app"`, `admin-gateway` is
+  `"operator"`; a token for one is rejected at signature verification on the other, which is the
+  whole of §2's audience boundary.
+- The gateway forwards `X-Audience: <policy.audience>`; the only place a service reads it is
+  `require_operator`, which compares against `"operator"`.
+- The refresh token exists only as an httpOnly, path-scoped cookie; `/auth/refresh` reads
+  `request.cookies` and nothing else.
+
+**Undecided — each needs an owner decision before it is built:**
+
+1. **What "the mobile audience" is called, and how many there are.** §6 says one, "the mobile
+   audience"; ADR-0000 §3 says a token "names one *product* in `aud`" while `"app"` today names a
+   *surface*, not a product. Is it one `mobile` for every native app, one per platform, or one per
+   product app (ADR-0001's one-app-per-product shape would suggest the last)?
+2. **How a client obtains it, and what authorizes it to.** There is no sign-in field or endpoint
+   that selects an audience. Adding one lets a client *choose* its own audience, so what may it
+   claim, and why is a native client entitled to `mobile` rather than a web page asking for it to
+   shed a web-only protection? Nothing authenticates a native app itself.
+3. **One gateway accepting two audiences, or a second policy.** "The same `app-gateway` routes"
+   reads as the first: `GatewayPolicy.audience` becomes a set, the "a token minted for the other
+   surface is not accepted here" invariant becomes set membership, and `X-Audience` must say which
+   one matched. "It costs a `GatewayPolicy`" reads as the second: another gateway process over the
+   same route table with `audience="mobile"`, which adds a container to a box that has no memory
+   headroom for one (ADR-0013 memory-budget addendum), a Caddy route and a preflight check. These
+   are different designs with different blast radii; the ADR does not choose.
+4. **Refresh transport and lifetime.** A native client does not want an httpOnly cookie
+   scoped to `.opsgrids.com`. A body-carried refresh token is a different threat model (storage
+   on the device, no cookie flags) needing its own lifetime, rotation and reuse-detection rules,
+   and possibly device binding. None of that is specified.
+5. **MFA and session semantics.** Whether `amr`/step-up requirements differ on mobile, and
+   whether a mobile session (`sid`) is separately listable and revocable from the console.
+6. **Whether any route should refuse it.** Nothing but the operator check reads `aud`
+   downstream today; whether `mobile` is treated as `app` everywhere or some destructive
+   organisation-admin routes are web-only is unstated.
+
+Once 1–4 are decided the implementation is small and mechanical: wire `audience` through the
+sign-in and refresh schemas in auth, teach the gateway policy the accepted audience(s), and add
+the negative test that a `mobile` token is refused on `admin-gateway` and an `operator` token on
+the mobile path. It should not start before then; a guessed audience string is a token shape in
+circulation, and changing one later is a forced re-login (ADR-0000 §3, "Why now").
