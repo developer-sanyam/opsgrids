@@ -247,8 +247,14 @@ Razorpay has no idempotency key on a payment create (ADR-0004 §6 and its addend
   payment in another amount or currency than the charge and a charge that is not the
   organization's: reconciliation runs in a SAVEPOINT, raises a typed verdict for each, and the row
   is recorded once more stating why. Every by-id charge query filters on the organization, not on
-  RLS alone. Only a bad signature, an unidentifiable body and a transient database failure (503)
-  are non-2xx.
+  RLS alone. Every capture also checks whether another charge of the same invoice is captured too
+  (`_detect_double_collection`, `ix_charges_org_invoice`) — a dunning retry and the same charge's
+  own late capture can both settle one invoice, in either order — and logs and audits
+  `payment.invoice.collected_twice` with no automatic refund; `charge_on_dunning_retry` also checks
+  *before* staging, so a settled invoice is not debited a second time at all. Non-2xx is exactly: a
+  bad signature or an unidentifiable body (**400**), a transient database failure (**503**), an
+  unrelated `IntegrityError` (the platform's **409**), and a defect (**500**) — nothing else, and
+  nothing here ever turns a defect into a permanent condition recorded as `ignored`.
 * **The lease outlives the call.** `charge_reclaim_after_seconds >= 2 × provider_call_timeout_seconds
   + 60` is validated at start-up (finance: `2 × portal_call_timeout_seconds + 60 ≤
   FILING_RECLAIM_AFTER`), and an adapter's per-request connect/read timeouts over `ensure_order`

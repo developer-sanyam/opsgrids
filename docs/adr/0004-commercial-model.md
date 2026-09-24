@@ -576,7 +576,14 @@ under **fresh** delivery ids. That is state-safe — a redelivery of an outcome 
 is a no-op on the charge, emits nothing, and a conflicting body is a conflict again — but each replay
 adds an inbox row and, for a conflict, an audit row and an error line. It needs the raw signed bytes
 (Razorpay's signature carries no timestamp, so there is nothing to expire), and the cost is noise,
-not money. Bounding it would take a per-body uniqueness the design deliberately does not have.
+not money. Bounding it would take a per-body uniqueness the design deliberately does not have. The
+same is true, and accepted for the same reason, of a genuine redelivery an operator cannot tell from
+a replay by watching the logs alone: `payment.webhook.event_id_reused` fires once per delivery that
+re-keys, and `payment.webhook.late_authorization` fires once per distinct delivery id of an
+`authorized` on a failed charge — a body resent enough times pages an operator that many times.
+Deduplicating the *alert* (rather than the event, which is already handled correctly) would need
+its own rate-limited channel; nothing here builds one, and the noise is a paging-policy question,
+not a payment-correctness one.
 
 The database now says the same thing: `provider_events` has
 `CHECK (length(provider_event_id) > 0)`, created **`NOT VALID`** — enforced on every new row,
@@ -661,6 +668,63 @@ same payment id reported failed and then captured is trusted on Razorpay's word 
 different* payment on the same Order that succeeds (a customer retrying at checkout) is **not**
 recognised automatically and surfaces as a `provider_id_conflict` for an operator, because a charge
 holds one payment id and recording several is a decision this addendum does not take.
+
+> **OWNER DECISION (2026-09-24, PAY-A round 2).**
+> 1. **`failed -> captured` for the same payment is applied automatically.** The exemption above
+>    ships as described; it is not held back for a manual review step.
+> 2. **An invoice collected twice is alerted, never auto-corrected.** `payment.invoice.collected_twice`
+>    (below) is the whole answer at the code level: it is logged and audited, and an operator
+>    refunds the extra charge by hand, against the evidence the alert and the audit row leave. No
+>    code here issues a refund on its own.
+
+### An invoice collected twice: alerted, never auto-corrected
+
+Applying the exemption automatically opens a second way for one invoice to be collected twice, on
+top of the one dunning already guarded against (a retry reusing the failed charge's key would
+deduplicate into it and debit nobody, ADR-0004 §6). Now that a *stale* failed charge can come back
+to life on its own, two real charges can both capture the same invoice, in either order:
+
+* **The late capture lands after a retry already captured.** Charge X (provider-reported) fails;
+  dunning raises a fresh charge Y for the same invoice under its own key; Y captures normally. X's
+  late same-payment capture then applies exactly as designed — nothing about it is individually
+  wrong — and the invoice is now collected twice, with only X's own
+  `payment.charge.captured_after_provider_failure` line to notice from, which says nothing about Y.
+* **The retry is staged after the late capture already settled the invoice.** X's late capture
+  lands first; a dunning retry for Y, already scheduled before that happened, still arrives and
+  stages and debits Y — an ordinary-looking capture, no alert at all.
+
+Both are closed. **Detection**, in `services._detect_double_collection`, runs on *every* transition
+to `captured` — the ordinary path and both `_capture_after_failure` variants — and queries every
+other charge of the same `(organization_id, invoice_id)` already `captured`
+(`selectors.captured_charges_for_invoice`, `ix_charges_org_invoice`). Finding one logs
+`payment.invoice.collected_twice` at error and writes an audit row of the same action (entity
+`invoice`, `after` carrying `invoice_id`, `other_captured_charge_ids`, `amount_minor`, `currency`) —
+whichever order the two captures arrived in, and however many charges collected the invoice.
+**Nothing is refunded automatically**: the code's job stops at making the double collection visible
+and evidenced: a refund moves money back out, on a schedule and to a party the platform does not
+decide unilaterally, and mistargeting it (refunding the wrong one of two charges, or a customer who
+disputes the second debit before an operator gets to it) is worse than a bounded delay.
+
+**Prevention** closes the second ordering where prevention is still possible: `consumers.
+charge_on_dunning_retry` checks `captured_charges_for_invoice` for the retry's invoice **before**
+`stage_charge`, and if the invoice is already captured, logs `dunning.retry.invoice_already_paid`
+and marks the event processed without staging or debiting anything. This is the one charge-creating
+path that needed it: `charge_on_invoice_finalized` and the internal charge route both derive their
+idempotency key from the invoice itself, so a redelivery or a second request for an already-charged
+invoice returns the existing (already captured) charge and calls the provider again for it —
+`stage_charge`'s own `ON CONFLICT DO NOTHING` refuses the second row before any guard would need to.
+Only the dunning ladder mints a **fresh** key per attempt (by design — the same key would swallow
+the retry into the charge that already failed), which is exactly what removes that protection and
+is why this is the one path that needed an explicit check.
+
+**Rejected.** An automatic refund of the second charge — the platform cannot tell which of two
+captured charges for one invoice is "the extra one" without knowing which the customer expects to
+keep, and a wrong automatic refund is itself a support incident. Preventing the double collection at
+the reconciliation layer (refusing X's late capture once Y is known captured) — that would be
+turning genuine, verified money received back into an unresolved state, which is a worse outcome
+than a flagged double collection an operator clears. A single "invoice already settled" table
+checked by every path — the existing `(organization_id, invoice_id)` index already answers the
+question; a second source of the same fact is a second thing to keep in sync.
 
 A webhook that names **no usable organization** — a payment made on the same Razorpay account
 outside this platform, or a `notes.organization_id` that is not an id — has no tenant to record

@@ -67,8 +67,12 @@ ids, state driven by injected webhook fixtures). A test asserts no keys or netwo
   or currency, a payment id other than the charge's) is recorded, audited `payment.webhook.ignored`
   and answered **200** — a retry could not change it. `failed → captured` is legal for a failure the
   platform decided and for the **same payment** the provider had failed (a bank's late
-  authorisation; ADR-0004, owner to confirm). Only a bad signature or an unidentifiable body (400)
-  and a transient database failure (503) are non-2xx.
+  authorisation; ADR-0004, owner decision). Every capture also checks whether the same invoice is
+  *already* collected by another charge — a dunning retry and the original charge's own late
+  capture can both land — and if so logs `payment.invoice.collected_twice` and audits it; nothing
+  is refunded automatically, an operator handles it by hand. Non-2xx is exactly: a bad signature or
+  an unidentifiable body (**400**), a transient database failure (**503**), an unrelated
+  `IntegrityError` (the platform's **409**), and a defect (**500**).
 - `POST /internal/v1/charges` — service-to-service, guarded by a short-lived service token. Not in
   the public OpenAPI document.
 - `GET /internal/v1/organizations/{org}/mandates:usable?currency=&amount_minor=` — could this
