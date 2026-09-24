@@ -70,6 +70,7 @@ TENANT_TABLES = (
     "messages",
     "rules",
     "templates",
+    "provider_templates",
     "preferences",
     "audit_logs",
     "outbox",

@@ -231,6 +231,7 @@ async def upsert_provider_template(
         raise ValidationProblem(str(exc)) from exc
 
     row = await selectors.get_provider_template(session, ctx.organization_id, code, channel)
+    is_update = row is not None
     if row is None:
         row = ProviderTemplate(
             organization_id=ctx.organization_id,
@@ -250,6 +251,16 @@ async def upsert_provider_template(
     row.variables = variables
     row.preview_text = preview_text
     await session.flush()
+    if is_update:
+        # The `INSERT` path gets `updated_at` back for free — SQLAlchemy 2.0's
+        # `eager_defaults="auto"` appends a server-side default to the statement's own
+        # `RETURNING` clause. An `UPDATE`'s `onupdate=func.now()` is not fetched the same way,
+        # so the flush leaves the attribute expired; the caller's own assembler reads it right
+        # back (`_provider_template_out`), and an expired attribute read outside an `await` is
+        # `MissingGreenlet` on an async session, not a stale value. Refresh the whole row rather
+        # than only `updated_at`, the same call employee-service's own update path makes and for
+        # the same reason: a flush can expire more than the one column being watched here today.
+        await session.refresh(row)
 
     record_audit(
         session,

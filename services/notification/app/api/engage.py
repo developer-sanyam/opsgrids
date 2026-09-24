@@ -37,6 +37,7 @@ from app.models import (
     EmailConnection,
     EmailDomain,
     ProviderAccount,
+    ProviderTemplate,
     Sender,
     Suppression,
 )
@@ -71,6 +72,8 @@ from app.schemas import (
     DomainPatch,
     ListMembersIn,
     ListMembersOut,
+    ProviderTemplateIn,
+    ProviderTemplateOut,
     RecipientStatus,
     SenderIn,
     SenderOut,
@@ -148,6 +151,14 @@ WhatsAppRead = Annotated[
 ]
 WhatsAppWrite = Annotated[
     ScopeContext, Depends(require("engage.setup.whatsapp.write", minimum=Scope.ORG))
+]
+#: Its own permission from the account credential above — see the catalogue note on
+#: `whatsapp.template.*` for why the two are not folded together.
+WhatsAppTemplateRead = Annotated[
+    ScopeContext, Depends(require("engage.whatsapp.template.read", minimum=Scope.ORG))
+]
+WhatsAppTemplateWrite = Annotated[
+    ScopeContext, Depends(require("engage.whatsapp.template.write", minimum=Scope.ORG))
 ]
 ContactRead = Annotated[
     ScopeContext, Depends(require("engage.audience.contact.read", minimum=Scope.ORG))
@@ -488,6 +499,91 @@ async def replace_whatsapp(
         request=request,
     )
     return _whatsapp_connection_out(row)
+
+
+# --------------------------------------------------------------------- whatsapp templates
+
+
+def _provider_template_out(row: ProviderTemplate) -> ProviderTemplateOut:
+    """Same shape as `routes._provider_template_out` — each router keeps its own assembler
+    rather than importing the other's, the pattern every `_x_out` function in this file follows.
+    Only the permission that reaches it differs; the row and the fields never do."""
+    return ProviderTemplateOut(
+        id=row.code,
+        channel=row.channel,
+        provider_name=row.provider_name,
+        provider_template_id=row.provider_template_id,
+        language=row.language,
+        category=row.category,
+        parameter_format=row.parameter_format,
+        status=row.status,
+        status_reason=row.status_reason,
+        status_checked_at=row.status_checked_at,
+        variables=list(row.variables),
+        preview_text=row.preview_text,
+        # Derived rather than stored, so it can never disagree with `status`.
+        sendable=_rules.template_is_sendable(row.status),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+@router.get(
+    "/engage/whatsapp/templates",
+    response_model=Page[ProviderTemplateOut],
+    summary="WhatsApp templates and their real approval status",
+    dependencies=[Entitled],
+)
+async def list_whatsapp_templates(
+    session: SessionDep,
+    ctx: WhatsAppTemplateRead,
+    params: PageQuery,
+    channel: Annotated[str | None, Query(description="email or whatsapp")] = None,
+) -> Page[ProviderTemplateOut]:
+    """What can be sent outside a conversation window, and what is still in review.
+
+    The same rows `notification`'s own `GET /notifications/provider-templates` reads
+    (`selectors.provider_templates_stmt`) — read here under Engage's own permission so an
+    organization that has bought Engage but not the transactional `notification` product can
+    still see the real approval status of the templates it sends through its own WhatsApp
+    account, rather than a 403 for a permission it was never sold.
+    """
+    stmt = selectors.provider_templates_stmt(ctx, channel=channel)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([_provider_template_out(r) for r in rows], total=total, params=params)
+
+
+@router.put(
+    "/engage/whatsapp/templates",
+    response_model=ProviderTemplateOut,
+    summary="Register or update a WhatsApp template",
+    dependencies=[Entitled],
+)
+async def put_whatsapp_template(
+    body: ProviderTemplateIn,
+    session: SessionDep,
+    ctx: WhatsAppTemplateWrite,
+    request: Request,
+) -> ProviderTemplateOut:
+    """Same write `notification`'s own `PUT /notifications/provider-templates` makes
+    (`services.upsert_provider_template`) — the row is the platform's, the permission is
+    Engage's own."""
+    row = await services.upsert_provider_template(
+        session,
+        ctx,
+        code=body.code,
+        channel=body.channel,
+        provider_name=body.provider_name,
+        language=body.language,
+        category=body.category,
+        parameter_format=body.parameter_format,
+        status=body.status,
+        status_reason=body.status_reason,
+        variables=[v.model_dump() for v in body.variables],
+        preview_text=body.preview_text,
+        request=request,
+    )
+    return _provider_template_out(row)
 
 
 # --------------------------------------------------------------------- setup checklist

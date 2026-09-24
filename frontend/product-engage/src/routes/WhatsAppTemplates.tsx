@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 
-import { useAsync } from "@opsgrids/client";
+import { Can, useAsync } from "@opsgrids/client";
 import { FileTextIcon, PlusIcon } from "@opsgrids/ui";
 
 import { listWhatsAppTemplates, submitWhatsAppTemplate } from "@/api/client";
@@ -34,10 +34,11 @@ import type { SelectOption } from "@/ui";
  * A template outside a customer's 24-hour service window can only be sent once Meta has actually
  * approved it, and `sendable` is the one fact this screen trusts to say whether that is true.
  *
- * **This read crosses into a second product.** See the note on `listWhatsAppTemplates`: its
- * route is gated on `notification`, not `engage`, so an organization can meet this screen's own
- * `402` — met by `NotificationNotActive` here, not the ordinary `EngageNotActive` — with Engage
- * fully active. That is named on this screen rather than hidden behind generic wording.
+ * Gated on Engage's own `engage.whatsapp.template.read`/`.write`, held by every Engage seat and
+ * `ENGAGE_ADMIN` respectively (`app/catalogue.py`) — not `notification`'s permission of the same
+ * shape, which no Engage role ever granted. Submitting a template is wrapped in `Can` on the
+ * write permission for the same reason every other Engage write control is: the button hides
+ * for a caller who cannot use it, and the service refuses the call regardless.
  */
 
 const CATEGORY_OPTIONS: SelectOption[] = [
@@ -283,9 +284,11 @@ function WhatsAppTemplates() {
         description="The status of every WhatsApp template, exactly as Meta reports it. Approval is Meta's decision — this screen only ever shows what it has actually said."
         actions={
           state.status === "success" && templates.length > 0 ? (
-            <Button onClick={() => setAdding(true)} leadingIcon={<PlusIcon className="size-4" />}>
-              Submit a template
-            </Button>
+            <Can permission="engage.whatsapp.template.write" scope="ORG">
+              <Button onClick={() => setAdding(true)} leadingIcon={<PlusIcon className="size-4" />}>
+                Submit a template
+              </Button>
+            </Can>
           ) : null
         }
       />
@@ -298,11 +301,7 @@ function WhatsAppTemplates() {
       ) : null}
 
       {state.status === "error" ? (
-        <LoadFailure
-          error={state.error}
-          title="Couldn't load your WhatsApp templates"
-          notActive="notification"
-        />
+        <LoadFailure error={state.error} title="Couldn't load your WhatsApp templates" />
       ) : null}
 
       {state.status === "success" && templates.length === 0 ? (
@@ -311,7 +310,11 @@ function WhatsAppTemplates() {
             icon={<FileTextIcon className="size-6" />}
             title="No WhatsApp templates yet"
             description="Submit a template to start Meta's review. Nothing can send outside a customer's 24-hour service window until one is approved."
-            action={<Button onClick={() => setAdding(true)}>Submit a template</Button>}
+            action={
+              <Can permission="engage.whatsapp.template.write" scope="ORG">
+                <Button onClick={() => setAdding(true)}>Submit a template</Button>
+              </Can>
+            }
           />
         </Card>
       ) : null}

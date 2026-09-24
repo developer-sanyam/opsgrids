@@ -41,5 +41,5 @@ export {
   TemplateStatusTag,
   WindowStatusTag,
 } from "./StatusTags";
-export { EngageNotActive, LoadFailure, NotificationNotActive } from "./LoadFailure";
+export { EngageNotActive, LoadFailure } from "./LoadFailure";
 export { PageHeading } from "./PageHeading";

@@ -3,11 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 
-import { ApiError } from "@opsgrids/client";
+import { ApiError, PermissionProvider } from "@opsgrids/client";
 
 import * as client from "@/api/client";
 import type { Page, ProviderTemplateOut } from "@/api/types";
 import { WhatsAppTemplatesPage } from "./WhatsAppTemplates";
+
+const READ_AND_WRITE = ["engage.whatsapp.template.read:ORG", "engage.whatsapp.template.write:ORG"];
 
 const APPROVED: ProviderTemplateOut = {
   id: "delivery_confirmed",
@@ -44,11 +46,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function renderPage() {
+function renderPage(grants = READ_AND_WRITE) {
   return render(
-    <MemoryRouter>
-      <WhatsAppTemplatesPage />
-    </MemoryRouter>,
+    <PermissionProvider grants={grants}>
+      <MemoryRouter>
+        <WhatsAppTemplatesPage />
+      </MemoryRouter>
+    </PermissionProvider>,
   );
 }
 
@@ -79,17 +83,35 @@ describe("error", () => {
   });
 });
 
-describe("402 — a different product than Engage", () => {
-  it("names the notification product, not Engage, because that is the one actually missing", async () => {
+describe("402 — Engage not active", () => {
+  it("shows the ordinary Engage not-active state, now that this read is an Engage route", async () => {
     vi.spyOn(client, "listWhatsAppTemplates").mockRejectedValue(
-      new ApiError(402, "notification is not active for this organization", null),
+      new ApiError(402, "engage is not active for this organization", null),
+    );
+    renderPage();
+    expect(await screen.findByText("Engage isn't active for this organization yet")).toBeTruthy();
+  });
+});
+
+describe("403 — missing the engage permission", () => {
+  it("shows the service's own sentence naming the engage permission, not the old notification one", async () => {
+    vi.spyOn(client, "listWhatsAppTemplates").mockRejectedValue(
+      new ApiError(403, "Missing permission: engage.whatsapp.template.read", null),
     );
     renderPage();
     expect(
-      await screen.findByText("Template approval status needs the notification product"),
+      await screen.findByText("Missing permission: engage.whatsapp.template.read"),
     ).toBeTruthy();
-    // The wrong-product copy must not appear — this 402 is not Engage's.
-    expect(screen.queryByText("Engage isn't active for this organization yet")).toBeNull();
+  });
+});
+
+describe("permission gating", () => {
+  it("hides submitting a template for a caller with only the read grant", async () => {
+    vi.spyOn(client, "listWhatsAppTemplates").mockResolvedValue(page([APPROVED]));
+    renderPage(["engage.whatsapp.template.read:ORG"]);
+
+    await screen.findByText("delivery_confirmed");
+    expect(screen.queryByRole("button", { name: /Submit a template/ })).toBeNull();
   });
 });
 

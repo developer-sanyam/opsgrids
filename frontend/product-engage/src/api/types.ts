@@ -156,12 +156,13 @@ export interface WhatsAppConnectionOut {
   status: ConnectionStatus;
 }
 
-/* ------------------------------- provider templates ------------------------------ */
+/* ------------------------------- whatsapp templates ------------------------------ */
 //
-// `services/notification`'s templates, transcribed from the `engage` section of `schemas.py` in
-// shape only — these routes are mounted at `/api/v1/notifications`, gated on the `notification`
-// product rather than `engage` (`services/app-gateway/routes.json`). See `client.ts` for what
-// that means for this screen.
+// `services/notification`'s `ProviderTemplate`, transcribed from `schemas.py` in shape only.
+// Read and written through Engage's own routes — `/api/v1/engage/whatsapp/templates`, gated on
+// `engage.whatsapp.template.read`/`.write` (`services/app-gateway/routes.json`) — rather than
+// `notification`'s `/api/v1/notifications/provider-templates`, which the same rows are also
+// reachable through under that product's own permission. See `client.ts`.
 
 export type TemplateCategory = "utility" | "marketing" | "authentication";
 export type ParameterFormat = "positional" | "named";
@@ -182,7 +183,7 @@ export interface TemplateVariableIn {
 
 export type TemplateVariableOut = Required<TemplateVariableIn>;
 
-/** `PUT /notifications/provider-templates`. */
+/** `PUT /engage/whatsapp/templates`. */
 export interface ProviderTemplateIn {
   code: string;
   channel: "whatsapp" | "email";
@@ -194,7 +195,7 @@ export interface ProviderTemplateIn {
   preview_text?: string;
 }
 
-/** `GET /notifications/provider-templates`. `status` and `sendable` are the provider's own
+/** `GET /engage/whatsapp/templates`. `status` and `sendable` are the provider's own
  *  answer — `sendable` is derived by the service from `status` so it can never disagree with
  *  it, and neither is ever set by this app. */
 export interface ProviderTemplateOut {

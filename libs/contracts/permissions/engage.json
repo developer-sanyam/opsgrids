@@ -189,6 +189,24 @@
       "max_scope": "ORG",
       "module": "setup",
       "resource": "whatsapp"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See the organization's WhatsApp templates and their real approval status",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "whatsapp",
+      "resource": "template"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Register or update a WhatsApp template for Meta's review",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "whatsapp",
+      "resource": "template"
     }
   ],
   "product": "engage",
@@ -281,6 +299,14 @@
         {
           "code": "engage.setup.whatsapp.write",
           "scope": "ORG"
+        },
+        {
+          "code": "engage.whatsapp.template.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.whatsapp.template.write",
+          "scope": "ORG"
         }
       ],
       "is_admin": true,
@@ -327,6 +353,10 @@
         {
           "code": "engage.setup.whatsapp.read",
           "scope": "ORG"
+        },
+        {
+          "code": "engage.whatsapp.template.read",
+          "scope": "ORG"
         }
       ],
       "is_admin": false,
@@ -348,6 +378,10 @@
         },
         {
           "code": "engage.inbox.message.reply",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.whatsapp.template.read",
           "scope": "ORG"
         }
       ],
