@@ -134,6 +134,7 @@ SUBSCRIBABLE_EVENTS: Final[tuple[str, ...]] = (
     "finance.compliance.eway_bill.cancelled",
     "finance.compliance.eway_bill.failed",
     "finance.compliance.eway_bill.generated",
+    "finance.compliance.eway_bill.retry_scheduled",
     "finance.compliance.gst_registration.set",
     "finance.compliance.gst_return.filed",
     "finance.compliance.gst_return.generated",

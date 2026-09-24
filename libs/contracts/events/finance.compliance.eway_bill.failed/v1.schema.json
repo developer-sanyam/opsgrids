@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/finance.compliance.eway_bill.failed/v1",
+  "title": "finance.compliance.eway_bill.failed",
+  "description": "An e-Way bill generation ended without a bill, and a person has to act. Terminal only: an outage that is being retried is finance.compliance.eway_bill.retry_scheduled. error_code is the portal's own numbered refusal (never retried: the identical consignment would be refused again) or the platform's (retry_exhausted: the portal did not answer within the attempt budget; stale: the request was first made more than 24 hours ago; no_registration). remedy says what to do about it and remedy_detail says it in a sentence. error is the portal's text with GSTINs, vehicle numbers and other identifiers masked. retryable is always false and is kept for consumers written against the earlier contract, where an outage said true.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "invoice_id",
+    "eway_bill_id",
+    "number",
+    "error_code",
+    "error",
+    "retryable",
+    "terminal",
+    "attempt",
+    "remedy",
+    "remedy_detail",
+    "portal"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "invoice_id": { "type": "string", "format": "uuid" },
+    "eway_bill_id": { "type": "string", "format": "uuid" },
+    "number": { "type": "string" },
+    "error_code": { "type": ["string", "null"] },
+    "error": { "type": ["string", "null"] },
+    "retryable": { "const": false },
+    "terminal": { "const": true },
+    "attempt": { "type": ["integer", "null"], "minimum": 1 },
+    "remedy": {
+      "enum": [
+        "retry_now",
+        "register_gst",
+        "correct_and_resubmit",
+        "not_required",
+        "contact_support"
+      ]
+    },
+    "remedy_detail": { "type": "string" },
+    "portal": { "type": "string" }
+  }
+}

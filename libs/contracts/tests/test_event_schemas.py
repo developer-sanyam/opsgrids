@@ -112,3 +112,63 @@ def test_every_engage_event_notification_emits_has_a_committed_schema() -> None:
     assert not missing, (
         f"no committed schema for {missing} — add libs/contracts/events/<event_type>/v1.schema.json"
     )
+
+
+FINANCE = ROOT / "services" / "finance"
+
+#: The finance events whose payloads are a promise to a consumer — the ones a notification rule or a
+#: dashboard acts on (the e-Way retry story, C4, and the IMS push-back, C2). `EVT_*` constants
+#: outside these prefixes predate contracts and have none yet.
+_FINANCE_CONTRACTED_PREFIXES = (
+    "finance.compliance.eway_bill.generated",
+    "finance.compliance.eway_bill.failed",
+    "finance.compliance.eway_bill.retry_scheduled",
+    "finance.compliance.eway_bill.generation_requested",
+    "finance.compliance.ims_push.",
+)
+
+
+def _finance_event_types() -> list[str]:
+    """Every `finance.*` event `services.py` declares as an `EVT_*` constant, read from a fresh
+    interpreter with finance's directory as cwd — for the reason `_notification_engage_event_types`
+    gives."""
+    script = (
+        "import app.services as s\n"
+        "print('\\n'.join(sorted({\n"
+        "    v for k, v in vars(s).items()\n"
+        "    if k.startswith('EVT_') and isinstance(v, str) and v.startswith('finance.')\n"
+        "})))\n"
+    )
+    result = subprocess.run(  # noqa: S603 - this interpreter, a literal script, a path we chose
+        [sys.executable, "-c", script],
+        cwd=FINANCE,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def test_every_contracted_finance_event_has_a_committed_schema() -> None:
+    committed = {path.parent.name for path in _schema_files()}
+    emitted = [
+        event_type
+        for event_type in _finance_event_types()
+        if event_type.startswith(_FINANCE_CONTRACTED_PREFIXES)
+    ]
+    assert emitted, "expected services/finance/app/services.py to declare the e-Way retry events"
+    missing = sorted(set(emitted) - committed)
+    assert not missing, (
+        f"no committed schema for {missing} — add libs/contracts/events/<event_type>/v1.schema.json"
+    )
+
+
+def test_every_committed_finance_schema_is_still_emitted() -> None:
+    """The other direction: a schema for an event nothing publishes any more is a contract nobody
+    can honour, and it would sit here looking authoritative."""
+    emitted = set(_finance_event_types())
+    committed = {
+        path.parent.name for path in _schema_files() if path.parent.name.startswith("finance.")
+    }
+    stale = sorted(committed - emitted)
+    assert not stale, f"committed schemas for events finance no longer declares: {stale}"

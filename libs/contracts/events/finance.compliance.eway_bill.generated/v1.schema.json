@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/finance.compliance.eway_bill.generated/v1",
+  "title": "finance.compliance.eway_bill.generated",
+  "description": "The portal issued an e-Way bill. valid_until is this platform's own arithmetic over distance_km and valid_from (one day per 200 km or part thereof, each ending at midnight), not a figure taken from the portal. attempt is which attempt of its generation chain finally raised it: 1 for a bill raised first time, more when the automatic retry got it through an outage.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "invoice_id",
+    "eway_bill_id",
+    "number",
+    "eway_bill_no",
+    "transport_mode",
+    "distance_km",
+    "valid_from",
+    "valid_until",
+    "portal",
+    "attempt"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "invoice_id": { "type": "string", "format": "uuid" },
+    "eway_bill_id": { "type": "string", "format": "uuid" },
+    "number": { "type": "string" },
+    "eway_bill_no": { "type": "string" },
+    "transport_mode": { "enum": ["road", "rail", "air", "ship"] },
+    "distance_km": { "type": "integer", "minimum": 1 },
+    "valid_from": { "type": "string", "format": "date-time" },
+    "valid_until": { "type": "string", "format": "date-time" },
+    "portal": { "type": "string" },
+    "attempt": { "type": "integer", "minimum": 1 }
+  }
+}

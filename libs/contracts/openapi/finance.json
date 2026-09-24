@@ -679,6 +679,17 @@
       "EwayBillOut": {
         "description": "One recorded attempt to raise an e-Way bill. Append-only: a retry is a further row.",
         "properties": {
+          "attempt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt"
+          },
           "attempted_at": {
             "format": "date-time",
             "title": "Attempted At",
@@ -753,6 +764,18 @@
               }
             ],
             "title": "Remedy"
+          },
+          "retry_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry At"
           },
           "status": {
             "title": "Status",
@@ -882,9 +905,25 @@
       "EwayState": {
         "description": "A document's *current* e-Way position, derived from its newest attempt.\n\nNever null on a document that needs a bill: an unmet obligation must be **visible** rather\nthan absent, which is the same reason `EInvoiceState.required` exists.",
         "properties": {
+          "attempt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt"
+          },
           "attempts": {
             "title": "Attempts",
             "type": "integer"
+          },
+          "can_retry": {
+            "default": false,
+            "title": "Can Retry",
+            "type": "boolean"
           },
           "cancellable_until": {
             "anyOf": [
@@ -898,6 +937,28 @@
             ],
             "title": "Cancellable Until"
           },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
           "eway_bill_no": {
             "anyOf": [
               {
@@ -908,6 +969,11 @@
               }
             ],
             "title": "Eway Bill No"
+          },
+          "max_attempts": {
+            "default": 0,
+            "title": "Max Attempts",
+            "type": "integer"
           },
           "remedy": {
             "anyOf": [
@@ -920,9 +986,32 @@
             ],
             "title": "Remedy"
           },
+          "remedy_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remedy Detail"
+          },
           "required": {
             "title": "Required",
             "type": "boolean"
+          },
+          "retry_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry At"
           },
           "status": {
             "anyOf": [
@@ -5695,6 +5784,59 @@
           }
         },
         "summary": "Every e-Way bill attempt for one document, newest first",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/invoices/{invoice_id}/eway/retry": {
+      "post": {
+        "description": "Ask for another attempt at a bill, without waiting for the automatic retry (C4).\n\n**202, not 201**: this stages a request and returns; the portal call happens afterwards, in the\nworker, on the same claim/call/record path the automatic retry uses (D3 \u2014 a route wrapped end\nto end by the tenant transaction must never hold it open across a government's answer). The\nresponse is the document's e-Way position as it stands now; poll it, or read the\n`retry_scheduled` / `generated` / `failed` events.\n\nOffered for an outage still awaiting its retry and for a failed generation whose cause was the\nplatform's (`retry_exhausted`, `stale`, `no_registration`) \u2014 `EwayState.can_retry` says which.\nA portal **refusal** is a 409 naming the code and what to fix: the identical consignment would\nbe refused again. Rate limited per document.",
+        "operationId": "retry_eway_bill_api_v1_finance_invoices__invoice_id__eway_retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Invoice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EwayState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "That invoice is not part of this organization"
+          },
+          "409": {
+            "description": "Nothing to retry: a bill already stands, a generation is in flight, or the portal refused the consignment and would refuse it again"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "description": "Retried too recently \u2014 one attempt per document per few seconds"
+          }
+        },
+        "summary": "Retry raising one document's e-Way bill now",
         "tags": [
           "finance"
         ]

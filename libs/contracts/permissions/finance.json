@@ -92,9 +92,27 @@
       "resource": "eway"
     },
     {
+      "action": "retry",
+      "default_scope": "ORG",
+      "description": "Retry raising an e-Way bill that failed or is waiting on the portal",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "compliance",
+      "resource": "eway"
+    },
+    {
       "action": "decide",
       "default_scope": "ORG",
       "description": "Accept, reject or park an inbound supplier document",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "compliance",
+      "resource": "ims"
+    },
+    {
+      "action": "push",
+      "default_scope": "ORG",
+      "description": "Send recorded IMS decisions to the GST portal",
       "is_dangerous": true,
       "max_scope": "ORG",
       "module": "compliance",
@@ -239,7 +257,15 @@
           "scope": "ORG"
         },
         {
+          "code": "finance.compliance.eway.retry",
+          "scope": "ORG"
+        },
+        {
           "code": "finance.compliance.ims.decide",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.compliance.ims.push",
           "scope": "ORG"
         },
         {

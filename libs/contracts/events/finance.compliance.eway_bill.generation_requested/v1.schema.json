@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/finance.compliance.eway_bill.generation_requested/v1",
+  "title": "finance.compliance.eway_bill.generation_requested",
+  "description": "A command to finance's own worker: make another attempt at raising one document's e-Way bill. Handed to the scheduler with a not_before for the automatic retry after an outage (trigger retry) and published directly for a person's retry now (trigger manual). chain_id names the generation chain the retry belongs to, so a retry that arrives after the chain has moved on or ended is recognised as stale and does nothing. The consumer claims, calls the portal with no transaction open, and records; the transport facts are read from the ledger, never from this message.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "invoice_id",
+    "number",
+    "attempt",
+    "max_attempts",
+    "chain_id",
+    "not_before",
+    "trigger",
+    "requested_by"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "invoice_id": { "type": "string", "format": "uuid" },
+    "number": { "type": "string" },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "max_attempts": { "type": "integer", "minimum": 1 },
+    "chain_id": { "type": ["string", "null"], "format": "uuid" },
+    "not_before": { "type": ["string", "null"], "format": "date-time" },
+    "trigger": { "enum": ["retry", "manual"] },
+    "requested_by": { "type": ["string", "null"], "format": "uuid" }
+  }
+}
