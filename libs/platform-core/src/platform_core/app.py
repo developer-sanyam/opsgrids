@@ -38,6 +38,55 @@ from platform_core.supervise import (
     sweep_health_samples,
 )
 
+#: The two cookie-authenticated auth routes a product SPA other than the dashboard calls
+#: cross-origin, straight to `app.opsgrids.com` (ADR-0003 addendum) — see
+#: `ServiceSettings.auth_refresh_cors_origins`.
+AUTH_CROSS_ORIGIN_PATHS = frozenset({"/api/v1/auth/refresh", "/api/v1/auth/logout"})
+
+
+class _PathScopedCorsMiddleware:
+    """Two independent `CORSMiddleware`s in front of the same app, chosen by path.
+
+    `CORSMiddleware` itself has no notion of "these origins, but only for these routes" — it
+    is configured once for the whole app. Every product SPA's origin needs exactly that
+    though: allowed, with credentials, to call `/api/v1/auth/refresh` and `/api/v1/auth/logout`
+    (the only two routes it ever reaches cross-origin), and allowed nowhere else on this
+    gateway. Wrapping the *same* downstream app in two `CORSMiddleware` instances and picking
+    one per request gets that without reimplementing preflight handling.
+    """
+
+    def __init__(
+        self,
+        app: Any,
+        *,
+        default_origins: list[str],
+        scoped_paths: frozenset[str],
+        scoped_origins: list[str],
+    ) -> None:
+        self._scoped_paths = scoped_paths
+        self._default = CORSMiddleware(
+            app,
+            allow_origins=default_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=["X-Request-ID", "X-Correlation-ID"],
+        )
+        self._scoped = CORSMiddleware(
+            app,
+            allow_origins=scoped_origins,
+            allow_credentials=True,
+            allow_methods=["POST"],
+            allow_headers=["Content-Type", "X-Requested-With"],
+        )
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "http" and scope["path"] in self._scoped_paths:
+            await self._scoped(scope, receive, send)
+        else:
+            await self._default(scope, receive, send)
+
+
 _METRICS_HELP = {
     "outbox_pending": "Unpublished rows in this service's outbox.",
     "outbox_oldest_seconds": "Age of the oldest unpublished outbox row, in seconds.",
@@ -275,14 +324,22 @@ def create_app(
     app.state.settings = settings
 
     app.add_middleware(RequestContextMiddleware)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["X-Request-ID", "X-Correlation-ID"],
-    )
+    if settings.auth_refresh_cors_origins:
+        app.add_middleware(
+            _PathScopedCorsMiddleware,
+            default_origins=settings.cors_origins,
+            scoped_paths=AUTH_CROSS_ORIGIN_PATHS,
+            scoped_origins=settings.auth_refresh_cors_origins,
+        )
+    else:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=["X-Request-ID", "X-Correlation-ID"],
+        )
 
     register_error_handlers(app)
     app.include_router(

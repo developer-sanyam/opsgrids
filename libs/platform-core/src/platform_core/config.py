@@ -178,8 +178,21 @@ class ServiceSettings(BaseSettings):
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:5273"]
     )
+    #: A second, narrower CORS allowance for exactly the two cookie-authenticated auth routes
+    #: (`platform_core.app.AUTH_CROSS_ORIGIN_PATHS`) — `/api/v1/auth/refresh` and
+    #: `/api/v1/auth/logout`. ADR-0003 addendum: the refresh cookie is host-only on
+    #: `app.opsgrids.com`, so every other product SPA calls those two routes cross-origin to
+    #: reach it, and each needs its own origin allowed *with credentials* to do so. Widening
+    #: `cors_origins` itself would let those same origins make a credentialed call to *every*
+    #: route this gateway fronts, not just the two that need it — a materially bigger blast
+    #: radius for a page compromised on one of them. Empty by default: only the gateway that
+    #: fronts `app.opsgrids.com` (app-gateway, in production) ever sets this; every other
+    #: service leaves it unset and those two paths fall back to `cors_origins` like any other
+    #: route. Storefront hosts (`*.stores.opsgrids.com`, custom domains) must never appear here
+    #: — nothing there is meant to hold a platform session.
+    auth_refresh_cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
-    @field_validator("cors_origins", "pii_decrypt_keys", mode="before")
+    @field_validator("cors_origins", "auth_refresh_cors_origins", "pii_decrypt_keys", mode="before")
     @classmethod
     def _split_csv(cls, v: object) -> object:
         if isinstance(v, str):
