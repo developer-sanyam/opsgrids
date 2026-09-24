@@ -40,6 +40,10 @@ and run from their pinned images whenever the local binary is a different versio
 | dependency-cruiser | Apps never import each other; `@opsgrids/ui` / `@opsgrids/client` only via exports; ui ⟂ client; no cycles | `make frontend-boundaries` | gate, CI frontend | The frontend's `.importlinter`; found a real cycle in the storefront on day one. |
 | vitest | Frontend tests; `--passWithNoTests` only where a package has none | `make frontend-test` | gate, CI frontend | Already the test runner; the change is that an empty suite fails. |
 | Vite | Production builds, including the storefront's buyer bundle | `make frontend-build` | gate, CI frontend | The bundle buyers load was never built by any check before. |
+| Storybook 10 (`opsgrids-ui/.storybook`, no addons) | The design-system workshop: every exported component in every state, props only, light + dark. `src/stories.test.ts` fails if an exported component has no story | `pnpm --filter @opsgrids/ui storybook`; coverage in `make frontend-test` | gate + CI frontend (coverage); gate-full (built and photographed by `ui-visual`) | Vite 7-native with no second Vite in the tree, where Ladle would add one (measured in frontend/VISUAL-TESTING.md); its `index.json` is the harness's story list. |
+| Playwright 1.63 (`frontend/opsgrids-visual`) | Screenshots of 159 stories and 6 app pages, 2 themes × 375/768/1280, match `baselines/<os>/` (threshold 0.05, ≤20 px); no unmocked API call, no request off the local server | `make ui-visual` (= `pnpm visual:check`); `pnpm visual:update` to rebaseline | gate-full | The redesign changes tokens every screen inherits; this proves which pixels moved before anyone merges them. |
+| @axe-core/playwright 4.13 | No rendering gets a new WCAG 2.0–2.2 A/AA violation (plus best-practice on pages) beyond `a11y-baseline.json`; improvements ratchet the baseline down | `make ui-visual` | gate-full | axe on the exact rendering just photographed; "no new violations", not "zero today". |
+| ajv 8 (`opsgrids-visual/fixtures/contracts.test.ts`) | Every harness API fixture validates against its operation's response schema in `libs/contracts/openapi/`, with path and query keys checked too | `make frontend-test` | gate, CI frontend | Mocks cannot drift from what the services actually return. |
 
 ## Supply chain
 
@@ -59,6 +63,7 @@ and run from their pinned images whenever the local binary is a different versio
 make install                 # Python toolchain (uv sync)
 # Node 22 and pnpm 11 on PATH, then:
 make frontend-install        # pnpm install --frozen-lockfile
+make ui-visual               # installs the pinned Chromium on first run, then the visual/a11y check
 brew install shellcheck hadolint   # optional — without them the pinned Docker images are used
 ```
 
@@ -66,7 +71,8 @@ brew install shellcheck hadolint   # optional — without them the pinned Docker
 
 Named so their absence is a known gap rather than an assumption: pre-commit hooks on staged
 files; automated dependency-update pull requests; coverage thresholds on critical paths; mutation
-testing; property-based and schema-driven API fuzzing; load testing; container image scanning,
-visual regression and runtime (axe) accessibility — the last three are `gate-full`'s extension
-points; a performance budget; a design-token lint rule; query-plan capture; ERD generation;
+testing; property-based and schema-driven API fuzzing; load testing; container image scanning
+(`gate-full`'s remaining extension point); visual regression in CI (the baselines are macOS-only
+until Linux ones are generated in the Playwright container — see frontend/VISUAL-TESTING.md,
+"Platforms"); a performance budget; a design-token lint rule; query-plan capture; ERD generation;
 dead-code detection; commit-message linting.

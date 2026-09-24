@@ -1,0 +1,18 @@
+{
+  "mrr_minor": 132420000,
+  "currency": "INR",
+  "trials_started": 14,
+  "trial_conversions": 6,
+  "trial_conversion_rate": 0.4286,
+  "active_subscriptions": 11,
+  "churned": 2,
+  "churn_rate": 0.1538,
+  "organization_count": 10,
+  "organizations_by_lifecycle": {
+    "active": 4,
+    "trial": 3,
+    "suspended": 1,
+    "churned": 1,
+    "none": 1
+  }
+}

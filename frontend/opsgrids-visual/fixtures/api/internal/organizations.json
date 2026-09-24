@@ -1,0 +1,242 @@
+{
+  "organizations": [
+    {
+      "organization_id": "01000000-0000-4000-8000-000000000001",
+      "mrr_minor": 12490000,
+      "currency": "INR",
+      "active_products": [
+        "crm",
+        "hrms"
+      ],
+      "subscription_states": {
+        "crm": {
+          "state": "active",
+          "plan_version_id": "b0000000-0000-4000-8000-000000000001",
+          "amount_minor": 249900,
+          "currency": "INR",
+          "trial_ends_at": null
+        },
+        "hrms": {
+          "state": "active",
+          "plan_version_id": "b0000001-0000-4000-8000-000000000001",
+          "amount_minor": 249900,
+          "currency": "INR",
+          "trial_ends_at": null
+        }
+      },
+      "trial_ends_at": null,
+      "locked": false,
+      "updated_at": "2026-09-15T00:00:00Z"
+    },
+    {
+      "organization_id": "02000000-0000-4000-8000-000000000002",
+      "mrr_minor": 0,
+      "currency": "INR",
+      "active_products": [
+        "crm"
+      ],
+      "subscription_states": {
+        "crm": {
+          "state": "trial",
+          "plan_version_id": "b0000000-0000-4000-8000-000000000001",
+          "amount_minor": 0,
+          "currency": "INR",
+          "trial_ends_at": "2026-09-19T05:00:00Z"
+        }
+      },
+      "trial_ends_at": "2026-09-19T05:00:00Z",
+      "locked": false,
+      "updated_at": "2026-09-14T01:00:00Z"
+    },
+    {
+      "organization_id": "03000000-0000-4000-8000-000000000003",
+      "mrr_minor": 49980000,
+      "currency": "INR",
+      "active_products": [
+        "crm",
+        "finance",
+        "operations"
+      ],
+      "subscription_states": {
+        "crm": {
+          "state": "active",
+          "plan_version_id": "b0000000-0000-4000-8000-000000000001",
+          "amount_minor": 249900,
+          "currency": "INR",
+          "trial_ends_at": null
+        },
+        "finance": {
+          "state": "active",
+          "plan_version_id": "b0000003-0000-4000-8000-000000000001",
+          "amount_minor": 249900,
+          "currency": "INR",
+          "trial_ends_at": null
+        },
+        "operations": {
+          "state": "active",
+          "plan_version_id": "b0000002-0000-4000-8000-000000000001",
+          "amount_minor": 249900,
+          "currency": "INR",
+          "trial_ends_at": null
+        }
+      },
+      "trial_ends_at": null,
+      "locked": false,
+      "updated_at": "2026-09-13T02:00:00Z"
+    },
+    {
+      "organization_id": "04000000-0000-4000-8000-000000000004",
+      "mrr_minor": 0,
+      "currency": "INR",
+      "active_products": [
+        "hrms"
+      ],
+      "subscription_states": {
+        "hrms": {
+          "state": "trial",
+          "plan_version_id": "b0000001-0000-4000-8000-000000000001",
+          "amount_minor": 0,
+          "currency": "INR",
+          "trial_ends_at": "2026-09-26T05:00:00Z"
+        }
+      },
+      "trial_ends_at": "2026-09-26T05:00:00Z",
+      "locked": false,
+      "updated_at": "2026-09-12T03:00:00Z"
+    },
+    {
+      "organization_id": "05000000-0000-4000-8000-000000000005",
+      "mrr_minor": 24990000,
+      "currency": "INR",
+      "active_products": [
+        "operations"
+      ],
+      "subscription_states": {
+        "operations": {
+          "state": "past_due",
+          "plan_version_id": "b0000002-0000-4000-8000-000000000001",
+          "amount_minor": 0,
+          "currency": "INR",
+          "trial_ends_at": null
+        }
+      },
+      "trial_ends_at": null,
+      "locked": true,
+      "updated_at": "2026-09-11T04:00:00Z"
+    },
+    {
+      "organization_id": "06000000-0000-4000-8000-000000000006",
+      "mrr_minor": 0,
+      "currency": null,
+      "active_products": [],
+      "subscription_states": {
+        "projects": {
+          "state": "cancelled",
+          "plan_version_id": "b0000004-0000-4000-8000-000000000001",
+          "amount_minor": 0,
+          "currency": "INR",
+          "trial_ends_at": null
+        }
+      },
+      "trial_ends_at": null,
+      "locked": false,
+      "updated_at": "2026-09-10T05:00:00Z"
+    },
+    {
+      "organization_id": "07000000-0000-4000-8000-000000000007",
+      "mrr_minor": 7490000,
+      "currency": "INR",
+      "active_products": [
+        "itsm"
+      ],
+      "subscription_states": {
+        "itsm": {
+          "state": "active",
+          "plan_version_id": "b0000005-0000-4000-8000-000000000001",
+          "amount_minor": 249900,
+          "currency": "INR",
+          "trial_ends_at": null
+        }
+      },
+      "trial_ends_at": null,
+      "locked": false,
+      "updated_at": "2026-09-09T06:00:00Z"
+    },
+    {
+      "organization_id": "08000000-0000-4000-8000-000000000008",
+      "mrr_minor": 0,
+      "currency": null,
+      "active_products": [],
+      "subscription_states": {},
+      "trial_ends_at": null,
+      "locked": false,
+      "updated_at": "2026-09-08T07:00:00Z"
+    },
+    {
+      "organization_id": "09000000-0000-4000-8000-000000000009",
+      "mrr_minor": 37470000,
+      "currency": "INR",
+      "active_products": [
+        "crm",
+        "projects",
+        "support"
+      ],
+      "subscription_states": {
+        "crm": {
+          "state": "active",
+          "plan_version_id": "b0000000-0000-4000-8000-000000000001",
+          "amount_minor": 249900,
+          "currency": "INR",
+          "trial_ends_at": null
+        },
+        "projects": {
+          "state": "active",
+          "plan_version_id": "b0000004-0000-4000-8000-000000000001",
+          "amount_minor": 249900,
+          "currency": "INR",
+          "trial_ends_at": null
+        },
+        "support": {
+          "state": "active",
+          "plan_version_id": "b0000006-0000-4000-8000-000000000001",
+          "amount_minor": 249900,
+          "currency": "INR",
+          "trial_ends_at": null
+        }
+      },
+      "trial_ends_at": null,
+      "locked": false,
+      "updated_at": "2026-09-07T08:00:00Z"
+    },
+    {
+      "organization_id": "10000000-0000-4000-8000-000000000010",
+      "mrr_minor": 0,
+      "currency": "INR",
+      "active_products": [
+        "finance"
+      ],
+      "subscription_states": {
+        "finance": {
+          "state": "trial",
+          "plan_version_id": "b0000003-0000-4000-8000-000000000001",
+          "amount_minor": 0,
+          "currency": "INR",
+          "trial_ends_at": "2026-10-02T05:00:00Z"
+        }
+      },
+      "trial_ends_at": "2026-10-02T05:00:00Z",
+      "locked": false,
+      "updated_at": "2026-09-06T00:00:00Z"
+    }
+  ],
+  "metrics": {
+    "mrr_minor": 132420000,
+    "currency": "INR",
+    "trials_started": 14,
+    "trial_conversions": 6,
+    "trial_conversion_rate": 0.4286,
+    "active_subscriptions": 11,
+    "churned": 2,
+    "churn_rate": 0.1538
+  }
+}

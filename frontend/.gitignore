@@ -5,3 +5,9 @@ dist/
 *.tsbuildinfo
 next-env.d.ts
 .turbo/
+
+# The design system's workshop build (opsgrids-ui) and what the visual harness leaves behind
+# (opsgrids-visual). The harness's baselines/ and a11y-baseline.json are committed; these are not.
+storybook-static/
+test-results/
+playwright-report/

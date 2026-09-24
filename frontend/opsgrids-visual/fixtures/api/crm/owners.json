@@ -1,0 +1,37 @@
+[
+  {
+    "id": "a1000000-0000-4000-8000-000000000001",
+    "full_name": "Arjun Mehta",
+    "email": "arjun.mehta@acme.example",
+    "role": "Sales lead",
+    "is_active": true
+  },
+  {
+    "id": "a1000000-0000-4000-8000-000000000002",
+    "full_name": "Priya Raman",
+    "email": "priya.raman@acme.example",
+    "role": "Account executive",
+    "is_active": true
+  },
+  {
+    "id": "a1000000-0000-4000-8000-000000000003",
+    "full_name": "Sofia Marchetti",
+    "email": "sofia.marchetti@acme.example",
+    "role": "Revenue admin",
+    "is_active": true
+  },
+  {
+    "id": "a1000000-0000-4000-8000-000000000004",
+    "full_name": "Kwame Mensah",
+    "email": "kwame.mensah@acme.example",
+    "role": "Account executive",
+    "is_active": true
+  },
+  {
+    "id": "a1000000-0000-4000-8000-000000000005",
+    "full_name": "Lena Fischer",
+    "email": "lena.fischer@acme.example",
+    "role": "Sales development",
+    "is_active": true
+  }
+]

@@ -1,0 +1,110 @@
+[
+  {
+    "key": "crm",
+    "name": "OpsGrids Revenue",
+    "tagline": "Pipeline, deals, companies and contacts",
+    "description": null,
+    "category": "Sales",
+    "status": "available",
+    "connects_to": [],
+    "features": [],
+    "is_platform": false,
+    "is_bundle": false
+  },
+  {
+    "key": "hrms",
+    "name": "OpsGrids People",
+    "tagline": "Employees, attendance, leave and approvals",
+    "description": null,
+    "category": "People",
+    "status": "available",
+    "connects_to": [],
+    "features": [],
+    "is_platform": false,
+    "is_bundle": false
+  },
+  {
+    "key": "operations",
+    "name": "OpsGrids Inventory",
+    "tagline": "Suppliers, purchase orders and stock on hand",
+    "description": null,
+    "category": "Operations",
+    "status": "available",
+    "connects_to": [],
+    "features": [],
+    "is_platform": false,
+    "is_bundle": false
+  },
+  {
+    "key": "finance",
+    "name": "OpsGrids Finance",
+    "tagline": "Invoices, receivables and GST compliance",
+    "description": null,
+    "category": "Finance",
+    "status": "available",
+    "connects_to": [],
+    "features": [],
+    "is_platform": false,
+    "is_bundle": false
+  },
+  {
+    "key": "projects",
+    "name": "OpsGrids Projects",
+    "tagline": "Plans, milestones and delivery",
+    "description": null,
+    "category": "Projects",
+    "status": "available",
+    "connects_to": [],
+    "features": [],
+    "is_platform": false,
+    "is_bundle": false
+  },
+  {
+    "key": "itsm",
+    "name": "OpsGrids IT",
+    "tagline": "Incidents, requests and assets",
+    "description": null,
+    "category": "IT",
+    "status": "available",
+    "connects_to": [],
+    "features": [],
+    "is_platform": false,
+    "is_bundle": false
+  },
+  {
+    "key": "support",
+    "name": "OpsGrids Support",
+    "tagline": "Customer tickets and SLAs",
+    "description": null,
+    "category": "Support",
+    "status": "soon",
+    "connects_to": [],
+    "features": [],
+    "is_platform": false,
+    "is_bundle": false
+  },
+  {
+    "key": "marketing",
+    "name": "OpsGrids Marketing",
+    "tagline": "Campaigns, channels and attribution",
+    "description": null,
+    "category": "Marketing",
+    "status": "soon",
+    "connects_to": [],
+    "features": [],
+    "is_platform": false,
+    "is_bundle": false
+  },
+  {
+    "key": "notification",
+    "name": "Notifications",
+    "tagline": null,
+    "description": null,
+    "category": null,
+    "status": "available",
+    "connects_to": [],
+    "features": [],
+    "is_platform": true,
+    "is_bundle": false
+  }
+]

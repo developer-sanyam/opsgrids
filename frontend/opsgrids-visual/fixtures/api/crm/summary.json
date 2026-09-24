@@ -1,0 +1,79 @@
+{
+  "pipeline_value_minor": 1867500000,
+  "weighted_pipeline_minor": 895050000,
+  "open_deals": 13,
+  "win_rate_pct": 67,
+  "won_value_minor": 343500000,
+  "activities_this_week": 23,
+  "currency": "INR",
+  "funnel": [
+    {
+      "stage": "lead",
+      "label": "Lead",
+      "count": 3,
+      "value_minor": 74000000,
+      "pct": 4
+    },
+    {
+      "stage": "qualified",
+      "label": "Qualified",
+      "count": 3,
+      "value_minor": 785000000,
+      "pct": 42
+    },
+    {
+      "stage": "proposal",
+      "label": "Proposal",
+      "count": 4,
+      "value_minor": 272500000,
+      "pct": 15
+    },
+    {
+      "stage": "negotiation",
+      "label": "Negotiation",
+      "count": 3,
+      "value_minor": 736000000,
+      "pct": 39
+    },
+    {
+      "stage": "closed_won",
+      "label": "Won",
+      "count": 2,
+      "value_minor": 343500000,
+      "pct": 0
+    },
+    {
+      "stage": "closed_lost",
+      "label": "Lost",
+      "count": 1,
+      "value_minor": 160000000,
+      "pct": 0
+    }
+  ],
+  "trend": [
+    {
+      "label": "Apr",
+      "value_minor": 1420000000
+    },
+    {
+      "label": "May",
+      "value_minor": 1550000000
+    },
+    {
+      "label": "Jun",
+      "value_minor": 1610000000
+    },
+    {
+      "label": "Jul",
+      "value_minor": 1740000000
+    },
+    {
+      "label": "Aug",
+      "value_minor": 1880000000
+    },
+    {
+      "label": "Sep",
+      "value_minor": 1867500000
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "items": [
+    {
+      "id": "f0000000-0000-4000-8000-000000000001",
+      "type": "call",
+      "subject": "Pricing walkthrough with Rohan",
+      "body": "Agreed to phase the rollout across two warehouses.",
+      "deal_id": "e0000000-0000-4000-8000-000000000001",
+      "company_id": "c0000000-0000-4000-8000-000000000001",
+      "contact_id": "d0000000-0000-4000-8000-000000000001",
+      "owner_id": "a1000000-0000-4000-8000-000000000001",
+      "occurred_at": "2026-09-15T04:10:00Z",
+      "direction": "outbound"
+    },
+    {
+      "id": "f0000000-0000-4000-8000-000000000002",
+      "type": "email",
+      "subject": "Sent revised proposal",
+      "body": null,
+      "deal_id": "e0000000-0000-4000-8000-000000000010",
+      "company_id": "c0000000-0000-4000-8000-000000000007",
+      "contact_id": "d0000000-0000-4000-8000-000000000009",
+      "owner_id": "a1000000-0000-4000-8000-000000000003",
+      "occurred_at": "2026-09-14T11:40:00Z",
+      "direction": "outbound"
+    },
+    {
+      "id": "f0000000-0000-4000-8000-000000000003",
+      "type": "meeting",
+      "subject": "On-site demo at Pune DC",
+      "body": "Ops and finance both attended; security review next.",
+      "deal_id": "e0000000-0000-4000-8000-000000000005",
+      "company_id": "c0000000-0000-4000-8000-000000000003",
+      "contact_id": "d0000000-0000-4000-8000-000000000004",
+      "owner_id": "a1000000-0000-4000-8000-000000000004",
+      "occurred_at": "2026-09-14T07:00:00Z",
+      "direction": null
+    },
+    {
+      "id": "f0000000-0000-4000-8000-000000000004",
+      "type": "note",
+      "subject": "Budget confirmed for Q4",
+      "body": "Meera confirmed the Q4 budget line in writing.",
+      "deal_id": "e0000000-0000-4000-8000-000000000004",
+      "company_id": "c0000000-0000-4000-8000-000000000003",
+      "contact_id": "d0000000-0000-4000-8000-000000000004",
+      "owner_id": "a1000000-0000-4000-8000-000000000001",
+      "occurred_at": "2026-09-13T09:20:00Z",
+      "direction": null
+    },
+    {
+      "id": "f0000000-0000-4000-8000-000000000005",
+      "type": "task",
+      "subject": "Chase signed MSA",
+      "body": null,
+      "deal_id": "e0000000-0000-4000-8000-000000000014",
+      "company_id": "c0000000-0000-4000-8000-000000000010",
+      "contact_id": "d0000000-0000-4000-8000-000000000012",
+      "owner_id": "a1000000-0000-4000-8000-000000000001",
+      "occurred_at": "2026-09-12T12:00:00Z",
+      "direction": null
+    },
+    {
+      "id": "f0000000-0000-4000-8000-000000000006",
+      "type": "call",
+      "subject": "Discovery call — fleet telematics",
+      "body": "Wants a 20-vehicle pilot before committing.",
+      "deal_id": "e0000000-0000-4000-8000-000000000003",
+      "company_id": "c0000000-0000-4000-8000-000000000002",
+      "contact_id": "d0000000-0000-4000-8000-000000000003",
+      "owner_id": "a1000000-0000-4000-8000-000000000003",
+      "occurred_at": "2026-09-11T05:45:00Z",
+      "direction": "inbound"
+    }
+  ],
+  "total": 42,
+  "page": 1,
+  "size": 6,
+  "pages": 7
+}
