@@ -235,7 +235,7 @@ export interface PricingHistoryEntry {
   currency: string;
   billing_interval: BillingInterval;
   created_at: string;
-  /** Masked per ADR-0000 §9 — never the operator's full address. */
+  /** PII-masked per CLAUDE.md's platform rules — never the operator's full address. */
   created_by_email_masked: string;
   reason: string;
 }
