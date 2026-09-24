@@ -190,4 +190,14 @@ describe("DataTable", () => {
     // Same rows, same columns: density is padding and nothing else.
     expect(screen.getAllByRole("row")).toHaveLength(4);
   });
+
+  it("makes its scroller the containing block, so hidden text in a cell cannot widen the page", () => {
+    render(<DataTable columns={COLUMNS} rows={ROWS} rowKey={(row) => row.id} caption="Widgets" />);
+    // jsdom has no layout, so this pins the class and not the pixels. The pixels were measured in a
+    // browser at 360px: an `sr-only` "Access locked" in a column past the edge made the accounts
+    // page 366px wide until the scroller was positioned, and 360px after.
+    const scroller = screen.getByRole("table").parentElement;
+    expect(scroller?.className).toContain("overflow-x-auto");
+    expect(scroller?.className).toContain("relative");
+  });
 });

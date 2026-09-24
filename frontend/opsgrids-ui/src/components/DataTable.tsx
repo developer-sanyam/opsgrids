@@ -143,7 +143,11 @@ export function DataTable<T>({
   return (
     <div className="flex flex-col gap-4">
       {toolbar}
-      <div className="overflow-x-auto">
+      {/* `relative` is what keeps a cell's visually-hidden text (`sr-only` is absolutely positioned)
+          inside this scroller: without it the nearest positioned ancestor is outside, the scroller
+          does not clip the text, and a table wider than the screen widens the whole page by
+          wherever that text sits — a horizontal scrollbar on a phone. */}
+      <div className="relative overflow-x-auto">
         <table className="w-full border-collapse text-sm">
           {caption ? <caption className="sr-only">{caption}</caption> : null}
           <thead>
