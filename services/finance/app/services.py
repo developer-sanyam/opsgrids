@@ -5508,10 +5508,14 @@ async def record_eway_generation(
       from the stored distance; audit + `EVT_EWAY_GENERATED`. If the same number is already on
       the ledger — a second recorder of the same claim, the portal having answered both with its
       one bill — that row is returned instead: success-by-lookup, never a duplicate.
-    * **rejected** — a `failed` row carrying the portal's code; audit + `EVT_EWAY_FAILED`
-      (`retryable: false`).
-    * **unavailable** — a `pending` row (the goods are loaded; somebody is going to try again,
-      and the reclaim sweep is that somebody); audit + `EVT_EWAY_FAILED` (`retryable: true`).
+    * **rejected** — a terminal `failed` row carrying the portal's code and its masked words, never
+      retried; audit + `EVT_EWAY_FAILED`.
+    * **unavailable** (an outage, a timeout, a 5xx or a rate limit) — a `pending` row naming the
+      `attempt` and its `retry_at`, with the next attempt scheduled in the same transaction
+      (`request_eway_generation`, ADR-0015) and `EVT_EWAY_RETRY_SCHEDULED` announced; the reclaim
+      sweep is the net under that schedule. When the budget is spent, or the next attempt would land
+      after the 24-hour generation window, the chain ends instead in a terminal `failed` row
+      (`retry_exhausted` or `stale`) and `EVT_EWAY_FAILED` — which therefore only ever means final.
 
     A refusal or an outage arriving after the claim was already resolved by somebody else (the
     newest row is no longer a `submitting` claim) appends nothing. The invoice is row-locked so
@@ -6003,7 +6007,7 @@ async def _drive_generation(
     `attempts` is how many claims the chain has had (`domain.leading_claim_attempts`); `first` is
     its oldest row (`None` for a chain that starts now, after a terminal `failed` a person is
     retrying); `transport_from` is the row whose transport facts are re-sent (the newest, unless a
-    person is retrying a `failed` row, which copies them). Four things end the chain instead of
+    person is retrying a `failed` row, which copies them). Three things end the chain instead of
     driving it, each as a terminal `failed` row a person can read, and no portal call:
 
     * **no registration** — nothing to raise a bill under (`no_registration`);

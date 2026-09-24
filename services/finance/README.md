@@ -51,6 +51,11 @@ document, and generating and filing a return.
   opinion, deliberately **not** frozen.
 - **`ims_decisions`** — who accepted or rejected what, and when. **Append-only at the database**,
   by trigger, because this is the row that decides whether a credit is claimed.
+- **`ims_decision_pushes`** — whether GSTN has been told what one decision says: one row per
+  decision, a state machine (`queued → submitting → pushed | failed | conflict`, or `superseded`)
+  with a lease and a retry budget. **Not** append-only, deliberately — a trigger freezes its
+  identity, forbids deletes and allows only the legal status edges, and every transition writes an
+  audit row. The decision it carries is never touched (ADR-0015, C2).
 - **`gst_returns`** — one row per (registration, period, type). Carries the **snapshot** of what
   was assembled, as JSONB, plus the one-line totals denormalised out of it. Frozen by a trigger
   once **filed**; before that it may be re-assembled, because nothing has been reported yet.
@@ -98,6 +103,20 @@ suggestion **with its reason** — `matched`, `amount_mismatch` (with the delta,
 `pending` until somebody records a decision, because accepting claims the input tax credit on
 somebody else's invoice.
 
+**Deciding and telling GSTN are two acts** (ADR-0015, C2). `POST /finance/ims/documents/{id}/decisions`
+(and `POST /finance/ims/decisions` for up to 100 at once, all or none, each with its own reason)
+appends to `ims_decisions` and queues a push in the same transaction; nothing reaches the portal
+until a person holding `finance.compliance.ims.push` asks for a period to be sent
+(`POST /finance/ims/pushes`, **202**). A worker then runs claim / call / record per batch, one
+period at a time, each item under the key `(period, portal reference, decision version)`, so a crash
+between the call and the record is repaired by asking again — "already recorded" is success. A
+refusal is `failed`, a disagreement with what GSTN holds is `conflict` (never retried, never pushed
+over), an outage retries on a 1 to 30 minute backoff for six attempts, and the reclaim sweep in
+`finance-worker` finishes what a crash left. The next sync compares what the portal shows with what
+was pushed and flags `drift`; the platform never "fixes" it. Input tax credit follows the newest
+*decision*, not the push: only an accept claims it, and leaving accepted takes it back out as a new
+ledger row, so GSTR-3B 4A never contains a rejected or held document.
+
 ## How a return gets assembled, and why it is frozen
 
 `POST /finance/gst/returns` assembles one period's outward supplies from the invoices already
@@ -142,6 +161,17 @@ is derived on read (`effective_status`) rather than written. A bill may be cance
 hours of being raised, checked against the stored `valid_from`; past that, and once it has
 expired, there is no remedy at all — the movement has to be reported as it happened.
 
+**An outage is retried; a refusal is not** (ADR-0015, C4). A timeout, a 5xx or a rate limit
+(`EwayUnavailable`, `EwayRateLimited`) leaves a `pending` row naming its `attempt` and `retry_at`,
+and the next attempt is scheduled in the same transaction (`schedule_event`, backoff
+`min(1 min × 2^(n−1), 30 min)`, eight attempts). A portal refusal (`EwayRejected`) is a terminal
+`failed` row carrying its code and its masked words, with a remedy the screen states. Every attempt
+of a chain sends the idempotency key its first claim computed, so a retry can never mint a second
+bill; a chain first asked for more than 24 hours ago ends `failed` `stale` without a call. The
+reclaim sweep is the net under the schedule. `POST /finance/eway-bills/retries` (**202**, permission
+`finance.compliance.eway.retry`) is a person's "retry now": it stages the request and makes no
+portal call.
+
 ## How tax gets withheld
 
 Three heads, two statutes, and they work differently in ways that get conflated:
@@ -181,9 +211,13 @@ actually files, and therefore reconcilable.
 | `GET /finance/invoices/{id}/filings` | `EInvoiceFiling[]` | `finance.compliance.einvoice.read` |
 | `GET /finance/gst/registration` | `GstRegistration` | `finance.compliance.registration.read` |
 | `PUT /finance/gst/registration` | `GstRegistration` | `finance.compliance.registration.write` |
-| `GET /finance/ims/documents?q=&status=&supplier_gstin=&period=&reason=&sort=` | `Page<ImsDocument>` | `finance.compliance.ims.read` |
+| `GET /finance/ims/documents?q=&status=&supplier_gstin=&period=&reason=&push_status=&drift=&sort=` | `Page<ImsDocument>` | `finance.compliance.ims.read` |
 | `GET /finance/ims/documents/{id}` | `ImsDocumentDetail` | `finance.compliance.ims.read` |
 | `POST /finance/ims/documents/{id}/decisions` | `ImsDecision` | `finance.compliance.ims.decide` |
+| `POST /finance/ims/decisions` (up to 100, all or none) | `ImsBulkDecision` | `finance.compliance.ims.decide` |
+| `GET /finance/ims/pushes?period=&status=&drift=` | `Page<ImsPushWithDocument>` | `finance.compliance.ims.read` |
+| `GET /finance/ims/pushes/summary?period=` | `ImsPushSummary` | `finance.compliance.ims.read` |
+| `POST /finance/ims/pushes` (**202**) | `ImsPushRequest` | `finance.compliance.ims.push` |
 | `GET /finance/gst/returns?period=&status=&return_type=&sort=` | `Page<GstReturn>` | `finance.compliance.returns.read` |
 | `GET /finance/gst/returns/{id}` | `GstReturnDetail` | `finance.compliance.returns.read` |
 | `GET /finance/gst/returns/{id}/diff` | `ReturnDiff` | `finance.compliance.returns.read` |
@@ -192,6 +226,7 @@ actually files, and therefore reconcilable.
 | `GET /finance/eway-bills?status=&invoice_id=` | `Page<EwayBillWithInvoice>` | `finance.compliance.eway.read` |
 | `GET /finance/invoices/{id}/eway-bills` | `EwayBill[]` | `finance.compliance.eway.read` |
 | `GET /finance/invoices/{id}/eway` | `EwayState` | `finance.compliance.eway.read` |
+| `POST /finance/eway-bills/retries` (**202**) | `EwayState` | `finance.compliance.eway.retry` |
 | `GET /finance/gst/withholdings?period=&code=&invoice_id=` | `Page<WithholdingWithInvoice>` | `finance.compliance.withholding.read` |
 | `GET /finance/gst/withholdings/summary?period=&code=` | `WithholdingSummary` | `finance.compliance.withholding.read` |
 | `GET /finance/gst/withholding-rates` | `WithholdingRate[]` | `finance.compliance.withholding.read` |
@@ -223,10 +258,16 @@ so every permission defaults to ORG, tops out at ORG, and the routes floor at OR
 - `finance.compliance.einvoice.read`, `finance.compliance.registration.read`,
   `finance.compliance.ims.read`, `finance.compliance.returns.read`,
   `finance.compliance.eway.read`, `finance.compliance.withholding.read`
-- `finance.compliance.registration.write`, `finance.compliance.ims.decide` and
-  `finance.compliance.returns.file` — the three **dangerous** writes, because each decides money
-  or speaks to a government: which identity every future invoice is filed under, whether the
-  credit on a supplier's invoice is claimed, and what a tax period is declared to have contained.
+- `finance.compliance.registration.write`, `finance.compliance.ims.decide`,
+  `finance.compliance.ims.push` and `finance.compliance.returns.file` — the four **dangerous**
+  writes, because each decides money or speaks to a government: which identity every future
+  invoice is filed under, whether the credit on a supplier's invoice is claimed, whether GSTN is
+  told what was decided, and what a tax period is declared to have contained. Recording a decision
+  and sending it are separate permissions on purpose: a clerk may record decisions for a
+  supervisor to review without being able to send them.
+- `finance.compliance.eway.retry` — a write that is deliberately *not* dangerous: it replays
+  transport facts the dispatch system already asserted, under the key that makes a second bill
+  impossible. Both new permissions reach existing organizations only after the ADR-0007 reconcile.
 - `finance.compliance.returns.generate` — a write, but deliberately *not* dangerous and
   deliberately separate from `.file`. Generating states what this platform believes about its own
   book and can be repeated; filing is terminal and leaves the building. A finance analyst can hold
