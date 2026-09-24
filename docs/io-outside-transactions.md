@@ -236,14 +236,19 @@ Razorpay has no idempotency key on a payment create (ADR-0004 §6 and its addend
   outlived its timeout was never finalized, and its capture would otherwise leave a charge no
   refund can reach. A `payment.captured` for a charge the platform failed on its own judgement
   (`attempts_exhausted`, `lookup_unavailable`) is recorded (`failed -> captured`, audited
-  `payment.charge.captured_after_local_failure`, logged at error); a failure the provider reported
-  stays final — a `captured` for it is kept in the inbox as a `conflict` (`illegal_transition`),
-  audited `payment.webhook.ignored` and answered **200** with the charge untouched, not a 422 the
-  provider would redeliver for days (ADR-0004, PAY-A addendum). The same holds for a payment in
-  another amount or currency than the charge, a charge that is not the organization's, and a
-  provider id another charge already holds: reconciliation runs in a SAVEPOINT, raises a typed
-  verdict for each, and the row is recorded once more stating why. Only a bad signature, an
-  unidentifiable body and a transient database failure (503) are non-2xx.
+  `payment.charge.captured_after_local_failure`, logged at error). So is a `payment.captured` for
+  **the same payment** the provider had reported failed — a bank's late authorisation, failed →
+  authorized → captured (`payment.charge.captured_after_provider_failure`, the authorization itself
+  logged at error as `payment.webhook.late_authorization`); it emits `commerce.payment.captured` as
+  any capture does (ADR-0004, PAY-A addendum — *owner to confirm*). A `captured` that is neither is
+  kept in the inbox as a `conflict` (`illegal_transition`, or `provider_id_conflict` when it names
+  another payment id than the charge holds), audited `payment.webhook.ignored` and answered **200**
+  with the charge untouched, not a 422 the provider would redeliver for days. The same holds for a
+  payment in another amount or currency than the charge and a charge that is not the
+  organization's: reconciliation runs in a SAVEPOINT, raises a typed verdict for each, and the row
+  is recorded once more stating why. Every by-id charge query filters on the organization, not on
+  RLS alone. Only a bad signature, an unidentifiable body and a transient database failure (503)
+  are non-2xx.
 * **The lease outlives the call.** `charge_reclaim_after_seconds >= 2 × provider_call_timeout_seconds
   + 60` is validated at start-up (finance: `2 × portal_call_timeout_seconds + 60 ≤
   FILING_RECLAIM_AFTER`), and an adapter's per-request connect/read timeouts over `ensure_order`
@@ -269,4 +274,6 @@ Razorpay has no idempotency key on a payment create (ADR-0004 §6 and its addend
   impossible in the service and in the database), `test_webhook_permanent_conditions.py` (each
   permanent condition answered 200, kept, audited, no state change; a transient failure is a 503;
   a redelivery of an ignored event is deduplicated), `test_webhook_domain.py`,
-  `test_provider_contract.py`.
+  `test_provider_contract.py`. PAY-A fix round: `test_webhook_late_authorization.py`,
+  `test_webhook_provider_id_binding.py`, `test_webhook_tenant_scope.py` (on a BYPASSRLS session),
+  `test_webhook_event_id_reuse.py`, `test_webhook_failure_classification.py`.

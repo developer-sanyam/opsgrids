@@ -64,9 +64,11 @@ ids, state driven by injected webhook fixtures). A test asserts no keys or netwo
   (a provider carries no platform token); admin-gateway routes it as a public path and payment
   verifies the HMAC signature before recording or acting on anything. A permanent condition in a
   signed webhook (a charge that is not ours, an outcome the state machine forbids, another amount
-  or currency) is recorded, audited `payment.webhook.ignored` and answered **200** — a retry could
-  not change it. Only a bad signature or an unidentifiable body (400) and a transient database
-  failure (503) are non-2xx.
+  or currency, a payment id other than the charge's) is recorded, audited `payment.webhook.ignored`
+  and answered **200** — a retry could not change it. `failed → captured` is legal for a failure the
+  platform decided and for the **same payment** the provider had failed (a bank's late
+  authorisation; ADR-0004, owner to confirm). Only a bad signature or an unidentifiable body (400)
+  and a transient database failure (503) are non-2xx.
 - `POST /internal/v1/charges` — service-to-service, guarded by a short-lived service token. Not in
   the public OpenAPI document.
 - `GET /internal/v1/organizations/{org}/mandates:usable?currency=&amount_minor=` — could this
