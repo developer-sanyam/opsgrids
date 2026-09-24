@@ -29,15 +29,21 @@ function tintFor(name: string): string {
 interface AvatarProps {
   name: string;
   size?: AvatarSize | undefined;
+  /**
+   * `circle` for a person (default); `square` — rounded, in the tile radius — for an
+   * organization, so a list mixing the two reads as two kinds of thing without a legend.
+   */
+  shape?: "circle" | "square" | undefined;
   className?: string | undefined;
 }
 
 /** An initials avatar. Alt/label carried by the surrounding name; marked decorative here. */
-export function Avatar({ name, size = "md", className }: AvatarProps) {
+export function Avatar({ name, size = "md", shape = "circle", className }: AvatarProps) {
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center justify-center rounded-full font-bold select-none",
+        "inline-flex shrink-0 items-center justify-center font-bold select-none",
+        shape === "square" ? "rounded-tile" : "rounded-full",
         SIZES[size],
         tintFor(name),
         className,

@@ -37,6 +37,12 @@ export interface SidebarAccount {
   email: string;
   /** The organization the person is acting in, when there is one. */
   organizationName?: string | undefined;
+  /**
+   * A labelled fact about the signed-in person that is not an organization — the operator
+   * console's roles, where nobody acts in one. When present it takes the place of the
+   * organization line under the name and of the labelled box in the menu.
+   */
+  detail?: { label: string; value: string } | undefined;
 }
 
 interface SidebarProps {
@@ -144,7 +150,8 @@ function AccountSwitcher({
     };
   }, [open]);
 
-  const { name, email, organizationName } = account;
+  const { name, email, organizationName, detail } = account;
+  const context = detail ?? (organizationName ? { label: "Organization", value: organizationName } : null);
 
   return (
     <div className="relative" ref={ref}>
@@ -158,7 +165,7 @@ function AccountSwitcher({
         <Avatar name={name} size="sm" />
         <span className="flex min-w-0 flex-col items-start leading-tight">
           <span className="truncate text-sm font-bold text-ink">{name}</span>
-          <span className="truncate text-xs text-muted">{organizationName ?? "Workspace"}</span>
+          <span className="truncate text-xs text-muted">{context?.value ?? "Workspace"}</span>
         </span>
         <ChevronsUpDown className="ml-auto size-4 shrink-0 text-faint" />
       </button>
@@ -177,14 +184,12 @@ function AccountSwitcher({
               <span className="truncate text-xs text-muted">{email}</span>
             </div>
           </div>
-          {organizationName ? (
+          {context ? (
             <div className="mx-1 mb-1 rounded-tile bg-ground px-3 py-2">
               <span className="block text-[0.7rem] font-semibold uppercase tracking-wide text-faint">
-                Organization
+                {context.label}
               </span>
-              <span className="block truncate text-sm font-semibold text-ink">
-                {organizationName}
-              </span>
+              <span className="block truncate text-sm font-semibold text-ink">{context.value}</span>
             </div>
           ) : null}
           <button

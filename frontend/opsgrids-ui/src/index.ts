@@ -10,6 +10,7 @@
  */
 export { Announcer } from "./components/Announcer";
 export { AppShell } from "./components/AppShell";
+export { AuthCard } from "./components/AuthCard";
 export { Avatar } from "./components/Avatar";
 export type { AvatarSize } from "./components/Avatar";
 export { Button } from "./components/Button";
@@ -25,6 +26,8 @@ export { DataTable } from "./components/DataTable";
 export type { Column, TableSelection } from "./components/DataTable";
 export { DateRangeField } from "./components/DateRangeField";
 export { DateTimeField } from "./components/DateTimeField";
+export { DefinitionList } from "./components/DefinitionList";
+export type { Definition } from "./components/DefinitionList";
 export { DeltaPill } from "./components/DeltaPill";
 export { Dialog } from "./components/Dialog";
 export { FormDialog } from "./components/FormDialog";

@@ -338,6 +338,13 @@ export const GaugeIcon = (p: IconProps) => (
   </Base>
 );
 
+export const GiftIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M20 12v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-8" />
+    <path d="M2 8h20v4H2zM12 21V8M12 8S10.5 4 8 4a2 2 0 1 0 0 4Zm0 0s1.5-4 4-4a2 2 0 1 1 0 4Z" />
+  </Base>
+);
+
 export const GlobeIcon = (p: IconProps) => (
   <Base {...p}>
     <circle cx="12" cy="12" r="9" />
@@ -433,6 +440,14 @@ export const LifeBuoyIcon = (p: IconProps) => (
     <circle cx="12" cy="12" r="9" />
     <circle cx="12" cy="12" r="3.5" />
     <path d="m4.9 4.9 4.6 4.6m5 5 4.6 4.6m0-14.2-4.6 4.6m-5 5-4.6 4.6" />
+  </Base>
+);
+
+export const LockIcon = (p: IconProps) => (
+  <Base {...p}>
+    <rect x="4" y="10" width="16" height="11" rx="2" />
+    <path d="M8 10V7a4 4 0 0 1 8 0v3" />
+    <circle cx="12" cy="15.5" r="1.2" fill="currentColor" stroke="none" />
   </Base>
 );
 
@@ -548,6 +563,12 @@ export const PaperclipIcon = (p: IconProps) => (
   </Base>
 );
 
+export const PauseIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M9 5v14M15 5v14" />
+  </Base>
+);
+
 export const PauseCircleIcon = (p: IconProps) => (
   <Base {...p}>
     <circle cx="12" cy="12" r="9" />
@@ -558,6 +579,12 @@ export const PauseCircleIcon = (p: IconProps) => (
 export const PhoneIcon = (p: IconProps) => (
   <Base {...p}>
     <path d="M4 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L14 12l5 2v4a2 2 0 0 1-2.2 2A16 16 0 0 1 2 6.2 2 2 0 0 1 4 4Z" />
+  </Base>
+);
+
+export const PlayIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M7 5v14l12-7-12-7Z" />
   </Base>
 );
 
@@ -591,6 +618,14 @@ export const ReceiptIcon = (p: IconProps) => (
 export const RefreshIcon = (p: IconProps) => (
   <Base {...p}>
     <path d="M20 11a8 8 0 0 0-14.3-4.5M4 4v3h3M4 13a8 8 0 0 0 14.3 4.5M20 20v-3h-3" />
+  </Base>
+);
+
+export const RepeatIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M17 3l4 4-4 4" />
+    <path d="M21 7H8a4 4 0 0 0-4 4v1M7 21l-4-4 4-4" />
+    <path d="M3 17h13a4 4 0 0 0 4-4v-1" />
   </Base>
 );
 
