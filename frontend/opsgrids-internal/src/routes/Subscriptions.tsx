@@ -13,6 +13,7 @@ import {
   EnvBadge,
   ErrorState,
   Money,
+  OrgIdentity,
   PageHeader,
   Pill,
   SearchInput,
@@ -37,7 +38,11 @@ export function SubscriptionsPage() {
     const q = search.trim().toLowerCase();
     return all.filter((s) => {
       const matchQuery =
-        q === "" || s.organization_id.toLowerCase().includes(q) || s.product_key.toLowerCase().includes(q);
+        q === "" ||
+        s.organization_id.toLowerCase().includes(q) ||
+        (s.name?.toLowerCase().includes(q) ?? false) ||
+        (s.slug?.toLowerCase().includes(q) ?? false) ||
+        s.product_key.toLowerCase().includes(q);
       const matchState = state === "all" || s.state === state;
       return matchQuery && matchState;
     });
@@ -50,10 +55,10 @@ export function SubscriptionsPage() {
       render: (s) => (
         <Link
           to={`/accounts/${s.organization_id}`}
-          className="mono truncate text-sm font-bold text-ink hover:text-accent transition-colors"
+          className="block truncate hover:text-accent transition-colors"
           onClick={(e) => e.stopPropagation()}
         >
-          {s.organization_id}
+          <OrgIdentity name={s.name} slug={s.slug} organizationId={s.organization_id} />
         </Link>
       ),
     },
@@ -102,7 +107,7 @@ export function SubscriptionsPage() {
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
           <SearchInput
             label="Search subscriptions"
-            placeholder="Search by organization id or product…"
+            placeholder="Search by name, slug, organization id or product…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             containerClassName="lg:max-w-sm"

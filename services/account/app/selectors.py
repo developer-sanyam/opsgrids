@@ -58,6 +58,20 @@ async def slug_taken(session: AsyncSession, slug: str) -> bool:
     return (await get_organization_by_slug(session, slug)) is not None
 
 
+def organizations_page_stmt(*, cursor: uuid.UUID | None, limit: int) -> Select[Any]:
+    """Keyset page of every live organization, in `id` order — console's backfill discovery
+    read (`GET /internal/v1/organizations`).
+
+    `WHERE deleted_at IS NULL AND id > :cursor ORDER BY id LIMIT n`, the same shape
+    `employee/app/selectors.py`'s `hierarchy_stmt` uses for its own internal backfill page:
+    offset pagination is deliberately not used — a row inserted mid-run would shift every later
+    page and silently skip an organization."""
+    stmt = select(Organization).where(Organization.deleted_at.is_(None))
+    if cursor is not None:
+        stmt = stmt.where(Organization.id > cursor)
+    return stmt.order_by(Organization.id).limit(limit)
+
+
 # --------------------------------------------------------------------- members
 
 

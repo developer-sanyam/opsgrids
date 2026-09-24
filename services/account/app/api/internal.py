@@ -42,10 +42,11 @@ from sqlalchemy.orm import selectinload
 
 from app import selectors
 from app.models import Membership, MembershipRole, Organization, OrgDomain, User
+from app.schemas import OrganizationsPageOut, OrganizationSummaryOut
 from platform_core.auth import require_service_token
 from platform_core.cache import current_permission_version
 from platform_core.db import get_directory_session
-from platform_core.errors import ForbiddenProblem, NotFoundProblem
+from platform_core.errors import ForbiddenProblem, NotFoundProblem, UnauthorizedProblem
 from platform_core.logging import get_logger
 
 log = get_logger("account.internal")
@@ -196,6 +197,65 @@ async def organization_by_domain(session: SessionDep, domain: str) -> dict[str, 
         "organization_status": organization.status,
         "verified": org_domain.verified_at is not None,
     }
+
+
+#: Page bounds for `GET /organizations`, the same shape `employee/app/api/internal.py`'s own
+#: internal backfill page uses.
+DEFAULT_ORGANIZATIONS_PAGE_SIZE = 200
+MAX_ORGANIZATIONS_PAGE_SIZE = 500
+
+#: Only console's backfill discovers organizations in bulk today. Every other internal caller on
+#: this router answers a question about *one* person or *one* domain; a bulk organization listing
+#: is a materially bigger cross-tenant surface than any of the four this module's own docstring
+#: names, so it starts narrowed to the one caller that needs it rather than "any service holding
+#: an account-audience token" — the same posture `subscription`'s `require_console_caller` and
+#: this module's own `membership_lookup` already take for their own narrower routes.
+TRUSTED_BULK_CALLER = "console"
+
+
+def require_console_caller(request: Request) -> None:
+    """The narrower caller check: valid and addressed to account (`require_service_token`, applied
+    to the whole router, already checked that) and issued by console specifically."""
+    caller = getattr(request.state, "service_caller", None)
+    if caller != TRUSTED_BULK_CALLER:
+        raise UnauthorizedProblem("Valid service token required")
+
+
+ConsoleCallerDep = Annotated[None, Depends(require_console_caller)]
+
+
+@router.get(
+    "/organizations",
+    response_model=OrganizationsPageOut,
+    summary="Every live organization's identity, paginated — console's backfill discovery read",
+)
+async def list_organizations(
+    session: SessionDep,
+    _console: ConsoleCallerDep,
+    cursor: Annotated[uuid.UUID | None, Query()] = None,
+    limit: Annotated[
+        int, Query(ge=1, le=MAX_ORGANIZATIONS_PAGE_SIZE)
+    ] = DEFAULT_ORGANIZATIONS_PAGE_SIZE,
+) -> OrganizationsPageOut:
+    """The one-off backfill's org-identity source (`services/console/app/backfill.py`): every
+    organization that predates console's own event queue has no row to fold from, because there
+    was no consumer running to catch its `core.org.created`. This is not a live read any operator
+    request takes — it exists so that one-off script never has to read `account.organizations`
+    directly (ADR-0000 §10: no cross-schema reach, service-to-service or otherwise).
+
+    Keyset on `id`, the same termination rule as `employee-service`'s own internal backfill page:
+    keep requesting with `cursor=next_cursor` until it comes back `null`.
+    """
+    rows = (
+        (await session.execute(selectors.organizations_page_stmt(cursor=cursor, limit=limit)))
+        .scalars()
+        .all()
+    )
+    next_cursor = rows[-1].id if len(rows) == limit else None
+    return OrganizationsPageOut(
+        items=[OrganizationSummaryOut.model_validate(row) for row in rows],
+        next_cursor=next_cursor,
+    )
 
 
 @router.get(

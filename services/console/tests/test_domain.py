@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.domain import apply_subscription_transition, recompute_snapshot
+from app.domain import apply_org_identity, apply_subscription_transition, recompute_snapshot
 
 T0 = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 
@@ -135,3 +135,74 @@ class TestCancellationTombstone:
         assert snapshot["mrr_minor"] == 30000, "a cancelled tombstone added to MRR"
         assert snapshot["locked"] is False, "a cancelled tombstone locked the org"
         assert snapshot["currency"] == "INR"
+
+
+class TestOrgIdentity:
+    """`apply_org_identity` — the same ordering guard as a subscription transition, over the
+    thinner signal of a `core.org.*` event or a backfill snapshot."""
+
+    def test_the_first_sighting_always_applies(self) -> None:
+        applied, name, slug = apply_org_identity(
+            current_name=None,
+            current_slug=None,
+            current_synced_at=None,
+            name="Northwind Metals",
+            slug="northwind-metals",
+            occurred_at=_at(0),
+        )
+        assert applied is True
+        assert (name, slug) == ("Northwind Metals", "northwind-metals")
+
+    def test_a_later_rename_overwrites_the_name(self) -> None:
+        applied, name, slug = apply_org_identity(
+            current_name="Old Name",
+            current_slug="old-slug",
+            current_synced_at=_at(0),
+            name="New Name",
+            slug=None,
+            occurred_at=_at(10),
+        )
+        assert applied is True
+        assert name == "New Name"
+        assert slug == "old-slug", "an update with no slug field must not blank the stored one"
+
+    def test_a_stale_source_is_dropped_untouched(self) -> None:
+        """An event replayed after a later rename, or a backfill run against data already
+        superseded by a real event, must not resurrect the old name."""
+        applied, name, slug = apply_org_identity(
+            current_name="New Name",
+            current_slug="new-slug",
+            current_synced_at=_at(10),
+            name="Old Name",
+            slug="old-slug",
+            occurred_at=_at(5),
+        )
+        assert applied is False
+        assert (name, slug) == ("New Name", "new-slug")
+
+    def test_a_tie_does_not_reapply(self) -> None:
+        """Re-running the backfill against unchanged source data — the same `updated_at` it wrote
+        last time — must be a no-op, not a redundant write."""
+        applied, _name, _slug = apply_org_identity(
+            current_name="Northwind Metals",
+            current_slug="northwind-metals",
+            current_synced_at=_at(10),
+            name="Northwind Metals",
+            slug="northwind-metals",
+            occurred_at=_at(10),
+        )
+        assert applied is False
+
+    def test_an_update_with_no_name_leaves_the_stored_name_alone(self) -> None:
+        """`core.org.updated`'s payload carries `name: null` when `name` was not in `changed` —
+        this must not blank a name that was never touched."""
+        applied, name, slug = apply_org_identity(
+            current_name="Northwind Metals",
+            current_slug="northwind-metals",
+            current_synced_at=_at(0),
+            name=None,
+            slug=None,
+            occurred_at=_at(10),
+        )
+        assert applied is True
+        assert (name, slug) == ("Northwind Metals", "northwind-metals")

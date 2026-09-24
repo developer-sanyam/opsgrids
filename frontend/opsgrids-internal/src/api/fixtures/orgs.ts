@@ -2,13 +2,14 @@
  * The tenant directory fixture: sixteen customer organizations across every product, plan and
  * lifecycle state, plus the subscriptions derived from them.
  *
- * This mirrors a real split in the live system on purpose: `orgDirectory()` (name, slug, status,
- * country) is only ever read by `getOrganization()`, one id at a time — exactly like the real
- * `/admin/organizations/{id}` composite, which is the only place the console has a customer's
- * name. `buildOrgStates()` — the bulk `/admin/organizations` list — deliberately does **not**
- * expose the name, because the real endpoint doesn't either. A fixtures screen that tried to show
- * a directory name in a bulk list would silently diverge from what the live gateway can do; keeping
- * that gap here too is what caught it instead.
+ * `orgDirectory()` (name, slug, status, country, plus fields the bulk projection doesn't carry at
+ * all — `legal_name` has no analogue here, `country` does) is still only ever read by
+ * `getOrganization()`, one id at a time — the real `/admin/organizations/{id}` composite calls
+ * account-service directly for it. `buildOrgStates()` — the bulk `/admin/organizations` list —
+ * **does** carry `name`/`slug` now, mirrored from the same seed: console's projection folds
+ * account-service's `core.org.*` (and the one-off backfill) into `name`/`slug` on the bulk row
+ * itself, so a fixtures screen that showed one in the list is no longer diverging from what the
+ * live gateway can do — it would be the gap, if this stayed the old shape.
  */
 
 import type { OrgStateOut, SubscriptionStateEntry } from "@/api/types";
@@ -331,8 +332,8 @@ export function orgDirectory(organizationId: string): OrgDirectoryEntry | undefi
 }
 
 /** One organization's commercial snapshot — `OrgStateOut`, exactly what `/admin/organizations`
- *  and the `commercial` half of `/admin/organizations/{id}` carry. No name: the real projection
- *  does not have one either. */
+ *  and the `commercial` half of `/admin/organizations/{id}` carry, including the account-service
+ *  name/slug mirror the bulk projection folds in. */
 export function orgStateFor(organizationId: string): OrgStateOut | undefined {
   const seed = ORG_SEED_BY_ID.get(organizationId);
   if (!seed) return undefined;
@@ -351,6 +352,8 @@ export function orgStateFor(organizationId: string): OrgStateOut | undefined {
   }
   return {
     organization_id: seed.id,
+    name: seed.name,
+    slug: seed.slug,
     mrr_minor: mrrMinor,
     currency: "INR",
     active_products: activeProducts,

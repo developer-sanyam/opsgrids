@@ -11,6 +11,7 @@ import {
   EmptyState,
   EnvBadge,
   ErrorState,
+  OrgIdentity,
   PageHeader,
   Pill,
   SearchInput,
@@ -72,7 +73,11 @@ export function AccountsPage() {
     const q = search.trim().toLowerCase();
     const filtered = all.filter((o) => {
       const matchQuery =
-        q === "" || o.organization_id.toLowerCase().includes(q) || o.active_products.some((p) => p.includes(q));
+        q === "" ||
+        o.organization_id.toLowerCase().includes(q) ||
+        (o.name?.toLowerCase().includes(q) ?? false) ||
+        (o.slug?.toLowerCase().includes(q) ?? false) ||
+        o.active_products.some((p) => p.includes(q));
       const matchStatus =
         status === "all" || (status === "locked" && o.locked) || (status === "trial" && o.trial_ends_at !== null);
       return matchQuery && matchStatus;
@@ -89,10 +94,10 @@ export function AccountsPage() {
       render: (row) => (
         <Link
           to={`/accounts/${row.organization_id}`}
-          className="mono truncate text-sm font-bold text-ink hover:text-accent transition-colors"
+          className="block truncate hover:text-accent transition-colors"
           onClick={(e) => e.stopPropagation()}
         >
-          {row.organization_id}
+          <OrgIdentity name={row.name} slug={row.slug} organizationId={row.organization_id} />
         </Link>
       ),
     },
@@ -164,8 +169,8 @@ export function AccountsPage() {
       />
 
       <p className="text-xs text-faint">
-        The accounts list doesn't carry a customer name or slug yet — only the organization id.
-        Open a row for its directory identity.
+        An organization shows its account-service name and slug once folded — a row still
+        showing its bare id predates that fold. Open it for the directory identity either way.
       </p>
 
       {/* Controls */}
@@ -173,7 +178,7 @@ export function AccountsPage() {
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
           <SearchInput
             label="Search accounts"
-            placeholder="Search by organization id or product…"
+            placeholder="Search by name, slug, organization id or product…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             containerClassName="lg:max-w-sm"

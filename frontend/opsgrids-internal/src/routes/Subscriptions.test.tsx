@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -18,11 +19,13 @@ afterEach(() => {
 });
 
 describe("SubscriptionsPage", () => {
-  it("renders rows from the real, flattened SubscriptionOut shape", async () => {
+  it("renders rows from the real, flattened SubscriptionOut shape, with the org's name", async () => {
     vi.spyOn(client, "listSubscriptions").mockResolvedValue({
       subscriptions: [
         {
           organization_id: "org_a1f09c",
+          name: "Northwind Metals",
+          slug: "northwind-metals",
           product_key: "trading",
           state: "active",
           plan_version_id: "pv_trading_bespoke_northwind_v1",
@@ -32,6 +35,8 @@ describe("SubscriptionsPage", () => {
         },
         {
           organization_id: "org_07c662",
+          name: null,
+          slug: null,
           product_key: "crm",
           state: "trial",
           plan_version_id: null,
@@ -45,6 +50,46 @@ describe("SubscriptionsPage", () => {
     renderSubscriptions();
     await waitFor(() => expect(screen.getByText("trading")).toBeTruthy());
     expect(screen.getByText("crm")).toBeTruthy();
+    expect(screen.getByText("Northwind Metals")).toBeTruthy();
+    expect(screen.getByText("northwind-metals")).toBeTruthy();
+    // No name for the second row (predates the identity fold) — falls back to the raw id.
+    expect(screen.getByText("org_07c662")).toBeTruthy();
+  });
+
+  it("is searchable by the organization's name", async () => {
+    vi.spyOn(client, "listSubscriptions").mockResolvedValue({
+      subscriptions: [
+        {
+          organization_id: "org_a1f09c",
+          name: "Northwind Metals",
+          slug: "northwind-metals",
+          product_key: "trading",
+          state: "active",
+          plan_version_id: "pv_1",
+          amount_minor: 420_000_00,
+          currency: "INR",
+          trial_ends_at: null,
+        },
+        {
+          organization_id: "org_07c662",
+          name: "BlueOak Retail",
+          slug: "blueoak-retail",
+          product_key: "crm",
+          state: "trial",
+          plan_version_id: null,
+          amount_minor: 0,
+          currency: null,
+          trial_ends_at: "2026-09-05T00:00:00Z",
+        },
+      ],
+    });
+
+    renderSubscriptions();
+    await waitFor(() => expect(screen.getByText("Northwind Metals")).toBeTruthy());
+
+    await userEvent.type(screen.getByLabelText("Search subscriptions"), "blueoak");
+    await waitFor(() => expect(screen.queryByText("Northwind Metals")).toBeNull());
+    expect(screen.getByText("BlueOak Retail")).toBeTruthy();
   });
 
   it("shows the empty state for an empty subscription list", async () => {

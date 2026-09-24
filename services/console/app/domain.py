@@ -47,6 +47,17 @@ CREDIT_EVENTS: tuple[str, ...] = (
 )
 USAGE_EVENT = "commerce.usage.recorded"
 
+# account-service's identity events (documented, from account-service's `app/services.py`; not
+# imported — the coupling is the routing key and the payload, same as every commerce event
+# above). `core.org.created` carries `organization_id`, `slug`, `name` (and other fields console
+# does not project); `core.org.updated` carries `organization_id`, `changed`, and `name` when
+# `"name" in changed` (`null` otherwise) — `slug` never appears there because account's own
+# `OrganizationPatch` carries no slug field, so it can never be in `changed`.
+ORG_EVENTS: tuple[str, ...] = (
+    "core.org.created",
+    "core.org.updated",
+)
+
 #: States that pay: what MRR sums over.
 MRR_STATES: frozenset[str] = frozenset({"active"})
 #: States that entitle a product: `active`, or a trial that has not lapsed.
@@ -152,6 +163,38 @@ def apply_subscription_transition(
             "occurred_at": occurred_at,
         }
     return True, previous
+
+
+def apply_org_identity(
+    *,
+    current_name: str | None,
+    current_slug: str | None,
+    current_synced_at: str | None,
+    name: str | None,
+    slug: str | None,
+    occurred_at: str | None,
+) -> tuple[bool, str | None, str | None]:
+    """Fold one org-identity source (a `core.org.*` event, or a backfill snapshot stamped with
+    account's own `updated_at`) into the projection's `name`/`slug`.
+
+    Same ordering guard as `apply_subscription_transition`, over the same kind of thin,
+    unordered-delivery-prone signal: a source whose `occurred_at` does not advance
+    `current_synced_at` is dropped, so a `core.org.created` redelivered after a later rename (or
+    a backfill run after a real rename event has already landed) cannot resurrect the old name.
+    `name`/`slug` of `None` (an update that did not touch this field, or a backfill row that
+    genuinely lacks one) leaves the corresponding current value alone rather than blanking it —
+    a PATCH cannot null a field account-service's own way, and neither can this.
+
+    Returns ``(applied, name, slug)`` — the fields to write, or the existing ones unchanged when
+    not applied.
+    """
+    if _is_stale({"occurred_at": current_synced_at}, occurred_at):
+        return False, current_name, current_slug
+    return (
+        True,
+        name if name is not None else current_name,
+        slug if slug is not None else current_slug,
+    )
 
 
 def recompute_snapshot(states: dict[str, Any]) -> dict[str, Any]:

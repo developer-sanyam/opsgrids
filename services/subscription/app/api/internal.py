@@ -31,7 +31,13 @@ from starlette.requests import Request
 from app import selectors, services
 from app.api.routes import CatalogDep
 from app.registry import ProductRegistry
-from app.schemas import OperatorChangePlanIn, OperatorSubscribeIn, SubscriptionOut, SuspendIn
+from app.schemas import (
+    OperatorChangePlanIn,
+    OperatorSubscribeIn,
+    SubscriptionOperatorOut,
+    SubscriptionOut,
+    SuspendIn,
+)
 from platform_core.auth import require_service_token
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
@@ -179,7 +185,7 @@ async def change_plan_as_operator(
 
 @router.get(
     "/organizations/{organization_id}/subscriptions",
-    response_model=list[SubscriptionOut],
+    response_model=list[SubscriptionOperatorOut],
     summary="Every subscription this organization holds — console's cross-tenant pricing read",
 )
 async def list_subscriptions_for_operator(
@@ -187,13 +193,18 @@ async def list_subscriptions_for_operator(
     session: SessionDep,
     request: Request,
     _caller: ConsoleCallerDep,
-) -> list[SubscriptionOut]:
-    """What `GET /admin/organizations/{id}/pricing` and the pricing POST's re-pin decision both
-    need: this organization's live subscriptions, with the id and `current_period_end` the
-    console projection (`console.OrgCommercialState`) does not carry. Bound to the named
-    organization as the first statement, the same shape every other route in this file uses —
-    there is no principal to take a chokepoint session from on a service-token request, so RLS
-    isolation depends on this binding rather than on a caller-supplied filter alone.
+) -> list[SubscriptionOperatorOut]:
+    """What `GET /admin/organizations/{id}/pricing`, the pricing POST's re-pin decision, and the
+    one-off backfill (`services/console/app/backfill.py`) all need: this organization's live
+    subscriptions, with the id, `current_period_end` and `updated_at` the console projection
+    (`console.OrgCommercialState`) does not carry. Bound to the named organization as the first
+    statement, the same shape every other route in this file uses — there is no principal to take
+    a chokepoint session from on a service-token request, so RLS isolation depends on this binding
+    rather than on a caller-supplied filter alone.
+
+    `SubscriptionOperatorOut`, not the plain `SubscriptionOut` every customer-facing route in
+    `app/api/routes.py` returns — see that schema's own docstring for why `updated_at` lives only
+    here.
     """
     settings: ServiceSettings = request.app.state.settings
     async with session.begin():
@@ -201,4 +212,4 @@ async def list_subscriptions_for_operator(
         if not settings.is_production:
             await assert_tenant(session, organization_id)
         subscriptions = await selectors.list_by_organization(session, organization_id)
-        return [SubscriptionOut.model_validate(s) for s in subscriptions]
+        return [SubscriptionOperatorOut.model_validate(s) for s in subscriptions]

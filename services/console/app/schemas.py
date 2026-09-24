@@ -26,6 +26,13 @@ class OrgStateOut(BaseModel):
     model_config = {"from_attributes": True}
 
     organization_id: uuid.UUID
+    #: Mirrored from account-service's `core.org.{created,updated}` (`app/consumers.py`) or the
+    #: one-off backfill (`app/backfill.py`) — `null` for a row neither has reached yet. Not the
+    #: authority: `GET /admin/organizations/{id}`'s directory composite still calls account-service
+    #: directly for that. This is what lets the *bulk* lists show a name without an extra
+    #: cross-tenant call per row.
+    name: str | None = None
+    slug: str | None = None
     mrr_minor: int
     currency: str | None
     active_products: list[str]
@@ -95,6 +102,10 @@ class SubscriptionOut(BaseModel):
     """One organization's subscription to one product, flattened from its snapshot."""
 
     organization_id: uuid.UUID
+    #: Same mirror as `OrgStateOut.name`/`.slug` — `null` until the identity fold or the backfill
+    #: has reached this organization.
+    name: str | None = None
+    slug: str | None = None
     product_key: str
     state: str
     plan_version_id: str | None

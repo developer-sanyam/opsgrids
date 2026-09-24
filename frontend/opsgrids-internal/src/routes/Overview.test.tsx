@@ -8,10 +8,11 @@ import { OverviewPage } from "./Overview";
 
 /**
  * Rendered against the real `GET /admin/metrics/overview` (`MetricsOverviewOut`) and
- * `GET /admin/organizations` (`OrganizationsOut`) shapes — no sparkline, no delta, no revenue
- * figure and no per-org name, because the live payloads don't carry them (`services/console/app/
- * schemas.py`). This is the exact page that shipped broken: `attentionRows(orgs.data.items)` threw
- * because the real envelope key is `organizations`, not `items`.
+ * `GET /admin/organizations` (`OrganizationsOut`) shapes — no sparkline, no delta and no revenue
+ * figure, because the live payload doesn't carry them (`services/console/app/schemas.py`); `name`/
+ * `slug` it does carry now, mirrored from account-service. This is the exact page that shipped
+ * broken: `attentionRows(orgs.data.items)` threw because the real envelope key is `organizations`,
+ * not `items`.
  */
 
 function renderOverview() {
@@ -46,6 +47,8 @@ describe("OverviewPage", () => {
       organizations: [
         {
           organization_id: "org_a1f09c",
+          name: "Northwind Metals",
+          slug: "northwind-metals",
           mrr_minor: 420_000_00,
           currency: "INR",
           active_products: ["trading"],
@@ -83,6 +86,8 @@ describe("OverviewPage", () => {
       organizations: [
         {
           organization_id: "org_clean",
+          name: "Clean Co",
+          slug: "clean-co",
           mrr_minor: 0,
           currency: null,
           active_products: [],
@@ -101,6 +106,45 @@ describe("OverviewPage", () => {
         screen.getByText("Nothing needs attention — every account is unlocked with no trial ending soon."),
       ).toBeTruthy(),
     );
+  });
+
+  it("names the account in the attention list, falling back to the id when there's no name", async () => {
+    vi.spyOn(client, "getOverview").mockResolvedValue(METRICS);
+    vi.spyOn(client, "listOrganizations").mockResolvedValue({
+      organizations: [
+        {
+          organization_id: "org_4b0aa6",
+          name: "Vertex Mining",
+          slug: "vertex-mining",
+          mrr_minor: 0,
+          currency: null,
+          active_products: [],
+          subscription_states: {},
+          trial_ends_at: null,
+          locked: true,
+          updated_at: "2026-07-30T10:04:00Z",
+        },
+        {
+          organization_id: "org_not_backfilled",
+          name: null,
+          slug: null,
+          mrr_minor: 0,
+          currency: null,
+          active_products: [],
+          subscription_states: {},
+          trial_ends_at: null,
+          locked: true,
+          updated_at: "2026-07-30T10:04:00Z",
+        },
+      ],
+      metrics: METRICS,
+    });
+
+    renderOverview();
+
+    await waitFor(() => expect(screen.getByText("Vertex Mining")).toBeTruthy());
+    expect(screen.getByText("vertex-mining")).toBeTruthy();
+    expect(screen.getByText("org_not_backfilled")).toBeTruthy();
   });
 
   it("shows a contained error card, not a crash, when the metrics call fails", async () => {

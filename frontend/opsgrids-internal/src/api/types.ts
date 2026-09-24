@@ -6,12 +6,16 @@
  * credit-ledger route (`libs/contracts/openapi/billing.json`). Money is always an **integer
  * minor amount + ISO-4217 currency** (never a float).
  *
- * Several of these are visibly thinner than a customer-facing screen would want — no directory
- * name on a bulk list row, no seat counts, no per-subscription id outside the pricing composite.
- * That is not an oversight in this file: it is what the service actually returns today. Where the
- * console needs a field the server does not send, the screen that reads it shows an honest "—",
- * never a guess. See each screen for the specific gap and `docs/adr` / the PR description for the
- * backend follow-ups this implies.
+ * Several of these are visibly thinner than a customer-facing screen would want — no seat counts,
+ * no per-subscription id outside the pricing composite. That is not an oversight in this file: it
+ * is what the service actually returns today. Where the console needs a field the server does not
+ * send, the screen that reads it shows an honest "—", never a guess. See each screen for the
+ * specific gap and `docs/adr` / the PR description for the backend follow-ups this implies.
+ *
+ * `name`/`slug` on `OrgStateOut` and `SubscriptionOut` are mirrored from account-service's
+ * directory (`core.org.{created,updated}`, or the one-off backfill for an organization that
+ * predates console's own event queue) — `null` for a row neither has reached yet, never a
+ * guess or a fabricated fallback.
  */
 
 /* ------------------------------ pagination ------------------------------ */
@@ -45,10 +49,13 @@ export interface SubscriptionStateEntry {
   [key: string]: unknown;
 }
 
-/** `OrgStateOut` — one organization's commercial snapshot. No name, no slug, no seats: those live
- *  in account-service's directory, which this projection does not carry. */
+/** `OrgStateOut` — one organization's commercial snapshot. `name`/`slug` are mirrored from
+ *  account-service's directory and are `null` until the identity fold or the backfill has
+ *  reached this organization — still no seat count, which this projection does not carry at all. */
 export interface OrgStateOut {
   organization_id: string;
+  name: string | null;
+  slug: string | null;
   mrr_minor: number;
   currency: string | null;
   active_products: string[];
@@ -110,10 +117,12 @@ export interface OrgDetailOut {
 }
 
 /** `SubscriptionOut` — one row of `GET /admin/subscriptions`, flattened from every org's
- *  `subscription_states`. No subscription id, no product/plan name, no seats: those are not part
- *  of this projection. */
+ *  `subscription_states`. `name`/`slug` are the same account-service mirror as `OrgStateOut`'s;
+ *  there is still no subscription id, no product/plan name and no seat count in this projection. */
 export interface SubscriptionOut {
   organization_id: string;
+  name: string | null;
+  slug: string | null;
   product_key: string;
   state: string;
   plan_version_id: string | null;

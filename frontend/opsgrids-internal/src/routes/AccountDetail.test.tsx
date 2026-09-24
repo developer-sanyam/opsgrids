@@ -56,6 +56,8 @@ describe("AccountDetailPage", () => {
       created_at: "2024-02-11T00:00:00Z",
       commercial: {
         organization_id: "org_a1f09c",
+        name: "Northwind Metals",
+        slug: "northwind-metals",
         mrr_minor: 420_000_00,
         currency: "INR",
         active_products: ["trading"],
@@ -71,6 +73,8 @@ describe("AccountDetailPage", () => {
       subscriptions: [
         {
           organization_id: "org_a1f09c",
+          name: "Northwind Metals",
+          slug: "northwind-metals",
           product_key: "trading",
           state: "active",
           plan_version_id: "pv_1",

@@ -3,6 +3,7 @@ export { Button } from "./Button";
 export { Pill } from "./Pill";
 export { Tag } from "./Tag";
 export { Avatar } from "./Avatar";
+export { OrgIdentity } from "./OrgIdentity";
 export { SearchInput } from "./SearchInput";
 export { PageHeader } from "./PageHeader";
 export { ThemeToggle } from "./ThemeToggle";

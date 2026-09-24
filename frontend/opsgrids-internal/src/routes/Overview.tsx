@@ -13,6 +13,7 @@ import {
   ErrorState,
   KpiCard,
   Money,
+  OrgIdentity,
   SectionHeader,
   Skeleton,
 } from "@/ui";
@@ -235,7 +236,12 @@ export function OverviewPage() {
                   to={`/accounts/${org.organization_id}`}
                   className="flex flex-wrap items-center gap-3 py-3 transition-colors hover:bg-ground/60"
                 >
-                  <span className="mono truncate text-sm font-bold text-ink">{org.organization_id}</span>
+                  <OrgIdentity
+                    name={org.name}
+                    slug={org.slug}
+                    organizationId={org.organization_id}
+                    className="min-w-0 max-w-xs"
+                  />
                   <span className="text-sm text-muted">{reason}</span>
                   <span className="ml-auto flex items-center gap-4">
                     {org.mrr_minor > 0 ? (
