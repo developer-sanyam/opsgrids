@@ -77,6 +77,21 @@ x-service-env: &service-env
   MALLOC_TRIM_THRESHOLD_: '131072'
   DB_POOL_SIZE: ${DB_POOL_SIZE:-3}
   DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-2}
+  # On, by this default, on the edge: every service that used to have its own `*-worker`
+  # container (account, product, subscription, payment, notification, approval, attendance,
+  # leave, customer, finance) now runs that worker's loops — consumers, dispatchers, sweeps,
+  # drivers, whatever `bin/worker` ran — as supervised background tasks inside the API process
+  # itself, on their own bulkhead engine (`create_bulkhead_engine`), instead of a second
+  # container idling at ~90 MB apiece (the worker-folding follow-up to the memory-headroom
+  # slice, which already folded every service's `*-cron` sweep the same way — see each folded
+  # `*-worker` container's own comment, below). A service with no field named
+  # `run_consumers_in_api` (every service that never had a worker: `auth`, `app-gateway`,
+  # `catalog`, `billing`, `metering`, `deal`, `lead`, `project`, `timesheet`, `standup`,
+  # `projects`, `support`, `marketing`, `itsm`) simply ignores this — `ServiceSettings` is
+  # `extra="ignore"`, so an unused env var here is inert, not an error. Rollback is `false`
+  # here plus `split-workers` added to `EDGE_PROFILES` (RUNBOOK.md) — the ten `*-worker`
+  # containers below still exist, unchanged, behind that profile, off by default.
+  RUN_CONSUMERS_IN_API: ${RUN_CONSUMERS_IN_API:-true}
   JWKS_URL: http://auth:8000/.well-known/jwks.json
   JWT_ISSUER: ${JWT_ISSUER}
   JWT_KID: ${JWT_KID}
@@ -591,8 +606,20 @@ services:
     networks:
       - back
 
+  # `stop_grace_period: 30s` here and on every other service whose API now folds a `*-worker`'s
+  # loops in (`product`, `subscription`, `payment`, `notification`, `approval`, `attendance`,
+  # `leave`, `customer`, `finance`, below): Docker's default is 10s, SIGTERM then SIGKILL, and a
+  # plain API's own shutdown (draining in-flight requests, disposing its engines) was already
+  # comfortably inside that. A folded consumer adds real drain time on top — an in-flight
+  # message handler finishing its transaction, `EventConsumer.run()`'s AMQP connection closing
+  # cleanly, a sweep's own tick — all of it triggered by the same `SIGTERM` -> lifespan shutdown
+  # -> `stop_background_sweep` path, cancelled promptly but not instantly. 30s is comfortably
+  # over what any of these loops need to unwind and under what an operator waiting on `docker
+  # compose down` will not notice; a `SIGKILL` mid-transaction is safe either way (the next
+  # delivery retries), but a clean stop is strictly better than relying on that safety net.
   account:
     <<: *service-common
+    stop_grace_period: 30s
     image: opsgrids-edge/account
     build:
       context: ../..
@@ -610,6 +637,7 @@ services:
 
   product:
     <<: *service-common
+    stop_grace_period: 30s
     image: opsgrids-edge/product
     build:
       context: ../..
@@ -860,8 +888,19 @@ services:
   # since ADR-0013's memory-budget erratum (2026-09-23) — the same merge `subscription-worker`
   # already documents. `app/worker.py` `gather`s the two; `bin/cron` (`app/cron.py`) still runs
   # the sweep alone for local debugging, on no container of its own.
+  #
+  # **Off by default (the worker-folding follow-up to the memory-headroom slice).** Both loops
+  # now run inside the `account` API container itself, supervised, on their own bulkhead engine
+  # (`RUN_CONSUMERS_IN_API`, above — `services/account/app/main.py`'s own
+  # `_start_background_worker`/`_stop_background_worker`). This container still exists, unchanged,
+  # for the rollback: `RUN_CONSUMERS_IN_API=false` plus `split-workers` added to `EDGE_PROFILES`
+  # (RUNBOOK.md) starts it exactly as before. `profiles: ['split-workers']` (not `['hrms']`-style
+  # product gating — this container has none) means turning that profile on for the rollback
+  # starts all ten folded workers together, not this one alone; an idle one for a product this
+  # box does not sell costs ~90 MB and nothing else.
   account-worker:
     <<: *background
+    profiles: ['split-workers']
     image: opsgrids-edge/account
     command: ['./bin/worker']
     environment:
@@ -870,8 +909,11 @@ services:
     volumes:
       - ../../libs/contracts/permissions:/opt/opsgrids/permissions:ro
 
+  # Off by default — see `account-worker`'s own comment, just above; the same rollback shape,
+  # folded into `product`'s own API process (`services/product/app/main.py`).
   product-worker:
     <<: *background
+    profiles: ['split-workers']
     image: opsgrids-edge/product
     command: ['./bin/worker']
     environment: *service-env
@@ -889,6 +931,7 @@ services:
 
   subscription:
     <<: *service-common
+    stop_grace_period: 30s
     image: opsgrids-edge/subscription
     build:
       context: ../..
@@ -909,8 +952,13 @@ services:
   # (`subscription-worker` on `./bin/worker`, `subscription-cron` on `./bin/cron`) at 192m
   # apiece for two processes that are each idle almost all the time. `bin/cron` still points at
   # `app.cron` unchanged and runs standalone for local debugging; only `bin/worker` moved.
+  #
+  # Off by default — see `account-worker`'s own comment. All three loops (the payment consumer,
+  # the dunning sweep, the billing run) now run inside `subscription`'s own API process
+  # (`services/subscription/app/main.py`); this container is the `split-workers` rollback.
   subscription-worker:
     <<: *background
+    profiles: ['split-workers']
     image: opsgrids-edge/subscription
     command: ['./bin/worker']
     environment:
@@ -959,6 +1007,7 @@ services:
   # refuses the dev-only default — so it is generated on the box like every other secret.
   payment:
     <<: *service-common
+    stop_grace_period: 30s
     image: opsgrids-edge/payment
     build:
       context: ../..
@@ -976,8 +1025,13 @@ services:
   # resumed only by that sweep (the consumer marks the event processed at claim time), so it
   # must run wherever payment runs. Folded in here rather than a `payment-cron` container: no
   # memory budget change. `bin/cron` still runs the sweep alone for local debugging.
+  #
+  # Off by default — see `account-worker`'s own comment. Both loops now run inside `payment`'s
+  # own API process (`services/payment/app/main.py`); this container is the `split-workers`
+  # rollback.
   payment-worker:
     <<: *background
+    profiles: ['split-workers']
     image: opsgrids-edge/payment
     command: ['./bin/worker']
     environment: *payment-env
@@ -1028,6 +1082,7 @@ services:
   # honest state until SMTP credentials exist, and preflight says so in capitals.
   notification:
     <<: *service-common
+    stop_grace_period: 30s
     image: opsgrids-edge/notification
     build:
       context: ../..
@@ -1066,8 +1121,13 @@ services:
   # are each idle almost all the time (ADR-0013's memory-budget erratum, 2026-09-23), the same
   # shape `subscription-worker` and `approval-worker` already collapsed. `bin/cron` is unchanged
   # and still runs `app.cron` standalone for local debugging; only `bin/worker` moved.
+  #
+  # Off by default — see `account-worker`'s own comment. All three loops now run inside
+  # `notification`'s own API process (`services/notification/app/main.py`); this container is
+  # the `split-workers` rollback.
   notification-worker:
     <<: *background
+    profiles: ['split-workers']
     image: opsgrids-edge/notification
     command: ['./bin/worker']
     environment: *notification-env
@@ -1194,6 +1254,7 @@ services:
   # from employee events; its cron is the SLA escalation sweep.
   approval:
     <<: *service-common
+    stop_grace_period: 30s
     profiles: ['hrms']
     image: opsgrids-edge/approval
     build:
@@ -1208,9 +1269,14 @@ services:
   # `gather` shape notification/app/worker.py and subscription/app/worker.py already use.
   # ADR-0013's memory-budget erratum (2026-09-23) folded `approval-cron` into this container;
   # `bin/cron` is unchanged and still runs `app.cron` standalone for local debugging.
+  #
+  # Off by default — see `account-worker`'s own comment. `profiles: ['split-workers']` replaces
+  # `['hrms']` here: both loops now run inside `approval`'s own API process
+  # (`services/approval/app/main.py`), so this container only exists for the rollback, gated on
+  # the box-wide `split-workers` profile rather than on the product profile it complements.
   approval-worker:
     <<: *background
-    profiles: ['hrms']
+    profiles: ['split-workers']
     image: opsgrids-edge/approval
     command: ['./bin/worker']
     environment: *service-env
@@ -1228,6 +1294,7 @@ services:
 
   attendance:
     <<: *service-common
+    stop_grace_period: 30s
     profiles: ['hrms']
     image: opsgrids-edge/attendance
     build:
@@ -1237,15 +1304,18 @@ services:
     networks:
       - back
 
+  # Off by default — see `account-worker`'s own comment; the same rollback shape as
+  # `approval-worker` above, folded into `attendance`'s own API process.
   attendance-worker:
     <<: *background
-    profiles: ['hrms']
+    profiles: ['split-workers']
     image: opsgrids-edge/attendance
     command: ['./bin/worker']
     environment: *service-env
 
   leave:
     <<: *service-common
+    stop_grace_period: 30s
     profiles: ['hrms']
     image: opsgrids-edge/leave
     build:
@@ -1255,9 +1325,11 @@ services:
     networks:
       - back
 
+  # Off by default — see `account-worker`'s own comment; the same rollback shape as
+  # `approval-worker` above, folded into `leave`'s own API process.
   leave-worker:
     <<: *background
-    profiles: ['hrms']
+    profiles: ['split-workers']
     image: opsgrids-edge/leave
     command: ['./bin/worker']
     environment: *service-env
@@ -1265,6 +1337,7 @@ services:
   # ---------------------------------------------------------------- OpsGrids Revenue (profile `crm`)
   customer:
     <<: *service-common
+    stop_grace_period: 30s
     profiles: ['crm']
     image: opsgrids-edge/customer
     build:
@@ -1278,9 +1351,13 @@ services:
   # (app/consumers.py). The consumer has existed since deal started publishing that event, but
   # this container was never added — ADR-0017 closes that gap. No relay of its own: it consumes,
   # it does not publish, so it runs NOBYPASSRLS on the per-message tenant GUC like every consumer.
+  #
+  # Off by default — see `account-worker`'s own comment. `profiles: ['split-workers']` replaces
+  # `['crm']` here: the consumer now runs inside `customer`'s own API process
+  # (`services/customer/app/main.py`); this container is the `split-workers` rollback.
   customer-worker:
     <<: *background
-    profiles: ['crm']
+    profiles: ['split-workers']
     image: opsgrids-edge/customer
     command: ['./bin/worker']
     environment: *service-env
@@ -1386,8 +1463,19 @@ services:
       - back
 
   # ---------------------------------------------------------------- OpsGrids Finance (profile `finance`)
+  # No new `depends_on` for the filing consumer and the filing-reclaim sweep this container now
+  # runs (`RUN_CONSUMERS_IN_API`, `services/finance/app/main.py`), even though it now speaks
+  # AMQP where a plain API never did: `*service-common`'s own comment ("Not rabbitmq: ... a
+  # broker that would not boot took the whole platform down with it") still holds. The folded
+  # consumer's `EventConsumer.run()` uses `aio_pika.connect_robust`, and the whole group is
+  # wrapped in `platform_core.supervise.run_supervised_forever` — a broker that is not ready yet
+  # is a caught, logged, backed-off retry inside that task, never a reason this API fails to
+  # start or serve a single request. The same reasoning covers `scheduler: service_started`,
+  # which `finance-worker` (below) keeps only for its own, no-longer-load-bearing build-ordering
+  # reason.
   finance:
     <<: *service-common
+    stop_grace_period: 30s
     profiles: ['finance']
     image: opsgrids-edge/finance
     build:
@@ -1402,9 +1490,15 @@ services:
   # queue never retries a crashed claim; the sweep is what finishes it, and it must run
   # wherever finance runs. Folded in here rather than a `finance-cron` container: no memory
   # budget change. `bin/cron` still runs the sweep alone for local debugging.
+  #
+  # Off by default — see `account-worker`'s own comment. `profiles: ['split-workers']` replaces
+  # `['finance']` here: both loops now run inside `finance`'s own API process
+  # (`services/finance/app/main.py`) — see that service's own block, below, for why it gains no
+  # new `depends_on` even though it now speaks AMQP; this container is the `split-workers`
+  # rollback.
   finance-worker:
     <<: *background
-    profiles: ['finance']
+    profiles: ['split-workers']
     image: opsgrids-edge/finance
     command: ['./bin/worker']
     environment: *service-env

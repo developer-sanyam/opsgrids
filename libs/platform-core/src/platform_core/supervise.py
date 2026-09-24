@@ -28,6 +28,7 @@ import asyncio
 import contextlib
 import json
 import time
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -175,6 +176,42 @@ async def run_supervised(**named_coroutines: Any) -> None:
         raise exc
     log.error("supervise.loop_returned", loop=finished_name)
     raise LoopExited(finished_name)
+
+
+async def run_supervised_forever(
+    build_loops: Callable[[], dict[str, Coroutine[Any, Any, Any]]],
+    *,
+    name: str,
+    initial_backoff: float = 5.0,
+    max_backoff: float = 300.0,
+) -> None:
+    """`run_supervised`, restarted with backoff instead of ending for good — what lets a worker
+    folded into an API process (via `start_background_sweep`) recover from a crashed loop the
+    same way a standalone worker container does, without taking the API down to get it.
+
+    A standalone `bin/worker` container gets that self-healing for free: `run_supervised` ending
+    exits the process non-zero, and `restart: unless-stopped` brings a fresh one back. Folded into
+    an API process, a bare `run_supervised(**loops)` passed to `start_background_sweep` would
+    instead just die once — logged (`supervise.background_sweep_exited`) and never touched again,
+    because `start_background_sweep`'s whole contract is the opposite of that container restart:
+    a background task ending must never be allowed to end the process serving requests. This
+    closes that gap: `build_loops()` is called fresh on every attempt (a coroutine object can only
+    be awaited once, so the loops — `consumer.run()`, `sweep.run()`, ... — must be rebuilt, not
+    reused) and `run_supervised` is re-entered after a capped exponential backoff, indefinitely.
+
+    `CancelledError` is never caught — a supervisor asking this to stop (API shutdown) must
+    always be able to.
+    """
+    backoff = initial_backoff
+    while True:
+        try:
+            await run_supervised(**build_loops())
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.error(f"{name}.crashed", error=str(exc)[:300], retry_in_seconds=backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, max_backoff)
 
 
 def start_background_sweep(coro: Any, *, name: str | None = None) -> asyncio.Task[None]:

@@ -14,6 +14,7 @@ file inventing a second naming convention just for one service.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = REPO_ROOT / "infrastructure/edge/compose.prod.yml"
+MEMORY_BUDGET = REPO_ROOT / "infrastructure/edge/memory-budget.json"
 
 sys.path.insert(0, str(REPO_ROOT / "libs/platform-core/src"))
 from platform_core.ops_monitor.config import (  # noqa: E402
@@ -30,11 +32,24 @@ from platform_core.ops_monitor.config import (  # noqa: E402
 )
 
 
+def _budget() -> dict[str, Any]:
+    result: dict[str, Any] = json.loads(MEMORY_BUDGET.read_text())
+    return result
+
+
 def _worker_services() -> dict[str, str | None]:
     """`{schema: profile}` for every service whose `command` is exactly `['./bin/worker']` —
     `profile` is `None` for a core service (no `profiles:` key at all, the same "always on"
-    convention every other core container in `compose.prod.yml` uses)."""
+    convention every other core container in `compose.prod.yml` uses).
+
+    A worker behind `split-workers` (the worker-folding follow-up to the memory-headroom slice,
+    2026-09-24) is the *rollback* for a schema whose loops now run inside its own API container
+    by default (`RUN_CONSUMERS_IN_API`) — the queue's real, default-configuration consumer is
+    that API container, not this one, so the profile that actually justifies the queue in
+    `config.py` is the API container's own profile (`memory-budget.json`'s `containers[schema]`),
+    looked up here rather than read off this container's own `profiles:` key."""
     raw: dict[str, Any] = yaml.safe_load(COMPOSE_FILE.read_text())
+    budget = _budget()
     workers: dict[str, str | None] = {}
     for name, spec in raw["services"].items():
         if spec.get("command") != ["./bin/worker"]:
@@ -45,7 +60,10 @@ def _worker_services() -> dict[str, str | None]:
                 f"{name}: this test assumes one profile per worker service, got {profiles!r}"
             )
         schema = name.removesuffix("-worker")
-        workers[schema] = profiles[0] if profiles else None
+        profile = profiles[0] if profiles else None
+        if profile == "split-workers":
+            profile = budget["containers"][schema]["profile"]
+        workers[schema] = profile
     return workers
 
 

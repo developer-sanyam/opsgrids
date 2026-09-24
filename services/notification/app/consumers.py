@@ -34,7 +34,11 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, selectors, services
 from app.config import settings
@@ -49,6 +53,32 @@ from platform_core.logging import get_logger
 log = get_logger("notification.consumers")
 
 consumer = EventConsumer(amqp_url=settings().rabbitmq_url, queue_name="notification.events")
+
+#: Same shape as `app.cron.WorkScope` — defined again here, not imported, because `app.consumers`
+#: and `app.cron` are independent layers (the service anatomy, CLAUDE.md; `.importlinter`'s
+#: `service-layers` contract refuses the import).
+WorkScope = Callable[[uuid.UUID], AbstractAsyncContextManager[AsyncSession]]
+
+
+def _default_session_scope(organization_id: uuid.UUID) -> Any:
+    return session_scope(organization_id=organization_id)
+
+
+#: The transaction scope every handler below opens. Defaults to the process-wide engine — this
+#: consumer's own connection pool when it runs standalone (`python -m app.consumers`,
+#: `bin/worker`). `app/main.py` swaps it to a bulkhead scope (`platform_core.db.bulkhead_scope`)
+#: before starting this consumer as a supervised background task inside the API process, on
+#: `RUN_CONSUMERS_IN_API` — so a folded consumer's per-message transactions can neither take a
+#: connection from request traffic nor be starved by it. Module-level and process-wide on
+#: purpose, the same seam the sweeps already use (`app.cron.WorkScope`).
+_session_scope: WorkScope = _default_session_scope
+
+
+def use_session_scope(scope: WorkScope) -> None:
+    """Point every handler above at `scope` instead of the default engine. Called once, before
+    this consumer starts, by whichever entrypoint constructs it that way — never by a handler."""
+    global _session_scope
+    _session_scope = scope
 
 
 class ContactResolutionUnavailable(RuntimeError):
@@ -72,7 +102,7 @@ async def fold(envelope: dict[str, Any], resolve_target: TargetResolver | None =
     event_type = str(envelope["event_type"])
     organization_id = uuid.UUID(str(envelope["organization_id"]))
 
-    async with session_scope(organization_id=organization_id) as session:
+    async with _session_scope(organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("event.redelivered", event_type=event_type, event_id=str(event_id))
             return
@@ -107,7 +137,7 @@ async def expand_campaign_send(
     campaign_id = uuid.UUID(str((envelope.get("payload") or {})["campaign_id"]))
     size = batch_size or settings().engage_campaign_batch_size
 
-    async with session_scope(organization_id=organization_id) as session:
+    async with _session_scope(organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("campaign.redelivered", campaign_id=str(campaign_id))
             return "redelivered"
@@ -160,7 +190,7 @@ async def fold_inbound_contact(
 
     fold_id = uuid.uuid5(event_id, "contact_resolve")
 
-    async with session_scope(organization_id=organization_id) as session:
+    async with _session_scope(organization_id) as session:
         if await already_processed(session, ProcessedEvent, fold_id):
             log.info("inbound.contact.redelivered", conversation_id=str(conversation_id))
             return

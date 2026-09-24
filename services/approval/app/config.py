@@ -23,6 +23,15 @@ class Settings(ServiceSettings):
     #: token authenticated, never reachable from outside the cluster.
     employee_service_url: str = "http://localhost:8120"
 
+    #: Runs this service's worker loops — the hierarchy/regularization consumer and the SLA
+    #: escalation sweep (`app/worker.py`) — as supervised background tasks inside the API process
+    #: instead of the separate `approval-worker` container (the memory-headroom follow-up that
+    #: folds every service's remaining worker in). Off by default everywhere except the edge
+    #: box's own `.env`: `bin/worker` still runs `app.worker` standalone unchanged, and setting
+    #: this to `false` while adding `split-workers` to `EDGE_PROFILES` is the rollback
+    #: (RUNBOOK.md).
+    run_consumers_in_api: bool = False
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

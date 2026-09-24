@@ -32,9 +32,12 @@ def _budget() -> dict:
 
 def test_prices_an_explicit_container_list_regardless_of_profile() -> None:
     budget = _budget()
-    # auth and account are core (profile: null); operations is behind `inventory`. Naming all
-    # three here must price all three, with no COMPOSE_PROFILES involved at all.
-    total = expected_total_for_names(budget, {"auth", "account", "operations"})
+    # auth and billing are core (profile: null) and plain `kind: api` (unlike account, which is
+    # `api_with_worker` since the worker-folding follow-up folded its own worker in); operations
+    # is behind `inventory` and still plain `api` too (it folds only a sweep, on
+    # RUN_SWEEPS_IN_API, not a worker). Naming all three here must price all three, with no
+    # COMPOSE_PROFILES involved at all.
+    total = expected_total_for_names(budget, {"auth", "billing", "operations"})
     api_mb = budget["kinds"]["api"]["expected_rss_mb"]
     assert total == api_mb * 3
 
@@ -118,11 +121,13 @@ class TestPostDeployContainerNames:
         assert "some-removed-service" not in names
 
     def test_prices_correctly_through_expected_total_for_names(self) -> None:
+        # `billing`, not `account`: plain `kind: api`, unlike `account`, which is
+        # `api_with_worker` since the worker-folding follow-up folded its own worker in.
         budget = _budget()
         names = post_deploy_container_names(
-            running={"auth", "account"},
-            all_services={"auth", "account", "operations"},
-            declared_services={"auth", "account", "operations"},
+            running={"auth", "billing"},
+            all_services={"auth", "billing", "operations"},
+            declared_services={"auth", "billing", "operations"},
         )
         assert (
             expected_total_for_names(budget, names) == budget["kinds"]["api"]["expected_rss_mb"] * 3

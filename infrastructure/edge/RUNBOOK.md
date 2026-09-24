@@ -1488,72 +1488,91 @@ docker stats --no-stream --format '{{.MemUsage}}' | awk '{ u=$1; v=u+0;
 vmstat 5 3        # the si / so columns: swap-in / swap-out per second
 ```
 
-1. **Scale the release.** The real sum is the measured cost of the same 40 containers that
-   `preflight.sh` prices at **4044**. If it is higher, this release is about
-   **4581 x measured / 4044** — the arm64 prices were low by the same factor everywhere.
+1. **Scale the release.** The real sum is the measured cost of whatever `preflight.sh` prices for
+   the box's own declared profiles right now — read it off `make edge-preflight`'s own output, not
+   off any number printed in this file, which is a worked example for the ten-profile-plus-`admin`
+   case (3888 MB) as of this commit, not a live figure. If the box's real measured sum is higher
+   than what preflight prices, the release is about **preflight's figure x measured / preflight's
+   figure** — the arm64 prices this repository ships are the best available, not the box's own.
 2. **If that scaled figure is above 4827 MB (the 125% cap), do not write a ceiling.** Preflight
    will refuse any total above the cap even with one, and a box that far over is not "swapping
    more", it is killing things: **resize or de-list** instead. Do the same if `vmstat 5` shows
-   `si`/`so` above zero at a quiet hour — the box is already thrashing before this release adds
-   537 MB.
-3. **Otherwise write the number preflight printed** (`EDGE_BUDGET_ACCEPTED_MB=4581`), not the
-   scaled one: the ceiling is what preflight prices, and preflight's prices are what the tests pin.
-   The scaled figure is for deciding *whether* to run at all.
+   `si`/`so` above zero at a quiet hour — the box is already thrashing before this release changes
+   anything.
+3. **Otherwise write the number preflight printed**, not the scaled one: the ceiling is what
+   preflight prices, and preflight's prices are what the tests pin. The scaled figure is for
+   deciding *whether* to run at all.
 
-### What this release costs, on the merged tree (review round 3, 2026-09-24)
+### What this release costs, on the merged tree (the worker-folding follow-up, 2026-09-24)
 
-Re-priced from the real images: **api 98, background 90, ops-monitor 93** (were 85 / 85 / 48 —
-the API and ops-monitor images idle 15-95% above what the file assumed; see its header for the
-per-image readings). Against MemTotal **3862 MB** (soft line 3282, hard line 3862, cap 4827):
+Re-priced from the real images: **api 98, api_with_worker 99, background 90, ops-monitor 93**
+(api_with_worker is new this round — see memory-budget.json's own `kinds` header for the
+account/notification before-after measurement). Against MemTotal **3862 MB** (soft line 3282,
+hard line 3862, cap 4827):
 
 | profiles enabled | this profile adds | cumulative total | of MemTotal |
 |---|---|---|---|
-| core (auth … ops-monitor, no profile) | — | 2217 | 57.4% |
-| + storefront | 256 | 2473 | 64.0% |
-| + inventory | 98 | 2571 | 66.6% |
-| + hrms | 662 | 3233 | 83.7% |
-| + crm | 384 | 3617 | 93.7% |
-| + pulseboard | 294 | 3911 | **101.3%** (over the hard line from here) |
-| + projects | 98 | 4009 | 103.8% |
-| + support | 98 | 4107 | 106.3% |
-| + marketing | 98 | 4205 | 108.9% |
-| + finance | 278 | 4483 | 116.1% |
-| **+ itsm — all ten, what this box declares** | 98 | **4581** | **118.6% — 719 MB over MemTotal** |
-| + every `planned` backlog item (+956) | | 5537 | 143.4% |
+| core (auth … ops-monitor, no profile) | — | 1772 | 45.9% |
+| + storefront | 256 | 2028 | 52.5% |
+| + inventory | 98 | 2126 | 55.1% |
+| + hrms | 395 | 2521 | 65.3% |
+| + crm | 295 | 2816 | 72.9% |
+| + pulseboard | 294 | 3110 | 80.5% |
+| + projects | 98 | 3208 | 83.1% |
+| + support | 98 | 3306 | 85.6% |
+| + marketing | 98 | 3404 | 88.1% |
+| + finance | 189 | 3593 | 93.0% |
+| **+ itsm — all ten, what this box declares** | 98 | **3691** | **95.6% — under the hard line, still over the soft one** |
+| + every `planned` backlog item (+956) | | 4647 | 120.3% |
 
-Where the box is today, priced the same way (the ten profiles at the production ref `47143a0`,
-40 containers): **4044 MB — 104.7%, 182 MB over MemTotal.** That agrees with the ~2 GB of swap the
-box was found using. At the old prices the same set read 3664 MB (94.9%; 3494 if the two
-`*-cron` containers the budget has no entry for are left out, which is not what this file's own
-rule allows — an unpriced container is priced as `kinds.background`, never as free). **This
-release adds eight containers (customer-worker, document, lead, leave, leave-worker, minio,
-ops-monitor, scheduler: 717 MB) and removes two (approval-cron, subscription-cron: 180 MB) —
-net +537 MB, from 104.7% to 118.6%.** Folding `operations-cron`, `storefront-cron` and
-`document-cron` into their API containers (below) is already counted: it is 3 x 90 MB this total
-does not carry.
+**This is the worker-folding follow-up's own effect, on top of the memory-headroom slice's
+release** (which priced the same ten profiles at 4581 MB / 118.6% — over the hard line, 719 MB
+over MemTotal, and the reason the owner-decision section below existed at all). Folding
+`account-worker`, `product-worker`, `subscription-worker`, `payment-worker`,
+`notification-worker`, `approval-worker`, `attendance-worker`, `leave-worker`, `customer-worker`
+and `finance-worker`'s loops into their own API containers (`RUN_CONSUMERS_IN_API`, on by
+default; the ten containers themselves still exist, unchanged, behind the `split-workers`
+profile as the rollback — see "Rolling back the worker fold", below) removes ten containers at
+`kinds.background`'s 90 MB (900 MB) and adds back only ten containers' worth of
+`kinds.api_with_worker` minus `kinds.api` (99 - 98 = 1 MB each, 10 MB) — **net -890 MB, from
+4581 to 3691, 118.6% to 95.6%.** The ten-profile scenario no longer needs an owner decision on
+its own (see below); it is still tight, at 95.6%, which is honest for "sell everything this
+platform can sell on this box," not a bug.
 
-### The owner decision: `EDGE_BUDGET_ACCEPTED_MB` (B2, review round 2; restated round 3)
+Where the box is today, priced the ten profiles the way `preflight.sh` actually prices a running
+box (`post_deploy_compute`, not the projection table above) will read differently from either
+figure until this release is actually deployed — read `make edge-status` and this section's
+"How to read the box" for the box's own live numbers, always, before writing a ceiling.
 
-The ten profiles do not fit this box with realistic prices, before a single backlog item is added.
-Nothing in a repository can shrink that to fit; what can change is which of three things the owner
-chooses:
+### The owner decision: `EDGE_BUDGET_ACCEPTED_MB` (B2, review round 2; restated round 3; the
+worker-folding follow-up moved the ten-profile figure under the hard line, 2026-09-24)
+
+**The ten profiles alone no longer need a ceiling.** At 3691 MB / 95.6% they are under the 100%
+hard line (though still over the 85% soft one — `preflight` warns, and proceeds, with no
+`EDGE_BUDGET_ACCEPTED_MB` set at all). If the owner wants an explicit ceiling anyway, silencing
+the warn rather than reading past it on every deploy, the ten-profile figure alone is
+`EDGE_BUDGET_ACCEPTED_MB=3691` — but nothing requires it now. A ceiling is only a live question
+again once something is added on top — the `admin` profile (admin-gateway + console, console-worker folded into console
+the same way this release folds the ten product workers in: +98 + 99 = 197 MB) brings the total to
+**3888 MB / 100.7%** — just over the hard line — or once enough of the `planned` backlog above
+lands. Nothing in a repository can shrink either scenario to fit on its own; what can change is
+which of three things the owner chooses:
 
 1. **Resize the VM** — the only option that adds headroom rather than redistributing it. The
-   memory erratum (ADR-0013) recorded that the owner would not resize this box; that was decided
-   when the running set priced at ~90% on the old prices, before this release added 537 MB. Worth
-   asking again: an 8 GB VM (~7.7 GB MemTotal) puts the ten profiles near 58% and the whole
-   planned backlog near 70%; the 85% soft line needs about 5390 MB of MemTotal for the ten.
+   memory erratum (ADR-0013) recorded that the owner would not resize this box; worth asking again
+   now that ten profiles plus `admin` is only 26 MB over the hard line (100.7%) and comfortably
+   under the 125% cap (4827 MB) either way. An 8 GB VM (~7.7 GB MemTotal) puts the ten profiles
+   near 48% and the whole planned backlog near 82%.
 2. **De-list products** — drop their profiles from `COMPOSE_PROFILES`, *after* confirming with the
    catalogue that no organization has a live activation of them (preflight refuses otherwise: a
-   paying customer would lose their product). The "adds" column above is what each one frees;
-   getting under the hard line from 4581 takes 719 MB (e.g. `hrms`, 662, plus any one 98 MB
-   profile); getting under the soft line takes 1299 MB.
+   paying customer would lose their product). The "adds" column above is what each one frees.
 3. **Accept a deliberate overcommit** — set `EDGE_BUDGET_ACCEPTED_MB` in `.env` to the number
-   preflight's own projection printed (`EDGE_BUDGET_ACCEPTED_MB=4581` for the release above),
-   *after reading it*. Understand what it means: the working set exceeds RAM by 719 MB, the kernel
-   decides which pages live in swap, and the box that is already swapping swaps more. A deploy over
-   the hard line then warns, loudly, naming the overcommit in MB and to one decimal, instead of
-   refusing; a deploy asking for even one MB more than the ceiling still refuses.
+   preflight's own projection printed for the deploy actually being made (ten profiles plus
+   `admin`: `EDGE_BUDGET_ACCEPTED_MB=3888`), *after reading it*. Understand what it means: the
+   working set exceeds RAM by a little (26 MB at 100.7%), the kernel decides which pages live in
+   swap, and the box swaps a little more than it otherwise would. A deploy over the hard line then
+   warns, loudly, naming the overcommit in MB and to one decimal, instead of refusing; a deploy
+   asking for even one MB more than the ceiling still refuses.
 
 **The ceiling is a decision record, not a limit to leave loose.** Its value is **exactly the
 post-deploy total preflight printed for the commit being deployed** — no more. So:

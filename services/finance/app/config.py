@@ -44,6 +44,14 @@ class Settings(ServiceSettings):
     #: (`app/worker.py`) rather than a container of its own.
     filing_reclaim_poll_interval_seconds: float = 60.0
 
+    #: Runs this service's worker loops — the filing consumer and the filing-reclaim sweep
+    #: (`app/worker.py`) — as supervised background tasks inside the API process instead of the
+    #: separate `finance-worker` container (the memory-headroom follow-up that folds every
+    #: service's remaining worker in). Off by default everywhere except the edge box's own
+    #: `.env`: `bin/worker` still runs `app.worker` standalone unchanged, and setting this to
+    #: `false` while adding `split-workers` to `EDGE_PROFILES` is the rollback (RUNBOOK.md).
+    run_consumers_in_api: bool = False
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

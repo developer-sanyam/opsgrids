@@ -324,10 +324,36 @@ def _all_ten_csv(budget: dict) -> str:
     return ",".join(budget["profiles"])
 
 
+def _small_box_over_hard_line(budget: dict, box: Box) -> tuple[int, int]:
+    """Points `box.meminfo` at a box small enough that the real ten-profile total is over its own
+    hard line, and returns `(total, mem_total_mb)`.
+
+    The worker-folding follow-up to the memory-headroom slice (2026-09-24) brought the real
+    ten-profile total comfortably under the real box's hard line (3691M against 3862M, 95.6% —
+    see memory-budget.json's own header). `apply_accepted_ceiling` only ever touches an
+    already-`refuse` verdict — `ok` and `warn` pass through unchanged — so every test below that
+    exercises the ceiling machinery (a ceiling above the cap, the last-ok ratchet, slack
+    reporting, ...) needs a base scenario that is genuinely over the hard line to have anything
+    to exercise at all. A smaller simulated `MemTotal` gets there without inventing a profile
+    combination that does not exist."""
+    total = _ten_profile_total(budget)
+    hard_percent = budget["host"]["hard_budget_percent"]
+    # The largest MemTotal (MB) for which `total` is still at or over `hard_percent`, minus a
+    # margin so integer division on either side of the calculation cannot land exactly on the
+    # line by coincidence.
+    mem_total_mb = total * 100 // hard_percent - 10
+    box.meminfo.write_text(f"MemTotal:       {mem_total_mb * 1024} kB\n")
+    return total, mem_total_mb
+
+
 def test_over_the_hard_line_with_no_ceiling_refuses(box: Box, budget: dict) -> None:
+    _total, mem_total_mb = _small_box_over_hard_line(budget, box)
     box.write_env(compose_profiles=_all_ten_csv(budget))
     result = box.preflight()
-    assert _priced_mb(result) > MEM_TOTAL_MB * budget["host"]["hard_budget_percent"] // 100
+    assert (
+        _priced_mb(result, mem_total_mb)
+        > mem_total_mb * budget["host"]["hard_budget_percent"] // 100
+    )
     assert _memory_failed(result)
     assert "EDGE_BUDGET_ACCEPTED_MB" in result.stderr
     assert result.returncode != 0
@@ -336,7 +362,7 @@ def test_over_the_hard_line_with_no_ceiling_refuses(box: Box, budget: dict) -> N
 def test_over_the_hard_line_but_at_or_under_the_accepted_ceiling_warns_and_names_the_overcommit(
     box: Box, budget: dict
 ) -> None:
-    total = _ten_profile_total(budget)
+    total, mem_total_mb = _small_box_over_hard_line(budget, box)
     box.write_env(compose_profiles=_all_ten_csv(budget), accepted_mb=str(total))
     result = box.preflight()
     assert not _memory_failed(result), result.stderr
@@ -344,14 +370,14 @@ def test_over_the_hard_line_but_at_or_under_the_accepted_ceiling_warns_and_names
     assert f"EDGE_BUDGET_ACCEPTED_MB={total}" in result.stderr
     # The overcommit is named in megabytes and to one decimal — a floored "100%" reads as fine
     # for a box that is 3894 MB on 3862 MB (round 3, M5).
-    over = total - MEM_TOTAL_MB
+    over = total - mem_total_mb
     assert over > 0
     assert f"{over}M over MemTotal" in result.stderr
-    assert re.search(rf"\({total * 1000 // MEM_TOTAL_MB // 10}\.\d%\)", result.stderr)
+    assert re.search(rf"\({total * 1000 // mem_total_mb // 10}\.\d%\)", result.stderr)
 
 
 def test_over_the_accepted_ceiling_still_refuses(box: Box, budget: dict) -> None:
-    total = _ten_profile_total(budget)
+    total, _mem_total_mb = _small_box_over_hard_line(budget, box)
     box.write_env(compose_profiles=_all_ten_csv(budget), accepted_mb=str(total - 1))
     result = box.preflight()
     assert _memory_failed(result)
@@ -370,7 +396,7 @@ def test_last_ok_is_informational_only_and_never_grandfathers_a_deploy(
 ) -> None:
     """The removed ratchet: a recorded last-ok equal to this deploy's own total used to make an
     over-the-line deploy pass. It must not — the ceiling is `.env`'s, not the last success's."""
-    total = _ten_profile_total(budget)
+    total, _mem_total_mb = _small_box_over_hard_line(budget, box)
     (box.state / "edge-budget.last-ok").write_text(f"{total}\n")
     box.write_env(compose_profiles=_all_ten_csv(budget))
     result = box.preflight()
@@ -576,12 +602,15 @@ def _cap_mb(budget: dict, mem_total_mb: int = MEM_TOTAL_MB) -> int:
 
 def test_a_ceiling_above_the_cap_is_a_failure_naming_the_cap(box: Box, budget: dict) -> None:
     """The typo the cap exists to catch: 38940 for 3894 was a blank cheque."""
-    total = _ten_profile_total(budget)
+    total, mem_total_mb = _small_box_over_hard_line(budget, box)
     box.write_env(compose_profiles=_all_ten_csv(budget), accepted_mb=str(total * 10))
     result = box.preflight()
     assert result.returncode != 0
     assert f"EDGE_BUDGET_ACCEPTED_MB ({total * 10}M) is above the " in result.stderr
-    assert f"{budget['host']['max_accepted_percent']}% cap ({_cap_mb(budget)}M" in result.stderr
+    assert (
+        f"{budget['host']['max_accepted_percent']}% cap ({_cap_mb(budget, mem_total_mb)}M"
+        in result.stderr
+    )
     # ...and the rejected ceiling covers nothing: the deploy itself refuses too.
     assert _memory_failed(result)
     assert "was rejected" in result.stderr
@@ -615,7 +644,7 @@ def test_a_ceiling_exactly_at_the_cap_is_accepted(box: Box, budget: dict) -> Non
 
 
 def test_slack_between_the_ceiling_and_the_total_is_reported(box: Box, budget: dict) -> None:
-    total = _ten_profile_total(budget)
+    total, _mem_total_mb = _small_box_over_hard_line(budget, box)
     box.write_env(compose_profiles=_all_ten_csv(budget), accepted_mb=str(total + 50))
     result = box.preflight()
     assert not _memory_failed(result), result.stderr
@@ -623,7 +652,7 @@ def test_slack_between_the_ceiling_and_the_total_is_reported(box: Box, budget: d
 
 
 def test_a_ceiling_at_exactly_the_total_reports_no_slack(box: Box, budget: dict) -> None:
-    total = _ten_profile_total(budget)
+    total, _mem_total_mb = _small_box_over_hard_line(budget, box)
     box.write_env(compose_profiles=_all_ten_csv(budget), accepted_mb=str(total))
     result = box.preflight()
     assert not _memory_failed(result), result.stderr

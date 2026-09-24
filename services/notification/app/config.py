@@ -123,6 +123,14 @@ class Settings(ServiceSettings):
     #: A message that has failed this many times stops being claimed and waits for an operator.
     dispatch_max_attempts: int = 6
 
+    #: Runs this service's worker loops — the two event consumers and the campaign send driver
+    #: (`app/worker.py`) — as supervised background tasks inside the API process instead of the
+    #: separate `notification-worker` container (the memory-headroom follow-up that folds every
+    #: service's remaining worker in). Off by default everywhere except the edge box's own
+    #: `.env`: `bin/worker` still runs `app.worker` standalone unchanged, and setting this to
+    #: `false` while adding `split-workers` to `EDGE_PROFILES` is the rollback (RUNBOOK.md).
+    run_consumers_in_api: bool = False
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

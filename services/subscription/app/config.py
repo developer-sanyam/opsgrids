@@ -68,6 +68,15 @@ class Settings(ServiceSettings):
     #: Why the configured cutover was refused, when it was. Written by the screen below only.
     billing_run_not_before_invalid: str | None = None
 
+    #: Runs this service's worker loops — the payment-event consumer, the dunning sweep and the
+    #: billing run (`app/worker.py`) — as supervised background tasks inside the API process
+    #: instead of the separate `subscription-worker` container (the memory-headroom follow-up
+    #: that folds every service's remaining worker in). Off by default everywhere except the
+    #: edge box's own `.env`: `bin/worker` still runs `app.worker` standalone unchanged, and
+    #: setting this to `false` while adding `split-workers` to `EDGE_PROFILES` is the rollback
+    #: (RUNBOOK.md).
+    run_consumers_in_api: bool = False
+
     @model_validator(mode="before")
     @classmethod
     def _screen_cutover(cls, data: Any) -> Any:

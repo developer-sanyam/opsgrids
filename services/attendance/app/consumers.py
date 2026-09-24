@@ -40,8 +40,12 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import ProcessedEvent
@@ -52,6 +56,31 @@ from platform_core.logging import get_logger
 log = get_logger("attendance.consumers")
 
 consumer = EventConsumer(amqp_url=settings().rabbitmq_url, queue_name="attendance.events")
+
+#: Same shape as every service's `app.cron.WorkScope` — this service has no sweep of its own, so
+#: it is defined here rather than imported.
+WorkScope = Callable[[uuid.UUID], AbstractAsyncContextManager[AsyncSession]]
+
+
+def _default_session_scope(organization_id: uuid.UUID) -> Any:
+    return session_scope(organization_id=organization_id)
+
+
+#: The transaction scope every handler below opens. Defaults to the process-wide engine — this
+#: consumer's own connection pool when it runs standalone (`python -m app.consumers`,
+#: `bin/worker`). `app/main.py` swaps it to a bulkhead scope (`platform_core.db.bulkhead_scope`)
+#: before starting this consumer as a supervised background task inside the API process, on
+#: `RUN_CONSUMERS_IN_API` — so a folded consumer's per-message transactions can neither take a
+#: connection from request traffic nor be starved by it.
+_session_scope: WorkScope = _default_session_scope
+
+
+def use_session_scope(scope: WorkScope) -> None:
+    """Point every handler above at `scope` instead of the default engine. Called once, before
+    this consumer starts, by whichever entrypoint constructs it that way — never by a handler."""
+    global _session_scope
+    _session_scope = scope
+
 
 #: Contract strings from approval-service, named here rather than imported — one process may only
 #: ever hold one service's top-level `app` (CLAUDE.md).
@@ -131,7 +160,7 @@ async def on_approval_request_opened(envelope: dict[str, Any]) -> None:
     opened_at = _opened_at(envelope)
 
     applied: bool = False
-    async with session_scope(organization_id=organization_id) as session:
+    async with _session_scope(organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("regularization.opened.duplicate", event_id=str(event_id))
             return
@@ -196,7 +225,7 @@ async def on_approval_request_decided(envelope: dict[str, Any]) -> None:
     decided_by_name = _display_name(payload, "decided_by_name")
 
     applied_status: str | None = None
-    async with session_scope(organization_id=organization_id) as session:
+    async with _session_scope(organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("regularization.decided.duplicate", event_id=str(event_id))
             return

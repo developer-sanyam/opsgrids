@@ -42,6 +42,15 @@ class Settings(ServiceSettings):
     #: How often the sweep loop wakes up to ask whether anything is due.
     domain_recheck_poll_interval_seconds: float = 900.0
 
+    #: Runs this service's worker loops — the activation consumer and the domain re-verification
+    #: sweep (`app/worker.py`) — as supervised background tasks inside the API process instead of
+    #: the separate `account-worker` container (the memory-headroom follow-up that folds every
+    #: service's remaining worker in, the same way the earlier slice folded each service's own
+    #: `*-cron` sweep). Off by default everywhere except the edge box's own `.env`: `bin/worker`
+    #: still runs `app.worker` standalone unchanged, and setting this to `false` while adding
+    #: `split-workers` to `EDGE_PROFILES` is the rollback (RUNBOOK.md).
+    run_consumers_in_api: bool = False
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

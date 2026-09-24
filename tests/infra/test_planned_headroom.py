@@ -78,24 +78,28 @@ def test_planned_is_not_double_counted_into_the_enforced_budget() -> None:
     assert planned_total_mb(budget) > 0, "the planned list is empty — nothing to project"
 
 
-def test_current_production_is_at_the_hard_line_so_the_owner_decision_is_required() -> None:
-    """The honest state of the box, pinned by number rather than left to drift: the real
-    ten-profile production set is at or over the hard budget line before any planned service is
-    added. This is not new information this test discovered — it is ADR-0013's memory-headroom
-    addendum's own finding, re-measured — and it is why the RUNBOOK asks the owner to decide
-    (resize, de-list, or set `EDGE_BUDGET_ACCEPTED_MB`) *before* the first deploy. If this number
-    ever drops clearly under the hard line, update it — and consider whether the owner-decision
-    section of the RUNBOOK is still needed."""
+def test_current_production_is_tight_but_under_the_hard_line_since_the_worker_fold() -> None:
+    """The honest state of the box, pinned by number rather than left to drift. Before the
+    worker-folding follow-up to the memory-headroom slice (2026-09-24), the real ten-profile
+    production set was at or over the hard budget line on its own (see git history for the
+    assertion this replaces) — ten `*-worker` containers at ~90 MB apiece, running by default.
+    Folding each one's loops into its own API process (RUN_CONSUMERS_IN_API) drops that ~900 MB
+    and adds back only ~10 MB (kinds.api_with_worker's 99 vs kinds.api's 98, across the ten
+    containers this now applies to), moving the ten-profile total from over the hard line to
+    comfortably under it — but still over the soft one: selling everything this platform can
+    sell is still a tight fit, honestly, not a bug. If this ever drops clearly under the soft
+    line too, or climbs back to the hard one, update this test and reconsider whether the
+    RUNBOOK's owner-decision section (EDGE_BUDGET_ACCEPTED_MB) is still needed."""
     budget = _budget()
     profiles = _real_production_profiles(budget)
     current = expected_total_mb(budget, profiles)
     host = budget["host"]
     percent = current * 100 // host["mem_total_mb_reference"]
-    assert percent >= host["hard_budget_percent"], (
+    assert host["soft_budget_percent"] <= percent < host["hard_budget_percent"], (
         f"the real production profile set ({','.join(sorted(profiles))}) now projects to "
-        f"{current}M on a {host['mem_total_mb_reference']}M box ({percent}%) — no longer at the "
-        f"hard budget on its own. Update this test's expectation, and reconsider whether the "
-        f"RUNBOOK's owner-decision section (EDGE_BUDGET_ACCEPTED_MB) is still needed."
+        f"{current}M on a {host['mem_total_mb_reference']}M box ({percent}%) — no longer between "
+        f"the soft and hard budget lines. Update this test's expectation, and reconsider whether "
+        f"the RUNBOOK's owner-decision section (EDGE_BUDGET_ACCEPTED_MB) is still needed."
     )
 
 
