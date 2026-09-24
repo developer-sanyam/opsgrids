@@ -245,17 +245,36 @@ make edge-web HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PLACEHOLDER=1
 
 **Single sign-on (ADR-0003 addendum, 2026-09-24):** `publish-web.sh` reads the box's own
 `APP_BASE_URL` and bakes it into every product SPA's build as `VITE_AUTH_ORIGIN` — never `dashboard`
-(the cookie already lives on its own origin) or `buyer` (no auth code at all). This is what lets a
-product app's own `/login` route send the browser to the dashboard and get a session back rather
-than rendering a form nobody can complete there. It needs nothing extra on the box: `APP_BASE_URL`
-already has to be set for `CORS_ORIGINS` to be right. `AUTH_REFRESH_CORS_ORIGINS` (`.env`, required)
-is the matching server-side half — the narrow, credentialed CORS allowance on app-gateway for
-exactly `/api/v1/auth/refresh` and `/auth/logout`, one entry per product app host, never a
-storefront host. `.env.example` lists the current set; keep it in step with `TLS_PLATFORM_HOSTS`
-when a product ships a new host, or that app's sign-in will work once (same-origin, on first
-load) and then silently fail to survive a reload once its access token expires — the refresh call
-will 403 at the gateway's CORS layer, never reach the browser's own error handling, and the
-symptom is "signed out every ~15 minutes" all over again on that one app.
+(the cookie already lives on its own origin) or `buyer` (no auth code at all); it also refuses to
+publish a product app at all if its own host is not already in `AUTH_REFRESH_CORS_ORIGINS` (below),
+rather than shipping a build that would fail its first reload. Baking in the auth origin is what
+lets a product app's own `/login` route send the browser to the dashboard and get a session back
+rather than rendering a form nobody can complete there.
+
+`AUTH_REFRESH_CORS_ORIGINS` (`.env`, required) is the matching server-side half — the narrow,
+credentialed CORS allowance on app-gateway for exactly `/api/v1/auth/refresh` and `/auth/logout`,
+one entry per product app host (every platform app host except `app.opsgrids.com` itself), never a
+storefront host. `.env.example` lists the current set, pinned in CI against `TLS_PLATFORM_HOSTS`
+and the Caddyfile (`tests/infra/test_sso_redirect_allowlist.py`) so the three cannot silently
+drift apart — add a host to all three together when a product ships one, or `publish-web.sh`'s
+own check above catches the specific case of forgetting this one.
+
+A host missing from this list does **not** surface as a 403, and the symptom is **not** "signed
+out every ~15 minutes" the way the original bug was: the browser's own CORS check refuses the
+preflight before the request ever reaches app-gateway (a 400 response app-gateway does send, but
+the browser never exposes to the page — `fetch` just rejects), `refreshAccessToken()` sees that as
+a network failure and reports its generic `"error"` outcome, and the client shows a "Couldn't
+reach the sign-in service — Retry" screen rather than bouncing to `/login`. Confirm the cause in
+the browser console (a CORS error naming the missing origin) or by checking the entry is actually
+present in `AUTH_REFRESH_CORS_ORIGINS` on the box.
+
+**Session length (ADR-0003 addendum, 2026-09-24):** a session lasts 7 days from sign-in, however
+often it refreshes in between, in every app including the storefront console — `SESSION_TTL_DAYS`
+on `auth`, default `7`, not currently set in `.env.example` or the box `.env` because the default
+is the wanted value; set it explicitly only to change the policy. The silent refresh keeps
+renewing the access token every ~15 minutes without interruption for the full 7 days and then
+fails closed: `/auth/refresh` returns 401, and every product app's own client shows its sign-in
+screen rather than looping or hanging — there is no separate expiry warning to configure.
 
 ### 7. Prove it works, in this order
 
