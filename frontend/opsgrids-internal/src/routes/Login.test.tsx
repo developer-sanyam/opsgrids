@@ -178,7 +178,7 @@ describe("the enrolment-code step (mfa_enrollment_required)", () => {
     await signInToEnrolCode();
     vi.spyOn(authApi, "beginEnrolment").mockResolvedValue({
       factor_id: "f1",
-      secret: "JBSWY3DPEHPK3PXP",
+      secret: "JBSWY3DPEHPK3PXP", // pragma: allowlist secret -- a well-known example TOTP secret, not a real one
       otpauth_uri: "otpauth://totp/OpsGrids:b@opsgrids.com?secret=JBSWY3DPEHPK3PXP&issuer=OpsGrids",
     });
     await userEvent.type(screen.getByLabelText("Enrolment code"), "a-valid-code");
@@ -194,7 +194,7 @@ describe("the scan step", () => {
     await signInToEnrolCode();
     vi.spyOn(authApi, "beginEnrolment").mockResolvedValue({
       factor_id: "f1",
-      secret: "JBSWY3DPEHPK3PXP",
+      secret: "JBSWY3DPEHPK3PXP", // pragma: allowlist secret -- a well-known example TOTP secret, not a real one
       otpauth_uri: "otpauth://totp/OpsGrids:b@opsgrids.com?secret=JBSWY3DPEHPK3PXP&issuer=OpsGrids",
     });
     await userEvent.type(screen.getByLabelText("Enrolment code"), "a-valid-code");
@@ -241,7 +241,7 @@ describe("the recovery-codes step", () => {
     await signInToEnrolCode();
     vi.spyOn(authApi, "beginEnrolment").mockResolvedValue({
       factor_id: "f1",
-      secret: "JBSWY3DPEHPK3PXP",
+      secret: "JBSWY3DPEHPK3PXP", // pragma: allowlist secret -- a well-known example TOTP secret, not a real one
       otpauth_uri: "otpauth://totp/OpsGrids:b@opsgrids.com?secret=JBSWY3DPEHPK3PXP",
     });
     await userEvent.type(screen.getByLabelText("Enrolment code"), "a-valid-code");

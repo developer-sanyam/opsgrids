@@ -64,7 +64,7 @@ class TestUnsafeShapesAreRefused:
 
     def test_userinfo_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="bare origin"):
-            _cfg("https://user:pass@people.opsgrids.com")
+            _cfg("https://user:pass@people.opsgrids.com")  # pragma: allowlist secret
 
     def test_a_storefront_subdomain_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="storefront host"):
