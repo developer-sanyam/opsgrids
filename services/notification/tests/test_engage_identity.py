@@ -28,7 +28,12 @@ from sqlalchemy import select
 from app import models, services, whatsapp_provider
 from app.config import settings
 from app.main import app
-from app.transports import RecordingTransport, TransportRefused, TransportUnavailable
+from app.transports import (
+    RecordingTransport,
+    TransportRefused,
+    TransportTlsError,
+    TransportUnavailable,
+)
 from platform_core.auth import Principal, Scope, ScopeContext, get_principal
 from platform_core.errors import (
     BusinessRuleProblem,
@@ -421,12 +426,14 @@ async def test_replacing_audits_and_stages_an_event_without_the_secret(session, 
         "username": "info@company.com",
         "host": "smtp.gmail.com",
         "port": 587,
+        "tls_mode": "starttls",
     }
     assert audit[0].after == {
         "kind": "smtp",
         "username": "ops@newprovider.com",
         "host": "mail.newprovider.com",
         "port": 587,
+        "tls_mode": "starttls",
     }
     everywhere = json.dumps([audit[0].before, audit[0].after, events[0].payload])
     assert "old-app-password" not in everywhere
@@ -1108,6 +1115,67 @@ async def test_the_connection_route_refuses_a_port_outside_the_submission_set(
     assert response.status_code == 422
 
 
+async def test_the_connection_route_refuses_a_tls_mode_it_does_not_know(client, org_id) -> None:
+    with as_principal(engage_caller(org_id, [f"{C_WRITE}:ORG"])):
+        response = await client.post(
+            CONNECTION,
+            json={
+                "kind": "smtp",
+                "username": "ops@company.com",
+                "secret": "x",  # pragma: allowlist secret
+                "host": "mail.example.com",
+                "tls_mode": "tls1.3",
+            },
+        )
+    assert response.status_code == 422
+
+
+async def test_the_connection_route_reports_how_the_connection_is_secured(client, org_id) -> None:
+    """A named provider is STARTTLS whatever the caller sent: like `host` and `port`, how it is
+    secured is the provider's to say. The answer is on the response so the setup screen can show
+    it."""
+    with as_principal(engage_caller(org_id, [f"{C_WRITE}:ORG"])):
+        response = await client.post(
+            CONNECTION,
+            json={
+                "kind": "google",
+                "username": "ops@company.com",
+                "secret": "x",  # pragma: allowlist secret
+                "tls_mode": "none",
+            },
+        )
+    assert response.status_code == 201
+    assert response.json()["tls_mode"] == "starttls"
+
+
+async def test_a_test_send_to_a_server_whose_certificate_will_not_verify_says_so(
+    session, org_id, usable_sender
+) -> None:
+    """ "Try again in a few minutes" is the wrong advice for a certificate that will not verify,
+    and the right one is something the customer can act on. Still one fixed sentence: the
+    handshake's own words — the code, the host — stay in the log."""
+    sender_id = usable_sender.id
+    wire = RecordingTransport(
+        fail_with=TransportTlsError("TLS certificate verification failed (code 18)")
+    )
+    with pytest.raises(BusinessRuleProblem) as failure:
+        async with session.begin():
+            await services.send_test(
+                session,
+                _ctx(org_id, "engage.setup.sender.write"),
+                sender_id=sender_id,
+                to_address="ops@company.com",
+                transport=wire,
+            )
+
+    assert str(failure.value) == (
+        "The mail server's certificate could not be verified. It must be issued by a public "
+        "authority for the host name this connection uses."
+    )
+    assert "code 18" not in str(failure.value)
+    assert (await _reread(session, sender_id)).usable is False
+
+
 async def _events(session, event_type: str) -> int:
     rows = (
         (
@@ -1278,7 +1346,15 @@ async def test_connecting_a_provider_never_returns_the_secret(client, org_id) ->
         )
 
     assert response.status_code == 201
-    assert set(response.json()) == {"kind", "username", "host", "port", "status", "daily_cap"}
+    assert set(response.json()) == {
+        "kind",
+        "username",
+        "host",
+        "port",
+        "tls_mode",
+        "status",
+        "daily_cap",
+    }
     assert "app-password" not in response.text
 
 
@@ -1299,7 +1375,15 @@ async def test_reading_the_connection_returns_that_same_shape(client, org_id) ->
     body = response.json()
     assert response.status_code == 200
     assert body["total"] == 1
-    assert set(body["items"][0]) == {"kind", "username", "host", "port", "status", "daily_cap"}
+    assert set(body["items"][0]) == {
+        "kind",
+        "username",
+        "host",
+        "port",
+        "tls_mode",
+        "status",
+        "daily_cap",
+    }
     # Derived from the kind by the writer, which is what lets the wizard skip the question —
     # worth reading back, because a screen showing nothing here looks unconnected.
     assert body["items"][0]["host"] == "smtp.gmail.com"
@@ -1330,7 +1414,7 @@ async def test_replacing_a_connection_never_returns_the_secret_and_updates_the_f
 
     body = response.json()
     assert response.status_code == 200
-    assert set(body) == {"kind", "username", "host", "port", "status", "daily_cap"}
+    assert set(body) == {"kind", "username", "host", "port", "tls_mode", "status", "daily_cap"}
     assert (body["kind"], body["username"], body["host"]) == (
         "smtp",
         "ops@newprovider.com",

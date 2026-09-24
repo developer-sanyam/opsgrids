@@ -250,6 +250,10 @@ class PreferenceIn(BaseModel):
 
 ConnectionKind = Literal["google", "microsoft", "smtp", "platform"]
 ConnectionStatus = Literal["connected", "disconnected"]
+#: How an SMTP connection is secured: an upgrade on the plain port, encrypted from the first
+#: byte, or not at all. `none` is a value a caller can name and the writer will refuse whenever a
+#: credential is set — see `domain.resolve_tls_mode`.
+ConnectionTlsMode = Literal["starttls", "ssl", "none"]
 DomainStatus = Literal["pending", "verified", "failed"]
 DnsRecordKind = Literal["spf", "dkim", "dmarc", "return_path", "tracking"]
 
@@ -280,6 +284,13 @@ class ConnectionIn(BaseModel):
     #: The mail submission ports, and the only ones `app/dns_check.py` will dial regardless of
     #: what this accepts — narrowed here too so a bad port is a 422 rather than a round trip.
     port: Literal[25, 465, 587, 2525] | None = None
+    #: How to secure the connection. Only an `smtp` connection has a choice: leave it out and it
+    #: follows the port — implicit TLS on 465, STARTTLS on any other. A named provider
+    #: (`google`, `microsoft`) is always what that provider offers, and this is ignored for the
+    #: same reason `host` is. `none` is refused whenever the connection carries a username and
+    #: password, which every connection here does — the server's certificate is verified either
+    #: way, so a host with a self-signed certificate is not a valid submission host.
+    tls_mode: ConnectionTlsMode | None = None
 
 
 class ConnectionOut(BaseModel):
@@ -294,6 +305,8 @@ class ConnectionOut(BaseModel):
     username: str
     host: str
     port: int
+    #: How the connection is secured — derived for a row that predates the column.
+    tls_mode: ConnectionTlsMode
     status: ConnectionStatus
     #: What the provider accepts in a day. Shown because a campaign larger than this is refused,
     #: and the customer should learn the number before they build one.

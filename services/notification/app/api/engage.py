@@ -27,7 +27,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import dns_check, selectors, services, webhooks
-from app.domain import UnsubscribeTarget
+from app.domain import UnsubscribeTarget, effective_tls_mode
 from app.models import (
     Campaign,
     Contact,
@@ -188,6 +188,7 @@ def _connection_out(row: EmailConnection) -> ConnectionOut:
         username=row.username,
         host=row.host,
         port=row.port,
+        tls_mode=effective_tls_mode(row.tls_mode, use_tls=row.use_tls, port=row.port),
         status=row.status,
         daily_cap=row.daily_cap,
     )
@@ -315,6 +316,7 @@ async def connect_provider(
         secret=body.secret,
         host=body.host,
         port=body.port,
+        tls_mode=body.tls_mode,
         request=request,
     )
     return _connection_out(row)
@@ -346,6 +348,7 @@ async def replace_provider(
         secret=body.secret,
         host=body.host,
         port=body.port,
+        tls_mode=body.tls_mode,
         request=request,
     )
     return _connection_out(row)

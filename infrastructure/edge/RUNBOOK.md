@@ -1411,7 +1411,7 @@ of the file (last assignment wins, an inline ` # comment` is dropped) is what `r
 | `EDGE_UP_PARALLEL_LIMIT` | optional, commented out in `.env.example` | how many containers `up` starts at once (default 4); set `2` for this release's deploy (below) |
 | `OPS_ALERT_EMAIL` | key present, may be empty | empty = ops-monitor checks and logs but pages nobody (preflight warns in capitals); set it to an inbox a human reads |
 | `OPS_MONITOR_API_CONTAINERS`, `OPS_MONITOR_DLQ_QUEUES` | keys present, normally empty | empty = derive from `COMPOSE_PROFILES`; setting either REPLACES the derived list |
-| `SMTP_USE_SSL` | key present, `false` | `true` only for a provider that offers SMTPS on 465 and not STARTTLS; mutually exclusive with `SMTP_USE_TLS` |
+| `SMTP_USE_SSL` | key present, `false` | `true` only for a provider that offers SMTPS on 465 and not STARTTLS; mutually exclusive with `SMTP_USE_TLS`. Read by ops-monitor and notification. Both check the server's certificate and refuse to send `SMTP_USERNAME`/`SMTP_PASSWORD` over a connection that is neither STARTTLS nor SMTPS; `SMTP_ALLOW_UNVERIFIED_TLS` exists for local mail servers only and is not passed through by compose |
 | `ENGAGE_UNSUBSCRIBE_SECRET`, `ENGAGE_PUBLIC_API_BASE` | **need real values** | a fresh secret (rotating it breaks every unsubscribe link already sent); an `https://` base a mailbox can reach |
 | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `DOCUMENT_S3_ACCESS_KEY`, `DOCUMENT_S3_SECRET_KEY` | **need real values** | generate fresh; both secrets ≥ 8 characters (MinIO's floor) |
 | `DOCUMENT_S3_ORPHAN_ACCESS_KEY`, `DOCUMENT_S3_ORPHAN_SECRET_KEY` | keys present, may be empty | the by-hand orphan pass only; held by no always-on container |

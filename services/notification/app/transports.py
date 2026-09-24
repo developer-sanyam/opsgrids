@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import re
 import smtplib
+import ssl
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from email.message import EmailMessage
@@ -24,7 +26,7 @@ from typing import Any, Protocol
 
 import httpx
 
-from platform_core import pii
+from platform_core import pii, smtp_tls
 from platform_core.logging import get_logger
 
 log = get_logger("notification.transports")
@@ -40,14 +42,14 @@ _ADDRESS_RE = re.compile(r"[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+")
 def scrub_addresses(text: str) -> str:
     """A provider's error message, with every address-shaped substring redacted.
 
-    Applied inside `SmtpTransport`, and by `send_batch` to an exception it did not classify,
-    before the error is wrapped in `TransportRefused`/`TransportUnavailable` — so every caller
-    downstream (the dispatcher's log line, the campaign driver's, the recipient-facing message)
-    is safe by construction rather than by remembering to scrub at each call site.
+    Applied by `send_batch` to an exception it did not classify, before the error is wrapped in
+    `TransportUnavailable` — so the campaign driver's own log line and stored error are safe by
+    construction rather than by remembering to scrub at each call site.
 
-    Email-shaped text only. It is **not** what keeps `WhatsAppCloudTransport`'s errors clean: a
-    phone number or a template parameter would pass straight through it. That transport never
-    carries provider text at all — see `_meta_error`.
+    Email-shaped text only, so it is a net and not the mechanism. `SmtpTransport` and
+    `WhatsAppCloudTransport` never carry the server's or Meta's own text at all
+    (`_describe_smtp_error`, `_meta_error`): a phone number or a template parameter would pass
+    straight through this.
     """
     return _ADDRESS_RE.sub("<redacted>", text)
 
@@ -62,6 +64,16 @@ class TransportRefused(TransportError):
 
 class TransportUnavailable(TransportError):
     """The provider could not take it now. Retrying is reasonable."""
+
+
+class TransportTlsError(TransportUnavailable):
+    """The server's certificate did not verify, so nothing — no credential, no message — was sent.
+
+    A kind of `TransportUnavailable`: a renewed certificate or a corrected host makes the next
+    attempt work, so the dispatcher retries it like any other outage. Its own class so a caller
+    that talks to a person (`services.send_test`) can say what is wrong instead of "try again in
+    a few minutes".
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +183,21 @@ class SmtpTransport:
 
     `SMTPRecipientsRefused` and `SMTPSenderRefused` are permanent by definition, so they refuse
     rather than retry; everything else from the socket is treated as "not now".
+
+    **The server is verified before anything secret is sent.** `tls_mode` is `starttls`, `ssl`
+    (implicit TLS) or `none`; either encrypted mode checks the server's certificate against
+    `host` with a default verifying context, and only then is `login` attempted. `login` is
+    refused outright on an unencrypted connection, and so is *building* a transport that would
+    have to (`ValueError`): a credential is never written to a channel nobody has authenticated
+    or encrypted. `host` is the name the certificate is checked against and `dial_address` (when
+    the caller has already resolved it) is where the socket connects — see `platform_core.
+    smtp_tls`. `verify_tls=False` exists for a development mail server with a self-signed
+    certificate and is the caller's to gate by environment (`Settings.smtp_verify_tls`).
+
+    **No text from the server is carried into an error.** What an SMTP server says about a
+    failure can echo the recipient, a hostname or a fragment of the message, and the description
+    here ends up stored on the message, published on the bus and logged; the exception's type and
+    the numeric reply code say what happened without it (`_describe_smtp_error`).
     """
 
     name = "smtp"
@@ -182,16 +209,24 @@ class SmtpTransport:
         port: int,
         username: str | None,
         password: str | None,
-        use_tls: bool,
+        tls_mode: smtp_tls.TlsMode,
         timeout: float,
         from_address: str,
         executor: ThreadPoolExecutor | None = None,
+        dial_address: str | None = None,
+        verify_tls: bool = True,
     ) -> None:
+        if tls_mode == "none" and username and password:
+            raise ValueError(
+                "refusing to build an SMTP transport that would send credentials unencrypted"
+            )
         self._host = host
+        self._dial_address = dial_address
         self._port = port
         self._username = username
         self._password = password
-        self._use_tls = use_tls
+        self._tls_mode = tls_mode
+        self._verify_tls = verify_tls
         self._timeout = timeout
         self._from = from_address
         #: `None` means "the process's default executor" — `loop.run_in_executor(None, ...)`
@@ -242,18 +277,39 @@ class SmtpTransport:
     def _send_many_blocking(self, messages: list[Outgoing]) -> list[Receipt | TransportError]:
         results: list[Receipt | TransportError] = []
         try:
-            client = smtplib.SMTP(self._host, self._port, timeout=self._timeout)
+            # Connects, and for `starttls` upgrades — verifying the certificate — before this
+            # returns. Nothing below runs on a connection that did not pass that.
+            client = smtp_tls.open_smtp(
+                self._host,
+                self._port,
+                tls_mode=self._tls_mode,
+                timeout=self._timeout,
+                dial_address=self._dial_address,
+                verify=self._verify_tls,
+            )
+        except ssl.SSLCertVerificationError as exc:
+            # Before the general `OSError` branch, which it is a subtype of. `verify_code` is
+            # OpenSSL's numeric reason (18 self-signed, 10 expired, 62 wrong host) — stable, and
+            # unlike `str(exc)` it does not name the host.
+            tls_error = TransportTlsError(
+                f"TLS certificate verification failed (code {exc.verify_code})"
+            )
+            return [tls_error] * len(messages)
         except (smtplib.SMTPException, OSError) as exc:
-            unavailable = TransportUnavailable(scrub_addresses(str(exc)))
+            unavailable = TransportUnavailable(_describe_smtp_error(exc))
             return [unavailable] * len(messages)
         try:
             try:
-                if self._use_tls:
-                    client.starttls()
                 if self._username and self._password:
-                    client.login(self._username, self._password)
+                    smtp_tls.login(client, self._username, self._password, tls_mode=self._tls_mode)
+            except smtp_tls.PlaintextLoginRefused:
+                # Configuration, not weather: no retry will encrypt the connection.
+                refused = TransportRefused(
+                    "SMTP credentials refused over an unencrypted connection"
+                )
+                return [refused] * len(messages)
             except (smtplib.SMTPException, OSError) as exc:
-                unavailable = TransportUnavailable(scrub_addresses(str(exc)))
+                unavailable = TransportUnavailable(_describe_smtp_error(exc))
                 return [unavailable] * len(messages)
 
             connection_dead = False
@@ -266,19 +322,40 @@ class SmtpTransport:
                     client.send_message(mail)
                     results.append(Receipt(provider=self.name))
                 except (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused) as exc:
-                    results.append(TransportRefused(scrub_addresses(str(exc))))
+                    results.append(TransportRefused(_describe_smtp_error(exc)))
                 except (smtplib.SMTPException, OSError) as exc:
                     connection_dead = True
-                    results.append(TransportUnavailable(scrub_addresses(str(exc))))
+                    results.append(TransportUnavailable(_describe_smtp_error(exc)))
                 except Exception as exc:
                     # Anything else building or sending this one message — a header value the
                     # email package itself refuses, for instance — is this recipient's problem,
                     # not the connection's, so the batch continues.
-                    results.append(TransportRefused(scrub_addresses(str(exc))))
+                    results.append(TransportRefused(_describe_smtp_error(exc)))
         finally:
             with contextlib.suppress(Exception):
                 client.quit()
         return results
+
+
+def _describe_smtp_error(exc: BaseException) -> str:
+    """What went wrong on an SMTP connection, without repeating anything the server said.
+
+    The exception's type, and the numeric reply code when it carries one (a recipient refusal
+    carries one per recipient; the codes are listed, the addresses are not) or the OS error name
+    for a socket failure. That is what an operator needs to tell a rejected password (`535`) from
+    a refused recipient (`550`) from a dead connection, and none of it can contain a recipient, a
+    host or a slice of the message.
+    """
+    parts = [type(exc).__name__]
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        parts.extend(str(code) for code in sorted({reply[0] for reply in exc.recipients.values()}))
+    else:
+        code = getattr(exc, "smtp_code", None)
+        if isinstance(code, int):
+            parts.append(str(code))
+        elif isinstance(exc, OSError) and exc.errno is not None:
+            parts.append(errno.errorcode.get(exc.errno, str(exc.errno)))
+    return " ".join(parts)
 
 
 class WhatsAppCloudTransport:
@@ -435,7 +512,10 @@ def build(cfg: object) -> dict[str, Transport]:
             port=cfg.smtp_port,  # type: ignore[attr-defined]
             username=getattr(cfg, "smtp_username", None),
             password=password.get_secret_value() if password is not None else None,
-            use_tls=cfg.smtp_use_tls,  # type: ignore[attr-defined]
+            # Raises (`ValueError`) for a username and password with no TLS at all: a service
+            # that would send the platform's SMTP credential unencrypted refuses to start.
+            tls_mode=cfg.smtp_tls_mode,  # type: ignore[attr-defined]
+            verify_tls=cfg.smtp_verify_tls,  # type: ignore[attr-defined]
             timeout=cfg.smtp_timeout_seconds,  # type: ignore[attr-defined]
             from_address=cfg.email_from,  # type: ignore[attr-defined]
         )

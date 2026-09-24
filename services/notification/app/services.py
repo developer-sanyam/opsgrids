@@ -68,6 +68,7 @@ from app.transports import (
     Transport,
     TransportError,
     TransportRefused,
+    TransportTlsError,
     TransportUnavailable,
 )
 from platform_core import pii
@@ -83,6 +84,7 @@ from platform_core.errors import (
 )
 from platform_core.events import publish_event
 from platform_core.logging import get_logger
+from platform_core.smtp_tls import TlsMode
 
 log = get_logger("notification.services")
 
@@ -1969,6 +1971,22 @@ async def _submission_endpoint(
     return submission_host, submission_port
 
 
+def _connection_tls_mode(
+    *, kind: str, requested: str | None, port: int, has_credentials: bool
+) -> TlsMode:
+    """`domain.resolve_tls_mode`, with its refusal turned into the sentence the caller gets.
+
+    One function for both writers, for the reason `_submission_endpoint` is one: a second copy of
+    a security decision is how the check gets skipped on one path.
+    """
+    try:
+        return _rules.resolve_tls_mode(
+            kind=kind, requested=requested, port=port, has_credentials=has_credentials
+        )
+    except ValueError as exc:
+        raise ValidationProblem(str(exc)) from exc
+
+
 async def create_connection(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -1978,6 +1996,7 @@ async def create_connection(
     secret: str,
     host: str = "",
     port: int | None = None,
+    tls_mode: str | None = None,
     request: Request | None = None,
     resolver: dns_check.Resolver | None = None,
 ) -> EmailConnection:
@@ -2022,6 +2041,12 @@ async def create_connection(
     submission_host, submission_port = await _submission_endpoint(
         ctx, kind=kind, transport=transport, host=host, port=port, resolver=resolver
     )
+    secured_by = _connection_tls_mode(
+        kind=kind,
+        requested=tls_mode,
+        port=submission_port,
+        has_credentials=bool(username and secret),
+    )
 
     # `seal` returns (ciphertext, mask); the mask is discarded deliberately. A hint of an app
     # password is a hint of a credential, and nothing in this product displays one.
@@ -2033,7 +2058,8 @@ async def create_connection(
         kind=kind,
         host=submission_host,
         port=submission_port,
-        use_tls=transport.use_tls,
+        use_tls=secured_by != "none",
+        tls_mode=secured_by,
         username=username,
         secret_enc=sealed,
         daily_cap=transport.daily_cap,
@@ -2057,6 +2083,7 @@ async def create_connection(
             "username": username,
             "host": submission_host,
             "port": connection.port,
+            "tls_mode": secured_by,
             "daily_cap": connection.daily_cap,
         },
         request=request,
@@ -2088,6 +2115,7 @@ async def replace_connection(
     secret: str,
     host: str = "",
     port: int | None = None,
+    tls_mode: str | None = None,
     request: Request | None = None,
     resolver: dns_check.Resolver | None = None,
 ) -> EmailConnection:
@@ -2136,6 +2164,12 @@ async def replace_connection(
     submission_host, submission_port = await _submission_endpoint(
         ctx, kind=kind, transport=transport, host=host, port=port, resolver=resolver
     )
+    secured_by = _connection_tls_mode(
+        kind=kind,
+        requested=tls_mode,
+        port=submission_port,
+        has_credentials=bool(username and secret),
+    )
 
     # Snapshotted before the row changes, for the audit `before`. Never the secret or its
     # envelope — that rule is not this snapshot's alone, `after` below keeps it too.
@@ -2144,6 +2178,9 @@ async def replace_connection(
         "username": existing.username,
         "host": existing.host,
         "port": existing.port,
+        "tls_mode": _rules.effective_tls_mode(
+            existing.tls_mode, use_tls=existing.use_tls, port=existing.port
+        ),
     }
 
     # `seal` returns (ciphertext, mask); the mask is discarded deliberately, as in
@@ -2154,7 +2191,8 @@ async def replace_connection(
     existing.kind = kind
     existing.host = submission_host
     existing.port = submission_port
-    existing.use_tls = transport.use_tls
+    existing.use_tls = secured_by != "none"
+    existing.tls_mode = secured_by
     existing.username = username
     # The overwrite. Assigning a new value to the same column, in the same row, in the same
     # transaction as everything else here — there is no intermediate state where the row
@@ -2206,6 +2244,7 @@ async def replace_connection(
             "username": username,
             "host": submission_host,
             "port": existing.port,
+            "tls_mode": secured_by,
         },
         request=request,
     )
@@ -2720,16 +2759,36 @@ async def _transport_for_connection(
     password = (
         pii.open_sealed(connection.secret_enc, settings=cfg) if connection.secret_enc else None
     )
-    return SmtpTransport(
-        host=dial_host,
-        port=connection.port,
-        username=connection.username or None,
-        password=password,
-        use_tls=connection.use_tls,
-        timeout=cfg.smtp_timeout_seconds,
-        from_address=from_address,
-        executor=executor,
-    )
+    try:
+        return SmtpTransport(
+            # The certificate is checked against the connection's own name; the socket goes to
+            # the address the guard resolved. Handing the transport only the address would make
+            # TLS verify an IP no certificate lists — and handing it only the name would let the
+            # socket layer make the third lookup the guard exists to prevent.
+            host=connection.host,
+            dial_address=dial_host,
+            port=connection.port,
+            username=connection.username or None,
+            password=password,
+            tls_mode=_rules.effective_tls_mode(
+                connection.tls_mode, use_tls=connection.use_tls, port=connection.port
+            ),
+            verify_tls=cfg.smtp_verify_tls,
+            timeout=cfg.smtp_timeout_seconds,
+            from_address=from_address,
+            executor=executor,
+        )
+    except ValueError as exc:
+        # A connection whose stored TLS settings would send its credential unencrypted. Cannot
+        # be created any more (`resolve_tls_mode`), but a row is a row: refuse to use it.
+        log.warning(
+            "engage.connection.insecure_settings",
+            organization_id=str(connection.organization_id),
+        )
+        raise BusinessRuleProblem(
+            "This connection is set to send its password without encryption. Replace it with "
+            "a STARTTLS or SSL/TLS connection."
+        ) from exc
 
 
 async def send_test(
@@ -2817,6 +2876,16 @@ async def send_test(
         raise BusinessRuleProblem(
             "The provider refused the test message. Check the connection's credentials and "
             "the sender's address."
+        ) from exc
+    except TransportTlsError as exc:
+        # Before `TransportUnavailable`, which it is a kind of: "try again in a few minutes"
+        # is the wrong advice for a certificate that will not verify, and the right one is
+        # something the customer can act on. Still a fixed sentence — never the handshake's own
+        # words, for the reason the neighbouring branches give.
+        log.warning("engage.test_send.tls_refused", sender_id=str(sender.id), error=str(exc))
+        raise BusinessRuleProblem(
+            "The mail server's certificate could not be verified. It must be issued by a public "
+            "authority for the host name this connection uses."
         ) from exc
     except TransportUnavailable as exc:
         log.warning("engage.test_send.unavailable", sender_id=str(sender.id), error=str(exc))

@@ -14,7 +14,9 @@ import hmac
 import re
 import uuid
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, cast
+
+from platform_core.smtp_tls import TLS_MODES, TlsMode
 
 #: The channels this service can actually reach. A rule naming anything else is refused at
 #: write time rather than discovered when a message fails to send.
@@ -713,6 +715,9 @@ class TransportSettings:
     port: int
     use_tls: bool
     daily_cap: int
+    #: How that connection is secured: `starttls` or `ssl` (`none` is never derived — see
+    #: `resolve_tls_mode`). Kept beside `use_tls`, which it refines.
+    tls_mode: TlsMode = "starttls"
 
 
 #: Caps are the provider's published external-recipient limits, not ours. They exist so a campaign
@@ -744,6 +749,53 @@ def transport_for(kind: str, username: str) -> TransportSettings:
         # rather than discovered by a campaign that silently sends nothing.
         return TransportSettings("", 587, True, 50_000)
     raise ValueError(f"Unknown connection kind {kind!r}")
+
+
+#: The submission port that means implicit TLS. Every other port is STARTTLS unless a caller
+#: says otherwise.
+_IMPLICIT_TLS_PORT: Final = 465
+
+
+def resolve_tls_mode(
+    *, kind: str, requested: str | None, port: int, has_credentials: bool
+) -> TlsMode:
+    """The TLS mode a new connection will be stored with — decided in one place for every writer.
+
+    A fixed-provider kind (`google`, `microsoft`) is always what the provider offers: its endpoint
+    is not the caller's to describe, so neither is how it is secured. For `smtp` the caller may
+    say `starttls`, `ssl` or `none`; leaving it out means implicit TLS on 465 and STARTTLS on any
+    other port, which is what the port already says.
+
+    `none` with a credential is refused (`ValueError`), not stored: it would send a customer's
+    mailbox password across the network in the clear on every message, and no server worth
+    connecting to needs that. The transport refuses it again at `login()` — this is the answer
+    the person filling in the form gets, at save time, rather than a failed send later.
+    """
+    if kind in _KINDS:
+        return _KINDS[kind].tls_mode
+    mode = requested or ("ssl" if port == _IMPLICIT_TLS_PORT else "starttls")
+    if mode not in TLS_MODES:
+        raise ValueError(f"tls_mode must be one of {', '.join(TLS_MODES)}")
+    if mode == "none" and has_credentials:
+        raise ValueError(
+            "An unencrypted SMTP connection cannot carry a username and password. Choose "
+            "STARTTLS or SSL/TLS."
+        )
+    return cast(TlsMode, mode)
+
+
+def effective_tls_mode(stored: str | None, *, use_tls: bool, port: int) -> TlsMode:
+    """The TLS mode of an existing connection row.
+
+    A row written before `tls_mode` existed has none stored; its `use_tls` and port say what it
+    was meant to be. Never `none` for a row that is asked to authenticate — the transport refuses
+    that — but this answers only "how was it meant to be secured".
+    """
+    if stored in TLS_MODES:
+        return cast(TlsMode, stored)
+    if not use_tls:
+        return "none"
+    return "ssl" if port == _IMPLICIT_TLS_PORT else "starttls"
 
 
 def dns_records_for(

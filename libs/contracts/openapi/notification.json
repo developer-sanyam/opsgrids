@@ -467,6 +467,22 @@
             "title": "Secret",
             "type": "string"
           },
+          "tls_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "starttls",
+                  "ssl",
+                  "none"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tls Mode"
+          },
           "username": {
             "maxLength": 255,
             "minLength": 1,
@@ -515,6 +531,15 @@
             "title": "Status",
             "type": "string"
           },
+          "tls_mode": {
+            "enum": [
+              "starttls",
+              "ssl",
+              "none"
+            ],
+            "title": "Tls Mode",
+            "type": "string"
+          },
           "username": {
             "title": "Username",
             "type": "string"
@@ -525,6 +550,7 @@
           "username",
           "host",
           "port",
+          "tls_mode",
           "status",
           "daily_cap"
         ],

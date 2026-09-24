@@ -13,13 +13,14 @@ from __future__ import annotations
 import asyncio
 import json
 import smtplib
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import httpx
 import pytest
 
 from app import transports
 from app.config import Settings
+from platform_core import smtp_tls
 
 # --------------------------------------------------------------------- the default
 
@@ -408,25 +409,38 @@ def test_scrub_addresses_redacts_email_like_substrings() -> None:
 
 
 class _FakeSmtp:
-    """Stands in for `smtplib.SMTP`: no socket, and it remembers what it was asked to send."""
+    """Stands in for the connected client `smtp_tls.open_smtp` returns: no socket, and it
+    remembers what it was asked to send. The real connect-and-verify step is
+    `platform_core.smtp_tls`'s own tests, and `test_smtp_transport_tls.py`'s against a live TLS
+    server; this file is about what the transport does with a connection once it has one."""
 
     instances: ClassVar[list[_FakeSmtp]] = []
 
-    def __init__(self, host: str, port: int, timeout: float | None = None) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        *,
+        tls_mode: str = "starttls",
+        timeout: float | None = None,
+        dial_address: str | None = None,
+        verify: bool = True,
+    ) -> None:
         self.host = host
         self.port = port
+        self.tls_mode = tls_mode
+        self.dial_address = dial_address
+        self.verify = verify
         self.sent: list[str] = []
         self.quit_called = False
         self.connect_error: Exception | None = None
         self.refuse_recipients: set[str] = set()
         self.die_after: int | None = None
+        self.logins: list[tuple[str, str]] = []
         _FakeSmtp.instances.append(self)
 
-    def starttls(self) -> None:
-        pass
-
     def login(self, username: str, password: str) -> None:
-        pass
+        self.logins.append((username, password))
 
     def send_message(self, mail) -> None:
         to = mail["To"]
@@ -452,7 +466,7 @@ def _smtp_transport() -> transports.SmtpTransport:
         port=587,
         username="u",
         password="p",
-        use_tls=True,
+        tls_mode="starttls",
         timeout=1.0,
         from_address="from@example.com",
     )
@@ -466,7 +480,7 @@ async def test_send_many_reuses_one_connection_for_the_whole_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _FakeSmtp.instances.clear()
-    monkeypatch.setattr(smtplib, "SMTP", _FakeSmtp)
+    monkeypatch.setattr(smtp_tls, "open_smtp", _FakeSmtp)
     transport = _smtp_transport()
     results = await transport.send_many([_message("a@b.com"), _message("c@d.com")])
     assert all(isinstance(r, transports.Receipt) for r in results)
@@ -482,12 +496,12 @@ async def test_send_many_refuses_one_recipient_without_aborting_the_rest(
     the batch is still attempted on it."""
     _FakeSmtp.instances.clear()
 
-    def factory(host: str, port: int, timeout: float | None = None) -> _FakeSmtp:
-        fake = _FakeSmtp(host, port, timeout)
+    def factory(host: str, port: int, **kwargs: Any) -> _FakeSmtp:
+        fake = _FakeSmtp(host, port, **kwargs)
         fake.refuse_recipients = {"bad@b.com"}
         return fake
 
-    monkeypatch.setattr(smtplib, "SMTP", factory)
+    monkeypatch.setattr(smtp_tls, "open_smtp", factory)
     transport = _smtp_transport()
     results = await transport.send_many(
         [_message("a@b.com"), _message("bad@b.com"), _message("c@d.com")]
@@ -501,10 +515,10 @@ async def test_send_many_refuses_one_recipient_without_aborting_the_rest(
 async def test_send_many_treats_a_connect_failure_as_unavailable_for_the_whole_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def factory(host: str, port: int, timeout: float | None = None) -> _FakeSmtp:
+    def factory(host: str, port: int, **kwargs: Any) -> _FakeSmtp:
         raise OSError("connection refused")
 
-    monkeypatch.setattr(smtplib, "SMTP", factory)
+    monkeypatch.setattr(smtp_tls, "open_smtp", factory)
     transport = _smtp_transport()
     results = await transport.send_many([_message("a@b.com"), _message("c@d.com")])
     assert all(isinstance(r, transports.TransportUnavailable) for r in results)
@@ -517,12 +531,12 @@ async def test_send_many_marks_the_rest_unavailable_once_the_connection_drops(
     gone — the rest of the batch is not worth attempting on it."""
     _FakeSmtp.instances.clear()
 
-    def factory(host: str, port: int, timeout: float | None = None) -> _FakeSmtp:
-        fake = _FakeSmtp(host, port, timeout)
+    def factory(host: str, port: int, **kwargs: Any) -> _FakeSmtp:
+        fake = _FakeSmtp(host, port, **kwargs)
         fake.die_after = 1
         return fake
 
-    monkeypatch.setattr(smtplib, "SMTP", factory)
+    monkeypatch.setattr(smtp_tls, "open_smtp", factory)
     transport = _smtp_transport()
     results = await transport.send_many(
         [_message("a@b.com"), _message("b@b.com"), _message("c@b.com")]
@@ -535,7 +549,7 @@ async def test_send_many_marks_the_rest_unavailable_once_the_connection_drops(
 async def test_send_delegates_to_send_many_for_a_single_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(smtplib, "SMTP", _FakeSmtp)
+    monkeypatch.setattr(smtp_tls, "open_smtp", _FakeSmtp)
     receipt = await _smtp_transport().send(_message("a@b.com"))
     assert receipt.provider == "smtp"
 
@@ -546,7 +560,7 @@ async def test_send_delegates_to_send_many_for_a_single_message(
 async def test_send_batch_uses_send_many_when_the_transport_has_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(smtplib, "SMTP", _FakeSmtp)
+    monkeypatch.setattr(smtp_tls, "open_smtp", _FakeSmtp)
     transport = _smtp_transport()
     results = await transports.send_batch(transport, [_message("a@b.com"), _message("b@b.com")])
     assert len(results) == 2
@@ -579,7 +593,7 @@ async def test_send_many_uses_the_process_default_executor_when_none_is_given(
     """The platform's own shared transport (built once in `app/worker.py`, used by the
     dispatcher for a single password-reset or notification send) must land on the default
     pool — passing no executor at all is what makes that true."""
-    monkeypatch.setattr(smtplib, "SMTP", _FakeSmtp)
+    monkeypatch.setattr(smtp_tls, "open_smtp", _FakeSmtp)
     transport = _smtp_transport()
     captured: dict[str, object] = {}
 
@@ -597,14 +611,14 @@ async def test_send_many_uses_the_executor_it_was_given(monkeypatch: pytest.Monk
     """A campaign's transport (`app/services.py:campaign_transport`) is built with
     `CAMPAIGN_SMTP_EXECUTOR` — this is the seam that proves the value actually reaches the
     blocking call, not just the constructor."""
-    monkeypatch.setattr(smtplib, "SMTP", _FakeSmtp)
+    monkeypatch.setattr(smtp_tls, "open_smtp", _FakeSmtp)
     sentinel_executor = object()
     transport = transports.SmtpTransport(
         host="smtp.example.com",
         port=587,
         username="u",
         password="p",
-        use_tls=True,
+        tls_mode="starttls",
         timeout=1.0,
         from_address="from@example.com",
         executor=sentinel_executor,  # type: ignore[arg-type]

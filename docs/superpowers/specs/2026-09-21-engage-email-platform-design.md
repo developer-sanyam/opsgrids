@@ -78,6 +78,23 @@ successful test send sets.
 send email* — Google Workspace, Microsoft 365, custom SMTP, or platform-managed — and the system
 derives host, port, TLS and auth from that choice.
 
+**The server's certificate is always checked (NOTIF-A, 2026-09-24).** The transport first called
+`starttls()` with no context, which `smtplib` fills with the *unverified* stdlib default — any
+certificate accepted, then `login()` — so anyone on the path, or answering for a customer-typed
+hostname, got the SMTP credential and the mail. `SmtpTransport` now connects through
+`platform_core.smtp_tls`: a default verifying context, checked against the connection's **name**
+(the socket still dials the address the outbound dial guard resolved, so the check is never run
+against an IP), and `login()` refused on a connection that is not encrypted. Each connection
+carries a `tls_mode` — `starttls`, `ssl` (implicit TLS, 465) or `none` — validated when it is
+saved: it follows the port if the caller says nothing, a named provider is always what the
+provider offers, and `none` is refused whenever a credential is set (every connection carries
+one). Rows written before the column read as STARTTLS through `domain.effective_tls_mode`.
+
+A customer host with a self-signed certificate therefore no longer works; a test send says the
+certificate could not be verified rather than "try again". The one exception is the
+`SMTP_ALLOW_UNVERIFIED_TLS` setting for a development or CI mail server: it is refused at
+startup in production, staging and uat, and consulted against the environment again when read.
+
 ---
 
 ## 2. What already exists and is reused unchanged

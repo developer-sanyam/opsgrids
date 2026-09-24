@@ -11,6 +11,7 @@ from __future__ import annotations
 from pydantic import SecretStr
 
 from platform_core.config import ServiceSettings, settings_for
+from platform_core.smtp_tls import UNVERIFIED_TLS_ENVIRONMENTS, TlsMode
 
 
 class Settings(ServiceSettings):
@@ -30,7 +31,20 @@ class Settings(ServiceSettings):
     smtp_port: int = 1025
     smtp_username: str | None = None
     smtp_password: SecretStr | None = None
+    #: STARTTLS on the plain port (587 by convention). The platform's own SMTP credential is only
+    #: ever sent after this upgrade, and the server's certificate is verified — see
+    #: `smtp_allow_unverified_tls` for the one exception.
     smtp_use_tls: bool = False
+    #: Implicit TLS from the first byte ("SMTPS", 465 by convention) instead of STARTTLS. Mutually
+    #: exclusive with `smtp_use_tls`. Neither set means an unencrypted connection, which is refused
+    #: whenever a username and password are configured (`transports.SmtpTransport`).
+    smtp_use_ssl: bool = False
+    #: Accept a certificate that does not verify (self-signed, wrong name) on SMTP TLS — for a
+    #: development or CI mail server only. **Refused at startup in production, staging and uat**
+    #: (`model_post_init`): a deployed service always checks who it is sending credentials to.
+    #: It applies to every SMTP connection this process opens, a customer's own included, because
+    #: the environment it is allowed in is the one where nothing real is being sent.
+    smtp_allow_unverified_tls: bool = False
     smtp_timeout_seconds: float = 10.0
     email_from: str = "no-reply@opsgrids.example.com"
 
@@ -122,6 +136,36 @@ class Settings(ServiceSettings):
     dispatch_poll_interval: float = 1.0
     #: A message that has failed this many times stops being claimed and waits for an operator.
     dispatch_max_attempts: int = 6
+
+    @property
+    def smtp_tls_mode(self) -> TlsMode:
+        """How the platform's own SMTP connection is secured."""
+        if self.smtp_use_ssl:
+            return "ssl"
+        return "starttls" if self.smtp_use_tls else "none"
+
+    @property
+    def smtp_verify_tls(self) -> bool:
+        """Whether SMTP TLS certificates are checked. Always, except when the flag is on **and**
+        the environment is one where nothing real is sent — the environment is checked here as
+        well as at startup, so the answer never rests on the validator alone."""
+        return not (
+            self.smtp_allow_unverified_tls and self.environment in UNVERIFIED_TLS_ENVIRONMENTS
+        )
+
+    def model_post_init(self, context: object) -> None:
+        super().model_post_init(context)
+        if self.smtp_use_tls and self.smtp_use_ssl:
+            raise ValueError(
+                "SMTP_USE_TLS and SMTP_USE_SSL are mutually exclusive — STARTTLS upgrades a "
+                "plain connection, SSL/SMTPS is encrypted from the first byte; pick one"
+            )
+        if self.smtp_allow_unverified_tls and self.environment not in UNVERIFIED_TLS_ENVIRONMENTS:
+            raise ValueError(
+                f"{self.environment} refuses smtp_allow_unverified_tls: a deployed service must "
+                "verify the certificate of every SMTP server it sends credentials to. It exists "
+                "for local, test and ci mail servers only."
+            )
 
 
 def settings() -> Settings:

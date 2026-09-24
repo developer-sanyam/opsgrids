@@ -636,6 +636,10 @@ class EmailConnection(Base, TenantBase):
     host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     port: Mapped[int] = mapped_column(Integer, nullable=False, default=587)
     use_tls: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    #: starttls | ssl | none — how the connection is secured. Null on a row written before this
+    #: column existed; `domain.effective_tls_mode` derives it from `use_tls` and the port. `none`
+    #: is never stored alongside a credential (`domain.resolve_tls_mode`).
+    tls_mode: Mapped[str | None] = mapped_column(String(16))
     username: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     secret_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
 
@@ -650,6 +654,10 @@ class EmailConnection(Base, TenantBase):
         # One connection per organization for now. A second would make "which one sent this"
         # ambiguous before anything records the answer.
         UniqueConstraint("organization_id", name="uq_email_connection_org"),
+        CheckConstraint(
+            "tls_mode IS NULL OR tls_mode IN ('starttls', 'ssl', 'none')",
+            name="tls_mode_known",
+        ),
     )
 
 
