@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -337,6 +338,44 @@ def test_an_app_that_takes_no_stylesheet_needs_no_typeface(tmp_path: Path) -> No
         tmp_path, "product-a", dependencies={"@opsgrids/ui": "workspace:*"}, main="export {};\n"
     )
     assert frontend_manifest.font_problems(tmp_path) == []
+
+
+def _edge_csp_values() -> list[str]:
+    """Every `Content-Security-Policy` value the edge Caddyfile sets, quoted or not."""
+    caddyfile = (REPO_ROOT / "infrastructure/edge/caddy/Caddyfile").read_text(encoding="utf-8")
+    return [
+        (quoted or bare).strip()
+        for quoted, bare in re.findall(
+            r'^\s*header\s+Content-Security-Policy\s+(?:"([^"]*)"|(\S.*))$', caddyfile, re.M
+        )
+    ]
+
+
+def test_the_edge_names_no_google_fonts_host() -> None:
+    """Fonts come from the app's own origin (R32), so the edge has nothing to allow-list. Should a
+    later change put a Google host into any edge file, the CSP that could then be widened to match
+    is the one thing a self-hosted typeface no longer needs."""
+    for path in sorted((REPO_ROOT / "infrastructure").rglob("*")):
+        if not path.is_file() or path.stat().st_size > 1_000_000:
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for host in frontend_manifest.GOOGLE_FONT_HOSTS:
+            assert host not in text, f"{path.relative_to(REPO_ROOT)} names {host}"
+
+
+def test_no_edge_policy_grants_fonts_or_styles_to_another_origin() -> None:
+    """The edge sets one CSP today (the public bucket's, `default-src 'none'; sandbox`). If a
+    policy for the apps ever joins it, `default-src`, `font-src` and `style-src` stay on the app's
+    own origin: a host in them is a third party the self-hosted fonts no longer need."""
+    policies = _edge_csp_values()
+    assert policies, "the parser found no Content-Security-Policy in the Caddyfile"
+    for policy in policies:
+        for directive in policy.split(";"):
+            name, *sources = directive.split()
+            if name in {"default-src", "font-src", "style-src"}:
+                assert set(sources) <= {"'self'", "'none'"}, (
+                    f"{name} in {policy!r} grants a source beyond the app's own origin"
+                )
 
 
 def test_two_apps_naming_one_session_slot_fails(tmp_path: Path) -> None:
