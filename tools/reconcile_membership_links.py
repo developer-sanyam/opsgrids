@@ -322,12 +322,17 @@ async def reconcile_organization(
     *,
     dry_run: bool,
     page_pace_ms: int = PAGE_PACE_MS,
+    acting_as: str = ACTING_AS,
 ) -> dict[str, Any]:
     """One organization: page employee-service, then one transaction on the app role.
 
     A clean exit commits; under `--dry-run` the transaction is always rolled back, whether or
     not anything was found. The tenant GUC is bound as the transaction's first statement and
     is transaction-local, so nothing leaks onto the pooled connection.
+
+    `acting_as` is written to the audit row of any write this makes. It defaults to this
+    command's own name; `tools/verify_membership_links.py` passes its own, so a row says which
+    of the two commands wrote it.
     """
     from app import services  # type: ignore[import-not-found]  # loaded from the service dir
     from platform_core.db import get_sessionmaker, set_tenant
@@ -344,7 +349,7 @@ async def reconcile_organization(
         async with sessionmaker() as session, session.begin():
             await set_tenant(session, org_id)
             result = await services.reconcile_employee_links(
-                session, org_id, links, acting_as=ACTING_AS, dry_run=dry_run
+                session, org_id, links, acting_as=acting_as, dry_run=dry_run
             )
             if dry_run:
                 raise _DryRunRollback()
@@ -361,6 +366,7 @@ async def reconcile_fleet(
     dry_run: bool,
     pace_ms: int = 250,
     page_pace_ms: int = PAGE_PACE_MS,
+    acting_as: str = ACTING_AS,
 ) -> list[dict[str, Any]]:
     """Every organization in `org_ids`, sequentially, each its own transaction, paced.
 
@@ -371,7 +377,13 @@ async def reconcile_fleet(
     results: list[dict[str, Any]] = []
     for index, org_id in enumerate(org_ids):
         results.append(
-            await reconcile_organization(org_id, source, dry_run=dry_run, page_pace_ms=page_pace_ms)
+            await reconcile_organization(
+                org_id,
+                source,
+                dry_run=dry_run,
+                page_pace_ms=page_pace_ms,
+                acting_as=acting_as,
+            )
         )
         is_last = index == len(org_ids) - 1
         if not is_last and pace_ms > 0:
