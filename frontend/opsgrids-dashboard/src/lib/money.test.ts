@@ -1,19 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { daysUntil, formatDate, formatMoney, intervalLabel } from "./money";
+import { daysUntil, formatDate, formatMoney } from "./money";
 
 describe("formatMoney", () => {
   it("divides by the currency's own minor-unit exponent, not a flat 100", () => {
     expect(formatMoney(249900, "INR")).toBe("₹2,499.00");
     expect(formatMoney(100, "JPY")).toBe("JP¥100");
-  });
-});
-
-describe("intervalLabel", () => {
-  it("names the two intervals the catalogue sells, and falls back for anything else", () => {
-    expect(intervalLabel("month")).toBe("per month");
-    expect(intervalLabel("year")).toBe("per year");
-    expect(intervalLabel("week")).toBe("per week");
   });
 });
 

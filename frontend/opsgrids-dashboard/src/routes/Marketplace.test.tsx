@@ -72,7 +72,7 @@ function arrange(overrides: Partial<{ subscriptions: unknown[]; activations: unk
 }
 
 describe("MarketplacePage", () => {
-  it("lists sellable products with the flat monthly price, hides platform ones, marks soon ones", async () => {
+  it("lists sellable products, hides platform ones, marks soon ones, and never shows a catalogue price", async () => {
     arrange();
     render(
       <MemoryRouter>
@@ -80,13 +80,35 @@ describe("MarketplacePage", () => {
       </MemoryRouter>,
     );
     await waitFor(() => expect(screen.getByRole("heading", { name: "Inventory" })).toBeTruthy());
-    expect(screen.getByText(/₹2,499\.00/)).toBeTruthy();
-    expect(screen.getByText(/per month, flat/)).toBeTruthy();
+    expect(screen.getByText("Free 14-day trial")).toBeTruthy();
+    expect(
+      screen.getByText(/Pricing is agreed with OpsGrids for your organisation — contact info@opsgrids\.com\./),
+    ).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Email us" }).getAttribute("href")).toBe("mailto:info@opsgrids.com");
+    expect(screen.queryByText(/₹2,499\.00/)).toBeNull();
+    expect(screen.queryByText(/per month/)).toBeNull();
+    expect(screen.queryByText(/flat/)).toBeNull();
     expect(screen.getByRole("heading", { name: "People" })).toBeTruthy();
     expect(screen.getByText("Coming soon")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Notifications" })).toBeNull();
-    // Only the available product with a price can be started.
+    // Only the available product with a published plan version can be started.
     expect(screen.getAllByRole("button", { name: "Start 14-day trial" })).toHaveLength(1);
+  });
+
+  it("a product with no published plan version shows a disabled state instead of a price", async () => {
+    vi.mocked(api.listProducts).mockResolvedValue([inventory] as never);
+    vi.mocked(api.listActivations).mockResolvedValue([] as never);
+    vi.mocked(api.listSubscriptions).mockResolvedValue([] as never);
+    vi.mocked(api.listPlans).mockResolvedValue([] as never);
+
+    render(
+      <MemoryRouter>
+        <MarketplacePage />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Inventory" })).toBeTruthy());
+    expect(screen.getByText("Not available to start yet")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Start 14-day trial" })).toBeNull();
   });
 
   it("starting a trial subscribes to the published version — the subscription is the purchase", async () => {

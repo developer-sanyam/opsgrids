@@ -5,9 +5,9 @@ import { ApiError } from "@opsgrids/client";
 import { EmptyState, ErrorState, SearchInput, Skeleton } from "@opsgrids/ui";
 
 import { listActivations, listPlans, listProducts, listSubscriptions, startTrial } from "@/api";
-import type { Activation, Plan, PlanVersion, Price, Product, Subscription } from "@/api/types";
+import type { Activation, Plan, PlanVersion, Product, Subscription } from "@/api/types";
 import { bundleMembers, bundlesIncluding, joinNames, productNames } from "@/lib/bundles";
-import { daysUntil, formatDate, formatMoney, intervalLabel } from "@/lib/money";
+import { daysUntil, formatDate } from "@/lib/money";
 import { Button, Card, PageHeader } from "@/ui";
 import { shortProductName } from "../lib/productName";
 
@@ -30,13 +30,21 @@ const PRODUCT_HOSTS: Record<string, string> = {
   engage: "https://engage.opsgrids.com/",
 };
 
-/** The one price a card shows: the first published version's flat price, if there is one. */
-function flatPrice(plans: Plan[]): { version: PlanVersion; price: Price } | null {
+/** The contact address for pricing, agreed per organisation rather than shown here (the owner's call). */
+const PRICING_CONTACT_EMAIL = "info@opsgrids.com";
+
+/**
+ * The plan version a trial pins to: the first published version with a flat price. This no
+ * longer means a displayed price — pricing is agreed per client — but the same published,
+ * flat-priced version is still what `startTrial` needs and still what decides whether a
+ * product can be started at all.
+ */
+function trialOffer(plans: Plan[]): PlanVersion | null {
   for (const plan of plans) {
     for (const version of plan.versions) {
       if (version.state !== "published") continue;
-      const price = version.prices.find((p) => p.kind === "flat" && p.amount_minor !== null);
-      if (price) return { version, price };
+      const hasFlatPrice = version.prices.some((p) => p.kind === "flat" && p.amount_minor !== null);
+      if (hasFlatPrice) return version;
     }
   }
   return null;
@@ -119,12 +127,12 @@ export function MarketplacePage() {
   }, [refresh]);
 
   async function handleStart(row: Row) {
-    const offer = flatPrice(row.plans);
+    const offer = trialOffer(row.plans);
     if (!offer) return;
     setBusy(row.product.key);
     setNotice(null);
     try {
-      await startTrial(row.product.key, offer.version.id);
+      await startTrial(row.product.key, offer.id);
       setNotice(`${shortProductName(row.product.name)} is starting. Your 14-day trial begins now; its roles arrive in a moment.`);
       await refresh();
     } catch (err) {
@@ -220,7 +228,7 @@ export function MarketplacePage() {
 
 function ProductCard({ row, busy, onStart }: { row: Row; busy: boolean; onStart: () => void }) {
   const { product, subscription, activation } = row;
-  const offer = flatPrice(row.plans);
+  const offer = trialOffer(row.plans);
   const host = PRODUCT_HOSTS[product.key];
   const entitled = activation?.entitles === true;
   const trialDays = daysUntil(subscription?.trial_ends_at ?? null);
@@ -245,18 +253,24 @@ function ProductCard({ row, busy, onStart }: { row: Row; busy: boolean; onStart:
         </ul>
       ) : null}
 
-      <p className="text-sm font-semibold text-ink-soft">
-        {product.status !== "available" ? (
-          "Coming soon"
-        ) : offer ? (
-          <>
-            {formatMoney(offer.price.amount_minor ?? 0, offer.price.currency)}{" "}
-            <span className="font-normal text-muted">{intervalLabel(offer.version.billing_interval)}, flat</span>
-          </>
-        ) : (
-          "Price on request"
-        )}
-      </p>
+      {product.status !== "available" ? (
+        <p className="text-sm font-semibold text-ink-soft">Coming soon</p>
+      ) : offer ? (
+        <div className="flex flex-col gap-1">
+          <p className="text-sm font-semibold text-ink-soft">Free 14-day trial</p>
+          <p className="text-xs text-muted">
+            Pricing is agreed with OpsGrids for your organisation — contact {PRICING_CONTACT_EMAIL}.{" "}
+            <a
+              href={`mailto:${PRICING_CONTACT_EMAIL}`}
+              className="font-medium text-accent-ink underline-offset-2 hover:underline"
+            >
+              Email us
+            </a>
+          </p>
+        </div>
+      ) : (
+        <p className="text-sm font-semibold text-ink-soft">Not available to start yet</p>
+      )}
 
       <div className="mt-auto flex flex-col gap-2">
         {row.includedIn.length > 0 ? (
