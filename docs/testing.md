@@ -83,9 +83,12 @@ ADR-0002 calls this out as a design constraint rather than a test cleanup task.
 ### A skipped test fails the build
 `make hygiene` refuses `pytest.mark.skip` and a `skipif` without a reason; the shared ESLint
 preset refuses `it.only`, `describe.skip`, `it.todo` and their relatives in the frontend. A
-frontend package with tests runs `vitest run` without `--passWithNoTests`, so a suite that stops
-being collected fails rather than passing with zero. The one package that keeps the flag,
-`opsgrids-internal`, genuinely has no tests yet — that is a gap, listed below.
+frontend package with tests runs plain `vitest run` — never `--passWithNoTests`, in the script or in
+the vitest config — so a suite that stops being collected fails rather than passing with zero.
+`tools/frontend_manifest.py` (part of `make frontend-lint`) holds that for every package: a
+package with a `test` script must have at least one test file, a package with test files must have a
+`test` script, and the script must be exactly `vitest run`. A package with nothing to test simply has
+no `test` script; there is no third state where the flag hides an empty suite.
 
 ## What is worth testing here
 
@@ -120,7 +123,11 @@ distinguishes "refused" from "refused after forwarding it anyway".
 
 - **Cross-tenant isolation is per service, not universal.** Fifteen services have the suite; the
   rest rely on the shared chokepoint and RLS. A service without one has not proven its own lists.
-- **`opsgrids-internal` has no frontend tests** — the one package still on `--passWithNoTests`.
+- **The operator console's tests run against fixtures and the OpenAPI documents, not a gateway.**
+  Sign-in is tested against the auth contract (`libs/contracts/openapi/auth.json`) and the
+  console, billing and catalog routes against their documents, so a renamed field fails a test —
+  but nothing exercises the console
+  against a running `admin-gateway`, and no browser test drives the sign-in.
 - **No load or soak testing.**
 - **No mutation testing**, so the *quality* of these assertions is unmeasured.
 - **No coverage thresholds.** Nothing fails when a critical path loses its tests.
@@ -147,7 +154,7 @@ has no tooling is reported **N/A with its reason**, never green.
 | Licences | `make licenses`, `make frontend-licenses` — both in `tools/licenses.toml` |
 | Secrets | `make secrets` — detect-secrets over every tracked file |
 | Frontend types | `make frontend-typecheck` |
-| Frontend lint, static accessibility, focused/skipped tests, ports | `make frontend-lint` — shared preset with jsx-a11y and the vitest rules; `tools/frontend_ports.py` |
+| Frontend lint, static accessibility, focused/skipped tests, design tokens, ports, manifest | `make frontend-lint` — shared preset with jsx-a11y and the vitest rules, plus the token rules where an app has adopted them; `tools/frontend_ports.py`; `tools/frontend_manifest.py` |
 | Frontend package boundaries, no cycles | `make frontend-boundaries` — dependency-cruiser, `frontend/.dependency-cruiser.cjs` |
 | Frontend tests | `make frontend-test` |
 | Production build | `make frontend-build` — every app, and the storefront's buyer bundle |
@@ -159,7 +166,11 @@ What has no tooling yet, and why:
   component workshop to run them over. `jsx-a11y` catches what is visible in the markup; it
   cannot see contrast, focus order or live-region behaviour. `gate-full` is where they land.
 - **Performance budget** — no bundle-size or field-metric budget is enforced.
-- **Design-token lint** — nothing rejects a raw colour or spacing value in feature code.
+- **Design-token lint is opt-in per app, and only `opsgrids-internal` has opted in.**
+  `@opsgrids/config/eslint-tokens` refuses raw colours, Tailwind arbitrary values, raw lengths and
+  inline styles that set a real property (each case is a test in `opsgrids-config/src/tokens.test.ts`).
+  The other apps have raw values in them, so turning it on for one is a migration, not a lint fix;
+  until they do, row 18 is enforced for one app of thirteen.
 - **Query plans** — nothing checks `EXPLAIN` output. It needs representative data volumes and an
   agreed baseline to compare against, and neither exists yet.
 - **Container image scan** — `gate-full`'s next extension point.

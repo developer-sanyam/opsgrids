@@ -36,9 +36,11 @@ and run from their pinned images whenever the local binary is a different versio
 | ESLint, one shared preset (`frontend/opsgrids-config/eslint.preset.js`) | typescript-eslint, react-hooks, react-refresh; `--max-warnings=0` | `make frontend-lint` | gate, CI frontend | ADR-0001's "one eslint config" — a rule added once holds in fourteen packages. |
 | eslint-plugin-jsx-a11y (recommended) | Labels tied to controls, no div-as-button, valid ARIA | `make frontend-lint` | gate, CI frontend | frontend/CLAUDE.md's semantic-HTML rules, checked in the markup. |
 | @vitest/eslint-plugin | No `.only`, `.skip`, `.todo` (`no-focused-tests`, `no-disabled-tests`, `warn-todo`) | `make frontend-lint` | gate, CI frontend | The frontend half of tools/hygiene.py; vitest passes a focused suite. |
-| tools/frontend_ports.py | Every app has its own dev and preview port, agreeing with vite.config | `make frontend-lint` | gate, CI frontend | Seven apps once shared a preview port; stdlib, no install. |
+| `@opsgrids/config/eslint-tokens` | No raw colour, Tailwind arbitrary value, raw length or real-property inline style in an adopting app's `src/` | `make frontend-lint` | gate, CI frontend | frontend/CLAUDE.md's "never introduce a raw value", enforced. Opt-in per app; `opsgrids-internal` has adopted it. |
+| tools/frontend_ports.py | Every app has its own dev and preview port (`--strictPort`, never another app's), agreeing with vite.config | `make frontend-lint` | gate, CI frontend | Seven apps once shared a preview port; stdlib, no install. |
+| tools/frontend_manifest.py | A package with tests runs them (`vitest run`, never `--passWithNoTests`); no app loads fonts from Google; every app has its own session slot, and the operator slot and `/auth/operator` exist only in `opsgrids-internal` | `make frontend-lint` | gate, CI frontend | Three things a per-package lint run cannot see: an empty suite passing, a third-party font request, and a tenant app reaching the operator audience. |
 | dependency-cruiser | Apps never import each other; `@opsgrids/ui` / `@opsgrids/client` only via exports; ui ⟂ client; no cycles | `make frontend-boundaries` | gate, CI frontend | The frontend's `.importlinter`; found a real cycle in the storefront on day one. |
-| vitest | Frontend tests; `--passWithNoTests` only where a package has none | `make frontend-test` | gate, CI frontend | Already the test runner; the change is that an empty suite fails. |
+| vitest | Frontend tests; a suite that collects nothing fails (no `--passWithNoTests` anywhere) | `make frontend-test` | gate, CI frontend | Already the test runner; the change is that an empty suite fails. |
 | Vite | Production builds, including the storefront's buyer bundle | `make frontend-build` | gate, CI frontend | The bundle buyers load was never built by any check before. |
 
 ## Supply chain
@@ -68,5 +70,6 @@ Named so their absence is a known gap rather than an assumption: pre-commit hook
 files; automated dependency-update pull requests; coverage thresholds on critical paths; mutation
 testing; property-based and schema-driven API fuzzing; load testing; container image scanning,
 visual regression and runtime (axe) accessibility — the last three are `gate-full`'s extension
-points; a performance budget; a design-token lint rule; query-plan capture; ERD generation;
+points; a performance budget; the design-token lint rule in the twelve apps that have not adopted
+it; query-plan capture; ERD generation;
 dead-code detection; commit-message linting.

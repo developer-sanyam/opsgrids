@@ -47,7 +47,12 @@ Inline styles beat every stylesheet rule, cannot be themed, cannot be overridden
 dark-mode variant, and are invisible to the token lint. One is enough to break a component in
 dark mode permanently.
 
-Gate row 18 (token lint) enforces both rules and is **not yet wired**.
+Gate row 18 (token lint) enforces both rules: `@opsgrids/config/eslint-tokens`, spread after the shared
+preset in an app's `eslint.config.js`, refuses a raw colour, a Tailwind arbitrary value (`w-[256px]`),
+a raw length (`12px`) and an inline style that sets a real property. It is **wired for
+`opsgrids-internal` only** — the other apps have raw values to migrate first, and turning it on before
+then is a wall of errors people will suppress. `opsgrids-ui` is out of scope by design: it defines
+the tokens, so it has to spell them.
 
 ---
 

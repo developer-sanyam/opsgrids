@@ -73,7 +73,7 @@ Everything an application needs and a marketing site does not:
 | **Theme toggle UI** | `data-theme` is respected; nothing sets it |
 | **Component workshop** | No Storybook or equivalent, so no place to review states in isolation |
 | **Visual regression baselines** | Gate row 12 has nothing to run |
-| **Token lint** | Gate row 18 has nothing to run; the "no raw values" rule is unenforced |
+| **Token lint** | Gate row 18 runs for `opsgrids-internal` only (`@opsgrids/config/eslint-tokens`); the other apps have not adopted it |
 
 ---
 

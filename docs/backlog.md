@@ -524,13 +524,37 @@ ten call sites.
 - **10 of the 18 quality-gate rows have no tooling** — production build, E2E, schema drift,
   visual regression, automated accessibility, performance budget, query plans, SAST and licence,
   dependency boundaries, token lint.
-- **`opsgrids-internal` is not on the shared packages yet.** `opsgrids-ui` and `opsgrids-client` now
-  hold the design system and the auth/HTTP layer, and all nine `product-*` apps consume them;
-  the staff console still carries its own copies. It is a real fork rather than an oversight —
-  its palette is a different token family (lifecycle statuses, a monospaced control-panel face)
-  and its auth is the staff registry from ADR-0004 P6a, which has no organization selection. It
-  joins once that endpoint lands and the operator palette is expressed as a theme over the
-  Console tokens rather than a replacement for them.
+- **The operator console is on the shared packages; it is not yet on live data.** It signs in
+  against the current operator contract (`/auth/operator/login`, MFA enrolment and verification,
+  recovery codes, the 503 re-seal-pending answer), holds its token apart from the tenant apps'
+  (its own storage slot; a tenant token is never sent to an operator route, nor the reverse), and
+  reads its screens through `src/api/client.ts` in one of two modes: fixtures (the dev default) or
+  live. The live mode is reconciled with what `console-service`, `billing-service` and
+  `catalog-service` actually answer, but several screens degrade because the backend does not say
+  enough yet, each one named so it is a backend item rather than a UI surprise:
+  - **Account directory** — the org list has no name, slug, status or filter parameters; the
+    console can show ids and what the summary route answers, not the directory the design draws.
+  - **Plans & Pricing** — there is no catalog read route for the console; the screen renders its
+    empty-and-explained state live.
+  - **Override kinds** — `POST /admin/overrides` takes `suspend` and `comp_grant` only. Reactivate
+    and plan migration have no action; a bespoke price is a `restricted_to_org_id` version drafted
+    through the catalog write surface, which the console does not call yet. A reversal is a
+    negative grant in the console and the API refuses a negative amount.
+  - **Audit** — actor names and a one-line summary are not on the audit rows.
+  - **Ledger** — no organization names or an `is_comp` marker on credit-ledger rows.
+  - **Overview** — the metrics route has no history (no delta, sparkline or period revenue), so the
+    MRR trend has nothing to draw live; and `console/app/selectors.py::_lifecycle_of` counts an
+    organization with any subscription that is neither `active` nor `trial` — a `past_due` one
+    included — as churned, so the churn figure over-reads until dunning (ADR-0005) has its own
+    bucket.
+  - **Invoices** — no staff route lists an organization's invoices.
+
+  The operator token is not renewed: the auth contract has `POST /auth/operator/refresh` (by the
+  httpOnly cookie), but neither the console nor the tenant client calls a refresh route, so a
+  session ends at token expiry and the operator signs in again — password and code. Wiring silent
+  renewal is a session-semantics change for every app, not a console fix. Design-token lint
+  (`@opsgrids/config/eslint-tokens`) is on for this app only; the other twelve have raw values to
+  migrate before they can adopt it.
 - **The Engage send gate answers in prose, and the UI matches on the prose.**
   `POST /engage/campaigns/{id}/send` refuses with a `422` whose only content is one sentence
   (`services.request_send`, `_check_public_base`); `frontend/product-engage/src/lib/sendGate.ts`

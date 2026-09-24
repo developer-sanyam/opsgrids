@@ -514,8 +514,18 @@ errors, with field-level detail mapped onto the control that caused it. A 4xx is
 **Current wiring:** six product apps default to live data; `product-crm`, `product-pulseboard` and
 `opsgrids-internal` still default to fixtures. Several live apps carry named sample islands — an
 Overview trend chart, a sparkline — flagged in the UI with a "Sample data" chip rather than passed
-off as real. `opsgrids-internal` is a deliberate fork off the shared packages, because its palette is
-a different token family and its auth is the staff registry, which has no organization selection.
+off as real. `opsgrids-internal` is built on the shared packages like every other app — `@opsgrids/ui`
+for components and tokens, `@opsgrids/client` for the request, session and async primitives. What it
+keeps of its own is what is genuinely the operator's: the sign-in (`src/auth/`, the operator audience
+of ADR-0003 §2, with mandatory MFA and no organization selection), its token slot, and the
+control-panel pieces (money, lifecycle status, the trend). It reaches only `/admin` and
+`/auth/operator`, never the tenant half of the client — a lint rule and a runtime guard say so.
+
+**Fonts are served from the app's own origin.** Manrope ships in `@opsgrids/ui` (`@opsgrids/ui/fonts`,
+latin and latin-ext, `font-display: swap`), the finance app's tabular face and the operator console's
+monospace come from `@fontsource` packages, and no app requests `fonts.googleapis.com` — so the edge
+needs no third-party `font-src`, and a visitor's browser makes no request to a third party to render
+a page. `tools/frontend_manifest.py` fails the gate if a `<link>` to one comes back.
 
 ---
 
