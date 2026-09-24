@@ -13,7 +13,7 @@ import { SectionHeader } from "./States";
 
 function Mark() {
   return (
-    <span className="grid size-7 shrink-0 place-items-center rounded-tile bg-accent text-xs font-bold text-white" aria-hidden>
+    <span className="grid size-7 shrink-0 place-items-center rounded-tile bg-accent text-xs font-bold text-on-accent" aria-hidden>
       R
     </span>
   );

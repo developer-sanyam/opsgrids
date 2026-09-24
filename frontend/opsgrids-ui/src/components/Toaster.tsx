@@ -79,7 +79,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string)
       onFocusCapture={() => setPaused(true)}
       onBlurCapture={() => setPaused(false)}
     >
-      <Icon className={cn("mt-0.5 size-[18px] shrink-0", style.ink)} aria-hidden />
+      <Icon className={cn("mt-0.5 size-4.5 shrink-0", style.ink)} aria-hidden />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <p className="text-sm font-bold text-ink">{toast.title}</p>
         {toast.description ? (
@@ -93,7 +93,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string)
         type="button"
         onClick={() => onDismiss(toast.id)}
         aria-label={`Dismiss: ${toast.title}`}
-        className="grid size-7 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-ground hover:text-ink"
+        className="grid size-7 shrink-0 place-items-center rounded-tile text-muted transition-colors hover:bg-sunken hover:text-ink"
       >
         <CloseIcon className="size-4" />
       </button>

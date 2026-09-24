@@ -38,7 +38,7 @@ const GROUPS: NavGroup[] = [
 
 function Mark() {
   return (
-    <span className="grid size-8 shrink-0 place-items-center rounded-tile bg-accent text-sm font-bold text-white" aria-hidden>
+    <span className="grid size-8 shrink-0 place-items-center rounded-tile bg-accent text-sm font-bold text-on-accent" aria-hidden>
       R
     </span>
   );

@@ -4,20 +4,22 @@ import { initials } from "../lib/format";
 export type AvatarSize = "xs" | "sm" | "md" | "lg";
 
 const SIZES: Record<AvatarSize, string> = {
-  xs: "size-6 text-[0.6rem]",
+  xs: "size-6 text-caption",
   sm: "size-8 text-xs",
   md: "size-10 text-sm",
   lg: "size-12 text-base",
 };
 
-// A few restrained, on-brand tints. Deterministic per name so a person's colour is stable.
+// The token families' soft/ink pairs — every one is AA in both themes (styles/tokens.test.ts).
+// Deterministic per name so a person's colour is stable. Identity, not status: the tint says
+// nothing about the person, so it never borrows the danger red.
 const TINTS = [
   "bg-accent-soft text-accent-ink",
-  "bg-ink text-white",
+  "bg-neutral-soft text-neutral",
   "bg-late-soft text-late",
   "bg-present-soft text-present",
-  "bg-[#e7eef7] text-[#2a4a6b]",
-  "bg-[#f0e7f7] text-[#5a3a6b]",
+  "bg-info-soft text-info",
+  "bg-cyan-soft text-cyan",
 ];
 
 function tintFor(name: string): string {

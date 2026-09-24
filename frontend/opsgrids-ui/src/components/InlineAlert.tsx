@@ -74,7 +74,7 @@ export function InlineAlert({
         className,
       )}
     >
-      <Icon className={cn("mt-0.5 size-[18px] shrink-0", styles.ink)} aria-hidden />
+      <Icon className={cn("mt-0.5 size-4.5 shrink-0", styles.ink)} aria-hidden />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <p className="text-sm font-bold text-ink">{title}</p>
         {children ? <div className="text-sm text-ink-soft">{children}</div> : null}

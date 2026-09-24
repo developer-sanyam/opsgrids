@@ -55,7 +55,7 @@ export function RadioGroup({
       aria-describedby={describedBy}
       aria-invalid={error !== undefined || undefined}
     >
-      <legend className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-faint">
+      <legend className="mb-1.5 text-body-sm font-semibold text-ink-soft">
         {legend}
       </legend>
       <div className="flex flex-col gap-2">

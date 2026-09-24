@@ -12,6 +12,7 @@ interface TextAreaProps extends NativeTextArea {
   label: string;
   helper?: string | undefined;
   error?: string | undefined;
+  /** @deprecated Mark required fields with the native `required` instead; see `FormField`. */
   optional?: boolean | undefined;
   /**
    * Show `{n}/{maxLength}` once the value reaches this length. A counter that is on from the
@@ -59,6 +60,7 @@ export function TextArea({
       label={label}
       {...(helper !== undefined ? { helper } : {})}
       {...(error !== undefined ? { error } : {})}
+      required={props.required === true}
       optional={optional}
       hideLabel={hideLabel}
       {...(containerClassName !== undefined ? { className: containerClassName } : {})}

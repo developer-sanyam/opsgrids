@@ -20,7 +20,20 @@ interface FormFieldProps {
   helper?: ReactNode | undefined;
   /** The server's message, verbatim (§2.5). Never a rewritten, friendlier version of it. */
   error?: string | undefined;
-  /** Renders `Optional` beside the label. The platform labels the optional, not the required. */
+  /**
+   * A red asterisk after the label (owner brief, 2026-09-25: required fields are marked, not
+   * optional ones). The asterisk is decoration for sighted users; the control carries the fact
+   * itself with `required` / `aria-required`, which is what a screen reader announces. The
+   * components built on `FormField` (`TextField`, `Select`, `TextArea`) pass their native
+   * `required` through here, so marking a control required marks its label too.
+   */
+  required?: boolean | undefined;
+  /**
+   * Renders `(optional)` beside the label — the convention before the brief.
+   *
+   * @deprecated Mark the required fields with `required` instead. Kept, and still rendered, until
+   * the forms that use it are moved over, so no form loses the information in between.
+   */
   optional?: boolean | undefined;
   /**
    * Keep the `<label>` — real, tied to the control, read by a screen reader — but take it off the
@@ -50,6 +63,7 @@ export function FormField({
   label,
   helper,
   error,
+  required = false,
   optional = false,
   hideLabel = false,
   labelAside,
@@ -65,9 +79,7 @@ export function FormField({
   const labelNode = (
     <label
       htmlFor={id}
-      className={
-        hideLabel ? "sr-only" : "text-xs font-semibold uppercase tracking-wide text-faint"
-      }
+      className={hideLabel ? "sr-only" : "text-body-sm font-semibold text-ink-soft"}
     >
       {label}
       {optional ? (
@@ -76,11 +88,30 @@ export function FormField({
         // what a screen reader reads without this.
         <>
           {" "}
-          <span className="normal-case text-faint">(optional)</span>
+          <span className="font-medium text-faint">(optional)</span>
         </>
       ) : null}
     </label>
   );
+
+  /*
+   * The asterisk sits beside the `<label>`, not inside it. Inside, it would join the label's text:
+   * the accessible name would read "Product name star" (`aria-hidden` keeps it out of that, but
+   * not out of the label's text content, which is what `getByLabelText` and a user's
+   * find-in-page match). Outside, the label is exactly the words, and the control's own
+   * `required` is what tells a screen reader.
+   */
+  const marked =
+    required && !hideLabel ? (
+      <span className="inline-flex items-baseline gap-0.5">
+        {labelNode}
+        <span aria-hidden className="text-body-sm font-semibold text-negative">
+          *
+        </span>
+      </span>
+    ) : (
+      labelNode
+    );
 
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
@@ -93,7 +124,7 @@ export function FormField({
         labelNode
       ) : (
         <div className="flex items-baseline justify-between gap-3">
-          {labelNode}
+          {marked}
           {labelAside}
         </div>
       )}

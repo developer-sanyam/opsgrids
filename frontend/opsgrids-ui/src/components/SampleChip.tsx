@@ -13,7 +13,7 @@ interface SampleChipProps {
 
 /**
  * A small amber chip marking a surface as representative rather than live, for the widgets whose
- * backing service is not wired yet. Amber — not the violet accent, not an error red — reads as
+ * backing service is not wired yet. Amber — not the accent, not an error red — reads as
  * "informational, provisional".
  */
 export function SampleChip({
@@ -24,7 +24,7 @@ export function SampleChip({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full bg-late-soft px-2.5 py-1 text-xs font-semibold text-late",
+        "inline-flex items-center gap-1.5 rounded-chip bg-late-soft px-2 py-0.5 text-caption font-semibold text-late",
         className,
       )}
       title={title}

@@ -1,12 +1,13 @@
 import type { ReactNode } from "react";
 
 import { cn } from "../lib/cn";
+import { Button } from "./Button";
 
 /** A shimmering placeholder block that reserves layout so nothing shifts on load. */
 export function Skeleton({ className }: { className?: string | undefined }) {
   return (
     <div
-      className={cn("animate-pulse rounded-full bg-ground", className)}
+      className={cn("animate-pulse rounded-full bg-sunken", className)}
       aria-hidden
     />
   );
@@ -24,7 +25,7 @@ export function EmptyState({ icon, title, description, action }: EmptyStateProps
   return (
     <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
       {icon ? (
-        <span className="grid size-14 place-items-center rounded-full bg-ground text-ink-soft">
+        <span className="grid size-12 place-items-center rounded-tile bg-sunken text-ink-soft">
           {icon}
         </span>
       ) : null}
@@ -92,13 +93,10 @@ export function ErrorState({
         {reference ? <p className="text-xs text-faint tnum">Reference: {reference}</p> : null}
       </div>
       {onRetry ? (
-        <button
-          type="button"
-          onClick={onRetry}
-          className="rounded-full bg-ink px-4 h-9 text-sm font-semibold text-white hover:bg-ink-soft transition-colors"
-        >
+        // Secondary, not primary: retrying is the way out, not the reason the screen exists.
+        <Button variant="secondary" size="sm" onClick={onRetry}>
           Try again
-        </button>
+        </Button>
       ) : null}
       {action}
     </div>
@@ -116,7 +114,7 @@ export function SectionHeader({ title, subtitle, action }: SectionHeaderProps) {
   return (
     <div className="flex items-start justify-between gap-3">
       <div className="flex flex-col gap-0.5">
-        <h2 className="text-lg font-bold tracking-tight">{title}</h2>
+        <h2 className="text-section">{title}</h2>
         {subtitle ? <p className="text-sm text-muted">{subtitle}</p> : null}
       </div>
       {action}

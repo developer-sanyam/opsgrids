@@ -2,7 +2,28 @@ import type { ButtonHTMLAttributes, ReactNode, Ref } from "react";
 
 import { cn } from "../lib/cn";
 
-export type ButtonVariant = "primary" | "ghost" | "dark" | "outline" | "danger";
+/**
+ * The hierarchy (owner brief §10). Not every action is primary.
+ *
+ * - `primary`: the one action a screen exists for. Create, save, submit, continue, approve.
+ * - `secondary`: everything that sits beside it. Cancel, back, filter, export.
+ * - `ghost`: a quiet action inside a card or a row ("View all", "Add row").
+ * - `destructive`: delete, suspend, remove, an irreversible cancel. Nothing else.
+ * - `dark`: an ink-filled emphasis for a surface where the accent is already spent.
+ *
+ * `outline` and `danger` are the names these had before the brief; they draw exactly
+ * `secondary` and `destructive` and are kept until the call sites are renamed.
+ */
+export type ButtonVariant =
+  | "primary"
+  | "secondary"
+  | "ghost"
+  | "destructive"
+  | "dark"
+  /** @deprecated Write `secondary`. */
+  | "outline"
+  /** @deprecated Write `destructive`. */
+  | "danger";
 export type ButtonSize = "sm" | "md";
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -26,23 +47,32 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   ref?: Ref<HTMLButtonElement> | undefined;
 }
 
+const SECONDARY =
+  "bg-surface text-ink border border-field-edge hover:bg-sunken active:bg-sunken " +
+  "disabled:border-line disabled:bg-surface disabled:text-disabled";
+const DESTRUCTIVE =
+  "bg-negative text-on-negative hover:opacity-90 active:opacity-90 disabled:opacity-50";
+
 const VARIANTS: Record<ButtonVariant, string> = {
-  // The single accent, spent on the primary action: violet pill, white text.
+  // The single accent, spent on the primary action.
   primary:
-    "bg-accent text-white hover:bg-accent-strong active:bg-accent-strong disabled:bg-accent/50",
-  dark: "bg-ink text-surface hover:bg-ink-soft active:bg-ink-soft disabled:bg-ink/50",
-  outline:
-    "bg-surface text-ink border border-line hover:bg-ground active:bg-ground disabled:text-faint",
+    "bg-accent text-on-accent hover:bg-accent-strong active:bg-accent-strong disabled:bg-accent/50",
+  // A control edge, not a divider: the same `field-edge` an input carries.
+  secondary: SECONDARY,
+  outline: SECONDARY,
   ghost:
-    "bg-transparent text-ink-soft hover:bg-ground active:bg-ground disabled:text-faint",
+    "bg-transparent text-ink-soft hover:bg-sunken hover:text-ink active:bg-sunken disabled:text-disabled disabled:hover:bg-transparent",
   // Destructive actions. Semantic red, never the accent.
-  danger:
-    "bg-negative text-white hover:opacity-90 active:opacity-90 disabled:opacity-50",
+  destructive: DESTRUCTIVE,
+  danger: DESTRUCTIVE,
+  dark: "bg-ink text-surface hover:bg-ink-soft active:bg-ink-soft disabled:bg-ink/50",
 };
 
 const SIZES: Record<ButtonSize, string> = {
-  sm: "h-9 px-4 text-sm",
-  md: "h-11 px-5 text-[0.95rem]",
+  // 36px: dense toolbars and table rows.
+  sm: "h-9 px-3 text-sm",
+  // 44px: the default, and the touch target the brief asks for on a phone.
+  md: "h-11 px-4 text-sm",
 };
 
 const GAPS: Record<ButtonSize, string> = {
@@ -58,7 +88,7 @@ const GAPS: Record<ButtonSize, string> = {
 function Spinner({ size }: { size: ButtonSize }) {
   return (
     <svg
-      className={cn("spin", size === "sm" ? "size-4" : "size-[18px]")}
+      className={cn("spin", size === "sm" ? "size-4" : "size-4.5")}
       viewBox="0 0 24 24"
       fill="none"
       aria-hidden
@@ -74,7 +104,7 @@ function Spinner({ size }: { size: ButtonSize }) {
   );
 }
 
-/** A fully-rounded pill button with all five interactive states — and a sixth when it loads. */
+/** A rounded-rectangle button with all five interactive states — and a sixth when it loads. */
 export function Button({
   variant = "primary",
   size = "md",
@@ -95,8 +125,8 @@ export function Button({
       disabled={disabled === true || loading}
       aria-busy={loading || undefined}
       className={cn(
-        "relative inline-flex items-center justify-center rounded-full font-semibold",
-        "transition-colors duration-150 disabled:cursor-not-allowed",
+        "relative inline-flex items-center justify-center rounded-tile font-semibold",
+        "transition-colors duration-(--duration-quick) disabled:cursor-not-allowed",
         SIZES[size],
         VARIANTS[variant],
         className,
@@ -108,7 +138,12 @@ export function Button({
           <Spinner size={size} />
         </span>
       ) : null}
-      <span className={cn("inline-flex items-center", GAPS[size], loading && "invisible")}>
+      {/*
+        `opacity-0`, not `invisible`: `visibility: hidden` takes the text out of the accessibility
+        tree, and the label is the button's accessible name — a loading button with no name is
+        what axe flagged on every pending dialog.
+      */}
+      <span className={cn("inline-flex items-center", GAPS[size], loading && "opacity-0")}>
         {leadingIcon}
         {children}
         {trailingIcon}

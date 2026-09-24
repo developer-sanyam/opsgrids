@@ -84,7 +84,7 @@ export function KpiCard({
   const chip = sample ? <SampleChip {...(sample === true ? {} : sample)} /> : null;
 
   return (
-    <Card className="p-5 flex flex-col gap-4">
+    <Card className="flex flex-col gap-4 p-4 sm:p-6">
       <div className="flex items-start justify-between">
         <span className={cn("grid size-10 place-items-center rounded-tile", TONE[tone])}>
           {icon}
@@ -108,14 +108,8 @@ export function KpiCard({
           </div>
         )}
 
-        <div className="flex flex-wrap items-center gap-2.5">
-          <span
-            className={
-              figure === "money"
-                ? "money display text-[1.85rem] leading-none font-extrabold"
-                : "display text-[2.1rem] leading-none font-extrabold tnum"
-            }
-          >
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={cn("text-kpi", figure === "money" ? "money" : "tnum")}>
             {value}
           </span>
           {deltaPct !== undefined ? <DeltaPill value={deltaPct} goodWhen={goodWhen} /> : null}

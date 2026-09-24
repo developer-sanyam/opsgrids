@@ -43,6 +43,24 @@ describe("TextField", () => {
     expect(describedText(input)).toContain("That number doesn't exist.");
     expect(input.getAttribute("aria-invalid")).toBe("true");
   });
+
+  it("marks a required field with an asterisk that stays out of the label's words", () => {
+    render(<TextField label="Product name" required />);
+    // The label is exactly the words — an exact-string lookup still finds it — and the input
+    // itself carries `required`, which is what a screen reader announces.
+    const input = screen.getByLabelText("Product name");
+    expect(input.hasAttribute("required")).toBe(true);
+    const star = screen.getByText("*");
+    expect(star.getAttribute("aria-hidden")).toBe("true");
+    expect(star.closest("label")).toBeNull();
+  });
+
+  it("draws no asterisk on a field that is not required, or whose label is hidden", () => {
+    const { rerender } = render(<TextField label="Nickname" />);
+    expect(screen.queryByText("*")).toBeNull();
+    rerender(<TextField label="Quantity" required hideLabel />);
+    expect(screen.queryByText("*")).toBeNull();
+  });
 });
 
 describe("TextArea", () => {

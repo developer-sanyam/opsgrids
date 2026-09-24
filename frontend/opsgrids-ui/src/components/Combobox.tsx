@@ -234,7 +234,7 @@ export function Combobox({
       {({ id, describedBy, invalid }) => (
         <div className="flex flex-col gap-2">
           {value ? (
-            <span className="inline-flex w-fit items-center gap-2 rounded-full bg-accent-soft py-1 pl-3 pr-1 text-sm font-semibold text-accent-ink">
+            <span className="inline-flex w-fit items-center gap-2 rounded-chip bg-accent-soft py-1 pl-3 pr-1 text-sm font-semibold text-accent-ink">
               <span className="truncate">{value.label}</span>
               {value.sublabel ? (
                 <span className="tnum text-xs font-medium opacity-80">{value.sublabel}</span>
@@ -246,7 +246,7 @@ export function Combobox({
                   inputRef.current?.focus();
                 }}
                 aria-label={text.remove(value.label)}
-                className="grid size-6 place-items-center rounded-full transition-colors hover:bg-surface/60"
+                className="grid size-6 place-items-center rounded-chip transition-colors hover:bg-surface/60"
               >
                 <CloseIcon className="size-4" />
               </button>
@@ -258,10 +258,13 @@ export function Combobox({
               className={cn(
                 fieldSkin(invalid),
                 "flex h-11 items-center gap-2",
+                // The input inside takes focus, not this box, so the ring is drawn on
+                // focus-within — the skin's own `focus-visible` ring never fires on a div.
+                "focus-within:outline-2 focus-within:outline-focus focus-within:outline-offset-2",
                 disabled && "opacity-60",
               )}
             >
-              <SearchIcon className="size-[18px] shrink-0 text-faint" aria-hidden />
+              <SearchIcon className="size-4.5 shrink-0 text-faint" aria-hidden />
               <input
                 id={id}
                 ref={inputRef}

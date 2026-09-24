@@ -12,6 +12,7 @@ interface TextFieldProps extends NativeInput {
   label: string;
   helper?: string | undefined;
   error?: string | undefined;
+  /** @deprecated Mark required fields with the native `required` instead; see `FormField`. */
   optional?: boolean | undefined;
   /**
    * Keep the label in the accessibility tree but off the screen — for a dense row whose column
@@ -48,6 +49,7 @@ export function TextField({
       label={label}
       {...(helper !== undefined ? { helper } : {})}
       {...(error !== undefined ? { error } : {})}
+      required={props.required === true}
       optional={optional}
       hideLabel={hideLabel}
       {...(containerClassName !== undefined ? { className: containerClassName } : {})}

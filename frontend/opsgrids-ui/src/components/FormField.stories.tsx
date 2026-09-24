@@ -35,7 +35,10 @@ type Story = StoryObj<typeof meta>;
 
 export const WithHelper: Story = {};
 
-/** The platform labels the optional, not the required. */
+/** Required fields carry a red asterisk beside the label (owner brief, 2026-09-25). */
+export const Required: Story = { args: { required: true, label: "Product name", helper: undefined } };
+
+/** The convention before the brief, kept until forms move to `required`. */
 export const Optional: Story = { args: { optional: true, label: "Purchase order number", helper: undefined } };
 
 /** The error appends — the helper stays, because it says what a valid value looks like. */

@@ -38,9 +38,26 @@ describe("Button", () => {
 
   it("keeps the label in the layout so the button does not resize mid-submit", () => {
     render(<Button loading>Create widget</Button>);
-    // Present and measured, just not painted — `invisible`, never `display: none`.
+    // Present and measured, just not painted — never `display: none`, and not `invisible`
+    // either: `visibility: hidden` drops the text from the accessibility tree, which leaves a
+    // real browser with a nameless button (jsdom computes no styles, so only the class says so).
     const label = screen.getByText("Create widget");
-    expect(label.className).toContain("invisible");
+    expect(label.className).toContain("opacity-0");
+    expect(label.className).not.toContain("invisible");
+  });
+
+  it("draws the deprecated names exactly as the brief's names", () => {
+    render(
+      <>
+        <Button variant="secondary">A</Button>
+        <Button variant="outline">B</Button>
+        <Button variant="destructive">C</Button>
+        <Button variant="danger">D</Button>
+      </>,
+    );
+    const [secondary, outline, destructive, danger] = screen.getAllByRole("button");
+    expect(outline?.className).toBe(secondary?.className);
+    expect(danger?.className).toBe(destructive?.className);
   });
 
   it("stays a button the accessible name still reaches", () => {

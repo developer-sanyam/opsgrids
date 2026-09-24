@@ -24,7 +24,20 @@ export const WithHelper: Story = {
   args: { label: "Domain", defaultValue: "acme.example", helper: "Used to match incoming email to this company." },
 };
 
+/** The native `required` marks the label too: a red asterisk beside it, never inside it. */
+export const Required: Story = {
+  args: { label: "Product name", defaultValue: "", placeholder: "e.g. Canvas laptop bag", required: true },
+};
+
 export const Optional: Story = { args: { label: "Website", defaultValue: "", optional: true, type: "url" } };
+
+/** Reached by keyboard: the accent ring sits outside the field edge. */
+export const Focused: Story = {
+  args: { defaultValue: "", placeholder: "e.g. Acme Industries" },
+  play: async ({ userEvent }) => {
+    await userEvent.tab();
+  },
+};
 
 export const WithError: Story = {
   args: {
