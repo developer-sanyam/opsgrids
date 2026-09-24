@@ -170,7 +170,10 @@ What has no tooling yet, and why:
   `@opsgrids/config/eslint-tokens` refuses raw colours, Tailwind arbitrary values, raw lengths and
   inline styles that set a real property (each case is a test in `opsgrids-config/src/tokens.test.ts`).
   The other apps have raw values in them, so turning it on for one is a migration, not a lint fix;
-  until they do, row 18 is enforced for one app of thirteen.
+  until they do, row 18 is enforced for one app of thirteen. The same app also refuses `eval`,
+  `dangerouslySetInnerHTML` / `innerHTML`, `console.*` and the browser's `alert` / `confirm` (each a
+  case in `opsgrids-internal/src/hygiene.test.ts`, which also pins that the token rules survive
+  beside them); the other apps are not held to that yet.
 - **Query plans** — nothing checks `EXPLAIN` output. It needs representative data volumes and an
   agreed baseline to compare against, and neither exists yet.
 - **Container image scan** — `gate-full`'s next extension point.

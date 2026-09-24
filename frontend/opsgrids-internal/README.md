@@ -110,6 +110,11 @@ pnpm --filter @opsgrids/opsgrids-internal build
   `src/`. A computed number goes in a custom property (`w-(--share)` with `style={{ "--share": … }}`).
   The mono face (IBM Plex Mono) is self-hosted from `@fontsource`; Manrope comes from
   `@opsgrids/ui/fonts`. Nothing is requested from a third party to render a page.
+- **No string becomes script or markup, and no browser prompt stands in for a dialog.** Lint refuses
+  `eval`, `new Function`, a string handed to a timer, `dangerouslySetInnerHTML`, `innerHTML` and its
+  kin, `console.*`, and `alert` / `confirm` / `prompt` in this app's `src/` (tests included). A
+  confirmation is a dialog on the page. `src/hygiene.test.ts` runs each of them through the real
+  config, and pins that the token rules above still fire beside them.
 - **Money is integer minor units** with an ISO currency, formatted in `src/lib/money.ts`; an amount
   typed into a dialog is parsed to minor units there and never held as a float.
 - **A UI gate is not a gate.** `can(capability)` and `RequireCapability` hide controls the role
