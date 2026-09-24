@@ -9,11 +9,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   archiveCustomer,
   createCustomer,
+  decideImsDocumentsBulk,
   fileReturn,
   generateReturn,
+  getImsPushSummary,
   issueInvoice,
+  listImsDocuments,
   recordPayment,
   recordPurchase,
+  requestImsPush,
+  retryEwayBill,
   setGstRegistration,
   updateCustomer,
 } from "./client";
@@ -200,5 +205,93 @@ describe("generateReturn / fileReturn", () => {
     expect(url).toBe("/api/v1/finance/gst/returns/ret-1/filing");
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body as string)).toEqual({ arn: "AA270826001234A" });
+  });
+});
+
+describe("retryEwayBill", () => {
+  it("POSTs the document to /finance/eway-bills/retries, not under the invoice", async () => {
+    // The route sits outside /finance/invoices on purpose: that prefix is append-only and only
+    // ever accepts the one POST that issues an invoice.
+    const fetchMock = vi.fn().mockResolvedValue(respond(202, { required: true, status: "pending" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await retryEwayBill("inv-9");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/v1/finance/eway-bills/retries");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ invoice_id: "inv-9" });
+  });
+});
+
+describe("the IMS push endpoints", () => {
+  it("asks for one period's decisions to be sent, by period", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(respond(202, { period: "2026-08", requested: 3, not_pushable: 1 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await requestImsPush("2026-08");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/v1/finance/ims/pushes");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ period: "2026-08" });
+    expect(result.requested).toBe(3);
+  });
+
+  it("names the documents when a push is narrowed to some of them", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(respond(202, { period: "2026-08", requested: 1, not_pushable: 0 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await requestImsPush("2026-08", ["d-1"]);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ period: "2026-08", document_ids: ["d-1"] });
+  });
+
+  it("reads a period's push summary from the period query", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(respond(200, { period: "2026-08", queued: 0 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getImsPushSummary("2026-08");
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/v1/finance/ims/pushes/summary?period=2026-08");
+  });
+
+  it("sends a bulk decision as one request and unwraps its results", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(respond(201, { results: [{ document_id: "d-1", decision: { id: "x" } }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const results = await decideImsDocumentsBulk(
+      [{ document_id: "d-1", action: "reject", note: "wrong recipient" }],
+      "Priya Nair",
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/v1/finance/ims/decisions");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      items: [{ document_id: "d-1", action: "reject", note: "wrong recipient" }],
+    });
+    expect(results).toHaveLength(1);
+  });
+
+  it("filters the queue by period and by push state, with drift as its own flag", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(() => Promise.resolve(respond(200, { items: [], total: 0, page: 1, size: 25, pages: 1 })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listImsDocuments({ period: "2026-08", pushStatus: "failed" });
+    await listImsDocuments({ pushStatus: "drift" });
+
+    const [first] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [second] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(first).toContain("period=2026-08");
+    expect(first).toContain("push_status=failed");
+    expect(first).not.toContain("drift");
+    expect(second).toContain("drift=true");
+    expect(second).not.toContain("push_status");
   });
 });

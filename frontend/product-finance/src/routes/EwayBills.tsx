@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { listEwayBills } from "@/api/client";
@@ -7,6 +7,7 @@ import type { EwayBillWithInvoice, Page } from "@/api/types";
 import { EWAY_STATUS_FILTERS, ewayStateView, ewayStatusTone } from "@/data/compliance";
 import { formatDateTime } from "@/lib/format";
 import { formatMoney } from "@/lib/money";
+import { useQuietRefresh } from "@/lib/useQuietRefresh";
 import { problemMessage, useAsync } from "@opsgrids/client";
 import {
   Card,
@@ -47,30 +48,19 @@ export function EwayBillsPage() {
 
   // A background read that replaces the loaded page without going back through `loading`: a table
   // that flashed to skeletons every fifteen seconds would unmount the countdowns and any dialog
-  // open on a row. A fresh load (a new filter, a new page) discards whatever it had.
-  const [refreshed, setRefreshed] = useState<Page<EwayBillWithInvoice> | null>(null);
-  useEffect(() => {
-    setRefreshed(null);
-  }, [loaded]);
-  const shown = loaded === null ? null : (refreshed ?? loaded);
-  const rows = useMemo(() => shown?.items ?? [], [shown]);
-
-  const refresh = useCallback(() => {
-    void listEwayBills({ status, page, size })
-      .then(setRefreshed)
-      // The page already on screen stays; the next tick asks again. A failed background read is
-      // not worth replacing good data with an error.
-      .catch(() => undefined);
-  }, [status, page, size]);
-
-  const inProgress = rows.some(
-    (row) => row.is_current === true && row.state != null && ewayStateView(row.state)?.active === true,
+  // open on a row.
+  const { shown, refresh } = useQuietRefresh<Page<EwayBillWithInvoice>>(
+    loaded,
+    () => listEwayBills({ status, page, size }),
+    {
+      active: (current) =>
+        current.items.some(
+          (row) => row.is_current === true && row.state != null && ewayStateView(row.state)?.active === true,
+        ),
+      intervalMs: ACTIVE_REFRESH_MS,
+    },
   );
-  useEffect(() => {
-    if (!inProgress) return;
-    const id = window.setInterval(refresh, ACTIVE_REFRESH_MS);
-    return () => window.clearInterval(id);
-  }, [inProgress, refresh]);
+  const rows = useMemo(() => shown?.items ?? [], [shown]);
 
   const columns: Column<EwayBillWithInvoice>[] = [
     {

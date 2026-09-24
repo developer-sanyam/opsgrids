@@ -22,6 +22,8 @@ import type {
   EwayStatus,
   FilingRemedy,
   ImsAction,
+  ImsPush,
+  ImsPushStatus,
   ImsReason,
   ImsStatus,
   ImsSuggestion,
@@ -405,6 +407,7 @@ const ACTION_LABEL: Record<ImsAction, string> = {
   accept: "Accept",
   reject: "Reject",
   pending_action: "Hold",
+  no_action: "Take no action",
 };
 
 export function actionLabel(action: ImsAction): string {
@@ -416,6 +419,7 @@ const ACTION_PAST: Record<ImsAction, string> = {
   accept: "accepted this document",
   reject: "rejected this document",
   pending_action: "put this document on hold",
+  no_action: "chose to take no action on this document",
 };
 
 export function actionPastTense(action: ImsAction): string {
@@ -427,11 +431,169 @@ const ACTION_CONSEQUENCE: Record<ImsAction, string> = {
   accept: "Claims the input tax credit on this document.",
   reject: "Declines the credit and sends the document back to the supplier.",
   pending_action: "Parks it: real, but not settled this period.",
+  no_action:
+    "Withdraws an earlier decision: the document goes back to undecided, and any credit it claimed is taken back out.",
 };
 
 export function actionConsequence(action: ImsAction): string {
   return ACTION_CONSEQUENCE[action];
 }
+
+/** What a bulk decision says it does, for the confirmation — plural, and to the whole selection. */
+const BULK_CONSEQUENCE: Record<ImsAction, string> = {
+  accept:
+    "Claims the input tax credit on each of them, as a general business purchase. To classify one as blocked credit (s. 17(5)), decide it from its own page.",
+  reject: "Declines the credit on each of them and sends them back to their suppliers.",
+  pending_action: "Parks each of them: real, but not settled this period.",
+  no_action:
+    "Returns each of them to undecided, and takes back any credit an earlier acceptance claimed.",
+};
+
+export function bulkConsequence(action: ImsAction): string {
+  return BULK_CONSEQUENCE[action];
+}
+
+/** A bulk reject or hold without a reason is a row nobody can explain later. */
+export function needsReason(action: ImsAction): boolean {
+  return action === "reject" || action === "pending_action";
+}
+
+/* ------------------------------------------------------------ pushing decisions to GSTN */
+
+/** How one document's push reads in the queue. `null` push means nothing was decided yet. */
+export interface PushView {
+  /** The badge text — always words, never colour alone. */
+  label: string;
+  /** Tag colour classes. */
+  tone: string;
+  /** One sentence with the specifics: the reason a push failed, when a retry is due. */
+  detail: string | null;
+  /** The platform is still working on it. */
+  active: boolean;
+  /** A person has to look at it. */
+  needsPerson: boolean;
+}
+
+const PUSH_TONE = {
+  waiting: "bg-ground text-muted",
+  active: "bg-info-soft text-info",
+  done: "bg-present-soft text-present",
+  bad: "bg-danger-soft text-danger",
+  warn: "bg-late-soft text-late",
+} as const;
+
+/**
+ * The words for where one decision's delivery to GSTN stands.
+ *
+ * `queued` says two different things and this tells them apart: waiting for a person (nobody has
+ * asked for it to be sent) and waiting for the worker or a retry's backoff (somebody has). A
+ * `conflict` and a `failed` are told apart too, because they call for opposite actions — try
+ * again, or decide again.
+ */
+export function pushView(push: ImsPush | null | undefined): PushView | null {
+  if (push === null || push === undefined) return null;
+  switch (push.status) {
+    case "queued":
+      if (push.requested_at === null) {
+        return {
+          label: "Queued to send",
+          tone: PUSH_TONE.waiting,
+          detail: "Recorded here. GSTN has not been told — someone with the push permission sends it.",
+          active: false,
+          needsPerson: false,
+        };
+      }
+      return {
+        label: push.attempts > 0 ? "Retrying" : "Waiting to send",
+        tone: PUSH_TONE.active,
+        detail:
+          push.attempts > 0
+            ? `The portal did not answer${push.next_attempt_at ? "; the next attempt is scheduled" : ""}. Attempt ${push.attempts} of ${push.max_attempts}.`
+            : "Asked for, and waiting for the worker to send it.",
+        active: true,
+        needsPerson: false,
+      };
+    case "submitting":
+      return {
+        label: "Sending",
+        tone: PUSH_TONE.active,
+        detail: "The portal is being asked now.",
+        active: true,
+        needsPerson: false,
+      };
+    case "pushed":
+      return {
+        label: "On GSTN",
+        tone: PUSH_TONE.done,
+        detail: push.drift
+          ? null
+          : "GSTN holds this decision.",
+        active: false,
+        needsPerson: false,
+      };
+    case "failed":
+      return {
+        label:
+          push.error_code === "retry_exhausted" ? "Send failed — gave up" : "Send failed",
+        tone: PUSH_TONE.bad,
+        detail: [push.error_code ? `Code ${push.error_code}` : null, push.error]
+          .filter((part): part is string => part !== null && part !== "")
+          .join(" — "),
+        active: false,
+        needsPerson: true,
+      };
+    case "conflict":
+      return {
+        label: "Conflict on GSTN",
+        tone: PUSH_TONE.warn,
+        detail: `GSTN holds ${push.observed_action ?? "a different decision"} for this document. Decide it again to send a newer decision.`,
+        active: false,
+        needsPerson: true,
+      };
+    case "superseded":
+      return {
+        label: "Replaced before sending",
+        tone: PUSH_TONE.waiting,
+        detail: "A newer decision replaced this one before it was sent.",
+        active: false,
+        needsPerson: false,
+      };
+  }
+}
+
+/** The portal's word for an action, as a sentence fragment. */
+const PORTAL_ACTION_LABEL: Record<string, string> = {
+  accepted: "accepted",
+  rejected: "rejected",
+  pending: "on hold",
+  no_action: "no action",
+};
+
+export function portalActionLabel(action: string | null | undefined): string {
+  if (action === null || action === undefined) return "unknown";
+  return PORTAL_ACTION_LABEL[action] ?? action;
+}
+
+/** What the drift badge says: GSTN was told one thing and now shows another. */
+export function driftSentence(push: ImsPush): string {
+  const pushed = portalActionLabel(
+    { accept: "accepted", reject: "rejected", pending_action: "pending", no_action: "no_action" }[
+      push.action
+    ],
+  );
+  return `You sent ${pushed}; the last sync found GSTN showing ${portalActionLabel(push.observed_action)}.`;
+}
+
+/** The queue's push filter, in the order a person works it. */
+export const PUSH_STATUS_FILTERS: readonly { value: ImsPushStatus | "drift" | "all"; label: string }[] = [
+  { value: "all", label: "Any" },
+  { value: "queued", label: "Waiting to send" },
+  { value: "submitting", label: "Sending" },
+  { value: "pushed", label: "On GSTN" },
+  { value: "failed", label: "Send failed" },
+  { value: "conflict", label: "Conflict" },
+  { value: "drift", label: "GSTN differs" },
+];
 
 const STATUS_LABEL: Record<ImsStatus, string> = {
   pending: "Undecided",

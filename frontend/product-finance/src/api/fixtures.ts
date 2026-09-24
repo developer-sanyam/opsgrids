@@ -20,10 +20,14 @@ import type {
   GstReturnDetail,
   GstReturnTransition,
   ImsAction,
+  ImsBulkDecisionResult,
   ImsDecision,
   ImsDocument,
   ImsDocumentDetail,
   ImsExpenseCategory,
+  ImsPush,
+  ImsPushRequestResult,
+  ImsPushSummary,
   ImsReason,
   Invoice,
   InvoiceLine,
@@ -749,6 +753,7 @@ const ACTION_STATUS: Record<ImsAction, ImsDocument["status"]> = {
   accept: "accepted",
   reject: "rejected",
   pending_action: "pending_action",
+  no_action: "pending",
 };
 
 /**
@@ -835,7 +840,117 @@ const SESSION_DECISIONS = new Map<string, ImsDecision[]>();
 function decisionsFor(document: ImsDocument): ImsDecision[] {
   const session = SESSION_DECISIONS.get(document.id) ?? [];
   const seeded = document.decision ? [document.decision] : [];
-  return [...session, ...seeded];
+  return [...session, ...seeded].map((decision, index, all) =>
+    withPush(document, decision, all.length - index, index === 0),
+  );
+}
+
+/**
+ * Where each decision's delivery to GSTN stands, keyed by decision id. Seeded so the queue shows
+ * every state a person will meet — sent, refused, in conflict, drifted — and written by the
+ * fixture-mode "push", which has no worker and so completes at once.
+ */
+const PUSHES = new Map<string, ImsPush>();
+
+function pushRow(
+  document: ImsDocument,
+  decision: ImsDecision,
+  version: number,
+  over: Partial<ImsPush>,
+): ImsPush {
+  return {
+    id: `push-${decision.id}`,
+    decision_id: decision.id,
+    ims_document_id: document.id,
+    period: document.period,
+    action: decision.action,
+    version,
+    status: "queued",
+    is_current: true,
+    requested_at: null,
+    attempts: 0,
+    max_attempts: 6,
+    next_attempt_at: null,
+    pushed_at: null,
+    error_code: null,
+    error: null,
+    portal: null,
+    observed_action: null,
+    observed_at: null,
+    drift: false,
+    drift_detected_at: null,
+    ...over,
+  };
+}
+
+const SEEDED_PUSHES: Record<string, Partial<ImsPush>> = {
+  "IMS-2608-0002": {
+    status: "pushed",
+    requested_at: "2026-08-21T09:40:00Z",
+    pushed_at: "2026-08-21T09:41:00Z",
+    attempts: 1,
+    portal: "gstn-ims",
+    observed_action: "accepted",
+    observed_at: "2026-08-22T04:30:00Z",
+  },
+  "IMS-2608-0004": {
+    status: "failed",
+    requested_at: "2026-08-21T09:40:00Z",
+    attempts: 1,
+    portal: "gstn-ims",
+    error_code: "IMS150",
+    error: "GSTR-3B is already filed for this period",
+  },
+  "IMS-2607-0011": {
+    status: "conflict",
+    requested_at: "2026-08-01T12:00:00Z",
+    attempts: 1,
+    portal: "gstn-ims",
+    error_code: "IMS302",
+    error: "the portal holds 'accepted' for this document, not 'rejected'",
+    observed_action: "accepted",
+    observed_at: "2026-08-01T12:00:00Z",
+  },
+  "IMS-2607-0012": {
+    status: "pushed",
+    requested_at: "2026-08-01T12:00:00Z",
+    pushed_at: "2026-08-01T12:01:00Z",
+    attempts: 1,
+    portal: "gstn-ims",
+    observed_action: "rejected",
+    observed_at: "2026-08-22T04:30:00Z",
+    drift: true,
+    drift_detected_at: "2026-08-22T04:30:00Z",
+  },
+};
+
+/**
+ * Attach a decision's push — seeded, written by this session, or the default `queued`. A decision
+ * that is no longer the document's newest keeps its push as history: one still `queued` reads as
+ * `superseded` (a newer decision replaced it unsent), anything else is what it was.
+ */
+function withPush(
+  document: ImsDocument,
+  decision: ImsDecision,
+  version: number,
+  isNewest: boolean,
+): ImsDecision {
+  const key = decision.id;
+  const seeded = SEEDED_PUSHES[document.source_ref];
+  const stored =
+    PUSHES.get(key) ??
+    (decision === document.decision && seeded !== undefined
+      ? pushRow(document, decision, version, seeded)
+      : pushRow(document, decision, version, {}));
+  PUSHES.set(key, stored);
+  const shown: ImsPush = isNewest
+    ? stored
+    : {
+        ...stored,
+        is_current: false,
+        status: stored.status === "queued" ? "superseded" : stored.status,
+      };
+  return { ...decision, version, push: shown };
 }
 
 /** The queue as it currently stands, with any decision taken in this session applied. */
@@ -844,8 +959,68 @@ export function fixtureImsDocuments(): ImsDocument[] {
     const decisions = decisionsFor(document);
     const newest = decisions[0];
     if (newest === undefined) return document;
-    return { ...document, status: ACTION_STATUS[newest.action], decision: newest };
+    return {
+      ...document,
+      status: ACTION_STATUS[newest.action],
+      decision: newest,
+      push: newest.push ?? null,
+    };
   });
+}
+
+/** Where one period's pushes stand — what the push control on the queue is drawn from. */
+export function fixturePushSummary(period: string): ImsPushSummary {
+  const current = fixtureImsDocuments()
+    .filter((doc) => doc.period === period && doc.push != null)
+    .map((doc) => doc.push as ImsPush);
+  const count = (status: ImsPush["status"]) => current.filter((p) => p.status === status).length;
+  const queued = count("queued");
+  return {
+    period,
+    queued,
+    requested: current.filter((p) => p.status === "queued" && p.requested_at !== null).length,
+    submitting: count("submitting"),
+    pushed: count("pushed"),
+    failed: count("failed"),
+    conflict: count("conflict"),
+    drift: current.filter((p) => p.drift).length,
+    pushable: queued + count("failed"),
+    unqueued: 0,
+  };
+}
+
+/**
+ * A person asks for a period to be sent. The real server stages the request and a worker sends it
+ * afterwards; fixture mode has no worker, so what would be sent is recorded as sent on the spot —
+ * the same end state, without the wait.
+ */
+export function requestFixturePush(period: string, documentIds?: string[]): ImsPushRequestResult {
+  const now = new Date().toISOString();
+  let requested = 0;
+  let notPushable = 0;
+  for (const doc of fixtureImsDocuments()) {
+    if (doc.period !== period || doc.push == null) continue;
+    if (documentIds !== undefined && !documentIds.includes(doc.id)) continue;
+    const push = doc.push;
+    if (push.status !== "queued" && push.status !== "failed") {
+      notPushable += 1;
+      continue;
+    }
+    requested += 1;
+    PUSHES.set(push.decision_id, {
+      ...push,
+      status: "pushed",
+      requested_at: now,
+      pushed_at: now,
+      attempts: push.attempts + 1,
+      portal: "gstn-ims",
+      error_code: null,
+      error: null,
+      observed_action: { accept: "accepted", reject: "rejected", pending_action: "pending", no_action: "no_action" }[push.action] as ImsPush["observed_action"],
+      observed_at: now,
+    });
+  }
+  return { period, requested, not_pushable: notPushable };
 }
 
 /** One inbound document with the evidence behind its suggestion and its whole decision history. */
@@ -894,7 +1069,32 @@ export function recordFixtureDecision(
     decided_at: new Date().toISOString(),
   };
   SESSION_DECISIONS.set(documentId, [decision, ...(SESSION_DECISIONS.get(documentId) ?? [])]);
-  return decision;
+  // Read back through the overlay, so the caller gets the decision with its queued push attached
+  // exactly as the server's response carries it.
+  const base = IMS_BASE.find((d) => d.id === documentId);
+  const recorded = base === undefined ? undefined : decisionsFor(base)[0];
+  return recorded ?? decision;
+}
+
+/** Record several decisions at once. Each is its own decision, exactly as if decided alone. */
+export function recordFixtureDecisions(
+  items: readonly { document_id: string; action: ImsAction; note?: string | null; expense_category?: ImsExpenseCategory }[],
+  decidedBy: string,
+): ImsBulkDecisionResult[] {
+  if (items.some((item) => !IMS_BASE.some((d) => d.id === item.document_id))) {
+    // All or nothing, as the server is: one unknown document fails the whole request.
+    throw new Error("One or more of those supplier documents is not part of this organization");
+  }
+  return items.map((item) => ({
+    document_id: item.document_id,
+    decision: recordFixtureDecision(
+      item.document_id,
+      item.action,
+      item.note ?? null,
+      item.expense_category ?? "general",
+      decidedBy,
+    ),
+  }));
 }
 
 /* --------------------------- GST registration ------------------------------ */

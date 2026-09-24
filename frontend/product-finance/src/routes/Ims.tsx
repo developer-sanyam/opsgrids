@@ -1,30 +1,41 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
-import { listImsDocuments } from "@/api/client";
-import type { ImsReasonFilter, ImsSort, ImsStatusFilter } from "@/api/client";
-import type { ImsDocument } from "@/api/types";
-import { reasonLabel, suggestionSentence } from "@/data/compliance";
+import { getImsPushSummary, listImsDocuments } from "@/api/client";
+import type { ImsPushFilter, ImsReasonFilter, ImsSort, ImsStatusFilter } from "@/api/client";
+import type { ImsAction, ImsDocument, ImsPushSummary, Page } from "@/api/types";
+import {
+  PUSH_STATUS_FILTERS,
+  actionLabel,
+  periodLabel,
+  reasonLabel,
+  suggestionSentence,
+} from "@/data/compliance";
 import { readErrorMessage } from "@/lib/errors";
 import { formatDate } from "@/lib/format";
 import { formatAmount } from "@/lib/money";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
-import { useAsync } from "@opsgrids/client";
+import { useQuietRefresh } from "@/lib/useQuietRefresh";
+import { useAsync, useAuth } from "@opsgrids/client";
 import {
   Card,
   DataTable,
   EmptyState,
   ErrorState,
+  ImsBulkBar,
+  ImsPushPanel,
   ImsStatusPill,
   PageHeader,
   Pagination,
   Pill,
+  PushBadge,
   SampleDataChip,
   SearchInput,
   Select,
   Skeleton,
   SuggestedAction,
   Tag,
+  TextField,
 } from "@/ui";
 import type { Column } from "@/ui";
 import { InboxIcon } from "@opsgrids/ui";
@@ -58,6 +69,17 @@ const DOCUMENT_TYPE_LABEL: Record<ImsDocument["document_type"], string> = {
   credit_note: "Credit note",
   debit_note: "Debit note",
 };
+
+/** How often the queue and the period's counts re-read while a push is under way, so the answer
+ *  from GSTN shows up without a reload. Not while everything is at rest. */
+const ACTIVE_REFRESH_MS = 6_000;
+
+const PERIOD_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+/** Some decision of the period is asked for or in the portal's hands, and no answer is back yet. */
+function pushUnderWay(summary: ImsPushSummary | null): boolean {
+  return summary !== null && (summary.requested > 0 || summary.submitting > 0);
+}
 
 function isStatusFilter(value: string | null): value is ImsStatusFilter {
   return STATUS_FILTERS.some((f) => f.value === value);
@@ -93,6 +115,7 @@ function SuggestionCell({ document }: { document: ImsDocument }) {
 export function ImsPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const { user } = useAuth();
 
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search);
@@ -102,16 +125,72 @@ export function ImsPage() {
   });
   const [reason, setReason] = useState<ImsReasonFilter>("all");
   const [sort, setSort] = useState<ImsSort>("date_asc");
+  const [period, setPeriod] = useState("");
+  const [pushFilter, setPushFilter] = useState<ImsPushFilter>("all");
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(25);
 
-  const loader = useCallback(
-    () => listImsDocuments({ search: debouncedSearch, status, reason, sort, page, size }),
-    [debouncedSearch, status, reason, sort, page, size],
-  );
-  const queue = useAsync(loader, [debouncedSearch, status, reason, sort, page, size]);
+  // What is ticked, and what was typed beside each row. Both belong to the page on screen: a
+  // change of filter or page clears them, because an action that could reach rows the person can
+  // no longer see is how a bulk decision goes wrong.
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
+  const [reasons, setReasons] = useState<Readonly<Record<string, string>>>({});
+  const [receipt, setReceipt] = useState<string | null>(null);
 
-  const rows = useMemo(() => (queue.status === "success" ? queue.data.items : []), [queue]);
+  const validPeriod = PERIOD_PATTERN.test(period) ? period : "";
+
+  const loader = useCallback(
+    () =>
+      listImsDocuments({
+        search: debouncedSearch,
+        status,
+        reason,
+        sort,
+        period: validPeriod,
+        pushStatus: pushFilter,
+        page,
+        size,
+      }),
+    [debouncedSearch, status, reason, sort, validPeriod, pushFilter, page, size],
+  );
+  const queue = useAsync(loader, [debouncedSearch, status, reason, sort, validPeriod, pushFilter, page, size]);
+  const loadedQueue = queue.status === "success" ? queue.data : null;
+
+  const summaryLoader = useCallback(
+    () => (validPeriod === "" ? Promise.resolve(null) : getImsPushSummary(validPeriod)),
+    [validPeriod],
+  );
+  const summaryState = useAsync<ImsPushSummary | null>(summaryLoader, [validPeriod]);
+  const loadedSummary = summaryState.status === "success" ? summaryState.data : null;
+
+  // A push under way is worth watching: while any decision of the period is asked for and not yet
+  // answered, both the counts and the rows re-read quietly (no skeletons, so nothing on screen —
+  // a dialog, a half-typed reason — is torn down by the poll). The counts decide when to stop:
+  // asked of what is shown, so the poll ends when an answer shows nothing left under way.
+  const { shown: summary, refresh: refreshSummary } = useQuietRefresh<ImsPushSummary | null>(
+    loadedSummary,
+    summaryLoader,
+    { active: (current) => pushUnderWay(current), intervalMs: ACTIVE_REFRESH_MS },
+  );
+  const watching = pushUnderWay(summary);
+  const { shown: shownQueue, refresh: refreshQueue } = useQuietRefresh<Page<ImsDocument>>(
+    loadedQueue,
+    loader,
+    { active: () => watching, intervalMs: ACTIVE_REFRESH_MS },
+  );
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+    setReasons({});
+  }, [debouncedSearch, status, reason, sort, validPeriod, pushFilter, page, size]);
+
+  const rows = useMemo(() => shownQueue?.items ?? [], [shownQueue]);
+  const selectedDocs = useMemo(() => rows.filter((doc) => selectedIds.has(doc.id)), [rows, selectedIds]);
+
+  const afterChange = useCallback(() => {
+    refreshQueue();
+    refreshSummary();
+  }, [refreshQueue, refreshSummary]);
 
   const columns: Column<ImsDocument>[] = [
     {
@@ -153,17 +232,55 @@ export function ImsPage() {
     {
       key: "suggestion",
       header: "What we see",
-      cellClassName: "hidden lg:table-cell",
-      headerClassName: "hidden lg:table-cell",
+      cellClassName: "hidden xl:table-cell",
+      headerClassName: "hidden xl:table-cell",
       render: (doc) => <SuggestionCell document={doc} />,
+    },
+    {
+      key: "reason",
+      header: "Your reason",
+      cellClassName: "min-w-[12rem]",
+      render: (doc) => (
+        // A text field inside a row that is itself a control: without stopping the event, typing
+        // a space would open the document, and clicking the field would navigate away from it.
+        <div
+          role="presentation"
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
+        >
+          <TextField
+            label={`Reason for ${doc.document_number}`}
+            hideLabel
+            maxLength={1000}
+            placeholder="Why — kept with your decision"
+            value={reasons[doc.id] ?? ""}
+            onChange={(event) => setReasons((prev) => ({ ...prev, [doc.id]: event.target.value }))}
+            optional
+          />
+        </div>
+      ),
     },
     {
       key: "status",
       header: "Decision",
       align: "right",
-      render: (doc) => <ImsStatusPill status={doc.status} />,
+      render: (doc) => (
+        <div className="flex flex-col items-end gap-1.5">
+          <ImsStatusPill status={doc.status} />
+          <PushBadge push={doc.push} />
+        </div>
+      ),
     },
   ];
+
+  function onRecorded({ count, action }: { count: number; action: ImsAction }) {
+    setSelectedIds(new Set());
+    setReasons({});
+    setReceipt(
+      `Recorded ${count} decision${count === 1 ? "" : "s"} — ${actionLabel(action).toLowerCase()}. Each has your name and its own reason, and is queued to be sent to GSTN; nothing is sent until someone with the push permission sends the period.`,
+    );
+    afterChange();
+  }
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -175,7 +292,7 @@ export function ImsPage() {
             <SampleDataChip />
             <span className="inline-flex h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold shadow-card">
               <InboxIcon className="size-4 text-muted" />
-              <span className="tnum">{queue.status === "success" ? queue.data.total : "—"}</span>
+              <span className="tnum">{shownQueue !== null ? shownQueue.total : "—"}</span>
               <span className="font-medium text-muted">documents</span>
             </span>
           </span>
@@ -187,11 +304,12 @@ export function ImsPage() {
         <span className="font-semibold text-ink-soft">claims the input tax credit</span> on it;
         rejecting declines the credit and sends the document back. The platform reconciles each
         against your purchase book and says what it found — the decision is yours, and every one
-        is recorded with your name against it.
+        is recorded with your name and your reason against it, whether decided alone or ticked
+        together.
       </p>
 
       <Card className="flex flex-col gap-4 p-4 sm:p-5">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <SearchInput
             label="Search supplier documents"
             placeholder="Search by supplier, GSTIN or document number…"
@@ -202,13 +320,27 @@ export function ImsPage() {
             }}
             containerClassName="lg:max-w-sm"
           />
-          <Select
-            label="Sort supplier documents"
-            containerClassName="lg:w-56"
-            value={sort}
-            onChange={(event) => setSort(event.target.value as ImsSort)}
-            options={SORTS}
-          />
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <TextField
+              label="Return period"
+              type="month"
+              value={period}
+              onChange={(event) => {
+                setPeriod(event.target.value);
+                setPage(1);
+              }}
+              helper="Sending is made one period at a time."
+              containerClassName="sm:w-48"
+              optional
+            />
+            <Select
+              label="Sort supplier documents"
+              containerClassName="sm:w-56"
+              value={sort}
+              onChange={(event) => setSort(event.target.value as ImsSort)}
+              options={SORTS}
+            />
+          </div>
         </div>
 
         <div className="flex flex-col gap-3 border-t border-line pt-4">
@@ -246,8 +378,44 @@ export function ImsPage() {
               </Pill>
             ))}
           </div>
+          <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
+            <span className="mr-1 shrink-0 text-xs font-semibold uppercase tracking-wide text-faint">
+              On GSTN
+            </span>
+            {PUSH_STATUS_FILTERS.map((filter) => (
+              <Pill
+                key={filter.value}
+                active={pushFilter === filter.value}
+                onClick={() => {
+                  setPushFilter(filter.value);
+                  setPage(1);
+                }}
+              >
+                {filter.label}
+              </Pill>
+            ))}
+          </div>
         </div>
       </Card>
+
+      <ImsPushPanel
+        period={validPeriod}
+        summary={validPeriod === "" ? null : summary}
+        onRequested={(requested) => {
+          setReceipt(
+            requested === 0
+              ? `Nothing in ${periodLabel(validPeriod)} was waiting to be sent.`
+              : `Asked for ${requested} decision${requested === 1 ? "" : "s"} for ${periodLabel(validPeriod)} to be sent to GSTN. Each row shows where it stands as GSTN answers.`,
+          );
+          afterChange();
+        }}
+      />
+
+      {receipt !== null ? (
+        <p role="status" className="rounded-tile bg-present-soft px-4 py-3 text-sm font-medium text-present">
+          {receipt}
+        </p>
+      ) : null}
 
       <Card className="p-2 sm:p-4">
         {queue.status === "loading" ? (
@@ -260,7 +428,7 @@ export function ImsPage() {
         {queue.status === "error" ? (
           <ErrorState message={readErrorMessage(queue.error, "the reconciliation queue")} />
         ) : null}
-        {queue.status === "success" ? (
+        {shownQueue !== null ? (
           <>
             <DataTable
               columns={columns}
@@ -268,19 +436,42 @@ export function ImsPage() {
               rowKey={(doc) => doc.id}
               onRowClick={(doc) => navigate(`/compliance/ims/${doc.id}`)}
               caption="Inbound supplier documents awaiting reconciliation"
+              selection={{
+                selected: selectedIds,
+                onToggle: (key, next) =>
+                  setSelectedIds((prev) => {
+                    const copy = new Set(prev);
+                    if (next) copy.add(key);
+                    else copy.delete(key);
+                    return copy;
+                  }),
+                onToggleAll: (next) => setSelectedIds(next ? new Set(rows.map((doc) => doc.id)) : new Set()),
+                label: (doc) => `${doc.supplier_name} ${doc.document_number}`,
+              }}
+              toolbar={
+                selectedDocs.length > 0 ? (
+                  <ImsBulkBar
+                    selected={selectedDocs}
+                    reasons={reasons}
+                    decidedBy={user?.full_name ?? "You"}
+                    onClear={() => setSelectedIds(new Set())}
+                    onRecorded={onRecorded}
+                  />
+                ) : null
+              }
               emptyState={
                 <EmptyState
                   icon={<InboxIcon className="size-6" />}
                   title="Nothing in this view"
-                  description="No supplier document matches these filters. Clear the search, or widen the decision and reason filters."
+                  description="No supplier document matches these filters. Clear the search, or widen the decision, reason and GSTN filters."
                 />
               }
             />
             <Pagination
-              page={queue.data.page}
-              pages={queue.data.pages}
-              total={queue.data.total}
-              size={queue.data.size}
+              page={shownQueue.page}
+              pages={shownQueue.pages}
+              total={shownQueue.total}
+              size={shownQueue.size}
               noun="documents"
               onPageChange={setPage}
               onSizeChange={(n) => {

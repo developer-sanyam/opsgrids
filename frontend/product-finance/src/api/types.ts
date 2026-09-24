@@ -257,8 +257,97 @@ export interface InvoiceIssueIn {
 /** Where an inbound document stands. `pending` until somebody decides. */
 export type ImsStatus = "pending" | "accepted" | "rejected" | "pending_action";
 
-/** What an operator may decide. `pending` is not a decision — it is the absence of one. */
-export type ImsAction = "accept" | "reject" | "pending_action";
+/**
+ * What an operator may decide. `pending` is not a decision — it is the absence of one — but
+ * `no_action` is: an explicit "I looked, and I choose to take none", which withdraws an earlier
+ * accept, reject or hold. It returns the document to `pending` and is never an accept: nothing here
+ * claims credit that a person did not accept.
+ */
+export type ImsAction = "accept" | "reject" | "pending_action" | "no_action";
+
+/**
+ * Where the delivery of a decision to GSTN stands (`ImsPush.status`).
+ *
+ * `queued` — decided, waiting for a person with the push permission to send it (or, once asked
+ * for, for the worker or a retry's backoff). `pushed` — GSTN holds this decision. `failed` — the
+ * portal refused it, or the platform gave up. `conflict` — GSTN holds something else for the
+ * document; only a new decision resolves it. `superseded` — a newer decision replaced it unsent.
+ */
+export type ImsPushStatus =
+  | "queued"
+  | "submitting"
+  | "pushed"
+  | "failed"
+  | "conflict"
+  | "superseded";
+
+/** Whether GSTN has been told what one decision says. The decision itself is never touched. */
+export interface ImsPush {
+  id: string;
+  decision_id: string;
+  ims_document_id: string;
+  period: string;
+  action: ImsAction;
+  /** The decision's ordinal within its document — 1, then 2 after a change of mind. */
+  version: number;
+  status: ImsPushStatus;
+  is_current: boolean;
+  /** Null until a person asked for it to be sent. */
+  requested_at: string | null;
+  attempts: number;
+  max_attempts: number;
+  /** After an outage, not before: when the next attempt is due. */
+  next_attempt_at: string | null;
+  pushed_at: string | null;
+  /** The portal's numbered code, or the platform's own (`unavailable`, `retry_exhausted`, …). */
+  error_code: string | null;
+  /** The portal's words, masked of identifiers by the server. */
+  error: string | null;
+  portal: string | null;
+  /** What the last sync saw the portal hold, in the portal's words. */
+  observed_action: "accepted" | "rejected" | "pending" | "no_action" | null;
+  observed_at: string | null;
+  /** True while a pushed decision disagrees with what the last sync saw on the portal. */
+  drift: boolean;
+  drift_detected_at: string | null;
+}
+
+/** `GET /finance/ims/pushes/summary` — where one period's pushes stand. */
+export interface ImsPushSummary {
+  period: string;
+  queued: number;
+  /** Of the queued, how many a person already asked for — the push is still under way. */
+  requested: number;
+  submitting: number;
+  pushed: number;
+  failed: number;
+  conflict: number;
+  drift: number;
+  /** What a push request would now send: waiting decisions and refused ones. */
+  pushable: number;
+  /** Decisions recorded before pushes existed; a push request includes them. */
+  unqueued: number;
+}
+
+/** `POST /finance/ims/pushes` — a request staged, not a portal call made. */
+export interface ImsPushRequestResult {
+  period: string;
+  requested: number;
+  not_pushable: number;
+}
+
+/** One document's decision inside a bulk request — its own action and its own reason. */
+export interface ImsBulkDecisionItem {
+  document_id: string;
+  action: ImsAction;
+  note?: string | null;
+  expense_category?: ImsExpenseCategory;
+}
+
+export interface ImsBulkDecisionResult {
+  document_id: string;
+  decision: ImsDecision;
+}
 
 /**
  * Why the platform suggests what it suggests. This is the field a queue is actually worked by:
@@ -320,6 +409,10 @@ export interface ImsDecision {
   /** The subject id of whoever decided. */
   decided_by: string;
   decided_at: string;
+  /** The decision's ordinal within its document, and where its delivery to GSTN stands. Null on a
+   *  decision recorded before pushes existed and not yet asked for. */
+  version?: number | null;
+  push?: ImsPush | null;
 }
 
 /** One row of the reconciliation queue: a document a supplier filed against this organization. */
@@ -348,6 +441,8 @@ export interface ImsDocument {
   suggestion?: ImsSuggestion | null;
   /** The newest decision. Null is what "nobody has decided yet" looks like. */
   decision?: ImsDecision | null;
+  /** Where the delivery of that decision to GSTN stands. Null before anything was decided. */
+  push?: ImsPush | null;
 }
 
 /** A recorded purchase document — the local counterpart a supplier's filing is matched against. */

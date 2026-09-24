@@ -7,10 +7,24 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { EInvoiceState, EwayState, FilingRemedy, ImsSuggestion, Invoice } from "@/api/types";
+import type {
+  EInvoiceState,
+  EwayState,
+  FilingRemedy,
+  ImsPush,
+  ImsSuggestion,
+  Invoice,
+} from "@/api/types";
 import {
   EWAY_STATUS_FILTERS,
+  PUSH_STATUS_FILTERS,
+  actionLabel,
+  bulkConsequence,
   complianceSummary,
+  driftSentence,
+  needsReason,
+  portalActionLabel,
+  pushView,
   ewayStateView,
   ewayStatusTone,
   filingErrorSentence,
@@ -344,5 +358,121 @@ describe("what an e-Way position says", () => {
     expect(ewayStateView(state({ status: "cancelled", terminal: true }))).toBeNull();
     // A failed withdrawal is not terminal: the bill stands, so it is not a generation failure.
     expect(ewayStateView(state({ status: "failed", terminal: false }))).toBeNull();
+  });
+});
+
+function push(over: Partial<ImsPush>): ImsPush {
+  return {
+    id: "push-1",
+    decision_id: "dec-1",
+    ims_document_id: "doc-1",
+    period: "2026-08",
+    action: "accept",
+    version: 1,
+    status: "queued",
+    is_current: true,
+    requested_at: null,
+    attempts: 0,
+    max_attempts: 6,
+    next_attempt_at: null,
+    pushed_at: null,
+    error_code: null,
+    error: null,
+    portal: null,
+    observed_action: null,
+    observed_at: null,
+    drift: false,
+    drift_detected_at: null,
+    ...over,
+  };
+}
+
+describe("where a decision's push stands", () => {
+  it("says nothing for a document nobody decided", () => {
+    expect(pushView(null)).toBeNull();
+    expect(pushView(undefined)).toBeNull();
+  });
+
+  it("tells waiting-for-a-person from waiting-for-the-worker", () => {
+    const unasked = pushView(push({}));
+    const asked = pushView(push({ requested_at: "2026-09-24T06:00:00Z" }));
+    expect(unasked?.label).toBe("Queued to send");
+    expect(unasked?.active).toBe(false);
+    expect(unasked?.detail).toMatch(/GSTN has not been told/);
+    expect(asked?.label).toBe("Waiting to send");
+    expect(asked?.active).toBe(true);
+  });
+
+  it("calls an outage that is being retried a retry, with the attempt it is on", () => {
+    const view = pushView(
+      push({ requested_at: "2026-09-24T06:00:00Z", attempts: 2, next_attempt_at: "2026-09-24T06:04:00Z" }),
+    );
+    expect(view?.label).toBe("Retrying");
+    expect(view?.detail).toMatch(/Attempt 2 of 6/);
+    expect(view?.needsPerson).toBe(false);
+  });
+
+  it("puts a refusal in front of a person, with the portal's code and reason", () => {
+    const view = pushView(push({ status: "failed", error_code: "IMS201", error: "document not found on the portal" }));
+    expect(view?.label).toBe("Send failed");
+    expect(view?.detail).toBe("Code IMS201 — document not found on the portal");
+    expect(view?.needsPerson).toBe(true);
+  });
+
+  it("says when the platform gave up on an outage, not that the portal refused", () => {
+    expect(pushView(push({ status: "failed", error_code: "retry_exhausted" }))?.label).toBe(
+      "Send failed — gave up",
+    );
+  });
+
+  it("names what GSTN holds on a conflict and says the way out is a new decision", () => {
+    const view = pushView(push({ status: "conflict", observed_action: "rejected" }));
+    expect(view?.label).toBe("Conflict on GSTN");
+    expect(view?.detail).toMatch(/holds rejected/);
+    expect(view?.detail).toMatch(/Decide it again/);
+    expect(view?.needsPerson).toBe(true);
+  });
+
+  it("does not claim a pushed decision is settled when the portal has since disagreed", () => {
+    const settled = pushView(push({ status: "pushed" }));
+    const drifted = pushView(push({ status: "pushed", drift: true, observed_action: "pending" }));
+    expect(settled?.detail).toBe("GSTN holds this decision.");
+    expect(drifted?.detail).toBeNull();
+  });
+
+  it("puts the words of drift in the portal's terms, not the platform's", () => {
+    const sentence = driftSentence(push({ status: "pushed", action: "accept", drift: true, observed_action: "pending" }));
+    expect(sentence).toBe("You sent accepted; the last sync found GSTN showing on hold.");
+    expect(portalActionLabel(null)).toBe("unknown");
+    expect(portalActionLabel("something_new")).toBe("something_new");
+  });
+});
+
+describe("what a decision is asked to say", () => {
+  it("needs a reason to reject or hold, and not to accept or to withdraw", () => {
+    expect(needsReason("reject")).toBe(true);
+    expect(needsReason("pending_action")).toBe(true);
+    expect(needsReason("accept")).toBe(false);
+    expect(needsReason("no_action")).toBe(false);
+  });
+
+  it("states what each bulk action does to the credit before it is confirmed", () => {
+    expect(bulkConsequence("accept")).toMatch(/Claims the input tax credit/);
+    expect(bulkConsequence("accept")).toMatch(/general business purchase/);
+    expect(bulkConsequence("reject")).toMatch(/Declines the credit/);
+    expect(bulkConsequence("no_action")).toMatch(/takes back any credit/);
+    expect(actionLabel("no_action")).toBe("Take no action");
+  });
+
+  it("filters by every push state, and by drift as its own", () => {
+    expect(PUSH_STATUS_FILTERS.map((f) => f.value)).toEqual([
+      "all",
+      "queued",
+      "submitting",
+      "pushed",
+      "failed",
+      "conflict",
+      "drift",
+    ]);
   });
 });

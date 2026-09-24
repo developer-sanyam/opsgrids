@@ -27,6 +27,7 @@ import {
   Card,
   ErrorState,
   ImsStatusPill,
+  PushBadge,
   SampleDataChip,
   SectionHeader,
   Select,
@@ -37,7 +38,7 @@ import {
 import { ArrowLeftIcon, CheckCircleIcon, cn } from "@opsgrids/ui";
 import type { Minor } from "@/lib/money";
 
-const DECISIONS: ImsAction[] = ["accept", "reject", "pending_action"];
+const DECISIONS: ImsAction[] = ["accept", "reject", "pending_action", "no_action"];
 
 /**
  * What an accepted document was for, and what each blocks under GST s. 17(5). `general` is the
@@ -195,7 +196,19 @@ function DecisionRow({ decision }: { decision: ImsDecision }) {
           {expenseCategoryLabel(decision.expense_category)}
         </span>
         {decision.note ? <p className="max-w-prose pt-1 text-sm text-ink-soft">{decision.note}</p> : null}
+        {/* Whether GSTN has been told, and whether it still agrees. Each decision carries its own:
+            an accepted-then-rejected document has two, and only the newer is the one in flight. */}
+        {decision.push ? (
+          <div className="pt-1">
+            <PushBadge push={decision.push} detail="full" />
+          </div>
+        ) : null}
       </div>
+      {decision.version != null ? (
+        <span className="ml-auto shrink-0 text-xs text-faint tnum" title="Decision number for this document">
+          v{decision.version}
+        </span>
+      ) : null}
     </li>
   );
 }
@@ -404,6 +417,7 @@ function DetailBody({
             <div className="flex flex-wrap items-center gap-2.5">
               <h1 className="display text-2xl font-extrabold">{document.supplier_name}</h1>
               <ImsStatusPill status={document.status} />
+              <PushBadge push={document.push} />
               <SampleDataChip />
             </div>
             <div className="flex flex-wrap items-center gap-2">

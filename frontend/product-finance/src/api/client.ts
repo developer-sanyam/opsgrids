@@ -53,7 +53,10 @@ import {
   WITHHOLDING_RATES,
   fixtureImsDetail,
   fixtureImsDocuments,
+  fixturePushSummary,
   recordFixtureDecision,
+  recordFixtureDecisions,
+  requestFixturePush,
   retryFixtureEway,
 } from "./fixtures";
 import type {
@@ -77,8 +80,13 @@ import type {
   ImsAction,
   ImsDecision,
   ImsDocument,
+  ImsBulkDecisionItem,
+  ImsBulkDecisionResult,
   ImsDocumentDetail,
   ImsExpenseCategory,
+  ImsPushRequestResult,
+  ImsPushStatus,
+  ImsPushSummary,
   ImsReason,
   ImsStatus,
   LedgerReport,
@@ -310,12 +318,18 @@ export async function listFilings(invoiceId: string): Promise<EInvoiceFiling[]> 
 export type ImsStatusFilter = ImsStatus | "all";
 export type ImsReasonFilter = ImsReason | "all";
 export type ImsSort = "date_asc" | "date_desc" | "amount_desc" | "amount_asc";
+/** Where the delivery of a document's newest decision to GSTN stands; `drift` is its own filter. */
+export type ImsPushFilter = ImsPushStatus | "drift" | "all";
 
 export interface ListImsParams {
   search?: string;
   status?: ImsStatusFilter;
   reason?: ImsReasonFilter;
   sort?: ImsSort;
+  /** The return period, `YYYY-MM`. Empty is every period. */
+  period?: string;
+  /** Where the delivery of the newest decision to GSTN stands; `drift` is a separate filter. */
+  pushStatus?: ImsPushFilter;
   page?: number;
   size?: number;
 }
@@ -339,18 +353,31 @@ function sortIms(rows: ImsDocument[], sort: ImsSort): ImsDocument[] {
 
 /** The reconciliation queue — documents suppliers filed against this organization. */
 export async function listImsDocuments(params: ListImsParams = {}): Promise<Page<ImsDocument>> {
-  const { search = "", status = "all", reason = "all", sort = "date_asc", page = 1, size = DEFAULT_PAGE_SIZE } = params;
+  const {
+    search = "",
+    status = "all",
+    reason = "all",
+    sort = "date_asc",
+    period = "",
+    pushStatus = "all",
+    page = 1,
+    size = DEFAULT_PAGE_SIZE,
+  } = params;
   if (USE_FIXTURES) {
     const q = search.trim().toLowerCase();
     const filtered = fixtureImsDocuments().filter((doc) => {
       const matchesStatus = status === "all" || doc.status === status;
       const matchesReason = reason === "all" || doc.suggestion?.reason === reason;
+      const matchesPeriod = period === "" || doc.period === period;
+      const matchesPush =
+        pushStatus === "all" ||
+        (pushStatus === "drift" ? doc.push?.drift === true : doc.push?.status === pushStatus);
       const matchesQuery =
         q === "" ||
         doc.supplier_name.toLowerCase().includes(q) ||
         doc.supplier_gstin.toLowerCase().includes(q) ||
         doc.document_number.toLowerCase().includes(q);
-      return matchesStatus && matchesReason && matchesQuery;
+      return matchesStatus && matchesReason && matchesPeriod && matchesPush && matchesQuery;
     });
     return settle(paginate(sortIms(filtered, sort), page, size));
   }
@@ -362,8 +389,55 @@ export async function listImsDocuments(params: ListImsParams = {}): Promise<Page
     q: search.trim() || undefined,
     status: status !== "all" ? status : undefined,
     reason: reason !== "all" ? reason : undefined,
+    period: period || undefined,
+    push_status: pushStatus !== "all" && pushStatus !== "drift" ? pushStatus : undefined,
+    drift: pushStatus === "drift" ? true : undefined,
   });
   return apiRequest<Page<ImsDocument>>(`/finance/ims/documents${query}`);
+}
+
+/** Where one return period's pushes stand — what the inbox's push control is drawn from. */
+export async function getImsPushSummary(period: string): Promise<ImsPushSummary> {
+  if (USE_FIXTURES) return settle(fixturePushSummary(period));
+  return apiRequest<ImsPushSummary>(`/finance/ims/pushes/summary${buildQuery({ period })}`);
+}
+
+/**
+ * Ask for one period's decisions to be sent to GSTN.
+ *
+ * A `202`: the server marks them as asked for and stages the request; the portal is called
+ * afterwards, by the worker. The answer says how many were asked for — each decision's own
+ * `push.status` in the queue says how it went. Behind its own permission
+ * (`finance.compliance.ims.push`, dangerous) and rate limited per period, so a hammered button is
+ * answered with a 429 rather than queued.
+ */
+export async function requestImsPush(
+  period: string,
+  documentIds?: string[],
+): Promise<ImsPushRequestResult> {
+  if (USE_FIXTURES) return settle(requestFixturePush(period, documentIds), 320);
+  return apiRequest<ImsPushRequestResult>("/finance/ims/pushes", {
+    method: "POST",
+    body: { period, ...(documentIds !== undefined ? { document_ids: documentIds } : {}) },
+  });
+}
+
+/**
+ * Record decisions on several documents at once — each with its own action and its own reason,
+ * all of them or none. Not a way around anything: every item is its own append-only decision with
+ * the same person's name against it, under the same permission as deciding one at a time.
+ * Recording sends nothing to GSTN.
+ */
+export async function decideImsDocumentsBulk(
+  items: readonly ImsBulkDecisionItem[],
+  decidedBy: string,
+): Promise<ImsBulkDecisionResult[]> {
+  if (USE_FIXTURES) return settle(recordFixtureDecisions(items, decidedBy), 320);
+  const response = await apiRequest<{ results: ImsBulkDecisionResult[] }>("/finance/ims/decisions", {
+    method: "POST",
+    body: { items },
+  });
+  return response.results;
 }
 
 /** One inbound document with the evidence behind its suggestion and its whole decision history. */
@@ -650,8 +724,9 @@ export async function getEwayState(invoiceId: string): Promise<EwayState> {
  */
 export async function retryEwayBill(invoiceId: string): Promise<EwayState> {
   if (USE_FIXTURES) return settle(retryFixtureEway(invoiceId), 320);
-  return apiRequest<EwayState>(`/finance/invoices/${encodeURIComponent(invoiceId)}/eway/retry`, {
+  return apiRequest<EwayState>("/finance/eway-bills/retries", {
     method: "POST",
+    body: { invoice_id: invoiceId },
   });
 }
 
