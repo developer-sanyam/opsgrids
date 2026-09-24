@@ -1236,6 +1236,108 @@ behaviour is inexplicable and no log says anything:
 
 ---
 
+## Rate limiting behind Caddy, and the provider webhooks
+
+Everything a stranger can call goes Caddy → app-gateway, so app-gateway is where the anonymous
+limits live. There are four buckets, all Redis fixed one-minute windows, and all of them **fail
+closed** (Redis down means 503, not "allowed"):
+
+| Bucket | Counts | Default | Setting (`.env`, all optional) |
+|---|---|---|---|
+| `rl:anon:<address>` | one caller's unauthenticated requests (sign-in, password reset, sign-up, storefront buyer calls, unsubscribe) | 60/min | `ANONYMOUS_RATE_LIMIT_PER_MINUTE` |
+| `rl:anon-global` | **every** unauthenticated request together, on top of the per-address one | 6000/min | `ANONYMOUS_GLOBAL_RATE_LIMIT_PER_MINUTE` (`0` disables) |
+| `rl:hook:<path>:<address>` | one address's deliveries to one webhook path | 600/min | `WEBHOOK_RATE_LIMIT_PER_MINUTE` |
+| `rl:hook:<path>` | every address, one webhook path | 3000/min | `WEBHOOK_GLOBAL_RATE_LIMIT_PER_MINUTE` (`0` disables) |
+
+Every 429 carries `Retry-After: 60`. The per-address 429 says "Too many requests"; the shared one
+says "Too many unauthenticated requests are arriving right now" (or "This endpoint is receiving
+too many requests" for a webhook) — that wording is how you tell a sign-in flood from one noisy
+client. Authenticated traffic is limited per user (`rl:user:<id>`, 300/min) and never touches the
+anonymous or webhook buckets, so a flood of strangers does not log anybody out. The per-address
+check runs first, so one address hammering the gateway can spend at most its own 60 of the shared
+ceiling.
+
+### How the gateway learns the caller's address
+
+The socket peer of every request app-gateway sees is Caddy, so keying on it would make the
+per-address limit one bucket for the whole internet — and that limit is the only brake on
+password and one-time-code guessing before a per-account lockout has anything to count. Instead:
+
+1. **Caddy overwrites `X-Forwarded-For`** with the address it accepted the connection from. A
+   client-supplied value is discarded, not appended to (Caddy's default for a client that is not
+   in `trusted_proxies`, which the Caddyfile deliberately does not set; checked against
+   `caddy:2.10.0`: a request sent with `X-Forwarded-For: 6.6.6.6, 7.7.7.7` reaches the upstream
+   as the peer address alone).
+2. **app-gateway believes that header only when the connecting peer is inside
+   `TRUSTED_PROXY_CIDRS`**, and then reads it from the right: the first address that is not one of
+   the trusted ranges. From any other peer the header is ignored, so nothing on the internet
+   can pick its own bucket. IPv6 callers are counted per /64, IPv4-mapped addresses as IPv4.
+3. **Only app-gateway does this.** No other service reads it, and
+   `tests/infra/test_gateway_trusted_proxies.py` fails if the variable appears on another
+   container.
+
+`compose.prod.yml` defaults `TRUSTED_PROXY_CIDRS` to `10.0.0.0/8,172.16.0.0/12,192.168.0.0/16`:
+Docker allocates the `front` network from its own private pool, so its subnet is not fixed, and
+only Caddy publishes a port — nothing outside the compose networks can be a peer of the gateway
+at all. To narrow it to exactly the `front` network:
+
+```bash
+docker network inspect opsgrids-edge_front --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'
+#   e.g. 172.18.0.0/16 — then add  TRUSTED_PROXY_CIDRS=172.18.0.0/16  to .env and redeploy
+#   (`make deploy …`, above). The subnet is fixed for the life of the network, but a
+#   `docker compose down` followed by `up` may allocate a different one; re-check after a rebuild.
+```
+
+A malformed entry, or `0.0.0.0/0` / `::/0` (which would let any client choose its bucket), stops
+the gateway booting with a message naming the value. An empty value means "trust nobody": safe,
+but the limiter is back on Caddy's address, and the gateway logs `gateway.no_trusted_proxies`.
+
+**Check it after any deploy that touches the edge** — from a shell on the box, after making one
+anonymous request from outside (for example `curl -s https://<edge>/api/v1/auth/login -d '{}'`):
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec -T redis redis-cli --scan --pattern 'rl:anon:*'
+#   rl:anon:203.0.113.7:<window>   → correct: the caller's own address
+#   rl:anon:172.18.0.x:<window>    → wrong: the gateway is counting Caddy. Either the peer is not in
+#                                    TRUSTED_PROXY_CIDRS, or Caddy is not the only thing in front
+#                                    of it (below).
+```
+
+**If a CDN or load balancer is put in front of Caddy**, Caddy sees *its* address, not the visitor's
+(and Docker's userland proxy does the same for a client that reaches Caddy over IPv6 on a host
+without ip6tables NAT — the symptom is the `172.18.0.1` above). The fix is not to widen
+`TRUSTED_PROXY_CIDRS`: give Caddy the front proxy's ranges as global `trusted_proxies` with
+`client_ip_headers`, so Caddy itself resolves the visitor, **and** change what it forwards so the
+gateway still gets one address. That is a deliberate design change; the Caddyfile comment above
+`handle /api/*` and its test explain why it is fenced off.
+
+### Provider webhooks (Razorpay, Meta's WhatsApp)
+
+`/api/v1/webhooks/razorpay` (POST) and `/api/v1/webhooks/whatsapp` (GET — Meta's `hub.challenge`
+handshake — and POST) are the only unauthenticated routes that are not the sign-in or buyer
+surface. They carry no bearer token: the provider signs the body and payment / notification
+verify that signature over the exact bytes the gateway forwards. The gateway declares them
+public **by exact path and method** (`WEBHOOK_PUBLIC_PATHS`), counts them in their own buckets
+(above), caps the body (Razorpay 256 KiB, Meta 3 MiB — set per route in `routes.prod.json`; a
+larger body is a 413 before it is buffered), and drops cookies, `Authorization`, `Origin` and
+`Referer` on the way in and any `Set-Cookie` / `Access-Control-*` on the way out. What to give
+the provider:
+
+- Razorpay dashboard → Webhooks: `https://<EDGE_HOST>/api/v1/webhooks/razorpay`, the secret in
+  `RAZORPAY_WEBHOOK_SECRET`.
+- Meta app → WhatsApp → Configuration: callback `https://<EDGE_HOST>/api/v1/webhooks/whatsapp`,
+  verify token `WHATSAPP_VERIFY_TOKEN`, signed with `WHATSAPP_APP_SECRET`.
+
+Symptoms: a provider dashboard showing **401** means the path is not in `WEBHOOK_PUBLIC_PATHS`
+(the gateway is asking for a bearer token); **404** means the route is missing from
+`routes.prod.json` or the owning service does not serve the path; **413** is the body cap;
+**429** is a bucket above — providers retry, so a 429 is a redelivery, not a lost event; **400/401
+from the service itself** is the signature (wrong secret). `tests/infra/test_route_table_parity.py`
+fails a build in which a `/api/v1/webhooks/*` route exists in prod but is not public in the
+gateway or is missing from the dev table.
+
+---
+
 ## The box is out of disk
 
 80 GB, and three things consume it: Docker images and build cache, container logs, and

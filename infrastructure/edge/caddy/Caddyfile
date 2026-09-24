@@ -78,6 +78,21 @@
 	# X-Forwarded-Host, X-Forwarded-For and X-Forwarded-Proto on its own — which is what the
 	# gateway's public branch needs, so nothing is added here.
 	#
+	# **X-Forwarded-For is load-bearing, and the reason nothing is added is that Caddy's default
+	# is already the safe one.** app-gateway keys its anonymous rate limit on it (it believes the
+	# header only from a peer inside TRUSTED_PROXY_CIDRS, compose.prod.yml — this container's
+	# network — and reads it from the right). For a client that is not in `trusted_proxies`,
+	# Caddy *replaces* whatever X-Forwarded-For the client sent with the address it accepted the
+	# connection from, so the gateway sees exactly one entry that no client chose. Checked
+	# against the pinned image (2.10.0): a request carrying `X-Forwarded-For: 6.6.6.6, 7.7.7.7`
+	# reaches the upstream as the peer's address alone. Do not add `header_up X-Forwarded-For`
+	# (Caddy's own adapter warns it is unnecessary, once per site), and **do not add a global
+	# `trusted_proxies`** without changing this: that option makes Caddy append to a client's
+	# header instead, and the gateway's rightmost-untrusted read would then need the same CIDRs.
+	# tests/infra/test_gateway_trusted_proxies.py fails if `trusted_proxies` appears in this
+	# file. If a CDN or load balancer is ever put in front of this Caddy, the address Caddy sees
+	# becomes that proxy's — RUNBOOK.md, "rate limiting behind Caddy", says what to change.
+	#
 	# A deploy that recreates the gateway leaves a few seconds where the dial fails. Caddy
 	# retries a failed *dial* — never a request the gateway received — so holding the request
 	# for up to 20s turns that window into a slow answer instead of a 502, for POSTs too.

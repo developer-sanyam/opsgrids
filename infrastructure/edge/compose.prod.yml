@@ -680,6 +680,31 @@ services:
       # product's app answered "No route for /api/v1/…" until something else forced a
       # recreate. `remote.sh` exports the file's hash; a changed table is a changed container.
       ROUTES_SHA: ${ROUTES_SHA:-unset}
+      # Whose `X-Forwarded-For` this gateway believes — Caddy's, and nobody else's. Without it
+      # the socket peer of every request is Caddy's address on `front`, so the anonymous
+      # per-address rate limit counts the whole internet as one caller (and it is the only
+      # brake on unauthenticated password and one-time-code guessing before a per-account lockout
+      # has anything to count). Caddy overwrites the header with the address it accepted the
+      # connection from (caddy/Caddyfile, `handle /api/*`), so the value is never client-chosen;
+      # the gateway reads it only when the peer is inside this list, from the right.
+      #
+      # This service ONLY (`tests/infra/test_gateway_trusted_proxies.py` pins it): a service
+      # behind the gateway sees the gateway as its peer, and trusting `X-Forwarded-For` anywhere
+      # else would let a caller name its own address. The default is the three private ranges,
+      # because compose allocates `front` from Docker's own pool and its subnet is not fixed —
+      # and nothing outside the compose networks can reach this container's port (only Caddy
+      # publishes one). Narrow it to the exact subnet if the box's Docker is configured
+      # otherwise: RUNBOOK.md, "rate limiting behind Caddy". Empty means "trust nobody" and puts
+      # the limiter back on Caddy's address (the gateway logs `gateway.no_trusted_proxies`).
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      # The ceiling over ALL unauthenticated requests together, per minute, on top of the
+      # per-address limit; and the provider-webhook buckets. Empty falls through to the
+      # service's own default (`services/app-gateway/app/config.py`) rather than repeating a
+      # number here that would drift from it.
+      ANONYMOUS_RATE_LIMIT_PER_MINUTE: ${ANONYMOUS_RATE_LIMIT_PER_MINUTE:-}
+      ANONYMOUS_GLOBAL_RATE_LIMIT_PER_MINUTE: ${ANONYMOUS_GLOBAL_RATE_LIMIT_PER_MINUTE:-}
+      WEBHOOK_RATE_LIMIT_PER_MINUTE: ${WEBHOOK_RATE_LIMIT_PER_MINUTE:-}
+      WEBHOOK_GLOBAL_RATE_LIMIT_PER_MINUTE: ${WEBHOOK_GLOBAL_RATE_LIMIT_PER_MINUTE:-}
     volumes:
       - ./routes.prod.json:/opt/opsgrids/routes.prod.json:ro
     networks:
