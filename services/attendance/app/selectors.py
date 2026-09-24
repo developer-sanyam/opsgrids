@@ -24,15 +24,58 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import Select, and_, select
+from sqlalchemy import Select, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 
 from app.domain import STATUS_EXITED
-from app.models import AttendanceRecord, Geofence, RegularizationRequest, Shift, TeamMembership
+from app.models import (
+    AttendanceFlag,
+    AttendanceRecord,
+    Geofence,
+    PunchSignal,
+    RegularizationRequest,
+    Shift,
+    SignalSettings,
+    TeamMembership,
+)
 from platform_core.auth import Scope, ScopeContext
+
+
+def _apply_scope(
+    ctx: ScopeContext,
+    stmt: Select[Any],
+    *,
+    org_col: InstrumentedAttribute[Any],
+    employee_col: InstrumentedAttribute[Any],
+    location_col: InstrumentedAttribute[Any],
+) -> Select[Any]:
+    """Inject the caller's scope into a statement over rows that belong to an employee.
+
+    The one place the TEAM join is built, so every list that narrows by "whose row is this" —
+    attendance records, and the flags on them — answers TEAM the same way and cannot drift. For a
+    TEAM-scoped caller the row is inner-joined to the reporting-line projection and `ctx.apply` is
+    handed the manager column; every other rung answers from the row alone and pays no join.
+    `exited` employees are excluded (`models.TeamMembership`), and both join conditions and the
+    filter name the tenant beside RLS rather than instead of it.
+    """
+    team_col = None
+    if ctx.scope is Scope.TEAM:
+        stmt = stmt.join(
+            TeamMembership,
+            and_(
+                TeamMembership.organization_id == org_col,
+                TeamMembership.employee_id == employee_col,
+            ),
+        ).where(
+            TeamMembership.organization_id == ctx.organization_id,
+            TeamMembership.status != STATUS_EXITED,
+        )
+        team_col = TeamMembership.manager_employee_id
+    return ctx.apply(stmt, owner_col=employee_col, team_col=team_col, location_col=location_col)
 
 
 def attendance_stmt(
@@ -56,23 +99,11 @@ def attendance_stmt(
         AttendanceRecord.organization_id == ctx.organization_id,
         AttendanceRecord.deleted_at.is_(None),
     )
-    team_col = None
-    if ctx.scope is Scope.TEAM:
-        stmt = stmt.join(
-            TeamMembership,
-            and_(
-                TeamMembership.organization_id == AttendanceRecord.organization_id,
-                TeamMembership.employee_id == AttendanceRecord.employee_id,
-            ),
-        ).where(
-            TeamMembership.organization_id == ctx.organization_id,
-            TeamMembership.status != STATUS_EXITED,
-        )
-        team_col = TeamMembership.manager_employee_id
-    stmt = ctx.apply(
+    stmt = _apply_scope(
+        ctx,
         stmt,
-        owner_col=AttendanceRecord.employee_id,
-        team_col=team_col,
+        org_col=AttendanceRecord.organization_id,
+        employee_col=AttendanceRecord.employee_id,
         location_col=AttendanceRecord.location_code,
     )
 
@@ -268,5 +299,158 @@ async def get_geofence_by_location(
         Geofence.organization_id == org_id,
         Geofence.location_code == location_code,
         Geofence.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+# --------------------------------------------------------------------- anti-spoofing (R22)
+
+
+async def get_signal_settings(session: AsyncSession, org_id: uuid.UUID) -> SignalSettings | None:
+    """The organization's rules, or None — which means every rule is off.
+
+    Read on every punch, so it is one indexed lookup on the unique `(organization_id)` and nothing
+    else: an organization that has never configured a rule pays this and stores nothing.
+    """
+    stmt = select(SignalSettings).where(
+        SignalSettings.organization_id == org_id, SignalSettings.deleted_at.is_(None)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_previous_located_signal(
+    session: AsyncSession, org_id: uuid.UUID, employee_id: uuid.UUID, *, before: datetime
+) -> PunchSignal | None:
+    """This employee's most recent punch that carried a location fix, before `before`.
+
+    The travel rule's one read. Both coordinates are in the predicate because the partial index
+    behind it (`ix_punch_signals_org_employee_punched`) only holds located rows.
+    """
+    stmt = (
+        select(PunchSignal)
+        .where(
+            PunchSignal.organization_id == org_id,
+            PunchSignal.employee_id == employee_id,
+            PunchSignal.lat.is_not(None),
+            PunchSignal.lng.is_not(None),
+            PunchSignal.punched_at < before,
+            PunchSignal.deleted_at.is_(None),
+        )
+        .order_by(PunchSignal.punched_at.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def count_other_device_users(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    *,
+    device_index: str,
+    employee_id: uuid.UUID,
+    since: datetime,
+) -> int:
+    """How many *different* employees punched from this device since `since`.
+
+    The shared-device rule's one read, keyed on the blind index — the sealed device id itself is
+    never decrypted to answer it. Distinct employees, not punches: one person punching twice from
+    their own phone is not sharing it.
+    """
+    stmt = select(func.count(func.distinct(PunchSignal.employee_id))).where(
+        PunchSignal.organization_id == org_id,
+        PunchSignal.device_index == device_index,
+        PunchSignal.employee_id != employee_id,
+        PunchSignal.punched_at >= since,
+        PunchSignal.deleted_at.is_(None),
+    )
+    return int((await session.execute(stmt)).scalar_one())
+
+
+def flags_stmt(
+    ctx: ScopeContext,
+    *,
+    employee_id: uuid.UUID | None = None,
+    reason: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> Select[Any]:
+    """Scope-filtered flag list, newest first. `ctx.apply` is the enforcement point.
+
+    A flag is narrowed exactly as the attendance record it describes is — OWN by the record's
+    employee, TEAM through the reporting-line projection, LOCATION by the record's location — so a
+    manager can never see a flag on someone whose attendance they could not see. The record is
+    joined for that and for the day filter. `flag_read`'s route floor keeps OWN out entirely.
+    """
+    stmt = (
+        select(AttendanceFlag)
+        .join(
+            AttendanceRecord,
+            and_(
+                AttendanceRecord.id == AttendanceFlag.attendance_id,
+                AttendanceRecord.organization_id == AttendanceFlag.organization_id,
+            ),
+        )
+        .where(
+            AttendanceFlag.organization_id == ctx.organization_id,
+            AttendanceFlag.deleted_at.is_(None),
+            AttendanceRecord.organization_id == ctx.organization_id,
+            AttendanceRecord.deleted_at.is_(None),
+        )
+    )
+    stmt = _apply_scope(
+        ctx,
+        stmt,
+        org_col=AttendanceFlag.organization_id,
+        employee_col=AttendanceFlag.employee_id,
+        location_col=AttendanceRecord.location_code,
+    )
+    if employee_id:
+        stmt = stmt.where(AttendanceFlag.employee_id == employee_id)
+    if reason:
+        stmt = stmt.where(AttendanceFlag.reason_code == reason)
+    if date_from:
+        stmt = stmt.where(AttendanceRecord.work_date >= date_from)
+    if date_to:
+        stmt = stmt.where(AttendanceRecord.work_date <= date_to)
+    return stmt.order_by(AttendanceFlag.created_at.desc(), AttendanceFlag.id)
+
+
+async def get_signals_by_ids(
+    session: AsyncSession, org_id: uuid.UUID, signal_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, PunchSignal]:
+    """The signals behind a page of flags, in one query rather than one per row."""
+    if not signal_ids:
+        return {}
+    stmt = select(PunchSignal).where(
+        PunchSignal.organization_id == org_id,
+        PunchSignal.id.in_(signal_ids),
+        PunchSignal.deleted_at.is_(None),
+    )
+    return {s.id: s for s in (await session.execute(stmt)).scalars().all()}
+
+
+async def get_work_dates(
+    session: AsyncSession, org_id: uuid.UUID, attendance_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, date]:
+    """The day each record belongs to, for a page of flags, in one query rather than one per row."""
+    if not attendance_ids:
+        return {}
+    stmt = select(AttendanceRecord.id, AttendanceRecord.work_date).where(
+        AttendanceRecord.organization_id == org_id,
+        AttendanceRecord.id.in_(attendance_ids),
+        AttendanceRecord.deleted_at.is_(None),
+    )
+    return {row[0]: row[1] for row in (await session.execute(stmt)).all()}
+
+
+async def get_signal(
+    session: AsyncSession, org_id: uuid.UUID, signal_id: uuid.UUID
+) -> PunchSignal | None:
+    """Org-scoped fetch by id. None on a tenant mismatch: confirming an id exists in *some*
+    organization is itself a disclosure."""
+    stmt = select(PunchSignal).where(
+        PunchSignal.id == signal_id,
+        PunchSignal.organization_id == org_id,
+        PunchSignal.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()

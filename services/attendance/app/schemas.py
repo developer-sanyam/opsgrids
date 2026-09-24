@@ -13,9 +13,11 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.domain import normalise_cidr
 
 Source = Literal["web", "mobile", "biometric"]
 WorkMode = Literal["office", "field", "remote", "hybrid"]
@@ -27,6 +29,16 @@ RegularizationStatus = Literal["pending", "approved", "rejected", "failed"]
 
 Latitude = Annotated[Decimal, Field(ge=-90, le=90)]
 Longitude = Annotated[Decimal, Field(ge=-180, le=180)]
+#: A fix's stated accuracy radius in metres. 100 km is a country-level guess and already absurd;
+#: the bound is there to refuse garbage, not to judge a fix.
+AccuracyM = Annotated[Decimal, Field(ge=0, le=100_000)]
+#: What the client sends as its device id: an opaque, already-hashed token. Bounded and restricted
+#: to a token alphabet so it is neither a place to smuggle text nor an unbounded value to seal.
+DeviceIdHash = Annotated[str, Field(pattern=r"^[A-Za-z0-9._:-]{16,128}$")]
+FlagReasonName = Literal[
+    "mock_location", "impossible_travel", "shared_device", "ip_outside_allowed"
+]
+PunchKind = Literal["check_in", "check_out"]
 
 ShiftCode = Annotated[str, Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")]
 LocationCode = Annotated[str, Field(min_length=1, max_length=40)]
@@ -46,7 +58,16 @@ class CheckInIn(BaseModel):
     There is no `employee_id`: a person punches their *own* attendance, so the record's employee
     is the caller's subject reference. A field punch (`work_mode="field"`) at a location that
     has a geo-fence must carry a coordinate, and it is checked against the fence server-side.
+
+    **Unknown fields are refused**, not ignored: a client that misspells a signal (`device_id`
+    for `device_id_hash`) would otherwise quietly stop reporting it and nobody would know.
+
+    The last three fields are optional **client-reported signals** (R22). They are claims, not
+    facts: a client that lies about them is exactly what the rules exist to notice, and none of them
+    can make a punch fail. They are only stored when the organization has switched a rule on.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     work_mode: WorkMode = "office"
     source: Source = "web"
@@ -55,13 +76,25 @@ class CheckInIn(BaseModel):
     lat: Latitude | None = None
     lng: Longitude | None = None
     notes: str | None = Field(default=None, max_length=500)
+    #: An opaque hash of a device identifier, computed by the client. Sealed at rest.
+    device_id_hash: DeviceIdHash | None = None
+    #: The accuracy radius the platform's location API reported for `lat`/`lng`, in metres.
+    location_accuracy_m: AccuracyM | None = None
+    #: True when the client's location API says the fix came from a mock provider.
+    mock_location: bool | None = None
 
 
 class CheckOutIn(BaseModel):
-    """Close today's open attendance for the calling employee."""
+    """Close today's open attendance for the calling employee. Unknown fields are refused; the
+    signal fields are the same optional client claims `CheckInIn` documents."""
+
+    model_config = ConfigDict(extra="forbid")
 
     lat: Latitude | None = None
     lng: Longitude | None = None
+    device_id_hash: DeviceIdHash | None = None
+    location_accuracy_m: AccuracyM | None = None
+    mock_location: bool | None = None
 
 
 class RegularizeIn(BaseModel):
@@ -234,3 +267,103 @@ class GeofenceOut(BaseModel):
     center_lng: Decimal
     radius_m: int
     created_at: datetime
+
+
+# --------------------------------------------------------------------- anti-spoofing (R22)
+
+
+class SignalSettingsIn(BaseModel):
+    """An organization's anti-spoofing rules — a full replacement, so the same body always
+    produces the same state (`PUT` is idempotent). Every rule defaults off.
+
+    Unknown fields are refused. There is deliberately **no** field that makes a flag block a
+    punch: the rules are observe-only, and a blocking rule is a later decision (see
+    `models.SignalSettings`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    detect_mock_location: bool = False
+    detect_impossible_travel: bool = False
+    detect_shared_device: bool = False
+    detect_ip_outside_allowed: bool = False
+    max_travel_speed_kmh: int = Field(default=900, ge=10, le=3000)
+    shared_device_window_hours: int = Field(default=24, ge=1, le=168)
+    #: Ranges an *office* punch may come from, e.g. `203.0.113.0/24`. Canonicalised and
+    #: de-duplicated on the way in; a range that covers every address is refused.
+    allowed_cidrs: list[str] = Field(default_factory=list, max_length=50)
+
+    @field_validator("allowed_cidrs")
+    @classmethod
+    def _canonical_ranges(cls, value: list[str]) -> list[str]:
+        try:
+            return list(dict.fromkeys(normalise_cidr(v) for v in value))
+        except ValueError as exc:
+            raise ValueError(f"Not a usable IP range: {exc}") from exc
+
+    @model_validator(mode="after")
+    def _ip_rule_needs_a_range(self) -> SignalSettingsIn:
+        if self.detect_ip_outside_allowed and not self.allowed_cidrs:
+            raise ValueError("Turning on the IP-range rule needs at least one allowed range")
+        return self
+
+
+class SignalSettingsOut(SignalSettingsIn):
+    model_config = ConfigDict(from_attributes=True, extra="ignore")
+
+
+class SignalSummaryOut(BaseModel):
+    """What a flag's reviewer sees of the punch's signals: **masked**. The IP address and the device
+    id are personal data; the values are behind the unmask route, which needs its own permission
+    and audits every read."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    kind: PunchKind
+    punched_at: datetime
+    accuracy_m: Decimal | None
+    mock_location: bool | None
+    user_agent_class: str | None
+    ip_masked: str | None
+    device_id_masked: str | None
+
+
+class FlagOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    attendance_id: uuid.UUID
+    employee_id: uuid.UUID
+    #: The day the flagged punch belongs to.
+    work_date: date | None = None
+    reason_code: FlagReasonName
+    #: Counts and measurements only — never an address, a device id or another employee's id.
+    detail: dict[str, Any]
+    created_at: datetime
+    signal: SignalSummaryOut | None = None
+
+
+SignalField = Literal["ip", "device_id"]
+
+
+class SignalUnmaskIn(BaseModel):
+    """Which sealed values to reveal. Naming them keeps an unmask a deliberate, minimal act — and
+    the audit row records exactly this list."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fields: list[SignalField] = Field(min_length=1, max_length=2)
+
+    @field_validator("fields")
+    @classmethod
+    def _no_duplicates(cls, value: list[SignalField]) -> list[SignalField]:
+        return list(dict.fromkeys(value))
+
+
+class SignalUnmasked(BaseModel):
+    """The **only** response that carries these two values in the clear. Each is null when nothing
+    was recorded or it was not asked for."""
+
+    ip: str | None = None
+    device_id: str | None = None

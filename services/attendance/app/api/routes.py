@@ -29,14 +29,16 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import scope, selectors, services
+from app import scope, selectors, services, signals
 from app.config import settings
 from app.domain import ALLOWED_TRANSITIONS, AttendanceStatus
-from app.models import SCHEMA, AttendanceRecord, RegularizationRequest
+from app.models import SCHEMA, AttendanceRecord, PunchSignal, RegularizationRequest
 from app.schemas import (
     AttendanceOut,
     CheckInIn,
     CheckOutIn,
+    FlagOut,
+    FlagReasonName,
     GeofenceIn,
     GeofenceOut,
     GeofencePatch,
@@ -47,6 +49,11 @@ from app.schemas import (
     ShiftIn,
     ShiftOut,
     ShiftPatch,
+    SignalSettingsIn,
+    SignalSettingsOut,
+    SignalSummaryOut,
+    SignalUnmasked,
+    SignalUnmaskIn,
 )
 from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.db import get_tenant_session
@@ -84,6 +91,20 @@ AttendanceRegularize = Annotated[
 #: through `assert_can_touch`/`Scope.ORG`, because a permission's ceiling is not itself an
 #: object-level check and this one has no scope at which "for someone else" is legitimate.
 AttendanceRequest = Annotated[ScopeContext, Depends(require("hrms.time.attendance.request"))]
+#: R22. Reading anti-spoofing flags has no self-service reading — an employee is not shown the rules
+#: applied to them — so the floor is TEAM: an OWN grant is refused, not quietly answered with the
+#: caller's own flags. The permission's ceiling is ORG (HR).
+AttendanceFlagRead = Annotated[
+    ScopeContext, Depends(require("hrms.time.attendance_flag.read", minimum=Scope.TEAM))
+]
+#: R22. Unmasking a punch's IP address or device id: its own dangerous permission **and** a recent
+#: second factor, exactly as unmasking an employee's PII is (`employee/app/api/routes.py`). No
+#: floor: the object-level check re-scopes to the one punch named, and the catalogue grants it to
+#: HR at ORG only.
+AttendanceUnmask = Annotated[
+    ScopeContext,
+    Depends(require("hrms.time.attendance.read_sensitive", amr={"otp"})),
+]
 ShiftRead = Annotated[ScopeContext, Depends(require("hrms.time.shift.read"))]
 #: Shifts and geo-fences are organization definitions: read by everyone, written only by an
 #: administrator. The permission tops out at ORG; the floor makes that explicit at the route.
@@ -150,6 +171,137 @@ def _attendance_out(
             ),
         }
     )
+
+
+# --------------------------------------------------------------------- anti-spoofing (R22)
+#
+# Declared **before** `/attendance/{record_id}` on purpose: FastAPI matches in registration order,
+# and `flags` or `signal-settings` would otherwise be captured as a record id and answered 422.
+
+
+def _signal_out(signal: PunchSignal) -> SignalSummaryOut:
+    return SignalSummaryOut.model_validate(signal)
+
+
+@router.get(
+    "/attendance/flags",
+    response_model=Page[FlagOut],
+    summary="Attendance anti-spoofing flags",
+    dependencies=[Entitled],
+)
+async def list_flags(
+    session: SessionDep,
+    ctx: AttendanceFlagRead,
+    params: PageQuery,
+    employee_id: Annotated[uuid.UUID | None, Query()] = None,
+    reason: Annotated[FlagReasonName | None, Query()] = None,
+    date_from: Annotated[
+        date | None, Query(description="Inclusive lower bound on the work day")
+    ] = None,
+    date_to: Annotated[
+        date | None, Query(description="Inclusive upper bound on the work day")
+    ] = None,
+) -> Page[FlagOut]:
+    """The flags raised on punches, narrowed to the caller's scope exactly as the attendance
+    records they describe are — a TEAM manager sees flags on their reports and nobody else's. The
+    signal beside each flag is **masked**: the address and device id come back only from the unmask
+    route. Observe-only: these are prompts to look, never a verdict on the employee."""
+    stmt = selectors.flags_stmt(
+        ctx, employee_id=employee_id, reason=reason, date_from=date_from, date_to=date_to
+    )
+    rows, total = await paginate(session, stmt, params)
+    # One query for the page's signals and one for its days, not one per row.
+    signals_by_id = await selectors.get_signals_by_ids(
+        session, ctx.organization_id, [f.signal_id for f in rows]
+    )
+    work_dates = await selectors.get_work_dates(
+        session, ctx.organization_id, [f.attendance_id for f in rows]
+    )
+    items = [
+        FlagOut.model_validate(f).model_copy(
+            update={
+                "work_date": work_dates.get(f.attendance_id),
+                "signal": (
+                    _signal_out(signals_by_id[f.signal_id])
+                    if f.signal_id in signals_by_id
+                    else None
+                ),
+            }
+        )
+        for f in rows
+    ]
+    return Page.build(items, total=total, params=params)
+
+
+@router.post(
+    "/attendance/signals/{signal_id}/unmask",
+    response_model=SignalUnmasked,
+    summary="Reveal the IP address and device id recorded with a punch",
+    dependencies=[Entitled],
+)
+async def unmask_signal(
+    signal_id: uuid.UUID,
+    payload: SignalUnmaskIn,
+    session: SessionDep,
+    ctx: AttendanceUnmask,
+    request: Request,
+) -> SignalUnmasked:
+    """The single decrypting endpoint for punch signals. Guarded by the dangerous
+    `read_sensitive` permission and a second-factor step-up, then re-scoped to this one punch: a
+    TEAM grant reaches only the caller's reports', an ORG grant anyone's in the organization. The
+    service opens the requested fields and writes the `entity.sensitive_read` audit row in the same
+    transaction, so a revealed value never exists without a record that it was revealed."""
+    signal = await selectors.get_signal(session, ctx.organization_id, signal_id)
+    if signal is None:
+        raise NotFoundProblem("That punch signal is not part of this organization")
+    record = await selectors.get_attendance(session, ctx.organization_id, signal.attendance_id)
+    if record is None:
+        raise NotFoundProblem("That punch signal is not part of this organization")
+    # The named vulnerability: a scoped list beside an unguarded detail. Re-apply the caller's scope
+    # to the single punch they named, before anything is opened.
+    team_owner_id = (
+        await selectors.get_team_manager(session, ctx.organization_id, signal.employee_id)
+        if ctx.scope is Scope.TEAM
+        else None
+    )
+    ctx.assert_can_touch(
+        owner_id=signal.employee_id,
+        team_owner_id=team_owner_id,
+        location_code=record.location_code,
+    )
+    return await signals.unmask_signal(session, ctx, signal, payload.fields, request=request)
+
+
+@router.get(
+    "/attendance/signal-settings",
+    response_model=SignalSettingsOut,
+    summary="The organization's anti-spoofing rules",
+    dependencies=[Entitled],
+)
+async def read_signal_settings(session: SessionDep, ctx: ShiftWrite) -> SignalSettingsOut:
+    """Administrators only (`shift.write:ORG`, the org time-admin permission): the thresholds and
+    the allowed ranges tell a person exactly how to stay under them. An organization that has never
+    saved a setting reads back every rule off."""
+    row = await selectors.get_signal_settings(session, ctx.organization_id)
+    if row is None:
+        return SignalSettingsOut()
+    return SignalSettingsOut.model_validate(row)
+
+
+@router.put(
+    "/attendance/signal-settings",
+    response_model=SignalSettingsOut,
+    summary="Set the organization's anti-spoofing rules",
+    dependencies=[Entitled],
+)
+async def put_signal_settings(
+    payload: SignalSettingsIn, session: SessionDep, ctx: ShiftWrite, request: Request
+) -> SignalSettingsOut:
+    """A full replacement — the same body always yields the same state — audited with the rules
+    as they were and as they are. Every rule is observe-only: it can raise a flag and can never
+    refuse or alter a punch."""
+    row = await signals.put_settings(session, ctx, payload, request=request)
+    return SignalSettingsOut.model_validate(row)
 
 
 # --------------------------------------------------------------------- attendance

@@ -38,6 +38,15 @@
       "resource": "attendance"
     },
     {
+      "action": "read_sensitive",
+      "default_scope": "ORG",
+      "description": "Unmask the IP address and device id recorded with a punch",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "time",
+      "resource": "attendance"
+    },
+    {
       "action": "request",
       "default_scope": "OWN",
       "description": "Ask for a correction to your own attendance",
@@ -54,6 +63,15 @@
       "max_scope": "ORG",
       "module": "time",
       "resource": "attendance"
+    },
+    {
+      "action": "read",
+      "default_scope": "TEAM",
+      "description": "See attendance anti-spoofing flags",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "time",
+      "resource": "attendance_flag"
     },
     {
       "action": "read",
@@ -161,11 +179,19 @@
           "scope": "ORG"
         },
         {
+          "code": "hrms.time.attendance.read_sensitive",
+          "scope": "ORG"
+        },
+        {
           "code": "hrms.time.attendance.request",
           "scope": "OWN"
         },
         {
           "code": "hrms.time.attendance.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "hrms.time.attendance_flag.read",
           "scope": "ORG"
         },
         {

@@ -19,6 +19,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, time
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -29,6 +30,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -36,6 +38,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -438,6 +441,188 @@ class TeamMembership(Base, OrgScopedMixin, TimestampMixin):
             "manager_employee_id",
             "employee_id",
             postgresql_where=text("status <> 'exited'"),
+        ),
+    )
+
+
+class SignalSettings(Base, TenantBase):
+    """One organization's anti-spoofing rules (R22). At most one row per organization.
+
+    **Every rule defaults OFF**, and a tenant with no row at all is a tenant with every rule off:
+    nothing here changes what an existing organization's punches do until an administrator turns a
+    rule on. With no rule on, no signal is stored either — capture exists to feed the rules, and
+    keeping an IP address for a punch nothing will ever judge is a privacy cost with no benefit.
+
+    **Observe-only.** A rule that fires writes a flag (`AttendanceFlag`); it never refuses or alters
+    a punch. Letting an organization choose specific flags that *block* is a separate decision and
+    is not built — a blocking rule on a client-reported signal needs its own appeal path first.
+    """
+
+    __tablename__ = "signal_settings"
+
+    #: See `Shift.organization_id`'s note: the unique constraint below already leads with it.
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), nullable=False, index=False
+    )
+
+    #: The client says the location came from a mock-location provider.
+    detect_mock_location: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: Two consecutive located punches imply a speed above `max_travel_speed_kmh`.
+    detect_impossible_travel: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: The same device id was used by a different employee within `shared_device_window_hours`.
+    detect_shared_device: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: An office punch came from outside every range in `allowed_cidrs`.
+    detect_ip_outside_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    #: Above this the trip between two punches is called impossible. 900 km/h is a commercial
+    #: flight: nobody commutes faster, and a slower ceiling flags people on trains.
+    max_travel_speed_kmh: Mapped[int] = mapped_column(Integer, nullable=False, default=900)
+    #: How far back "the same device" looks for another employee.
+    shared_device_window_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
+    #: Canonical CIDR ranges an office punch may come from. Empty means the rule has nothing to
+    #: judge against and does not fire — never "everything is outside".
+    allowed_cidrs: Mapped[list[str]] = mapped_column(
+        ARRAY(String(64)), nullable=False, default=list
+    )
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", name="uq_signal_settings_organization_id"),
+        CheckConstraint("max_travel_speed_kmh between 10 and 3000", name="max_travel_speed_range"),
+        CheckConstraint(
+            "shared_device_window_hours between 1 and 168", name="shared_device_window_range"
+        ),
+        CheckConstraint("cardinality(allowed_cidrs) <= 50", name="allowed_cidrs_bounded"),
+    )
+
+
+class PunchSignal(Base, TenantBase):
+    """What a client and its network said about one punch — evidence, kept only when a rule is on.
+
+    One row per punch (`check_in` or `check_out`) of an attendance record, written in the same
+    transaction as the punch. **The IP address and the device id are personal data**, so they are
+    sealed with `platform_core.pii` like every other sensitive value: `*_enc` holds the AES-GCM
+    envelope, `*_masked` the hint the ordinary read shows, and the only path back to plaintext is
+    the unmask route, which needs its own permission and writes an audit row every time. The
+    envelope is bound to this row and field (`signals.seal_aad`), so a ciphertext copied onto
+    another row will not open there.
+
+    `device_index` is a keyed blind index of the device id (`platform_core.pii.blind_index`) and
+    exists for one question — "has a *different* employee used this device lately?" — which has to
+    be asked of a value that is otherwise unsearchable. It reveals equality between rows and
+    nothing else, is useless without the platform key, and is not returned by any route.
+
+    The user agent is stored as a coarse class (`browser`, `mobile_app`, `automation`, `unknown`),
+    never the string: the class is what a reviewer needs and the string is a fingerprint.
+
+    Coordinates and accuracy are plaintext `Numeric`, consistent with the punch's own coordinates
+    on `attendance_records` and required by the travel rule. Rows are not edited after insert.
+    """
+
+    __tablename__ = "punch_signals"
+
+    #: See `Shift.organization_id`'s note: every index below already leads with it.
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), nullable=False, index=False
+    )
+    #: The day this punch belongs to. A real foreign key: `attendance_records` is in this schema.
+    attendance_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("attendance.attendance_records.id"), nullable=False
+    )
+    #: Denormalised from the record so the travel and shared-device rules read one table.
+    employee_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    #: check_in | check_out.
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    #: The server's instant for the punch — never a client clock.
+    punched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    lat: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
+    lng: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
+    #: The client's stated accuracy radius for the fix, in metres.
+    accuracy_m: Mapped[Decimal | None] = mapped_column(Numeric(9, 2))
+    #: The client's own claim that the fix came from a mock-location provider. Null = not stated.
+    mock_location: Mapped[bool | None] = mapped_column(Boolean)
+    user_agent_class: Mapped[str | None] = mapped_column(String(20))
+
+    ip_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    ip_masked: Mapped[str | None] = mapped_column(String(40))
+    device_id_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    device_id_masked: Mapped[str | None] = mapped_column(String(40))
+    #: HMAC-SHA256 hex of the device id — see the class docstring. 64 hex characters.
+    device_index: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint("kind in ('check_in','check_out')", name="kind"),
+        # One signal per punch: a retry cannot record a punch's evidence twice.
+        UniqueConstraint(
+            "organization_id", "attendance_id", "kind", name="uq_punch_signals_attendance_kind"
+        ),
+        # The travel rule's read: this employee's most recent *located* punch. Partial on the same
+        # predicate the query carries, so unlocated punches are not in the index at all.
+        Index(
+            "ix_punch_signals_org_employee_punched",
+            "organization_id",
+            "employee_id",
+            text("punched_at DESC"),
+            postgresql_where=text("lat is not null and lng is not null"),
+        ),
+        # The shared-device rule's read: who else used this device inside the window.
+        Index(
+            "ix_punch_signals_org_device_punched",
+            "organization_id",
+            "device_index",
+            text("punched_at DESC"),
+            postgresql_where=text("device_index is not null"),
+        ),
+    )
+
+
+class AttendanceFlag(Base, TenantBase):
+    """A rule fired on a punch — a reason code and a few counts, nothing personal.
+
+    Observe-only (`SignalSettings`): the punch it describes was recorded exactly as it would have
+    been. `detail` carries the numbers a reviewer needs to judge the flag (a distance and a speed, a
+    count of other people) and is **never** an IP address, a device id or another employee's id —
+    a manager reading a flag on their own report must not learn who else, outside their team, used
+    the same device. Reaching the values themselves is the unmask route's job.
+
+    One flag per reason per punch, enforced by the unique constraint, so evaluating a punch twice
+    cannot double-report it.
+    """
+
+    __tablename__ = "attendance_flags"
+
+    #: See `Shift.organization_id`'s note: every index below already leads with it.
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), nullable=False, index=False
+    )
+    attendance_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("attendance.attendance_records.id"), nullable=False
+    )
+    signal_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("attendance.punch_signals.id"), nullable=False
+    )
+    #: The record's employee, denormalised so scope (OWN/TEAM) filters without a second join.
+    employee_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    #: One of `domain.FlagReason`.
+    reason_code: Mapped[str] = mapped_column(String(30), nullable=False)
+    detail: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    __table_args__ = (
+        CheckConstraint(
+            "reason_code in ('mock_location','impossible_travel','shared_device',"
+            "'ip_outside_allowed')",
+            name="reason_code",
+        ),
+        UniqueConstraint(
+            "organization_id", "signal_id", "reason_code", name="uq_attendance_flags_signal_reason"
+        ),
+        # The list, newest first, and the same list for one employee (a TEAM manager's filter).
+        Index("ix_attendance_flags_org_created", "organization_id", text("created_at DESC")),
+        Index(
+            "ix_attendance_flags_org_employee_created",
+            "organization_id",
+            "employee_id",
+            text("created_at DESC"),
         ),
     )
 

@@ -122,6 +122,33 @@ HRMS = PermissionCatalogue(
             "OWN",
             "OWN",
         ),
+        # R22: the flags a punch's device and network signals raise. Reading them has no "own"
+        # reading — an employee is not shown the rules that were applied to them — so it defaults
+        # to TEAM (a manager sees their reports') and the routes floor it at TEAM, which makes an
+        # OWN grant refuse rather than quietly show a person their own flags. It tops out at ORG
+        # for HR. A flag is scoped exactly like the attendance record it describes.
+        PermissionSpec(
+            "time",
+            "attendance_flag",
+            "read",
+            "See attendance anti-spoofing flags",
+            "TEAM",
+            "ORG",
+        ),
+        # R22: unmasking the IP address or device id recorded with a punch is its own permission,
+        # never folded into a read — the wildcard match keeps the dot, so `attendance.read` can
+        # never satisfy `attendance.read_sensitive`. Dangerous, and the route also demands a recent
+        # second factor (`amr={"otp"}`). It defaults to ORG and is held only by HR: there is no
+        # reading of "own" that is worth a person reaching their own network address.
+        PermissionSpec(
+            "time",
+            "attendance",
+            "read_sensitive",
+            "Unmask the IP address and device id recorded with a punch",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
         # A shift is an organization-wide definition, not a personal one: everyone reads them,
         # only an administrator writes them. So both default to ORG — there is no "own shift".
         PermissionSpec("time", "shift", "read", "See shift definitions", "ORG", "ORG"),
@@ -148,6 +175,12 @@ HRMS_ROLE_TEMPLATES: list[RoleTemplate] = [
             # An HR administrator is also an employee with their own attendance (ADR-0006 §11),
             # so they hold the self-service request permission too — at OWN, its ceiling.
             ("hrms.time.attendance.request", "OWN"),
+            # R22: HR reads every anti-spoofing flag and is the one role that may unmask the
+            # address and device id behind one (behind a second factor at the route). The rules
+            # themselves are configured with `shift.write`, the same org time-admin permission
+            # geo-fences use.
+            ("hrms.time.attendance_flag.read", "ORG"),
+            ("hrms.time.attendance.read_sensitive", "ORG"),
             ("hrms.time.shift.read", "ORG"),
             ("hrms.time.shift.write", "ORG"),
         ),

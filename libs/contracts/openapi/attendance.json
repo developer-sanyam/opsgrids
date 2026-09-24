@@ -180,8 +180,21 @@
         "type": "object"
       },
       "CheckInIn": {
-        "description": "Open today's attendance for the calling employee.\n\nThere is no `employee_id`: a person punches their *own* attendance, so the record's employee\nis the caller's subject reference. A field punch (`work_mode=\"field\"`) at a location that\nhas a geo-fence must carry a coordinate, and it is checked against the fence server-side.",
+        "additionalProperties": false,
+        "description": "Open today's attendance for the calling employee.\n\nThere is no `employee_id`: a person punches their *own* attendance, so the record's employee\nis the caller's subject reference. A field punch (`work_mode=\"field\"`) at a location that\nhas a geo-fence must carry a coordinate, and it is checked against the fence server-side.\n\n**Unknown fields are refused**, not ignored: a client that misspells a signal (`device_id`\nfor `device_id_hash`) would otherwise quietly stop reporting it and nobody would know.\n\nThe last three fields are optional **client-reported signals** (R22). They are claims, not\nfacts: a client that lies about them is exactly what the rules exist to notice, and none of them\ncan make a punch fail. They are only stored when the organization has switched a rule on.",
         "properties": {
+          "device_id_hash": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9._:-]{16,128}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Id Hash"
+          },
           "lat": {
             "anyOf": [
               {
@@ -216,6 +229,23 @@
             ],
             "title": "Lng"
           },
+          "location_accuracy_m": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Accuracy M"
+          },
           "location_code": {
             "anyOf": [
               {
@@ -228,6 +258,17 @@
               }
             ],
             "title": "Location Code"
+          },
+          "mock_location": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mock Location"
           },
           "notes": {
             "anyOf": [
@@ -279,8 +320,21 @@
         "type": "object"
       },
       "CheckOutIn": {
-        "description": "Close today's open attendance for the calling employee.",
+        "additionalProperties": false,
+        "description": "Close today's open attendance for the calling employee. Unknown fields are refused; the\nsignal fields are the same optional client claims `CheckInIn` documents.",
         "properties": {
+          "device_id_hash": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9._:-]{16,128}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Id Hash"
+          },
           "lat": {
             "anyOf": [
               {
@@ -314,9 +368,108 @@
               }
             ],
             "title": "Lng"
+          },
+          "location_accuracy_m": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Accuracy M"
+          },
+          "mock_location": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mock Location"
           }
         },
         "title": "CheckOutIn",
+        "type": "object"
+      },
+      "FlagOut": {
+        "properties": {
+          "attendance_id": {
+            "format": "uuid",
+            "title": "Attendance Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "detail": {
+            "additionalProperties": true,
+            "title": "Detail",
+            "type": "object"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "reason_code": {
+            "enum": [
+              "mock_location",
+              "impossible_travel",
+              "shared_device",
+              "ip_outside_allowed"
+            ],
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "signal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SignalSummaryOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "work_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Date"
+          }
+        },
+        "required": [
+          "id",
+          "attendance_id",
+          "employee_id",
+          "reason_code",
+          "detail",
+          "created_at"
+        ],
+        "title": "FlagOut",
         "type": "object"
       },
       "GeofenceIn": {
@@ -539,6 +692,42 @@
           "pages"
         ],
         "title": "Page[AttendanceOut]",
+        "type": "object"
+      },
+      "Page_FlagOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/FlagOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[FlagOut]",
         "type": "object"
       },
       "Page_GeofenceOut_": {
@@ -1027,6 +1216,248 @@
         "title": "ShiftPatch",
         "type": "object"
       },
+      "SignalSettingsIn": {
+        "additionalProperties": false,
+        "description": "An organization's anti-spoofing rules \u2014 a full replacement, so the same body always\nproduces the same state (`PUT` is idempotent). Every rule defaults off.\n\nUnknown fields are refused. There is deliberately **no** field that makes a flag block a\npunch: the rules are observe-only, and a blocking rule is a later decision (see\n`models.SignalSettings`).",
+        "properties": {
+          "allowed_cidrs": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Allowed Cidrs",
+            "type": "array"
+          },
+          "detect_impossible_travel": {
+            "default": false,
+            "title": "Detect Impossible Travel",
+            "type": "boolean"
+          },
+          "detect_ip_outside_allowed": {
+            "default": false,
+            "title": "Detect Ip Outside Allowed",
+            "type": "boolean"
+          },
+          "detect_mock_location": {
+            "default": false,
+            "title": "Detect Mock Location",
+            "type": "boolean"
+          },
+          "detect_shared_device": {
+            "default": false,
+            "title": "Detect Shared Device",
+            "type": "boolean"
+          },
+          "max_travel_speed_kmh": {
+            "default": 900,
+            "maximum": 3000.0,
+            "minimum": 10.0,
+            "title": "Max Travel Speed Kmh",
+            "type": "integer"
+          },
+          "shared_device_window_hours": {
+            "default": 24,
+            "maximum": 168.0,
+            "minimum": 1.0,
+            "title": "Shared Device Window Hours",
+            "type": "integer"
+          }
+        },
+        "title": "SignalSettingsIn",
+        "type": "object"
+      },
+      "SignalSettingsOut": {
+        "properties": {
+          "allowed_cidrs": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Allowed Cidrs",
+            "type": "array"
+          },
+          "detect_impossible_travel": {
+            "default": false,
+            "title": "Detect Impossible Travel",
+            "type": "boolean"
+          },
+          "detect_ip_outside_allowed": {
+            "default": false,
+            "title": "Detect Ip Outside Allowed",
+            "type": "boolean"
+          },
+          "detect_mock_location": {
+            "default": false,
+            "title": "Detect Mock Location",
+            "type": "boolean"
+          },
+          "detect_shared_device": {
+            "default": false,
+            "title": "Detect Shared Device",
+            "type": "boolean"
+          },
+          "max_travel_speed_kmh": {
+            "default": 900,
+            "maximum": 3000.0,
+            "minimum": 10.0,
+            "title": "Max Travel Speed Kmh",
+            "type": "integer"
+          },
+          "shared_device_window_hours": {
+            "default": 24,
+            "maximum": 168.0,
+            "minimum": 1.0,
+            "title": "Shared Device Window Hours",
+            "type": "integer"
+          }
+        },
+        "title": "SignalSettingsOut",
+        "type": "object"
+      },
+      "SignalSummaryOut": {
+        "description": "What a flag's reviewer sees of the punch's signals: **masked**. The IP address and the device\nid are personal data; the values are behind the unmask route, which needs its own permission\nand audits every read.",
+        "properties": {
+          "accuracy_m": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accuracy M"
+          },
+          "device_id_masked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Id Masked"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "ip_masked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ip Masked"
+          },
+          "kind": {
+            "enum": [
+              "check_in",
+              "check_out"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "mock_location": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mock Location"
+          },
+          "punched_at": {
+            "format": "date-time",
+            "title": "Punched At",
+            "type": "string"
+          },
+          "user_agent_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Agent Class"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "punched_at",
+          "accuracy_m",
+          "mock_location",
+          "user_agent_class",
+          "ip_masked",
+          "device_id_masked"
+        ],
+        "title": "SignalSummaryOut",
+        "type": "object"
+      },
+      "SignalUnmaskIn": {
+        "additionalProperties": false,
+        "description": "Which sealed values to reveal. Naming them keeps an unmask a deliberate, minimal act \u2014 and\nthe audit row records exactly this list.",
+        "properties": {
+          "fields": {
+            "items": {
+              "enum": [
+                "ip",
+                "device_id"
+              ],
+              "type": "string"
+            },
+            "maxItems": 2,
+            "minItems": 1,
+            "title": "Fields",
+            "type": "array"
+          }
+        },
+        "required": [
+          "fields"
+        ],
+        "title": "SignalUnmaskIn",
+        "type": "object"
+      },
+      "SignalUnmasked": {
+        "description": "The **only** response that carries these two values in the clear. Each is null when nothing\nwas recorded or it was not asked for.",
+        "properties": {
+          "device_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Id"
+          },
+          "ip": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ip"
+          }
+        },
+        "title": "SignalUnmasked",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -1285,6 +1716,140 @@
         ]
       }
     },
+    "/api/v1/attendance/flags": {
+      "get": {
+        "description": "The flags raised on punches, narrowed to the caller's scope exactly as the attendance\nrecords they describe are \u2014 a TEAM manager sees flags on their reports and nobody else's. The\nsignal beside each flag is **masked**: the address and device id come back only from the unmask\nroute. Observe-only: these are prompts to look, never a verdict on the employee.",
+        "operationId": "list_flags_api_v1_attendance_flags_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "employee_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Employee Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "mock_location",
+                    "impossible_travel",
+                    "shared_device",
+                    "ip_outside_allowed"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reason"
+            }
+          },
+          {
+            "description": "Inclusive lower bound on the work day",
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive lower bound on the work day",
+              "title": "Date From"
+            }
+          },
+          {
+            "description": "Inclusive upper bound on the work day",
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive upper bound on the work day",
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_FlagOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Attendance anti-spoofing flags",
+        "tags": [
+          "attendance"
+        ]
+      }
+    },
     "/api/v1/attendance/info": {
       "get": {
         "operationId": "info_api_v1_attendance_info_get",
@@ -1301,6 +1866,122 @@
           }
         },
         "summary": "What this service is",
+        "tags": [
+          "attendance"
+        ]
+      }
+    },
+    "/api/v1/attendance/signal-settings": {
+      "get": {
+        "description": "Administrators only (`shift.write:ORG`, the org time-admin permission): the thresholds and\nthe allowed ranges tell a person exactly how to stay under them. An organization that has never\nsaved a setting reads back every rule off.",
+        "operationId": "read_signal_settings_api_v1_attendance_signal_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignalSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The organization's anti-spoofing rules",
+        "tags": [
+          "attendance"
+        ]
+      },
+      "put": {
+        "description": "A full replacement \u2014 the same body always yields the same state \u2014 audited with the rules\nas they were and as they are. Every rule is observe-only: it can raise a flag and can never\nrefuse or alter a punch.",
+        "operationId": "put_signal_settings_api_v1_attendance_signal_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignalSettingsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignalSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set the organization's anti-spoofing rules",
+        "tags": [
+          "attendance"
+        ]
+      }
+    },
+    "/api/v1/attendance/signals/{signal_id}/unmask": {
+      "post": {
+        "description": "The single decrypting endpoint for punch signals. Guarded by the dangerous\n`read_sensitive` permission and a second-factor step-up, then re-scoped to this one punch: a\nTEAM grant reaches only the caller's reports', an ORG grant anyone's in the organization. The\nservice opens the requested fields and writes the `entity.sensitive_read` audit row in the same\ntransaction, so a revealed value never exists without a record that it was revealed.",
+        "operationId": "unmask_signal_api_v1_attendance_signals__signal_id__unmask_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "signal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Signal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignalUnmaskIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignalUnmasked"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reveal the IP address and device id recorded with a punch",
         "tags": [
           "attendance"
         ]

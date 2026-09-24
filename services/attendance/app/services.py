@@ -12,8 +12,9 @@ durable is the bug the outbox exists to prevent (ADR-0000).
 The geo-fence check lives here and nowhere else. It is a **PostGIS query, not app-side maths**
 (CLAUDE.md, plan A.4): `ST_DWithin` over the `geography` type answers "is this punch within the
 allowed radius of the location's centre" in the database, so there is no haversine in Python and
-no new dependency. This slice does the distance check only — the device, IP and mock-location
-anti-spoofing stack is deliberately out of scope.
+no new dependency. That check *refuses* a punch outside the fence. The device, IP, mock-location
+and impossible-travel signals are a separate, observe-only stack that only ever *flags*: it lives
+in `app/signals.py`, and the two punch functions below hand it each punch (R22).
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import selectors
+from app import selectors, signals
 from app.domain import (
     TEAM_STATUSES,
     AttendanceStatus,
@@ -194,6 +195,22 @@ async def check_in(
     session.add(record)
     await session.flush()
 
+    # R22: store the punch's signals and judge them against the organization's rules — a no-op
+    # for an organization with every rule off, and never a reason for the punch to fail.
+    await signals.record_punch(
+        session,
+        ctx,
+        record,
+        kind="check_in",
+        punched_at=record.check_in_at,
+        lat=payload.lat,
+        lng=payload.lng,
+        accuracy_m=payload.location_accuracy_m,
+        mock_location=payload.mock_location,
+        device_id_hash=payload.device_id_hash,
+        request=request,
+    )
+
     record_audit(
         session,
         AuditLog,
@@ -264,6 +281,20 @@ async def check_out(
     record.check_out_lat = payload.lat
     record.check_out_lng = payload.lng
     record.updated_by = str(ctx.principal.sub)
+
+    await signals.record_punch(
+        session,
+        ctx,
+        record,
+        kind="check_out",
+        punched_at=now,
+        lat=payload.lat,
+        lng=payload.lng,
+        accuracy_m=payload.location_accuracy_m,
+        mock_location=payload.mock_location,
+        device_id_hash=payload.device_id_hash,
+        request=request,
+    )
 
     record_audit(
         session,
