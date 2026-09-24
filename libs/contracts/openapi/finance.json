@@ -113,6 +113,94 @@
         "title": "CashflowPoint",
         "type": "object"
       },
+      "CurrencyRevenueHistory": {
+        "description": "A real revenue/receivables history, scoped to one currency.\n\n`/finance/overview` never sums money across currencies (ADR-0000 \u00a78), so a multi-currency\ntenant gets one of these per currency it has actually issued or been paid in. `*_delta_pct`\nis `None` \u2014 not `0` \u2014 when the previous month has nothing to compare against; the UI must\nomit the delta rather than render a manufactured percentage (\u00a75.0 of the dashboard audit).",
+        "properties": {
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "months": {
+            "items": {
+              "$ref": "#/components/schemas/MonthlyRevenuePoint"
+            },
+            "title": "Months",
+            "type": "array"
+          },
+          "outstanding_current_minor": {
+            "title": "Outstanding Current Minor",
+            "type": "integer"
+          },
+          "outstanding_delta_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outstanding Delta Pct"
+          },
+          "outstanding_previous_minor": {
+            "title": "Outstanding Previous Minor",
+            "type": "integer"
+          },
+          "received_current_minor": {
+            "title": "Received Current Minor",
+            "type": "integer"
+          },
+          "received_delta_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received Delta Pct"
+          },
+          "received_previous_minor": {
+            "title": "Received Previous Minor",
+            "type": "integer"
+          },
+          "revenue_current_minor": {
+            "title": "Revenue Current Minor",
+            "type": "integer"
+          },
+          "revenue_delta_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revenue Delta Pct"
+          },
+          "revenue_previous_minor": {
+            "title": "Revenue Previous Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "currency",
+          "revenue_current_minor",
+          "revenue_previous_minor",
+          "revenue_delta_pct",
+          "received_current_minor",
+          "received_previous_minor",
+          "received_delta_pct",
+          "outstanding_current_minor",
+          "outstanding_previous_minor",
+          "outstanding_delta_pct",
+          "months"
+        ],
+        "title": "CurrencyRevenueHistory",
+        "type": "object"
+      },
       "CustomerCreate": {
         "additionalProperties": false,
         "properties": {
@@ -2670,6 +2758,40 @@
         "title": "LedgerReport",
         "type": "object"
       },
+      "MonthlyRevenuePoint": {
+        "description": "One point of the real 12-month history: `revenue`/`received`/`outstanding` all derived\nfrom this tenant's own invoices, payments and allocations \u2014 never a sample.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "month": {
+            "title": "Month",
+            "type": "string"
+          },
+          "outstanding_minor": {
+            "title": "Outstanding Minor",
+            "type": "integer"
+          },
+          "received_minor": {
+            "title": "Received Minor",
+            "type": "integer"
+          },
+          "revenue_minor": {
+            "title": "Revenue Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "month",
+          "label",
+          "revenue_minor",
+          "received_minor",
+          "outstanding_minor"
+        ],
+        "title": "MonthlyRevenuePoint",
+        "type": "object"
+      },
       "OverviewKpi": {
         "description": "A headline KPI for the overview, pre-derived from the ledger.",
         "properties": {
@@ -2760,6 +2882,18 @@
           },
           "period_label": {
             "title": "Period Label",
+            "type": "string"
+          },
+          "revenue_history": {
+            "items": {
+              "$ref": "#/components/schemas/CurrencyRevenueHistory"
+            },
+            "title": "Revenue History",
+            "type": "array"
+          },
+          "revenue_history_timezone": {
+            "default": "Asia/Kolkata",
+            "title": "Revenue History Timezone",
             "type": "string"
           }
         },

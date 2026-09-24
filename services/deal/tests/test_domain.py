@@ -100,12 +100,6 @@ class TestRollups:
         ]
         assert domain.activities_this_week(acts, now=NOW) == 2
 
-    def test_the_trend_ends_on_the_live_open_pipeline(self) -> None:
-        trend = domain.pipeline_trend(123_456)
-        assert len(trend) == 8
-        assert trend[-1] == {"label": "Aug", "value_minor": 123_456}
-        assert trend[0]["label"] == "Jan"
-
 
 class TestTransitions:
     def test_the_stage_vocabulary_is_the_boards(self) -> None:

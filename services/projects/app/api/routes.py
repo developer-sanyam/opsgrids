@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -366,8 +366,28 @@ async def list_tasks(
     params: PageQuery,
     stage: Annotated[str | None, Query()] = None,
     project_code: Annotated[str | None, Query(description="Filter by project code")] = None,
+    assignee: Annotated[
+        Literal["me"] | None,
+        Query(description="`me` narrows to cards assigned to the caller, resolved server-side"),
+    ] = None,
 ) -> Page[TaskOut]:
-    stmt = selectors.tasks_stmt(ctx, stage=stage, project_code=project_code)
+    assignee_id: uuid.UUID | None = None
+    if assignee == "me":
+        member = (
+            await selectors.get_member_by_directory_id(
+                session, ctx.organization_id, ctx.subject_ref
+            )
+            if ctx.subject_ref is not None
+            else None
+        )
+        if member is None:
+            # The caller has no linked member row to own anything with — `assignee=me` narrows
+            # to nothing rather than silently falling back to the caller's full scope.
+            return Page.build([], total=0, params=params)
+        assignee_id = member.id
+    stmt = selectors.tasks_stmt(
+        ctx, stage=stage, project_code=project_code, assignee_id=assignee_id
+    )
     rows, total = await paginate(session, stmt, params)
     members = await selectors.members_by_id(session, ctx.organization_id)
     projects = await selectors.projects_by_id(session, ctx.organization_id)
@@ -524,14 +544,16 @@ async def overview(session: SessionDep, ctx: ProjectRead) -> OverviewOut:
         active_projects=domain.active_projects(projects),
         on_time_pct=round(domain.on_time_fraction(milestones) * 1000) / 10,
         milestones_due=domain.milestones_due(milestones, date.today()),
-        utilization_pct=domain.RESOURCE_UTILIZATION_PCT,
+        # Neither is derivable from data this service owns — see the module note on
+        # `domain.py`'s burndown/utilization section. `None`, not a placeholder number.
+        utilization_pct=None,
         avg_progress_pct=domain.average_progress(active),
         total_budget_minor=domain.total_budget_minor(projects),
         total_spent_minor=domain.total_spent_minor(projects),
         currency=currency,
         health_breakdown=[HealthSlice(**slice_) for slice_ in domain.health_breakdown(projects)],
-        burndown_sprint=domain.BURNDOWN_SPRINT,
-        burndown_release=domain.BURNDOWN_RELEASE,
-        burndown_delta_sprint=domain.BURNDOWN_DELTA_SPRINT,
-        burndown_delta_release=domain.BURNDOWN_DELTA_RELEASE,
+        burndown_sprint=None,
+        burndown_release=None,
+        burndown_delta_sprint=None,
+        burndown_delta_release=None,
     )

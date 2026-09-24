@@ -79,9 +79,19 @@ def utilization_pct(billable_minutes: int, capacity_minutes: int) -> float:
     return round(billable_minutes / capacity_minutes * 1000) / 10
 
 
-#: Representative utilization history (%) for the weeks before the demo's live one, mirroring
-#: the SPA's `data/samples.ts` UTILIZATION_TREND minus its final (current-week) point. The
-#: summary endpoint appends the live current-week figure, so the chart is real where data
-#: exists and representative where it does not — the same treatment the projects service gives
-#: its burndown. Replaced by real history as weeks accumulate.
-UTILIZATION_HISTORY: tuple[int, ...] = (71, 69, 74, 76, 73, 78, 80, 77, 81, 79, 83)
+#: How many weeks of real history `/timesheets/summary.series` carries before the queried
+#: week's own point — 11 weeks of history plus the live week matches the chart's previous shape.
+UTILIZATION_HISTORY_WEEKS = 11
+
+
+def utilization_point(
+    billable_minutes: int, capacity_minutes: int, *, has_data: bool
+) -> float | None:
+    """One week's point on the utilization series — `None`, not a manufactured `0.0`, when the
+    organization recorded no timesheets that week at all. There is a real difference between "0%
+    utilization" (sheets existed, capacity snapshotted, nothing billable) and "no data" (nobody
+    had opened a week yet), and collapsing the second into a number this module cannot back with
+    a real row is exactly the fake-history bug this replaces (dashboard-data audit §3.9)."""
+    if not has_data:
+        return None
+    return utilization_pct(billable_minutes, capacity_minutes)

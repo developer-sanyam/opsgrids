@@ -454,7 +454,7 @@
         "type": "object"
       },
       "OverviewOut": {
-        "description": "The Overview dashboard's server-side rollup. The SPA derives these from the project and\nmilestone lists; this is the same arithmetic exposed once, so a reporting view can share it.\n\n`on_time_pct` is the share of milestones that are on time (completed, on track or due soon);\n`milestones_due` counts unfinished milestones due within the next fortnight;\n`utilization_pct` is a representative resource-utilization figure (no capacity service yet).",
+        "description": "The Overview dashboard's server-side rollup. The SPA derives these from the project and\nmilestone lists; this is the same arithmetic exposed once, so a reporting view can share it.\n\n`on_time_pct` is the share of milestones that are on time (completed, on track or due soon);\n`milestones_due` counts unfinished milestones due within the next fortnight.\n\n`utilization_pct` and the `burndown_*` fields are `None`, not a representative figure: this\nservice has no capacity source (a member carries no weekly hours) and no dated history of a\ntask's remaining points (a task carries its current `stage`, never a per-day snapshot), so\nneither is derivable from data that exists. Rendering a placeholder number here previously\nlooked live and was not; `None` is the honest answer until a capacity source and a delivery\nsnapshot both exist (see the dashboard-data audit, \u00a73.9 and \u00a73.4 row 14-15).",
         "properties": {
           "active_projects": {
             "title": "Active Projects",
@@ -465,26 +465,54 @@
             "type": "integer"
           },
           "burndown_delta_release": {
-            "title": "Burndown Delta Release",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Burndown Delta Release"
           },
           "burndown_delta_sprint": {
-            "title": "Burndown Delta Sprint",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Burndown Delta Sprint"
           },
           "burndown_release": {
-            "items": {
-              "$ref": "#/components/schemas/BurndownPoint"
-            },
-            "title": "Burndown Release",
-            "type": "array"
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/BurndownPoint"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Burndown Release"
           },
           "burndown_sprint": {
-            "items": {
-              "$ref": "#/components/schemas/BurndownPoint"
-            },
-            "title": "Burndown Sprint",
-            "type": "array"
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/BurndownPoint"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Burndown Sprint"
           },
           "currency": {
             "title": "Currency",
@@ -514,8 +542,15 @@
             "type": "integer"
           },
           "utilization_pct": {
-            "title": "Utilization Pct",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utilization Pct"
           }
         },
         "required": [
@@ -2410,6 +2445,25 @@
               ],
               "description": "Filter by project code",
               "title": "Project Code"
+            }
+          },
+          {
+            "description": "`me` narrows to cards assigned to the caller, resolved server-side",
+            "in": "query",
+            "name": "assignee",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "const": "me",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`me` narrows to cards assigned to the caller, resolved server-side",
+              "title": "Assignee"
             }
           },
           {

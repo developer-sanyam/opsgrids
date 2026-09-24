@@ -240,9 +240,14 @@ class TrendPointOut(BaseModel):
 class SummaryOut(BaseModel):
     """The Overview dashboard's server-side rollup: the same arithmetic the SPA's
     `data/derive.ts` runs over the deal list, exposed once so a reporting view can share
-    it. Headline figures are computed live from the deals and activities; the trend's
-    earlier months are representative history (the seam a reporting service replaces —
-    see `app.domain.pipeline_trend`), with the final point always the live open pipeline.
+    it. Headline figures are computed live from the deals and activities.
+
+    `trend` is `None`, not a placeholder history: an open-pipeline-value-over-time chart needs a
+    dated snapshot of what was open on a past day, and this service keeps only each deal's
+    *current* stage and value, never a history of either. That is a genuinely missing capability
+    (a stage-history/insights projection, dashboard-data audit §3.3 row 12), not something this
+    endpoint can compute honestly today — so it reports `None` here instead of the fixed months
+    it used to serve unflagged as if they were real.
     """
 
     #: Total open pipeline value, in minor units of `currency`.
@@ -258,8 +263,8 @@ class SummaryOut(BaseModel):
     #: Touches logged in the trailing seven days.
     activities_this_week: int
     currency: str
-    #: Open pipeline value over time, oldest first; the last point is live.
-    trend: list[TrendPointOut] = Field(default_factory=list)
+    #: `None` until a dated pipeline-value history exists — see the class docstring.
+    trend: list[TrendPointOut] | None = None
     #: The by-stage funnel over the four open stages, in board order.
     funnel: list[StageRollupOut] = Field(default_factory=list)
 

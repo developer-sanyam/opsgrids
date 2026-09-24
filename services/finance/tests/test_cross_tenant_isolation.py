@@ -101,6 +101,68 @@ class TestCrossTenantIsolation:
             await s_b.close()
             await engine.dispose()
 
+    async def test_org_bs_revenue_history_never_sees_org_as_book(
+        self, session, org_id, book
+    ) -> None:
+        """Org A's rich, real revenue history must not leak a single paisa into org B's —
+        `get_overview`'s new series is scoped exactly like the rest of the read model."""
+        org_b = uuid.uuid4()
+        engine, s_b = await _session_bound_to(org_b)
+        try:
+            ctx_b = admin_ctx(org_b)
+            async with s_b.begin():
+                summary_b = await selectors.get_overview(s_b, ctx_b)
+            assert summary_b.revenue_history == []
+        finally:
+            await s_b.close()
+            await engine.dispose()
+
+    async def test_org_as_reverses_role_and_still_stays_isolated(self, session, org_id) -> None:
+        """The reverse direction: seed org B's own book directly and confirm a fresh org A
+        session (bound but otherwise empty) reports no history at all."""
+        org_a = org_id
+        org_b = uuid.uuid4()
+        write_b = admin_ctx(org_b)
+
+        engine, s_b = await _session_bound_to(org_b)
+        try:
+            async with s_b.begin():
+                customer = await services.create_customer(
+                    s_b,
+                    write_b,
+                    CustomerCreate(
+                        name="Org B Co",
+                        contact_name="B",
+                        email="b@example.com",
+                        city="Pune",
+                        state="Maharashtra",
+                    ),
+                )
+                await services.create_invoice(
+                    s_b,
+                    write_b,
+                    InvoiceCreate(
+                        number="INV-ORGB-1",
+                        customer_id=customer.id,
+                        issued_date=date(2026, 8, 5),
+                        due_date=date(2026, 8, 20),
+                        tax_rate_pct=18,
+                        lines=[
+                            InvoiceLineCreate(
+                                description="Widgets", quantity=1, unit_price_minor=100000
+                            )
+                        ],
+                    ),
+                )
+        finally:
+            await s_b.close()
+            await engine.dispose()
+
+        ctx_a = admin_ctx(org_a)
+        async with session.begin():
+            summary_a = await selectors.get_overview(session, ctx_a)
+        assert summary_a.revenue_history == []
+
     async def test_org_b_cannot_reference_org_as_invoices_in_its_own_writes(
         self, session, org_id, book
     ) -> None:

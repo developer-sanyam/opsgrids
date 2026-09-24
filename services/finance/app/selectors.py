@@ -51,6 +51,7 @@ from app.schemas import (
     AgingBucket,
     B2csOut,
     CashflowPoint,
+    CurrencyRevenueHistory,
     CustomerOut,
     CustomerSummary,
     DocumentSeriesOut,
@@ -81,6 +82,7 @@ from app.schemas import (
     ItcLedgerEntryOut,
     LedgerAccount,
     LedgerReport,
+    MonthlyRevenuePoint,
     OverviewKpi,
     OverviewSummary,
     PaymentAllocationOut,
@@ -230,6 +232,31 @@ async def paid_by_invoice(
         .group_by(PaymentAllocation.invoice_id)
     )
     return {inv_id: int(total) for inv_id, total in (await session.execute(stmt)).all()}
+
+
+async def dated_allocations_by_invoice(
+    session: AsyncSession, org_id: uuid.UUID, invoice_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[tuple[date, int]]]:
+    """Every allocation posted against each invoice, dated by the payment it came from.
+
+    The history a month-end snapshot replays: `paid_by_invoice` only needs *how much* is applied
+    today, but `domain.revenue_history` needs *when*, so a month a year ago can be reconstructed
+    as it stood then rather than as it stands now. Org-scoped like every read here."""
+    if not invoice_ids:
+        return {}
+    stmt = (
+        select(PaymentAllocation.invoice_id, Payment.received_date, PaymentAllocation.amount_minor)
+        .join(Payment, Payment.id == PaymentAllocation.payment_id)
+        .where(
+            PaymentAllocation.organization_id == org_id,
+            PaymentAllocation.deleted_at.is_(None),
+            PaymentAllocation.invoice_id.in_(invoice_ids),
+        )
+    )
+    out: dict[uuid.UUID, list[tuple[date, int]]] = {}
+    for invoice_id, received_date, amount_minor in (await session.execute(stmt)).all():
+        out.setdefault(invoice_id, []).append((received_date, int(amount_minor)))
+    return out
 
 
 def to_einvoice_state(
@@ -1495,21 +1522,32 @@ async def list_customer_summaries(
 
 
 async def get_overview(
-    session: AsyncSession, ctx: ScopeContext, *, today: date | None = None
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    today: date | None = None,
+    now: datetime | None = None,
 ) -> OverviewSummary:
-    """The whole Overview payload: derived KPIs + representative trends, AR aging, attention.
+    """The whole Overview payload: derived KPIs + representative trends, AR aging, attention,
+    plus the real revenue history.
 
-    Anchored to the real date (UTC — see `_today`), not the demo constant: "this period" is the
-    calendar month `today` falls in, aging bands are days-overdue against `today`, and nothing
-    here is frozen at write time. `revenue`/`receivables`/`overdue` and `aging` are computed from
-    this tenant's own invoices and payments; `cash` and every KPI's trend line are representative
-    figures with no general ledger behind them yet and are flagged `sample`/`trend_sample` on the
-    wire rather than served as though they were real.
+    The KPIs (UTC — see `_today`) are anchored to the real date, not the demo constant: "this
+    period" is the calendar month `today` falls in, aging bands are days-overdue against `today`,
+    and nothing here is frozen at write time. `revenue`/`receivables`/`overdue` and `aging` are
+    computed from this tenant's own invoices and payments; `cash` and every KPI's trend line are
+    representative figures with no general ledger behind them yet and are flagged
+    `sample`/`trend_sample` on the wire rather than served as though they were real.
+
+    `revenue_history` is anchored separately, to `now` resolved in `domain.DEFAULT_TIMEZONE`
+    (IST) rather than `_today`'s UTC — see `domain`'s module note on why the two are not (yet)
+    the same clock. `now` defaults to the real clock; a test may inject either or both.
     """
     org_id = ctx.organization_id
     resolved_today = _today(today)
     period_month = resolved_today.strftime("%Y-%m")
     period_label = resolved_today.strftime("%B %Y")
+    resolved_now = now if now is not None else datetime.now(UTC)
+    anchor_month = domain.month_key(domain.today_in(domain.DEFAULT_TIMEZONE, now=resolved_now))
 
     invoices = await all_invoices(session, org_id)
     paid = await paid_by_invoice(session, org_id, [inv.id for inv in invoices])
@@ -1518,6 +1556,49 @@ async def get_overview(
     revenue = domain.net_revenue_for_month(facts, period_month)
     receivables = domain.total_outstanding(facts)
     overdue = domain.total_overdue(facts)
+
+    allocations = await dated_allocations_by_invoice(session, org_id, [inv.id for inv in invoices])
+    history_facts = [
+        domain.InvoiceHistoryFacts(
+            currency=inv.currency,
+            document_type=inv.document_type,
+            stored_status=inv.status,
+            issued_date=inv.issued_date,
+            total_minor=inv.total_minor,
+            allocations=tuple(allocations.get(inv.id, [])),
+        )
+        for inv in invoices
+    ]
+    history = domain.revenue_history(history_facts, anchor_month=anchor_month)
+    revenue_history = [
+        CurrencyRevenueHistory(
+            currency=h.currency,
+            revenue_current_minor=h.revenue_current_minor,
+            revenue_previous_minor=h.revenue_previous_minor,
+            revenue_delta_pct=domain.delta_pct(h.revenue_current_minor, h.revenue_previous_minor),
+            received_current_minor=h.received_current_minor,
+            received_previous_minor=h.received_previous_minor,
+            received_delta_pct=domain.delta_pct(
+                h.received_current_minor, h.received_previous_minor
+            ),
+            outstanding_current_minor=h.outstanding_current_minor,
+            outstanding_previous_minor=h.outstanding_previous_minor,
+            outstanding_delta_pct=domain.delta_pct(
+                h.outstanding_current_minor, h.outstanding_previous_minor
+            ),
+            months=[
+                MonthlyRevenuePoint(
+                    month=p.month,
+                    label=p.label,
+                    revenue_minor=p.revenue_minor,
+                    received_minor=p.received_minor,
+                    outstanding_minor=p.outstanding_minor,
+                )
+                for p in h.months
+            ],
+        )
+        for h in history
+    ]
 
     def kpi(key: str, label: str, value: int, caption: str, *, sample: bool = False) -> OverviewKpi:
         trend = domain.KPI_TRENDS[key]
@@ -1588,6 +1669,8 @@ async def get_overview(
         aging=aging,
         attention=attention,
         cashflow_sample=True,
+        revenue_history=revenue_history,
+        revenue_history_timezone=domain.DEFAULT_TIMEZONE,
     )
 
 

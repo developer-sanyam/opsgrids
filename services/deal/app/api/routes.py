@@ -20,7 +20,7 @@ refused another's by id.
 from __future__ import annotations
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -137,11 +137,45 @@ async def create_deal(
     summary="Pipeline summary — the Overview rollups",
     dependencies=[Entitled],
 )
-async def summary(session: SessionDep, ctx: DealRead) -> SummaryOut:
+async def summary(
+    session: SessionDep,
+    ctx: DealRead,
+    owner_id: Annotated[
+        uuid.UUID | None, Query(description="Narrow the rollup to one rep's own pipeline")
+    ] = None,
+    owner: Annotated[
+        Literal["me"] | None,
+        Query(description="`me` narrows to the caller's own pipeline, resolved server-side"),
+    ] = None,
+) -> SummaryOut:
     """The same arithmetic the SPA's `data/derive.ts` runs over the deal list, computed
-    server-side over the caller's scope: an OWN-scoped rep gets their own numbers."""
-    deals = await selectors.all_deals(session, ctx)
-    activities = await selectors.all_activities(session, ctx)
+    server-side over the caller's scope: an OWN-scoped rep gets their own numbers.
+
+    `owner_id`/`owner=me` narrow *further*, the way `/deals`'s own `owner_id` filter does — both
+    compose with `ctx.apply`'s scope filter rather than replacing it, so an OWN-scoped caller who
+    names someone else's id still gets nothing back, never that colleague's numbers. `owner=me`
+    resolves the caller's own id from the token (`ctx.subject_ref`) rather than trusting a
+    caller-chosen id for "mine"; a caller with no `subject_ref` gets the all-zero rollup, never
+    the whole book.
+    """
+    resolved_owner_id = owner_id
+    if owner == "me":
+        if ctx.subject_ref is None:
+            return SummaryOut(
+                pipeline_value_minor=0,
+                weighted_pipeline_minor=0,
+                open_deals=0,
+                win_rate_pct=0,
+                won_value_minor=0,
+                activities_this_week=0,
+                currency="INR",
+                trend=None,
+                funnel=[],
+            )
+        resolved_owner_id = ctx.subject_ref
+
+    deals = await selectors.all_deals(session, ctx, owner_id=resolved_owner_id)
+    activities = await selectors.all_activities(session, ctx, owner_id=resolved_owner_id)
     open_value = domain.pipeline_value_minor(deals)
     currency = deals[0].currency if deals else "INR"
     return SummaryOut(
@@ -152,7 +186,7 @@ async def summary(session: SessionDep, ctx: DealRead) -> SummaryOut:
         won_value_minor=domain.won_value_minor(deals),
         activities_this_week=domain.activities_this_week(activities),
         currency=currency,
-        trend=domain.pipeline_trend(open_value),
+        trend=None,
         funnel=domain.stage_funnel(deals),
     )
 
