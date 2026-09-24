@@ -35,6 +35,8 @@ export function buildSubscriptionsOut(): SubscriptionsOut {
   const rows: SubscriptionOut[] = buildOrgStates().flatMap((state) =>
     Object.entries(state.subscription_states).map(([productKey, entry]) => ({
       organization_id: state.organization_id,
+      name: state.name,
+      slug: state.slug,
       product_key: productKey,
       state: String(entry.state ?? "unknown"),
       plan_version_id: entry.plan_version_id ?? null,

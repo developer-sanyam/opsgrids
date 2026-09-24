@@ -7,6 +7,12 @@ routing key and the documented payload — never an import — so console consum
 whether or not those services' code is on this branch. A routing key whose producer is not merged
 yet simply receives nothing until it is; the binding is harmless and waiting.
 
+It also binds account-service's `core.org.created`/`core.org.updated` (`domain.ORG_EVENTS`) —
+identity, not commerce, folded into the same per-org row so the operator list can show a name
+rather than a bare id. Console went live after every existing organization and subscription, so
+this binding alone never backfills what predates it; `app/backfill.py` is the one-off that does,
+through the same fold functions this module calls.
+
 Every handler is idempotent and tenant-bound. The envelope carries `organization_id`, so each
 message is folded inside `session_scope(organization_id=…)`: the NOBYPASSRLS app role with the
 tenant GUC set for exactly this message (ADR-0002 §2), so a fold can only write the event's own
@@ -100,6 +106,9 @@ def register(resolve_price: PriceResolver) -> None:
     async def on_usage(env: dict[str, Any]) -> None:
         await consume(env, services.fold_usage_event)
 
+    async def on_org(env: dict[str, Any]) -> None:
+        await consume(env, services.fold_org_event)
+
     for key in domain.SUBSCRIPTION_EVENTS:
         consumer.on(key)(on_subscription)
     for key in domain.INVOICE_EVENTS:
@@ -107,6 +116,8 @@ def register(resolve_price: PriceResolver) -> None:
     for key in domain.CREDIT_EVENTS:
         consumer.on(key)(on_credit)
     consumer.on(domain.USAGE_EVENT)(on_usage)
+    for key in domain.ORG_EVENTS:
+        consumer.on(key)(on_org)
 
 
 async def main() -> None:

@@ -359,10 +359,32 @@
             "title": "Mrr Minor",
             "type": "integer"
           },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
           "organization_id": {
             "format": "uuid",
             "title": "Organization Id",
             "type": "string"
+          },
+          "slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slug"
           },
           "subscription_states": {
             "additionalProperties": true,
@@ -864,6 +886,17 @@
             ],
             "title": "Currency"
           },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
           "organization_id": {
             "format": "uuid",
             "title": "Organization Id",
@@ -883,6 +916,17 @@
           "product_key": {
             "title": "Product Key",
             "type": "string"
+          },
+          "slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slug"
           },
           "state": {
             "title": "State",

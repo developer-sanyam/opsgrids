@@ -206,6 +206,8 @@ async def list_subscriptions(
             rows.append(
                 SubscriptionOut(
                     organization_id=state.organization_id,
+                    name=state.name,
+                    slug=state.slug,
                     product_key=product_key,
                     state=str(entry.get("state")),
                     plan_version_id=entry.get("plan_version_id"),

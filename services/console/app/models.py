@@ -95,6 +95,23 @@ class OrgCommercialState(Base, TenantBase):
     #: service.
     trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    #: Mirrored from account-service's `core.org.{created,updated}` (identity, not commerce) so
+    #: the operator list can show a name instead of a bare id. Nullable: every row that predates
+    #: this column, and every row the backfill or the consumer has not yet folded an identity
+    #: event for, has neither — the projection is still the commercial snapshot first, the
+    #: identity mirror second. `slug` never changes once set (account's own `OrganizationPatch`
+    #: carries no slug field), but `name` can, so both are folded through the same ordering guard
+    #: `identity_synced_at` backs.
+    name: Mapped[str | None] = mapped_column(String(200))
+    slug: Mapped[str | None] = mapped_column(String(60))
+    #: The source row's own freshness for the two fields above — account's `Organization.updated_at`
+    #: for a backfill snapshot, or the folded event's own `occurred_at` for a live one. Distinct
+    #: from `updated_at` below (this table's own write time, bumped on *any* column change,
+    #: commercial or identity): comparing against `updated_at` would make a subscription
+    #: transition's write look like it also refreshed the identity, and the ordering guard
+    #: (`domain.apply_org_identity`) needs the source's own clock, not this row's.
+    identity_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     #: True while any of the organization's subscriptions is suspended (ADR-0004 §5: a suspension
     #: de-entitles). Set when a `suspended` transition arrives, cleared when nothing is suspended.
     locked: Mapped[bool] = mapped_column(

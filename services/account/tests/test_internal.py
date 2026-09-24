@@ -688,6 +688,68 @@ class TestMembershipLookup:
         assert response.status_code == 403
 
 
+class TestOrganizationsBulkList:
+    """`services/console/app/backfill.py`'s discovery read: every live organization's identity,
+    paginated, restricted to console alone (a materially bigger cross-tenant surface than any
+    other route on this router)."""
+
+    async def test_it_needs_a_service_token(self, client: AsyncClient) -> None:
+        assert (await client.get("/internal/v1/organizations")).status_code == 401
+
+    async def test_a_caller_other_than_console_is_refused(self, client: AsyncClient) -> None:
+        response = await client.get("/internal/v1/organizations", headers=internal_as("billing"))
+        assert response.status_code == 401
+
+    async def test_console_sees_the_seeded_organization(
+        self, client: AsyncClient, org: Organization
+    ) -> None:
+        response = await client.get("/internal/v1/organizations", headers=internal_as("console"))
+        assert response.status_code == 200, response.text
+        body = response.json()
+        ids = {row["id"] for row in body["items"]}
+        assert str(org.id) in ids
+        row = next(r for r in body["items"] if r["id"] == str(org.id))
+        assert row["slug"] == "acme"
+        assert row["name"] == "Acme Technologies"
+        assert "updated_at" in row
+
+    async def test_keyset_pagination_terminates_with_a_null_cursor(
+        self, client: AsyncClient, admin_session: AsyncSession, org: Organization
+    ) -> None:
+        from app.schemas import OrganizationIn
+
+        async with admin_session.begin():
+            await services.create_organization(
+                admin_session,
+                OrganizationIn(name="Second Org", slug="second-org"),
+                actor_user_id=None,
+            )
+
+        first = await client.get(
+            "/internal/v1/organizations",
+            params={"limit": 1},
+            headers=internal_as("console"),
+        )
+        assert first.status_code == 200
+        page = first.json()
+        assert len(page["items"]) == 1
+        assert page["next_cursor"] is not None
+
+        second = await client.get(
+            "/internal/v1/organizations",
+            params={"limit": 1, "cursor": page["next_cursor"]},
+            headers=internal_as("console"),
+        )
+        assert second.status_code == 200
+        second_page = second.json()
+        assert len(second_page["items"]) == 1
+        assert second_page["items"][0]["id"] != page["items"][0]["id"]
+
+    async def test_the_route_is_absent_from_the_public_schema(self, client: AsyncClient) -> None:
+        schema = (await client.get("/openapi.json")).json()
+        assert "/internal/v1/organizations" not in schema["paths"]
+
+
 def _role(code: str, permission: str, scope: str):
     return RoleIn(
         code=code,

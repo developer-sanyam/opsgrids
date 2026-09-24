@@ -217,7 +217,17 @@ async def update_organization(
         event_type=EVT_ORG_UPDATED,
         aggregate_type="organization",
         aggregate_id=org.id,
-        payload={"organization_id": str(org.id), "changed": sorted(changes)},
+        payload={
+            "organization_id": str(org.id),
+            "changed": sorted(changes),
+            # `name` travels by value, not just by name-in-`changed`: console's directory fold
+            # (`services.fold_org_event` there) has no other route back to this row — it is a
+            # projection, not a cross-schema reader (ADR-0000 §10) — so the one identity field a
+            # patch can actually change has to ride on the event itself. `slug` never appears
+            # here because `OrganizationPatch` carries no slug field at all: it is fixed at
+            # `create_organization` and immutable thereafter.
+            "name": org.name if "name" in changes else None,
+        },
         actor=_actor(ctx),
     )
     return org

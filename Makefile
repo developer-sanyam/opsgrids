@@ -271,6 +271,14 @@ ops-monitor-db: ## Create/grant the opsgrids_mon database ops-monitor's integrat
 	$(COMPOSE) exec -T postgres psql -v ON_ERROR_STOP=1 -U opsgrids -d opsgrids -f - \
 	  < tools/dev-bootstrap/ops-monitor-db.sql
 
+# The same shape again, for trying the console backfill (app/backfill.py) by hand against real
+# seeded data — never the shared `opsgrids` database. Migrate into it the same way `e2e`'s own
+# comment describes: `make migrate DATABASE_URL=postgresql+asyncpg://opsgrids:opsgrids@localhost:5434/opsgrids_backfill`.
+.PHONY: backfill-db
+backfill-db: ## Create/grant the opsgrids_backfill database (idempotent, needs make infra)
+	$(COMPOSE) exec -T postgres psql -v ON_ERROR_STOP=1 -U opsgrids -d opsgrids -f - \
+	  < tools/dev-bootstrap/backfill-db.sql
+
 # The one suite where nothing is stubbed: six services, an outbox relay and an event
 # consumer, all started by the harness on ports the OS hands out, driven over real HTTP
 # against real Postgres and RabbitMQ. It needs no free port reserved and no stack stopped —

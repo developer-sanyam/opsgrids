@@ -76,6 +76,9 @@ class TestListSubscriptionsForOperator:
         rows = resp.json()
         assert {r["product_key"] for r in rows} == {"hrms", "crm"}
         assert all(uuid.UUID(r["id"]) for r in rows)
+        # `SubscriptionOperatorOut`'s one addition over the customer-facing `SubscriptionOut`:
+        # console's backfill stamps its own fold with this rather than "now" (app/backfill.py).
+        assert all(r["updated_at"] for r in rows)
 
     async def test_it_is_empty_for_an_organization_with_no_subscriptions(
         self, client, org_id: uuid.UUID

@@ -113,6 +113,34 @@ class OrganizationDirectoryOut(BaseModel):
     created_at: datetime
 
 
+class OrganizationSummaryOut(BaseModel):
+    """One row of `GET /internal/v1/organizations` — console's backfill discovery read
+    (`services/console/app/account_client.py`), never account's own OpenAPI: that router is
+    excluded from the document in its entirety.
+
+    Narrower even than `OrganizationDirectoryOut`: this is the identity a projection needs to
+    stay current (`id`, `slug`, `name`), plus `updated_at` so the caller can stamp its own fold
+    with this row's own freshness rather than "now" — the same ordering guard a live
+    `core.org.updated` event gets, applied to a snapshot instead of a transition.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    slug: str
+    name: str
+    status: str
+    updated_at: datetime
+
+
+class OrganizationsPageOut(BaseModel):
+    """A keyset page of `OrganizationSummaryOut`, in `id` order. `next_cursor` is `null` once
+    there is nothing left — the caller keeps requesting with `cursor=next_cursor` until it does."""
+
+    items: list[OrganizationSummaryOut]
+    next_cursor: uuid.UUID | None
+
+
 # --------------------------------------------------------------------- structure
 
 

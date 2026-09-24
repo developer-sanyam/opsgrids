@@ -80,3 +80,18 @@ export function initials(name: string): string {
 export function formatInt(value: number): string {
   return new Intl.NumberFormat("en-IN").format(value);
 }
+
+/** What a bulk list row shows for an organization, given only the account-service mirror
+ *  (`name`/`slug`, both nullable until the identity fold or the backfill reaches a row) and the
+ *  id that is always present. `secondary` is the slug when there's a name to lead with, and
+ *  `null` when there is nothing to show underneath the id itself. */
+export function orgIdentity(org: {
+  name: string | null;
+  slug: string | null;
+  organization_id: string;
+}): { primary: string; secondary: string | null } {
+  if (org.name) {
+    return { primary: org.name, secondary: org.slug };
+  }
+  return { primary: org.organization_id, secondary: null };
+}

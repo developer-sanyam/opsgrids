@@ -76,6 +76,49 @@ async def _get_or_create_state(
     return row
 
 
+async def _fold_subscription_state(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    *,
+    product_key: str,
+    plan_version_id: str | None,
+    to_state: str,
+    trial_ends_at: str | None,
+    amount_minor: int,
+    currency: str | None,
+    occurred_at: str | None,
+) -> tuple[bool, str | None]:
+    """Apply one subscription transition to the org snapshot alone — the arithmetic shared by
+    the live event fold (`fold_subscription_event`, below, which also appends the revenue-log
+    row for the transition it just observed) and the backfill's snapshot fold
+    (`backfill_subscription_snapshot`, which does not: a backfill is establishing a baseline,
+    not observing a discrete transition — see that function's own docstring for why appending
+    one there would break re-run idempotency)."""
+    state_row = await _get_or_create_state(session, organization_id)
+    states = dict(state_row.subscription_states)
+    applied, from_state = domain.apply_subscription_transition(
+        states,
+        product_key=product_key,
+        to_state=to_state,
+        plan_version_id=plan_version_id,
+        amount_minor=amount_minor,
+        currency=currency,
+        trial_ends_at=trial_ends_at,
+        occurred_at=occurred_at,
+    )
+    if applied:
+        snapshot = domain.recompute_snapshot(states)
+
+        # Reassign (not mutate) so SQLAlchemy sees the JSONB change.
+        state_row.subscription_states = states
+        state_row.mrr_minor = snapshot["mrr_minor"]
+        state_row.currency = snapshot["currency"]
+        state_row.active_products = snapshot["active_products"]
+        state_row.locked = snapshot["locked"]
+        state_row.trial_ends_at = _parse_dt(snapshot["trial_ends_at"])
+    return applied, from_state
+
+
 async def fold_subscription_event(
     session: AsyncSession, envelope: dict[str, Any], *, resolve_price: PriceResolver
 ) -> None:
@@ -99,28 +142,17 @@ async def fold_subscription_event(
     if plan_version_id and to_state in domain.ENTITLED_STATES:
         amount_minor, currency = await resolve_price(str(plan_version_id))
 
-    state_row = await _get_or_create_state(session, organization_id)
-    states = dict(state_row.subscription_states)
-    applied, from_state = domain.apply_subscription_transition(
-        states,
+    applied, from_state = await _fold_subscription_state(
+        session,
+        organization_id,
         product_key=product_key,
-        to_state=to_state,
         plan_version_id=str(plan_version_id) if plan_version_id else None,
+        to_state=to_state,
+        trial_ends_at=trial_ends_at,
         amount_minor=amount_minor,
         currency=currency,
-        trial_ends_at=trial_ends_at,
         occurred_at=envelope.get("occurred_at"),
     )
-    if applied:
-        snapshot = domain.recompute_snapshot(states)
-
-        # Reassign (not mutate) so SQLAlchemy sees the JSONB change.
-        state_row.subscription_states = states
-        state_row.mrr_minor = snapshot["mrr_minor"]
-        state_row.currency = snapshot["currency"]
-        state_row.active_products = snapshot["active_products"]
-        state_row.locked = snapshot["locked"]
-        state_row.trial_ends_at = _parse_dt(snapshot["trial_ends_at"])
 
     session.add(
         RevenueEvent(
@@ -141,6 +173,36 @@ async def fold_subscription_event(
             },
         )
     )
+
+
+async def fold_org_event(session: AsyncSession, envelope: dict[str, Any]) -> None:
+    """Fold `core.org.{created,updated}` into the org snapshot's `name`/`slug`.
+
+    Payload (documented, from account-service; not imported — see `domain.ORG_EVENTS`):
+    `core.org.created` carries `organization_id`, `slug`, `name`; `core.org.updated` carries
+    `organization_id`, `changed`, and `name` when `"name" in changed` (`null` otherwise — `slug`
+    is immutable once set, so it never appears on an update). Ordering follows
+    `domain.apply_org_identity`: the event's own `occurred_at` must advance the projection's
+    stored `identity_synced_at`, so a redelivered create arriving after a later rename cannot
+    resurrect the old name.
+    """
+    payload = envelope["payload"]
+    organization_id = uuid.UUID(str(payload["organization_id"]))
+    state_row = await _get_or_create_state(session, organization_id)
+    applied, name, slug = domain.apply_org_identity(
+        current_name=state_row.name,
+        current_slug=state_row.slug,
+        current_synced_at=(
+            state_row.identity_synced_at.isoformat() if state_row.identity_synced_at else None
+        ),
+        name=payload.get("name"),
+        slug=payload.get("slug"),
+        occurred_at=envelope.get("occurred_at"),
+    )
+    if applied:
+        state_row.name = name
+        state_row.slug = slug
+        state_row.identity_synced_at = _occurred_at(envelope)
 
 
 async def fold_invoice_event(session: AsyncSession, envelope: dict[str, Any]) -> None:
@@ -229,6 +291,82 @@ async def fold_usage_event(session: AsyncSession, envelope: dict[str, Any]) -> N
         )
     )
     await session.execute(stmt)
+
+
+# --------------------------------------------------------------------- backfill
+
+
+async def backfill_org_identity(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    name: str,
+    slug: str,
+    source_updated_at: datetime,
+) -> bool:
+    """The backfill's identity fold — `app/backfill.py`'s discovery-time counterpart to
+    `fold_org_event`'s live-event one, sharing the same ordering guard
+    (`domain.apply_org_identity`) so a real `core.org.updated` that lands after this snapshot was
+    taken always wins, and re-running this against an unchanged organization is a no-op: the
+    second run's `source_updated_at` is the same instant already stored in
+    `identity_synced_at`, which the guard reads as not advancing. Returns whether anything
+    changed, for the backfill's summary.
+    """
+    state_row = await _get_or_create_state(session, organization_id)
+    applied, new_name, new_slug = domain.apply_org_identity(
+        current_name=state_row.name,
+        current_slug=state_row.slug,
+        current_synced_at=(
+            state_row.identity_synced_at.isoformat() if state_row.identity_synced_at else None
+        ),
+        name=name,
+        slug=slug,
+        occurred_at=source_updated_at.isoformat(),
+    )
+    if applied:
+        state_row.name = new_name
+        state_row.slug = new_slug
+        state_row.identity_synced_at = source_updated_at
+    return applied
+
+
+async def backfill_subscription_snapshot(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    product_key: str,
+    plan_version_id: str | None,
+    state: str,
+    trial_ends_at: str | None,
+    amount_minor: int,
+    currency: str | None,
+    source_updated_at: datetime,
+) -> bool:
+    """The backfill's per-subscription fold: the same ordering guard and snapshot arithmetic as
+    the live event fold (`_fold_subscription_state`), stamped with **the subscription's own
+    `updated_at`** rather than an event's `occurred_at`.
+
+    Deliberately does not append to `revenue_events` the way `fold_subscription_event` does: a
+    backfill snapshot is not a transition it observed, it is the current state as of discovery,
+    and appending a synthetic row for it — every run, since there is no processed-event ledger
+    entry to make a repeat a no-op the way a real redelivered event gets — would grow the
+    append-only revenue log by one meaningless row per organization every time this script runs.
+    The MRR/entitlement/lock snapshot this writes is real and immediate; the transition history
+    for a subscription this old starts at its next genuine event, same as subscription-service's
+    own `app/backfill.py` does not fabricate history it cannot resolve.
+    """
+    applied, _from_state = await _fold_subscription_state(
+        session,
+        organization_id,
+        product_key=product_key,
+        plan_version_id=plan_version_id,
+        to_state=state,
+        trial_ends_at=trial_ends_at,
+        amount_minor=amount_minor,
+        currency=currency,
+        occurred_at=source_updated_at.isoformat(),
+    )
+    return applied
 
 
 async def record_override(

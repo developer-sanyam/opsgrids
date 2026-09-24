@@ -237,3 +237,26 @@ class SubscriptionOut(BaseModel):
     items: list[SubscriptionItemOut] = Field(default_factory=list)
     #: Null unless a dunning cycle is open against this subscription.
     dunning: DunningOut | None = None
+
+
+class SubscriptionOperatorOut(SubscriptionOut):
+    """`SubscriptionOut` plus this row's own last-write instant — console's cross-tenant
+    backfill discovery read (`GET /internal/v1/organizations/{id}/subscriptions`) only, never the
+    customer-facing routes above.
+
+    Deliberately not added to the base `SubscriptionOut`: those routes serialise the response
+    inside the same transaction as a write that can touch `updated_at` (cancel, suspend, a
+    change-plan) — `TimestampMixin.updated_at` is `onupdate=func.now()`, a server-generated value
+    SQLAlchemy marks expired after such an UPDATE, and reading an expired attribute triggers an
+    implicit refresh that is not awaitable in an async context (`MissingGreenlet`). The internal
+    listing route this schema is for does no write in its own request — a plain
+    `selectors.list_by_organization` read — so the column is never expired when this model reads
+    it.
+
+    Console's backfill (`services/console/app/backfill.py`) stamps its snapshot fold with this
+    value rather than "now", so the same ordering guard a live transition event gets applies to a
+    discovered snapshot too — a later real event always wins, and re-running the backfill against
+    an unchanged subscription is a no-op.
+    """
+
+    updated_at: datetime
