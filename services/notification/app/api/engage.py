@@ -18,18 +18,21 @@ is the SMTP handshake in `services._transport_for_connection`.
 
 from __future__ import annotations
 
+import html
 import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, Query, Request, Response, status
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import selectors, services
-from app.domain import verify_unsubscribe_token
+from app import dns_check, selectors, services, webhooks
+from app.domain import UnsubscribeTarget
 from app.models import (
     Campaign,
     Contact,
     ContactList,
+    Conversation,
     EmailConnection,
     EmailDomain,
     ProviderAccount,
@@ -54,6 +57,12 @@ from app.schemas import (
     ContactListPatch,
     ContactOut,
     ContactPatch,
+    ConversationAssignIn,
+    ConversationMessageOut,
+    ConversationOut,
+    ConversationReplyIn,
+    ConversationReplyOut,
+    ConversationStatus,
     DnsRecordOut,
     DomainIn,
     DomainOut,
@@ -66,20 +75,40 @@ from app.schemas import (
     SuppressionOut,
     SuppressionReason,
     TestSendIn,
+    UnmaskedMessageOut,
     UnsubscribeOut,
     WhatsAppConnectionIn,
     WhatsAppConnectionOut,
 )
 from platform_core.auth import Scope, ScopeContext, require, require_product
-from platform_core.db import get_session, get_tenant_session, set_tenant
+from platform_core.config import ServiceSettings
+from platform_core.db import (
+    assert_tenant,
+    get_directory_session,
+    get_session,
+    get_tenant_session,
+    set_tenant,
+)
 from platform_core.errors import NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
+from platform_core.pii import mask as mask_pii
 
 router = APIRouter(tags=["engage"])
 
+#: The cross-tenant, BYPASSRLS, SELECT-only reader — the same one the webhook route resolves a
+#: tenant from. The WhatsApp connection writes below are the other caller: a phone number's
+#: global-uniqueness check must see every organization's row, which the tenant-scoped `session`
+#: (RLS-filtered to the caller's own organization) never can.
+DirectorySessionDep = Annotated[AsyncSession, Depends(get_directory_session)]
+
 #: **The tenancy chokepoint.** Opens the transaction and binds it to the caller's organization
 #: before the route body runs, so no route can read or write without one.
-SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
+
+#: The one route in this file that does **not** take `SessionDep` — see `verify_domain` below.
+#: A raw, untransacted session; the route binds its own two short transactions around the DNS
+#: lookup, the same idiom payment's and finance's internal APIs use for the same reason (D3).
+RawSessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 #: The `engage` entitlement gate, applied to every route here as well as at the gateway. It is
 #: deliberately not `notification`: a customer paying for transactional plumbing has not bought
@@ -126,6 +155,22 @@ SuppressionRead = Annotated[
 ]
 SuppressionWrite = Annotated[
     ScopeContext, Depends(require("engage.audience.suppression.write", minimum=Scope.ORG))
+]
+ConversationRead = Annotated[
+    ScopeContext, Depends(require("engage.inbox.conversation.read", minimum=Scope.ORG))
+]
+ConversationWrite = Annotated[
+    ScopeContext, Depends(require("engage.inbox.conversation.write", minimum=Scope.ORG))
+]
+MessageReply = Annotated[
+    ScopeContext, Depends(require("engage.inbox.message.reply", minimum=Scope.ORG))
+]
+#: The dangerous, stepped-up unmask. `amr={"otp"}` pairs with the permission the same way
+#: `crm.book.contact.read_sensitive` does — an ordinary inbox session must not be a standing
+#: route to a customer's real words.
+MessageUnmask = Annotated[
+    ScopeContext,
+    Depends(require("engage.inbox.message.unmask", minimum=Scope.ORG, amr={"otp"})),
 ]
 
 
@@ -203,6 +248,25 @@ def _suppression_out(row: Suppression) -> SuppressionOut:
         email=row.email_masked,
         reason=row.reason,
         created_at=row.created_at,
+    )
+
+
+def _conversation_out(row: Conversation) -> ConversationOut:
+    """The mask, never the address — same rule as `_contact_out`. `within_service_window` is
+    computed at read time so the inbox never reimplements the 24-hour rule client-side."""
+    return ConversationOut(
+        id=str(row.id),
+        channel=row.channel,
+        wa_address=row.wa_address_masked,
+        contact_id=str(row.contact_id) if row.contact_id else None,
+        last_customer_message_at=row.last_customer_message_at,
+        within_service_window=webhooks.within_service_window(row.last_customer_message_at),
+        status=row.status,
+        assignee_membership_id=(
+            str(row.assignee_membership_id) if row.assignee_membership_id else None
+        ),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
     )
 
 
@@ -314,13 +378,18 @@ async def read_whatsapp_connection(
     dependencies=[Entitled],
 )
 async def connect_whatsapp(
-    body: WhatsAppConnectionIn, session: SessionDep, ctx: WhatsAppWrite, request: Request
+    body: WhatsAppConnectionIn,
+    session: SessionDep,
+    directory: DirectorySessionDep,
+    ctx: WhatsAppWrite,
+    request: Request,
 ) -> WhatsAppConnectionOut:
     """POST rather than PUT, for the reason `connect_provider` is: one organization gets one
     WhatsApp account and a second POST is refused rather than silently accepted."""
     row = await services.create_whatsapp_connection(
         session,
         ctx,
+        directory=directory,
         waba_id=body.waba_id,
         phone_number_id=body.phone_number_id,
         display_number=body.display_number,
@@ -337,11 +406,16 @@ async def connect_whatsapp(
     dependencies=[Entitled],
 )
 async def replace_whatsapp(
-    body: WhatsAppConnectionIn, session: SessionDep, ctx: WhatsAppWrite, request: Request
+    body: WhatsAppConnectionIn,
+    session: SessionDep,
+    directory: DirectorySessionDep,
+    ctx: WhatsAppWrite,
+    request: Request,
 ) -> WhatsAppConnectionOut:
     row = await services.replace_whatsapp_connection(
         session,
         ctx,
+        directory=directory,
         waba_id=body.waba_id,
         phone_number_id=body.phone_number_id,
         display_number=body.display_number,
@@ -392,11 +466,38 @@ async def add_domain(
     dependencies=[Entitled],
 )
 async def verify_domain(
-    domain_id: uuid.UUID, session: SessionDep, ctx: DomainWrite, request: Request
+    domain_id: uuid.UUID, session: RawSessionDep, ctx: DomainWrite, request: Request
 ) -> DomainOut:
     """Takes the write permission although it publishes nothing: it rewrites `records` and
-    `status`, and a domain flipping to verified is what lets mail go out as that name."""
-    row = await services.verify_domain(session, ctx, domain_id=domain_id, request=request)
+    `status`, and a domain flipping to verified is what lets mail go out as that name.
+
+    **Not `SessionDep`.** Every other route in this file runs its whole body inside the one
+    transaction the chokepoint opens before the handler starts; this is the one place that would
+    hold it across a DNS lookup, and a resolver that is slow or simply cannot be reached
+    (`NoNameservers`, `Timeout`) would then pin a pool connection for however long it takes to
+    give up (D3). So this route binds two short transactions of its own instead — the same idiom
+    payment's and finance's internal APIs use, and for the same reason — with the lookups
+    themselves running between them, with no session and no transaction open at all.
+    """
+    settings: ServiceSettings = request.app.state.settings
+
+    async def _bind() -> None:
+        await set_tenant(session, ctx.organization_id)
+        if not settings.is_production:
+            await assert_tenant(session, ctx.organization_id)
+
+    async with session.begin():
+        await _bind()
+        loaded = await services.load_domain_for_check(session, ctx, domain_id=domain_id)
+        records = list(loaded.records)
+
+    checked = await dns_check.check_records(records)
+
+    async with session.begin():
+        await _bind()
+        row = await services.record_domain_check(
+            session, ctx, domain_id=domain_id, checked=checked, request=request
+        )
     return _domain_out(row)
 
 
@@ -1049,6 +1150,165 @@ async def campaign_recipients(
     )
 
 
+# --------------------------------------------------------------------- inbox (WhatsApp)
+
+
+async def _conversation_or_404(
+    session: AsyncSession, ctx: ScopeContext, conversation_id: uuid.UUID
+) -> Conversation:
+    row = await selectors.get_conversation(session, ctx.organization_id, conversation_id)
+    if row is None:
+        raise NotFoundProblem("No such conversation")
+    return row
+
+
+@router.get(
+    "/engage/conversations",
+    response_model=Page[ConversationOut],
+    summary="WhatsApp conversations, most recently active first",
+    dependencies=[Entitled],
+)
+async def list_conversations(
+    session: SessionDep,
+    ctx: ConversationRead,
+    params: PageQuery,
+    conversation_status: Annotated[ConversationStatus | None, Query(alias="status")] = None,
+) -> Page[ConversationOut]:
+    stmt = selectors.conversations_stmt(ctx, conversation_status=conversation_status)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([_conversation_out(r) for r in rows], total=total, params=params)
+
+
+@router.get(
+    "/engage/conversations/{conversation_id}",
+    response_model=ConversationOut,
+    summary="One conversation",
+    dependencies=[Entitled],
+)
+async def get_conversation(
+    conversation_id: uuid.UUID, session: SessionDep, ctx: ConversationRead
+) -> ConversationOut:
+    return _conversation_out(await _conversation_or_404(session, ctx, conversation_id))
+
+
+@router.get(
+    "/engage/conversations/{conversation_id}/messages",
+    response_model=Page[ConversationMessageOut],
+    summary="A conversation's thread, both directions, oldest first, bodies masked on the "
+    "inbound side",
+    dependencies=[Entitled],
+)
+async def list_conversation_messages(
+    conversation_id: uuid.UUID,
+    session: SessionDep,
+    ctx: ConversationRead,
+    params: PageQuery,
+) -> Page[ConversationMessageOut]:
+    await _conversation_or_404(session, ctx, conversation_id)
+    rows, total = await selectors.thread_messages(
+        session, ctx, conversation_id, offset=params.offset, limit=params.size
+    )
+    items = [
+        ConversationMessageOut(
+            id=str(r.id),
+            direction=r.direction,
+            message_type=r.message_type,
+            body=r.body or "",
+            occurred_at=r.occurred_at,
+            provider_message_id=r.provider_message_id,
+            profile_name=r.profile_name,
+        )
+        for r in rows
+    ]
+    return Page.build(items, total=total, params=params)
+
+
+@router.post(
+    "/engage/conversations/{conversation_id}/reply",
+    response_model=ConversationReplyOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Send a free-text WhatsApp reply inside the 24-hour service window",
+    dependencies=[Entitled],
+)
+async def reply_to_conversation(
+    conversation_id: uuid.UUID,
+    body: ConversationReplyIn,
+    session: SessionDep,
+    ctx: MessageReply,
+    request: Request,
+) -> ConversationReplyOut:
+    """202: staged, not yet sent — the dispatcher sends it, same as every other message in this
+    service. 409 with `remedy: "template"` when the window has closed; nothing is staged then."""
+    message = await services.reply_to_conversation(
+        session,
+        ctx,
+        conversation_id=conversation_id,
+        body=body.body,
+        idempotency_key=body.idempotency_key,
+        request=request,
+    )
+    return ConversationReplyOut(
+        message_id=str(message.id), state=message.state, conversation_id=str(conversation_id)
+    )
+
+
+@router.post(
+    "/engage/conversations/{conversation_id}:assign",
+    response_model=ConversationOut,
+    summary="Assign a conversation to a membership, or clear its assignment",
+    dependencies=[Entitled],
+)
+async def assign_conversation(
+    conversation_id: uuid.UUID,
+    body: ConversationAssignIn,
+    session: SessionDep,
+    ctx: ConversationWrite,
+    request: Request,
+) -> ConversationOut:
+    row = await services.assign_conversation(
+        session,
+        ctx,
+        conversation_id=conversation_id,
+        assignee_membership_id=body.assignee_membership_id,
+        request=request,
+    )
+    return _conversation_out(row)
+
+
+@router.post(
+    "/engage/conversations/{conversation_id}:close",
+    response_model=ConversationOut,
+    summary="Close a conversation. A later reply, or the customer writing back, reopens it",
+    dependencies=[Entitled],
+)
+async def close_conversation(
+    conversation_id: uuid.UUID, session: SessionDep, ctx: ConversationWrite, request: Request
+) -> ConversationOut:
+    row = await services.close_conversation(
+        session, ctx, conversation_id=conversation_id, request=request
+    )
+    return _conversation_out(row)
+
+
+@router.post(
+    "/engage/conversations/{conversation_id}/messages/{message_id}:unmask",
+    response_model=UnmaskedMessageOut,
+    summary="Reveal one customer message's real text (dangerous; audited every time)",
+    dependencies=[Entitled],
+)
+async def unmask_message(
+    conversation_id: uuid.UUID,
+    message_id: uuid.UUID,
+    session: SessionDep,
+    ctx: MessageUnmask,
+    request: Request,
+) -> UnmaskedMessageOut:
+    body = await services.unmask_inbound_message(
+        session, ctx, conversation_id=conversation_id, message_id=message_id, request=request
+    )
+    return UnmaskedMessageOut(message_id=str(message_id), body=body)
+
+
 # --------------------------------------------------------------------- public unsubscribe
 
 #: The one Engage surface with no principal: the recipient of a campaign clicking the link in
@@ -1056,44 +1316,177 @@ async def campaign_recipients(
 #: and this one cannot be — the token is the whole of its authority. It never uses
 #: `get_tenant_session` (there is no caller organization); it opens the transaction itself and
 #: binds the GUC to the organization the *verified token* names, before touching a tenant table.
+#:
+#: **The GET is a confirmation page, not an action.** A mail scanner or link-preview bot that
+#: prefetches every URL in a message body used to unsubscribe the recipient on GET alone — a
+#: request nobody clicked. GET now only ever renders HTML and never opens a write transaction;
+#: the only route that touches `suppressions` is the POST below, reached either by a human
+#: submitting the confirmation page's form or by a mailbox provider's RFC 8058 one-click POST.
+#: Both are the same request — the response is simply rendered for whichever one asked, by
+#: `Accept`: a browser navigating a form submit sends `Accept: text/html`, a one-click POST
+#: does not, so it gets exactly the JSON body it always has.
 public_router = APIRouter(tags=["engage-public"])
 
 PlainSessionDep = Annotated[AsyncSession, Depends(get_session)]
 
+#: Every response this router sends, success or failure, HTML or JSON. No search engine has any
+#: business indexing a recipient-specific, single-use link (`X-Robots-Tag`); no browser has any
+#: business running a script, loading a subresource, or being framed on a page that renders
+#: nothing but a name and a button (`Content-Security-Policy`); nothing here is meant to be
+#: sniffed as anything but what its `Content-Type` already says (`X-Content-Type-Options`);
+#: the referrer header carries a token in its path and must not leak to whatever `href` this
+#: page never actually has (`Referrer-Policy`); and no intermediate cache has any business
+#: holding a copy of a page whose whole point is one-time, one-recipient state (`Cache-Control`).
+_PUBLIC_HEADERS = {
+    "X-Robots-Tag": "noindex",
+    "Content-Security-Policy": "default-src 'none'; form-action 'self'; frame-ancestors 'none'; "
+    "base-uri 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+}
 
-async def _unsubscribe(token: str, session: AsyncSession, request: Request) -> UnsubscribeOut:
-    key = services.unsubscribe_key()
-    verified = verify_unsubscribe_token(token, key) if key is not None else None
-    if verified is None:
-        # Same answer for malformed, forged, and "unsubscribe is not configured": none of them
-        # may learn anything, and none of them touches a row.
-        raise NotFoundProblem("This unsubscribe link is not valid")
-    organization_id, email = verified
+
+def _page(title: str, body: str) -> str:
+    """The one template every page on this router renders from — plain HTML, no external
+    assets (no stylesheet, script or font to fetch), so nothing here ever depends on a CDN
+    being reachable from a recipient's mail client."""
+    return (
+        "<!doctype html>\n"
+        '<html lang="en">\n'
+        "<head>\n"
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        f"<title>{html.escape(title)}</title>\n"
+        "</head>\n"
+        "<body>\n"
+        f"<main>\n{body}\n</main>\n"
+        "</body>\n</html>\n"
+    )
+
+
+def _invalid_page() -> str:
+    return _page(
+        "Unsubscribe link not valid",
+        "<h1>This unsubscribe link is not valid</h1>"
+        "<p>It may have expired or been used already. If you no longer wish to receive "
+        "these emails, please contact the sender directly.</p>",
+    )
+
+
+def _confirm_page(masked_email: str | None) -> str:
+    detail = (
+        f"<p>This stops email to <strong>{html.escape(masked_email)}</strong> from this sender.</p>"
+        if masked_email
+        else "<p>This stops future email from this sender to the address this link was sent to.</p>"
+    )
+    return _page(
+        "Unsubscribe",
+        f"<h1>Unsubscribe from future emails?</h1>{detail}"
+        '<form method="post"><button type="submit">Unsubscribe me</button></form>',
+    )
+
+
+def _done_page(masked_email: str | None) -> str:
+    who = f"<strong>{html.escape(masked_email)}</strong>" if masked_email else "This address"
+    return _page(
+        "Unsubscribed",
+        f"<h1>You're unsubscribed</h1><p>{who} will no longer receive email from this sender.</p>",
+    )
+
+
+def _html(body: str, *, status_code: int = status.HTTP_200_OK) -> HTMLResponse:
+    return HTMLResponse(body, status_code=status_code, headers=_PUBLIC_HEADERS)
+
+
+def _wants_html(request: Request) -> bool:
+    """A browser navigating a form submit sends `Accept: text/html, ...`; an RFC 8058
+    one-click POST from a mailbox provider does not (it wants and gets the JSON body this
+    endpoint has always returned). Content negotiation, not a hidden field or a second
+    endpoint, is what tells the two apart."""
+    return "text/html" in request.headers.get("accept", "").lower()
+
+
+def _invalid_response(request: Request) -> Response:
+    """Same answer for malformed, forged, unconfigured, and a v2 link naming a recipient row
+    that is gone or erased: none of them may learn anything, and none of them touches a row."""
+    if _wants_html(request):
+        return _html(_invalid_page(), status_code=status.HTTP_404_NOT_FOUND)
+    raise NotFoundProblem("This unsubscribe link is not valid", headers=_PUBLIC_HEADERS)
+
+
+async def _masked_preview(target: UnsubscribeTarget, session: AsyncSession) -> str | None:
+    """The masked address for a confirmation page. A v1 link already carries it; a v2 link
+    names a recipient row instead, so this reads (never decrypts) that row's own masked column
+    — a single `SELECT`, not a write, so `GET` stays side-effect-free. `None` when a v2 link's
+    row is gone or erased: the page still renders, just without naming an address."""
+    if target.email is not None:
+        return mask_pii(target.email, kind="email")
+    assert target.recipient_id is not None
     async with session.begin():
-        await set_tenant(session, organization_id)
-        await services.unsubscribe(
-            session, organization_id=organization_id, email=email, request=request
+        await set_tenant(session, target.organization_id)
+        return await selectors.masked_recipient_email(
+            session, target.organization_id, target.recipient_id
         )
-    return UnsubscribeOut(unsubscribed=True)
+
+
+async def _resolve_and_unsubscribe(
+    target: UnsubscribeTarget, session: AsyncSession, request: Request
+) -> str | None:
+    """Writes the suppression `target` names, inside the caller's transaction. Returns the
+    masked address to show on the result page, or `None` if there was nothing to act on (a v2
+    link naming a recipient row that is gone or erased) — the caller answers that exactly like
+    an invalid token."""
+    await set_tenant(session, target.organization_id)
+    if target.email is not None:
+        await services.unsubscribe(
+            session, organization_id=target.organization_id, email=target.email, request=request
+        )
+        return mask_pii(target.email, kind="email")
+    assert target.recipient_id is not None
+    result = await services.unsubscribe_recipient(
+        session,
+        organization_id=target.organization_id,
+        recipient_id=target.recipient_id,
+        request=request,
+    )
+    if result is None:
+        return None
+    _wrote, masked = result
+    return masked
 
 
 @public_router.get(
     "/engage/unsubscribe/{token}",
-    response_model=UnsubscribeOut,
-    summary="Unsubscribe the address a signed link names (no sign-in)",
+    response_class=HTMLResponse,
+    summary="A confirmation page for the address a signed link names (no sign-in, no side effects)",
 )
-async def unsubscribe_via_link(
-    token: str, session: PlainSessionDep, request: Request
-) -> UnsubscribeOut:
-    return await _unsubscribe(token, session, request)
+async def unsubscribe_confirm(token: str, session: PlainSessionDep) -> HTMLResponse:
+    """Renders a page and nothing else. `GET` must be safe to prefetch — the only read this
+    does is a single masked-column `SELECT` for a v2 link, never a write, so a scanner fetching
+    every link in a message body cannot unsubscribe anyone by doing so."""
+    target = services.verify_unsubscribe_link(token)
+    if target is None:
+        # Same page for malformed, forged, and "unsubscribe is not configured": none of them
+        # may learn anything, and none of them touches a row.
+        return _html(_invalid_page(), status_code=status.HTTP_404_NOT_FOUND)
+    return _html(_confirm_page(await _masked_preview(target, session)))
 
 
 @public_router.post(
     "/engage/unsubscribe/{token}",
     response_model=UnsubscribeOut,
-    summary="One-click unsubscribe (RFC 8058) for the address a signed link names",
+    summary="Unsubscribe the address a signed link names — the confirmation form's submit, "
+    "and RFC 8058 one-click unsubscribe, both land here",
 )
-async def unsubscribe_one_click(
-    token: str, session: PlainSessionDep, request: Request
-) -> UnsubscribeOut:
-    return await _unsubscribe(token, session, request)
+async def unsubscribe_via_link(token: str, session: PlainSessionDep, request: Request) -> Response:
+    target = services.verify_unsubscribe_link(token)
+    if target is None:
+        return _invalid_response(request)
+    async with session.begin():
+        masked = await _resolve_and_unsubscribe(target, session, request)
+    if masked is None:
+        return _invalid_response(request)
+    if _wants_html(request):
+        return _html(_done_page(masked))
+    return JSONResponse(UnsubscribeOut(unsubscribed=True).model_dump(), headers=_PUBLIC_HEADERS)

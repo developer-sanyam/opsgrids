@@ -19,6 +19,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# Exec form, not shell form: hadolint's DL3025, and no /bin/sh between Docker and the probe.
+# Kept out of the template below only because it is longer than a line. Every service's
+# Dockerfile carries exactly this string.
+_HEALTHCHECK_CMD = (
+    '["python", "-c", "import urllib.request as u,sys; '
+    "sys.exit(0 if u.urlopen('http://127.0.0.1:8000/health').status==200 else 1)\"]"
+)
+
 
 def _files(name: str, schema: str, module: str, title: str) -> dict[str, str]:
     return {
@@ -460,8 +468,7 @@ COPY --chown=opsgrids:opsgrids services/{name}/ /app/
 USER opsgrids
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \\
-  CMD python -c "import urllib.request as u,sys; \\
-      sys.exit(0 if u.urlopen('http://127.0.0.1:8000/health').status==200 else 1)"
+  CMD {_HEALTHCHECK_CMD}
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 """,
         "README.md": f"""# {title}

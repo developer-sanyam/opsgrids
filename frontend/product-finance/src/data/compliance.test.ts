@@ -9,8 +9,11 @@ import { describe, expect, it } from "vitest";
 
 import type { EInvoiceState, FilingRemedy, ImsSuggestion, Invoice } from "@/api/types";
 import {
+  EWAY_STATUS_FILTERS,
   complianceSummary,
+  ewayStatusTone,
   filingErrorSentence,
+  filingRowLabel,
   filingView,
   periodLabel,
   remedyView,
@@ -201,5 +204,57 @@ describe("complianceSummary", () => {
   it("names the period in words", () => {
     expect(summary.periodLabel).toBe("August 2026");
     expect(periodLabel("2026-01")).toBe("January 2026");
+  });
+});
+
+describe("the D3 claim states", () => {
+  it("reads a withdrawal in flight as work in progress, not a failure or a submission", () => {
+    const view = filingView({ required: true, status: "cancelling", attempts: 1 });
+    expect(view?.key).toBe("in_flight");
+    expect(view?.label).toBe("Cancelling IRN");
+    expect(view?.needsPerson).toBe(false);
+    expect(filingRowLabel({ status: "cancelling", ack_date: "2026-08-12T09:00:00Z" })).toBe(
+      "Withdrawal requested",
+    );
+  });
+
+  it("never calls a failed withdrawal a failed filing: the IRN still stands", () => {
+    const view = filingView({
+      required: true,
+      status: "failed",
+      ack_date: "2026-08-12T09:00:00Z",
+      error_code: "window_closed",
+      error: "the 24-hour window closed",
+      attempts: 1,
+      terminal: false,
+      remedy: "contact_support",
+    });
+    expect(view?.label).toBe("Withdrawal failed");
+    expect(view?.detail).toContain("The IRN still stands.");
+    expect(filingRowLabel({ status: "failed", ack_date: "2026-08-12T09:00:00Z" })).toBe(
+      "Withdrawal refused",
+    );
+    expect(filingRowLabel({ status: "failed", ack_date: null })).toBe("Refused");
+  });
+
+  it("offers a look at the portal, not a button, when the withdrawal could not be confirmed", () => {
+    const remedy = remedyView({
+      required: true,
+      status: "failed",
+      attempts: 1,
+      remedy: "contact_support",
+    });
+    expect(remedy?.key).toBe("contact_support");
+    expect(remedy?.action).toBe("");
+    expect(remedy?.consequence).toContain("credit note");
+  });
+
+  it("gives an e-Way bill being raised or withdrawn an in-progress tone and a filter", () => {
+    expect(ewayStatusTone("submitting")).toBe(ewayStatusTone("cancelling"));
+    expect(ewayStatusTone("submitting")).not.toBe(ewayStatusTone("failed"));
+    expect(ewayStatusTone("submitting")).not.toBe(ewayStatusTone("generated"));
+    const filters = EWAY_STATUS_FILTERS.map((f) => f.value);
+    expect(filters).toContain("submitting");
+    expect(filters).toContain("cancelling");
   });
 });

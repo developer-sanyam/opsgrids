@@ -91,6 +91,40 @@ class Settings(ServiceSettings):
     def tls_platform_host_set(self) -> frozenset[str]:
         return frozenset(h.strip().lower() for h in self.tls_platform_hosts.split(",") if h.strip())
 
+    #: `edge.opsgrids.com` — what a merchant CNAMEs (or ALIASes) a subdomain to (ADR-0012 §2,
+    #: §4). Also what the merchant's domain screen prints as the "preferred" record.
+    edge_host: str = "edge.opsgrids.com"
+    #: The reserved IPv4 an apex merchant's A record points at (ADR-0012 §1, §4). **Empty by
+    #: default is a real value**, not a placeholder to fill in later out of habit: the routing
+    #: probe prints "the platform address" instead of a literal until this is set, which is the
+    #: honest thing to show rather than a made-up example address. Pinned as a default here
+    #: rather than set in the repository's shared `.env`, for the same reason `edge_host` is.
+    edge_reserved_ip: str = ""
+    #: Where the certificate probe dials — Caddy on the compose network's `front` alias, never
+    #: out through the internet (ADR-0012 §6). `caddy` is the compose service name; overridden
+    #: in tests to a fake TLS server.
+    tls_probe_host: str = "caddy"
+    tls_probe_port: int = 443
+    #: Per-resolver / per-handshake timeout for all three probes (ADR-0012 §6, §13).
+    tls_probe_timeout_seconds: float = 5.0
+    #: `POST .../domain/check`'s own limit (ADR-0012 §6): one call per organization every 30
+    #: seconds. The merchant has just pasted a record and wants an answer now — this is not the
+    #: gateway's anonymous limiter, it is a second, narrower one on an authenticated route that
+    #: runs three real network probes synchronously.
+    domain_check_rate_limit_window_seconds: int = 30
+    #: How often `app/cron.py`'s sweep wakes to look for due claims (ADR-0012 §6).
+    domain_sweep_poll_interval_seconds: float = 60.0
+    #: At most this many due claims are advanced in one tick, so one slow resolver cannot make a
+    #: tick unbounded (ADR-0012 §6). At ≤50 merchants platform-wide this is generous headroom,
+    #: not a real ceiling.
+    domain_sweep_batch_size: int = 20
+    #: Runs the custom-domain sweep as a supervised background task inside the API process
+    #: itself instead of `storefront-cron`'s own container (the memory-headroom slice's fix
+    #: round 2 — see `operations.app.config.Settings.run_sweeps_in_api`'s own comment for the
+    #: full argument). Off by default everywhere except the edge box's own `.env`; `bin/cron`
+    #: still runs the sweep standalone for local debugging either way.
+    run_sweeps_in_api: bool = False
+
 
 def assert_directory_role_configured(cfg: Settings) -> None:
     """Refuse to start without the bypass reader the anonymous route depends on.

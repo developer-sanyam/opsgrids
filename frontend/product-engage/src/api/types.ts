@@ -268,3 +268,202 @@ export interface Page<T> {
   size: number;
   pages: number;
 }
+
+/* ----------------------------------------- inbox ------------------------------------------ */
+
+export type ConversationStatus = "open" | "closed";
+export type MessageDirection = "inbound" | "outbound";
+
+/**
+ * One WhatsApp conversation. `wa_address` is always the mask — sealed at rest, and no route on
+ * this service ever opens it here; the real number is reachable only through `contact_id`, and
+ * only from the CRM's own audited unmask. `within_service_window` is computed by the service at
+ * read time from `last_customer_message_at`, so this screen never reimplements the 24-hour rule.
+ */
+export interface ConversationOut {
+  id: string;
+  channel: "whatsapp";
+  wa_address: string;
+  /** A `customer.contacts` id, once `app/consumers.py`'s resolver has matched the number. `null`
+   *  for a stranger, or before resolution has run — an ordinary state, not a fault. */
+  contact_id: string | null;
+  last_customer_message_at: string | null;
+  within_service_window: boolean;
+  status: ConversationStatus;
+  assignee_membership_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * One entry in a conversation's thread. `body` is masked for an inbound message (the customer's
+ * own words) and shown in full for an outbound one (this organization's own reply) — see
+ * `selectors.thread_stmt`'s docstring for why only one side is PII-gated. Revealing an inbound
+ * message's real text needs its own audited, stepped-up permission this app does not offer a
+ * route to yet.
+ */
+export interface ConversationMessageOut {
+  id: string;
+  direction: MessageDirection;
+  message_type: string;
+  body: string;
+  occurred_at: string;
+  provider_message_id: string | null;
+  profile_name: string | null;
+}
+
+/** `POST /engage/conversations/{id}/reply`. `idempotency_key` makes a retried click a no-op
+ *  rather than a second message on the wire. */
+export interface ConversationReplyIn {
+  body: string;
+  idempotency_key: string;
+}
+
+/** pending | sending | sent | delivered | read | failed | suppressed. Only `pending` and
+ *  `suppressed` are possible immediately after a reply — the dispatcher owns every transition
+ *  after that. `suppressed` is how a customer's earlier STOP reaches a reply already in flight. */
+export type MessageState =
+  | "pending"
+  | "sending"
+  | "sent"
+  | "delivered"
+  | "read"
+  | "failed"
+  | "suppressed";
+
+export interface ConversationReplyOut {
+  message_id: string;
+  state: MessageState;
+  conversation_id: string;
+}
+
+/** `POST /engage/conversations/{id}:assign`. `null` clears the assignment. */
+export interface ConversationAssignIn {
+  assignee_membership_id: string | null;
+}
+
+/* ----------------------------------- contact lists ----------------------------------- */
+
+/** `POST /engage/lists`. */
+export interface ContactListIn {
+  name: string;
+  description?: string;
+}
+
+/** `PATCH /engage/lists/{list_id}`. An absent field is left alone. */
+export interface ContactListPatch {
+  name?: string;
+  description?: string;
+}
+
+export interface ContactListOut {
+  id: string;
+  name: string;
+  description: string;
+  /** Folded from `contact_list_members` at read time — never held on the list row itself, so it
+   *  can never drift from who is actually on the list. */
+  member_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** The most contact ids one `POST /engage/lists/{list_id}/members` (or `.../members/remove`)
+ *  call may carry — `LIST_MEMBERS_MAX`. */
+export const LIST_MEMBERS_MAX = 1000;
+
+/** `POST /engage/lists/{list_id}/members` and `.../members/remove`. Ids that are not this
+ *  organization's contacts are reported back in `unknown` rather than failing the whole call. */
+export interface ListMembersIn {
+  contact_ids: string[];
+}
+
+export interface ListMembersOut {
+  changed: number;
+  unknown: string[];
+}
+
+/* -------------------------------------- campaigns -------------------------------------- */
+
+/** draft -> scheduled | sending -> sent, or cancelled from any state before sent. `paused` is the
+ *  send driver's own "no route to send on right now" state, distinct from a person cancelling. */
+export type CampaignStatus = "draft" | "scheduled" | "sending" | "paused" | "sent" | "cancelled";
+/** `list` addresses one named list; `all_sendable` addresses every contact this organization may
+ *  mail (every contact minus every suppression). */
+export type CampaignAudience = "list" | "all_sendable";
+/** `sending` (the driver's in-flight claim lease) is folded into `queued` on the wire — see
+ *  `_campaign_out`'s docstring in `engage.py` — so this app never has a fifth value to render. */
+export type RecipientStatus = "queued" | "sent" | "failed" | "suppressed";
+
+/** `POST /engage/campaigns`. A draft — nothing is queued to send until `sendCampaign` is called
+ *  and the service's send gate lets it through. */
+export interface CampaignIn {
+  name: string;
+  sender_id: string;
+  subject?: string;
+  html_body?: string;
+  text_body?: string;
+  audience?: CampaignAudience;
+  list_id?: string | null;
+  scheduled_at?: string | null;
+}
+
+/** `PATCH /engage/campaigns/{campaign_id}`. Refused once the campaign has left `draft` — what a
+ *  campaign said once it started going out is a record, not a form. */
+export interface CampaignPatch {
+  name?: string;
+  sender_id?: string;
+  subject?: string;
+  html_body?: string;
+  text_body?: string;
+  audience?: CampaignAudience;
+  list_id?: string | null;
+  scheduled_at?: string | null;
+}
+
+/** Recipient counts, folded from `campaign_recipients` by a single grouped query. There is no
+ *  `delivered`, `bounced` or `unsubscribed` count here: the service's `campaign_recipients.status`
+ *  vocabulary is exactly `queued | sending | sent | failed | suppressed` (`models.py`), because a
+ *  recipient row has no link back to the delivery ledger or to a later unsubscribe — those are
+ *  provider-webhook and consent facts this schema does not yet fold per campaign. `sent` here
+ *  means "handed to the provider without a transport error", not "reached the inbox". */
+export interface CampaignStats {
+  recipients: number;
+  queued: number;
+  sent: number;
+  failed: number;
+  suppressed: number;
+}
+
+export interface CampaignOut {
+  id: string;
+  name: string;
+  sender_id: string;
+  subject: string;
+  html_body: string;
+  text_body: string;
+  audience: CampaignAudience;
+  list_id: string | null;
+  status: CampaignStatus;
+  scheduled_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  cancelled_at: string | null;
+  /** Why the send driver paused this campaign (no connected provider, no usable sender). Empty
+   *  unless `status === "paused"`. */
+  pause_reason: string;
+  stats: CampaignStats;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One row of `GET /engage/campaigns/{campaign_id}/recipients` — addresses masked, exactly as
+ *  `campaign_recipients.email_masked` holds them. */
+export interface CampaignRecipientOut {
+  id: string;
+  contact_id: string;
+  email: string;
+  status: RecipientStatus;
+  provider_message_id: string | null;
+  error: string;
+  sent_at: string | null;
+}

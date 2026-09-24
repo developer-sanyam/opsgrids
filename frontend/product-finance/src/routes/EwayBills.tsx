@@ -4,28 +4,13 @@ import { Link } from "react-router-dom";
 import { listEwayBills } from "@/api/client";
 import type { EwayStatusFilter } from "@/api/client";
 import type { EwayBillWithInvoice } from "@/api/types";
+import { EWAY_STATUS_FILTERS, ewayStatusTone } from "@/data/compliance";
 import { formatDateTime } from "@/lib/format";
 import { formatMoney } from "@/lib/money";
 import { problemMessage, useAsync } from "@opsgrids/client";
 import { Card, DataTable, EmptyState, ErrorState, PageHeader, Pagination, Pill, Skeleton, Tag } from "@/ui";
 import type { Column } from "@/ui";
 import { TruckIcon } from "@opsgrids/ui";
-
-const STATUS_FILTERS: { value: EwayStatusFilter; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "pending", label: "Pending" },
-  { value: "generated", label: "Generated" },
-  { value: "failed", label: "Failed" },
-  { value: "cancelled", label: "Cancelled" },
-];
-
-const STATUS_TONE: Record<string, string> = {
-  pending: "bg-late-soft text-late",
-  generated: "bg-present-soft text-present",
-  failed: "bg-danger-soft text-danger",
-  cancelled: "bg-ground text-muted",
-  expired: "bg-ground text-muted",
-};
 
 /**
  * A read-only register: e-Way bills are raised over the internal API by a dispatch system, not
@@ -96,7 +81,7 @@ export function EwayBillsPage() {
       header: "Status",
       align: "right",
       render: (row) => (
-        <Tag className={STATUS_TONE[row.bill.effective_status] ?? "bg-ground text-muted"}>
+        <Tag className={ewayStatusTone(row.bill.effective_status)}>
           {row.bill.effective_status}
         </Tag>
       ),
@@ -113,7 +98,7 @@ export function EwayBillsPage() {
 
       <Card className="flex flex-col gap-3 p-4 sm:p-5">
         <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
-          {STATUS_FILTERS.map((f) => (
+          {EWAY_STATUS_FILTERS.map((f) => (
             <Pill
               key={f.value}
               active={status === f.value}

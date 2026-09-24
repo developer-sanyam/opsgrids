@@ -10,7 +10,7 @@ from starlette.requests import Request
 
 from app import selectors, services
 from app.config import settings
-from app.models import SCHEMA
+from app.models import SCHEMA, Activation
 from app.schemas import ActivateIn, ActivationOut, ProductOut, ServiceInfo
 from platform_core.auth import Scope, ScopeContext, require
 from platform_core.db import get_tenant_session
@@ -19,7 +19,7 @@ router = APIRouter(tags=["product"])
 
 #: **The tenancy chokepoint.** Opens the transaction and binds it to the caller's organization
 #: before the route body runs, so no route can read or write without one.
-SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 
 CatalogueRead = Annotated[ScopeContext, Depends(require("core.product.catalogue.read"))]
 ActivationRead = Annotated[ScopeContext, Depends(require("core.product.activation.read"))]
@@ -58,7 +58,23 @@ async def list_products(
 )
 async def list_activations(session: SessionDep, ctx: ActivationRead) -> list[ActivationOut]:
     activations = await selectors.list_activations(session, ctx.organization_id)
-    return [ActivationOut.model_validate(a) for a in activations]
+    entitled_by = await selectors.live_sources_by_product(session, ctx.organization_id)
+    out = []
+    for activation in activations:
+        row = ActivationOut.model_validate(activation)
+        row.entitled_by = entitled_by.get(activation.product_key, [])
+        out.append(row)
+    return out
+
+
+async def _with_sources(
+    session: AsyncSession, ctx: ScopeContext, activation: Activation
+) -> ActivationOut:
+    """One activation with what currently entitles it, as the list route reports it."""
+    live = await selectors.live_sources_by_product(session, ctx.organization_id)
+    out = ActivationOut.model_validate(activation)
+    out.entitled_by = live.get(activation.product_key, [])
+    return out
 
 
 @router.post(
@@ -77,7 +93,7 @@ async def activate(
         trial_days=payload.trial_days,
         request=request,
     )
-    return ActivationOut.model_validate(activation)
+    return await _with_sources(session, ctx, activation)
 
 
 @router.delete(
@@ -89,4 +105,4 @@ async def deactivate(
     product_key: str, session: SessionDep, ctx: ActivationWrite, request: Request
 ) -> ActivationOut:
     activation = await services.deactivate(session, ctx, product_key=product_key, request=request)
-    return ActivationOut.model_validate(activation)
+    return await _with_sources(session, ctx, activation)

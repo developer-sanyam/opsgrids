@@ -94,7 +94,9 @@ def _derive_key(passphrase: str) -> bytes:
     return hkdf.derive(passphrase.encode("utf-8"))
 
 
-def seal(plaintext: str, *, kind: str, settings: ServiceSettings) -> tuple[bytes, str]:
+def seal(
+    plaintext: str, *, kind: str, settings: ServiceSettings, aad: bytes | None = None
+) -> tuple[bytes, str]:
     """Encrypt `plaintext` and derive its mask.
 
     Returns `(ciphertext, masked)`: the bytes to store in the `<field>_enc` column and the safe
@@ -102,20 +104,30 @@ def seal(plaintext: str, *, kind: str, settings: ServiceSettings) -> tuple[bytes
     twice yields different ciphertext — no equality oracle across rows.
 
     `kind` selects the masker (see `mask`); it does not affect the encryption.
+
+    `aad` (associated data) is optional and backward compatible: omitted, sealing behaves exactly
+    as before. Bound in, it is authenticated but not encrypted — GCM refuses to open the envelope
+    if the same `aad` is not presented again, which is what stops a sealed value being copied
+    onto a *different* row it was never written for (an MFA secret sealed with
+    `mfa_factor:<user_id>` cannot be lifted into another user's row and decrypt there, because
+    `open_sealed` would present that row's own user id as `aad` and the tag would not verify).
     """
     key = _derive_key(settings.pii_encryption_key.get_secret_value())
     nonce = _random_nonce()
-    ciphertext = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), aad)
     envelope = bytes([_VERSION]) + nonce + ciphertext
     return envelope, mask(plaintext, kind=kind)
 
 
-def open_sealed(ciphertext: bytes, *, settings: ServiceSettings) -> str:
+def open_sealed(ciphertext: bytes, *, settings: ServiceSettings, aad: bytes | None = None) -> str:
     """Decrypt a sealed value, trying the current key then each rotation key.
 
     This is the only path back to plaintext, and its callers are the only places a sensitive
     read is audited. Raises `PiiError` when the envelope is malformed or no configured key
     verifies — never a partial or a wrong-key result.
+
+    `aad` must be the exact value `seal` was called with, or every key tried will fail to
+    verify — including the *correct* key, if the associated data does not match what was sealed.
     """
     if len(ciphertext) < 1 + _NONCE_LEN + 16 or ciphertext[0] != _VERSION:
         # Too short to hold a nonce and a GCM tag, or a version this build does not know.
@@ -126,10 +138,11 @@ def open_sealed(ciphertext: bytes, *, settings: ServiceSettings) -> str:
     current = settings.pii_encryption_key.get_secret_value()
     for passphrase in (current, *settings.pii_decrypt_keys):
         try:
-            plaintext = AESGCM(_derive_key(passphrase)).decrypt(nonce, body, None)
+            plaintext = AESGCM(_derive_key(passphrase)).decrypt(nonce, body, aad)
         except InvalidTag:
-            # The signature of a wrong key. Try the next; GCM makes this safe because a bad key
-            # cannot forge a valid tag, so no wrong plaintext is ever accepted.
+            # The signature of a wrong key (or the wrong aad). Try the next; GCM makes this
+            # safe because a bad key cannot forge a valid tag, so no wrong plaintext is ever
+            # accepted.
             continue
         return plaintext.decode("utf-8")
     raise PiiError("No configured key could open this value")

@@ -1,8 +1,11 @@
-import { useAuth } from "@opsgrids/client";
+import { useAuth, usePermissionStatus } from "@opsgrids/client";
 import {
   FileTextIcon,
   GlobeIcon,
   HomeIcon,
+  InboxIcon,
+  LayersIcon,
+  MegaphoneIcon,
   MessageSquareIcon,
   PlugIcon,
   ShieldIcon,
@@ -15,24 +18,34 @@ import type { NavEntry, NavGroup } from "@opsgrids/ui";
 import { LogoMark } from "./LogoMark";
 
 /**
- * Phase 1 of Engage is the sending identity and its audience: the provider connections, the
- * domains an organization has proven, the named senders mail may go out as, the Cloud API
- * account and its templates for WhatsApp, and now who Engage may reach — contacts and the
- * addresses it may never mail. Campaigns and reporting are later phases and **are deliberately
- * absent from this navigation** — an entry that routes to a "coming soon" panel teaches people
- * the rail lies, and this codebase already had that bug elsewhere. They arrive here when their
- * screens do.
+ * The provider connections, the domains an organization has proven, the named senders mail may go
+ * out as, the Cloud API account and its templates for WhatsApp, who Engage may reach — contacts,
+ * the lists a campaign is addressed to and the addresses it may never mail — the inbox, and the
+ * campaigns themselves, each with its own delivery report.
+ *
+ * Inbox sits in the top-level Engage group rather than under WhatsApp: it is a place someone
+ * works from all day, not a setup step done once, and the top group is where Overview — the
+ * other place worked from daily — already lives.
  *
  * The three Email entries are the three setup steps in the order they have to happen: there is
  * nothing to prove without a connection, and no sender to name without a proven domain. WhatsApp
  * has no domain to prove, so it is two steps: connect the account, then track what Meta has
- * approved to send through it. Audience is independent of both — contacts and suppressions exist
- * whether or not a sender is usable yet.
+ * approved to send through it. Audience is independent of both — contacts, lists and suppressions
+ * exist whether or not a sender is usable yet. Campaigns come last because they need all of it.
+ *
+ * Lists and Campaigns are hidden from a member **known** not to hold their read permission, and
+ * shown while that is not yet known — a rail that flashes entries in and out as grants arrive is
+ * worse than one that briefly offers a page whose own guard then explains itself. Hiding is
+ * courtesy, not protection: both routes carry their own `RequireGrant`, and the service refuses
+ * every read behind them regardless of what this rail shows.
  */
 const GROUPS: NavGroup[] = [
   {
     title: "Engage",
-    items: [{ to: "/", label: "Overview", icon: HomeIcon, end: true }],
+    items: [
+      { to: "/", label: "Overview", icon: HomeIcon, end: true },
+      { to: "/inbox", label: "Inbox", icon: InboxIcon },
+    ],
   },
   {
     title: "Email",
@@ -53,8 +66,13 @@ const GROUPS: NavGroup[] = [
     title: "Audience",
     items: [
       { to: "/contacts", label: "Contacts", icon: UserPlusIcon },
+      { to: "/lists", label: "Lists", icon: LayersIcon },
       { to: "/suppressions", label: "Suppressions", icon: ShieldIcon },
     ],
+  },
+  {
+    title: "Campaigns",
+    items: [{ to: "/campaigns", label: "Campaigns", icon: MegaphoneIcon }],
   },
 ];
 
@@ -74,6 +92,16 @@ const PINNED: NavEntry[] = [];
  */
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { user, logout } = useAuth();
+  const listsRead = usePermissionStatus("engage.audience.list.read", "ORG");
+  const campaignsRead = usePermissionStatus("engage.campaign.campaign.read", "ORG");
+  const hidden = new Set([
+    ...(listsRead === "denied" ? ["/lists"] : []),
+    ...(campaignsRead === "denied" ? ["/campaigns"] : []),
+  ]);
+  const groups = GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => !hidden.has(item.to)),
+  })).filter((group) => group.items.length > 0);
   const name = user?.full_name ?? "Account";
   const org =
     user?.organizations.find((o) => o.organization_id === user.organization_id) ??
@@ -82,7 +110,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <SidebarShell
-      groups={GROUPS}
+      groups={groups}
       pinned={PINNED}
       account={{
         name,

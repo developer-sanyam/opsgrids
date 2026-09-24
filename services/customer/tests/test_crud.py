@@ -147,6 +147,20 @@ class TestCreateCompany:
             )
         assert response.status_code == 409
 
+    async def test_a_case_insensitive_duplicate_name_is_also_refused(
+        self, client, org_id, data
+    ) -> None:
+        """`uq_companies_org_name` stayed case-sensitive (M2: a unique index on `lower(name)`
+        would fail `alembic upgrade` on an organization already holding two case-variant
+        names) — this is `create_company`'s own `pg_advisory_xact_lock`-guarded check doing
+        the case-insensitive refusal the database constraint no longer can."""
+        with as_principal(_admin(org_id, data["subject_a"])):
+            response = await client.post(
+                "/api/v1/customers",
+                json={"name": "NORTHWIND LOGISTICS", "owner_id": str(data["subject_a"])},
+            )
+        assert response.status_code == 409
+
     async def test_negative_revenue_is_a_422(self, client, org_id, data) -> None:
         with as_principal(_admin(org_id, data["subject_a"])):
             response = await client.post(

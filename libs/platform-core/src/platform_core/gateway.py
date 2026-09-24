@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import posixpath
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,7 +56,13 @@ from platform_core.errors import (
     UnauthorizedProblem,
     UpstreamUnavailableProblem,
 )
-from platform_core.internal_auth import GATEWAY_AUDIENCE, mint_service_token
+from platform_core.internal_auth import (
+    ADMIN_HOP_HEADER,
+    GATEWAY_AUDIENCE,
+    canonical_query,
+    mint_service_token,
+    sign_admin_hop,
+)
 from platform_core.logging import get_logger
 
 log = get_logger("gateway")
@@ -79,6 +87,12 @@ HOP_BY_HOP = frozenset(
 #: Identity headers a client must never be able to set. They are stripped from every
 #: inbound request before the gateway writes its own — otherwise a caller could simply
 #: claim to be somebody else and the internal token would vouch for it.
+#:
+#: `ADMIN_HOP_HEADER` belongs here too, for the same reason: a caller presenting one it made
+#: up itself must not be indistinguishable from the one admin-gateway signs and writes below
+#: (BLOCKER 2 of the 2026-09-24 security review). Stripping it on *every* gateway — not only
+#: app-gateway — is what makes "app-gateway strips it inbound" true without a second,
+#: gateway-specific list to keep in sync with this one.
 SPOOFABLE = frozenset(
     {
         "x-internal-token",
@@ -95,8 +109,14 @@ SPOOFABLE = frozenset(
         "x-session-id",
         "x-audience",
         "x-org-slug",
+        ADMIN_HOP_HEADER,
     }
 )
+
+#: What `_normalize_path` collapses a run of slashes with. Anchors nowhere on its own — a
+#: *leading* doubled slash is POSIX-reserved and `posixpath.normpath` deliberately leaves it
+#: alone, so this collapse has to happen before that call, not instead of it.
+_COLLAPSE_SLASHES = re.compile(r"/+")
 
 
 #: Ceiling on a forwarded request body, in bytes, unless a route says otherwise.
@@ -154,6 +174,20 @@ class Route:
     product: str | None = None
     #: Only reachable by OpsGrids staff. Used by the operator console.
     staff_only: bool = False
+    #: Refused with the same 404 an unmatched path gets — never proxied, regardless of any
+    #: bearer token. For a sub-path that a broader prefix on the *same* gateway would
+    #: otherwise happily forward, and that this gateway specifically must not: app-gateway's
+    #: `/api/v1/auth/operator` entry over the shorter `/api/v1/auth` one is the case this
+    #: exists for (MAJOR 3 of the security review — operator sign-in was reachable from the
+    #: public product gateway with any ordinary tenant bearer token, because nothing about
+    #: `/api/v1/auth/operator/login` requires the caller's *own* token to be staff-shaped; it
+    #: reads staff credentials from the request body). `RouteTable.resolve` picks the longest
+    #: matching prefix, so a `blocked` entry here wins over the shorter one and is checked
+    #: before the token is even decoded — the same "refuse before doing any other work" shape
+    #: `_has_internal_segment` already uses for `/internal/` paths, just per-route instead of
+    #: platform-wide, because *which* paths must be blocked is a per-gateway decision
+    #: (admin-gateway wants exactly these reachable).
+    blocked: bool = False
     #: Per-route request-body ceiling in bytes. `None` means the gateway's default. An
     #: upload route legitimately needs more than a JSON POST; nothing else should.
     max_body_bytes: int | None = None
@@ -202,6 +236,7 @@ class RouteTable:
                     upstream=item["upstream"].rstrip("/"),
                     product=item.get("product"),
                     staff_only=bool(item.get("staff_only", False)),
+                    blocked=bool(item.get("blocked", False)),
                     max_body_bytes=_parse_max_body_bytes(item),
                 )
                 for item in raw["routes"]
@@ -228,8 +263,17 @@ class GatewayPolicy:
 
     #: The `aud` value tokens must carry to be accepted here.
     audience: str
-    #: Reachable without a token.
+    #: Reachable without a token, by exact path.
     public_paths: frozenset[str]
+    #: Reachable without a token, by prefix — the one shape `public_paths` cannot express (see
+    #: its own module note in `app-gateway/app/main.py`): a path that carries a variable
+    #: segment, such as a per-recipient token. Each entry **must** end in `/`, so a prefix names
+    #: a real path boundary rather than a bare string match — `"/api/v1/engage/unsubscribe/"`
+    #: matches `.../unsubscribe/abc` and not a hypothetical `.../unsubscribe-all`. Checked
+    #: against the same normalised path routing itself uses (`_normalize_path`), never the raw
+    #: one, so a `..`/`//`-laden path dressed up to look like a member of a public prefix is
+    #: judged by where it actually resolves rather than by what it merely contains.
+    public_path_prefixes: frozenset[str] = frozenset()
     #: Requests per minute, per caller.
     rate_limit: int = 300
     #: Unauthenticated callers are limited harder, and by address.
@@ -246,6 +290,21 @@ class GatewayPolicy:
     #: Request bodies larger than this are refused with 413 before being read into memory.
     #: A route may raise its own ceiling; see `Route.max_body_bytes`.
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
+    #: Sign every proxied request with the admin-gateway hop signature (`sign_admin_hop`).
+    #: M1(b) of the third-round security review: this used to key off "`ADMIN_GATEWAY_HOP_KEY`
+    #: is set in this process's settings", which made *any* gateway that happened to see the
+    #: key — every service reads the same `.env` in development — a signer. Now a property of
+    #: the gateway's own policy, set `True` in exactly one place (admin-gateway's `main.py`),
+    #: so holding the key is necessary but no longer sufficient.
+    sign_admin_hop: bool = False
+
+    def __post_init__(self) -> None:
+        # A prefix without a trailing slash is a bug waiting to widen: refused at construction
+        # (a deployment-time failure, the same class as `_parse_max_body_bytes`'s) rather than
+        # silently matching more than whoever wrote it meant.
+        for prefix in self.public_path_prefixes:
+            if not prefix.endswith("/"):
+                raise ValueError(f"public path prefix {prefix!r} must end with '/'")
 
 
 DEFAULT_PUBLIC_PATHS = frozenset(
@@ -371,10 +430,38 @@ def build_gateway(
         include_in_schema=False,
     )
     async def proxy(path: str, request: Request) -> Response:
-        full_path = f"/api/{path}"
+        # Normalised once, here, and used for every decision this function makes — which route,
+        # which permission gate, whether the path is public — and for what is actually
+        # forwarded (`_forward` takes this, not `request.url.path`, for exactly this reason).
+        # ASGI hands this handler `scope["path"]` percent-decoded but *not* otherwise
+        # normalised: `..` segments, doubled slashes and the rest travel through exactly as the
+        # client sent them (proven in this module's tests, not assumed). Deciding "is this
+        # public" against the raw text and then forwarding a different, normalised path is
+        # exactly how `/api/v1/engage/unsubscribe/x/../../senders` — publicly reachable by
+        # prefix, but *routed* to `/api/v1/engage/senders` once httpx builds the outbound
+        # request the same way `_normalize_path` does — would have bypassed the entitlement and
+        # permission gates on `senders` entirely.
+        full_path = _normalize_path(f"/api/{path}")
+
+        if _has_internal_segment(full_path):
+            # Defence in depth, not the only control: every service mounts its own internal
+            # router at `/internal/v1` (never under `/api`), so no route table entry should
+            # ever match one of these anyway. This exists for the request that reaches here
+            # through a path a route table author did not anticipate — a typo'd prefix, a
+            # `..` segment — rather than to be the thing that makes `/internal/` unreachable.
+            # 404, the same answer a route that does not exist gives, so this refusal is not
+            # itself a way to confirm an internal path exists.
+            log.warning("gateway.internal_path_refused", path=full_path)
+            raise NotFoundProblem(f"No route for {full_path}")
 
         route = routes.resolve(full_path)
         if route is None:
+            raise NotFoundProblem(f"No route for {full_path}")
+        if route.blocked:
+            # Refused before the token is even decoded — a blocked route carries no bearer
+            # token that would make it acceptable, so there is nothing to check. The same 404
+            # an unmatched path gives, for the same reason `staff_only` answers 404: this
+            # gateway is not confirming which paths it deliberately does not serve.
             raise NotFoundProblem(f"No route for {full_path}")
 
         # Start from the client's headers minus anything hop-by-hop or spoofable, then
@@ -393,14 +480,18 @@ def build_gateway(
         headers["x-request-id"] = request.state.request_id
         headers["x-correlation-id"] = request.state.correlation_id
 
-        if full_path in policy.public_paths:
+        if full_path in policy.public_paths or any(
+            full_path.startswith(prefix) for prefix in policy.public_path_prefixes
+        ):
             # Unauthenticated: limit by address, and pass the host through so login can
-            # resolve the organization from the subdomain.
+            # resolve the organization from the subdomain. No identity header is ever written
+            # on this branch — those all live below, past the token this branch never asks
+            # for — so a public route is forwarded exactly as anonymous as the caller was.
             client_ip = request.client.host if request.client else "anonymous"
             await enforce_rate_limit(f"anon:{client_ip}", limit=policy.anonymous_rate_limit)
             if (slug := _slug_from_host(request)) is not None:
                 headers["x-org-slug"] = slug
-            return await _forward(request, route, headers, policy)
+            return await _forward(request, route, headers, policy, full_path, settings)
 
         authorization = request.headers.get("Authorization", "")
         if not authorization.startswith("Bearer "):
@@ -510,7 +601,46 @@ def build_gateway(
 
             headers["x-perms"] = ",".join(grants)
 
-        return await _forward(request, route, headers, policy)
+        return await _forward(request, route, headers, policy, full_path, settings)
+
+
+def _normalize_path(raw: str) -> str:
+    """Collapse repeated slashes and resolve `.`/`..` segments before this path is used for
+    any routing decision — see `proxy`'s own comment at its call site for why.
+
+    ASGI does not do this; Starlette matches `scope["path"]` byte-for-byte, so a raw
+    `/api/v1/x/../y` reaches this handler exactly as written (proven in this module's tests
+    with a hand-built ASGI scope — an `httpx` client normalises a URL string before it is ever
+    sent, which would hide the very thing being defended against here). `posixpath.normpath`
+    does the dot-segment and duplicate-slash collapsing; the explicit slash-collapse first is
+    needed because `normpath` deliberately leaves a *leading* doubled slash alone (`//x` stays
+    `//x` — POSIX reserves that form), which is not a distinction this router has any use for.
+    `..` above the root clamps to the root rather than raising, matching what `httpx` itself
+    does when `_forward` goes on to build the outbound request from this same string.
+    """
+    collapsed = _COLLAPSE_SLASHES.sub("/", raw)
+    normalized = posixpath.normpath(collapsed)
+    return normalized if normalized.startswith("/") else f"/{normalized}"
+
+
+def _has_internal_segment(path: str) -> bool:
+    """True when `path`, normalised, contains a literal `internal` path segment.
+
+    Every service mounts its internal, service-to-service router at `/internal/v1` — never
+    under `/api`, which is all this gateway ever forwards — so an ordinary request has no
+    business matching this at all; it exists for the request that was crafted to reach one
+    anyway.
+
+    Normalising first is what makes this hold under `..`: `/api/v1/x/../internal/y` is a
+    literal string that does not contain `/internal/` as its own segment sequence in the
+    naive sense, and `posixpath.normpath` collapsing it to `/api/internal/y` is what a
+    same-check-without-normalising would miss. Percent-encoded forms (`%2Finternal%2F`) need
+    no handling here: the ASGI server has already decoded them into literal `/` characters by
+    the time `path` (captured from `{path:path}`) reaches this function, which is exactly why
+    they show up as an ordinary `..`-free case above.
+    """
+    normalized = posixpath.normpath(path)
+    return "internal" in normalized.split("/")
 
 
 def _slug_from_host(request: Request) -> str | None:
@@ -568,10 +698,21 @@ async def _read_capped_body(request: Request, limit: int) -> bytes:
 
 
 async def _forward(
-    request: Request, route: Route, headers: dict[str, str], policy: GatewayPolicy
+    request: Request,
+    route: Route,
+    headers: dict[str, str],
+    policy: GatewayPolicy,
+    full_path: str,
+    settings: ServiceSettings,
 ) -> Response:
     client: httpx.AsyncClient = request.app.state.http
-    url = f"{route.upstream}{request.url.path}"
+
+    # The *normalised* path `proxy` already routed and authorized on — never `request.url.path`
+    # again here. httpx's own URL parsing would resolve a raw `..`/`//` the same way on its way
+    # to the wire regardless, but building the request from the same string the routing
+    # decision was made against removes the "regardless" — the two can no longer read
+    # differently even in principle.
+    url = f"{route.upstream}{full_path}"
 
     # Before the body is buffered, and before the upstream is opened: an oversized request
     # must cost the gateway neither the memory nor a connection to a service that would
@@ -592,11 +733,27 @@ async def _forward(
         )
         raise
 
+    params = dict(request.query_params)
+    if policy.sign_admin_hop and settings.admin_gateway_hop_key is not None:
+        # Signed here, after the body is buffered, because the signature binds the method, the
+        # normalised path, the canonical query and the body's digest (m2 of the third-round
+        # review) — a captured header cannot be replayed with a different body or query. Only a
+        # gateway whose *policy* says so signs: holding the key is not enough. Any copy of the
+        # header a client attached to its inbound request was already stripped with the rest of
+        # `SPOOFABLE`, so a non-signing gateway forwards none at all.
+        headers[ADMIN_HOP_HEADER] = sign_admin_hop(
+            request.method,
+            full_path,
+            key=settings.admin_gateway_hop_key.get_secret_value(),
+            query=canonical_query(params.items()),
+            body=body,
+        )
+
     upstream_request = client.build_request(
         request.method,
         url,
         headers=headers,
-        params=dict(request.query_params),
+        params=params,
         content=body,
     )
     try:

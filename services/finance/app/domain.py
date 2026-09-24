@@ -36,12 +36,14 @@ render identically live, and are the obvious seam a real GL integration replaces
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
 # --------------------------------------------------------------------- vocabularies
 
@@ -69,8 +71,26 @@ EINVOICE_SUPPLY_TYPES: frozenset[str] = frozenset({"b2b", "export", "sez"})
 
 #: The lifecycle of one filing attempt. `pending` is an attempt recorded before an answer came
 #: back; `filed` carries an IRN; `failed` carries the portal's error; `cancelled` records that a
-#: previously registered IRN was withdrawn (the IRP allows this within 24 hours).
-FILING_STATUSES: frozenset[str] = frozenset({"pending", "filed", "failed", "cancelled"})
+#: previously registered IRN was withdrawn (the IRP allows this within 24 hours); `cancelling` is
+#: the **claim** for that withdrawal (see below).
+#:
+#: **Registration has no claim row; cancellation does** (D3, ADR-0015 addendum).
+#: `stage_registration_attempt` writes nothing before the portal is asked — registering a document
+#: is itself idempotent (the IRN is a pure function of the document, `IrpDuplicate` is a real
+#: portal saying so), so a process that dies between the call and `record_registration_result`
+#: leaves *no* row behind and a resumed attempt simply asks again. `app/cron.py`'s filing-reclaim
+#: sweep therefore looks for the *absence* of a row for a registration.
+#:
+#: Cancelling an IRN is **not** idempotent by document: it is time-boxed (24 h from the
+#: acknowledgement), needs a reason and an actor, and once done it is done. So the withdrawal is
+#: claimed first — a `cancelling` row carrying the reason, the remark and the acknowledgement it
+#: withdraws, audited as `einvoice.cancel_requested` — then the portal is called with no
+#: transaction open, then the outcome is recorded as a `cancelled` (or `failed`) row. A
+#: `cancelling` row that is still the newest for its invoice past `resume_after` is what the sweep
+#: resumes; a portal that answers "already cancelled" is success-by-fetch (`IrpAlreadyCancelled`).
+FILING_STATUSES: frozenset[str] = frozenset(
+    {"pending", "filed", "failed", "cancelled", "cancelling"}
+)
 
 #: The statutory GST rate bands. 0.25 % and 3 % are the precious-stones and precious-metals
 #: bands — easy to forget, and wrong to reject.
@@ -99,7 +119,10 @@ IRN_CANCELLATION_WINDOW: timedelta = timedelta(hours=24)
 #: time: `cancel` while the portal's window is open, `credit_note` once it has closed. Named as a
 #: vocabulary because a screen must offer exactly one of them, and offering both is how a user
 #: learns which is right by having the other fail.
-FILING_REMEDIES: frozenset[str] = frozenset({"cancel", "credit_note"})
+#: `contact_support` is the one a person cannot resolve from a screen: a withdrawal the platform
+#: asked for, never saw confirmed, and can no longer ask again because the window has shut — the
+#: portal may or may not hold it, and only a look at the portal says which (D3).
+FILING_REMEDIES: frozenset[str] = frozenset({"cancel", "credit_note", "contact_support"})
 
 
 # --------------------------------------------------------------------- the retry policy
@@ -123,15 +146,75 @@ MAX_FILING_ATTEMPTS: int = 5
 FILING_RETRY_BASE: timedelta = timedelta(minutes=2)
 FILING_RETRY_CEILING: timedelta = timedelta(hours=1)
 
+#: How much clock skew the early-arrival guard forgives (`app/consumers.py:file_requested_invoice`,
+#: ADR-0015 §5) before it treats a `filing_requested` message as arriving early. The scheduler
+#: fires a job the instant its own discovery query sees `due_at <= now()` on the database's own
+#: clock; this consumer's guard reads wall-clock time on whatever pod happens to run it. Neither
+#: pod nor broker latency is expected to exceed this by much, and the guard exists for a message
+#: arriving *meaningfully* early (a hand redelivery, a DLQ replay), not to reject one the ordinary
+#: last few seconds of scheduling latency produced.
+FILING_EARLY_ARRIVAL_TOLERANCE: timedelta = timedelta(seconds=30)
+
+#: How long a reportable, unfiled invoice may sit with no filing row newer than this before the
+#: filing-reclaim sweep (`app/cron.py`) treats the automatic pipeline as having lost track of it
+#: — the `filing_requested` event never arrived, or a process died between calling the portal and
+#: recording what it said, leaving no row behind at all (see `FILING_STATUSES`). Comfortably
+#: longer than the finalize-to-first-attempt path and a single portal call are ever expected to
+#: take together, so an invoice genuinely still in flight is never mistaken for lost.
+FILING_RECLAIM_AFTER: timedelta = timedelta(minutes=5)
+
+#: How many times the reclaim sweep will re-drive one stuck claim (a `cancelling` filing, a
+#: `submitting` or `cancelling` e-Way row) before it stops and writes a terminal `failed` row
+#: carrying `retry_exhausted`. The poisoned-step guard: a claim that keeps failing must become a
+#: visible failure a person can act on, not a row the sweep picks up on every tick forever. Each
+#: re-drive appends a fresh claim row, which doubles as its **lease** — see `resume_after`.
+MAX_COMPLIANCE_RESUMES: int = MAX_FILING_ATTEMPTS
+
+
+def resume_after(attempts: int) -> timedelta:
+    """How long a stuck claim must have stood, with nothing newer for its document, before the
+    reclaim sweep re-drives it — the bounded backoff between re-drives.
+
+    `attempts` is how many drives the chain has had so far (1-based). The floor is
+    `FILING_RECLAIM_AFTER` (comfortably longer than one portal call); each further drive adds the
+    same capped exponential the automatic filing retry uses, so a portal that is down for an hour
+    is not hammered by a sweep ticking every minute. Because every re-drive appends a fresh claim
+    row, "newest row older than this" is also the **lease**: two sweep replicas, or a sweep and a
+    request, cannot both pass it for the same document.
+    """
+    attempts = max(1, attempts)
+    backoff: timedelta = min(FILING_RETRY_BASE * (2 ** (attempts - 1)), FILING_RETRY_CEILING)
+    return FILING_RECLAIM_AFTER + backoff - FILING_RETRY_BASE
+
+
+def pending_redrive_after(attempts: int) -> timedelta:
+    """How long a `pending` row (an attempt that got an outage answer, with a retry owed) may
+    stand with no successor before the sweep concludes the retry it scheduled was lost.
+
+    The retry was staged for `filing_retry_delay(attempts)` after the row; the sweep waits that
+    long **plus** `FILING_RECLAIM_AFTER` of grace. Finance cannot see the scheduler's own table
+    (no cross-schema reads), so "no live scheduler job" is inferred from time alone — a deliberately
+    generous bound, and a re-drive that turns out to be redundant is harmless because the
+    consumer's claim asks `live_registration` first.
+    """
+    return filing_retry_delay(max(1, min(attempts, MAX_FILING_ATTEMPTS))) + FILING_RECLAIM_AFTER
+
+
 #: Error codes this *platform* writes, as opposed to the numbered ones the portal returns. Kept
 #: distinct from the portal's namespace (which is numeric) so "who said this" is never ambiguous
 #: in a support conversation: `2227` came from NIC, `retry_exhausted` came from us.
 ERR_PORTAL_UNAVAILABLE: str = "unavailable"
 ERR_RETRY_EXHAUSTED: str = "retry_exhausted"
 ERR_NO_REGISTRATION: str = "no_registration"
+#: A withdrawal the reclaim sweep found still owed after the portal's own 24-hour window shut:
+#: asking now can only be refused, so it stops and says so (D3).
+ERR_WINDOW_CLOSED: str = "window_closed"
+#: An e-Way generation chain older than `EWAY_REDRIVE_MAX_AGE`: goods that were meant to move a
+#: day ago are not given a bill automatically now (D3).
+ERR_STALE: str = "stale"
 
 PLATFORM_ERROR_CODES: frozenset[str] = frozenset(
-    {ERR_PORTAL_UNAVAILABLE, ERR_RETRY_EXHAUSTED, ERR_NO_REGISTRATION}
+    {ERR_PORTAL_UNAVAILABLE, ERR_RETRY_EXHAUSTED, ERR_NO_REGISTRATION, ERR_WINDOW_CLOSED, ERR_STALE}
 )
 
 
@@ -178,16 +261,31 @@ def cancellation_deadline(ack_date: datetime) -> datetime:
     return ack_date + IRN_CANCELLATION_WINDOW
 
 
+def is_failed_withdrawal(status: str | None, ack_date: datetime | None) -> bool:
+    """A `failed` row that carries an acknowledgement is a withdrawal that did not happen — the
+    portal refused it, the window shut, or the reclaim sweep gave up — so **the registration it
+    was withdrawing still stands**. A failed *registration* never carries one (D3)."""
+    return status == "failed" and ack_date is not None
+
+
 def remedy_for(*, status: str | None, ack_date: datetime | None, at: datetime) -> str | None:
     """Which correction is available for a document's current filing position at `at`.
 
     `cancel` only while a live registration is still inside the window; `credit_note` once it has
     closed. None when there is nothing to correct — an unfiled or already-withdrawn document has
     no registration standing against it.
+
+    A failed withdrawal leaves the registration standing, so it is never "nothing to do": inside
+    the window the answer is to ask again (`cancel`); outside it, the platform cannot know whether
+    the portal holds a withdrawal it never confirmed, so a person has to look (`contact_support`).
     """
-    if status != "filed" or ack_date is None:
+    if ack_date is None:
         return None
-    return "cancel" if cancellation_window_open(ack_date, at) else "credit_note"
+    if status == "filed":
+        return "cancel" if cancellation_window_open(ack_date, at) else "credit_note"
+    if is_failed_withdrawal(status, ack_date):
+        return "cancel" if cancellation_window_open(ack_date, at) else "contact_support"
+    return None
 
 
 # --------------------------------------------------------------------- GST identity
@@ -412,6 +510,20 @@ def parse_period(period: str) -> tuple[int, int]:
     if not 1 <= month <= 12:
         raise ValueError(f"{period!r} names month {month}, which does not exist")
     return year, month
+
+
+def next_period(period: str) -> str:
+    """The calendar period immediately after `period` — December rolls into next January.
+
+    Used to find the next *open* period for a posting that arrives after its own period's return
+    has already been filed: `selectors.claim_period_for` finds it directly
+    with no filed `gstr3b`, the same "amendment in a later period" shape a credit note against a
+    filed invoice already has.
+    """
+    year, month = parse_period(period)
+    if month == 12:
+        return f"{year + 1}-01"
+    return f"{year}-{month + 1:02d}"
 
 
 def financial_year(on: date) -> str:
@@ -825,8 +937,10 @@ def suggest_action(
 # assert the equality directly rather than approximately.
 
 #: The returns this service models. `gstr1` is outward supplies; `gstr7` is the deductor's
-#: TDS return, which this slice reports the *figures* for without filing (see the README).
-GST_RETURN_TYPES: frozenset[str] = frozenset({"gstr1", "gstr7"})
+#: TDS return, which this slice reports the *figures* for without filing (see the README);
+#: `gstr3b` is the summary return that nets outward liability against the ITC ledger — see
+#: `assemble_gstr3b`, further down this module, beside the ledger it reads.
+GST_RETURN_TYPES: frozenset[str] = frozenset({"gstr1", "gstr7", "gstr3b"})
 
 #: A return's lifecycle. `draft` is a period nobody has assembled yet; `generated` carries a
 #: snapshot of what would be reported; `filed` says the snapshot went to the portal. Forward
@@ -1412,6 +1526,602 @@ def may_transition_return(current: str, wanted: str) -> bool:
     return wanted in RETURN_TRANSITIONS.get(current, frozenset())
 
 
+# --------------------------------------------------------------------- the input-tax-credit ledger
+# GSTR-3B's other half, and a ledger in its own right. Three kinds of row, all append-only —
+#
+#   accrual      — eligible input tax credit from an IMS document this organization *accepted*.
+#   reversal     — an accepted document's credit withdrawn, because the decision changed.
+#   utilisation  — credit consumed against output liability when a GSTR-3B is filed.
+#
+# and the balance is never a column: it is `SUM(amount_minor)` per (registration, head, period),
+# carried forward the way every append-only ledger on this platform is read — the same shape as
+# the credit-pack draws commerce settled on. `amount_minor` is signed: positive on an accrual,
+# negative on a reversal or a utilisation, so the sum is the balance without a case split.
+#
+# **Section 17(5) blocked credit — what is handled and what is not.** The inbound document model
+# (`ims_documents`) carries no HSN, no description and no line items — only a supplier, a document
+# and four money columns — so there is nothing in the data to *derive* a blocked-credit category
+# from. What this slice does instead is let the person accepting a document say what it was for,
+# at the moment they accept it (`ImsDecisionCreate.expense_category`), and refuse to accrue credit
+# on the categories the statute blocks:
+#
+#   motor_vehicle              s. 17(5)(a)/(aa)  — motor vehicles for transport of persons (seating
+#                              ≤ 13) and vessels/aircraft, outside the further-supply/training/
+#                              transport-of-goods carve-outs this slice does not distinguish.
+#   food_beverage              s. 17(5)(b)(i)     — food, beverages, outdoor catering, and the
+#                              health/life insurance this slice folds into the same bucket rather
+#                              than adding a fifth category for.
+#   membership_club_fitness    s. 17(5)(b)(ii)    — membership of a club, health or fitness centre.
+#   works_contract_immovable   s. 17(5)(c)/(d)    — works contract services and goods/services for
+#                              construction of immovable property on one's own account, other than
+#                              plant and machinery.
+#   personal_consumption       s. 17(5)(g)        — goods or services for personal consumption.
+#
+# Deliberately **not** modelled: s. 17(5)(h) (goods lost, stolen, destroyed, written off, or given
+# as gifts or free samples) and s. 17(5)(i) (tax paid under composition) — both are facts about
+# what happened to goods *after* receipt, which nothing on `purchase_documents` or `ims_documents`
+# tracks, and inventing a column to hold a fact this platform never observes would be worse than
+# leaving the gap visible. A document in either situation is accepted as `general` today, which
+# overstates eligible credit until that tracking exists — called out again in the docstring of
+# `is_itc_eligible` so it is not a fact somebody has to already know to find.
+ITC_TAX_HEADS: frozenset[str] = frozenset({"igst", "cgst", "sgst", "cess"})
+
+#: The same four heads, ordered — for a posting loop or a report column order, where a set's
+#: undefined iteration order would make two runs list a document's postings differently.
+ITC_TAX_HEAD_ORDER: tuple[str, ...] = ("igst", "cgst", "sgst", "cess")
+
+#: The categories `ImsDecisionCreate.expense_category` accepts. `general` is the default and the
+#: only one this slice can actually observe most purchases as, since nothing upstream classifies
+#: an inbound document any further.
+ITC_EXPENSE_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "general",
+        "motor_vehicle",
+        "food_beverage",
+        "membership_club_fitness",
+        "works_contract_immovable",
+        "personal_consumption",
+    }
+)
+
+#: The categories s. 17(5) blocks outright. See the module note above for the statutory mapping
+#: and for what is deliberately absent from this set.
+BLOCKED_ITC_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "motor_vehicle",
+        "food_beverage",
+        "membership_club_fitness",
+        "works_contract_immovable",
+        "personal_consumption",
+    }
+)
+
+#: What a ledger row records itself as having come from — `itc_ledger_entries.source_type`.
+ITC_SOURCE_TYPES: frozenset[str] = frozenset({"ims_decision", "gst_return"})
+
+#: A posted row's kind — `itc_ledger_entries.kind`.
+ITC_POSTING_KINDS: frozenset[str] = frozenset({"accrual", "reversal", "utilisation"})
+
+
+def is_itc_eligible(category: str) -> bool:
+    """Whether a purchase in this category may accrue input tax credit at all.
+
+    `cess` is not a real observed head today — see `TaxHeadAmounts` — but the categories above
+    block a purchase's *whole* claim regardless of head, which is the statute's own shape: s.
+    17(5) does not partially block a document, it blocks the claim on it entirely.
+    """
+    return category not in BLOCKED_ITC_CATEGORIES
+
+
+@dataclass(frozen=True, slots=True)
+class TaxHeadAmounts:
+    """An amount broken across the four heads GST is payable under.
+
+    `cess_minor` is carried for forward compatibility and is always zero on every path this
+    slice produces: no table anywhere in this service — not `invoices`, not `purchase_documents`,
+    not `ims_documents` — has a cess column, because `split_gst` itself only ever computes
+    CGST/SGST/IGST. Adding cess for real is a change to that split and to every table it feeds,
+    which is a wider change than an ITC ledger; the field exists here so the ledger's schema does
+    not need to change shape on the day that lands.
+    """
+
+    igst_minor: int = 0
+    cgst_minor: int = 0
+    sgst_minor: int = 0
+    cess_minor: int = 0
+
+    @property
+    def total_minor(self) -> int:
+        return self.igst_minor + self.cgst_minor + self.sgst_minor + self.cess_minor
+
+    def __add__(self, other: TaxHeadAmounts) -> TaxHeadAmounts:
+        return TaxHeadAmounts(
+            igst_minor=self.igst_minor + other.igst_minor,
+            cgst_minor=self.cgst_minor + other.cgst_minor,
+            sgst_minor=self.sgst_minor + other.sgst_minor,
+            cess_minor=self.cess_minor + other.cess_minor,
+        )
+
+    def __sub__(self, other: TaxHeadAmounts) -> TaxHeadAmounts:
+        return TaxHeadAmounts(
+            igst_minor=self.igst_minor - other.igst_minor,
+            cgst_minor=self.cgst_minor - other.cgst_minor,
+            sgst_minor=self.sgst_minor - other.sgst_minor,
+            cess_minor=self.cess_minor - other.cess_minor,
+        )
+
+    def for_head(self, head: str) -> int:
+        return getattr(self, f"{head}_minor")  # type: ignore[no-any-return]
+
+
+ZERO_ITC = TaxHeadAmounts()
+
+
+def itc_eligible_amounts(document: TaxHeadAmounts, *, category: str) -> TaxHeadAmounts:
+    """The credit a document's own tax split would accrue, or nothing at all when blocked.
+
+    Not a partial reduction — `is_itc_eligible` is a whole-document gate, so a blocked category
+    is `ZERO_ITC` across every head rather than a head-by-head means test the statute does not
+    describe.
+    """
+    return document if is_itc_eligible(category) else ZERO_ITC
+
+
+def split_positive_negative(amounts: TaxHeadAmounts) -> tuple[TaxHeadAmounts, TaxHeadAmounts]:
+    """Split a signed amount into its non-negative part and its non-positive part, head by head —
+    `positive.for_head(h) + negative.for_head(h) == amounts.for_head(h)` for every head.
+
+    What `services.record_ims_decision` uses to turn one delta on the ledger (what should now be
+    outstanding, minus what already is) into the two kinds of row the ledger actually holds: the
+    positive part posts as an `accrual`, the negative part as a `reversal`. One decision can
+    legitimately produce both in general, even though in practice a document is taxed under a
+    single shape (IGST alone, or CGST+SGST together) so a real delta is never mixed-sign across
+    its own two or three live heads.
+    """
+    positive = TaxHeadAmounts(
+        igst_minor=max(0, amounts.igst_minor),
+        cgst_minor=max(0, amounts.cgst_minor),
+        sgst_minor=max(0, amounts.sgst_minor),
+        cess_minor=max(0, amounts.cess_minor),
+    )
+    negative = TaxHeadAmounts(
+        igst_minor=min(0, amounts.igst_minor),
+        cgst_minor=min(0, amounts.cgst_minor),
+        sgst_minor=min(0, amounts.sgst_minor),
+        cess_minor=min(0, amounts.cess_minor),
+    )
+    return positive, negative
+
+
+@dataclass(frozen=True, slots=True)
+class UtilisationLine:
+    """One application of credit against liability — one credit head, against one liability head,
+    for one amount. `head == against` is the ordinary case; the three cross-heads the statute
+    permits (`igst`→`cgst`, `igst`→`sgst`, `cgst`→`igst`, `sgst`→`igst`) are the exceptional one,
+    and `cgst`↔`sgst` never appears at all."""
+
+    head: str
+    against: str
+    amount_minor: int
+
+
+@dataclass(frozen=True, slots=True)
+class UtilisationResult:
+    """What filing a GSTR-3B does to the credit ledger and the liability: every application made,
+    what is left of the credit afterwards (carried forward), what liability nothing covered
+    (payable in cash), and what liability was negative to begin with (`excess_liability`)."""
+
+    lines: tuple[UtilisationLine, ...]
+    credit_remaining: TaxHeadAmounts
+    cash_payable: TaxHeadAmounts
+    #: The magnitude of any *negative* liability handed in — a heavy-credit-note period reporting
+    #: more corrected than supplied at a head. Always `>= 0` per head. Never treated as spendable
+    #: credit and never netted into `cash_payable`; carried here as a visible, reported excess
+    #: because GSTR-3B's own refund/carry-forward workflow for it is out of scope for this slice —
+    #: see the module note on `utilise_itc`.
+    excess_liability: TaxHeadAmounts
+    #: The magnitude of any *negative* available credit handed in — a credit note's own negative
+    #: accrual (see `services.record_ims_decision`) outrunning what a head had otherwise accrued.
+    #: Always `>= 0` per head. Never treated as a liability and never added to `cash_payable`;
+    #: carried here, visibly, for the same reason `excess_liability` is — dropping it silently
+    #: would understate how deep a head has gone negative rather than merely reporting it as zero.
+    credit_deficit: TaxHeadAmounts
+
+
+def _apply(credit: int, liability: int) -> tuple[int, int, int]:
+    """Use as much of `credit` against `liability` as either allows. Returns
+    `(amount_applied, credit_left, liability_left)` — all non-negative given non-negative inputs,
+    since `min` of two non-negative numbers is itself non-negative and never exceeds either."""
+    applied = min(credit, liability)
+    return applied, credit - applied, liability - applied
+
+
+def _clamp_non_negative(amounts: TaxHeadAmounts) -> TaxHeadAmounts:
+    return TaxHeadAmounts(
+        igst_minor=max(0, amounts.igst_minor),
+        cgst_minor=max(0, amounts.cgst_minor),
+        sgst_minor=max(0, amounts.sgst_minor),
+        cess_minor=max(0, amounts.cess_minor),
+    )
+
+
+def utilise_itc(available: TaxHeadAmounts, liability: TaxHeadAmounts) -> UtilisationResult:
+    """The statutory utilisation order (CGST Rule 88A), as pure integer arithmetic, minimising
+    cash payable subject to it.
+
+    **Negative inputs are real and are handled before any of the rest of this runs.** A period
+    heavy with credit notes can report negative liability at a head (more corrected than
+    supplied); this platform's ledger can likewise report negative available credit at a head once
+    a credit note's own negative accrual (see `services.record_ims_decision`) outruns what was
+    otherwise accrued. Neither is spendable: a negative liability is not a debt owed by the
+    government, and a negative credit balance is not a credit this function can hand out. Both are
+    clamped to zero before the statute's own arithmetic runs; the magnitude of a clamped negative
+    liability is returned separately as `excess_liability` rather than silently disappearing, so
+    it stays visible even though carrying it forward into a refund claim or a future period's
+    Table 3.1 is real functionality this slice does not implement.
+
+    Four rules, applied in this order because each is a precondition of the ones after it:
+
+    1. **IGST credit against its own liability first.**
+    2. **The rest of IGST credit is routed to minimise cash, not merely to satisfy the ordering.**
+       CGST and SGST liability that *their own* native credit could never reach anyway — the
+       shortfall `max(0, liability - own credit)` — is paid from IGST before native credit gets a
+       chance, so native CGST/SGST credit is never left idle while IGST pays a liability the
+       credit sitting right beside it could have paid instead. (The defect this replaces: credit
+       igst=100 cgst=100 sgst=0 against liability cgst=100 sgst=100 used to leave 100 in cash with
+       100 of CGST credit stranded; paying the SGST shortfall from IGST and letting native CGST
+       credit cover CGST leaves nothing in cash.) Any IGST still left after both shortfalls is
+       offered to whatever of CGST/SGST liability remains, because Rule 88A requires IGST credit
+       be **completely** exhausted before CGST or SGST credit may be used at all — not merely used
+       "enough".
+    3. **CGST credit** then goes against CGST liability, and only the remainder against IGST.
+       It never touches SGST liability — CGST and SGST are separate governments' money and the
+       statute keeps them apart even when both are owed to the same taxpayer.
+    4. **SGST credit** mirrors it: SGST liability first, the remainder against IGST, never CGST.
+
+    Cess stands alone throughout: cess credit offsets only cess liability, because no other head's
+    credit may touch it and it may not touch any other head.
+
+    Every step is a `min(...)`, so the result is non-negative by construction, no step ever
+    manufactures negative credit or negative liability, and `credit_remaining + applied` and
+    `cash_payable + applied` each foot back to the (clamped) inputs — asserted as invariants over
+    generated inputs, including negative ones, in `tests/test_itc.py`, alongside a brute-force
+    check that cash payable really is the minimum Rule 88A allows and a stronger ordering check:
+    whenever any CGST or SGST credit is applied to anything, IGST credit is already fully spent.
+    """
+    excess_liability = TaxHeadAmounts(
+        igst_minor=max(0, -liability.igst_minor),
+        cgst_minor=max(0, -liability.cgst_minor),
+        sgst_minor=max(0, -liability.sgst_minor),
+        cess_minor=max(0, -liability.cess_minor),
+    )
+    credit_deficit = TaxHeadAmounts(
+        igst_minor=max(0, -available.igst_minor),
+        cgst_minor=max(0, -available.cgst_minor),
+        sgst_minor=max(0, -available.sgst_minor),
+        cess_minor=max(0, -available.cess_minor),
+    )
+    liability = _clamp_non_negative(liability)
+    available = _clamp_non_negative(available)
+
+    lines: list[UtilisationLine] = []
+
+    def use(credit: int, liability: int, head: str, against: str) -> tuple[int, int]:
+        applied, credit_left, liability_left = _apply(credit, liability)
+        if applied:
+            lines.append(UtilisationLine(head=head, against=against, amount_minor=applied))
+        return credit_left, liability_left
+
+    def use_at_most(
+        credit: int, liability: int, cap: int, head: str, against: str
+    ) -> tuple[int, int]:
+        """Apply at most `cap` of `credit` against `liability` — the shortfall-targeted step,
+        where the amount offered is bounded by neither the liability nor the credit alone but by
+        how much of the liability the *other* credit at that head cannot reach anyway."""
+        applied = min(credit, liability, cap)
+        if applied:
+            lines.append(UtilisationLine(head=head, against=against, amount_minor=applied))
+        return credit - applied, liability - applied
+
+    igst_credit, igst_liab = available.igst_minor, liability.igst_minor
+    cgst_credit, cgst_liab = available.cgst_minor, liability.cgst_minor
+    sgst_credit, sgst_liab = available.sgst_minor, liability.sgst_minor
+    cess_credit, cess_liab = available.cess_minor, liability.cess_minor
+
+    # 1. IGST credit against its own liability first.
+    igst_credit, igst_liab = use(igst_credit, igst_liab, "igst", "igst")
+
+    # 2. Route the rest of IGST credit to minimise cash: pay the shortfall native CGST/SGST credit
+    # cannot reach first, then (Rule 88A requiring IGST be *fully* exhausted first) whatever of
+    # CGST/SGST liability still remains.
+    shortfall_cgst = max(0, cgst_liab - cgst_credit)
+    shortfall_sgst = max(0, sgst_liab - sgst_credit)
+    igst_credit, cgst_liab = use_at_most(igst_credit, cgst_liab, shortfall_cgst, "igst", "cgst")
+    igst_credit, sgst_liab = use_at_most(igst_credit, sgst_liab, shortfall_sgst, "igst", "sgst")
+    igst_credit, cgst_liab = use(igst_credit, cgst_liab, "igst", "cgst")
+    igst_credit, sgst_liab = use(igst_credit, sgst_liab, "igst", "sgst")
+
+    # 3. CGST credit: CGST liability first, remainder against IGST. Never SGST.
+    cgst_credit, cgst_liab = use(cgst_credit, cgst_liab, "cgst", "cgst")
+    cgst_credit, igst_liab = use(cgst_credit, igst_liab, "cgst", "igst")
+
+    # 4. SGST credit: SGST liability first, remainder against IGST. Never CGST.
+    sgst_credit, sgst_liab = use(sgst_credit, sgst_liab, "sgst", "sgst")
+    sgst_credit, igst_liab = use(sgst_credit, igst_liab, "sgst", "igst")
+
+    # Cess: only ever against cess.
+    cess_credit, cess_liab = use(cess_credit, cess_liab, "cess", "cess")
+
+    # IGST's shortfall-targeted step and its generic "whatever remains" step can both post against
+    # the same (head, against) pair — merge them into one line so a report reads "IGST -> CGST
+    # 9,000" rather than two rows that happen to sum to it.
+    merged: dict[tuple[str, str], int] = {}
+    order: list[tuple[str, str]] = []
+    for line in lines:
+        key = (line.head, line.against)
+        if key not in merged:
+            order.append(key)
+        merged[key] = merged.get(key, 0) + line.amount_minor
+    lines = [UtilisationLine(head=h, against=a, amount_minor=merged[(h, a)]) for h, a in order]
+
+    return UtilisationResult(
+        lines=tuple(lines),
+        credit_remaining=TaxHeadAmounts(
+            igst_minor=igst_credit,
+            cgst_minor=cgst_credit,
+            sgst_minor=sgst_credit,
+            cess_minor=cess_credit,
+        ),
+        cash_payable=TaxHeadAmounts(
+            igst_minor=igst_liab, cgst_minor=cgst_liab, sgst_minor=sgst_liab, cess_minor=cess_liab
+        ),
+        excess_liability=excess_liability,
+        credit_deficit=credit_deficit,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class Gstr3bOutward:
+    """Table 3.1 — outward supplies and inward supplies liable to reverse charge.
+
+    Only (a) and (b) are ever non-zero on this platform today, and the docstring on each field
+    says why: (c), (d) and (e) all ask for a fact no table here records.
+    """
+
+    #: 3.1(a) — taxable supplies other than zero-rated: every reportable `b2b`/`b2c` document that
+    #: is not itself marked reverse-charge. A document this organization raised under reverse
+    #: charge is excluded here and carried separately in `outward_reverse_charge` — the recipient,
+    #: not this organization, owes the tax on it, and folding it into (a) would make Table 6.1
+    #: collect cash from the wrong side of the supply.
+    taxable_supplies: TaxHeadAmounts
+    outward_taxable_minor: int
+    #: 3.1(b) — zero-rated supplies: `export` and `sez`, inter-state by statute regardless of the
+    #: rate actually charged.
+    zero_rated: TaxHeadAmounts
+    zero_rated_taxable_minor: int
+    #: 3.1(c) — nil-rated and exempt supplies. Always zero: no document here carries a flag
+    #: distinguishing an exempt supply from a taxable one billed at a 0% band: both look like "no
+    #: tax", and only one of them is what this section asks for.
+    nil_rated_taxable_minor: int
+    #: 3.1(d) — inward supplies liable to reverse charge. Always zero: `purchase_documents` and
+    #: `ims_documents` carry no reverse-charge flag; `invoices.reverse_charge` records the
+    #: *outward* side of a reverse-charge supply this organization raised, which is a different
+    #: fact from what this organization owes as the recipient of somebody else's.
+    reverse_charge_inward_taxable_minor: int
+    #: 3.1(e) — non-GST outward supplies (alcohol, petroleum, …). Always zero: `supply_type`
+    #: carries no such classification, and inventing one without a real non-GST product line to
+    #: test it against would be guessing.
+    non_gst_taxable_minor: int
+    #: Not a numbered row of the real form — GSTR-3B has no line of its own for the taxable value
+    #: of an outward reverse-charge supply, and folding it into 3.1(a) is exactly the bug this
+    #: field exists to avoid. Kept here, visibly, rather than dropped: the value was real, the
+    #: platform just does not owe the tax on it.
+    outward_reverse_charge: TaxHeadAmounts
+    outward_reverse_charge_taxable_minor: int
+
+    @property
+    def output_tax(self) -> TaxHeadAmounts:
+        """The liability Table 6.1 is computed against — (a) and (b) summed, since (c)/(d)/(e)
+        never carry tax by construction and a reverse-charge outward supply is the recipient's
+        liability, not this organization's."""
+        return self.taxable_supplies + self.zero_rated
+
+
+@dataclass(frozen=True, slots=True)
+class Gstr3bItc:
+    """Table 4, mapped the way Notification 14/2022-CT reshaped it (with effect from the return
+    for July 2022): 4A(5) is **gross** eligible-by-default ITC — including credit this platform
+    never let onto the spendable balance because a category blocked it under s. 17(5) — 4B splits
+    the reversal the return itself asks for into two rows, 4C is the net the ledger actually
+    carries forward, and 4D is informational and never touches 4C.
+
+    * **4A(5) "All other ITC"** — every accepted document's credit, blocked or not. 4A(1)-(4) —
+      import of goods, import of services, inward supplies liable to RCM, and credit from an Input
+      Service Distributor — each ask for a fact `ims_documents` does not carry: nothing
+      distinguishes an import or an RCM inward supply or an ISD credit from an ordinary domestic
+      purchase today, so this platform cannot place a figure in any of the four.
+    * **4B(1) "As per Rule 42/43 and s. 17(5)"** — the blocked-category portion of 4A(5), read
+      off `ims_decisions.expense_category` rather than the ledger, because a blocked document
+      never posts a ledger row to begin with (see the module note above the ledger — nothing to
+      spend is nothing to post). Rules 42/43 themselves (the exempt-supply proportional reversal)
+      are unmodelled; only s. 17(5) is.
+    * **4B(2) "Others"** — reversals actually posted to the ledger this period: an accepted
+      document's status later moving away from `accepted`, or a supplier credit note accepted
+      against credit already claimed. Rule 37 (non-payment within 180 days) is unmodelled.
+    * **4C = 4A - 4B** — the figure `payment` actually utilises. Numerically unchanged by this
+      remapping: 4A(5) gross minus 4B(1) blocked minus 4B(2) other is exactly the eligible accrual
+      minus the ledger's own reversals, which is what `net_eligible` computed before the return's
+      *display* shape was corrected to match the notification.
+    * **4D(1) "ITC reclaimed, reversed earlier under 4B(2)"** and **4D(2) "Ineligible under
+      s. 16(4) / place-of-supply"** — both always zero. Neither Rule 37's 180-day re-claim nor a
+      time-barred or PoS-mismatched claim is modelled; see the module note.
+    """
+
+    available: TaxHeadAmounts  # 4A(5), gross
+    reversed_section_17_5: TaxHeadAmounts  # 4B(1)
+    reversed_other: TaxHeadAmounts  # 4B(2)
+    reclaimed: TaxHeadAmounts  # 4D(1) — always zero, out of scope
+    ineligible_other: TaxHeadAmounts  # 4D(2) — always zero, out of scope
+
+    @property
+    def total_reversed(self) -> TaxHeadAmounts:  # 4B = 4B(1) + 4B(2)
+        return self.reversed_section_17_5 + self.reversed_other
+
+    @property
+    def net_eligible(self) -> TaxHeadAmounts:  # 4C = 4A - 4B
+        return self.available - self.total_reversed
+
+
+@dataclass(frozen=True, slots=True)
+class Gstr3bPayment:
+    """Table 6.1 — payment of tax: the liability, what credit covered it and how, and what is
+    left for cash. Late fee and interest are out of scope — see the module note."""
+
+    liability: TaxHeadAmounts
+    utilisation: UtilisationResult
+
+    @property
+    def cash_payable(self) -> TaxHeadAmounts:
+        return self.utilisation.cash_payable
+
+
+@dataclass(frozen=True, slots=True)
+class Gstr3bReturn:
+    """One period's GSTR-3B, assembled. Pure data — the snapshot a `gst_returns` row stores."""
+
+    period: str
+    gstin: str
+    outward: Gstr3bOutward
+    #: The count of reportable documents Table 3.1 was summed from — denormalised the same way
+    #: `Gstr1Return.totals.document_count` is, so a list page need not re-open the snapshot.
+    document_count: int
+    itc: Gstr3bItc
+    #: The ITC ledger balance brought into the period, before this period's accrual and reversal —
+    #: what Table 6.1 has *on top of* 4C to utilise.
+    itc_brought_forward: TaxHeadAmounts
+    payment: Gstr3bPayment
+
+
+def assemble_gstr3b(
+    documents: Sequence[ReturnDocument],
+    *,
+    period: str,
+    gstin: str,
+    itc_brought_forward: TaxHeadAmounts,
+    itc_accrued: TaxHeadAmounts,
+    itc_reversed: TaxHeadAmounts,
+    itc_blocked: TaxHeadAmounts,
+) -> Gstr3bReturn:
+    """Assemble one period's GSTR-3B. Pure, like `assemble_gstr1`, and deliberately built from the
+    *same* raw document list rather than from an already-assembled `Gstr1Return` — two independent
+    paths over one book, so a test comparing this return's Table 3.1 against GSTR-1's totals for
+    the same period is a real cross-foot rather than a tautology built from itself.
+
+    `documents` is every finalized document the organization issued in the period, exactly what
+    `assemble_gstr1` is handed — the two returns are always generated over the same book. The three
+    `itc_*` arguments are the ledger's own figures for the period, computed by `selectors` from the
+    ITC ledger table; nothing here writes to it or decides what belongs in it.
+    """
+    parse_period(period)
+    reported = [d for d in documents if is_reportable_in_return(d.document_type, d.status)]
+
+    taxable_split = ZERO_TAX
+    taxable_minor = 0
+    zero_rated_split = ZERO_TAX
+    zero_rated_minor = 0
+    reverse_charge_split = ZERO_TAX
+    reverse_charge_minor = 0
+    for document in reported:
+        if document.reverse_charge:
+            # The recipient owes this tax, not this organization — reported for visibility, never
+            # folded into (a) or (b), and never part of `output_tax`.
+            reverse_charge_split = reverse_charge_split + document.split
+            reverse_charge_minor += document.taxable_minor
+        elif document.supply_type in INTERSTATE_SUPPLY_TYPES:
+            zero_rated_split = zero_rated_split + document.split
+            zero_rated_minor += document.taxable_minor
+        else:
+            taxable_split = taxable_split + document.split
+            taxable_minor += document.taxable_minor
+
+    outward = Gstr3bOutward(
+        taxable_supplies=TaxHeadAmounts(
+            igst_minor=taxable_split.igst_minor,
+            cgst_minor=taxable_split.cgst_minor,
+            sgst_minor=taxable_split.sgst_minor,
+        ),
+        outward_taxable_minor=taxable_minor,
+        zero_rated=TaxHeadAmounts(
+            igst_minor=zero_rated_split.igst_minor,
+            cgst_minor=zero_rated_split.cgst_minor,
+            sgst_minor=zero_rated_split.sgst_minor,
+        ),
+        zero_rated_taxable_minor=zero_rated_minor,
+        nil_rated_taxable_minor=0,
+        reverse_charge_inward_taxable_minor=0,
+        non_gst_taxable_minor=0,
+        outward_reverse_charge=TaxHeadAmounts(
+            igst_minor=reverse_charge_split.igst_minor,
+            cgst_minor=reverse_charge_split.cgst_minor,
+            sgst_minor=reverse_charge_split.sgst_minor,
+        ),
+        outward_reverse_charge_taxable_minor=reverse_charge_minor,
+    )
+
+    itc = Gstr3bItc(
+        available=itc_accrued + itc_blocked,
+        reversed_section_17_5=itc_blocked,
+        reversed_other=itc_reversed,
+        reclaimed=ZERO_ITC,
+        ineligible_other=ZERO_ITC,
+    )
+
+    liability = outward.output_tax
+    available_for_utilisation = itc_brought_forward + itc.net_eligible
+    utilisation = utilise_itc(available_for_utilisation, liability)
+
+    return Gstr3bReturn(
+        period=period,
+        gstin=gstin,
+        outward=outward,
+        document_count=len(reported),
+        itc=itc,
+        itc_brought_forward=itc_brought_forward,
+        payment=Gstr3bPayment(liability=liability, utilisation=utilisation),
+    )
+
+
+def gstr3b_reconciles_with_gstr1(gstr3b: Gstr3bReturn, gstr1_totals: ReturnTotals) -> bool:
+    """Table 3.1's outward figures must equal GSTR-1's totals for the same period, to the paisa.
+
+    Both returns are assembled from the same documents, so this should always hold. GSTR-1 reports
+    every outward document regardless of `reverse_charge`, so the comparison adds
+    `outward_reverse_charge` back in even though `output_tax` (what Table 6.1 collects cash
+    against) deliberately excludes it — the two questions are "what did this book declare" and
+    "what does this organization itself owe", and only the first is what GSTR-1 answers too.
+    Table 3.1(c), (d) and (e) are always zero given what this platform records, so (a) + (b) + the
+    reverse-charge figure is the *whole* of this platform's outward declaration. Checked at
+    generation time as a defensive assertion, not only in a test: two returns silently disagreeing
+    about one book is exactly the mismatch this pairing exists to prevent.
+    """
+    outward = (
+        gstr3b.outward.taxable_supplies
+        + gstr3b.outward.zero_rated
+        + gstr3b.outward.outward_reverse_charge
+    )
+    outward_taxable = (
+        gstr3b.outward.outward_taxable_minor
+        + gstr3b.outward.zero_rated_taxable_minor
+        + gstr3b.outward.outward_reverse_charge_taxable_minor
+    )
+    return (
+        outward_taxable == gstr1_totals.taxable_minor
+        and outward.cgst_minor == gstr1_totals.cgst_minor
+        and outward.sgst_minor == gstr1_totals.sgst_minor
+        and outward.igst_minor == gstr1_totals.igst_minor
+    )
+
+
 # --------------------------------------------------------------------- e-Way bills
 # A second portal with a second obligation, and it is not e-invoicing with a different endpoint:
 # an IRN says a supply was reported, an e-Way bill says goods are *moving right now* and is
@@ -1437,8 +2147,20 @@ TRANSPORT_MODES: frozenset[str] = frozenset({"road", "rail", "air", "ship"})
 #:                from the stored `valid_until`, because the table is append-only and a row
 #:                cannot be updated when the clock passes it. Storable so a bill imported from
 #:                the portal already past its validity is representable.
+#:   submitting — the **claim** for a generation (D3, ADR-0015 addendum): the transport facts,
+#:                committed before the portal is called with no transaction open. The facts are
+#:                the caller's and are on no invoice, so a claim row is the only place a resumed
+#:                attempt can find them. Idempotent by (document, transporter/vehicle part) —
+#:                `eway_idempotency_key` — and the portal's own answer to a repeat is "already
+#:                generated", carrying the bill number (success-by-lookup,
+#:                `EwayAlreadyGenerated`).
+#:   cancelling — the **claim** for a withdrawal, carrying the reason and the bill's own
+#:                validity, audited as `eway.cancel_requested`. A portal that answers "already
+#:                cancelled" is success-by-fetch (`EwayAlreadyCancelled`).
+#: A `submitting` or `cancelling` row still newest for its document past `resume_after` is what
+#: the reclaim sweep re-drives; so is a `pending` (outage) row, which nothing else retries yet.
 EWAY_STATUSES: frozenset[str] = frozenset(
-    {"pending", "generated", "failed", "cancelled", "expired"}
+    {"pending", "generated", "failed", "cancelled", "expired", "submitting", "cancelling"}
 )
 
 #: Kilometres of approximate distance one day of validity buys, for ordinary cargo.
@@ -1534,6 +2256,99 @@ def eway_cancellation_window_open(generated_at: datetime, at: datetime) -> bool:
     return at - generated_at <= EWAY_CANCELLATION_WINDOW
 
 
+#: How old the first row of a stuck e-Way generation chain may be before the reclaim sweep stops
+#: re-driving it and records a terminal `stale` row instead. A bill is a licence for goods to be
+#: on the road now; a consignment that should have moved a day ago is a person's call (D3).
+EWAY_REDRIVE_MAX_AGE: timedelta = timedelta(hours=24)
+
+
+def eway_idempotency_key(
+    *,
+    invoice_id: uuid.UUID,
+    generation: int,
+    transport_mode: str,
+    vehicle_no: str | None,
+    transporter_id: str | None,
+    transport_doc_no: str | None,
+    transport_doc_date: date | None,
+    distance_km: int,
+    over_dimensional: bool,
+) -> str:
+    """The key one e-Way generation is idempotent by: **(document, transporter/vehicle part)**,
+    plus which bill of the document's life this is.
+
+    * **document** — the invoice id, which fixes the seller, the document type, number and date.
+    * **transporter/vehicle part** — "Part B" of the bill: how the goods move and who moves them.
+      The same consignment asked for twice with the same Part B is one bill; a different vehicle
+      is a different request, and must not be answered with the first one's number.
+    * **distance and over-dimensional cargo** — not Part B, but the two inputs this platform
+      computes validity from (`eway_valid_until`). A repeat answered "already generated" is
+      recorded against the *resuming* row's stored distance; were the distance not in the key, a
+      corrected distance could be answered with a bill raised for the old one, and the deadline
+      a screen shows would no longer be the portal's.
+    * **generation** — 1 for the document's first bill, 2 once that one was cancelled or expired
+      and another is raised, and so on (the count of `generated` rows before this claim, plus
+      one). Without it a document legitimately re-raised on the same lorry after a cancellation
+      would be answered with the withdrawn bill.
+
+    A pure function of values stored on the claim row and the ledger, so a resumed attempt
+    (`app/cron.py`, after a crash between the portal call and recording it) recomputes the
+    identical key without anything extra having been persisted, and a real portal answers the
+    repeat with "already generated" (`EwayAlreadyGenerated`) rather than a second bill.
+    """
+    if generation < 1:
+        raise ValueError("e-Way generations are 1-based")
+    part_b = "|".join(
+        [
+            transport_mode,
+            _normalised_ref(vehicle_no),
+            _normalised_ref(transporter_id),
+            _normalised_ref(transport_doc_no),
+            transport_doc_date.isoformat() if transport_doc_date else "",
+            str(distance_km),
+            "odc" if over_dimensional else "",
+        ]
+    )
+    digest = hashlib.sha256(part_b.encode()).hexdigest()[:24]
+    return f"eway:{invoice_id}:{generation}:{digest}"
+
+
+def _normalised_ref(value: str | None) -> str:
+    """A vehicle number, transporter id or transport document number as the portal compares it:
+    case- and whitespace-insensitive, so `mh12 ab1234` and `MH12AB1234` are one request."""
+    return "".join((value or "").split()).upper()
+
+
+def chain_start(rows: Sequence[Any], *, chain: frozenset[str]) -> Any | None:
+    """The oldest row of the run of `chain` statuses at the head of a newest-first history — when
+    the stuck attempt was first made, which is what the age cap on re-driving it measures."""
+    first = None
+    for row in rows:
+        if row.status not in chain:
+            break
+        first = row
+    return first
+
+
+def leading_claim_attempts(statuses: Sequence[str], *, claim: str, chain: frozenset[str]) -> int:
+    """How many times the claim at the head of a newest-first history has been driven.
+
+    Walks `statuses` from the newest while each is in `chain` (the claim status and the outage
+    rows its attempts leave behind), counting the `claim` rows among them. A `cancelling` chain
+    is just its claim rows — an outage appends nothing, the claim standing is the record — while
+    an e-Way generation chain interleaves `submitting` claims with the `pending` rows each
+    outage recorded, and only the claims count as drives. The reclaim sweep's poisoned-step
+    guard compares this to `MAX_COMPLIANCE_RESUMES`; `resume_after` turns it into the backoff.
+    """
+    attempts = 0
+    for status in statuses:
+        if status not in chain:
+            break
+        if status == claim:
+            attempts += 1
+    return attempts
+
+
 def eway_status_at(*, status: str, valid_until: datetime | None, at: datetime) -> str:
     """The status a stored attempt *actually* has now.
 
@@ -1552,10 +2367,18 @@ def eway_remedy_for(*, status: str, generated_at: datetime | None, at: datetime)
     Named as a single answer rather than a set of flags for the same reason `remedy_for` is: a
     screen must offer the one action that will work, and offering both is how a user learns
     which is right by having the other fail.
+
+    A failed *withdrawal* (a `failed` row carrying the bill's `valid_from` — a failed generation
+    never has one) leaves the bill standing: ask again inside the window, `contact_support`
+    outside it, where only the portal knows whether it holds a withdrawal never confirmed (D3).
     """
-    if status != "generated" or generated_at is None:
+    if generated_at is None:
         return None
-    return "cancel" if eway_cancellation_window_open(generated_at, at) else None
+    if status == "generated":
+        return "cancel" if eway_cancellation_window_open(generated_at, at) else None
+    if status == "failed":
+        return "cancel" if eway_cancellation_window_open(generated_at, at) else "contact_support"
+    return None
 
 
 # --------------------------------------------------------------------- withholding: TDS and TCS

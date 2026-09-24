@@ -58,7 +58,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import selectors, services
 from app.config import settings
-from app.transports import send_batch
+from app.transports import Receipt, TransportError, send_batch
 from platform_core.db import (
     assert_app_role,
     assert_outbox_role,
@@ -69,6 +69,7 @@ from platform_core.db import (
     session_scope,
 )
 from platform_core.logging import get_logger
+from platform_core.supervise import GuardedSweep
 
 log = get_logger("notification.cron")
 
@@ -94,8 +95,16 @@ class SweepReport:
     failed: int = 0
 
 
-class CampaignDriver:
-    """Drains due campaigns, one batch at a time, one tick at a time. See the module docstring."""
+class CampaignDriver(GuardedSweep):
+    """Drains due campaigns, one batch at a time, one tick at a time. See the module docstring.
+
+    `run()` is `GuardedSweep`'s own: the poisoned-step guard around the whole tick (a discovery
+    failure — a DB restart, a deadlock — is logged and backed off exponentially rather than
+    propagated) matters more here than it would alone, because `app/worker.py` shares one
+    `run_supervised` group between this driver and both event consumers — an uncaught exception
+    here would take those down too. `on_tick_success` below is this class's own: the pass-level
+    logging `run()` used to do inline before this shared with `scheduler.app.cron.Sweep`.
+    """
 
     def __init__(
         self,
@@ -109,43 +118,40 @@ class CampaignDriver:
         max_backoff_seconds: float = 300.0,
         discovery_limit: int = 100,
     ) -> None:
+        super().__init__(poll_interval=poll_interval, max_backoff=max_backoff_seconds)
         self._discovery_factory = discovery_factory
         self._work_scope = work_scope
         self._batch_size = batch_size
         self._lease_seconds = lease_seconds
         self._pause_retry_seconds = pause_retry_seconds
-        self._poll_interval = poll_interval
+        # Also the ceiling for each campaign's own in-memory provider-outage backoff
+        # (`_note_unavailable`, below) — a distinct concept from the tick-level guard
+        # `GuardedSweep.__init__` stored as `_max_backoff`, sharing a default only because
+        # neither ever needed a different one; kept as its own name here for that reason.
         self._max_backoff_seconds = max_backoff_seconds
         self._discovery_limit = discovery_limit
-        self._stop = False
         #: Consecutive provider-unavailable outcomes and the instant a campaign is worth
         #: retrying again, kept in memory only — see the module docstring for why that is safe.
         self._backoff_streak: dict[uuid.UUID, int] = {}
         self._backoff_until: dict[uuid.UUID, datetime] = {}
 
-    def stop(self) -> None:
-        self._stop = True
+    @property
+    def _log_name(self) -> str:
+        return "notification.cron"
 
-    async def run(self) -> None:
-        log.info(
-            "notification.cron.started",
-            poll_interval=self._poll_interval,
-            batch_size=self._batch_size,
-        )
-        while not self._stop:
-            report = await self.tick()
-            if report.considered or report.failed:
-                log.info(
-                    "notification.cron.pass",
-                    considered=report.considered,
-                    batches_sent=report.batches_sent,
-                    completed=report.completed,
-                    paused=report.paused,
-                    capped=report.capped,
-                    backed_off=report.backed_off,
-                    failed=report.failed,
-                )
-            await asyncio.sleep(self._poll_interval)
+    async def on_tick_success(self, result: SweepReport) -> None:
+        report = result
+        if report.considered or report.failed:
+            log.info(
+                "notification.cron.pass",
+                considered=report.considered,
+                batches_sent=report.batches_sent,
+                completed=report.completed,
+                paused=report.paused,
+                capped=report.capped,
+                backed_off=report.backed_off,
+                failed=report.failed,
+            )
 
     async def tick(self, now: datetime | None = None) -> SweepReport:
         """One pass: discover due campaigns, then drain each under its own tenant binding.
@@ -240,12 +246,23 @@ class CampaignDriver:
         if outcome != "claimed" or batch is None:
             return outcome
 
+        # One more read, immediately before any address in this batch reaches a transport: a
+        # contact erased in the window between the claim above and now must not be mailed just
+        # because it was not yet erased when it was claimed. See `drop_erased_from_batch`'s
+        # docstring for what this does and does not close.
+        async with self._work_scope(organization_id) as session:
+            batch = await services.drop_erased_from_batch(
+                session, organization_id=organization_id, batch=batch
+            )
+
         # Building the real transport (a self-hosted `smtp` connection re-resolves its host,
         # `ClaimedBatch`'s own docstring explains why) happens here, after the claim
         # transaction above has already committed — never inside it.
-        wire = await services.resolve_campaign_transport(batch)
-        results = await send_batch(wire, [m.outgoing for m in batch.messages])
-        paired = list(zip((m.recipient_id for m in batch.messages), results, strict=True))
+        paired: list[tuple[uuid.UUID, Receipt | TransportError]] = []
+        if batch.messages:
+            wire = await services.resolve_campaign_transport(batch)
+            results = await send_batch(wire, [m.outgoing for m in batch.messages])
+            paired = list(zip((m.recipient_id for m in batch.messages), results, strict=True))
 
         async with self._work_scope(organization_id) as session:
             any_unavailable = await services.record_campaign_batch(

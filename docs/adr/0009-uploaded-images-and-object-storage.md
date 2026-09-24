@@ -384,6 +384,10 @@ second one.
 
 ### 8. Deletion: soft by default, immediate takedown on request, purged by a sweep
 
+**Implemented 2026-09-23** — see the addendum at the foot of this document for what the sweep
+actually is (`services/document/app/cron.py`, not `bin/relay`) and what §9's orphan pass turned
+out to need beyond what this section anticipated.
+
 This is the one everyone forgets, and it has a structural constraint that decides it.
 
 **The document service cannot know what references an asset, and never will.** The store document
@@ -439,6 +443,10 @@ storefront-side reference list plus one batch route here — deferred, with an e
 speculatively built.
 
 ### 9. Write order, and the orphan it deliberately chooses
+
+**The orphan sweep named at the end of this section is implemented 2026-09-23** — see the
+addendum for the credential it needed that this section did not anticipate, and for the
+caution built into turning it on.
 
 An upload is two writes that cannot be one transaction: an object into S3 and a row into Postgres.
 One of them can fail after the other succeeded, and the choice of order is the choice of which
@@ -713,3 +721,285 @@ sensitive read and calling it one would dilute the signal on the paths where it 
 - **A key collision is ever observed, or MinIO's conditional-write support is verified.** Then the
   `PutObject` precondition in §10 moves from "not required" to "required", and the guarantee stops
   being probabilistic.
+
+## Addendum (2026-09-23) — MinIO on the edge VM, and a header a public bucket cannot be trusted with
+
+§13's "Bootstrap, Prod" said the production half of this ADR "has no home yet and needs an
+owner." It now does: `infrastructure/edge/` (ADR-0012), `minio` and `document` behind the
+`storefront` compose profile, `minio-init` running the same anonymous-`GetObject`-only bucket
+policy `tools/dev-bootstrap/compose.yml` uses in development. This addendum records what that
+deploy actually needed beyond §13's dev/prod table, because one of the three findings below is a
+stored-XSS-to-account-takeover path and the fix is a Caddy configuration decision this ADR never
+anticipated, not an application change.
+
+**MinIO gets no host port; Caddy is a plain reverse proxy in front of it, and that is still the
+right shape.** §"What this rejects" already refuses an *authorizing* content proxy — a service
+that decides per request whether to serve an object. What runs on the edge is not that: it is an
+unauthenticated `reverse_proxy minio:9000` for `GET`/`HEAD` on `/opsgrids-public/*`, with no
+application logic and no session ever consulted, because the bucket behind it already grants
+`s3:GetObject` to `*` and nothing else. There is nothing for a proxy to authorize that MinIO's own
+anonymous policy has not already decided. This is acceptable precisely because §1's decision — the
+bucket is world-readable by design — has not changed; a proxy in front of a *private* bucket would
+be a different and refused shape.
+
+**What was missing, and it is a real finding, not a hardening nicety: a public-bucket reverse
+proxy cannot be a *bare* one.** MinIO honours `?response-content-type=` (and the sibling
+`response-*` overrides) on an anonymous `GetObject` — a caller may ask MinIO to lie about the
+`Content-Type` of an object it did not write. `services/document` never issues such a query
+itself, but nothing stops a browser from appending one to a URL it already has, and every object
+in this bucket is reachable by anyone who has the URL (§1). Combined with the original Caddy
+route, which imported into *every* site this Caddyfile serves — `app.opsgrids.com`,
+`ops.opsgrids.com`, every other platform hostname, not only the one `PUBLIC_ASSET_BASE_URL` names
+— the consequence was concrete: upload an HTML/JS payload through the ordinary, authorized upload
+endpoint (§4's five validation rules bound *image* formats, not arbitrary bytes rejected outright
+as non-images — see the honest residual below), then fetch it back as
+`/opsgrids-public/<org>/<asset>?response-content-type=text/html` on `app.opsgrids.com`, where the
+`.opsgrids.com`-scoped refresh cookie (ADR-0001) is live. That is stored XSS with a direct path to
+session theft and account takeover, reachable without ever touching an authenticated route.
+
+**The fix, entirely in `infrastructure/edge/caddy/Caddyfile`, no application code:**
+
+1. **The route now lives only on `EDGE_HOST`'s own site block**, not in the shared snippet every
+   platform hostname imports. `PUBLIC_ASSET_BASE_URL` already names exactly one host (§13); the
+   Caddyfile now enforces that it is the *only* host this path resolves on, so a payload served
+   back with a lying content type has no platform cookie to steal even if every other layer below
+   failed.
+2. **The query string is stripped before the request reaches MinIO** (`rewrite * {path}?`) — the
+   trap named in the Caddy documentation and easy to get backwards: `rewrite * {path}` alone does
+   **not** drop the incoming query, only a rewrite target ending in a bare `?` does. This closes
+   `response-content-type` and every other `response-*` override at the edge, not by trusting
+   MinIO to have no more of them.
+3. **Response hardening on top of both**: `Content-Security-Policy: default-src 'none'; sandbox`
+   and `X-Content-Type-Options: nosniff` on every response this route serves, `Cache-Control:
+   public, max-age=86400` (objects are content-addressed UUID keys, written once, ADR-0009 §3 —
+   the honest trade-off is that a `?purge=true` takedown, §8, does not invalidate a cache that
+   already has the object, so the real takedown latency for an already-cached response is bounded
+   by this TTL, not by the API call), `request_header -Authorization` (no session ever belongs on
+   this path; stripping it is one less thing an operator error downstream could turn into a
+   leak), and `-Server` (MinIO's own version banner is not this platform's to publish). None of
+   these is the boundary on its own — the host restriction and the query strip are — but each is
+   free and each is the layer that still holds if a future MinIO version adds an override nobody
+   here has read about yet.
+
+**The honest residual, not closed by this addendum.** §5's validation refuses SVG permanently and
+GIF for now, and every accepted upload is decoded and re-encoded by Pillow before it is ever
+written — a polyglot does not survive that round trip (§5, "neutralises polyglots"). The
+`evilasset` payload used to verify this fix was written directly into a scratch MinIO bucket, not
+through `POST /api/v1/documents/assets` — proving the Caddy-layer fix independently of whether
+`process_upload` would have accepted the bytes in the first place, which it would not (Pillow has
+no HTML/script decoder, so `UnidentifiedImageError` refuses it with 422 before any bytes reach
+S3). The Caddy hardening above exists anyway, for the object that gets into the bucket by some
+path this ADR did not anticipate — a future service sharing the bucket, an operator's `mc cp`, a
+bug in `process_upload` — because "the application validates it" and "the edge cannot serve it as
+HTML regardless" are two different guarantees and only the second one is a boundary a public
+bucket can actually stand behind.
+
+**Verified against the pinned images, not assumed**: `caddy:2.10.0-alpine` serving the production
+Caddyfile (`caddy validate`, clean) and, in a scratch compose project against a real
+`quay.io/minio/minio` with the anonymous-`GetObject` policy `minio-init` applies, the following
+held simultaneously — `?response-content-type=text/html` on a non-image object returns
+`Content-Type: application/octet-stream` (MinIO's own default) with the CSP and `nosniff` headers
+present and no `Server` header; a plain `GET` of a real object still returns its true content
+type; a bucket-root listing still returns `403 AccessDenied`; and a `..`-traversal probe and a
+`POST` both miss the route entirely and hit the same 404 fallback as before this change, so
+nothing about the isolation properties §3 depends on moved.
+
+**The longer-term plan, named here so it is a decision rather than a thing that happens by
+default:** the durable fix is a cookieless asset domain entirely outside `.opsgrids.com` — a
+second-level domain with no cookie ever set on it, so an object served with any content type on
+that host has nothing to steal regardless of what MinIO, a future proxy, or a future contributor
+gets wrong. That is the CDN §"What this rejects" already deferred ("A CDN in slice 1"), and this
+addendum is the concrete argument for not deferring the *domain* choice along with it: when a CDN
+does arrive, its origin should be that cookieless domain, not a `stores.opsgrids.com` or
+`opsgrids.com` subdomain, and `PUBLIC_ASSET_BASE_URL` (§6, §13) is already the one config value
+that changing costs nothing else — the payoff §6 was built for, spent here.
+
+## Addendum (2026-09-23) — §8 shipped: the purge sweep, and the orphan pass it made possible
+
+§8's own deadline was thirty days after the document service reached the edge, and the edge
+addendum above records that as the same date this one carries. This addendum is that slice:
+`services/document/app/cron.py`, wired to `bin/cron` in place of the scaffold's `app/relay`,
+and a second container, `document-cron`, in `infrastructure/edge/compose.prod.yml`.
+
+> **Superseded in part, 2026-09-24 (ADR-0013, fix round 2).** `document-cron` no longer exists as
+> a container: the purge sweep runs as a background task inside the `document` API process
+> (`RUN_SWEEPS_IN_API`), with the orphan pass **disabled there unconditionally**. The credential
+> discipline below is unchanged and, if anything, stricter — no always-on container holds the
+> orphan credential; an operator hands it to a one-off `docker compose run --rm --no-deps
+> document ./bin/cron` when an orphan scan is wanted.
+
+**§8 is implemented as designed, with the discipline the ADR named.** Discovery — which
+organizations have assets whose `deleted_at` is past `ASSET_PURGE_RETENTION_DAYS` (a setting,
+default 30, not the module constant §8 implied) — runs cross-tenant on the BYPASSRLS outbox
+role, reading exactly four columns a new column-level grant names
+(`organization_id, id, deleted_at, purged_at`; `migrations/env.py`'s
+`grant_purge_sweep_reader`, the same shape `approval`'s and `scheduler`'s own sweep readers
+use). Every write — the object delete, then `purged_at` — runs in
+`session_scope(organization_id=...)` on the ordinary app role, under `SELECT ... FOR UPDATE
+SKIP LOCKED`, re-checking the retention window against the write transaction's own, later
+clock read rather than trusting discovery's. The partial index §12 named for "slice 2, with
+the cron" — `(deleted_at) WHERE deleted_at IS NOT NULL AND purged_at IS NULL` — ships in this
+slice's own migration, not the table's. The row survives, as §7 requires: the sweep sets
+`purged_at` and nothing here ever deletes a row.
+
+**§9's orphan sweep is also implemented, not merely designed** — the ADR's own text said this
+needed "a separate list-capable MinIO credential" and stopped there. It is built, judged safe
+to automate rather than left as a dry-run-only report, for a reason worth stating plainly: the
+one way an automated bucket scan could delete something it should not is racing the write path
+described in this very section — an object whose `PutObject` succeeded but whose row `INSERT`
+has not committed yet. That race is bounded by a single request's duration, not by anything a
+human would call "a while", so a candidate has to sit unreferenced for `orphan_sweep_min_age_hours`
+(default 24, the number §9 itself named) before it is even considered. Two further backstops sit
+on top of that judgement, deliberately redundant with it rather than a substitute for it:
+`orphan_sweep_max_deletes_per_tick` caps how much damage one bad tick can do regardless of how
+wrong discovery turns out to be, and `orphan_sweep_dry_run` — on by default even after
+`orphan_sweep_enabled` is set — means the very first thing a newly turned-on sweep does is log
+what it *would* remove, never remove it, until an operator reads a run or two and turns the
+second flag off deliberately.
+
+**The credential §9 asked for, built exactly as narrow as it needs to be.** A second MinIO user,
+created idempotently by `minio-init` alongside the existing write-only one:
+`s3:ListBucket` on the bucket plus `s3:DeleteObject` on its objects, nothing else, and handed
+to **`document-cron` only** (as of 2026-09-24, to a manual one-off run of `bin/cron` and nothing
+always-on) — the `document` API container's own environment carries no trace of it. `services/document/app/storage.py`'s `ObjectStore` (the write path) and `OrphanScanner`
+(the sweep's own class, used only from `app/cron.py`) are two separate boto3 clients for exactly
+this reason: nothing on the request path must ever be capable of `ListBucket`, because that
+capability is the one thing ADR-0009 §3's whole tenancy argument depends on nobody having.
+
+**What discovery actually checks, precisely, because "has no row" needs to survive every state
+a row can be in.** The orphan pass's own read (`selectors.existing_asset_keys`, on the same
+column-grant-limited bypass connection §8's sweep uses) asks whether **any** row exists for a
+listed key's `(organization_id, id)` — live, soft-deleted, or already purged. A soft-deleted or
+purged asset's object is never in the bucket by the time this pass would see it (§8's own sweep,
+or `?purge=true`, already removed it), so the distinction is moot in practice, but the query is
+written to be correct rather than merely lucky: it would still refuse to touch a hypothetical
+future state where a row survives with no live object, because it asks about the row's
+existence, never its `deleted_at`.
+
+**Verified, not assumed**: the full test suite (`services/document/tests/test_cron.py`,
+`test_orphan_sweep.py`) drives the sweep against real PostgreSQL — cross-tenant discovery
+finding both organizations' own due work, the retention window's boundary, an already-purged
+row never rediscovered, a missing object counting as success, a storage failure leaving
+`purged_at` null for the next tick, two concurrent sweepers agreeing on the total, and the
+discovery role failing loudly (`42501`) on any column outside its grant — and one test in
+`test_storage_minio.py` runs the orphan pass against a genuine MinIO bucket with a real
+`ListObjectsV2` and a real `DeleteObject`, proving the credential shape works and not only that
+the application logic does.
+
+**What is deliberately still off.** `orphan_sweep_enabled` defaults to `false` in
+`services/document/app/config.py` and stays `false` in `infrastructure/edge/compose.prod.yml`
+until an operator sets `DOCUMENT_S3_ORPHAN_ACCESS_KEY`/`_SECRET_KEY` and flips it, per the
+runbook's own new section. §8's row-purge sweep carries no such flag and is on unconditionally
+once the sweep runs (originally as `document-cron`; since 2026-09-24 inside the `document` API
+container) — its failure mode (a soft-deleted object staying public a
+little longer) is bounded and already-accepted by §7; the orphan pass's failure mode (deleting
+an object a request-in-flight might still need) is the one this addendum's caution is about,
+even though the 24-hour margin makes it very unlikely in practice.
+
+---
+
+## Decisions on open questions (2026-09-24)
+
+This ADR named four things and built none of them. Each is decided below. One prerequisite has
+since been resolved: **the gateway body cap in §5 has landed**. `DEFAULT_MAX_BODY_BYTES` is 2 MiB,
+enforced before a body is read (`platform_core/gateway.py`), and `/api/v1/documents` raises its
+own ceiling to 6 MiB in both route tables. The other "Revisit when" items (re-encoding in a
+worker, GIF, a delete-only permission, conditional `PutObject`) stay demand triggers. The
+register of every ADR question is [open-questions-register.md](open-questions-register.md).
+
+### Q1. The private half (§2): payslips, contracts, ID scans — **DECIDED: a private bucket, the owning product authorizes, the document service presigns**
+
+**Decision.** `S3_PRIVATE_BUCKET` has **no anonymous policy at all**. Private objects get their own
+table in `document`, `private_objects` (RLS, `organization_id`, `owner_service`,
+`owner_aggregate_id`, `content_type`, `size_bytes`, `checksum_sha256`), under keys
+`{organization_id}/{owner_service}/{object_id}`. They are never in `assets` and never in the
+public bucket.
+
+**The product that owns the document authorizes reads, never the document service.** Payroll
+decides who may read a payslip; the scope is payroll's own, for example OWN = the employee's own
+payslip. The flow:
+1. The product's API checks scope.
+2. It writes the sensitive-read audit row. A payslip is PII, so every unmasking read is audited
+   (CLAUDE.md).
+3. It asks document's internal route for a presigned GET:
+   `POST /internal/v1/private-objects/{id}:presign`, with a service token carrying the `org`
+   claim and a per-route caller allowlist (the ADR-0008 §8 posture).
+
+The presigned URL lives for **60 seconds** and carries
+`response-content-disposition=attachment`. It is fetched through a **dedicated Caddy route on
+`EDGE_HOST`** (`/opsgrids-private/*`). Unlike the public route, it **preserves the query
+string**, because the SigV4 signature lives there, and preserves `Host`, because the presigner
+signs for that public URL. Any added `response-*` override breaks the signature rather than being
+honoured. The route sends `Cache-Control: private, no-store`,
+`Content-Security-Policy: default-src 'none'; sandbox` and `nosniff`. Uploads come from the product
+server-side, for example payroll rendering a PDF, over an internal route with the same posture.
+There is no browser upload path to the private bucket in this decision.
+
+**Why.** §2 named the bucket and a short-lived presigned GET. The only open question was who
+decides access, and only the product knows what a payslip's scope means. Every objection in §"What
+this rejects" to authorizing per request is about anonymous `<img>` fetches, and none of them
+applies to a click from a signed-in page.
+
+**Rejected.** Private objects as a `visibility` flag in the public bucket: that is §2's
+prefix-policy incident with a column instead of a prefix. A generic `document.file.read`
+permission: it cannot express "my own payslip". Streaming the bytes through the gateway: it
+buffers whole response bodies, and nothing needs it once presigning exists.
+
+**Consequences.** It is one table, two internal routes, one bucket, one Caddy route and one
+`minio-init` user that can put and get objects in the private bucket and never list them.
+**Implemented by R19** (private bucket and presigned GET), which D1's payslips depend on.
+
+### Q2. Per-organization quota and storage metering (§7) — **DECIDED: a catalog feature and a daily usage snapshot, once storage is priced**
+
+**Decision.** The configured ceilings stay (2 GiB and 5,000 assets) until storage is priced. When
+it is, the limit becomes the catalog plan feature `document.storage_bytes` (declared through C6's
+plan feature declarations). Document reads it from the organization's entitlement snapshot, and
+going over it returns **402** with an upgrade offer (ADR-0004 §5). Metering then receives a
+**daily** `document.storage.byte_days` usage event per organization, computed from `assets`
+(counting soft-deleted assets that have not been purged, because their bytes still exist). The
+history before that day is backfilled from the same table, which is possible only because the
+sweep keeps rows (§7, §8).
+
+**Rejected.** An override column per organization in document: a commercial promise belongs in a
+plan version (ADR-0004 §2). Metering on every upload and delete: a daily snapshot is exact to the
+day and is what a price per GB-month needs.
+
+**Consequences.** **Implemented by R19** (per-organization quota and storage metering) together
+with **C6**. The default numbers are **DECIDED (default; owner may revise)**.
+
+### Q3. The reference warning (§8) — **DECIDED: computed in the editor from the theme document; one batch read here**
+
+**Decision.** No reference table and no events. Only `resolveImageSrc` turns a setting into an
+`<img src>` (§6), and every uploaded value is a parseable `/a/{org}/{asset}` path. So the store
+editor already holds every asset reference in the theme document it has loaded (the storefront now
+persists `theme_documents`). On a delete, the editor counts the sections that reference the asset.
+On opening, it calls a new batch **`GET /api/v1/documents/assets?ids=…`** (at most 100 ids,
+tenant-scoped, returning `deleted_at` and `purged_at`) and flags sections whose image has been
+removed or purged.
+
+**Rejected.** A storefront-side references table maintained on every save: it is derivable from the
+document it would be derived from. A `referenced`/`dereferenced` event pair: already rejected in
+§"What this rejects".
+
+**Consequences.** One route here and two editor checks. **Implemented by R19** (batch
+`GET /assets?ids=`).
+
+### Q4. A cookieless asset domain (addendum 1's "longer-term plan") — **DECIDED (default; owner may revise): move off `opsgrids.com` when a CDN arrives or a second writer shares the bucket**
+
+**Decision.** `PUBLIC_ASSET_BASE_URL` moves to a **dedicated registrable domain outside
+`opsgrids.com` on which nothing ever sets a cookie**. It happens the first time either of two
+things occurs:
+- a CDN is put in front of the public bucket;
+- a second service writes to the public bucket.
+
+The owner registers and names the domain; the name is a commercial choice and is not made here.
+The move is a configuration change and one Caddy site block, with **no data migration**, which is
+§6's payoff. Until then, assets stay on `EDGE_HOST` behind addendum 1's hardening: host-only
+route, query strip, CSP sandbox, `nosniff`.
+
+**Why.** Addendum 1 found that a public bucket served under the platform's cookie domain is one
+MinIO feature away from stored XSS. The durable fix is a host with nothing to steal, and it costs
+nothing to decide now.
+
+**Consequences.** **Owner action**: register the domain when the trigger fires. No ledger item is
+needed until then.

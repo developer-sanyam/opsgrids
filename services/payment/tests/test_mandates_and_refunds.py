@@ -190,11 +190,11 @@ class TestRefundPreconditions:
         charge_id = await _captured_charge(session, provider, org_id, key="r-zero")
         with pytest.raises(BusinessRuleProblem, match="positive"):
             async with session.begin():
-                charge = await services.require_charge(session, charge_id)
+                charge = await services.require_charge(session, org_id, charge_id)
                 await services.create_refund(session, provider, charge, amount_minor=0)
         with pytest.raises(BusinessRuleProblem, match="positive"):
             async with session.begin():
-                charge = await services.require_charge(session, charge_id)
+                charge = await services.require_charge(session, org_id, charge_id)
                 await services.create_refund(session, provider, charge, amount_minor=-100)
 
     async def test_partial_refunds_may_never_exceed_what_was_collected(
@@ -206,15 +206,15 @@ class TestRefundPreconditions:
             session, provider, org_id, key="r-over", amount_minor=1000
         )
         async with session.begin():
-            charge = await services.require_charge(session, charge_id)
+            charge = await services.require_charge(session, org_id, charge_id)
             await services.create_refund(session, provider, charge, amount_minor=600)
         with pytest.raises(BusinessRuleProblem, match="exceed"):
             async with session.begin():
-                charge = await services.require_charge(session, charge_id)
+                charge = await services.require_charge(session, org_id, charge_id)
                 await services.create_refund(session, provider, charge, amount_minor=500)
 
         async with session.begin():
-            refunded = await selectors.refunded_total_for_charge(session, charge_id)
+            refunded = await selectors.refunded_total_for_charge(session, org_id, charge_id)
         assert refunded == 600, "the refused refund left no row behind"
 
     async def test_two_partial_refunds_carry_distinct_provider_keys(
@@ -228,10 +228,10 @@ class TestRefundPreconditions:
             session, provider, org_id, key="r-two", amount_minor=1000
         )
         async with session.begin():
-            charge = await services.require_charge(session, charge_id)
+            charge = await services.require_charge(session, org_id, charge_id)
             first = await services.create_refund(session, provider, charge, amount_minor=400)
         async with session.begin():
-            charge = await services.require_charge(session, charge_id)
+            charge = await services.require_charge(session, org_id, charge_id)
             second = await services.create_refund(session, provider, charge, amount_minor=500)
 
         assert first.provider_refund_id is not None
@@ -241,5 +241,5 @@ class TestRefundPreconditions:
         )
 
         async with session.begin():
-            refunded = await selectors.refunded_total_for_charge(session, charge_id)
+            refunded = await selectors.refunded_total_for_charge(session, org_id, charge_id)
         assert refunded == 900

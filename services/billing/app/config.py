@@ -18,6 +18,28 @@ class Settings(ServiceSettings):
     #: The outbox relay's role: BYPASSRLS, SELECT+UPDATE on `outbox` only. Kept from the
     #: scaffold — billing emits `commerce.invoice.*` and `commerce.credit.*`.
     db_outbox_role: str | None = "opsgrids_outbox"
+    #: BYPASSRLS but SELECT-only, on `credit_ledger` alone. The staff credit-ledger route
+    #: (`GET /admin/credit-ledger`) reads across every organization at once — there is no single
+    #: tenant to bind — so it cannot run on the application role, which reads nothing without a
+    #: tenant GUC. Its own role rather than the admin one keeps a bug in that read path from
+    #: writing anything (ADR-0002 §2, mirrors console's `opsgrids_console_directory`).
+    db_directory_role: str | None = "opsgrids_billing_directory"
+
+    # --- the billing run (ADR-0005 addendum, 2026-09-23) -----------------------------------
+    #: Where catalog answers the plan-version read. The billing run prices a subscription period
+    #: off the **pinned** version's own prices, read here — never off a price the caller sent.
+    catalog_service_url: str = "http://localhost:8164"
+    #: Where metering answers the per-period usage read, for a version that prices a meter.
+    metering_service_url: str = "http://localhost:8162"
+
+    #: Which `tax_rates` row applies to a billing-run invoice. Jurisdiction resolution per
+    #: customer is still open (ADR-0004 "Open: Tax"), so until it is settled this is one
+    #: deployment-wide choice: a `code` (`gst`) and optional `jurisdiction` (`IN`). Unset means
+    #: **no tax line** — the honest state for a deployment that has not registered for tax. Set,
+    #: the rate in force on the period's start date is applied, and a period with no rate in force
+    #: is refused rather than invoiced untaxed.
+    billing_tax_code: str | None = None
+    billing_tax_jurisdiction: str | None = None
 
 
 def settings() -> Settings:

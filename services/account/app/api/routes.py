@@ -21,6 +21,8 @@ from app import selectors, services
 from app.config import settings
 from app.models import SCHEMA
 from app.schemas import (
+    DomainIn,
+    DomainOut,
     InvitationAccept,
     InvitationCreated,
     InvitationIn,
@@ -46,7 +48,7 @@ from app.schemas import (
     SignupOut,
 )
 from platform_core.auth import CurrentPrincipal, Scope, ScopeContext, require
-from platform_core.cache import current_permission_version
+from platform_core.cache import current_permission_version, enforce_rate_limit
 from platform_core.db import get_directory_session, get_tenant_session, session_scope
 from platform_core.errors import ConflictProblem, NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
@@ -56,7 +58,7 @@ router = APIRouter(tags=["account"])
 #: **The tenancy chokepoint.** Opens the transaction and binds it to the caller's
 #: organization before the route body runs, so no route can read or write without one.
 #: Routes therefore do not open transactions of their own.
-SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 
 #: The cross-tenant, SELECT-only bypass session. Used by exactly one public route,
 #: `accept_invitation`, to resolve an invitation's organization before any tenant is bound —
@@ -71,6 +73,7 @@ UnitRead = Annotated[ScopeContext, Depends(require("core.org.unit.read"))]
 LocationRead = Annotated[ScopeContext, Depends(require("core.org.location.read"))]
 MemberRead = Annotated[ScopeContext, Depends(require("core.identity.membership.read"))]
 RoleRead = Annotated[ScopeContext, Depends(require("core.identity.role.read"))]
+DomainRead = Annotated[ScopeContext, Depends(require("core.identity.domain.read"))]
 
 # --- write contexts -----------------------------------------------------------------
 # Each of these carries `minimum=Scope.ORG`. Administering the organization has no "own"
@@ -86,6 +89,9 @@ MemberWrite = Annotated[
     ScopeContext, Depends(require("core.identity.membership.write", minimum=Scope.ORG))
 ]
 RoleWrite = Annotated[ScopeContext, Depends(require("core.identity.role.write", minimum=Scope.ORG))]
+DomainWrite = Annotated[
+    ScopeContext, Depends(require("core.identity.domain.write", minimum=Scope.ORG))
+]
 
 
 @router.get("/account/info", response_model=ServiceInfo, summary="What this service is")
@@ -409,6 +415,79 @@ async def list_permissions(
 ) -> list[PermissionOut]:
     rows = await selectors.list_permissions(session, product)
     return [PermissionOut.model_validate(r) for r in rows]
+
+
+# --------------------------------------------------------------------- domains
+
+
+@router.get("/domains", response_model=list[DomainOut], summary="Email domains this org claims")
+async def list_domains(session: SessionDep, ctx: DomainRead) -> list[DomainOut]:
+    rows = await selectors.list_domains(session, ctx.organization_id)
+    return [selectors.to_domain_out(r) for r in rows]
+
+
+@router.get("/domains/{domain_id}", response_model=DomainOut, summary="One claimed domain")
+async def read_domain(domain_id: uuid.UUID, session: SessionDep, ctx: DomainRead) -> DomainOut:
+    row = await selectors.get_domain(session, ctx.organization_id, domain_id)
+    if row is None:
+        raise NotFoundProblem("No such domain")
+    return selectors.to_domain_out(row)
+
+
+@router.post(
+    "/domains",
+    response_model=DomainOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Claim an email domain",
+    responses={
+        409: {
+            "description": "Claimed or verified by another organization — discloses nothing "
+            "about who holds it"
+        },
+        422: {"description": "Not a domain, or a platform domain / public suffix"},
+    },
+)
+async def claim_domain(payload: DomainIn, session: SessionDep, ctx: DomainWrite) -> DomainOut:
+    """Claim a domain for single sign-on. Starts (or restarts) unverified — see `DomainOut`
+    for the TXT record to publish, and `POST /domains/{id}/verify` to prove it."""
+    row = await services.claim_domain(session, ctx, payload)
+    return selectors.to_domain_out(row)
+
+
+@router.post(
+    "/domains/{domain_id}/verify",
+    response_model=DomainOut,
+    summary="Check DNS and mark a domain verified",
+    responses={
+        422: {"description": "Expired claim, or the TXT record is not (yet) published"},
+        429: {"description": "Rate limited per organization"},
+    },
+)
+async def verify_domain(domain_id: uuid.UUID, session: SessionDep, ctx: DomainWrite) -> DomainOut:
+    row = await selectors.get_domain(session, ctx.organization_id, domain_id)
+    if row is None:
+        raise NotFoundProblem("No such domain")
+    cfg = settings()
+    await enforce_rate_limit(
+        f"account.domain.verify:{ctx.organization_id}",
+        limit=1,
+        window_seconds=cfg.domain_verify_rate_limit_window_seconds,
+    )
+    verified = await services.verify_domain(session, ctx, row)
+    return selectors.to_domain_out(verified)
+
+
+@router.delete(
+    "/domains/{domain_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Release a claimed domain",
+)
+async def release_domain(domain_id: uuid.UUID, session: SessionDep, ctx: DomainWrite) -> Response:
+    row = await selectors.get_domain(session, ctx.organization_id, domain_id)
+    if row is None:
+        raise NotFoundProblem("No such domain")
+    await services.release_domain(session, ctx, row)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # --------------------------------------------------------------------- invitations

@@ -323,6 +323,52 @@ class TestPublicPaths:
         routes that are public — so it is worth pinning that the prefix does not leak."""
         assert (await client.get("/api/v1/auth/sso/config")).status_code == 401
 
+
+class TestOperatorSignInIsBlockedHere:
+    """MAJOR 3 of the security review: operator sign-in has no principal to check (staff
+    credentials travel in the body), so it must not be reachable from the *public* product
+    gateway at all — not even with an ordinary tenant's own valid bearer token. It belongs to
+    admin-gateway alone (ADR-0003 §2)."""
+
+    async def test_operator_login_is_refused_with_404_and_no_token_required_to_learn_that(
+        self, client: AsyncClient
+    ) -> None:
+        response = await client.post(
+            "/api/v1/auth/operator/login", json={"email": "staff@opsgrids.tech", "password": "x"}
+        )
+        assert response.status_code == 404
+
+    async def test_a_valid_tenant_token_does_not_unlock_it_either(
+        self, client: AsyncClient, mint, upstream: EchoUpstream
+    ) -> None:
+        """The headline finding: before this fix, an ordinary signed-in customer's own token
+        was enough to reach every operator MFA endpoint through the public gateway."""
+        for path, method, body in (
+            ("/api/v1/auth/operator/login", "POST", {"email": "x", "password": "y"}),
+            (
+                "/api/v1/auth/operator/mfa/enrol",
+                "POST",
+                {"pre_auth_token": "x", "enrollment_code": "y"},
+            ),
+            ("/api/v1/auth/operator/mfa/verify", "POST", {"pre_auth_token": "x", "code": "123456"}),
+            ("/api/v1/auth/operator/me", "GET", None),
+        ):
+            headers = {"Authorization": f"Bearer {mint()}"}
+            response = await client.request(method, path, json=body, headers=headers)
+            assert response.status_code == 404, path
+        assert upstream.calls == [], "a blocked route must never reach the upstream"
+
+    async def test_ordinary_auth_paths_under_the_same_prefix_are_unaffected(
+        self, client: AsyncClient, upstream: EchoUpstream
+    ) -> None:
+        """The block is scoped to `/api/v1/auth/operator`, not the whole `/api/v1/auth`
+        prefix it sits under — sign-in for everybody else keeps working."""
+        response = await client.post(
+            "/api/v1/auth/login", json={"email": "a@example.com", "password": "x"}
+        )
+        assert response.status_code == 200
+        assert upstream.last["path"] == "/api/v1/auth/login"
+
     async def test_the_organization_slug_is_taken_from_the_host(
         self, client: AsyncClient, upstream: EchoUpstream
     ) -> None:

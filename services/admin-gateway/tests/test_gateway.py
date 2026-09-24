@@ -273,6 +273,82 @@ class TestNoServiceToServiceRoutes:
             assert response.status_code == 404, path
 
 
+class TestOperatorMfaFlowIsReachable:
+    """BLOCKER 2 of the security review: the three operator MFA steps are pre-auth (there is
+    no bearer token yet to check), and were missing from `public_paths` — every one of them
+    was refused with 401 before ever reaching auth-service, so an operator's sign-in could
+    never actually finish through the real gateway. Public here is exactly as narrow as the
+    module docstring's rule: authentication only, nothing that reads or writes anything else.
+    """
+
+    async def test_enrolment_start_is_reachable_without_a_bearer_token(
+        self, client: AsyncClient, upstream: EchoUpstream
+    ) -> None:
+        response = await client.post(
+            "/api/v1/auth/operator/mfa/enrol",
+            json={"pre_auth_token": "x", "enrollment_code": "y"},
+        )
+        assert response.status_code == 200, response.text
+        assert upstream.last["path"] == "/api/v1/auth/operator/mfa/enrol"
+
+    async def test_enrolment_confirm_is_reachable_without_a_bearer_token(
+        self, client: AsyncClient, upstream: EchoUpstream
+    ) -> None:
+        response = await client.post(
+            "/api/v1/auth/operator/mfa/enrol/confirm",
+            json={"pre_auth_token": "x", "factor_id": str(USER), "code": "123456"},
+        )
+        assert response.status_code == 200, response.text
+        assert upstream.last["path"] == "/api/v1/auth/operator/mfa/enrol/confirm"
+
+    async def test_mfa_verify_is_reachable_without_a_bearer_token(
+        self, client: AsyncClient, upstream: EchoUpstream
+    ) -> None:
+        response = await client.post(
+            "/api/v1/auth/operator/mfa/verify",
+            json={"pre_auth_token": "x", "code": "123456"},
+        )
+        assert response.status_code == 200, response.text
+        assert upstream.last["path"] == "/api/v1/auth/operator/mfa/verify"
+
+    async def test_the_full_shape_login_then_mfa_then_me_is_all_reachable(
+        self, client: AsyncClient, mint, upstream: EchoUpstream
+    ) -> None:
+        """One request per leg of the flow the review asked to see proven end to end at the
+        gateway: sign-in, both MFA steps, and the authenticated `/me` that follows — none of
+        them refused before ever reaching auth-service."""
+        login = await client.post(
+            "/api/v1/auth/operator/login",
+            json={"email": "staff@opsgrids.tech", "password": "x"},
+        )
+        assert login.status_code == 200
+
+        enrol = await client.post(
+            "/api/v1/auth/operator/mfa/enrol",
+            json={"pre_auth_token": "x", "enrollment_code": "y"},
+        )
+        assert enrol.status_code == 200
+
+        confirm = await client.post(
+            "/api/v1/auth/operator/mfa/enrol/confirm",
+            json={"pre_auth_token": "x", "factor_id": str(USER), "code": "123456"},
+        )
+        assert confirm.status_code == 200
+
+        verify = await client.post(
+            "/api/v1/auth/operator/mfa/verify",
+            json={"pre_auth_token": "x", "code": "123456"},
+        )
+        assert verify.status_code == 200
+
+        # `/me` is on the same `/api/v1/auth` prefix and is not gateway-`staff_only` — the
+        # in-service `require_operator` is what gates it — so a completed operator token
+        # reaches it like any other authenticated call.
+        me = await client.get("/api/v1/auth/operator/me", headers=auth(mint(staff=True)))
+        assert me.status_code == 200
+        assert upstream.header("x-user-id") == USER
+
+
 class TestNoDatabase:
     def test_the_gateway_opens_no_database_connection(self) -> None:
         from pathlib import Path

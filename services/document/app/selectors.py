@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Asset
@@ -104,3 +105,100 @@ async def usage(session: AsyncSession, ctx: ScopeContext) -> Usage:
         await session.execute(ctx.apply(stmt, owner_col=Asset.uploaded_by_user_id))
     ).one()
     return Usage(bytes_used=int(bytes_used), asset_count=int(asset_count))
+
+
+# --------------------------------------------------------------------- the purge sweep
+#
+# The two reads below are the exception the house pattern (`approval/app/selectors.py`,
+# `subscription/app/selectors.py`) always carves out for a cron discovery query: they run
+# cross-tenant, on the BYPASSRLS outbox role, because finding out *which* organizations have
+# assets due for purging has no tenant to bind while asking (ADR-0009 §8). Both are served by
+# the column-level grant `migrations/env.py:grant_purge_sweep_reader` adds — `organization_id,
+# id, deleted_at, purged_at` and nothing else, never `original_filename` or `storage_key` —
+# rather than the outbox role's usual `SELECT, UPDATE` on `outbox` alone.
+
+#: Every soft-deleted, not-yet-purged asset whose `deleted_at` has crossed the retention
+#: cutoff, oldest first. No per-organization cap: unlike the SLA sweep's `approval_steps`
+#: (many open steps can pile up per organization), a soft delete is one row per asset and the
+#: volume a single tenant can accumulate is bounded by how many images they upload, not by a
+#: retry ladder — the fairness problem the SLA sweep's `LATERAL` join solves does not arise
+#: here. Matches ADR-0009 §12's index exactly: `(deleted_at) WHERE deleted_at IS NOT NULL AND
+#: purged_at IS NULL`, deliberately with no `organization_id` leading column.
+_DUE_PURGE_ASSETS_SQL = text(
+    """
+    SELECT organization_id, id
+      FROM document.assets
+     WHERE deleted_at IS NOT NULL
+       AND purged_at IS NULL
+       AND deleted_at <= :cutoff
+     ORDER BY deleted_at
+     LIMIT :limit
+    """
+)
+
+
+async def due_purge_assets(
+    session: AsyncSession, *, cutoff: datetime, limit: int = 200
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """`(organization_id, id)` for every asset the sweep should attempt to purge this tick.
+
+    `cutoff` (`now - retention`) is computed once by the caller, in the discovery
+    transaction, off the database's own clock, and passed in — one clock, and it is the
+    database's, the same amendment ADR-0006 §8 makes for the SLA sweep. The per-asset action
+    re-reads its own, deliberately later `now()` when it re-checks the row under the lock.
+    """
+    rows = (
+        (await session.execute(_DUE_PURGE_ASSETS_SQL, {"cutoff": cutoff, "limit": limit}))
+        .mappings()
+        .all()
+    )
+    return [(row["organization_id"], row["id"]) for row in rows]
+
+
+async def get_asset_for_purge_sweep(
+    session: AsyncSession, organization_id: uuid.UUID, asset_id: uuid.UUID
+) -> Asset | None:
+    """The sweep's own lock: `SELECT ... FOR UPDATE SKIP LOCKED`, re-checked here rather than
+    trusted from discovery's now-possibly-stale read. `None` covers "another replica's purge
+    (or an ordinary `?purge=true` request) is mid-flight", "the row was purged already in the
+    gap between discovery and here" and "the row was undeleted in that same gap" all at once —
+    the caller treats every one of those as a skip, never an error, which is what makes two
+    concurrent sweepers (and a sweeper racing an ordinary request) safe against the same row.
+
+    Filters `deleted_at IS NOT NULL AND purged_at IS NULL` in the query itself, matching
+    `get_job_for_firing`'s shape in `services/scheduler`; `app/services.purge_asset` still
+    re-checks the retention window against its own, later `now()` after taking the lock,
+    because *that* comparison depends on a clock reading the query cannot bake in.
+    """
+    stmt = (
+        select(Asset)
+        .where(
+            Asset.organization_id == organization_id,
+            Asset.id == asset_id,
+            Asset.deleted_at.is_not(None),
+            Asset.purged_at.is_(None),
+        )
+        .with_for_update(skip_locked=True)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def existing_asset_keys(
+    session: AsyncSession, pairs: list[tuple[uuid.UUID, uuid.UUID]]
+) -> set[tuple[uuid.UUID, uuid.UUID]]:
+    """Given `(organization_id, id)` pairs parsed off object keys the orphan sweep listed,
+    which ones have **any** row at all in `assets` — live, soft-deleted or already purged.
+
+    Used only by the orphan sweep's own discovery (ADR-0009 §9 addendum), on the same
+    BYPASSRLS, column-grant-limited connection `due_purge_assets` runs on. Selecting exactly
+    `organization_id, id` keeps this inside `grant_purge_sweep_reader`'s grant — a query that
+    reached for any other column would fail loudly with `42501` rather than quietly widening
+    what a cross-tenant bypass role can read.
+    """
+    if not pairs:
+        return set()
+    stmt = select(Asset.organization_id, Asset.id).where(
+        tuple_(Asset.organization_id, Asset.id).in_(pairs)
+    )
+    rows = (await session.execute(stmt)).all()
+    return {(row.organization_id, row.id) for row in rows}

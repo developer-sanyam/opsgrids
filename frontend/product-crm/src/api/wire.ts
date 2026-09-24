@@ -16,6 +16,8 @@ import type {
   CompanyStatus,
   ContactStatus,
   DealStage,
+  LeadSource,
+  LeadStatus,
 } from "./types";
 
 /** The envelope every paginated gateway list returns (`platform_core.pagination.Page`). */
@@ -33,6 +35,35 @@ export interface OwnerOut {
   full_name: string;
   email: string;
   role: string;
+  is_active: boolean;
+}
+
+/** Mirrors `LeadOut` — what `GET /leads` and `GET /leads/{id}` return. `email` / `phone` are
+ *  always the masked display form; the raw value never reaches this client. */
+export interface LeadOut {
+  id: string;
+  full_name: string;
+  company: string | null;
+  email: string | null;
+  phone: string | null;
+  source: LeadSource;
+  status: LeadStatus;
+  owner_id: string | null;
+  notes: string;
+  converted_company_id: string | null;
+  converted_contact_id: string | null;
+  converted_deal_id: string | null;
+  converted_at: string | null;
+  created_at: string;
+}
+
+/** Mirrors `LeadConvertOut` — `POST /leads/{id}:convert`'s response. Identical whether this
+ *  call performed the conversion or an already-converted lead's ids are being replayed. */
+export interface LeadConvertOut {
+  lead_id: string;
+  company_id: string;
+  contact_id: string | null;
+  deal_id: string;
 }
 
 /** Mirrors `CompanyOut` — what `GET /customers` and `GET /customers/{id}` return. */
@@ -136,6 +167,35 @@ export interface OwnerIn {
   full_name: string;
   email: string;
   role?: string;
+}
+
+/** Mirrors `OwnerPatch`. `is_active: false` deactivates (refused while the rep still owns a
+ *  live company or contact); `is_active: true` reactivates. Absent means "leave alone". */
+export interface OwnerPatch {
+  full_name?: string;
+  email?: string;
+  role?: string;
+  is_active?: boolean;
+}
+
+/** Mirrors `LeadIn`. `owner_id` omitted assigns from the organization's round-robin. */
+export interface LeadIn {
+  full_name: string;
+  company?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  source?: LeadSource;
+  owner_id?: string | null;
+  notes?: string;
+}
+
+/** Mirrors `LeadPatch`. No path to `converted` here — only `POST /leads/{id}:convert` sets it. */
+export interface LeadPatch {
+  full_name?: string;
+  company?: string | null;
+  status?: LeadStatus;
+  owner_id?: string | null;
+  notes?: string;
 }
 
 /** Mirrors `CompanyIn`. */

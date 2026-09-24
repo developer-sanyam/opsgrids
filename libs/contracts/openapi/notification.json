@@ -836,6 +836,232 @@
         "title": "ContactPatch",
         "type": "object"
       },
+      "ConversationAssignIn": {
+        "additionalProperties": false,
+        "description": "Hand a conversation to a membership, or clear its assignment with `null`.",
+        "properties": {
+          "assignee_membership_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Membership Id"
+          }
+        },
+        "title": "ConversationAssignIn",
+        "type": "object"
+      },
+      "ConversationMessageOut": {
+        "description": "One entry in a conversation's thread, either direction.\n\n`body` is masked for an inbound message (the customer's own words) and shown in full for an\noutbound one (the organization's own reply) \u2014 see `selectors.thread_stmt`'s docstring for\nwhy only one side is PII-gated here. `engage.inbox.message.unmask` is the audited path to an\ninbound message's real text.",
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "direction": {
+            "enum": [
+              "inbound",
+              "outbound"
+            ],
+            "title": "Direction",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "message_type": {
+            "title": "Message Type",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "profile_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Name"
+          },
+          "provider_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Message Id"
+          }
+        },
+        "required": [
+          "id",
+          "direction",
+          "message_type",
+          "body",
+          "occurred_at",
+          "provider_message_id",
+          "profile_name"
+        ],
+        "title": "ConversationMessageOut",
+        "type": "object"
+      },
+      "ConversationOut": {
+        "properties": {
+          "assignee_membership_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Membership Id"
+          },
+          "channel": {
+            "enum": [
+              "email",
+              "whatsapp"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "contact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Id"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "last_customer_message_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Customer Message At"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "closed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "wa_address": {
+            "title": "Wa Address",
+            "type": "string"
+          },
+          "within_service_window": {
+            "title": "Within Service Window",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "channel",
+          "wa_address",
+          "contact_id",
+          "last_customer_message_at",
+          "within_service_window",
+          "status",
+          "assignee_membership_id",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ConversationOut",
+        "type": "object"
+      },
+      "ConversationReplyIn": {
+        "additionalProperties": false,
+        "description": "Free text, sent inside the conversation's 24-hour service window.\n\n`idempotency_key` is the caller's own \u2014 a retried click or a flaky connection must not send\nthe same words twice, and the key is what makes the retry a no-op instead of a second\nmessage (`services.reply_to_conversation`'s `dedupe_key`).",
+        "properties": {
+          "body": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "body",
+          "idempotency_key"
+        ],
+        "title": "ConversationReplyIn",
+        "type": "object"
+      },
+      "ConversationReplyOut": {
+        "properties": {
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "sent",
+              "failed",
+              "suppressed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id",
+          "state",
+          "conversation_id"
+        ],
+        "title": "ConversationReplyOut",
+        "type": "object"
+      },
       "DeliveryOut": {
         "properties": {
           "at": {
@@ -1371,6 +1597,78 @@
           "pages"
         ],
         "title": "Page[ContactOut]",
+        "type": "object"
+      },
+      "Page_ConversationMessageOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationMessageOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ConversationMessageOut]",
+        "type": "object"
+      },
+      "Page_ConversationOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ConversationOut]",
         "type": "object"
       },
       "Page_DomainOut_": {
@@ -2728,6 +3026,32 @@
         "title": "TestSendIn",
         "type": "object"
       },
+      "UnmaskedMessageOut": {
+        "description": "The audited, stepped-up reveal of one inbound message's real text.\n\nReturned by `engage.inbox.message.unmask` alone \u2014 never embedded in the ordinary thread\nread, so a masked body and its plaintext never travel in the same response.",
+        "properties": {
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id",
+          "body"
+        ],
+        "title": "UnmaskedMessageOut",
+        "type": "object"
+      },
       "UnsubscribeOut": {
         "properties": {
           "unsubscribed": {
@@ -2798,14 +3122,16 @@
             "type": "string"
           },
           "phone_number_id": {
-            "maxLength": 80,
+            "maxLength": 30,
             "minLength": 1,
+            "pattern": "^\\d{1,30}$",
             "title": "Phone Number Id",
             "type": "string"
           },
           "waba_id": {
-            "maxLength": 80,
+            "maxLength": 30,
             "minLength": 1,
+            "pattern": "^\\d{1,30}$",
             "title": "Waba Id",
             "type": "string"
           }
@@ -3795,6 +4121,394 @@
         ]
       }
     },
+    "/api/v1/engage/conversations": {
+      "get": {
+        "operationId": "list_conversations_api_v1_engage_conversations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "open",
+                    "closed"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ConversationOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "WhatsApp conversations, most recently active first",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/conversations/{conversation_id}": {
+      "get": {
+        "operationId": "get_conversation_api_v1_engage_conversations__conversation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One conversation",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/conversations/{conversation_id}/messages": {
+      "get": {
+        "operationId": "list_conversation_messages_api_v1_engage_conversations__conversation_id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ConversationMessageOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "A conversation's thread, both directions, oldest first, bodies masked on the inbound side",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/conversations/{conversation_id}/messages/{message_id}:unmask": {
+      "post": {
+        "operationId": "unmask_message_api_v1_engage_conversations__conversation_id__messages__message_id__unmask_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Message Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnmaskedMessageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reveal one customer message's real text (dangerous; audited every time)",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/conversations/{conversation_id}/reply": {
+      "post": {
+        "description": "202: staged, not yet sent \u2014 the dispatcher sends it, same as every other message in this\nservice. 409 with `remedy: \"template\"` when the window has closed; nothing is staged then.",
+        "operationId": "reply_to_conversation_api_v1_engage_conversations__conversation_id__reply_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationReplyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationReplyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send a free-text WhatsApp reply inside the 24-hour service window",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/conversations/{conversation_id}:assign": {
+      "post": {
+        "operationId": "assign_conversation_api_v1_engage_conversations__conversation_id__assign_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationAssignIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Assign a conversation to a membership, or clear its assignment",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/conversations/{conversation_id}:close": {
+      "post": {
+        "operationId": "close_conversation_api_v1_engage_conversations__conversation_id__close_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Close a conversation. A later reply, or the customer writing back, reopens it",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
     "/api/v1/engage/domains": {
       "get": {
         "operationId": "list_domains_api_v1_engage_domains_get",
@@ -3908,7 +4622,7 @@
     },
     "/api/v1/engage/domains/{domain_id}/verify": {
       "post": {
-        "description": "Takes the write permission although it publishes nothing: it rewrites `records` and\n`status`, and a domain flipping to verified is what lets mail go out as that name.",
+        "description": "Takes the write permission although it publishes nothing: it rewrites `records` and\n`status`, and a domain flipping to verified is what lets mail go out as that name.\n\n**Not `SessionDep`.** Every other route in this file runs its whole body inside the one\ntransaction the chokepoint opens before the handler starts; this is the one place that would\nhold it across a DNS lookup, and a resolver that is slow or simply cannot be reached\n(`NoNameservers`, `Timeout`) would then pin a pool connection for however long it takes to\ngive up (D3). So this route binds two short transactions of its own instead \u2014 the same idiom\npayment's and finance's internal APIs use, and for the same reason \u2014 with the lookups\nthemselves running between them, with no session and no transaction open at all.",
         "operationId": "verify_domain_api_v1_engage_domains__domain_id__verify_post",
         "parameters": [
           {
@@ -4666,7 +5380,8 @@
     },
     "/api/v1/engage/unsubscribe/{token}": {
       "get": {
-        "operationId": "unsubscribe_via_link_api_v1_engage_unsubscribe__token__get",
+        "description": "Renders a page and nothing else. `GET` must be safe to prefetch \u2014 the only read this\ndoes is a single masked-column `SELECT` for a v2 link, never a write, so a scanner fetching\nevery link in a message body cannot unsubscribe anyone by doing so.",
+        "operationId": "unsubscribe_confirm_api_v1_engage_unsubscribe__token__get",
         "parameters": [
           {
             "in": "path",
@@ -4681,9 +5396,9 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": {
+              "text/html": {
                 "schema": {
-                  "$ref": "#/components/schemas/UnsubscribeOut"
+                  "type": "string"
                 }
               }
             },
@@ -4700,13 +5415,13 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Unsubscribe the address a signed link names (no sign-in)",
+        "summary": "A confirmation page for the address a signed link names (no sign-in, no side effects)",
         "tags": [
           "engage-public"
         ]
       },
       "post": {
-        "operationId": "unsubscribe_one_click_api_v1_engage_unsubscribe__token__post",
+        "operationId": "unsubscribe_via_link_api_v1_engage_unsubscribe__token__post",
         "parameters": [
           {
             "in": "path",
@@ -4740,7 +5455,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "One-click unsubscribe (RFC 8058) for the address a signed link names",
+        "summary": "Unsubscribe the address a signed link names \u2014 the confirmation form's submit, and RFC 8058 one-click unsubscribe, both land here",
         "tags": [
           "engage-public"
         ]
@@ -5637,6 +6352,28 @@
           }
         },
         "summary": "Readiness \u2014 can it serve traffic?",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "description": "Reachable only on the compose `back` network (`tests/infra`'s\n`test_metrics_never_routed.py` is the lint that keeps it that way) \u2014 never behind\nCaddy or a gateway, the same rule `ops_monitor`'s own `/metrics` follows.\n\n`db_pool_in_use` is always reported when this service has a database; the three\noutbox gauges only when `outbox_model` is configured \u2014 same gate as `/health/outbox`,\nand the same reason: an app-role connection with no tenant bound sees zero rows.",
+        "operationId": "metrics_metrics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Prometheus text exposition",
         "tags": [
           "health"
         ]

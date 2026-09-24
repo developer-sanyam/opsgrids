@@ -71,6 +71,47 @@ class Settings(ServiceSettings):
     #: uploads per API process), so it is the one route with a limit in front of it.
     asset_upload_rate_limit_per_minute: int = 60
 
+    # --- the purge sweep (ADR-0009 §8, `app/cron.py`) -----------------------------
+    #: How long a soft-deleted asset's object survives before the sweep removes it from the
+    #: bucket. A setting rather than the module constant it started as — ADR-0009 §8 calls
+    #: this "a date, not a preference" for when the sweep itself has to ship, and the window
+    #: it protects deserves the same ability to be tuned without a code change.
+    asset_purge_retention_days: int = 30
+
+    # --- the orphan sweep (ADR-0009 §9 addendum) -----------------------------------
+    #: A second, list-capable MinIO credential, held by **no always-on container** — only ever
+    #: handed to a one-off `docker compose run --rm --no-deps document ./bin/cron` an operator
+    #: starts by hand (the purge sweep runs inside the API without it; `document-cron` no longer
+    #: exists) — never by the API process, which never calls `ListBucket` (`app/storage.py`).
+    #: Optional for the same
+    #: reason `s3_access_key` is: absent, `OrphanScanner` simply cannot build a client and the
+    #: orphan pass of the sweep is skipped, which is the safe direction to be wrong in.
+    s3_orphan_access_key: SecretStr | None = None
+    s3_orphan_secret_key: SecretStr | None = None
+    #: An object with no matching row is only ever a candidate once it is at least this old —
+    #: the safety margin against the write-order race ADR-0009 §9 describes: the object write
+    #: and the row commit are two separate operations, and an upload that is merely mid-flight
+    #: must never look like an orphan. ADR-0009 §9 itself names 24 hours.
+    orphan_sweep_min_age_hours: int = 24
+    #: Off by default. An automated, bucket-wide delete earns this caution: an operator turns
+    #: it on only after reading a run or two of dry-run reports (`orphan_sweep_dry_run`,
+    #: below) and being satisfied the candidates it lists are the ones it should list.
+    orphan_sweep_enabled: bool = False
+    #: Independent of `orphan_sweep_enabled`: even switched on, the sweep only *lists and
+    #: logs* candidates until this is also explicitly set to `False`. Two flags rather than
+    #: one, so turning the pass on and trusting it to actually delete are two separate,
+    #: deliberate decisions, not one checkbox.
+    orphan_sweep_dry_run: bool = True
+    #: A circuit breaker independent of the age check and the row lookup: however wrong
+    #: discovery is on some future day, one tick can never remove more than this many objects.
+    orphan_sweep_max_deletes_per_tick: int = 100
+    #: Runs the purge sweep as a supervised background task inside the API process itself
+    #: instead of `document-cron`'s own container (the memory-headroom slice's fix round 2 —
+    #: see `operations.app.config.Settings.run_sweeps_in_api`'s own comment for the full
+    #: argument). Off by default everywhere except the edge box's own `.env`; `bin/cron` still
+    #: runs the sweep standalone for local debugging either way.
+    run_sweeps_in_api: bool = False
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

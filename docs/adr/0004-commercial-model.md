@@ -159,6 +159,52 @@ not re-implement *how* access is enforced.** The clean split is: `subscription` 
 failure becomes a suspension event becomes a de-entitled activation becomes a 402 — each step in the
 service that owns it.
 
+> **Addendum, 2026-09-23 — an activation is the OR of its sources.** This section assumed one
+> subscription per activation. Bundles broke that: a `suite/trio` subscription entitles `hrms`,
+> `crm` and `finance`, and the same customer may also hold a standalone `hrms` subscription. With
+> one status column written by whichever event arrived last, cancelling the suite would switch
+> off the HRMS they still pay for — and suspending a standalone HRMS would switch off the one
+> their suite includes.
+>
+> So `product.activation_sources` records *why* an activation is on: one row per
+> `(organization, product, source)`, where the source is the key the providing subscription was
+> bought under (`hrms` for the standalone, `suite` for the bundle; subscription-service keeps one
+> subscription per organization per key for ever, so the key names the subscription). The
+> activation's status is **recomputed** from its sources on every change — `active` if any source
+> is active, else `trial` if any is a trial (ending at the latest end), else `suspended` — and is
+> never written directly. The enforcement chain is unchanged: the activation row is still what
+> `/entitlements` reads, the `ent` claim is still built from it, and the gateway still 402s on
+> it. No new gate, no new claim.
+>
+> Three rules came with it. **Members come only from the pinned catalog version**:
+> subscription snapshots `bundled_products` as `entitled_products` at subscribe and change-plan,
+> and every lifecycle event carries it; nobody downstream reads catalog, and nothing reads a
+> member list from a client. **The ordering guard is per source**, not per activation: each
+> source row carries the `occurred_at` of the last event applied to it, and an older event for
+> that source is dropped whole; two sources are independent histories. **A dropped member is
+> tombstoned, not deleted**: a trio→duo downgrade marks `finance`'s suite source `removed` at the
+> event's time, so a stale trio event cannot re-add it. A hand activation is the product's own
+> source, shared with its standalone subscription exactly as the two always shared the row; a
+> hand deactivation of a product a bundle still feeds is refused rather than answered with a 200
+> that changes nothing. Details: [commerce-packaging.md](../commerce-packaging.md).
+>
+> **Concurrency.** Both the recompute and the watermark are read-then-write, so each fold holds
+> transaction-scoped advisory locks — on the source first, then on every activation it feeds now
+> or fed before, in key order — and the hand activate/deactivate paths take the same activation
+> lock. Without them two replicas folding at once each OR together a view missing the other's
+> uncommitted write, and the later *commit* wins rather than the later *event*. Two-connection
+> regression tests pin the three shapes that race (a leak, a lockout, an ordering bypass).
+>
+> **Decisions taken with it, each the safe default and each reversible.** (1) Bundles are
+> **sales-led**: customer routes refuse to subscribe to or re-pin a bundle; the platform team
+> sells one over subscription's service-token operator routes, which re-check the members against
+> product's registry at the moment of sale. Opening self-serve is one guard. (2) **The plan
+> version decides a trial's length** (`trial_days`, default 14, 0 for none); a customer's request
+> is capped at it, closing the self-granted 365-day trial on every product. (3) **A `soon`
+> product is never a member**: catalog refuses it at authoring, subscription at sale, product at
+> projection, and the seeded `suite/full` rung, which includes `projects`, is retired until
+> Projects launches. (4) A member list is honoured only on a bundle product's subscription.
+
 ### 6. Razorpay first, Stripe later — build against the more constrained provider
 
 `payment` ships a **Razorpay** adapter before a Stripe one, per [plan.md](../plan.md). This is
@@ -169,6 +215,9 @@ Razorpay cannot satisfy, and that mismatch is discovered only after the interfac
 sites. Designing against the tighter constraints first yields an abstraction the looser provider
 fits inside easily; the reverse does not hold. The provider seam is `payment`'s alone — no other
 service knows which processor took the money, only that `billing` recorded what was collected.
+"No true idempotency key" has a consequence for every retried or resumed charge; how the adapter
+contract answers it — lookup before create, against a provider Order — is the addendum at the end
+of this ADR.
 
 ### 7. Start metering now, billed later
 
@@ -225,7 +274,7 @@ version prices them.
   one without a flag-day cutover. Suspension via de-entitlement is already exercised by the 402 gate;
   billing just becomes the thing that pulls the switch.
 
-## Open, for a later ADR
+## Open, for a later ADR (as written 2026-08-24; every item is decided in "Decisions on open questions" below)
 
 Recorded so they are not mistaken for settled:
 
@@ -237,9 +286,505 @@ Recorded so they are not mistaken for settled:
 - **Tax computation and jurisdiction** — ADR-0000 §9 fixes that statutory rates are versioned by
   `effective_from` and a re-run for March uses March's rates. *Which* rate applies to a given
   customer, and where GST/VAT logic lives (a `billing` concern or its own service), is unsettled.
+  *Interim rule since 2026-09-23:* one deployment-wide rate code, exclusive, on the subtotal, in
+  force on the period's start — [ADR-0005's billing-run addendum](0005-dunning-and-grace.md) §5,
+  which also records trial conversion, the invoicing cadence and the plan-change rule this ADR
+  left open (upgrades prorate now, downgrades wait for the next period).
 - **Multi-currency on one account** — the schema carries an ISO currency per amount, so it is
   *possible*; whether one organization can hold subscriptions or ledgers in more than one currency,
   and how that reports, is deferred until a customer needs it.
 - **Revenue recognition** — invoices and collection are in scope; recognizing revenue over a
   subscription term (deferred revenue schedules) is a finance concern layered on the append-only
   invoice and ledger record, not modelled here.
+
+---
+
+## Decisions on open questions (2026-09-24)
+
+The three items still open in "Open, for a later ADR" above are decided here. That list is left as
+written so the history reads; read it through this section. Dunning, the first item, was already
+settled by ADR-0005. In-flight work that this section builds on and does not contradict: the
+billing-run addendum to [ADR-0005](0005-dunning-and-grace.md) (backlog R2) with its interim tax
+rule, and [ADR-0019](0019-statutory-portal-credentials.md) for where a *tenant's* GST portal
+credentials live. The register of every ADR question is
+[open-questions-register.md](open-questions-register.md).
+
+### Q1. Tax computation and jurisdiction, including OpsGrids' own GST on what commerce bills — **DECIDED (direction; built by O6)**
+
+**Facts this rests on.** `billing.tax_rates` exists (global, un-policied, `rate_bps`,
+versioned by `effective_from`) and nothing reads it yet (`services/billing/app/models.py`). The
+billing run (R2) adds an interim rule: one deployment-wide `BILLING_TAX_CODE` (and optional
+`BILLING_TAX_JURISDICTION`), the rate in force on the period's start, exclusive, computed **once on
+the subtotal** with `Money.percent_bps` half-up, written as its own line; unset means no tax line,
+and a code with no rate in force refuses to invoice. `billing.invoices.number` is unique per
+organization and R2 derives it from a hash of the invoice key, so it is idempotent but not
+consecutive. Finance already has the Indian GST rules as pure functions for its tenants:
+`gst_amount_minor` (once, half-up), `split_gst` (odd paisa to SGST), `is_intra_state` (export and
+SEZ are inter-state by statute), `parse_gstin` (check digit), `financial_year`; a per-organization
+`InvoiceNumberSeries` allocated with an atomic upsert; the IRP seam (`services/finance/app/irp/`);
+and GSTR-1 assembly (`assemble_gstr1`).
+
+**Decision.**
+
+1. **The supplier is the legal entity that operates the deployment**: OpsGrids' own GSTIN, legal
+   name and state, held as billing's deployment settings (`BILLING_SUPPLIER_GSTIN`,
+   `BILLING_SUPPLIER_LEGAL_NAME`, `BILLING_SUPPLIER_STATE_CODE`). Billing validates the GSTIN's
+   check digit at startup and refuses to boot if a tax code is set with no valid supplier GSTIN.
+   There is one supplier per deployment. It is not a tenant row, and it is not finance's
+   `gst_registrations`, which hold a tenant's own registration as a seller of its own goods.
+2. **The recipient is the customer organization.** Its tax identity is a **billing profile owned
+   by billing**: legal name, GSTIN (optional; no GSTIN means B2C), state code and billing address.
+   It is tenant-scoped under RLS and written by the organization's admin under two new ORG-only
+   permissions, `core.billing.profile.read` and `core.billing.profile.write`, which need
+   ADR-0007's reconcile in the deploy that ships them. The profile is **snapshotted onto each
+   invoice at finalize**, the same way finance snapshots `seller_gstin` and `buyer_gstin`. Billing
+   never reads finance's `customers` or `gst_registrations`: that would be a cross-schema read,
+   and a tenant does not have to own the finance product.
+3. **Billing computes the tax.** The R2 interim rule stays as it is and becomes the IGST case of
+   the general rule. The GST total is `round_half_up(subtotal × rate)`, computed once on the
+   invoice's taxable subtotal. It is then split by place of supply:
+   - **IGST** takes the whole total when the place of supply differs from the supplier's state, or
+     when the recipient is SEZ or export.
+   - Otherwise **CGST** is `⌊total / 2⌋` and **SGST** is the remainder. That is finance's
+     `split_gst` rule, so the heads always add back to the total.
+
+   Place of supply is the recipient GSTIN's state (B2B). Without a GSTIN it is the profile's state
+   if an address is on record, and otherwise the supplier's state (IGST Act s.12(2)). Each tax head
+   is its own invoice line, so the invoice still foots. Line-level heads for an e-invoice or GSTR-1
+   are the header heads **allocated** to the taxable lines by largest remainder
+   (`Money.allocate`). They are never recomputed per line, so the header and the lines cannot
+   disagree. The SAC code belongs to the catalog **product**. It defaults to one deployment-wide
+   `BILLING_DEFAULT_SAC`, whose value is **DECIDED (default; owner/CA may revise)**. In O6,
+   finance's pure GST functions move to `libs/platform-core` as `platform_core.gst`. They now have
+   two concrete users, finance and billing, and copying them would give two places to get GST
+   wrong.
+4. **The tax-invoice series lives in billing and belongs to the supplier.** It is not per customer
+   organization. CGST Rule 46(b) requires a consecutive serial number of at most 16 characters that
+   is unique within a financial year. So there is one counter row per `(series, financial_year)`,
+   with an `invoice` series and a `credit_note` series. The number is allocated **inside the
+   finalize transaction** with the same atomic `INSERT … ON CONFLICT DO UPDATE … RETURNING` that
+   finance's `allocate_invoice_number` uses. A rolled-back finalize therefore consumes no number,
+   and a draft never holds one. R2 finalizes only after the record step, so a voided draft leaves
+   no gap. The format is `OG/2627/000001` (14 characters). The per-organization `number` that R2
+   derives stays as the idempotent internal reference, and the tax-invoice number is an additional
+   column. The counter row has no `organization_id` because it is the supplier's and not a
+   tenant's. It is an **explicit RLS exemption** beside `tax_rates` (ADR-0002 §5), documented in
+   the model and pinned by a billing test, and the app role gets INSERT/UPDATE on that table only.
+5. **Once an invoice has a tax-invoice number, it is corrected with a credit note and never
+   voided.** The credit note takes a number from the `credit_note` series and references the
+   invoice, as GST requires and ADR-0000 §9 already says. `finalized → void` stays legal only for
+   invoices finalized before O6, which have no tax-invoice number.
+6. **Finance keeps OpsGrids' own returns, and its IRNs once they are required, under OpsGrids' own
+   organization.** A finance consumer of `commerce.invoice.finalized` (and the credit-note
+   equivalent) imports billing's tax invoice **verbatim** into the operator organization's book:
+   billing's number, lines and heads. Finance checks that the document foots and never recomputes
+   it; a document that does not foot is dead-lettered with an alarm. GSTR-1/3B for OpsGrids'
+   supplies then come from machinery that already exists. The IRN is requested through finance's
+   IRP pipeline **only once the owner confirms OpsGrids' AATO has crossed the e-invoice threshold**
+   (O4's gate) — **DECIDED (default; owner may revise)**. The IRN and QR come back to billing as an
+   event and are stored in an append-only billing table beside the frozen invoice. This consumer is
+   the one finance write that binds to an organization other than the envelope's. It binds only to
+   the configured `FINANCE_OPERATOR_ORG_ID`, accepts only envelopes whose `producer` is `billing`,
+   and never writes to the customer's tenant.
+
+**Why.** The tax must be computed where the money is charged. Payment collects billing's
+`total_minor`, so if anything else computed the tax, the tax invoice and the amount collected could
+differ by a paisa, and a tax invoice that disagrees with the money cannot be defended (ADR-0000 §9).
+The customer must be able to read their own tax invoice through their own tenant
+(`core.billing.invoice.read`, RLS); a document stored in OpsGrids' finance organization would need
+a cross-tenant read to show it. GST numbering belongs to the supplier: per-customer series would
+give every customer an `INV-0001` under one GSTIN. Returns and IRN filing already exist in
+finance, and building them a second time in billing would duplicate the part of the platform that
+is hardest to get right.
+
+**Rejected.** Issuing the tax invoice from finance under OpsGrids' organization: the customer
+could not read it without crossing tenants, and commerce's core document would depend on a product
+service. A per-organization series: it does not comply. R2's hash-derived numbers as GST numbers:
+they are not consecutive. A Postgres `SEQUENCE`: it leaves gaps on rollback, and every gap becomes
+an audit explanation. Copying finance's GST functions into billing. Per-line tax computation in
+billing: it contradicts R2's once-on-subtotal rule for no statutory gain, and allocation already
+gives every line a head within one minor unit of its exact share. A separate credential path for
+OpsGrids' own filings: as a taxpayer, OpsGrids' portal login is the operator organization's
+finance credential row, stored like any tenant's. Only the platform's ASP/GSP client credential is
+a deployment secret ([ADR-0019](0019-statutory-portal-credentials.md) §4).
+
+**Consequences.** Until O6 ships, the platform's invoices are **commercial invoices, not GST tax
+invoices**: no supplier GSTIN, no heads and no Rule 46 number. The owner must not issue them as tax
+invoices. O6 is several slices: the billing profile with its two permissions and ADR-0007
+reconcile, supplier settings, the series table and its exemption test, tax-head lines, credit
+notes, the `platform_core.gst` move, finance's operator-organization import consumer, and the IRN
+back-channel. The finance profile becomes part of what OpsGrids needs for its own compliance; the
+edge box already runs it. Every finalize serialises for one statement on one counter row per
+financial year. At hundreds of invoices a day that cost is not visible, and it is the only shape
+that keeps the series gap-free.
+
+### Q2. More than one currency on one account — **DECIDED**
+
+**Decision.** An organization has **one billing currency**, fixed by its first subscription that
+is not cancelled. A subscribe whose pinned version is priced in any other currency is refused with
+422, naming the organization's currency. The credit ledger stays keyed by currency (its balance
+index is already `(organization_id, currency, valid_from)`), so an existing grant in a
+different currency is never silently converted. A customer that needs to be billed in two
+currencies becomes **two organizations**, not one organization with mixed ledgers (ADR-0000 §1:
+one person may belong to many organizations). INR is the default. A non-Indian customer is billed
+in its own currency from its first subscription, and exporting to it — zero-rated under a LUT —
+is added to O6's supply types when the first such customer exists.
+
+**Grounding.** `subscriptions.currency` is already documented as "ADR-0004 defaults: one currency
+per org for now", and `_change_plan` already refuses a cross-currency change. But `_subscribe`
+(`services/subscription/app/services.py`) never checks the organization's other subscriptions,
+so today one organization can hold an INR subscription and a USD one.
+
+**Rejected.** Per-subscription currencies inside one organization: it breaks every sum a report
+or the credit ledger takes, and prepaid packs cannot be drawn across currencies. FX conversion at
+invoice time: it adds a rate source, a rounding policy and a reconciliation problem, and no
+customer has asked for it.
+
+**Consequences.** One guard in `_subscribe`, with a negative test. **Not covered by any ledger
+item. New backlog item needed.**
+
+### Q3. Revenue recognition — **DECIDED (no ledger now; one column now)**
+
+**Decision.** Commerce does not model deferred revenue. Recognized revenue is a **derived report**
+over finalized invoices that are not void, never a stored balance:
+- recurring lines are recognized over their service window, day-weighted by overlap with each
+  month;
+- usage lines are recognized in the window they measured;
+- proration and closing lines are recognized over their own window.
+
+One thing has to be captured now because it cannot be backfilled later. `billing.invoice_lines`
+are append-only (UPDATE is revoked), and an R2 renewal invoice mixes advance recurring lines for
+the new period with arrears usage lines for the old one. So **every invoice line gets its own
+nullable `service_start` and `service_end`**, written at pricing time. Lines written before that
+column exists keep the invoice's period, and are exact for every invoice that has only recurring
+lines.
+
+**Why.** It follows the reasoning of ADR-0009 §7 and this ADR's §7: defer what can be rebuilt from
+stored rows, and capture now what cannot. The report can be written on the day an auditor or the
+owner needs Ind AS 115 figures. A line's service window cannot be written after the line exists.
+
+**Rejected.** A deferred-revenue schedule table written at finalize: it is a second financial record
+that must agree with the invoice forever, built for a report nobody runs yet. Recognizing revenue
+at invoice date: it is wrong for a yearly plan.
+
+**Consequences.** The report is built when the owner or a statutory audit asks for recognized
+revenue by month; the likely home is Q4's analytics projection. The line-window column is a small
+billing change to make after R2 merges. **It is not covered by any ledger item. New backlog item
+needed.**
+
+## Addendum (2026-09-24) — §6 in practice: lookup before create (D3)
+
+Razorpay offers no idempotency key on a payment create, so sending ours on the call makes nothing
+idempotent at the provider: a charge resumed after a crash between the provider call and
+recording its answer could be created twice. The adapter contract (`payment/app/providers/
+base.py`) is therefore **lookup before create**:
+
+1. `ensure_order(receipt=<charge id>, …)` finds the charge's Order by its `receipt` and creates
+   it only if Razorpay holds none. The receipt is the charge's own id — 36 characters, globally
+   unique and stable — not the platform idempotency key: Razorpay caps `receipt` at 40
+   characters (`invoice:<uuid>` is 44) and does not enforce its uniqueness, so a key two tenants
+   could share would not be safe to look up by;
+2. `find_payment(order_id=…, charge_id=…)` returns a payment already made against that Order
+   (matched on the `notes.charge_id` the platform stamps), if any;
+3. only then `charge(order_id=…)` creates one.
+
+The Order id is recorded on the charge (`charges.provider_order_id`). A charge also carries a
+**lease** (`attempts`, `next_attempt_at`, `lease_until`), claimed with one conditional
+`UPDATE … RETURNING`, so only one caller at a time — a request, its own HTTP retry, or the
+stuck-charge sweep — may call the provider for it; the sweep backs off between attempts. At the
+budget it does **not** fail the charge blind: the last attempt's create may have reached Razorpay
+with its answer lost, and failing it would send dunning to debit again. It makes a **lookup-only**
+call (`find_order` by receipt, then `find_payment`; never a create) and records a payment it finds;
+only if Razorpay holds none does it fail the charge (`failure_reason = attempts_exhausted`) and emit
+`commerce.payment.failed` so dunning proceeds. If the lookup itself cannot be made it is retried a
+bounded number of times, then the charge fails as `lookup_unavailable` with an alert. A charge
+failed for either of those reasons still accepts a late `payment.captured` — the money moved, so
+the record follows it — while a failure Razorpay reported stays final. The verified webhook also
+records the provider payment and Order ids when the charge has none (a call that outlived its
+timeout was never finalized), and it takes the same row lock as the sweep and finalize. The lease
+is validated at start-up to be at least twice the provider call timeout plus a minute, and an
+adapter's per-request timeouts over the three wire calls must sum under that timeout. The live
+wire (real Razorpay HTTP) is out of scope here and belongs to the provider-integration work
+(B5g); the stub adapter keeps the Orders and payments a real account would, so the contract is
+exercised end to end in tests. A Stripe adapter forwards the key to Stripe's native idempotency
+header and may answer the two lookups trivially. The full claim/call/record contract is
+`docs/io-outside-transactions.md`.
+
+**The live adapter is bound by this, and there is a test that says so.** The Razorpay adapter is
+stubbed until B5g gives it live keys. When it does, it must implement exactly the contract above
+— `ensure_order` (`GET /orders?receipt=…`, `POST /orders` only if that found none), `find_order`
+(the GET alone, never a create), `find_payment` (`GET /orders/{id}/payments`, matched on
+`notes.charge_id`), `charge` only after that found none — and declare the connect and read
+timeout of each request it makes (`request_timeouts_seconds`), whose sum stays inside
+`provider_call_timeout_seconds`. That is not left to prose:
+`services/payment/tests/provider_contract.py::ProviderContract` is the same statement as tests —
+`ensure_order` is idempotent by receipt, `find_order` never creates, `find_payment` finds the
+payment made against its own Order, the provider call creates at most once per receipt however
+many times, and from however many processes, it is made, and the declared timeouts fit the budget.
+The stub passes it today; the live adapter's test module subclasses it and passes it unchanged
+before it can merge. `test_provider_contract.py` also runs each check against an adapter broken
+in the way the check guards against, and requires it to fail.
+
+## Addendum (2026-09-24) — webhook identity and permanent conditions (PAY-A)
+
+Two defects in how a verified Razorpay webhook was recorded, both invisible while the wire is
+stubbed and both fatal once real events flow. Neither changes §6's contract; both sit in the
+inbox (`provider_events`, insert-only) and the reconciliation in front of it.
+
+### The event id is a header, and the inbox never keys on `''`
+
+A real Razorpay body is `{entity: "event", account_id, event, contains, payload, created_at}` —
+**no top-level `id`**. The per-delivery event id is the `X-Razorpay-Event-Id` **header**. The
+adapter read it from the body and defaulted the missing value to `''`, so `(organization_id, '')`
+was the dedupe key of every event an organization received: the first was recorded, every later one
+was dropped as a "duplicate" and answered 200 — so Razorpay stopped retrying and the capture or
+failure was never reconciled, no `commerce.payment.*` event reached subscription, and dunning was
+never opened or recovered. The suite's own bodies synthesised an `id`, which is why nothing saw it.
+
+The id the inbox is idempotent on is now resolved in `domain.resolve_event_id`, in this order:
+
+1. the `X-Razorpay-Event-Id` header, if it is a usable id (printable ASCII, no whitespace, at
+   most 120 characters — the column — and not claiming the `derived:` prefix);
+2. an id the body itself carries (a fixture, or a future provider whose body has one);
+3. `derived:` + the SHA-256 of `(provider, event name, entity id, created_at)` — the body's own
+   identifying fields, the same on every redelivery of one event and different for a different
+   one. Derived only from all three; an id built from less would fold distinct events together.
+
+A webhook that yields none is **refused, 400, with no state change** — a delivery nothing tells
+apart from any other cannot be deduplicated. Genuine Razorpay deliveries always carry the header, so
+this is a hand-built or mangled request. The signature is still verified over the **raw body**
+before anything else, and a body that verified but is not a JSON object is refused the same way
+(`MalformedWebhook`, 400) rather than surfacing as a 500.
+
+The header is **not** covered by Razorpay's HMAC, which is over the body only. So it is a delivery
+id and nothing more, and two things follow.
+
+*A signed body filed under someone else's delivery id* — someone holding any genuine signed body for
+an organization (an intercepted delivery) could file it under the id of a delivery they expect next,
+and the real event, arriving under that id, would be acked `duplicate` and never applied. So the
+duplicate path **checks the row it collided with is this event**: it derives the identity of the
+stored signed body (event name, entity id, timestamp — which JSONB round-trips exactly, tested with
+nested numbers and unicode) and compares it with this delivery's. A true redelivery matches and is a
+plain duplicate on its header id. A different event is logged at error
+(`payment.webhook.event_id_reused`), re-keyed on **its own** derived id and processed; every later
+delivery of it, under either id, is then a plain duplicate. It can only be checked when this
+delivery has a derivable identity (all of event name, entity id and `created_at`, which every real
+Razorpay body carries).
+
+*Accepted residual (no code, no new column).* A body intercepted in flight can still be replayed
+under **fresh** delivery ids. That is state-safe — a redelivery of an outcome the charge already has
+is a no-op on the charge, emits nothing, and a conflicting body is a conflict again — but each replay
+adds an inbox row and, for a conflict, an audit row and an error line. It needs the raw signed bytes
+(Razorpay's signature carries no timestamp, so there is nothing to expire), and the cost is noise,
+not money. Bounding it would take a per-body uniqueness the design deliberately does not have. The
+same is true, and accepted for the same reason, of a genuine redelivery an operator cannot tell from
+a replay by watching the logs alone: `payment.webhook.event_id_reused` fires once per delivery that
+re-keys, and `payment.webhook.late_authorization` fires once per distinct delivery id of an
+`authorized` on a failed charge — a body resent enough times pages an operator that many times.
+Deduplicating the *alert* (rather than the event, which is already handled correctly) would need
+its own rate-limited channel; nothing here builds one, and the noise is a paging-policy question,
+not a payment-correctness one.
+
+The database now says the same thing: `provider_events` has
+`CHECK (length(provider_event_id) > 0)`, created **`NOT VALID`** — enforced on every new row,
+without failing an upgrade on a legacy `''` row, which the append-only trigger would make
+uncorrectable. Nothing depends on validating it.
+
+### A permanent condition is recorded and answered 200, never retried
+
+`_reconcile_charge` called `assert_legal`, and `ingest_webhook` raised for a body naming no
+organization. Both were a 422, rolled back whole by the route's transaction — the
+inbox row, the audit row and the state change together. Razorpay retries any non-2xx for days, so a
+webhook that could never succeed was redelivered until its window closed, **and the authentic
+evidence was kept nowhere**. A malformed organization id in `notes` was worse: a `ValueError`, a
+500. A status code is a promise that a retry can help; these are the cases where it cannot.
+
+`ingest_webhook` now records the inbox row and reconciles **inside a SAVEPOINT**. Reconciliation
+raises a typed verdict, `domain.WebhookNotApplied` (deliberately not a `ProblemError` — it cannot
+reach the HTTP layer), for each permanent condition. The SAVEPOINT rolls the attempt back — the
+inbox row and any partial write, provider ids included — and the event is recorded once more, with
+its outcome stated, because `provider_events` is insert-only and a disposition can only be written
+when the row is:
+
+| `disposition` | `disposition_reason` | Meaning | Operator action |
+|---|---|---|---|
+| `ignored` | `unknown_charge` | The `charge_id`/payment named is not this organization's (another tenant's is invisible under RLS) | none |
+| `conflict` | `illegal_transition` | An outcome the state machine forbids: `captured -> failed`, or `failed -> captured` that is **neither** a platform-decided failure **nor the same payment** the charge holds (below) | look — money may have moved |
+| `conflict` | `amount_mismatch` / `currency_mismatch` | The payment is not for the charge it names (integer minor units and ISO currency, exact) | look |
+| `conflict` | `provider_id_conflict` | The webhook names a payment id **other than the one this charge already holds**, or an id another charge of the organization holds. It does not drive the charge | look — the other payment may be money |
+
+`processed` is the default: reconciliation ran without meeting any of these (it may still have been
+a no-op — an intermediate event, a redelivered outcome). A reason code is a code, never free text,
+and never any part of the body.
+
+Each recorded case also writes an audit row `payment.webhook.ignored` (entity `provider_event`,
+`after` = the reason, the event's name and id, the charge's id and state, integer amounts or ISO
+currencies — nothing from the body) and one structured log line of the same name, at `error` for a
+`conflict` and `warning` for `ignored`. The answer is 200, with `ignored_reason` on the ack. A
+redelivery of an ignored event is deduplicated like any other: the first delivery kept its row.
+
+The identity checks run first, before the charge is touched, on every event that carries a payment
+entity (`captured`, `failed`, `authorized`). Amount and currency: a body that omits either is not a
+mismatch — what the provider does not say cannot contradict the charge. Payment id: an event about a
+payment **other than the one the charge already holds** never drives the charge (a second attempt on
+the same Order, a stray id) and is a `provider_id_conflict`; a charge that holds no id yet binds the
+first verified one, as before. Every by-id charge query (`get_charge`, `lock_charge`, the lease claim,
+the refund total) also filters on `organization_id` itself: the webhook's organization comes from a
+body, so RLS is the net and the predicate is the filter — a test runs the whole path on a BYPASSRLS
+session to prove it.
+
+### Late authorisation: `failed -> captured` for the same payment — **owner to confirm**
+
+D3 made `failed -> captured` legal for a failure the platform decided itself (`attempts_exhausted`,
+`lookup_unavailable`): the money moved, the record follows it. It left the provider's own failures
+final, on the reasoning that a failure Razorpay reported is Razorpay's word. That reasoning missed a
+real sequence: a bank's **late authorisation** reports the *same payment* `payment.failed` and later
+`payment.authorized` and `payment.captured`. The failure had already opened dunning; the capture was
+answered 200 `illegal_transition` and lost — the customer paid, stayed suspended, and was debited
+again by the dunning retry.
+
+So the D3 exemption is **extended**: `failed -> captured` is applied when the event's payment id is
+present and **equals the payment id the charge already held before this event** — the same payment —
+in addition to the two local failure reasons. It is audited under its own action,
+`payment.charge.captured_after_provider_failure` (the local variant keeps
+`payment.charge.captured_after_local_failure`), logged at error, and emits
+`commerce.payment.captured` exactly as a normal capture does, clearing `failure_reason`. It stays an
+`illegal_transition` conflict when the charge holds no payment id (nothing vouches whose money it is),
+and a capture naming a different id is a `provider_id_conflict`. The `authorized` step, which changes
+nothing, is logged at error as `payment.webhook.late_authorization` (and audited under that name) so
+an operator learns of it before the capture arrives; an `authorized` that follows a *capture* is
+ordinary reordering and is not alarmed.
+
+Subscription needs no change, and this was checked in code rather than assumed:
+`recover_on_payment_captured` is bound to **every** `commerce.payment.captured`, and
+`record_payment_captured` closes the open dunning cycle when the capture is for the cycle's invoice
+(`invoice_id` travels in the event) and returns the subscription to `active` from `past_due`, or from
+`suspended` when the suspension is dunning's and the cycle closed `grace_expired` for that invoice —
+which is exactly the D3 variant's path already.
+
+**Owner to confirm.** This reverses a stated D3 boundary in the customer's favour: money was taken,
+so the platform now recognises it rather than dunning against a paid customer. The cost is that the
+same payment id reported failed and then captured is trusted on Razorpay's word twice; a *second,
+different* payment on the same Order that succeeds (a customer retrying at checkout) is **not**
+recognised automatically and surfaces as a `provider_id_conflict` for an operator, because a charge
+holds one payment id and recording several is a decision this addendum does not take.
+
+> **OWNER DECISION (2026-09-24, PAY-A round 2).**
+> 1. **`failed -> captured` for the same payment is applied automatically.** The exemption above
+>    ships as described; it is not held back for a manual review step.
+> 2. **An invoice collected twice is alerted, never auto-corrected.** `payment.invoice.collected_twice`
+>    (below) is the whole answer at the code level: it is logged and audited, and an operator
+>    refunds the extra charge by hand, against the evidence the alert and the audit row leave. No
+>    code here issues a refund on its own.
+
+### An invoice collected twice: alerted, never auto-corrected
+
+Applying the exemption automatically opens a second way for one invoice to be collected twice, on
+top of the one dunning already guarded against (a retry reusing the failed charge's key would
+deduplicate into it and debit nobody, ADR-0004 §6). Now that a *stale* failed charge can come back
+to life on its own, two real charges can both capture the same invoice, in either order:
+
+* **The late capture lands after a retry already captured.** Charge X (provider-reported) fails;
+  dunning raises a fresh charge Y for the same invoice under its own key; Y captures normally. X's
+  late same-payment capture then applies exactly as designed — nothing about it is individually
+  wrong — and the invoice is now collected twice, with only X's own
+  `payment.charge.captured_after_provider_failure` line to notice from, which says nothing about Y.
+* **The retry is staged after the late capture already settled the invoice.** X's late capture
+  lands first; a dunning retry for Y, already scheduled before that happened, still arrives and
+  stages and debits Y — an ordinary-looking capture, no alert at all.
+
+Both are closed. **Detection**, in `services._detect_double_collection`, runs on *every* transition
+to `captured` — the ordinary path and both `_capture_after_failure` variants — and queries every
+other charge of the same `(organization_id, invoice_id)` already `captured`
+(`selectors.captured_charges_for_invoice`, `ix_charges_org_invoice`). Finding one logs
+`payment.invoice.collected_twice` at error and writes an audit row of the same action (entity
+`invoice`, `after` carrying `invoice_id`, `other_captured_charge_ids`, `amount_minor`, `currency`) —
+whichever order the two captures arrived in, and however many charges collected the invoice.
+**Nothing is refunded automatically**: the code's job stops at making the double collection visible
+and evidenced: a refund moves money back out, on a schedule and to a party the platform does not
+decide unilaterally, and mistargeting it (refunding the wrong one of two charges, or a customer who
+disputes the second debit before an operator gets to it) is worse than a bounded delay.
+
+**Prevention** closes the second ordering where prevention is still possible: `consumers.
+charge_on_dunning_retry` checks `captured_charges_for_invoice` for the retry's invoice **before**
+`stage_charge`, and if the invoice is already captured, logs `dunning.retry.invoice_already_paid`
+and marks the event processed without staging or debiting anything. This is the one charge-creating
+path that needed it: `charge_on_invoice_finalized` and the internal charge route both derive their
+idempotency key from the invoice itself, so a redelivery or a second request for an already-charged
+invoice returns the existing (already captured) charge and calls the provider again for it —
+`stage_charge`'s own `ON CONFLICT DO NOTHING` refuses the second row before any guard would need to.
+Only the dunning ladder mints a **fresh** key per attempt (by design — the same key would swallow
+the retry into the charge that already failed), which is exactly what removes that protection and
+is why this is the one path that needed an explicit check.
+
+**Rejected.** An automatic refund of the second charge — the platform cannot tell which of two
+captured charges for one invoice is "the extra one" without knowing which the customer expects to
+keep, and a wrong automatic refund is itself a support incident. Preventing the double collection at
+the reconciliation layer (refusing X's late capture once Y is known captured) — that would be
+turning genuine, verified money received back into an unresolved state, which is a worse outcome
+than a flagged double collection an operator clears. A single "invoice already settled" table
+checked by every path — the existing `(organization_id, invoice_id)` index already answers the
+question; a second source of the same fact is a second thing to keep in sync.
+
+A webhook that names **no usable organization** — a payment made on the same Razorpay account
+outside this platform, or a `notes.organization_id` that is not an id — has no tenant to record
+under (every table carries `organization_id`, and the GUC has nothing to bind). It is logged
+(`payment.webhook.unattributable`: the event's id and name, a `reason` code, and our own charge id
+when it is one — never the body) and answered 200, because the provider redelivering it can never
+make it attributable. That line is the whole trace of it, so its **level** carries the cause: a body
+with none of our notes (`no_platform_notes` — a payment made outside the platform) is `warning`;
+one that carries our own notes half-formed (`charge_named_without_organization`,
+`organization_id_malformed`) is `error`, because a platform-side bug malforming what it stamped
+would otherwise lose a real capture behind a 200.
+
+**What is non-2xx.** Only these: a bad signature (**400**, unchanged — and a signature of *any*
+bytes, non-ASCII included, is a 400, never a 500), a webhook that cannot be identified or read
+(**400**), and a *transient* failure to record it (**503**: the database was unreachable, refused
+the connection, was starting up or out of connections, or the pool was exhausted — SQLAlchemy's
+`OperationalError` and `InterfaceError`, the pool `TimeoutError`, a raw `OSError` from a refused or
+unroutable connect, and asyncpg's `PostgresConnectionError`, `CannotConnectNowError` and
+`TooManyConnectionsError`; the transaction rolls back whole, the event id is not burned, and the
+redelivery lands as a first delivery). Nothing else. A defect is deliberately **not** dressed as an
+outage: a `RuntimeError` is a 500, and an unrelated `IntegrityError` is the platform's **409**
+(`register_error_handlers` maps every integrity error to a conflict problem, constraint name kept
+out of the body). Both are non-2xx, so the provider retries and the defect is seen; neither is ever
+recorded as `ignored` and answered 200. Only the typed verdict is a permanent condition, and of the
+integrity errors only the two provider-id unique indexes are.
+
+**Seeing them.** There is no Prometheus counter: `/metrics` is `platform_core`'s shared surface with
+no per-service hook, and the platform's convention is that a metric is a query over append-only
+rows. So:
+
+```sql
+SELECT disposition, disposition_reason, count(*)
+FROM payment.provider_events
+WHERE disposition <> 'processed' AND received_at > now() - interval '1 day'
+GROUP BY 1, 2;
+```
+
+and an alert on the log event `payment.webhook.ignored` at level `error` (a `conflict`).
+
+**Rejected.** Answering these 4xx with a "please stop" header — Razorpay documents none, and a
+non-2xx is a retry by definition. Updating the inbox row after the fact — it is append-only, and
+weakening the trigger for one column would weaken it for all. Recording the row and *then*
+reconciling in the same statement order, without the SAVEPOINT — a partial reconcile (provider ids,
+an audit row) would survive a conflict. A blanket `except` around reconciliation — it would turn a
+defect into silently lost payments. A digest of the whole body as the fallback id — it changes
+whenever the provider re-serialises an otherwise identical event, where the chosen tuple does not.
+
+### For the live adapter (B5g): two things the stub cannot show
+
+Recorded here so they are not discovered in production.
+
+1. **`request_timeouts_seconds` is a sum, not a wall-clock bound.** It adds each request's connect
+   and read timeout, and `ProviderContract` holds that sum inside `provider_call_timeout_seconds`.
+   But an HTTP client's *read* timeout (httpx's is per chunk received) restarts every time bytes
+   arrive, so a slow trickle can outlast the sum. The live adapter therefore needs an **overall
+   per-call deadline** in addition to per-request timeouts — otherwise an abandoned call can still
+   be in flight after the lease lapses, which is the double create the budget exists to prevent.
+2. **The fee-bearer model may change what `amount` means.** With Razorpay's *customer bears the
+   fee* setting, a payment's `amount` may include the fee and so differ from the order amount. The
+   amount-mismatch check would then turn **every capture into a conflict** for such an account.
+   Confirm against Razorpay's live documentation before enabling the amount check for a fee-bearer
+   account, and consider a per-organization toggle (compare against the order amount, or skip the
+   amount and keep the currency check) if it is needed.

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/engage.setup.connection.created/v1",
+  "title": "engage.setup.connection.created",
+  "description": "An organization connected its outbound email provider for the first time.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "connection_id", "kind", "daily_cap"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "connection_id": { "type": "string", "format": "uuid" },
+    "kind": { "type": "string", "enum": ["google", "microsoft", "smtp", "platform"] },
+    "daily_cap": { "type": "integer", "minimum": 0 }
+  }
+}

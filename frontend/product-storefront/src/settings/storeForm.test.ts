@@ -46,39 +46,39 @@ describe("validateStoreForm", () => {
 });
 
 describe("toStorePut", () => {
-  it("blanks a cleared tagline, logo text and custom domain to null — never an empty string", () => {
+  it("blanks a cleared tagline and logo text to null — never an empty string", () => {
     const put = toStorePut({
       ...EMPTY_STORE_FORM,
       slug: "greenleaf",
       name: "Greenleaf",
       tagline: "  ",
       logoText: "",
-      customDomain: " ",
     });
     expect(put.tagline).toBeNull();
     expect(put.logo_text).toBeNull();
-    expect(put.custom_domain).toBeNull();
   });
 
-  it("upper-cases the currency and lower-cases the domain, trimming both", () => {
+  it("never sends the domain — the domain screen owns the claim", () => {
+    const put = toStorePut({ ...EMPTY_STORE_FORM, slug: "greenleaf", name: "Greenleaf" });
+    expect("custom_domain" in put).toBe(false);
+  });
+
+  it("upper-cases the currency, trimming it", () => {
     const put = toStorePut({
       ...EMPTY_STORE_FORM,
       slug: "greenleaf",
       name: "Greenleaf",
       currency: " inr ",
-      customDomain: " Shop.Example.COM ",
     });
     expect(put.currency).toBe("INR");
-    expect(put.custom_domain).toBe("shop.example.com");
   });
 });
 
 describe("fromStore", () => {
-  it("turns a null tagline, logo text and domain into empty strings for the inputs", () => {
-    const values = fromStore({ ...STORE, tagline: null, logo_text: null, custom_domain: null });
+  it("turns a null tagline and logo text into empty strings for the inputs", () => {
+    const values = fromStore({ ...STORE, tagline: null, logo_text: null });
     expect(values.tagline).toBe("");
     expect(values.logoText).toBe("");
-    expect(values.customDomain).toBe("");
   });
 
   it("round-trips a fully populated store", () => {
@@ -90,7 +90,6 @@ describe("fromStore", () => {
       logoText: "GTC",
       currency: "INR",
       timezone: "Asia/Kolkata",
-      customDomain: "",
     });
   });
 });

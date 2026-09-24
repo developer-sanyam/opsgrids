@@ -20,11 +20,22 @@
         "type": "object"
       },
       "WebhookAck": {
-        "description": "The result of ingesting a provider webhook.\n\n`duplicate` is true when the `provider_event_id` was already in the inbox \u2014 the callback was a\nre-delivery and did nothing the first time did not already do. `reconciled` is true when the\nevent moved a charge to a terminal state and emitted a `commerce.payment.*`.",
+        "description": "The result of ingesting a provider webhook.\n\n`duplicate` is true when the `provider_event_id` was already in the inbox \u2014 the callback was a\nre-delivery and did nothing the first time did not already do. `reconciled` is true when the\nevent moved a charge to a terminal state and emitted a `commerce.payment.*`.\n\n`provider_event_id` is the id the inbox deduplicated on: the delivery's `X-Razorpay-Event-Id`\nheader, else an id the body carried, else `derived:<sha256>` from the body's event name, entity\nid and timestamp. It is never empty.\n\n`ignored_reason` is set when the webhook was authentic but cannot be reconciled and never will\nbe \u2014 the provider is answered 200 (a retry could not change the outcome) and the reason is a\nstable code: `unknown_charge` and `unattributable` (nothing here to reconcile), or\n`illegal_transition`, `amount_mismatch`, `currency_mismatch` and `provider_id_conflict` (it\ncontradicts what this platform holds; no state was changed, an operator should look). Every\nreason except `unattributable` \u2014 which has no tenant to record under \u2014 is kept on the inbox\nrow and audited as `payment.webhook.ignored`. Null on a webhook that was reconciled or was\nsimply a redelivery.",
         "properties": {
           "duplicate": {
             "title": "Duplicate",
             "type": "boolean"
+          },
+          "ignored_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ignored Reason"
           },
           "provider_event_id": {
             "title": "Provider Event Id",
@@ -168,6 +179,28 @@
           }
         },
         "summary": "Readiness \u2014 can it serve traffic?",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "description": "Reachable only on the compose `back` network (`tests/infra`'s\n`test_metrics_never_routed.py` is the lint that keeps it that way) \u2014 never behind\nCaddy or a gateway, the same rule `ops_monitor`'s own `/metrics` follows.\n\n`db_pool_in_use` is always reported when this service has a database; the three\noutbox gauges only when `outbox_model` is configured \u2014 same gate as `/health/outbox`,\nand the same reason: an app-role connection with no tenant bound sees zero rows.",
+        "operationId": "metrics_metrics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Prometheus text exposition",
         "tags": [
           "health"
         ]

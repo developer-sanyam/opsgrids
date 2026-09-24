@@ -46,6 +46,11 @@ function ProductSection({ product, versions }: { product: Product; versions: Pla
         <div className="flex flex-col leading-tight">
           <span className="font-semibold text-ink">{v.plan_name}</span>
           <span className="mono text-xs text-faint">v{v.version_no}</span>
+          {v.bundled_products && v.bundled_products.length > 0 ? (
+            <span className="text-xs text-muted">
+              Bundles <span className="mono">{v.bundled_products.join(", ")}</span>
+            </span>
+          ) : null}
         </div>
       ),
     },

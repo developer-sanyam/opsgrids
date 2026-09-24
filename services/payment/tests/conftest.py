@@ -31,7 +31,14 @@ from app.config import settings
 from app.main import app
 from app.models import SCHEMA
 from app.providers.razorpay import RazorpayProvider
-from platform_core.db import TENANT_GUC, get_session
+from platform_core.db import (
+    TENANT_GUC,
+    dispose_engine,
+    dispose_outbox_engine,
+    get_session,
+    init_engine,
+    init_outbox_engine,
+)
 
 #: Everything payment owns. Tenant-scoped or global-and-test-empty, so all are safe to truncate.
 #: `refunds` before `charges` for the foreign key; TRUNCATE CASCADE would handle it too.
@@ -94,11 +101,35 @@ async def session(org_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
     async with maker() as s:
 
         @event.listens_for(s.sync_session, "after_begin")
-        def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+        def _bind(_session, transaction, connection) -> None:  # type: ignore[no-untyped-def]
+            # A SAVEPOINT (`begin_nested`) fires this event too, but it is not a new transaction:
+            # the GUC set for the outer one still holds, and re-applying the *fixture's*
+            # organization here would clobber the tenant a route bound for itself (the webhook
+            # binds the organization its body names, which a test may make another tenant's).
+            if transaction.nested:
+                return
             connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
 
         yield s
     await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def engines() -> AsyncIterator[None]:
+    """The real process-wide application and **outbox** engines, for `app/cron.py`'s
+    stuck-charge sweep: its discovery query runs on `get_outbox_sessionmaker`, which is `None`
+    (and silently falls back to the app engine — the untested, unsplit configuration) until
+    `init_outbox_engine` has run.
+
+    Per test rather than per session: an engine binds itself to the event loop it was created on,
+    and pytest-asyncio gives each test a fresh one.
+    """
+    cfg = settings()
+    init_engine(cfg)
+    init_outbox_engine(cfg)
+    yield
+    await dispose_outbox_engine()
+    await dispose_engine()
 
 
 @pytest_asyncio.fixture
@@ -134,3 +165,13 @@ async def client(session: AsyncSession, provider: RazorpayProvider) -> AsyncIter
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
     app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def tolerant(client: AsyncClient) -> AsyncIterator[AsyncClient]:
+    """A client that answers what the server would — a 500 is a 500, not an exception in the test.
+    Built after `client` so the app's dependency overrides (the shared session, the test provider)
+    are in place."""
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c

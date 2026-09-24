@@ -143,9 +143,26 @@ class ServiceSettings(BaseSettings):
     #: and a retry, far too short to be worth capturing. See `platform_core.internal_auth`.
     service_token_ttl_seconds: int = 60
 
+    #: HMAC key for the admin-gateway -> auth hop-signature header
+    #: (`platform_core.internal_auth.sign_admin_hop`/`verify_admin_hop`). Optional: only
+    #: admin-gateway (signs) and auth (verifies) ever read it; every other service leaves it
+    #: unset. Defence in depth on top of the route table blocking `/api/v1/auth/operator` at
+    #: every gateway (BLOCKER 2 of the 2026-09-24 security review) — even a gateway
+    #: misconfigured to forward that prefix produces a request auth's operator routes still
+    #: refuse, because it carries no valid hop signature.
+    admin_gateway_hop_key: SecretStr | None = None
+
     # --- PII ----------------------------------------------------------------------
     pii_encryption_key: SecretStr = SecretStr("dev-only-pii-key-change-me")
     pii_decrypt_keys: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
+    # --- egress ---------------------------------------------------------------------
+    #: Lets `platform_core.egress.EgressGuard` accept plain `http://` for an admin-supplied
+    #: URL (OIDC discovery, JWKS, a token endpoint) instead of refusing anything but `https`.
+    #: Exists only for a local IdP fixture that has no certificate; refused outright below
+    #: for `production`, `staging` and `uat` so a value that leaks into one of those `.env`
+    #: files fails at startup instead of quietly widening every egress-guarded fetch.
+    egress_allow_insecure_http: bool = False
 
     # --- observability ------------------------------------------------------------
     log_level: str = "INFO"
@@ -167,6 +184,18 @@ class ServiceSettings(BaseSettings):
     def _split_csv(cls, v: object) -> object:
         if isinstance(v, str):
             return [item.strip() for item in v.split(",") if item.strip()]
+        return v
+
+    @field_validator("admin_gateway_hop_key", mode="before")
+    @classmethod
+    def _empty_hop_key_is_unset(cls, v: object) -> object:
+        """`compose.prod.yml` passes `${ADMIN_GATEWAY_HOP_KEY:-}` — an *empty* value when the
+        box has none, so a missing key does not break every compose command (backup.sh's
+        `pg_dump` included). An empty string is "unset", not a zero-length key: in a real
+        deployment auth then refuses to start for the right reason (no key), and in development
+        the signature check stays a no-op rather than rejecting every request against ""."""
+        if isinstance(v, str) and not v.strip():
+            return None
         return v
 
     @property
@@ -239,6 +268,15 @@ class ServiceSettings(BaseSettings):
                 "tenant's PII is sealed under, and a short or guessable one makes the "
                 "encryption theatre. Generate 32+ random bytes and treat them as a secret."
             )
+        if self.admin_gateway_hop_key is not None:
+            hop_key = self.admin_gateway_hop_key.get_secret_value()
+            insecure["admin_gateway_hop_key"] = hop_key.startswith(placeholder_prefixes)
+            if len(hop_key.encode()) < 32:
+                raise ValueError(
+                    "admin_gateway_hop_key must be at least 32 bytes: it signs the "
+                    "admin-gateway hop header with HMAC-SHA256, and a key shorter than the "
+                    "digest is weaker than the algorithm suggests (RFC 7518 §3.2)."
+                )
 
         offenders = [name for name, bad in insecure.items() if bad]
         if offenders:
@@ -247,6 +285,12 @@ class ServiceSettings(BaseSettings):
             )
         if self.debug:
             raise ValueError(f"debug must be off in {self.environment}")
+        if self.egress_allow_insecure_http:
+            raise ValueError(
+                f"{self.environment} refuses egress_allow_insecure_http: every "
+                "admin-supplied URL this platform fetches (OIDC discovery, JWKS, a token "
+                "endpoint) must be https outside development."
+            )
 
 
 @lru_cache(maxsize=8)

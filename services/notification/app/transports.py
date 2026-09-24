@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import re
 import smtplib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from email.message import EmailMessage
 from typing import Any, Protocol
@@ -144,6 +145,19 @@ class RecordingTransport:
         return Receipt(provider=self.name, provider_message_id=f"rec-{len(self.sent)}")
 
 
+#: A campaign batch's SMTP sends run here, never on the process's default executor — that pool is
+#: what `asyncio.to_thread` (and hence every other blocking call in this process, `pii.py`'s
+#: crypto included) shares, and it is also what the dispatcher's own single, one-off sends use
+#: for a password reset or a trial-ending notice. A campaign of a few hundred recipients holds a
+#: thread for as long as its batch takes to send; two campaigns running at once on a busy day
+#: must never be able to occupy every thread the default pool has and leave a password reset
+#: waiting behind them. Two threads, not one: a batch that is mid-send must not block a *second*
+#: organization's campaign from making any progress at all, and not more than two: this is a
+#: concurrency cap on how many SMTP connections this process opens at once, not a throughput
+#: knob — a campaign is not latency-sensitive the way a password reset is.
+CAMPAIGN_SMTP_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="campaign-smtp")
+
+
 class SmtpTransport:
     """Email over SMTP.
 
@@ -167,6 +181,7 @@ class SmtpTransport:
         use_tls: bool,
         timeout: float,
         from_address: str,
+        executor: ThreadPoolExecutor | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -175,6 +190,12 @@ class SmtpTransport:
         self._use_tls = use_tls
         self._timeout = timeout
         self._from = from_address
+        #: `None` means "the process's default executor" — `loop.run_in_executor(None, ...)`
+        #: is exactly what `asyncio.to_thread` does internally, so the platform's own shared
+        #: transport (built once in `app/worker.py`, used by the dispatcher for a single
+        #: password-reset or notification send) is unaffected by this parameter existing at
+        #: all. Only `app/services.py:campaign_transport` passes `CAMPAIGN_SMTP_EXECUTOR`.
+        self._executor = executor
 
     async def send(self, message: Outgoing) -> Receipt:
         (receipt,) = await self.send_many([message])
@@ -194,7 +215,8 @@ class SmtpTransport:
         (`SMTPRecipientsRefused`) does not: the connection is still good, so the rest of the
         batch is still attempted on it.
         """
-        return await asyncio.to_thread(self._send_many_blocking, messages)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, self._send_many_blocking, messages)
 
     def _build(self, message: Outgoing) -> EmailMessage:
         # Building the message — including the caller-supplied headers — happens inside the

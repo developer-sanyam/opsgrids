@@ -30,7 +30,7 @@ CREATE EXTENSION IF NOT EXISTS citext;       -- email is case-insensitive and gl
 --                     UPDATE on each service's `outbox` and nothing else.
 --
 -- Each service also gets its own NOBYPASSRLS login role — opsgrids_account, opsgrids_auth,
--- opsgrids_product, opsgrids_employee, opsgrids_attendance, opsgrids_catalog, and one per
+-- opsgrids_product, opsgrids_employee, opsgrids_attendance, opsgrids_leave, opsgrids_catalog, and one per
 -- product/platform service (opsgrids_project, opsgrids_customer, opsgrids_lead, opsgrids_document, …)
 -- — so one service's connection cannot read another's schema. `opsgrids_catalog` owns the
 -- commerce definitional layer: its plan/price tables are global and un-policied, but its
@@ -97,12 +97,11 @@ DECLARE
 BEGIN
   FOREACH r IN ARRAY ARRAY[
     'opsgrids_account', 'opsgrids_auth', 'opsgrids_product', 'opsgrids_employee', 'opsgrids_attendance',
+    'opsgrids_leave',
     -- PulseBoard
     'opsgrids_project', 'opsgrids_timesheet', 'opsgrids_standup', 'opsgrids_quotation',
     -- CRM
-    'opsgrids_customer', 'opsgrids_deal', 'opsgrids_marketing', 'opsgrids_support',
-    -- Sales CRM
-    'opsgrids_lead', 'opsgrids_pipeline', 'opsgrids_activity',
+    'opsgrids_customer', 'opsgrids_deal', 'opsgrids_lead', 'opsgrids_marketing', 'opsgrids_support',
     -- Platform (shared)
     'opsgrids_document', 'opsgrids_notification', 'opsgrids_scheduler',
     'opsgrids_eventbridge', 'opsgrids_config', 'opsgrids_approval',
@@ -127,9 +126,9 @@ $$;
 -- nothing to do with the service's own tables. Reference data, no tenant rows.
 GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology
   TO opsgrids_admin, opsgrids_account, opsgrids_auth, opsgrids_product, opsgrids_employee, opsgrids_attendance,
+     opsgrids_leave,
      opsgrids_project, opsgrids_timesheet, opsgrids_standup, opsgrids_quotation,
-     opsgrids_customer, opsgrids_deal, opsgrids_marketing, opsgrids_support,
-     opsgrids_lead, opsgrids_pipeline, opsgrids_activity,
+     opsgrids_customer, opsgrids_deal, opsgrids_lead, opsgrids_marketing, opsgrids_support,
      opsgrids_document, opsgrids_notification, opsgrids_scheduler,
      opsgrids_eventbridge, opsgrids_config, opsgrids_catalog, opsgrids_billing, opsgrids_metering, opsgrids_subscription,
      opsgrids_console, opsgrids_payment, opsgrids_approval,
@@ -204,6 +203,23 @@ GRANT CONNECT ON DATABASE opsgrids TO opsgrids_console_directory;
 GRANT CONNECT ON DATABASE opsgrids TO opsgrids_notification_directory;
 GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO opsgrids_notification_directory;
 GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO opsgrids_console_directory;
+
+-- billing's staff credit-ledger reader (ADR-0002 §2, ADR-0003 §2 addendum).
+--
+-- `GET /admin/credit-ledger` reads across every organization at once, so it cannot run on the
+-- tenant-bound application role. BYPASSRLS, SELECT-only on `credit_ledger` alone — a separate
+-- role from every other bypass reader here, for the same least-privilege-inside-the-bypass
+-- reason each of them is separate. Table grant is applied by billing's `migrations/env.py`,
+-- because the table does not exist when this file runs.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'opsgrids_billing_directory') THEN
+    CREATE ROLE opsgrids_billing_directory LOGIN PASSWORD 'opsgrids' NOINHERIT BYPASSRLS;
+  END IF;
+END
+$$;
+GRANT CONNECT ON DATABASE opsgrids TO opsgrids_billing_directory;
+GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO opsgrids_billing_directory;
 
 -- The storefront's public reader (ADR-0010 §4, ADR-0002 §2).
 --

@@ -21,13 +21,14 @@ are platform vocabulary — the same 5/12/18/28 % bands and the same 2 % under s
 tenant in India — not tenant data, so RLS on them would be meaningless (see the RLS migrations,
 which list them as exempt alongside `processed_events`).
 
-`einvoice_filings`, `ims_decisions`, `eway_bills`, `gst_return_transitions` and
-`invoice_withholdings` are append-only at the *database*, not merely by convention: a trigger
-refuses UPDATE and DELETE. A privilege REVOKE would not survive `apply_schema_grants`, which
-re-grants DML on every table at the end of every migration run — see the migrations for the whole
-reasoning. Each holds **evidence**: what a tax portal was told, what a person decided about
-somebody else's claim on this business, what licence goods moved under, when a return was filed,
-and what somebody else already withheld and paid to a tax authority. `ims_reconciliations` is
+`einvoice_filings`, `ims_decisions`, `eway_bills`, `gst_return_transitions`,
+`invoice_withholdings` and `itc_ledger_entries` are append-only at the *database*, not merely by
+convention: a trigger refuses UPDATE and DELETE. A privilege REVOKE would not survive
+`apply_schema_grants`, which re-grants DML on every table at the end of every migration run — see
+the migrations for the whole reasoning. Each holds **evidence**: what a tax portal was told, what
+a person decided about somebody else's claim on this business, what licence goods moved under,
+when a return was filed, what somebody else already withheld and paid to a tax authority, and what
+was posted to the input-tax-credit ledger and why. `ims_reconciliations` is
 pointedly not among them — a suggestion is recomputed opinion, and freezing an opinion buys an
 auditor nothing. `gst_returns` is the one hybrid: its *snapshot* is frozen by a trigger the moment
 the return is **filed**, while `status`, `filed_at` and `arn` may still move forward, because a
@@ -46,6 +47,7 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -430,7 +432,8 @@ class EInvoiceFiling(Base, TenantBase):
         ForeignKey("finance.invoices.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    #: pending | filed | failed | cancelled.
+    #: pending | filed | failed | cancelled | cancelling — `domain.FILING_STATUSES`. `cancelling`
+    #: is a claim row (D3): written before the portal is asked to withdraw the IRN.
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     #: The Invoice Reference Number: a 64-character hash the portal returns, unique per document
     #: across India. Present only on `filed` and `cancelled`.
@@ -674,6 +677,14 @@ class ImsDecision(Base, TenantBase):
     suggestion_reason: Mapped[str | None] = mapped_column(String(40))
     reconciliation_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
 
+    #: What the accepted document was *for* — `domain.ITC_EXPENSE_CATEGORIES`, `general` by
+    #: default. The one input the ITC ledger's accrual needs that nothing upstream can supply:
+    #: `ims_documents` carries no HSN, no description and no line items, so there is nothing to
+    #: derive a s. 17(5) blocked-credit category from. Set on every decision, not only `accept`,
+    #: so a `reject` or `pending_action` still records what the person understood the document to
+    #: be — evidence, the same reason `note` is free text rather than a fixed reason code.
+    expense_category: Mapped[str] = mapped_column(String(40), nullable=False, default="general")
+
     #: Who. The principal's subject id, as a string, like every `created_by` on the platform —
     #: stated explicitly here rather than left to the mixin because it is the point of the row.
     decided_by: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -685,6 +696,128 @@ class ImsDecision(Base, TenantBase):
     __table_args__ = (
         Index("ix_ims_decisions_org_document", "organization_id", "ims_document_id"),
         Index("ix_ims_decisions_org_decided", "organization_id", "decided_at"),
+    )
+
+
+class ItcLedgerEntry(Base, TenantBase):
+    """One posting to the input-tax-credit ledger — append-only, and evidence, like
+    `einvoice_filings` and `ims_decisions`.
+
+    Three kinds of row (`domain.ITC_POSTING_KINDS`), and the balance is never a column: it is
+    `SUM(amount_minor)` per (registration, tax head, period), carried forward — the same shape as
+    a prepaid credit pack's draws. `amount_minor` is signed so that sum needs no case split:
+    positive on an `accrual`, negative on a `reversal` or a `utilisation`.
+
+    * **accrual** — credit from an IMS document this organization accepted, posted by
+      `services.record_ims_decision` in the same transaction as the decision that accepted it.
+      Always positive — see the sign convention below.
+    * **reversal** — credit withdrawn: an accepted document's status later moving away from
+      `accepted`, or a supplier credit note accepted against credit already claimed (or, if it is
+      the *first* thing accepted against that document, a negative entry with nothing preceding it
+      to reverse — still a `reversal` by amount, since `amount_minor`'s sign is what the kind
+      answers for, not the narrative). (From July 2022's Table 4 shape, a blocked s. 17(5) category
+      is read informationally at GSTR-3B assembly time rather than posted here at all.) What
+      `services.record_ims_decision` actually posts is **the delta** between what should now be
+      outstanding for a document and what already is — covering a plain accept, a plain un-accept,
+      *and* a later decision that re-classifies an already-accepted document under a different
+      `expense_category`, with one formula rather than three. It can therefore never withdraw more
+      than was actually accrued: the delta is computed against the ledger's own current standing,
+      not recomputed independently.
+    * **utilisation** — credit consumed against output liability, posted by `services.file_return`
+      in the same transaction as filing a `gstr3b`, one row per (head, counter-head) the statutory
+      utilisation order actually applied — see `domain.utilise_itc`.
+
+    The document's own decision is locked `FOR UPDATE` before any of this runs (see
+    `selectors.get_ims_document`), and the registration row is locked before a `gstr3b` is
+    generated or filed (see `services.registration_for`) — both because two of these three kinds
+    read "what is already posted" before deciding what to post next, and two callers racing that
+    read-then-write must serialise on the row rather than both acting on the same stale answer.
+
+    `source_ref` is the idempotency key: a unique index on `(organization_id, kind, source_ref)`
+    means the row a retried write would produce collides rather than doubles the ledger — the same
+    shape `ims_documents.source_ref` gives the IMS ingest.
+    """
+
+    __tablename__ = "itc_ledger_entries"
+
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: The return period this posting is **attributed to** for GSTR-3B purposes, `YYYY-MM` — the
+    #: *claim* period, which `selectors.claim_period_for` may advance past `source_period` when a
+    #: decision arrives after its own period's `gstr3b` has already been filed (the same
+    #: "amendment in a later period" shape a credit note against a filed invoice already has).
+    #: `selectors.itc_period_movement`/`itc_brought_forward` filter on this column, because it is
+    #: what decides which return sees the posting.
+    period: Mapped[str] = mapped_column(String(7), nullable=False)
+    #: The period the *source event itself* belongs to — the IMS document's own reported period
+    #: for an accrual or a reversal, or the return's own period for a utilisation. Kept apart from
+    #: `period` purely for audit: "what period was this really about" must stay answerable even
+    #: after a late decision has pushed the posting into a later one.
+    source_period: Mapped[str] = mapped_column(String(7), nullable=False)
+    #: igst | cgst | sgst | cess — `domain.ITC_TAX_HEADS`. `cess` is accepted so the schema does
+    #: not need to change shape the day a cess-bearing document exists; nothing posts one today.
+    tax_head: Mapped[str] = mapped_column(String(10), nullable=False)
+    #: accrual | reversal | utilisation — `domain.ITC_POSTING_KINDS`.
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: Signed: positive on an accrual, negative on a reversal or a utilisation, so the balance is
+    #: a plain `SUM` with no case split. `ck_itc_ledger_entries_amount_sign` holds the database to
+    #: that convention rather than trusting every future caller to remember it.
+    amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: ims_decision | gst_return — `domain.ITC_SOURCE_TYPES`. What produced this row.
+    source_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: The id of the row named above — an `ims_decisions.id` or a `gst_returns.id`. A plain UUID
+    #: rather than a foreign key: the two source tables are a union, so no single `ForeignKey`
+    #: could name both, and enforcing referential integrity against whichever one applies is what
+    #: `source_ref`'s uniqueness already does in practice.
+    source_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    #: The idempotency key: `f"{source_type}:{source_id}:{tax_head}"`. Unique per `kind` — see
+    #: `__table_args__` — so a retried post collides instead of doubling the ledger.
+    source_ref: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: The principal's subject id — the person who accepted or rejected the document, or filed the
+    #: return, whose action this row is the financial consequence of.
+    posted_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    posted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "kind", "source_ref", name="uq_itc_ledger_entries_org_kind_source"
+        ),
+        Index(
+            "ix_itc_ledger_entries_org_registration_period",
+            "organization_id",
+            "gst_registration_id",
+            "period",
+        ),
+        Index("ix_itc_ledger_entries_org_kind", "organization_id", "kind"),
+        # Belt and braces beside `domain.ITC_TAX_HEADS`/`ITC_POSTING_KINDS`/`ITC_SOURCE_TYPES`: an
+        # application-layer typo in a literal string must not be able to write a row a report then
+        # silently drops on the floor by never matching any filter.
+        # `name=` is the short suffix, not the full constraint name — the metadata's own naming
+        # convention (`libs/platform-core/src/platform_core/models.py`) already prepends
+        # `ck_<table>_`, so passing the full name here would double it.
+        CheckConstraint("tax_head IN ('igst', 'cgst', 'sgst', 'cess')", name="tax_head"),
+        CheckConstraint("kind IN ('accrual', 'reversal', 'utilisation')", name="kind"),
+        CheckConstraint(
+            "source_type IN ('ims_decision', 'gst_return')",
+            name="source_type",
+        ),
+        # The sign convention `amount_minor`'s own docstring states, held at the database: an
+        # accrual only ever adds, a reversal or a utilisation only ever takes away — including a
+        # credit note's first-ever negative entry against a document nothing was accrued for yet,
+        # which is a `reversal` by amount even though nothing preceded it to reverse. Zero is
+        # deliberately excluded from every branch — `services._post_itc_entries` never posts a
+        # zero-amount row, so a zero here would already be a bug the constraint should catch too.
+        CheckConstraint(
+            "(kind = 'accrual' AND amount_minor > 0) OR "
+            "(kind IN ('reversal', 'utilisation') AND amount_minor < 0)",
+            name="amount_sign",
+        ),
     )
 
 
@@ -822,7 +955,8 @@ class EwayBill(Base, TenantBase):
         ForeignKey("finance.invoices.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    #: pending | generated | failed | cancelled | expired — `domain.EWAY_STATUSES`.
+    #: pending | generated | failed | cancelled | expired | submitting | cancelling —
+    #: `domain.EWAY_STATUSES`. The last two are claim rows (D3), written before the portal call.
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     #: The portal's 12-digit bill number. Present only once a bill exists.
     eway_bill_no: Mapped[str | None] = mapped_column(String(16))

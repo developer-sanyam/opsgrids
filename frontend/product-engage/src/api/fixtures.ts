@@ -12,8 +12,13 @@
  */
 
 import type {
+  CampaignOut,
+  CampaignRecipientOut,
   ConnectionOut,
+  ContactListOut,
   ContactOut,
+  ConversationMessageOut,
+  ConversationOut,
   DnsRecordOut,
   DomainOut,
   ProviderTemplateOut,
@@ -211,24 +216,25 @@ export const WHATSAPP_CONNECTION: WhatsAppConnectionOut = {
  * mask is invented independently of any string a browser would otherwise need to hold, which is
  * the same reason `CONNECTION` carries no `secret_hint` above.
  */
-export const CONTACTS: ContactOut[] = [
-  {
-    id: "c1a0f2e4-9b3d-4a7c-8e1f-2d6b9c4a5e10",
-    email: "p•••@vaayu-logistics.example.com",
-    name: "Priya Raghavan",
-    attributes: { plan: "enterprise", region: "west" },
-    created_at: "2026-08-29T09:18:02Z",
-    updated_at: "2026-08-29T09:18:02Z",
-  },
-  {
-    id: "d2b1e3f5-8c4e-4b8d-9f2a-3e7c0d5b6f21",
-    email: "a•••@vaayu-freight.example.com",
-    name: "Arjun Mehta",
-    attributes: { plan: "growth" },
-    created_at: "2026-09-10T14:02:11Z",
-    updated_at: "2026-09-18T08:44:59Z",
-  },
-];
+const CONTACT_PRIYA: ContactOut = {
+  id: "c1a0f2e4-9b3d-4a7c-8e1f-2d6b9c4a5e10",
+  email: "p•••@vaayu-logistics.example.com",
+  name: "Priya Raghavan",
+  attributes: { plan: "enterprise", region: "west" },
+  created_at: "2026-08-29T09:18:02Z",
+  updated_at: "2026-08-29T09:18:02Z",
+};
+
+const CONTACT_ARJUN: ContactOut = {
+  id: "d2b1e3f5-8c4e-4b8d-9f2a-3e7c0d5b6f21",
+  email: "a•••@vaayu-freight.example.com",
+  name: "Arjun Mehta",
+  attributes: { plan: "growth" },
+  created_at: "2026-09-10T14:02:11Z",
+  updated_at: "2026-09-18T08:44:59Z",
+};
+
+export const CONTACTS: ContactOut[] = [CONTACT_PRIYA, CONTACT_ARJUN];
 
 /**
  * Suppressions in three of the four reasons the vocabulary carries — `manual` twice, since it is
@@ -255,6 +261,156 @@ export const SUPPRESSIONS: SuppressionOut[] = [
     created_at: "2026-09-19T10:05:19Z",
   },
 ];
+
+/**
+ * Two lists, one that already fed a campaign and one still being built — `member_count` is
+ * folded server-side from `contact_list_members` and has no counterpart on the row itself, the
+ * same shape `selectors.list_member_counts` returns for real.
+ */
+const LIST_ENTERPRISE: ContactListOut = {
+  id: "9a1b2c3d-4e5f-4061-8a7b-1c2d3e4f5061",
+  name: "Enterprise accounts",
+  description: "Every enterprise-tier contact, for release and pricing announcements.",
+  member_count: 2,
+  created_at: "2026-08-20T09:00:00Z",
+  updated_at: "2026-09-18T10:12:00Z",
+};
+
+const LIST_TRIAL: ContactListOut = {
+  id: "8b2c3d4e-5f60-4172-9b8c-2d3e4f506172",
+  name: "Growth trial — week 2",
+  description: "",
+  member_count: 0,
+  created_at: "2026-09-21T13:30:00Z",
+  updated_at: "2026-09-21T13:30:00Z",
+};
+
+export const CONTACT_LISTS: ContactListOut[] = [LIST_ENTERPRISE, LIST_TRIAL];
+
+/**
+ * Campaigns across the vocabulary this screen has to render: a draft still being written, one
+ * sending right now, one the driver has paused for a broken route, and one that finished. Stats
+ * are folded exactly as `_campaign_out` folds them — `recipients` is the sum of the other four,
+ * never a fifth number invented on this side.
+ */
+export const CAMPAIGN_DRAFT: CampaignOut = {
+  id: "c1d2e3f4-5061-4728-9a1b-2c3d4e5f6172",
+  name: "October delivery network update",
+  sender_id: "5c8e2a19-4b6f-4d02-a37e-9f15c0b8d744",
+  subject: "What's changing on your route this month",
+  html_body: "<p>Hello,</p><p>Here is what's new this month.</p>",
+  text_body: "Hello,\n\nHere is what's new this month.",
+  audience: "list",
+  list_id: LIST_ENTERPRISE.id,
+  status: "draft",
+  scheduled_at: null,
+  started_at: null,
+  completed_at: null,
+  cancelled_at: null,
+  pause_reason: "",
+  stats: { recipients: 0, queued: 0, sent: 0, failed: 0, suppressed: 0 },
+  created_at: "2026-09-20T08:00:00Z",
+  updated_at: "2026-09-22T11:00:00Z",
+};
+
+export const CAMPAIGN_SENDING: CampaignOut = {
+  id: "d2e3f4a5-6172-4839-8a1b-3d4e5f617283",
+  name: "September invoice reminder",
+  sender_id: "5c8e2a19-4b6f-4d02-a37e-9f15c0b8d744",
+  subject: "Your September invoice is ready",
+  html_body: "<p>Hello, your invoice is attached.</p>",
+  text_body: "Hello, your invoice is attached.",
+  audience: "all_sendable",
+  list_id: null,
+  status: "sending",
+  scheduled_at: null,
+  started_at: "2026-09-23T06:00:00Z",
+  completed_at: null,
+  cancelled_at: null,
+  pause_reason: "",
+  stats: { recipients: 240, queued: 180, sent: 55, failed: 3, suppressed: 2 },
+  created_at: "2026-09-22T14:00:00Z",
+  updated_at: "2026-09-23T06:10:00Z",
+};
+
+export const CAMPAIGN_PAUSED: CampaignOut = {
+  id: "e3f4a5b6-7283-4940-8a1b-4e5f61728394",
+  name: "Freight lane price update",
+  sender_id: "1a47f0d6-88b3-4c95-b214-6e7d3f92ac58",
+  subject: "New rates for the Chennai–Bengaluru lane",
+  html_body: "<p>Rates change from next week.</p>",
+  text_body: "Rates change from next week.",
+  audience: "all_sendable",
+  list_id: null,
+  status: "paused",
+  scheduled_at: null,
+  started_at: "2026-09-19T05:00:00Z",
+  completed_at: null,
+  cancelled_at: null,
+  pause_reason: "No connected email provider was found. Reconnect a provider and resume.",
+  stats: { recipients: 96, queued: 40, sent: 50, failed: 6, suppressed: 0 },
+  created_at: "2026-09-18T09:00:00Z",
+  updated_at: "2026-09-19T05:01:00Z",
+};
+
+export const CAMPAIGN_SENT: CampaignOut = {
+  id: "f4a5b6c7-8394-4a51-8a1b-5f6172839405",
+  name: "August product update",
+  sender_id: "5c8e2a19-4b6f-4d02-a37e-9f15c0b8d744",
+  subject: "What shipped in August",
+  html_body: "<p>A recap of last month.</p>",
+  text_body: "A recap of last month.",
+  audience: "all_sendable",
+  list_id: null,
+  status: "sent",
+  scheduled_at: null,
+  started_at: "2026-08-30T06:00:00Z",
+  completed_at: "2026-08-30T06:42:00Z",
+  cancelled_at: null,
+  pause_reason: "",
+  stats: { recipients: 512, queued: 0, sent: 498, failed: 9, suppressed: 5 },
+  created_at: "2026-08-29T10:00:00Z",
+  updated_at: "2026-08-30T06:42:00Z",
+};
+
+export const CAMPAIGNS: CampaignOut[] = [
+  CAMPAIGN_DRAFT,
+  CAMPAIGN_SENDING,
+  CAMPAIGN_PAUSED,
+  CAMPAIGN_SENT,
+];
+
+export const CAMPAIGN_RECIPIENTS: Record<string, CampaignRecipientOut[]> = {
+  [CAMPAIGN_SENDING.id]: [
+    {
+      id: "10000000-0000-4000-8000-000000000001",
+      contact_id: CONTACT_PRIYA.id,
+      email: CONTACT_PRIYA.email,
+      status: "sent",
+      provider_message_id: "smtp-fixture-1",
+      error: "",
+      sent_at: "2026-09-23T06:05:00Z",
+    },
+    {
+      id: "10000000-0000-4000-8000-000000000002",
+      contact_id: CONTACT_ARJUN.id,
+      email: CONTACT_ARJUN.email,
+      status: "queued",
+      provider_message_id: null,
+      error: "",
+      sent_at: null,
+    },
+    {
+      id: "10000000-0000-4000-8000-000000000003",
+      contact_id: "b6c7d8e9-9405-4b62-8a1b-6172839405a1",
+      email: "d•••@vaayu-freight.example.com",
+      status: "failed",
+      provider_message_id: null,
+      error: "535 5.7.8 Username and Password not accepted",
+      sent_at: null,
+    },
+  ],
+};
 
 export const WHATSAPP_TEMPLATES: ProviderTemplateOut[] = [
   {
@@ -314,3 +470,144 @@ export const WHATSAPP_TEMPLATES: ProviderTemplateOut[] = [
     updated_at: "2026-09-15T07:22:51Z",
   },
 ];
+
+/* ------------------------------------------ inbox ------------------------------------------ */
+
+/**
+ * Computed relative to the moment the module loads rather than pinned to a date, unlike every
+ * other fixture above: the whole point of these three rows is to exercise the 24-hour window at
+ * three different distances from its edge, and a fixed timestamp would drift out of true the day
+ * after it was written — exactly the bug `test_inbound_webhook.py`'s own fixtures found first.
+ */
+const NOW = Date.now();
+const hoursAgo = (h: number) => new Date(NOW - h * 60 * 60 * 1000).toISOString();
+
+/** Freshly active: plenty of the window left, and matched to a CRM contact. */
+export const CONVERSATION_OPEN: ConversationOut = {
+  id: "b1a2c3d4-1111-4a1a-8a1a-000000000001",
+  channel: "whatsapp",
+  wa_address: "•••••• 4210",
+  contact_id: "c1a0f2e4-9b3d-4a7c-8e1f-2d6b9c4a5e10",
+  last_customer_message_at: hoursAgo(2),
+  within_service_window: true,
+  status: "open",
+  assignee_membership_id: null,
+  created_at: hoursAgo(30),
+  updated_at: hoursAgo(2),
+};
+
+/** Ten minutes from the window closing — the composer's countdown has something to count down
+ *  to, and a stranger: no CRM contact has ever matched this number. */
+export const CONVERSATION_CLOSING_SOON: ConversationOut = {
+  id: "b1a2c3d4-2222-4a1a-8a1a-000000000002",
+  channel: "whatsapp",
+  wa_address: "•••••• 7788",
+  contact_id: null,
+  last_customer_message_at: hoursAgo(23 + 50 / 60),
+  within_service_window: true,
+  status: "open",
+  assignee_membership_id: null,
+  created_at: hoursAgo(23 + 50 / 60),
+  updated_at: hoursAgo(23 + 50 / 60),
+};
+
+/** The window closed a few hours ago and nobody has replied since — the composer's template-picker
+ *  state, on a conversation still `open` (an operator has not triaged it, the window just lapsed). */
+export const CONVERSATION_EXPIRED: ConversationOut = {
+  id: "b1a2c3d4-3333-4a1a-8a1a-000000000003",
+  channel: "whatsapp",
+  wa_address: "•••••• 5599",
+  contact_id: "d2b1e3f5-8c4e-4b8d-9f2a-3e7c0d5b6f21",
+  last_customer_message_at: hoursAgo(28),
+  within_service_window: false,
+  status: "open",
+  assignee_membership_id: null,
+  created_at: hoursAgo(50),
+  updated_at: hoursAgo(28),
+};
+
+/** A closed conversation — triaged and done, until the customer writes back. */
+export const CONVERSATION_CLOSED: ConversationOut = {
+  id: "b1a2c3d4-4444-4a1a-8a1a-000000000004",
+  channel: "whatsapp",
+  wa_address: "•••••• 1023",
+  contact_id: "c1a0f2e4-9b3d-4a7c-8e1f-2d6b9c4a5e10",
+  last_customer_message_at: hoursAgo(72),
+  within_service_window: false,
+  status: "closed",
+  assignee_membership_id: "11111111-2222-4333-8444-555555555555",
+  created_at: hoursAgo(96),
+  updated_at: hoursAgo(70),
+};
+
+export const CONVERSATIONS: ConversationOut[] = [
+  CONVERSATION_OPEN,
+  CONVERSATION_CLOSING_SOON,
+  CONVERSATION_EXPIRED,
+  CONVERSATION_CLOSED,
+];
+
+export const CONVERSATION_MESSAGES: Record<string, ConversationMessageOut[]> = {
+  [CONVERSATION_OPEN.id]: [
+    {
+      id: "m1",
+      direction: "inbound",
+      message_type: "text",
+      body: "Hi, is my order still on track for tomorrow?",
+      occurred_at: hoursAgo(2.2),
+      provider_message_id: "wamid.fixture1",
+      profile_name: "Priya Raghavan",
+    },
+    {
+      id: "m2",
+      direction: "outbound",
+      message_type: "text",
+      body: "Yes — it's out for delivery and should arrive by 6pm.",
+      occurred_at: hoursAgo(2),
+      provider_message_id: "wamid.fixture2",
+      profile_name: null,
+    },
+  ],
+  [CONVERSATION_CLOSING_SOON.id]: [
+    {
+      id: "m3",
+      direction: "inbound",
+      message_type: "text",
+      body: "Do you deliver to Whitefield?",
+      occurred_at: hoursAgo(23 + 50 / 60),
+      provider_message_id: "wamid.fixture3",
+      profile_name: null,
+    },
+  ],
+  [CONVERSATION_EXPIRED.id]: [
+    {
+      id: "m4",
+      direction: "inbound",
+      message_type: "text",
+      body: "Can I get a refund for the damaged item?",
+      occurred_at: hoursAgo(28),
+      provider_message_id: "wamid.fixture4",
+      profile_name: "Arjun Mehta",
+    },
+  ],
+  [CONVERSATION_CLOSED.id]: [
+    {
+      id: "m5",
+      direction: "inbound",
+      message_type: "text",
+      body: "Thanks for sorting that out!",
+      occurred_at: hoursAgo(72),
+      provider_message_id: "wamid.fixture5",
+      profile_name: "Priya Raghavan",
+    },
+    {
+      id: "m6",
+      direction: "outbound",
+      message_type: "text",
+      body: "Anytime — glad it's resolved.",
+      occurred_at: hoursAgo(70),
+      provider_message_id: "wamid.fixture6",
+      profile_name: null,
+    },
+  ],
+};

@@ -20,6 +20,7 @@ Start here.
 | Call the API | [api-reference.md](api-reference.md) |
 | Know what is wrong with the API and what to fix | [api-improvements.md](api-improvements.md) |
 | Write or run tests | [testing.md](testing.md) |
+| Know which check enforces what, and run it | [TOOLCHAIN.md](TOOLCHAIN.md) |
 | Package and price something — bundles, prepaid packs, seat classes, reseller pricing | [commerce-packaging.md](commerce-packaging.md) |
 | Use or extend the visual system | [theme-guide.md](theme-guide.md) |
 | Know what the theme already provides | [existing-theme-features.md](existing-theme-features.md) |
@@ -33,6 +34,7 @@ Start here.
 | Understand the longer arc and its sequencing | [plan.md](plan.md) |
 | Know whether this can be deployed | [production-readiness.md](production-readiness.md) |
 | Understand why something is shaped the way it is | [decisions.md](decisions.md) · [adr/](adr/) |
+| Know whether an ADR question is decided, and which backlog item builds it | [adr/open-questions-register.md](adr/open-questions-register.md) |
 | Learn from what has already gone wrong | [discoveries.md](discoveries.md) |
 | Run it, or work out why it is misbehaving | [operations.md](operations.md) |
 | Filter the product catalogue (proposal) | [subcategory-filter-plan.md](subcategory-filter-plan.md) |
@@ -52,9 +54,11 @@ shape, permission grammar, money representation, tenancy model. They are not ope
 revision, and several of them are load-bearing for code you are about to write.
 
 If you are about to touch anything that reads or writes tenant data, also read
-[ADR-0002](adr/0002-row-level-security.md), which is **proposed, not accepted**. It documents
-the fact that tenant isolation currently rests entirely on every query carrying the right
-filter. Knowing that changes how carefully you write the query.
+[ADR-0002](adr/0002-row-level-security.md). It is accepted and built: every tenant table has a
+forced row-level security policy, driven by a transaction-local GUC. It also explains why that
+policy is a net, not the control. The filter on every query is still the control, and a policy
+that is misconfigured fails silently by returning zero rows. Knowing that changes how carefully
+you write the query.
 
 ## Honesty policy for these documents
 

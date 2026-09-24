@@ -47,6 +47,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Date,
+    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -79,16 +80,34 @@ SCHEMA = "storefront"
 #: to the entitlement-lapse consumer; no merchant-facing route can set it or leave it.
 STORE_STATUSES = ("draft", "published", "suspended")
 
-#: How far a claimed custom domain has got. **Only `unverified` is reachable today**, because
-#: nothing in this platform serves a custom domain: there is no ingress, no TLS termination and
-#: no host-based routing anywhere in the repository, and this column is read by nothing. The
-#: value is stored so a merchant reading their own settings cannot conclude their site is live
-#: (ADR-0011 §5).
+#: How far a claimed custom domain has got (ADR-0012 §6, widened from ADR-0011's two values —
+#: the widening that ADR-0011's own column comment predicted).
 #:
-#: `verified` is in the enum from day one and refused by the writer, exactly as `SLOTTED` is in
-#: `ZONE_MODES`: the hosting slice that adds DNS verification is then a validation change and a
-#: new endpoint, not a migration against a table with live tenant rows.
-CUSTOM_DOMAIN_STATUSES = ("unverified", "verified")
+#: `unverified` — claimed, the TXT record has never been seen. `verified` — TXT seen; traffic
+#: may or may not point here yet; the certificate may be authorized. `live` — TXT seen, traffic
+#: resolves here, and a TLS handshake for this name succeeded. `failing` — was `verified` or
+#: `live`; at least one check has failed recently; **still served**. `suspended` — seven
+#: consecutive days failing, or the store is not `published`; **not served**, `ask` refuses.
+#:
+#: No claim at all is `custom_domain IS NULL AND custom_domain_status IS NULL` — an expired
+#: claim returns to that rather than becoming a sixth state (`custom_domain_claims` carries the
+#: evidence for every reachable value; see that table's own docstring).
+CUSTOM_DOMAIN_STATUSES = ("unverified", "verified", "live", "failing", "suspended")
+
+#: The subset a host may be *served* for and a certificate authorized for is
+#: `domain.SERVING_DOMAIN_STATUSES` — defined once, there, because it is a rule about the
+#: buyer-facing lookup rather than a fact about the column, and a second tuple here would be
+#: exactly the drift ADR-0010 §10's index-timing register exists to catch.
+
+#: `custom_domain_claims.ownership_state` / `.routing_state` / `.certificate_state` (ADR-0012
+#: §9). `pending` — never checked, or checking is not yet applicable (routing and certificate
+#: are `pending` for the whole time a claim is `unverified`: the certificate cannot be
+#: authorized before ownership is proved, and checking routing before then tells a merchant
+#: nothing they can act on). `ok` — the probe's last run succeeded. `failing` — the probe's
+#: last run returned a definite negative answer. There is no fourth value for "could not run at
+#: all" — §6's rule ("a check that cannot run never takes a domain off the air") is enforced by
+#: the sweep leaving the row untouched on an unexpected error, not by a state that means it.
+CLAIM_PROBE_STATES = ("pending", "ok", "failing")
 
 #: Named for what the **buyer does**, not for merchant marketing words like "quick" and
 #: "standard", which change and would then be either wrong in the enum or migrated in every
@@ -129,6 +148,18 @@ LOGO_TEXT_LENGTH = 12
 #: validator so a later internationalised-domain decision (store the punycode form, or store
 #: both) is a validator change rather than an ALTER on a live table.
 CUSTOM_DOMAIN_LENGTH = 255
+
+#: `custom_domain_claims` column widths (ADR-0012 §9).
+#: `secrets.token_hex(16)` is 32 hex characters; the column is wider so rotating the minting
+#: scheme (a longer token, a prefix) is a validator change rather than an ALTER.
+VERIFICATION_TOKEN_LENGTH = 64
+#: The enum a client branches on — `txt_not_found`, `points_elsewhere`, `handshake_failed`, and
+#: the rest of §6's failure table. Bounded independently of the detail string below it.
+LAST_ERROR_CODE_LENGTH = 40
+#: "What we actually saw" (§6) — truncated, never the whole of a hostile or oversized DNS
+#: answer. Long enough to hold a full sentence naming an operator by name; short enough that a
+#: pathological TXT record cannot grow this row without limit.
+LAST_ERROR_DETAIL_LENGTH = 500
 
 #: The theme document (ADR-0011 §3): a `StoreDoc` minus the brand, which ADR-0011 moved onto
 #: `storefronts`. One row per organization, keyed the same way `storefronts` is.
@@ -232,10 +263,10 @@ class Storefront(Base, TenantBase):
     #:
     #: Globally unique when present, across every tenant — see `__table_args__`.
     custom_domain: Mapped[str | None] = mapped_column(String(CUSTOM_DOMAIN_LENGTH))
-    #: `unverified` whenever `custom_domain` is set, null whenever it is not. Nothing can move
-    #: it off `unverified` today, and that honest dead end is the point: **serving a domain
-    #: because somebody typed it into a form is how one merchant takes another's traffic**, so
-    #: verification is a precondition of ever serving one, and it does not exist yet.
+    #: `unverified` whenever `custom_domain` is first set, null whenever it is not. The state
+    #: machine that moves it through `verified`/`live`/`failing`/`suspended` is
+    #: `app/domain.py`'s and `app/cron.py`'s (ADR-0012 §6); this column is the state, and
+    #: `custom_domain_claims` is the evidence for how it got there.
     custom_domain_status: Mapped[str | None] = mapped_column(String(16))
 
     __table_args__ = (
@@ -302,9 +333,110 @@ class Storefront(Base, TenantBase):
         CheckConstraint(
             "(custom_domain IS NULL AND custom_domain_status IS NULL)"
             " OR (custom_domain IS NOT NULL"
-            " AND custom_domain_status IN ('unverified', 'verified'))",
+            " AND custom_domain_status IN"
+            " ('unverified', 'verified', 'live', 'failing', 'suspended'))",
             name="custom_domain_status",
         ),
+    )
+
+
+class CustomDomainClaim(Base, TenantBase):
+    """The evidence behind `storefronts.custom_domain_status` (ADR-0012 §9).
+
+    **A second table rather than more columns on `storefronts`, for write locality.**
+    `storefronts` is the row every anonymous request reads and the row the 300-second Redis
+    cache is built from; a failed probe bumping its `updated_at` on every check would put churn
+    on the platform's most-read table for no reader's benefit. **What that gives up**: a state
+    transition writes two tables in one transaction, and a reader has to know that
+    `custom_domain_status` is the state and this row is the evidence — stated here so a future
+    contributor does not add a second status column instead of reading this one.
+
+    **One row per organization** (`uq_custom_domain_claims_organization_id`) — the merchant has
+    one storefront and ADR-0011 fixed it at one `custom_domain` column, so there is never more
+    than one claim to hold evidence for. `storefront_id` is an in-schema `ON DELETE CASCADE` FK
+    (allowed; only *cross-schema* foreign keys are banned) so a storefront row can never outlive
+    its own claim in an inconsistent way.
+
+    **The verification token is never logged and never audited into an `after` blob** — it
+    proves control of a zone and grants nothing, but it is still returned only over the
+    tenant-bound, permission-gated `GET /store/domain` route (ADR-0012 §3, §14).
+
+    `ownership_state` / `routing_state` / `certificate_state` are each `CLAIM_PROBE_STATES` —
+    the three probes ADR-0012 §6 names, tracked independently because "is it working" as one
+    boolean is exactly the pending-forever failure the ADR was written against.
+    """
+
+    __tablename__ = "custom_domain_claims"
+
+    storefront_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.storefronts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: `secrets.token_hex(16)`, minted fresh on every claim — including a re-claim of the same
+    #: domain, because a verification attaches to the act of claiming, not to the domain string.
+    verification_token: Mapped[str] = mapped_column(
+        String(VERIFICATION_TOKEN_LENGTH), nullable=False
+    )
+    token_issued_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: `token_issued_at + 14 days`, while `unverified`. The sweep releases the claim — clears
+    #: `storefronts.custom_domain` / `.custom_domain_status` and deletes this row — the first
+    #: time it finds an unverified claim past this instant (ADR-0012 §3).
+    claim_expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: Set once, the first time the ownership probe succeeds. Never cleared by a later failure —
+    #: it answers "when was this proved", not "is it still proved right now", which is what
+    #: `custom_domain_status` and `ownership_state` are for.
+    verified_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Set (or reset) each time the domain (re)enters `live` — "since when has this been
+    #: answering", which a merchant who watched it recover from `failing` wants to see move.
+    live_since: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    last_checked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The due-work column, and the one shown to the merchant so "pending" always has a clock on
+    #: it (ADR-0012 §6). Cadence: every 60s for 15 minutes, then every 5 minutes for an hour,
+    #: then every 30 minutes, then hourly, until the 14-day expiry, while `unverified`; daily
+    #: once `verified` or later. `app/domain.py`'s `next_check_interval` is the one place this
+    #: is computed.
+    next_check_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: Consecutive **daily** failures once past `unverified`. Seven ends a live domain — a
+    #: generous tolerance, on purpose: a resolver's bad day must not take a merchant's shop off
+    #: the air (ADR-0012 §6). Reset to zero the moment every probe is `ok` again.
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: The calendar day (server clock, UTC) `consecutive_failures` was last bumped on. Null
+    #: whenever the counter is zero. **What makes "seven consecutive daily failures" actually
+    #: daily**: `POST .../domain/check` runs the same probes the sweep does, on demand, so
+    #: without this a merchant mashing "Check now" could count seven failures in as many
+    #: minutes. `app/domain.py`'s `advance_verified_or_later` only advances the counter when
+    #: `today` differs from this column.
+    last_failure_counted_on: Mapped[dt.date | None] = mapped_column(Date)
+    #: pending | ok | failing, each independently — see the class docstring.
+    ownership_state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    routing_state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    certificate_state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    #: The enum a client branches on, from whichever probe most recently failed. Null once every
+    #: probe is `ok`.
+    last_error_code: Mapped[str | None] = mapped_column(String(LAST_ERROR_CODE_LENGTH))
+    #: "What we actually saw" — truncated to `LAST_ERROR_DETAIL_LENGTH`. **Never the
+    #: verification token**, even when the ownership probe's failure detail would otherwise
+    #: quote it back.
+    last_error_detail: Mapped[str | None] = mapped_column(String(LAST_ERROR_DETAIL_LENGTH))
+    #: From the certificate probe's handshake. Null until the first successful one.
+    tls_not_after: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    tls_last_ok_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        # One claim per organization — the merchant's own read, and the sweep's per-tenant read
+        # (ADR-0012 §9's index-timing register: this is the only index this table needs, because
+        # the sweep discovers *organizations* from `storefronts` and then reads at most one row
+        # here per tenant. A global `next_check_at` index is rejected in the ADR for the reason
+        # every rejected index in this codebase is: it would not lead with `organization_id`,
+        # which would mean widening the bypass reader to a second table).
+        UniqueConstraint("organization_id", name="uq_custom_domain_claims_organization_id"),
+        CheckConstraint("ownership_state IN ('pending', 'ok', 'failing')", name="ownership_state"),
+        CheckConstraint("routing_state IN ('pending', 'ok', 'failing')", name="routing_state"),
+        CheckConstraint(
+            "certificate_state IN ('pending', 'ok', 'failing')", name="certificate_state"
+        ),
+        CheckConstraint("consecutive_failures >= 0", name="consecutive_failures_not_negative"),
     )
 
 

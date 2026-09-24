@@ -17,6 +17,7 @@ import json
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Final
 
 import aio_pika
@@ -33,6 +34,14 @@ log = get_logger("events")
 EXCHANGE: Final[str] = "opsgrids.events"
 DLX: Final[str] = "opsgrids.events.dlx"
 ENVELOPE_VERSION: Final[int] = 1
+
+#: The delayed-delivery primitive (ADR-0015). A producer stages this on its **own** outbox
+#: instead of the event it actually wants delivered; `scheduler-service` consumes it, holds it in
+#: `scheduled_jobs`, and republishes the *target* event — unchanged, on its own outbox, with the
+#: target's own `event_type` as the routing key — the moment `due_at` arrives. The producer's own
+#: queue binding (already bound to that routing key, because the event is its own) receives it
+#: exactly as if the producer had published it directly. See `schedule_event` below.
+PLATFORM_SCHEDULE_REQUESTED: Final[str] = "platform.schedule.requested"
 
 
 class OutboxMixin:
@@ -84,8 +93,16 @@ def publish_event(
     causation_id: uuid.UUID | None = None,
     actor: dict[str, Any] | None = None,
 ) -> uuid.UUID:
-    """Stage an event **inside the caller's transaction**. Does not commit."""
+    """Stage an event **inside the caller's transaction**. Does not commit.
+
+    `id` is generated here rather than left to `OutboxMixin`'s own column default: that default
+    is a flush-time default, so the id it would eventually get is not yet on the Python object
+    when this function returns it to the caller — every existing caller has discarded the return
+    value, which is exactly how that went unnoticed, but `scheduler`'s `fire_job` (ADR-0015)
+    needs a real id immediately, to carry as the fired event's own `causation_id`.
+    """
     row = outbox_cls(
+        id=uuid.uuid4(),
         organization_id=organization_id,
         event_type=event_type,
         event_version=ENVELOPE_VERSION,
@@ -98,6 +115,59 @@ def publish_event(
     )
     session.add(row)
     return row.id  # type: ignore[no-any-return]
+
+
+def schedule_event(
+    session: AsyncSession,
+    outbox_cls: type[Any],
+    *,
+    organization_id: uuid.UUID,
+    due_at: datetime,
+    idempotency_key: str,
+    target_event_type: str,
+    target_aggregate_type: str,
+    target_aggregate_id: uuid.UUID,
+    target_payload: dict[str, Any],
+    target_actor: dict[str, Any] | None = None,
+    causation_id: uuid.UUID | None = None,
+) -> uuid.UUID:
+    """Ask the scheduler to deliver an event later instead of publishing it now (ADR-0015).
+
+    Stages **`PLATFORM_SCHEDULE_REQUESTED`** on the caller's own outbox — never a call to the
+    scheduler service, which has no HTTP surface for this at all. Whether "later" is warranted at
+    all is the caller's own policy, not this function's: it always schedules, on whatever `due_at`
+    it is given. Finance's `request_filing` is the first caller, and it only reaches here once it
+    has already decided `not_before` is in the future; a `due_at` in the past is still honoured
+    correctly (the scheduler fires anything already due on its very next sweep), just pointlessly
+    slower than calling `publish_event` directly would have been.
+
+    `idempotency_key` is the domain-level guard, checked again by the scheduler's own consumer
+    against a unique `(organization_id, idempotency_key)` constraint — event-id idempotency alone
+    is not enough once two distinct events can reasonably ask for the same delayed delivery (a
+    redelivered request, or a caller that computes the same key twice by design, as the early-
+    arrival defence in `finance/app/consumers.py` deliberately does not).
+    """
+    return publish_event(
+        session,
+        outbox_cls,
+        organization_id=organization_id,
+        event_type=PLATFORM_SCHEDULE_REQUESTED,
+        aggregate_type=target_aggregate_type,
+        aggregate_id=target_aggregate_id,
+        payload={
+            "idempotency_key": idempotency_key,
+            "due_at": due_at.astimezone(UTC).isoformat(),
+            "target": {
+                "event_type": target_event_type,
+                "aggregate_type": target_aggregate_type,
+                "aggregate_id": str(target_aggregate_id),
+                "payload": target_payload,
+                "actor": target_actor,
+            },
+        },
+        causation_id=causation_id,
+        actor=target_actor,
+    )
 
 
 def build_envelope(row: Any, *, producer: str) -> dict[str, Any]:
@@ -117,6 +187,46 @@ def build_envelope(row: Any, *, producer: str) -> dict[str, Any]:
         "schema_uri": f"opsgrids://contracts/{row.event_type}/v{row.event_version}",
         "payload": row.payload,
     }
+
+
+def event_schema_path(event_type: str, version: int, *, contracts_root: Path) -> Path:
+    """Where `build_envelope`'s `schema_uri` for `(event_type, version)` resolves on disk.
+
+    `opsgrids://contracts/{event_type}/v{version}` names a schema, not a file, so this is the
+    one place that URI is turned into a path — every publisher's schema lives at
+    `libs/contracts/events/<event_type>/v<version>.schema.json`, and this function is what a
+    test asks instead of building that string itself and drifting from `build_envelope`.
+    """
+    return contracts_root / "events" / event_type / f"v{version}.schema.json"
+
+
+def validate_event_schema(
+    event_type: str, version: int, payload: dict[str, Any], *, contracts_root: Path
+) -> None:
+    """Raise if `payload` does not match the committed JSON Schema for this event.
+
+    Dev/test-time only: nothing on the publish path (`publish_event`, the relay) calls this —
+    `jsonschema` is a dev dependency, not a runtime one, imported here rather than at module
+    level so importing `platform_core.events` in a service that never validates a contract never
+    requires it to be installed. The intended caller is a service's own test suite, building a
+    real event through the real function that publishes it and checking the payload that
+    produced against the schema committed for it (`libs/contracts/events/...`), the same way
+    `tools/export_openapi.py --check` catches an OpenAPI document that fell behind its code.
+
+    Raises `FileNotFoundError` for an event type or version with no committed schema — a
+    publisher that shipped ahead of its contract — and `jsonschema.ValidationError` for a
+    payload that does not match one that exists.
+    """
+    from jsonschema import Draft202012Validator, FormatChecker
+
+    path = event_schema_path(event_type, version, contracts_root=contracts_root)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"No committed schema for {event_type} v{version} at {path} — add one under "
+            "libs/contracts/events/."
+        )
+    schema = json.loads(path.read_text(encoding="utf-8"))
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(payload)
 
 
 class OutboxRelay:
@@ -139,6 +249,18 @@ class OutboxRelay:
     queries a second.
     """
 
+    #: Event types that must never be silently dropped for want of a bound queue (ADR-0015
+    #: §6). A topic exchange publish with nobody bound to the routing key is, by default, a
+    #: message the broker still confirms and the relay still marks `published_at` — it is
+    #: gone, and nothing anywhere noticed. That is an acceptable, long-standing trade for
+    #: ordinary events (a consumer that has not deployed yet loses events it was never going
+    #: to see anyway, until it does deploy and the queue exists). It is not acceptable for
+    #: `platform.schedule.requested`: the whole point of asking the scheduler to hold
+    #: something is that it must actually arrive there.
+    _GUARANTEED_ROUTING_EVENT_TYPES: Final[frozenset[str]] = frozenset(
+        {PLATFORM_SCHEDULE_REQUESTED}
+    )
+
     def __init__(
         self,
         *,
@@ -151,6 +273,7 @@ class OutboxRelay:
         max_attempts: int = 50,
         max_backoff: float = 60.0,
         max_idle_interval: float = 5.0,
+        guaranteed_routing_event_types: frozenset[str] | None = None,
     ) -> None:
         self._amqp_url = amqp_url
         self._outbox_cls = outbox_cls
@@ -161,6 +284,11 @@ class OutboxRelay:
         self._max_attempts = max_attempts
         self._max_backoff = max_backoff
         self._max_idle_interval = max_idle_interval
+        self._guaranteed_routing_event_types = (
+            guaranteed_routing_event_types
+            if guaranteed_routing_event_types is not None
+            else self._GUARANTEED_ROUTING_EVENT_TYPES
+        )
         self._stop = False
 
     def stop(self) -> None:
@@ -175,6 +303,20 @@ class OutboxRelay:
             exchange = await channel.declare_exchange(
                 EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True
             )
+            # A second channel, used only for `_guaranteed_routing_event_types`.
+            # `on_return_raises=True` turns an unroutable publish on *this* channel into an
+            # exception `_drain` already treats as a failed publish (attempts bumped,
+            # retried next pass) instead of the ordinary channel's silent confirm-and-drop.
+            # Scoped to its own channel and a small, named set of event types on purpose:
+            # every other event keeps today's behaviour, completely unexamined here — this
+            # is not a platform-wide policy change, just a guarantee for the one event type
+            # that needs one.
+            guaranteed_channel = await connection.channel(
+                publisher_confirms=True, on_return_raises=True
+            )
+            guaranteed_exchange = await guaranteed_channel.declare_exchange(
+                EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True
+            )
             log.info("outbox.relay.started", producer=self._producer)
             backoff = self._poll_interval
             # Below poll_interval, max() clamps this to poll_interval every pass — i.e. no
@@ -182,7 +324,7 @@ class OutboxRelay:
             idle_cap = max(self._max_idle_interval, self._poll_interval)
             idle = self._poll_interval
             while not self._stop:
-                published, failed = await self._drain(exchange)
+                published, failed = await self._drain(exchange, guaranteed_exchange)
                 if failed:
                     # A struggling broker must not be retried in a tight loop. Each pass
                     # burns one of every failing row's attempts, so without spacing a
@@ -203,13 +345,24 @@ class OutboxRelay:
                 else:
                     idle = self._poll_interval
 
-    async def _drain(self, exchange: aio_pika.abc.AbstractExchange) -> tuple[int, int]:
+    async def _drain(
+        self,
+        exchange: aio_pika.abc.AbstractExchange,
+        guaranteed_exchange: aio_pika.abc.AbstractExchange | None = None,
+    ) -> tuple[int, int]:
         """One pass over the claimable backlog. Returns ``(published, failed)``.
 
         Failures are counted rather than folded into the batch size, because the run loop
         must know the difference: a full batch of failed publishes used to come back as
         "progress" and drive a sleepless retry loop.
+
+        ``guaranteed_exchange`` defaults to ``exchange`` — every existing single-exchange
+        caller (a service's own `bin/relay`, and every test that calls this directly) keeps
+        publishing everything through the one exchange it passed, unchanged. `run()` is the
+        only caller that ever passes two: a row whose `event_type` is one of
+        `_guaranteed_routing_event_types` goes out on the strict one instead.
         """
+        target_exchange = guaranteed_exchange if guaranteed_exchange is not None else exchange
         cls: Any = self._outbox_cls
         published = failed = 0
         async with self._session_factory() as session, session.begin():
@@ -228,8 +381,13 @@ class OutboxRelay:
             )
             for row in rows:
                 envelope = build_envelope(row, producer=self._producer)
+                publish_via = (
+                    target_exchange
+                    if row.event_type in self._guaranteed_routing_event_types
+                    else exchange
+                )
                 try:
-                    await exchange.publish(
+                    await publish_via.publish(
                         aio_pika.Message(
                             body=json.dumps(envelope, default=str).encode(),
                             content_type="application/json",

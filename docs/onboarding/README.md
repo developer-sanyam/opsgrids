@@ -6,8 +6,8 @@ How four developers work on this platform without holding it in their heads.
 |---|---|
 | [`git-workflow.md`](git-workflow.md) | every developer, before their first card |
 | [`never-do.md`](never-do.md) | every developer — print it |
-| [`cards-dev-a-lead.md`](cards-dev-a-lead.md) | Dev A — `services/lead` |
-| [`cards-dev-b-pipeline.md`](cards-dev-b-pipeline.md) | Dev B — `services/pipeline` |
+| [`cards-dev-a-lead.md`](cards-dev-a-lead.md) | Dev A — `services/lead` (cards A1-A3, A5; card A4 superseded, see [ADR-0017](../adr/0017-crm-lead-service-and-pipeline-scaffold-removal.md)) |
+| [`cards-dev-b-pipeline.md`](cards-dev-b-pipeline.md) | Historical — `services/pipeline` was deleted rather than built, [ADR-0017](../adr/0017-crm-lead-service-and-pipeline-scaffold-removal.md) |
 | [`cards-dev-c-hrms.md`](cards-dev-c-hrms.md) | Dev C — `frontend/product-hrms` |
 | [`cards-dev-d-crm.md`](cards-dev-d-crm.md) | Dev D — `frontend/product-crm`, `frontend/opsgrids-ui` |
 
@@ -48,15 +48,14 @@ Each developer owns a disjoint set of files. No two open cards ever touch the sa
 | Dev | Owns | Never touches |
 |---|---|---|
 | A | `services/lead/**` | any other service |
-| B | `services/pipeline/**` | any other service |
 | C | `frontend/product-hrms/**` | other apps, `opsgrids-ui` |
 | D | `frontend/product-crm/**`, `frontend/opsgrids-ui/**` | other apps |
 
-A and B are building the two halves of the **Sales CRM** product, which is currently broken:
-the gateway gates `/api/v1/leads`, `/api/v1/pipelines` and `/api/v1/activities` on a product
-that has no permission manifest behind it. They run the same five cards against different
-services, from the same reference, so by the end of the fortnight either can read the other's
-code.
+There is no lane B. `services/pipeline` was deleted rather than built —
+[ADR-0017](../adr/0017-crm-lead-service-and-pipeline-scaffold-removal.md) — because `deal`
+already owns `crm.pipeline.*` end to end. `lead` is not a second product either: it joins the
+existing `crm` product alongside `customer` and `deal`, contributing `crm.lead.*`. There is no
+`salescrm` product and never was one shipped.
 
 `opsgrids-ui` is shared by every app, so **only one open card may touch it at a time** — Dev D's.
 

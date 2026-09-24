@@ -19,6 +19,7 @@ import type { TagTone } from "@opsgrids/ui";
 
 import { cancelSubscription, changeSubscriptionPlan, listPlans, listProducts, listSubscriptions } from "@/api";
 import type { Plan, PlanVersion, Product, Subscription } from "@/api/types";
+import { bundlesIncluding, joinNames, productNames } from "@/lib/bundles";
 import { daysUntil, formatDate, formatMoney, intervalLabel } from "@/lib/money";
 import { PageHeader } from "@/ui";
 import { shortProductName } from "../lib/productName";
@@ -36,6 +37,10 @@ const STATE_TONE: Record<string, TagTone> = {
 interface Row {
   subscription: Subscription;
   name: string;
+  /** For a bundle: the products it switches on. Empty for a single product. */
+  includes: string[];
+  /** For a single product: the live bundles that also include it. */
+  alsoIn: string[];
 }
 
 async function loadRows(): Promise<Row[]> {
@@ -44,10 +49,17 @@ async function loadRows(): Promise<Row[]> {
     listProducts().catch(() => [] as Product[]),
   ]);
   const names = Object.fromEntries(products.map((p) => [p.key, shortProductName(p.name)]));
-  return subscriptions.map((subscription) => ({
-    subscription,
-    name: names[subscription.product_key] ?? subscription.product_key,
-  }));
+  return subscriptions.map((subscription) => {
+    const members = (subscription.entitled_products ?? []).filter((k) => k !== subscription.product_key);
+    return {
+      subscription,
+      name: names[subscription.product_key] ?? subscription.product_key,
+      includes: productNames(members, products),
+      alsoIn: bundlesIncluding(subscription.product_key, subscriptions).map(
+        (s) => names[s.product_key] ?? s.product_key,
+      ),
+    };
+  });
 }
 
 /** Each product your organisation has started, its state, and the actions its lifecycle allows. */
@@ -120,7 +132,15 @@ export function SubscriptionsPage() {
                 return (
                   <Fragment key={s.id}>
                     <tr className="border-t border-line">
-                      <td className="px-5 py-3 font-semibold text-ink">{row.name}</td>
+                      <td className="px-5 py-3">
+                        <span className="font-semibold text-ink">{row.name}</span>
+                        {row.includes.length > 0 ? (
+                          <span className="block text-xs text-muted">Includes {joinNames(row.includes)}</span>
+                        ) : null}
+                        {row.alsoIn.length > 0 && !finished ? (
+                          <span className="block text-xs text-muted">Also included in {joinNames(row.alsoIn)}</span>
+                        ) : null}
+                      </td>
                       <td className="px-5 py-3">
                         <Tag tone={STATE_TONE[s.state] ?? "neutral"}>{s.state}</Tag>
                       </td>

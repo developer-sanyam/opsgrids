@@ -13,19 +13,21 @@ as though it were.
 
 from __future__ import annotations
 
+import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import services
+from app import selectors, services
 from app.deps import get_provider
 from app.providers.base import PaymentProvider
-from app.schemas import ChargeIn, ChargeOut
+from app.schemas import ChargeIn, ChargeOut, UsableMandateOut
 from platform_core.auth import require_service_token
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
+from platform_core.errors import ForbiddenProblem
 from platform_core.logging import get_logger
 
 log = get_logger("payment.internal")
@@ -50,19 +52,88 @@ ProviderDep = Annotated[PaymentProvider, Depends(get_provider)]
 async def create_charge(
     payload: ChargeIn, session: SessionDep, request: Request, provider: ProviderDep
 ) -> ChargeOut:
-    """Raise a charge, idempotently on the platform key. The transaction is bound to the payload's
-    organization as its first statement; RLS then isolates the write."""
+    """Raise a charge, idempotently on the platform key.
+
+    Three acts, at most two transactions, and the provider call spans neither. **Claim**: bind the
+    transaction to the payload's organization and stage the charge row; commit. **Call**: ask the
+    provider, with no session and no transaction open — a slow or hanging provider then holds
+    nothing from this service's pool. **Record**: bind a fresh transaction to the same
+    organization and finalize what the provider said. A process that dies between the call and the
+    record leaves the charge `created` with no `provider_payment_id`, which is exactly what
+    `app/cron.py`'s stuck-charge sweep resumes; `call_provider_charge` is safe to run again because
+    it looks the payment up (by the Order whose receipt is the platform's key) before it creates
+    one. A retry of the same key while the first call is still in flight is answered with the
+    charge as it stands — `stage_charge` hands the right to call to one caller at a time.
+    """
     settings: ServiceSettings = request.app.state.settings
     async with session.begin():
         await set_tenant(session, payload.organization_id)
         if not settings.is_production:
             await assert_tenant(session, payload.organization_id)
-        charge = await services.create_charge(session, provider, payload, request=request)
-        result = ChargeOut.model_validate(charge)
+        charge, needs_call = await services.stage_charge(session, provider, payload)
+
+    if needs_call:
+        # On a worker thread, bounded: a provider that does not answer in time leaves the charge
+        # `created` under its lease, and the stuck-charge sweep resumes it once the lease lapses.
+        result = await services.call_provider_charge_off_loop(provider, charge)
+        if result is not None:
+            async with session.begin():
+                await set_tenant(session, payload.organization_id)
+                if not settings.is_production:
+                    await assert_tenant(session, payload.organization_id)
+                charge = await services.finalize_charge(
+                    session,
+                    charge.id,
+                    result,
+                    organization_id=payload.organization_id,
+                    request=request,
+                )
+
+    result_out = ChargeOut.model_validate(charge)
     log.info(
         "payment.charge.created",
-        charge_id=str(result.id),
+        charge_id=str(result_out.id),
         organization_id=str(payload.organization_id),
-        state=result.state,
+        state=result_out.state,
     )
-    return result
+    return result_out
+
+
+#: Who may ask whether an organization can be debited. subscription's billing run asks it when a
+#: trial ends (ADR-0013 §6); nothing else has a reason to probe a customer's payment standing.
+MANDATE_READERS = frozenset({"subscription"})
+
+
+@router.get(
+    "/organizations/{organization_id}/mandates:usable",
+    response_model=UsableMandateOut,
+    summary="Could this organization be debited this amount now? — the trial-end question",
+)
+async def usable_mandate(
+    organization_id: uuid.UUID,
+    session: SessionDep,
+    request: Request,
+    currency: Annotated[str, Query(min_length=3, max_length=3)],
+    amount_minor: Annotated[int, Query(ge=0)],
+) -> UsableMandateOut:
+    """Answers with identifiers only. The transaction is bound to the organization in the path as
+    its first statement, so another organization's mandates are invisible under RLS as well as
+    filtered out by the selector."""
+    caller = getattr(request.state, "service_caller", None)
+    if caller not in MANDATE_READERS:
+        raise ForbiddenProblem("this service may not read payment standing")
+    settings: ServiceSettings = request.app.state.settings
+    async with session.begin():
+        await set_tenant(session, organization_id)
+        if not settings.is_production:
+            await assert_tenant(session, organization_id)
+        mandate = await selectors.usable_mandate(
+            session, organization_id, currency=currency, amount_minor=amount_minor
+        )
+    return UsableMandateOut(
+        organization_id=organization_id,
+        currency=currency.upper(),
+        amount_minor=amount_minor,
+        usable=mandate is not None,
+        mandate_id=mandate.id if mandate is not None else None,
+    )

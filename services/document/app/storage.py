@@ -20,6 +20,7 @@ the endpoint and the key go to the log with the tenant and the request id.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from functools import lru_cache
 from typing import Any
 
@@ -163,3 +164,90 @@ class ObjectStore:
 def get_object_store() -> ObjectStore:
     """FastAPI dependency. One store per process; overridden wholesale in tests."""
     return ObjectStore(settings())
+
+
+class OrphanScanner(ObjectStore):
+    """`ListObjectsV2` plus `DeleteObject`, on a **second, narrower** credential than
+    `ObjectStore` holds (ADR-0009 §9 addendum).
+
+    Nothing on the request path ever calls `ListBucket` — that is the entire tenancy argument
+    of ADR-0009 §3 ("an unguessable key is only unguessable if there is no listing to walk").
+    This class exists so exactly one background process, the purge sweep's own orphan pass in
+    `app/cron.py`, can hold that capability, and no API request ever can. It subclasses
+    `ObjectStore` rather than duplicating `delete` and `put`'s retry/timeout wiring; it
+    overrides only which credential the client authenticates as.
+
+    Optional in the same way `ObjectStore`'s own credentials are: `s3_orphan_access_key`/
+    `_secret_key` absent means this client authenticates as nothing this bucket recognises,
+    and `app/cron.py` treats that as "the orphan pass cannot run" rather than falling back to
+    the write credential — the point of a second credential is that the write path never
+    needs `ListBucket`, and silently reusing it here would defeat that.
+    """
+
+    def _build_client(self) -> Any:
+        credentials: dict[str, str] = {}
+        if self._cfg.s3_orphan_access_key and self._cfg.s3_orphan_secret_key:
+            credentials = {
+                "aws_access_key_id": self._cfg.s3_orphan_access_key.get_secret_value(),
+                "aws_secret_access_key": self._cfg.s3_orphan_secret_key.get_secret_value(),
+            }
+        return boto3.client(
+            "s3",
+            endpoint_url=self._cfg.s3_endpoint_url,
+            region_name=self._cfg.s3_region,
+            config=Config(
+                connect_timeout=self._cfg.s3_connect_timeout_seconds,
+                read_timeout=self._cfg.s3_read_timeout_seconds,
+                retries={"max_attempts": self._cfg.s3_max_attempts, "mode": "standard"},
+                s3={"addressing_style": "path" if self._cfg.s3_force_path_style else "auto"},
+                signature_version="s3v4",
+            ),
+            **credentials,
+        )
+
+    def is_configured(self) -> bool:
+        """Whether a list-capable credential was actually supplied. `app/cron.py` checks this
+        once per tick rather than letting a missing credential surface as a botocore
+        `NoCredentialsError` deep inside a paginator — the orphan pass being unconfigured is
+        an expected, logged skip, not a sweep failure."""
+        return bool(self._cfg.s3_orphan_access_key and self._cfg.s3_orphan_secret_key)
+
+    async def list_objects(self) -> list[tuple[str, datetime, int]]:
+        """Every object in the bucket: `(key, last_modified, size_bytes)`.
+
+        `ListObjectsV2` is paginated; boto3's own paginator drains every page before this
+        returns, wrapped in one thread hop (boto3 is synchronous — see the module docstring).
+        A single scan of the whole bucket is only acceptable because this runs on a slow,
+        capped cron tick against a bucket ADR-0009 §11 sizes at "well under 10 GB" in year
+        one — the day that stops being true, this is the first place to add a `Prefix` or a
+        continuation-token checkpoint between ticks.
+        """
+
+        def _list() -> list[tuple[str, datetime, int]]:
+            paginator = self.client.get_paginator("list_objects_v2")
+            out: list[tuple[str, datetime, int]] = []
+            for page in paginator.paginate(Bucket=self._cfg.s3_public_bucket):
+                for obj in page.get("Contents", []):
+                    out.append((obj["Key"], obj["LastModified"], obj["Size"]))
+            return out
+
+        try:
+            return await anyio.to_thread.run_sync(_list)
+        except (ClientError, BotoCoreError) as exc:
+            log.error(
+                "storage.list.failed",
+                bucket=self._cfg.s3_public_bucket,
+                error=str(exc)[:200],
+            )
+            raise UpstreamUnavailableProblem(
+                "Could not list the bucket right now. Please try again."
+            ) from exc
+
+
+@lru_cache(maxsize=1)
+def get_orphan_scanner() -> OrphanScanner:
+    """One scanner per process, built lazily — used only by `app/cron.py`, and only in a manual
+    `docker compose run … ./bin/cron` with the orphan credential supplied for that one run: the
+    API process never runs the orphan pass (`app/main.py`'s `_start_purge_sweep` pins
+    `orphan_enabled=False`), so it never needs — or holds — the credential."""
+    return OrphanScanner(settings())

@@ -19,12 +19,13 @@ position, the overview rollups — are reads, computed from the same `app.domain
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import Select, case, func, literal, or_, select
+from sqlalchemy import Select, and_, case, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from app import domain
 from app.models import (
@@ -39,6 +40,8 @@ from app.models import (
     ImsReconciliation,
     Invoice,
     InvoiceWithholding,
+    ItcLedgerEntry,
+    OutboxEvent,
     Payment,
     PaymentAllocation,
     PurchaseDocument,
@@ -57,6 +60,10 @@ from app.schemas import (
     EwayBillWithInvoice,
     EwayState,
     Gstr1Sections,
+    Gstr3bItcOut,
+    Gstr3bOutwardOut,
+    Gstr3bPaymentOut,
+    Gstr3bSections,
     GstRegistrationOut,
     GstReturnDetail,
     GstReturnOut,
@@ -69,6 +76,9 @@ from app.schemas import (
     InvoiceLineOut,
     InvoiceOut,
     InvoiceWithholdingOut,
+    ItcBalanceOut,
+    ItcHeadBalanceOut,
+    ItcLedgerEntryOut,
     LedgerAccount,
     LedgerReport,
     OverviewKpi,
@@ -79,6 +89,8 @@ from app.schemas import (
     RateGroupOut,
     ReturnInvoiceOut,
     ReturnTotalsOut,
+    TaxHeadAmountsOut,
+    UtilisationLineOut,
     WithholdingDeductorRow,
     WithholdingRateOut,
     WithholdingSummaryOut,
@@ -254,10 +266,17 @@ def to_einvoice_state(
         error=latest.error,
         attempted_at=latest.attempted_at,
         attempts=attempts,
-        terminal=domain.is_terminal_filing(latest.status),
+        # A failed *withdrawal* is not the platform having given up on the document: the
+        # registration stands, and `remedy` says what a person can still do about it.
+        terminal=domain.is_terminal_filing(latest.status)
+        and not domain.is_failed_withdrawal(latest.status, latest.ack_date),
         cancellable_until=(
             domain.cancellation_deadline(latest.ack_date)
-            if latest.status == "filed" and latest.ack_date is not None
+            if latest.ack_date is not None
+            and (
+                latest.status == "filed"
+                or domain.is_failed_withdrawal(latest.status, latest.ack_date)
+            )
             else None
         ),
         remedy=domain.remedy_for(status=latest.status, ack_date=latest.ack_date, at=at or _now()),
@@ -321,7 +340,12 @@ def to_invoice_out(
 
 
 async def get_invoice(
-    session: AsyncSession, org_id: uuid.UUID, invoice_id: uuid.UUID, *, for_update: bool = False
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    *,
+    for_update: bool = False,
+    skip_locked: bool = False,
 ) -> Invoice | None:
     """Org-scoped fetch by id, with lines. Returns None on a tenant mismatch or a soft-deleted
     row — confirming an id exists in *some* organization is itself a disclosure.
@@ -329,7 +353,11 @@ async def get_invoice(
     `for_update=True` row-locks it — the credit-note path takes this before reading how much has
     already been credited against it (`credited_total_for_invoice`), so a second credit note
     racing the same invoice serializes on the lock instead of both reading the same figure and
-    both passing the cap."""
+    both passing the cap.
+
+    `skip_locked=True` (with `for_update`) returns None for a row somebody else holds rather than
+    waiting behind them — what the reclaim sweep wants: an invoice another replica, or a request,
+    is already driving is left alone this tick, not queued behind."""
     stmt = (
         select(Invoice)
         .where(
@@ -340,7 +368,7 @@ async def get_invoice(
         .options(selectinload(Invoice.lines))
     )
     if for_update:
-        stmt = stmt.with_for_update()
+        stmt = stmt.with_for_update(skip_locked=skip_locked, of=Invoice)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
@@ -466,6 +494,73 @@ async def all_invoices(session: AsyncSession, org_id: uuid.UUID) -> list[Invoice
 
 # --------------------------------------------------------------------- e-invoicing
 
+#: The two claim statuses (D3): the row committed *before* a portal call, never an outcome.
+CLAIM_STATUSES: tuple[str, ...] = ("submitting", "cancelling")
+
+
+def _claims_last(model: type[EInvoiceFiling] | type[EwayBill]) -> Any:
+    """The last tie-break in every newest-first ordering of an attempt ledger: at an identical
+    `(attempted_at, created_at)` an outcome row is newer than a claim row.
+
+    A claim and the outcome it leads to share `attempted_at` by design (the outcome is recorded
+    against the instant the attempt was claimed), and when both are written in one transaction —
+    the single-transaction convenience wrappers the unit tests drive — they share `created_at`
+    too. A claim is always written before its own outcome, never after, so ranking claims last at
+    a tie is not a guess; without it the sort is free to put the claim first, and the read model
+    would report a finished attempt as still in flight."""
+    return case((model.status.in_(CLAIM_STATUSES), 1), else_=0)
+
+
+def _newest_first(model: type[EInvoiceFiling] | type[EwayBill]) -> tuple[Any, ...]:
+    return (model.attempted_at.desc(), model.created_at.desc(), _claims_last(model).asc())
+
+
+def _is_newest(model: Any) -> Any:
+    """SQL: `model`'s row is the newest live row for its document, by exactly `_newest_first`'s
+    ordering — a `NOT EXISTS` over a later row for the same `(organization_id, invoice_id)`.
+
+    `select(newer.id)`, not a bare `exists()`: the latter renders `SELECT *`, which the outbox
+    role's column-scoped grant (`migrations/env.py`) refuses — as it should — and this predicate
+    is also the reclaim sweep's discovery test."""
+    newer = aliased(model)
+    return ~(
+        select(newer.id)
+        .where(
+            # The organization too, not only the invoice: it is what lets the correlated probe
+            # ride `(organization_id, invoice_id)` rather than scan the ledger.
+            newer.organization_id == model.organization_id,
+            newer.invoice_id == model.invoice_id,
+            newer.deleted_at.is_(None),
+            or_(
+                newer.attempted_at > model.attempted_at,
+                and_(
+                    newer.attempted_at == model.attempted_at,
+                    newer.created_at > model.created_at,
+                ),
+                and_(
+                    newer.attempted_at == model.attempted_at,
+                    newer.created_at == model.created_at,
+                    _claims_last(newer) < _claims_last(model),
+                ),
+            ),
+        )
+        .exists()
+    )
+
+
+def visible_attempts(rows: list[Any]) -> list[Any]:
+    """A newest-first attempt history as a person reads it: every outcome row, and a claim row
+    only while it is still the newest — i.e. while that attempt is genuinely in flight.
+
+    A claim that has been answered (or re-driven by the reclaim sweep, whose every drive appends a
+    fresh claim as its lease) says nothing its outcome row does not: the outcome carries the same
+    reason, the same transport facts, the same instant. Showing them would double every history
+    and turn one withdrawal the sweep had to retry into five lines. They stay on the ledger — it
+    is append-only — and who asked is on the audit row (`*.cancel_requested`,
+    `eway.generate_requested`); this is the read model only.
+    """
+    return [row for index, row in enumerate(rows) if index == 0 or row.status not in CLAIM_STATUSES]
+
 
 async def filings_for_invoice(
     session: AsyncSession, org_id: uuid.UUID, invoice_id: uuid.UUID
@@ -482,9 +577,270 @@ async def filings_for_invoice(
             EInvoiceFiling.invoice_id == invoice_id,
             EInvoiceFiling.deleted_at.is_(None),
         )
-        .order_by(EInvoiceFiling.attempted_at.desc(), EInvoiceFiling.created_at.desc())
+        .order_by(*_newest_first(EInvoiceFiling))
     )
     return list((await session.execute(stmt)).scalars().all())
+
+
+#: `services.EVT_INVOICE_FILING_REQUESTED`, named here because selectors sit below services and may
+#: not import them. A test pins the two together.
+FILING_REQUESTED_EVENT = "finance.compliance.invoice.filing_requested"
+
+
+def _request_backoff(requests: Any) -> Any:
+    """SQL: `domain.resume_after(n)` for an integer SQL expression `n` — the same bounded backoff
+    the Python side computes, so discovery and the tenant-bound re-check agree on when a re-queued
+    invoice is due again."""
+    return (
+        literal(domain.FILING_RECLAIM_AFTER)
+        + func.least(
+            literal(domain.FILING_RETRY_BASE) * func.power(2, requests - 1),
+            literal(domain.FILING_RETRY_CEILING),
+        )
+        - literal(domain.FILING_RETRY_BASE)
+    )
+
+
+def _requests_backing_off(org_col: Any, invoice_col: Any, after_col: Any) -> Any:
+    """SQL: a `filing_requested` for this invoice is still in flight — either one the relay has
+    **not yet published** (any, whenever staged), or one published since `after_col` whose
+    newest is still inside `resume_after(count)` of the published ones. Measured on the
+    database's clock (`created_at` is `now()` at insert).
+
+    Unpublished requests are never attempts: with the relay down they only mean the request is
+    queued, and counting them would spend an invoice's whole budget in the outage and end it
+    `retry_exhausted` with nothing ever having been asked of anybody. While one is queued, the
+    invoice is simply left alone — re-queueing behind it would only queue a duplicate.
+
+    The published half is an aggregate with `HAVING` and no `GROUP BY`: one row when the condition
+    holds, none otherwise (no requests gives a NULL `max`, and the comparison is not true), so the
+    whole thing is an `EXISTS`. This is what keeps a re-queued or backing-off invoice **out of the
+    discovery batch** instead of occupying one of its `limit` slots every tick."""
+    queued = (
+        select(OutboxEvent.id)
+        .where(
+            OutboxEvent.organization_id == org_col,
+            OutboxEvent.aggregate_id == invoice_col,
+            OutboxEvent.event_type == FILING_REQUESTED_EVENT,
+            OutboxEvent.published_at.is_(None),
+        )
+        .exists()
+    )
+    recent = (
+        select(literal(1))
+        .select_from(OutboxEvent)
+        .where(
+            OutboxEvent.organization_id == org_col,
+            OutboxEvent.aggregate_id == invoice_col,
+            OutboxEvent.event_type == FILING_REQUESTED_EVENT,
+            OutboxEvent.published_at.is_not(None),
+            OutboxEvent.created_at > after_col,
+        )
+        .having(func.max(OutboxEvent.created_at) + _request_backoff(func.count()) > func.now())
+        .exists()
+    )
+    return or_(queued, recent)
+
+
+def _has_live_registration(org_col: Any) -> Any:
+    """SQL: the organization has a primary, live GST registration. Without one nothing can be
+    filed — the consumer answers `no_registration` and writes no row — so re-queueing its
+    invoices would only loop. Read on the outbox role's column grant on `gst_registrations`."""
+    return (
+        select(GstRegistration.id)
+        .where(
+            GstRegistration.organization_id == org_col,
+            GstRegistration.is_primary.is_(True),
+            GstRegistration.deleted_at.is_(None),
+        )
+        .exists()
+    )
+
+
+async def due_filing_reclaims(
+    session: AsyncSession, *, older_than: datetime, limit: int = 100
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """Every reportable, unfiled invoice with no filing row at all, as `(organization_id,
+    invoice_id)` — the automatic filing pipeline having lost track of it entirely.
+
+    **Cross-tenant**, like the outbox relay's, subscription's dunning sweep's and payment's
+    stuck-charge sweep's discovery: it exists to discover *which* organizations have such an
+    invoice, so there is no tenant to bind while asking. Run on the BYPASSRLS outbox role
+    (`get_outbox_sessionmaker`), which holds column-scoped `SELECT` on exactly what this reads
+    (`migrations/env.py`); as the NOBYPASSRLS app role it would return nothing, and a document
+    whose `filing_requested` never arrived — or whose one attempt crashed between calling the
+    portal and recording it, leaving no row at all — would sit unfiled past its window, silently.
+
+    Only invoices the sweep can actually move are returned, so the batch is never filled by ones it
+    cannot (a head-of-line block across organizations):
+
+    * the organization has a live GST registration (`_has_live_registration`) — without one the
+      consumer files nothing and writes nothing, and re-queueing would loop forever;
+    * no `filing_requested` staged since the invoice was created is still inside its backoff
+      (`_requests_backing_off`) — a re-queue already in flight is not re-queued, and each further
+      one waits `domain.resume_after(n)`. The tenant-bound re-check (`services.claim_lost_filing`)
+      stops at `domain.MAX_FILING_ATTEMPTS` with a terminal row.
+
+    Deliberately **not** every invoice with a non-terminal newest filing row: that is
+    `due_stale_filings`' question, on its own clock. `older_than` is the floor below which an
+    invoice is simply still waiting on its own first attempt.
+    """
+    reportable_document_types = tuple(domain.IRP_DOCUMENT_TYPES)
+    stmt = (
+        select(Invoice.organization_id, Invoice.id)
+        .where(
+            Invoice.supply_type.in_(domain.EINVOICE_SUPPLY_TYPES),
+            Invoice.document_type.in_(reportable_document_types),
+            Invoice.status.not_in(domain.UNREPORTED_STATUSES),
+            Invoice.deleted_at.is_(None),
+            Invoice.created_at <= older_than,
+            ~select(EInvoiceFiling.id)
+            .where(
+                EInvoiceFiling.organization_id == Invoice.organization_id,
+                EInvoiceFiling.invoice_id == Invoice.id,
+                EInvoiceFiling.deleted_at.is_(None),
+            )
+            .exists(),
+            _has_live_registration(Invoice.organization_id),
+            ~_requests_backing_off(Invoice.organization_id, Invoice.id, Invoice.created_at),
+        )
+        .order_by(Invoice.created_at)
+        .limit(limit)
+    )
+    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+
+
+def _stale_newest_stmt(
+    model: type[EInvoiceFiling] | type[EwayBill],
+    *,
+    floors: dict[str, datetime],
+    limit: int,
+    extra: Any = None,
+) -> Select[Any]:
+    """`(organization_id, invoice_id)` for every document whose **newest** attempt row has one of
+    the statuses in `floors`, made at or before that status's floor.
+
+    "Newest" is `_is_newest`, ordered exactly as `filings_for_invoice` / `eway_bills_for_invoice`
+    order it, so the sweep and the read model can never disagree about which row is current.
+    Filtering by status first keeps the scan to the handful of rows in a claim or outage state
+    rather than the whole ledger. Oldest first: a row backing off after a re-drive was re-stamped
+    by it (every re-drive appends a fresh claim), so it sorts behind rows that are genuinely due.
+    """
+    stmt = (
+        select(model.organization_id, model.invoice_id)
+        .where(
+            or_(
+                *(
+                    and_(model.status == status, model.attempted_at <= floor)
+                    for status, floor in floors.items()
+                )
+            ),
+            model.deleted_at.is_(None),
+            _is_newest(model),
+        )
+        .order_by(model.attempted_at)
+        .limit(limit)
+    )
+    if extra is not None:
+        stmt = stmt.where(extra)
+    return stmt
+
+
+async def due_stale_filings(
+    session: AsyncSession, *, floors: dict[str, datetime], limit: int = 100
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """Every invoice whose newest e-invoice filing row is a stale `pending` or `cancelling` — an
+    outage answer whose scheduled retry may have been lost, or a cancellation claim whose process
+    died between the portal call and recording it.
+
+    **Cross-tenant, like `due_filing_reclaims`**, on the same role and column grant. `floors` is
+    per status: a `pending` row's own retry may be scheduled up to
+    `domain.pending_redrive_after(MAX_FILING_ATTEMPTS)` out, so it is not even discovered before
+    then — hundreds of rows inside their own retry window during a portal outage must not fill the
+    batch. A `pending` row is further excluded while a re-queue of it is backing off, or when its
+    organization has no registration to file under (the same two filters `due_filing_reclaims`
+    applies). The exact per-attempt deadline is re-checked under the tenant binding before
+    anything is driven.
+    """
+    pending_is_actionable = or_(
+        EInvoiceFiling.status != "pending",
+        and_(
+            _has_live_registration(EInvoiceFiling.organization_id),
+            ~_requests_backing_off(
+                EInvoiceFiling.organization_id, EInvoiceFiling.invoice_id, EInvoiceFiling.created_at
+            ),
+        ),
+    )
+    stmt = _stale_newest_stmt(
+        EInvoiceFiling, floors=floors, limit=limit, extra=pending_is_actionable
+    )
+    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+
+
+async def due_stale_eway(
+    session: AsyncSession, *, floors: dict[str, datetime], limit: int = 100
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """The e-Way twin of `due_stale_filings`: newest row `submitting` (a generation claim whose
+    process died), `pending` (an outage nothing else retries) or `cancelling` (a withdrawal claim).
+    Cross-tenant on the outbox role's column grant on `eway_bills`. No outbox lease is needed here:
+    every re-drive appends a fresh claim row, which is itself the lease."""
+    stmt = _stale_newest_stmt(EwayBill, floors=floors, limit=limit)
+    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+
+
+@dataclass(frozen=True, slots=True)
+class RequestHistory:
+    """`filing_requested` for one invoice, read under the tenant binding: how many the relay has
+    **published** since some moment (the attempts that count), the newest of those, whether any
+    request is still queued unpublished, and the database's own clock."""
+
+    count: int
+    newest_at: datetime | None
+    db_now: datetime
+    queued: bool = False
+
+    def backing_off(self) -> bool:
+        """A request is still queued, or the newest published one is still inside
+        `domain.resume_after(count)` — exactly `_requests_backing_off`'s SQL, so discovery and the
+        re-check agree."""
+        if self.queued:
+            return True
+        if self.count == 0 or self.newest_at is None:
+            return False
+        return self.newest_at + domain.resume_after(self.count) > self.db_now
+
+
+async def filing_requests_since(
+    session: AsyncSession, org_id: uuid.UUID, invoice_id: uuid.UUID, *, after: datetime
+) -> RequestHistory:
+    """How many `filing_requested` events for the invoice the relay has **published** since
+    `after` (a filing row's, or the invoice's own, `created_at`), and whether any is still queued
+    unpublished — the sweep's **lease and budget** for a re-queue.
+
+    A re-queue cannot be recorded on the ledger (a `pending` row is never rewritten, and a lost
+    invoice has no row at all), so the outbox rows the re-queues themselves staged are the record:
+    while one is still queued, or the newest published one is inside its backoff, the invoice is
+    left alone; at `domain.MAX_FILING_ATTEMPTS` *published* requests the sweep stops with a
+    terminal row. Unpublished rows are never counted — a relay outage is not an invoice's failure
+    to file. The finalize request is staged in the invoice's own transaction, so it is never newer
+    than `invoice.created_at` and never counts as an attempt. Runs under the tenant binding, on
+    the app role, against this service's own outbox — no cross-schema read.
+    """
+    published_since = and_(OutboxEvent.published_at.is_not(None), OutboxEvent.created_at > after)
+    stmt = select(
+        func.count().filter(published_since),
+        func.max(OutboxEvent.created_at).filter(published_since),
+        func.count().filter(OutboxEvent.published_at.is_(None)),
+        func.now(),
+    ).where(
+        OutboxEvent.organization_id == org_id,
+        OutboxEvent.event_type == FILING_REQUESTED_EVENT,
+        OutboxEvent.aggregate_id == invoice_id,
+    )
+    count, newest_at, queued, db_now = (await session.execute(stmt)).one()
+    return RequestHistory(
+        count=int(count), newest_at=newest_at, db_now=db_now, queued=int(queued) > 0
+    )
 
 
 async def latest_filings(
@@ -507,20 +863,19 @@ async def latest_filings(
             EInvoiceFiling.deleted_at.is_(None),
         )
         .distinct(EInvoiceFiling.invoice_id)
-        .order_by(
-            EInvoiceFiling.invoice_id,
-            EInvoiceFiling.attempted_at.desc(),
-            EInvoiceFiling.created_at.desc(),
-        )
+        .order_by(EInvoiceFiling.invoice_id, *_newest_first(EInvoiceFiling))
     )
     latest = {row.invoice_id: row for row in (await session.execute(latest_stmt)).scalars().all()}
 
+    # Attempts are outcomes: a claim and the answer it led to are one attempt, and a sweep's
+    # lease rows are not attempts at all (see `visible_attempts`).
     count_stmt = (
         select(EInvoiceFiling.invoice_id, func.count())
         .where(
             EInvoiceFiling.organization_id == org_id,
             EInvoiceFiling.invoice_id.in_(invoice_ids),
             EInvoiceFiling.deleted_at.is_(None),
+            EInvoiceFiling.status.not_in(CLAIM_STATUSES),
         )
         .group_by(EInvoiceFiling.invoice_id)
     )
@@ -561,23 +916,36 @@ def to_filing_out(filing: EInvoiceFiling) -> EInvoiceFilingOut:
 # --------------------------------------------------------------------- GST registration
 
 
-async def get_gst_registration(session: AsyncSession, org_id: uuid.UUID) -> GstRegistration | None:
+async def get_gst_registration(
+    session: AsyncSession, org_id: uuid.UUID, *, for_update: bool = False
+) -> GstRegistration | None:
     """This organization's primary GST registration — the seller side of every tax decision.
 
     None means the org has not configured one, which is a real state and not an error: an invoice
     can still be raised, it simply cannot be filed, and the filing attempt says so.
+
+    `for_update=True` row-locks it — `generate_return`/`file_return` take this before assembling
+    or filing a `gstr3b`, so two calls racing the same registration serialise on the row instead
+    of both reading the same ITC ledger position and both posting a utilisation against it.
     """
     stmt = select(GstRegistration).where(
         GstRegistration.organization_id == org_id,
         GstRegistration.is_primary.is_(True),
         GstRegistration.deleted_at.is_(None),
     )
+    if for_update:
+        stmt = stmt.with_for_update()
     return (await session.execute(stmt)).scalars().first()
 
 
-async def all_gst_registrations(session: AsyncSession, org_id: uuid.UUID) -> list[GstRegistration]:
+async def all_gst_registrations(
+    session: AsyncSession, org_id: uuid.UUID, *, for_update: bool = False
+) -> list[GstRegistration]:
     """Every live registration for the org. A company registers per state, so there may be
-    several; exactly one is primary."""
+    several; exactly one is primary.
+
+    `for_update=True` row-locks every one returned, in the same deterministic order this already
+    sorts by, for the same reason `get_gst_registration`'s lock exists."""
     stmt = (
         select(GstRegistration)
         .where(
@@ -586,6 +954,8 @@ async def all_gst_registrations(session: AsyncSession, org_id: uuid.UUID) -> lis
         )
         .order_by(GstRegistration.is_primary.desc(), GstRegistration.state_code)
     )
+    if for_update:
+        stmt = stmt.with_for_update()
     return list((await session.execute(stmt)).scalars().all())
 
 
@@ -785,15 +1155,22 @@ def ims_documents_stmt(
 
 
 async def get_ims_document(
-    session: AsyncSession, org_id: uuid.UUID, document_id: uuid.UUID
+    session: AsyncSession, org_id: uuid.UUID, document_id: uuid.UUID, *, for_update: bool = False
 ) -> ImsDocument | None:
     """Org-scoped fetch by id. None on a tenant mismatch or a soft-deleted row — confirming an id
-    exists in *some* organization is itself a disclosure."""
+    exists in *some* organization is itself a disclosure.
+
+    `for_update=True` row-locks it — `record_ims_decision` takes this before reading `status`, so
+    two decisions racing the same document serialise on the row instead of each reading the same
+    `before_status`, each computing an accrual (or a reversal) of their own, and the ledger ending
+    up with the transition posted twice."""
     stmt = select(ImsDocument).where(
         ImsDocument.id == document_id,
         ImsDocument.organization_id == org_id,
         ImsDocument.deleted_at.is_(None),
     )
+    if for_update:
+        stmt = stmt.with_for_update()
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
@@ -814,23 +1191,6 @@ async def all_ims_documents(
     if period:
         stmt = stmt.where(ImsDocument.period == period)
     return list((await session.execute(stmt)).scalars().all())
-
-
-async def ims_documents_by_source_ref(
-    session: AsyncSession, org_id: uuid.UUID, source_refs: list[str]
-) -> dict[str, ImsDocument]:
-    """The documents already held for these portal references — the ingest's idempotency read.
-
-    One round trip for a whole fetch, so re-syncing a period is a single lookup rather than one
-    per document.
-    """
-    if not source_refs:
-        return {}
-    stmt = select(ImsDocument).where(
-        ImsDocument.organization_id == org_id,
-        ImsDocument.source_ref.in_(source_refs),
-    )
-    return {row.source_ref: row for row in (await session.execute(stmt)).scalars().all()}
 
 
 async def latest_reconciliations(
@@ -1315,6 +1675,96 @@ async def find_return(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def latest_filed_gstr3b_period(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID
+) -> str | None:
+    """The latest period this registration has a **filed** `gstr3b` for, or `None` if it has never
+    filed one. `YYYY-MM` strings compare lexicographically the same as chronologically, so `MAX`
+    is exactly "latest"."""
+    stmt = select(func.max(GstReturn.period)).where(
+        GstReturn.organization_id == org_id,
+        GstReturn.gst_registration_id == gst_registration_id,
+        GstReturn.return_type == "gstr3b",
+        GstReturn.status == "filed",
+        GstReturn.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def claim_period_for(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, source_period: str
+) -> str:
+    """The period a posting against `source_period` actually lands in: `source_period` itself, or
+    the period right after whichever `gstr3b` this registration most recently filed — whichever is
+    later.
+
+    Not "the period right after `source_period`'s own filed return" — a decision can arrive long
+    after several periods have been filed (a document reported for July decided on only after
+    August has already gone out), and a walk that only asks "is `source_period` itself filed"
+    would leave the posting sitting in a period no future GSTR-3B could ever pick up again. The
+    latest filed period is a single fact about the whole registration, not about any one document,
+    so one `MAX` query answers it regardless of how far behind the source period is.
+    """
+    latest_filed = await latest_filed_gstr3b_period(session, org_id, gst_registration_id)
+    if latest_filed is None:
+        return source_period
+    return max(source_period, domain.next_period(latest_filed))
+
+
+async def gstr3b_periods_after(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, period: str
+) -> list[str]:
+    """Every `gstr3b` period for this registration, later than `period`, that already exists —
+    filed or merely generated.
+
+    A non-empty result means generating or filing `period` now would let it utilise brought-forward
+    credit a later period has already drawn on (or is mid-way through drawing on), spending the
+    same credit twice — brought-forward is read straight off the ledger, not off any particular
+    return, so a later period's return existing at all is enough for this to be live even before
+    that return itself is filed.
+    """
+    stmt = (
+        select(GstReturn.period)
+        .where(
+            GstReturn.organization_id == org_id,
+            GstReturn.gst_registration_id == gst_registration_id,
+            GstReturn.return_type == "gstr3b",
+            GstReturn.period > period,
+            GstReturn.deleted_at.is_(None),
+        )
+        .order_by(GstReturn.period)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def gstr3b_pending_periods_before(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, period: str
+) -> list[str]:
+    """Every `gstr3b` period for this registration, earlier than `period`, that has been
+    generated but not yet filed — the periods that must be filed before `period` may be generated
+    or filed itself.
+
+    A period this platform was simply never asked to generate is not "pending": an organization
+    that onboarded mid-year has no earlier rows at all, and that is not this platform's problem to
+    refuse. Only a period that *exists* and is not `filed` blocks the one after it — the exact
+    shape of the double-utilisation defect this check exists to close: generating September while
+    August sat generated-but-unfiled let both periods utilise the same brought-forward credit.
+    """
+    stmt = (
+        select(GstReturn.period)
+        .where(
+            GstReturn.organization_id == org_id,
+            GstReturn.gst_registration_id == gst_registration_id,
+            GstReturn.return_type == "gstr3b",
+            GstReturn.period < period,
+            GstReturn.status != "filed",
+            GstReturn.deleted_at.is_(None),
+        )
+        .order_by(GstReturn.period)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
 async def return_transitions(
     session: AsyncSession, org_id: uuid.UUID, return_id: uuid.UUID
 ) -> list[GstReturnTransition]:
@@ -1522,22 +1972,308 @@ def to_return_transition_out(row: GstReturnTransition) -> GstReturnTransitionOut
     return GstReturnTransitionOut.model_validate(row)
 
 
+def _sections_model_for(return_type: str) -> type[Gstr1Sections] | type[Gstr3bSections]:
+    """Which contract a return's snapshot validates against. The two tables share nothing a
+    discriminated union could read off the JSONB itself, so `return_type` is the discriminator."""
+    return Gstr3bSections if return_type == "gstr3b" else Gstr1Sections
+
+
 async def return_detail(
     session: AsyncSession, org_id: uuid.UUID, ret: GstReturn
 ) -> GstReturnDetail:
     """The return, its snapshot and its trail.
 
-    The snapshot is re-validated through `Gstr1Sections` on the way out rather than handed back
-    as raw JSON: a snapshot written by an older revision of this service must either satisfy the
-    contract it is served under or fail loudly here, not reach a screen as a shape nothing
-    describes.
+    The snapshot is re-validated through `Gstr1Sections`/`Gstr3bSections` on the way out rather
+    than handed back as raw JSON: a snapshot written by an older revision of this service must
+    either satisfy the contract it is served under or fail loudly here, not reach a screen as a
+    shape nothing describes.
     """
     transitions = await return_transitions(session, org_id, ret.id)
+    model = _sections_model_for(ret.return_type)
     return GstReturnDetail(
         ret=to_return_out(ret),
-        sections=Gstr1Sections.model_validate(ret.sections) if ret.sections else None,
+        sections=model.model_validate(ret.sections) if ret.sections else None,
         transitions=[to_return_transition_out(t) for t in transitions],
     )
+
+
+# --------------------------------------------------------------------- the ITC ledger
+# The reads behind GSTR-3B's Table 4 and Table 6.1, and the ledger's own list/balance surface.
+# Every posting is written by `services` in the same transaction as the decision or the filing
+# that produced it; nothing here writes.
+
+_ITC_HEADS: tuple[str, ...] = domain.ITC_TAX_HEAD_ORDER
+
+
+def itc_ledger_stmt(
+    ctx: ScopeContext,
+    *,
+    gst_registration_id: uuid.UUID | None = None,
+    period: str | None = None,
+    tax_head: str | None = None,
+    kind: str | None = None,
+) -> Select[Any]:
+    """Scope-filtered ledger list, newest posting first."""
+    stmt = select(ItcLedgerEntry).where(
+        ItcLedgerEntry.organization_id == ctx.organization_id,
+        ItcLedgerEntry.deleted_at.is_(None),
+    )
+    stmt = ctx.apply(stmt, owner_col=ItcLedgerEntry.id)
+    if gst_registration_id:
+        stmt = stmt.where(ItcLedgerEntry.gst_registration_id == gst_registration_id)
+    if period:
+        stmt = stmt.where(ItcLedgerEntry.period == period)
+    if tax_head:
+        stmt = stmt.where(ItcLedgerEntry.tax_head == tax_head)
+    if kind:
+        stmt = stmt.where(ItcLedgerEntry.kind == kind)
+    return stmt.order_by(ItcLedgerEntry.posted_at.desc(), ItcLedgerEntry.created_at.desc())
+
+
+def to_itc_ledger_entry_out(row: ItcLedgerEntry) -> ItcLedgerEntryOut:
+    return ItcLedgerEntryOut.model_validate(row)
+
+
+async def _itc_amounts_by_head(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    gst_registration_id: uuid.UUID,
+    *,
+    kind: str | None = None,
+    period: str | None = None,
+    period_before: str | None = None,
+) -> domain.TaxHeadAmounts:
+    """`SUM(amount_minor)` per tax head, filtered the way each caller below needs it — grouped in
+    SQL rather than pulled row by row, so a registration's whole history is one query."""
+    stmt = select(
+        ItcLedgerEntry.tax_head, func.coalesce(func.sum(ItcLedgerEntry.amount_minor), 0)
+    ).where(
+        ItcLedgerEntry.organization_id == org_id,
+        ItcLedgerEntry.gst_registration_id == gst_registration_id,
+        ItcLedgerEntry.deleted_at.is_(None),
+    )
+    if kind:
+        stmt = stmt.where(ItcLedgerEntry.kind == kind)
+    if period:
+        stmt = stmt.where(ItcLedgerEntry.period == period)
+    if period_before:
+        stmt = stmt.where(ItcLedgerEntry.period < period_before)
+    stmt = stmt.group_by(ItcLedgerEntry.tax_head)
+    totals = {head: int(amount) for head, amount in (await session.execute(stmt)).all()}
+    return domain.TaxHeadAmounts(
+        igst_minor=totals.get("igst", 0),
+        cgst_minor=totals.get("cgst", 0),
+        sgst_minor=totals.get("sgst", 0),
+        cess_minor=totals.get("cess", 0),
+    )
+
+
+async def itc_brought_forward(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, period: str
+) -> domain.TaxHeadAmounts:
+    """The ledger's balance carried into `period` — every posting of every kind from an earlier
+    period, summed. What Table 6.1 has *on top of* the period's own net eligible credit."""
+    return await _itc_amounts_by_head(session, org_id, gst_registration_id, period_before=period)
+
+
+async def itc_period_movement(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, period: str
+) -> tuple[domain.TaxHeadAmounts, domain.TaxHeadAmounts]:
+    """`(accrued, reversed)` for exactly this period — Table 4A(5) and 4B(1)."""
+    accrued = await _itc_amounts_by_head(
+        session, org_id, gst_registration_id, kind="accrual", period=period
+    )
+    reversed_ = await _itc_amounts_by_head(
+        session, org_id, gst_registration_id, kind="reversal", period=period
+    )
+    # Reversal rows are posted negative so the ledger's own balance needs no case split; a GSTR-3B
+    # table declares a reversal as a positive figure being taken back, so the sign flips here, at
+    # the read boundary, rather than in the ledger itself.
+    reversed_ = domain.TaxHeadAmounts(
+        igst_minor=-reversed_.igst_minor,
+        cgst_minor=-reversed_.cgst_minor,
+        sgst_minor=-reversed_.sgst_minor,
+        cess_minor=-reversed_.cess_minor,
+    )
+    return accrued, reversed_
+
+
+async def itc_document_net_accrued(
+    session: AsyncSession, org_id: uuid.UUID, ims_document_id: uuid.UUID
+) -> domain.TaxHeadAmounts:
+    """One document's net standing on the ledger — every accrual it ever posted, less every
+    reversal already posted against it. What a further reversal must exactly mirror, so a
+    document's credit can never be withdrawn twice or withdrawn past zero.
+
+    A ledger row's `source_id` is the **decision** that produced it, not the document — a document
+    accepted, rejected and accepted again posts a fresh accrual each time, keyed on the decision
+    that made it, and `source_ref`'s uniqueness depends on that. So finding a document's net
+    standing means going by way of its decision history rather than a direct filter.
+    """
+    decisions = await decisions_for_document(session, org_id, ims_document_id)
+    if not decisions:
+        return domain.ZERO_ITC
+    stmt = (
+        select(ItcLedgerEntry.tax_head, func.coalesce(func.sum(ItcLedgerEntry.amount_minor), 0))
+        .where(
+            ItcLedgerEntry.organization_id == org_id,
+            ItcLedgerEntry.source_type == "ims_decision",
+            ItcLedgerEntry.source_id.in_([d.id for d in decisions]),
+            ItcLedgerEntry.kind.in_(("accrual", "reversal")),
+            ItcLedgerEntry.deleted_at.is_(None),
+        )
+        .group_by(ItcLedgerEntry.tax_head)
+    )
+    totals = {head: int(amount) for head, amount in (await session.execute(stmt)).all()}
+    return domain.TaxHeadAmounts(
+        igst_minor=totals.get("igst", 0),
+        cgst_minor=totals.get("cgst", 0),
+        sgst_minor=totals.get("sgst", 0),
+        cess_minor=totals.get("cess", 0),
+    )
+
+
+async def itc_blocked_amounts_for_period(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, period: str
+) -> domain.TaxHeadAmounts:
+    """Table 4D(1), informational: the tax on accepted documents whose declared category is
+    blocked under s. 17(5), and which therefore posted **no** accrual at all, landing in `period`.
+
+    Not read off the ledger — a blocked document leaves no row there by design — but off
+    `ims_documents` joined to each one's newest decision, which is where the category the person
+    asserted actually lives. Keyed on the **claim period** the same way a real accrual would be,
+    not the document's own reported period: a blocked document decided after its own period's
+    return has already been filed would, had it been eligible, have accrued into the next open
+    period — so its blocked figure belongs there too, for the same reason. Every accepted document
+    up to and including `period` is a candidate, since a late decision can redirect forward past
+    several already-filed periods.
+    """
+    candidates = [
+        d
+        for d in await all_ims_documents(session, org_id)
+        if d.status == "accepted" and d.period <= period
+    ]
+    if not candidates:
+        return domain.ZERO_ITC
+    decisions = await latest_decisions(session, org_id, [d.id for d in candidates])
+    total = domain.ZERO_ITC
+    for document in candidates:
+        decision = decisions.get(document.id)
+        category = decision.expense_category if decision is not None else "general"
+        if domain.is_itc_eligible(category):
+            continue
+        claim_period = await claim_period_for(session, org_id, gst_registration_id, document.period)
+        if claim_period != period:
+            continue
+        # A credit note reduces what a supplier billed, so a blocked one would have reduced
+        # credit, not added to it — the same sign convention `services.record_ims_decision`
+        # applies to a real accrual.
+        sign = -1 if document.document_type == "credit_note" else 1
+        total = total + domain.TaxHeadAmounts(
+            igst_minor=sign * document.igst_minor,
+            cgst_minor=sign * document.cgst_minor,
+            sgst_minor=sign * document.sgst_minor,
+        )
+    return total
+
+
+def to_tax_head_amounts_out(amounts: domain.TaxHeadAmounts) -> TaxHeadAmountsOut:
+    return TaxHeadAmountsOut(
+        igst_minor=amounts.igst_minor,
+        cgst_minor=amounts.cgst_minor,
+        sgst_minor=amounts.sgst_minor,
+        cess_minor=amounts.cess_minor,
+        total_minor=amounts.total_minor,
+    )
+
+
+def to_gstr3b_sections(ret: domain.Gstr3bReturn) -> Gstr3bSections:
+    """The assembled GSTR-3B, on the wire — and the exact shape the snapshot is stored in."""
+    return Gstr3bSections(
+        outward=Gstr3bOutwardOut(
+            taxable_supplies=to_tax_head_amounts_out(ret.outward.taxable_supplies),
+            outward_taxable_minor=ret.outward.outward_taxable_minor,
+            zero_rated=to_tax_head_amounts_out(ret.outward.zero_rated),
+            zero_rated_taxable_minor=ret.outward.zero_rated_taxable_minor,
+            nil_rated_taxable_minor=ret.outward.nil_rated_taxable_minor,
+            reverse_charge_inward_taxable_minor=ret.outward.reverse_charge_inward_taxable_minor,
+            non_gst_taxable_minor=ret.outward.non_gst_taxable_minor,
+            outward_reverse_charge=to_tax_head_amounts_out(ret.outward.outward_reverse_charge),
+            outward_reverse_charge_taxable_minor=ret.outward.outward_reverse_charge_taxable_minor,
+        ),
+        itc=Gstr3bItcOut(
+            available=to_tax_head_amounts_out(ret.itc.available),
+            reversed_section_17_5=to_tax_head_amounts_out(ret.itc.reversed_section_17_5),
+            reversed_other=to_tax_head_amounts_out(ret.itc.reversed_other),
+            reclaimed=to_tax_head_amounts_out(ret.itc.reclaimed),
+            ineligible_other=to_tax_head_amounts_out(ret.itc.ineligible_other),
+            total_reversed=to_tax_head_amounts_out(ret.itc.total_reversed),
+            net_eligible=to_tax_head_amounts_out(ret.itc.net_eligible),
+        ),
+        itc_brought_forward=to_tax_head_amounts_out(ret.itc_brought_forward),
+        payment=Gstr3bPaymentOut(
+            liability=to_tax_head_amounts_out(ret.payment.liability),
+            utilisation=[
+                UtilisationLineOut(
+                    head=line.head, against=line.against, amount_minor=line.amount_minor
+                )
+                for line in ret.payment.utilisation.lines
+            ],
+            credit_remaining=to_tax_head_amounts_out(ret.payment.utilisation.credit_remaining),
+            cash_payable=to_tax_head_amounts_out(ret.payment.cash_payable),
+            excess_liability=to_tax_head_amounts_out(ret.payment.utilisation.excess_liability),
+            credit_deficit=to_tax_head_amounts_out(ret.payment.utilisation.credit_deficit),
+        ),
+    )
+
+
+async def itc_balance(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID, period: str
+) -> ItcBalanceOut:
+    """The ledger's position for one registration as of the end of `period` — brought-forward plus
+    every posting of every kind made *in* that period, per head."""
+    brought_forward = await itc_brought_forward(session, org_id, gst_registration_id, period)
+    accrued, reversed_ = await itc_period_movement(session, org_id, gst_registration_id, period)
+    utilised = await _itc_amounts_by_head(
+        session, org_id, gst_registration_id, kind="utilisation", period=period
+    )
+    heads = []
+    total = 0
+    for head in _ITC_HEADS:
+        accrued_h = accrued.for_head(head)
+        reversed_h = reversed_.for_head(head)
+        utilised_h = -utilised.for_head(head)
+        balance_h = brought_forward.for_head(head) + accrued_h - reversed_h - utilised_h
+        heads.append(
+            ItcHeadBalanceOut(
+                tax_head=head,
+                accrued_minor=accrued_h,
+                reversed_minor=reversed_h,
+                utilised_minor=utilised_h,
+                balance_minor=balance_h,
+            )
+        )
+        total += balance_h
+    return ItcBalanceOut(
+        gst_registration_id=gst_registration_id,
+        period=period,
+        heads=heads,
+        total_balance_minor=total,
+    )
+
+
+async def itc_total_balance(
+    session: AsyncSession, org_id: uuid.UUID, gst_registration_id: uuid.UUID
+) -> domain.TaxHeadAmounts:
+    """The registration's whole ledger balance, right now — every accrual, reversal and
+    utilisation ever posted, with no period boundary at all.
+
+    The simplest statement of "is there enough credit to spend" there is, and deliberately not
+    scoped to any period: `file_return`'s pre-posting safety net uses this rather than a
+    period-scoped balance, so it stays correct even if the period-scoped bookkeeping elsewhere
+    ever disagrees with it — the two are independent checks on purpose.
+    """
+    return await _itc_amounts_by_head(session, org_id, gst_registration_id)
 
 
 # --------------------------------------------------------------------- e-Way bills
@@ -1554,7 +2290,7 @@ async def eway_bills_for_invoice(
             EwayBill.invoice_id == invoice_id,
             EwayBill.deleted_at.is_(None),
         )
-        .order_by(EwayBill.attempted_at.desc(), EwayBill.created_at.desc())
+        .order_by(*_newest_first(EwayBill))
     )
     return list((await session.execute(stmt)).scalars().all())
 
@@ -1574,7 +2310,7 @@ async def latest_eway_bills(
             EwayBill.deleted_at.is_(None),
         )
         .distinct(EwayBill.invoice_id)
-        .order_by(EwayBill.invoice_id, EwayBill.attempted_at.desc(), EwayBill.created_at.desc())
+        .order_by(EwayBill.invoice_id, *_newest_first(EwayBill))
     )
     latest = {row.invoice_id: row for row in (await session.execute(latest_stmt)).scalars().all()}
     count_stmt = (
@@ -1583,6 +2319,7 @@ async def latest_eway_bills(
             EwayBill.organization_id == org_id,
             EwayBill.invoice_id.in_(invoice_ids),
             EwayBill.deleted_at.is_(None),
+            EwayBill.status.not_in(CLAIM_STATUSES),
         )
         .group_by(EwayBill.invoice_id)
     )
@@ -1606,6 +2343,25 @@ def live_eway_bill(bills: list[EwayBill], *, at: datetime | None = None) -> Eway
         if bill.status == "generated":
             if bill.valid_until is not None and domain.eway_expired(bill.valid_until, now):
                 return None
+            return bill
+    return None
+
+
+def generation_under_claim(bills: list[EwayBill]) -> EwayBill | None:
+    """The `generated` row a `cancelling` claim is withdrawing — the newest one not already
+    withdrawn, **regardless of expiry**.
+
+    Not `live_eway_bill`: the claim checked the window and the validity when it was made, and a
+    resumed withdrawal (`app/cron.py`) must ask the portal about the bill it claimed even if the
+    clock has since run past its validity — the portal may already have done the work, and only
+    it can say. The claim rows themselves carry no bill number (the partial unique index on
+    `(org, eway_bill_no)` would refuse a second row claiming it), so this is how the number is
+    found again.
+    """
+    for bill in bills:
+        if bill.status == "cancelled":
+            return None
+        if bill.status == "generated":
             return bill
     return None
 
@@ -1678,11 +2434,14 @@ def to_eway_state(
         valid_from=latest.valid_from,
         valid_until=latest.valid_until,
         # A refusal stands until the consignment changes, and an expired bill cannot be revived —
-        # both are the platform having stopped, which is what a screen needs to say out loud.
-        terminal=effective in ("failed", "cancelled", "expired"),
+        # both are the platform having stopped, which is what a screen needs to say out loud. A
+        # failed *withdrawal* (a `failed` row carrying the bill's `valid_from`) is neither: the
+        # bill stands, and `remedy` says what can still be done.
+        terminal=effective in ("failed", "cancelled", "expired")
+        and not (effective == "failed" and latest.valid_from is not None),
         cancellable_until=(
             domain.eway_cancellation_deadline(latest.valid_from)
-            if effective == "generated" and latest.valid_from is not None
+            if effective in ("generated", "failed") and latest.valid_from is not None
             else None
         ),
         remedy=domain.eway_remedy_for(status=effective, generated_at=latest.valid_from, at=now),
@@ -1694,17 +2453,22 @@ def eway_bills_stmt(
     ctx: ScopeContext, *, status: str | None = None, invoice_id: uuid.UUID | None = None
 ) -> Select[Any]:
     """Scope-filtered e-Way attempts, newest first. `status` filters the **stored** value; an
-    expired bill is stored as `generated`, so a caller after those reads `effective_status`."""
+    expired bill is stored as `generated`, so a caller after those reads `effective_status`.
+
+    A claim row (`submitting`, `cancelling`) is listed only while it is its document's newest —
+    an attempt in flight — never once answered; the same rule `visible_attempts` applies to one
+    document's history, in SQL so the page and its total agree."""
     stmt = select(EwayBill).where(
         EwayBill.organization_id == ctx.organization_id,
         EwayBill.deleted_at.is_(None),
+        or_(EwayBill.status.not_in(CLAIM_STATUSES), _is_newest(EwayBill)),
     )
     stmt = ctx.apply(stmt, owner_col=EwayBill.id)
     if status:
         stmt = stmt.where(EwayBill.status == status)
     if invoice_id:
         stmt = stmt.where(EwayBill.invoice_id == invoice_id)
-    return stmt.order_by(EwayBill.attempted_at.desc(), EwayBill.created_at.desc())
+    return stmt.order_by(*_newest_first(EwayBill))
 
 
 async def eway_bills_with_invoice(

@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import settings
 from app.main import app
-from app.models import SCHEMA, Company
+from app.models import SCHEMA, Company, Owner
 from platform_core.auth import get_principal
 from platform_core.db import TENANT_GUC
 from tests.helpers import principal_for
@@ -219,3 +219,31 @@ class TestCrossTenantOverHttp:
             app.dependency_overrides.pop(get_principal, None)
         assert still_there.status_code == 200
         assert still_there.json()["title"] != "Nowhere"
+
+    async def test_org_b_cannot_patch_org_as_owner(self, client, org_id, admin_session) -> None:
+        """The owner directory is per-organization reference data — naming another
+        organization's rep by id, even to just edit their display role, must read as
+        not-found, the same as every other cross-tenant PATCH."""
+        other_org = uuid.uuid4()
+        other_owner_id = uuid.uuid4()
+        async with admin_session.begin():
+            await admin_session.execute(
+                Owner.__table__.insert().values(
+                    id=other_owner_id,
+                    organization_id=other_org,
+                    full_name="Someone Else's Rep",
+                    email="someone-elses-rep@example.com",
+                    role="",
+                    is_active=True,
+                )
+            )
+
+        outsider = principal_for(org_id, ["crm.book.owner.write:ORG"], subject_ref=uuid.uuid4())
+        app.dependency_overrides[get_principal] = lambda: outsider
+        try:
+            response = await client.patch(
+                f"/api/v1/customers/owners/{other_owner_id}", json={"role": "Nowhere"}
+            )
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+        assert response.status_code == 404

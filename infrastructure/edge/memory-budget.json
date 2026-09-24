@@ -1,0 +1,331 @@
+{
+  "$comment": [
+    "The production edge's memory budget (ADR-0013's memory-budget erratum, 2026-09-23; corrected by",
+    "the memory-headroom slice's review rounds 1-3, 2026-09-24). The box is one Azure VM, 2 vCPU,",
+    "MemTotal 3862 MB (read on the box, 2026-09-24) plus a swapfile. The erratum recorded that the",
+    "owner would not resize it, hence fewer processes rather than a bigger box; the release this file",
+    "ships with is over the hard line even so, which makes resizing the first option the RUNBOOK asks",
+    "the owner to reconsider.",
+    "",
+    "`expected_rss_mb` is a steady-state (idle, no load) planning figure in MiB (kB / 1024, the unit",
+    "/proc/meminfo's MemTotal is compared in), not a ceiling — the ceilings are `mem_limit_mb` /",
+    "`mem_reservation_mb`, applied in compose.prod.yml.",
+    "",
+    "**How `kinds` were measured** (round 3, from the merged tree): each service's production",
+    "Dockerfile was built (`docker build`, the same file compose.prod.yml uses) and run against an",
+    "isolated Postgres/Redis/RabbitMQ (a throwaway stack from tools/dev-bootstrap/init-db.sql, never",
+    "the shared dev database) with compose's MALLOC_ARENA_MAX=2, trim threshold and pool sizes, warmed",
+    "with 40 in-container /health probes for an API, then `/proc/1/status` VmRSS read after ~40 s",
+    "idle. Each kind's `source` and `measured_mib` list the images. api 98 (mean of ten readings of",
+    "seven images 97.3, max 102.3), background 90 (mean 89.4 of four), ops_monitor 93 (one reading,",
+    "92.3). They were 85 / 85 / 48: the first was confirmed by one image, the second was a guess",
+    "corrected once already (it was 42), the third was supplied unmeasured by the slice that added",
+    "the container. **These are arm64 Docker Desktop figures and the box is amd64: read `free -m`",
+    "and `docker stats --no-stream` on the box before treating any total here as exact.** The",
+    "datastores (caddy, postgres, rabbitmq, redis, minio) were NOT re-measured and postgres is the",
+    "one most likely to move.",
+    "",
+    "**What the re-pricing did to the release** (ten profiles, merged tree): 4112 MB at the old",
+    "prices, 4581 MB at these — 118.6% of 3862 MB, 719 MB over MemTotal (the +469 is 28 APIs x 13,",
+    "12 background x 5 and ops-monitor +45). The running set on the box today (the production ref's",
+    "40 services) prices at 4044 MB / 104.7% — it was reported as 3494 MB / 90% by summing without",
+    "`approval-cron` and `subscription-cron`, which had no entry here and are priced as",
+    "`kinds.background` by the rule below (3664 MB / 94.9% at the old prices). With `planned` the",
+    "ten profiles project to 5537 MB / 143.4%. See ADR-0013 'Fix round 3' and the RUNBOOK's memory",
+    "section for the per-profile table; `test_runbook_ceiling_example_is_the_number_preflight_would_",
+    "print` keeps the RUNBOOK's worked example equal to what preflight prints.",
+    "",
+    "**How the gate reads this file.** `preflight.sh` prices the POST-deploy set — containers running,",
+    "restarting or paused that the new compose still defines, unioned with what the declared profiles",
+    "configure (`post_deploy_compute`, lib/memory-budget.sh, which fails closed: a compose or docker",
+    "failure is a FAILED row, never a zero) — and refuses a deploy over `hard_budget_percent` unless",
+    "the owner has set `EDGE_BUDGET_ACCEPTED_MB` in .env to a number at or above the total and no",
+    "greater than `max_accepted_percent` of MemTotal (`apply_accepted_ceiling`). A running container",
+    "with no entry in `containers` is priced at `kinds.background` and named in a warning, never",
+    "treated as free.",
+    "",
+    "operations-cron, storefront-cron and document-cron no longer exist: their sweeps run inside",
+    "their own API container (RUN_SWEEPS_IN_API), 3 x 90 MB, at a measured cost of ~1 MiB or less per",
+    "API. Measured with each sweep on its own one-connection bulkhead engine, sweep off -> on:",
+    "operations 97,324 -> 97,820 kB, storefront 100,420 -> 101,324 kB, document 104,820 -> 104,648 kB.",
+    "",
+    "`tests/infra/test_compose_memory_budget.py` is the gate: every service compose.prod.yml",
+    "defines must have a `containers` entry here, and vice versa, or the test fails by name.",
+    "`preflight.sh` sums this file against the box's live /proc/meminfo through",
+    "`infrastructure/edge/lib/memory_budget_totals.py` and",
+    "`infrastructure/edge/lib/memory-budget.sh`'s `memory_budget_verdict`.",
+    "",
+    "`planned` (below `containers`) prices services that do not exist in compose.prod.yml yet —",
+    "backlog items with a rough shape (an api, a worker) but no code. `preflight.sh` and",
+    "`tests/infra/test_planned_headroom.py` report it as *projected* headroom, never as part of",
+    "the enforced budget: a placeholder must never be able to fail a real deploy. **Delete a",
+    "placeholder the day its container lands in `containers`** — `test_planned_and_containers_never_",
+    "overlap` fails otherwise (ops-monitor, lead-api and customer-worker were each priced twice in",
+    "every projection until it existed). An `-api` placeholder names the compose service it will",
+    "become in `container`, so that test can compare names."
+  ],
+
+  "host": {
+    "mem_total_mb_reference": 3862,
+    "soft_budget_percent": 85,
+    "hard_budget_percent": 100,
+    "max_accepted_percent": 125,
+    "notes": "mem_total_mb_reference documents the box this was measured against (3862 MB, from a read-only look at the production VM during review fix round 2 — it was 3800, a round number, before that); preflight.sh reads the box's own /proc/meminfo at deploy time and does not use this number. Soft: warn and let the deploy proceed — the box is allowed to run tight. Hard: refuse — past this, the kernel starts reclaiming from things that must not be reclaimed from (see datastores' mem_reservation) or the OOM killer picks a victim. Raised from 80 to 85 by the memory-headroom slice (2026-09-23) to match the 15%-margin target the backlog set for planned services — see the ADR-0013 addendum. max_accepted_percent (round 3): the most any EDGE_BUDGET_ACCEPTED_MB can cover, as a percentage of MemTotal. preflight FAILs on a ceiling above it (a 38940-for-3894 typo would otherwise be a blank cheque) and refuses any post-deploy total above it even with a ceiling: a quarter more than the box has is where the kernel stops swapping and starts killing, which is not an overcommit anyone can sign for in a .env file."
+  },
+
+  "kinds": {
+    "api": {
+      "expected_rss_mb": 98,
+      "mem_limit_mb": 256,
+      "source": "RE-PRICED (memory-headroom slice, review round 3, 2026-09-24) from a measurement of the real production images built from the merged tree, run against an isolated Postgres/Redis/RabbitMQ (never the shared dev stack), warmed with 40 in-container /health probes, /proc/1/status VmRSS read after ~40 s idle, MALLOC_ARENA_MAX=2 and the compose pool sizes: account 97.1, lead 92.2, operations 95.5, storefront 99.2, document 102.3, notification 100.6, customer 91.7 MiB (kB / 1024). Earlier round-2 runs of operations/storefront/document gave 94.7 / 97.7 / 101.8. Ten measurements of seven images: mean 97.3, max 102.3 MiB; priced at 98 (the mean, rounded up to a whole MiB). It was 85, an estimate confirmed only by one 92-95 MB read of `account` — the API images are ~15% heavier than that. These are arm64 Docker Desktop figures; the box is amd64. Cross-check `docker stats --no-stream` on the box before treating any of this as exact. mem_limit stays 256m (~2.6x expected idle).",
+      "measured_mib": {
+        "account": 97.1,
+        "lead": 92.2,
+        "operations": 95.5,
+        "storefront": 99.2,
+        "document": 102.3,
+        "notification": 100.6,
+        "customer": 91.7
+      }
+    },
+    "background": {
+      "expected_rss_mb": 90,
+      "mem_limit_mb": 192,
+      "source": "RE-PRICED (memory-headroom slice, review round 3, 2026-09-24), same method as kinds.api, images built from the merged tree: account-worker (./bin/worker) 89.6, notification-worker 92.1, customer-worker 84.6, edge-relay (python -m platform_core.edge_relay, EDGE_RELAY_SCHEMAS = compose's full list) 91.4 MiB. Mean 89.4, priced at 90 (rounded up). Was 85 (round 2), and 42 before that — a guess (compose comment '~35 MB each') never measured; a background process imports nearly the same module graph an API does and is not meaningfully lighter. arm64 figures; cross-check on the box. mem_limit stays 192m: ~2.1x expected idle, a real but shrinking fuse.",
+      "measured_mib": {
+        "account-worker": 89.6,
+        "notification-worker": 92.1,
+        "customer-worker": 84.6,
+        "edge-relay": 91.4
+      }
+    },
+    "ops_monitor": {
+      "expected_rss_mb": 93,
+      "mem_limit_mb": 128,
+      "source": "MEASURED (memory-headroom slice, review round 3, 2026-09-24): the `product` image running `python -m platform_core.ops_monitor` idled at 92.3 MiB VmRSS (94,476 kB), same method as kinds.api. slice/ops-monitor priced it at 48 MB ('a shade heavier than a plain background consumer') — it is not lighter than one: it imports the same module graph plus an HTTP server. The 128m mem_limit that slice chose to keep the total under the hard line leaves ~36 MiB of headroom over this idle figure (1.4x); a reduced-headroom fuse that was tuned against the wrong number. Not raised here (that container's own block belongs to the slice that owns it) — listed in the review-round-3 report for that owner. arm64 figure; cross-check on the box.",
+      "measured_mib": {
+        "ops-monitor": 92.3
+      }
+    }
+  },
+
+  "datastores": {
+    "caddy": {
+      "expected_rss_mb": 64,
+      "mem_limit_mb": 192,
+      "mem_reservation_mb": 96,
+      "source": "No prior measurement existed (caddy had no mem_limit at all before this erratum); estimated from a handful of proxied domains and streamed (not buffered) uploads. Revisit if TLS_PLATFORM_HOSTS or the storefront domain count grows an order of magnitude."
+    },
+    "postgres": {
+      "expected_rss_mb": 350,
+      "mem_limit_mb": 768,
+      "mem_reservation_mb": 512,
+      "source": "compose.prod.yml's postgres command comment: shared_buffers=256MB plus per-backend work_mem across ~25 client processes and OS page cache. mem_reservation protects it from host-wide reclaim ahead of the squeezable api/background containers, which carry none."
+    },
+    "rabbitmq": {
+      "expected_rss_mb": 150,
+      "mem_limit_mb": 256,
+      "mem_reservation_mb": 192,
+      "source": "Erlang VM baseline plus RabbitMQ's own runtime, idle (no -management plugin, per compose.prod.yml's own comment on that choice). rabbitmq/rabbitmq.conf sets vm_memory_high_watermark.relative against this same mem_limit so the broker's own alarm fires inside it."
+    },
+    "redis": {
+      "expected_rss_mb": 40,
+      "mem_limit_mb": 128,
+      "mem_reservation_mb": 64,
+      "source": "maxmemory 64mb (compose.prod.yml) bounds the dataset; this adds client buffers, the AOF rewrite fork and Redis's own bookkeeping. See compose.prod.yml's redis command comment for what is actually stored and why the eviction policy is volatile-lru, not allkeys-lru."
+    },
+    "minio": {
+      "expected_rss_mb": 60,
+      "mem_limit_mb": 128,
+      "mem_reservation_mb": 64,
+      "source": "compose.prod.yml's existing minio mem_limit comment: one small bucket, console disabled, no listing traffic."
+    },
+    "minio-init": {
+      "expected_rss_mb": 16,
+      "mem_limit_mb": 64,
+      "steady_state": false,
+      "source": "A one-shot `mc` client that runs for a few seconds and exits (labelled opsgrids.oneshot=true) — excluded from steady-state sums by memory_budget_totals.py, but still fused."
+    }
+  },
+
+  "profiles": [
+    "storefront",
+    "inventory",
+    "hrms",
+    "crm",
+    "pulseboard",
+    "projects",
+    "support",
+    "marketing",
+    "finance",
+    "itsm"
+  ],
+
+  "containers": {
+    "caddy": { "kind": "datastore", "datastore": "caddy", "profile": null },
+    "postgres": { "kind": "datastore", "datastore": "postgres", "profile": null },
+    "rabbitmq": { "kind": "datastore", "datastore": "rabbitmq", "profile": null },
+    "redis": { "kind": "datastore", "datastore": "redis", "profile": null },
+
+    "auth": { "kind": "api", "profile": null },
+    "account": { "kind": "api", "profile": null },
+    "product": { "kind": "api", "profile": null },
+    "app-gateway": { "kind": "api", "profile": null },
+    "catalog": { "kind": "api", "profile": null },
+    "subscription": { "kind": "api", "profile": null },
+    "billing": { "kind": "api", "profile": null },
+    "metering": { "kind": "api", "profile": null },
+    "payment": { "kind": "api", "profile": null },
+    "notification": { "kind": "api", "profile": null },
+
+    "edge-relay": { "kind": "background", "profile": null },
+    "ops-monitor": { "kind": "ops_monitor", "profile": null },
+    "account-worker": {
+      "kind": "background",
+      "profile": null,
+      "note": "runs both the event consumer and the periodic domain re-verification sweep since ADR-0013's memory-budget erratum (2026-09-23) merged account-cron into it, the same merge subscription-worker already documents."
+    },
+    "product-worker": { "kind": "background", "profile": null },
+    "subscription-worker": {
+      "kind": "background",
+      "profile": null,
+      "note": "runs the payment-event consumer, the dunning sweep and the billing run (trial end, period roll, ADR-0005 addendum 2026-09-23) in one process since ADR-0013's memory-budget erratum (2026-09-23) merged subscription-cron into it."
+    },
+    "payment-worker": { "kind": "background", "profile": null },
+    "notification-worker": {
+      "kind": "background",
+      "profile": null,
+      "note": "runs the events consumer, the dispatcher and the campaign send driver since the memory-headroom slice (2026-09-23) merged notification-cron into it, the same shape ADR-0013's erratum already used for subscription-worker and approval-worker."
+    },
+
+    "minio": { "kind": "datastore", "datastore": "minio", "profile": "storefront" },
+    "minio-init": { "kind": "datastore", "datastore": "minio-init", "profile": "storefront" },
+    "storefront": {
+      "kind": "api",
+      "profile": "storefront",
+      "note": "runs the custom-domain sweep (DomainSweep) as a supervised background task since the memory-headroom slice's fix round 2 (2026-09-24) folded storefront-cron into it — RUN_SWEEPS_IN_API. No mem_limit change: a background sweep's own cost is already priced at the same 85 MB as an api container (kinds.background's own note), so absorbing one into an api container that was already going to cost 85 MB on its own does not, on these numbers, need a bigger ceiling — watch it in practice before assuming that holds forever."
+    },
+    "document": {
+      "kind": "api",
+      "profile": "storefront",
+      "note": "runs the purge sweep (PurgeSweep, retention only — never the orphan scan, which stays a manual, credentialed-by-hand operation for tenancy reasons — see app/main.py's own docstring) as a supervised background task since the memory-headroom slice's fix round 2 (2026-09-24) folded document-cron into it — RUN_SWEEPS_IN_API."
+    },
+
+    "operations": {
+      "kind": "api",
+      "profile": "inventory",
+      "note": "runs the nightly stock reconciliation (ReconcileSweep) as a supervised background task since the memory-headroom slice's fix round 2 (2026-09-24) folded operations-cron into it — RUN_SWEEPS_IN_API."
+    },
+
+    "approval": { "kind": "api", "profile": "hrms" },
+    "approval-worker": {
+      "kind": "background",
+      "profile": "hrms",
+      "note": "runs both the hierarchy/regularization consumer and the SLA escalation sweep since ADR-0013's memory-budget erratum (2026-09-23) merged approval-cron into it."
+    },
+    "employee": { "kind": "api", "profile": "hrms" },
+    "attendance": { "kind": "api", "profile": "hrms" },
+    "leave": { "kind": "api", "profile": "hrms" },
+    "leave-worker": { "kind": "background", "profile": "hrms" },
+    "attendance-worker": { "kind": "background", "profile": "hrms" },
+
+    "customer": { "kind": "api", "profile": "crm" },
+    "customer-worker": { "kind": "background", "profile": "crm" },
+    "deal": { "kind": "api", "profile": "crm" },
+    "lead": { "kind": "api", "profile": "crm" },
+
+    "project": { "kind": "api", "profile": "pulseboard" },
+    "timesheet": { "kind": "api", "profile": "pulseboard" },
+    "standup": { "kind": "api", "profile": "pulseboard" },
+
+    "projects": { "kind": "api", "profile": "projects" },
+    "support": { "kind": "api", "profile": "support" },
+    "marketing": { "kind": "api", "profile": "marketing" },
+
+    "finance": { "kind": "api", "profile": "finance" },
+    "finance-worker": { "kind": "background", "profile": "finance" },
+    "scheduler": { "kind": "background", "profile": "finance" },
+
+    "itsm": { "kind": "api", "profile": "itsm" }
+  },
+
+  "planned": {
+    "$comment": [
+      "Backlog items with no code and no compose.prod.yml entry yet, priced at their kind's",
+      "measured `expected_rss_mb` so `preflight.sh` and `tests/infra/test_planned_headroom.py`",
+      "can report projected headroom before a slice lands, not after. A name here is a rough",
+      "shape (api, background, or ops_monitor), not a commitment to exactly one container: the",
+      "slice that actually builds each of these replaces its placeholder with real `containers`",
+      "entries, which is when `test_every_compose_service_is_in_the_budget` starts pricing it for",
+      "real. Never summed into the enforced budget `expected_mb` preflight.sh refuses a deploy",
+      "over — only into the separate projected total this file's own header describes.",
+      "",
+      "M8 (review fix round 1, 2026-09-24): two items the coordinator named as 'incoming' are",
+      "deliberately NOT priced here — account-worker gaining a merged sweep (the same",
+      "subscription/approval/notification pattern) and subscription-worker gaining a 'billing-run'",
+      "step both land inside an EXISTING container, adding zero new ones. Pricing either here",
+      "would double-count: the container they land in is already priced in `containers`, at the",
+      "same `background` kind, regardless of how many loops run inside it (see kinds.background's",
+      "own note: a background process's cost is dominated by its imported module graph, not by",
+      "how many loops share the process). If a future merge ever needs a bigger `mem_limit` for",
+      "the container it lands in, that is a `containers`/`mem_limit_mb` edit, not a `planned` one."
+    ],
+    "payroll-api": {
+      "container": "payroll",
+      "kind": "api",
+      "profile": "hrms",
+      "note": "backlog: payroll, folded into HRMS. No service directory yet."
+    },
+    "payroll-worker": {
+      "kind": "background",
+      "profile": "hrms",
+      "note": "backlog: payroll's payslip/compliance run, assumed to need its own sweep the way approval and attendance do."
+    },
+    "recruit-api": {
+      "container": "recruit",
+      "kind": "api",
+      "profile": "hrms",
+      "note": "backlog: recruiting/ATS, folded into HRMS. No service directory yet."
+    },
+    "config-service-api": {
+      "container": "config",
+      "kind": "api",
+      "profile": null,
+      "note": "backlog: a platform config surface (feature flags / org-level settings) named core rather than product-profiled, since every product would read it. No service directory yet — priced against core so a future slice adding it to `containers` with `profile: null` matches this placeholder."
+    },
+    "operator-console-api": {
+      "container": "console",
+      "kind": "api",
+      "profile": null,
+      "note": "the operator/staff console backend (this repository's own slice/operator-console-backend branch) — internal tooling used across every product, assumed core rather than profiled."
+    },
+    "analytics-api": {
+      "container": "analytics",
+      "kind": "api",
+      "profile": "analytics",
+      "note": "backlog: cross-product analytics/reporting. New profile; no service directory yet."
+    },
+    "analytics-worker": {
+      "kind": "background",
+      "profile": "analytics",
+      "note": "backlog: analytics' rollup/aggregation sweep, assumed to run on a schedule against event data the way finance's e-Invoice retry does."
+    },
+    "marketplace-api": {
+      "container": "marketplace",
+      "kind": "api",
+      "profile": "marketplace",
+      "note": "backlog: a partner/integration marketplace. New profile; no service directory yet."
+    },
+    "workflow-api": {
+      "container": "workflow",
+      "kind": "api",
+      "profile": "workflow",
+      "note": "backlog: a cross-product workflow/automation engine. New profile; no service directory yet."
+    },
+    "workflow-worker": {
+      "kind": "background",
+      "profile": "workflow",
+      "note": "backlog: workflow's own event-triggered automation runs, assumed to need a consumer the way approval and subscription do."
+    }
+  }
+}

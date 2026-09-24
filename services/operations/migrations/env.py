@@ -80,7 +80,12 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 #: Append-only by privilege, at whichever revision the schema is at.
-APPEND_ONLY_TABLES = ("stock_movements", "inventory_ledger", "inventory_moves")
+APPEND_ONLY_TABLES = (
+    "stock_movements",
+    "inventory_ledger",
+    "inventory_moves",
+    "inventory_reservation_releases",
+)
 #: What the ledger reconciler's discovery reads cross-tenant (`app/cron.py`).
 RECONCILE_DISCOVERY_TABLES = ("inventory_balances", "inventory_ledger")
 

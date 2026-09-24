@@ -36,10 +36,12 @@ import asyncio
 import uuid
 from typing import Any
 
-from app import domain, services
+from app import domain, selectors, services
 from app.config import settings
+from app.contacts import ContactResolver, make_contact_resolver
 from app.models import ProcessedEvent
 from app.targets import TargetResolver, make_resolver
+from platform_core import pii
 from platform_core.db import assert_app_role, init_engine, session_scope
 from platform_core.events import EventConsumer, already_processed, mark_processed
 from platform_core.logging import get_logger
@@ -47,6 +49,15 @@ from platform_core.logging import get_logger
 log = get_logger("notification.consumers")
 
 consumer = EventConsumer(amqp_url=settings().rabbitmq_url, queue_name="notification.events")
+
+
+class ContactResolutionUnavailable(RuntimeError):
+    """The CRM could not be asked at all — raised so `EventConsumer`'s own redeliver-once-then-
+    dead-letter handling (`platform_core.events.EventConsumer._handle`) gives this a genuine
+    second attempt, rather than `fold_inbound_contact` silently acknowledging a message nothing
+    was actually resolved for. Never raised for "the CRM answered and it was nobody" — that is a
+    definite answer (`app.contacts.ContactResolution.answered=True, contact_id=None`) and is
+    written and marked processed like any other, not retried."""
 
 
 async def fold(envelope: dict[str, Any], resolve_target: TargetResolver | None = None) -> None:
@@ -110,12 +121,98 @@ async def expand_campaign_send(
     return outcome
 
 
-def register(resolve_target: TargetResolver | None = None) -> None:
+async def fold_inbound_contact(
+    envelope: dict[str, Any], resolve_contact: ContactResolver | None = None
+) -> None:
+    """Resolve the contact for one inbound WhatsApp conversation, idempotently.
+
+    A separate handler from `fold`, on the same event (`services.EVT_INBOUND_RECEIVED`) but
+    **not** the same idempotency row: that event's own fold (`fold_inbound_message`, run inside
+    the webhook request, not here) already durably wrote the conversation and message before this
+    ever runs, so this step's identity is the *contact resolution*, not the arrival of the
+    message. A derived id namespaced against the raw event id keeps the two folds from treating
+    each other's `processed_events` row as their own.
+
+    **Only a definite answer is marked processed.** `app/contacts.ContactResolution.answered`
+    tells "the CRM said nobody" (write `None`, mark processed — asking again would waste a call on
+    a question already settled) apart from "the CRM could not be asked" (write nothing, mark
+    nothing — a transient outage must not permanently erase a match a *later* run could still
+    make, and must not be confused with the ledger's own redelivery guard, which exists for a
+    message Meta sends twice, not for a lookup this service itself declined to finish).
+    """
+    event_id = uuid.UUID(str(envelope["event_id"]))
+    organization_id = uuid.UUID(str(envelope["organization_id"]))
+    payload = envelope.get("payload") or {}
+    conversation_id = uuid.UUID(str(payload["conversation_id"]))
+
+    # The envelope is the trusted tenant binding (it is what `session_scope` below binds the GUC
+    # to); the payload's own copy is a second statement of the same fact written by
+    # `fold_inbound_message`. The two must never disagree — if they do, something upstream is
+    # broken in a way worth refusing loudly rather than silently trusting whichever value is
+    # convenient.
+    payload_org = payload.get("organization_id")
+    if payload_org is not None and str(payload_org) != str(organization_id):
+        log.error(
+            "inbound.contact.envelope_payload_org_mismatch",
+            envelope_org=str(organization_id),
+        )
+        return
+
+    fold_id = uuid.uuid5(event_id, "contact_resolve")
+
+    async with session_scope(organization_id=organization_id) as session:
+        if await already_processed(session, ProcessedEvent, fold_id):
+            log.info("inbound.contact.redelivered", conversation_id=str(conversation_id))
+            return
+
+        if resolve_contact is None:
+            log.error("inbound.contact.no_resolver_configured")
+            return
+
+        conversation = await selectors.get_conversation(session, organization_id, conversation_id)
+        if conversation is None:
+            # Nothing to resolve a phone number for, and nothing to retry — the conversation this
+            # event named is gone (deleted, or a stale redelivery of an org that never had it).
+            return
+
+        phone = pii.open_sealed(conversation.wa_address_enc, settings=settings())
+        resolution = await resolve_contact(str(organization_id), phone)
+
+        if not resolution.answered:
+            # No definite answer — leave the conversation exactly as it is (including a contact
+            # id an earlier, successful run already wrote) and mark nothing processed. Raising
+            # rather than returning is what actually gets this a real second attempt: a bare
+            # `return` acked the message and the CRM being briefly unreachable turned into a
+            # contact this conversation would never resolve unless someone noticed and replayed
+            # it by hand. `EventConsumer` redelivers once and only dead-letters on a *second*
+            # failure, so this cannot hot-loop — the same mechanism a transient database error
+            # already relies on elsewhere in this service.
+            log.warning("inbound.contact.unanswered", conversation_id=str(conversation_id))
+            raise ContactResolutionUnavailable(
+                f"could not resolve a contact for conversation {conversation_id}"
+            )
+
+        await services.resolve_conversation_contact(
+            session,
+            organization_id=organization_id,
+            conversation_id=conversation_id,
+            contact_id=resolution.contact_id,
+        )
+        mark_processed(session, ProcessedEvent, fold_id, "notification.whatsapp.contact_resolved")
+
+    log.info("inbound.contact.resolved", matched=resolution.contact_id is not None)
+
+
+def register(
+    resolve_target: TargetResolver | None = None,
+    resolve_contact: ContactResolver | None = None,
+) -> None:
     """Bind every subscribable routing key to the one fold.
 
     The target resolver is injected rather than imported, the way console injects its price
     resolver: a rule that targets a contact needs an HTTP call to customer-service, and a test
-    should be able to substitute that without a network or a customer-service to talk to.
+    should be able to substitute that without a network or a customer-service to talk to. The
+    contact resolver is the same shape, in the other direction.
     """
 
     async def on_event(envelope: dict[str, Any]) -> None:
@@ -129,6 +226,11 @@ def register(resolve_target: TargetResolver | None = None) -> None:
 
     consumer.on(services.EVT_CAMPAIGN_SEND_REQUESTED)(on_campaign_send)
 
+    async def on_inbound_received(envelope: dict[str, Any]) -> None:
+        await fold_inbound_contact(envelope, resolve_contact)
+
+    consumer.on(services.EVT_INBOUND_RECEIVED)(on_inbound_received)
+
 
 async def main() -> None:
     cfg = settings()
@@ -137,7 +239,7 @@ async def main() -> None:
     # row-level security can bind this role. Started on the admin or outbox DSN by
     # mistake, RLS would be silently inert — refuse outside local (ADR-0002).
     await assert_app_role(engine, environment=cfg.environment)
-    register(make_resolver(cfg))
+    register(make_resolver(cfg), make_contact_resolver(cfg))
     await consumer.run()
 
 

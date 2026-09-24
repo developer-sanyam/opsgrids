@@ -27,8 +27,8 @@ deployed only by GitHub Actions from green `main`.
 
 | # | Slice | Status | Why this order |
 |---|---|---|---|
-| 1 | **Storefront custom-domain sweep** (`services/storefront/app/cron.py`) | In progress | `compose.prod.yml` already defines `storefront-cron` running `bin/cron`, and the module it runs does not exist. A merchant's custom domain can never become verified. ADR-0012 specifies the behaviour. |
-| 2 | **Document service and MinIO on the edge** | Not started | The code exists, but neither is in `compose.prod.yml`, so Storefront's console image upload (`/documents/assets`) fails in a product people are paying for. Needs two new `.env` secrets on the box. |
+| 1 | **Storefront custom-domain sweep** (`services/storefront/app/cron.py`) | In progress | The module now exists (ADR-0012 §6) and, since ADR-0013's memory-headroom fix round 2, runs inside the `storefront` API container (`RUN_SWEEPS_IN_API`) — `storefront-cron` is no longer a container. Original gap: a merchant's custom domain could never become verified. ADR-0012 specifies the behaviour. |
+| 2 | **Document service and MinIO on the edge** | PR open | `document` and `minio` are wired into `compose.prod.yml` behind the `storefront` profile, routed at the gateway, migrated by `remote.sh`, and backed up; needs `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` set on the box before the next deploy. |
 | 3 | **Scheduler service, first consumer: finance `not_before`** | Not started | `services/scheduler` is a scaffold. e-Invoice and e-Way retries carry their own delay and are redelivered at once instead. Per-service cron containers move onto it later. |
 | 4 | **GSTR-3B and the input-tax-credit ledger** | Not started | The next compliance slice that needs no credentials, using the stub-client pattern. Larger than 1 to 3. |
 | 5 | **Off-box backup** | Code done, not enabled | `backup.sh` uploads to S3 once `BACKUP_S3_*` is set in the box `.env`. The owner must provide the bucket. |
@@ -531,6 +531,20 @@ ten call sites.
   and its auth is the staff registry from ADR-0004 P6a, which has no organization selection. It
   joins once that endpoint lands and the operator palette is expressed as a theme over the
   Console tokens rather than a replacement for them.
+- **The Engage send gate answers in prose, and the UI matches on the prose.**
+  `POST /engage/campaigns/{id}/send` refuses with a `422` whose only content is one sentence
+  (`services.request_send`, `_check_public_base`); `frontend/product-engage/src/lib/sendGate.ts`
+  chooses the next step it offers ("Open Senders", "Add a subject") by matching a lower-cased
+  substring of it. Nine sentences, nine substrings, held together by
+  `services/notification/tests/test_engage_send_gate_sentences.py` — which drives every gate
+  through the real route and reads the substrings out of `sendGate.ts`, so a reword on either
+  side fails a test. That is a guard, not a fix. **The fix is a stable machine `code` on the
+  `422` problem document** (`unusable_sender`, `domain_unverified`, `no_connection`,
+  `no_subject`, `no_body`, `list_gone`, `sender_gone`, `unsubscribe_unconfigured`,
+  `public_base_unset`) that the UI switches on, after which the prose is free to change and both
+  the substring match and its test can be deleted. It needs an additive field on
+  `BusinessRuleProblem` in `libs/platform-core` (the `remedy` extension on the inbox reply `409` is
+  the precedent) and a contract entry in `libs/contracts`.
 
 ---
 

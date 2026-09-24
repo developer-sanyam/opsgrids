@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -35,6 +36,16 @@ class CatalogPrice(BaseModel):
     meter_key: str | None = None
 
 
+class CatalogFeature(BaseModel):
+    """One row of a catalog version's feature sheet. `value` is whatever JSON catalog stored;
+    this service reads exactly one key of it (`bundled_products`) and ignores the rest."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    feature_key: str
+    value: Any = None
+
+
 class CatalogPlanVersion(BaseModel):
     """A catalog plan version as the pin lookup sees it — unfiltered, including the audience
     pointer, so this service can apply the published-and-visible rule itself."""
@@ -50,6 +61,11 @@ class CatalogPlanVersion(BaseModel):
     currency: str
     restricted_to_org_id: uuid.UUID | None = None
     prices: list[CatalogPrice] = Field(default_factory=list)
+    #: The feature sheet, parsed so a bundle's members can be read off the version being pinned.
+    features: list[CatalogFeature] = Field(default_factory=list)
+
+    def feature_pairs(self) -> list[tuple[str, Any]]:
+        return [(f.feature_key, f.value) for f in self.features]
 
 
 # --------------------------------------------------------------------- customer input
@@ -58,13 +74,23 @@ class CatalogPlanVersion(BaseModel):
 class SubscribeIn(BaseModel):
     """Start a subscription for a product, pinned to a catalog plan version.
 
-    `trial_days` set starts the subscription in `trial` with an end date; left null it starts
-    `active`. A trial is a *state of the subscription*, never a separate object (ADR-0004 §4).
+    `trial_days` set asks for a trial; left null it starts `active`. **The length is the pinned
+    version's, not the caller's**: the request is capped at the version's `trial_days` feature
+    (14 days when the version names none), and refused if the version sells no trial. A trial is
+    a *state of the subscription*, never a separate object (ADR-0004 §4).
+
+    A bundle cannot be bought here — it is sold by the platform team through the operator path
+    (docs/commerce-packaging.md).
     """
 
     product_key: str = Field(min_length=1, max_length=40)
     plan_version_id: uuid.UUID
-    trial_days: int | None = Field(default=None, ge=1, le=365)
+    trial_days: int | None = Field(
+        default=None,
+        ge=1,
+        le=365,
+        description="Ask for a trial. Capped at the plan version's own trial length.",
+    )
 
 
 class ChangePlanIn(BaseModel):
@@ -72,6 +98,29 @@ class ChangePlanIn(BaseModel):
     transition row — never overwritten in history (ADR-0004 §2)."""
 
     plan_version_id: uuid.UUID
+
+
+class OperatorSubscribeIn(BaseModel):
+    """A subscription opened by the platform team for a customer — the only way a bundle is sold.
+
+    Delegated over `/internal` by an operator surface, like a suspension. `organization_id` binds
+    the transaction; `operator_id` is the accountable human on the audit row. `trial` asks for the
+    version's own trial length; there is no length to type.
+    """
+
+    organization_id: uuid.UUID
+    product_key: str = Field(min_length=1, max_length=40)
+    plan_version_id: uuid.UUID
+    trial: bool = False
+    operator_id: str = Field(min_length=1, max_length=64)
+
+
+class OperatorChangePlanIn(BaseModel):
+    """Re-pin a subscription on the platform team's behalf — how a bundle moves between rungs."""
+
+    organization_id: uuid.UUID
+    plan_version_id: uuid.UUID
+    operator_id: str = Field(min_length=1, max_length=64)
 
 
 class CancelIn(BaseModel):
@@ -92,6 +141,9 @@ class PaymentOutcome(BaseModel):
     invoice_id: uuid.UUID | None = None
     amount_minor: int | None = Field(default=None, ge=0)
     currency: str | None = Field(default=None, min_length=3, max_length=3)
+    #: Why a failed charge failed, as payment recorded it. Kept on a trial conversion that failed
+    #: before the billing run recorded it (ADR-0005 addendum, review fix 1).
+    failure_reason: str | None = Field(default=None, max_length=200)
 
 
 class SuspendIn(BaseModel):
@@ -162,7 +214,14 @@ class SubscriptionOut(BaseModel):
     current_period_start: datetime | None = None
     current_period_end: datetime | None = None
     cancel_at: datetime | None = None
+    #: A downgrade waiting for the next period (ADR-0005 addendum §4): the version the
+    #: subscription moves to at `current_period_end`. Null when nothing is waiting.
+    pending_plan_version_id: uuid.UUID | None = None
     currency: str
+    #: The products this subscription switches on. One key for an ordinary subscription; a
+    #: bundle's members for a bundle — snapshotted from the pinned catalog version at subscribe
+    #: and change-plan, never taken from the client.
+    entitled_products: list[str] = Field(default_factory=list)
     items: list[SubscriptionItemOut] = Field(default_factory=list)
     #: Null unless a dunning cycle is open against this subscription.
     dunning: DunningOut | None = None

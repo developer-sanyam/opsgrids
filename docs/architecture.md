@@ -116,8 +116,8 @@ EDGE        ┌─────────────────────�
  product :8112                    marketing:8134  standup   :8142   metering     :8162
                                   support  :8180  quotation :8143   catalog      :8164
                                   lead     :8135  projects  :8170   payment    (no route)
-                                  pipeline :8136  finance   :8171
-                                  activity :8137  operations:8172
+                                                  finance   :8171
+                                                  operations:8172
                                                   itsm      :8173
                                      │
  PLATFORM   document :8150 · notification :8151 · approval :8152 · eventbridge :8163 (admin only)
@@ -349,7 +349,16 @@ main → (api | consumers | relay | cron) → services → selectors → (schema
 Nothing imports upward, and no cycles. `make boundaries` fails the build otherwise.
 
 **Three entrypoints** per service: `bin/api` (uvicorn), `bin/worker` (consumers), `bin/cron`
-(scheduled sweeps). Each runs as its own process, so a slow broker cannot block an API request.
+(scheduled sweeps). Each is its own process, so a slow broker cannot block an API request.
+
+**Where the edge runs each one is a memory decision, not a rule** (ADR-0013's memory-headroom
+addendum): on the one-box edge a process costs ~90-100 MiB whatever it does, so `subscription`,
+`approval` and `notification` fold their `bin/cron` sweep into their `bin/worker`, and
+`operations`, `storefront` and `document` — which have no worker — run theirs as a supervised
+background task **inside their API process** (`Settings.run_sweeps_in_api`, off by default and
+on in the edge compose file; on its own one-connection database engine so it cannot take a
+request's connection). `bin/cron` still runs any of them standalone, and is how an operator
+runs one by hand.
 
 Every service also carries `OutboxEvent`, `ProcessedEvent` and `AuditLog` on its own schema.
 
@@ -364,7 +373,7 @@ Every service also carries `OutboxEvent`, `ProcessedEvent` and `AuditLog` on its
 |---|---|---|
 | Identity & org | `auth`, `account`, `product` | `config` |
 | People (HRMS) | `employee`, `attendance` | — |
-| Revenue (CRM) | `customer`, `deal`, `marketing`, `support` | `lead`, `pipeline`, `activity` |
+| Revenue (CRM) | `customer`, `deal`, `marketing`, `support`, `lead` | — |
 | Work (PulseBoard) | `project`, `timesheet`, `standup`, `projects` | `quotation` |
 | Money (commerce) | `catalog`, `subscription`, `metering`, `billing`, `payment`, `console` | — |
 | Finance, ops, ITSM | `finance`, `operations`, `itsm` | — |
@@ -374,9 +383,12 @@ Every service also carries `OutboxEvent`, `ProcessedEvent` and `AuditLog` on its
 By size, the five largest: **`finance`** (20 models, 29 routes, ~8,400 test lines), **`account`**
 (14 models, 25 routes), **`auth`** (13 models, 20 routes), **`subscription`**, **`attendance`**.
 
-The three CRM skeletons matter: the gateway already routes `/api/v1/leads`, `/api/v1/pipelines`
-and `/api/v1/activities` under `"product": "salescrm"`, but none of the three has a catalogue, so
-**no `salescrm.json` manifest exists** and that product's entitlement gate has nothing behind it.
+`lead` (ADR-0017) is the third process in the `crm` product, alongside `customer` and `deal`:
+the gateway routes `/api/v1/leads` under `"product": "crm"`, and `lead`'s own catalogue
+contributes `crm.lead.*` to the same manifest `customer` and `deal` already fill in. `pipeline`
+and `activity`, the other two CRM skeletons this section used to name, were deleted rather than
+built — `deal` already owns `crm.pipeline.*` end to end, and a second service for the same
+bounded context is how a second source of truth is born.
 
 ---
 

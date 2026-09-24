@@ -33,6 +33,10 @@ vi.mock("@/api/client", () => ({
   getStore: () => getStore(),
   adoptTheme: vi.fn(),
   removeStore: vi.fn(),
+  // Live mode: the storefront service and `/storefront/theme` both exist (R28), so this screen
+  // must never claim otherwise. `false` is the production default — `USE_FIXTURES` is compiled
+  // out entirely once `import.meta.env.DEV` is false.
+  USE_FIXTURES: false,
 }));
 
 /** The sentence `/live` hands over when there is nothing to show a buyer. */
@@ -114,7 +118,6 @@ describe("the two ways to look at the store", () => {
     getStore.mockResolvedValue({
       themeKey: theme.key,
       mode: "trade",
-      brand: { name: "Verma Traders", tagline: "Since 1994", logoText: "VT" },
       tokens: theme.tokens,
       pages: [],
     });
@@ -127,5 +130,23 @@ describe("the two ways to look at the store", () => {
       .map((link) => link.getAttribute("href"));
     expect(links).toContain("/live");
     expect(links.length).toBeGreaterThan(1);
+  });
+});
+
+describe("the sample-data chip (R28)", () => {
+  it("shows no sample-data chip at all in live mode", async () => {
+    renderGallery();
+    await settled();
+
+    expect(screen.queryByText("Sample data")).toBeNull();
+  });
+
+  it("never claims there is no storefront service, in live mode or otherwise", async () => {
+    const { container } = renderGallery();
+    await settled();
+
+    // `services/storefront` and `GET/PUT /storefront/theme` both exist (R28) — nothing on this
+    // screen, including a chip's hover title, may say otherwise.
+    expect(container.innerHTML).not.toMatch(/no storefront service/i);
   });
 });

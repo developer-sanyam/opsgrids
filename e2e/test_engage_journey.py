@@ -16,6 +16,7 @@ This file is that proof, as a permanent journey rather than a one-off script.
     7  a sender is refused on that unverified domain   422, naming the reason
     8  a second organization cannot reach the first's row by id   the IDOR/BOLA check, over HTTP
     9  a same-org member with read but not write is split exactly there    403 write, 200 read
+   10  the unsubscribe link needs no token at all             a real signed link, 200 not 401
 
 Steps run in file order and share state through `engage_journey`, a dict scoped to this file
 alone — `journey` in `test_journey.py` is a *different* fixture instance with the same session
@@ -45,8 +46,11 @@ PRODUCT = "engage"
 #: MailHog, already running for the whole suite (`make infra`). Pointed at directly rather than
 #: through a DNS name, so the connection step proves a real SMTP host round-trips through the
 #: schema without needing a mail server that resolves anywhere.
-MAILHOG_HOST = "127.0.0.1"
-MAILHOG_PORT = 1026
+#: The connection API only accepts a public submission host (its dial guard resolves it and
+#: refuses private addresses, so MailHog on localhost can never be stored) on a standard port.
+#: Creating a connection resolves the host and stores it; it never opens an SMTP session.
+SMTP_SUBMISSION_HOST = "smtp.gmail.com"
+SMTP_SUBMISSION_PORT = 587
 
 #: The five DNS record kinds `services.create_domain` must generate for a fresh sending domain
 #: (`app/domain.py::dns_records_for`). Asserted as a set so a record silently dropped — or one
@@ -80,7 +84,10 @@ def _wait_for_registration(probe: Any, org_id: str, *, timeout: float = 45.0) ->
     deadline = time.monotonic() + timeout
     staged: dict[str, Any] = {}
     while time.monotonic() < deadline:
-        staged = probe("product", org_id)
+        # Scoped to engage specifically — see `_probe.py` and `test_journey.py::test_04`'s
+        # comment: an organization that has already activated a different product would
+        # otherwise satisfy this wait on that product's already-published event.
+        staged = probe("product", org_id, PRODUCT)
         if staged.get("published", 0) >= 1:
             break
         time.sleep(0.5)
@@ -209,8 +216,8 @@ class TestEngageJourney:
                 "kind": "smtp",
                 "username": username,
                 "secret": secret,
-                "host": MAILHOG_HOST,
-                "port": MAILHOG_PORT,
+                "host": SMTP_SUBMISSION_HOST,
+                "port": SMTP_SUBMISSION_PORT,
             },
         )
         assert response.status_code == 201, (
@@ -224,8 +231,8 @@ class TestEngageJourney:
         body = response.json()
         assert body["kind"] == "smtp"
         assert body["username"] == username
-        assert body["host"] == MAILHOG_HOST
-        assert body["port"] == MAILHOG_PORT
+        assert body["host"] == SMTP_SUBMISSION_HOST
+        assert body["port"] == SMTP_SUBMISSION_PORT
         assert body["status"] == "connected"
         assert "secret" not in body and "secret_enc" not in body
 
@@ -449,7 +456,7 @@ class TestEngageJourney:
         )
 
         viewer_password = "viewer-Sufficiently-Long-Passw0rd!"  # pragma: allowlist secret
-        seed_password(member["user_id"], viewer_password)
+        seed_password(invitee_email, viewer_password)
         viewer_token = login(client, invitee_email, viewer_password, alpha["org_id"])
 
         read = client.get("/api/v1/engage/connection", headers=auth_header(viewer_token))
@@ -467,3 +474,37 @@ class TestEngageJourney:
             f"a caller with no engage.setup.domain.write grant was allowed to add a domain: "
             f"{write.status_code} {write.text[:300]}"
         )
+
+    # ------------------------------------------------------------------ 10. the route with no token
+
+    def test_10_the_unsubscribe_link_is_reachable_without_a_token(
+        self, client: httpx.Client, engage_journey: dict, mint_unsubscribe_token: Any
+    ) -> None:
+        """The bug this step exists to catch: `GatewayPolicy.public_paths` is an *exact*-match
+        list (`full_path in policy.public_paths`), which cannot express a path with a variable
+        segment — so the one Engage surface with no principal, the per-recipient unsubscribe
+        link, got the same 401 as every permissioned route until `public_path_prefixes`
+        existed to name it. A real, validly-signed link has to reach notification-service and
+        get an actual answer from it — not a 401 the gateway raised before ever asking.
+        """
+        token = mint_unsubscribe_token(
+            engage_journey["org_id"], f"edge-smoke-{uuid.uuid4().hex[:8]}@example.com"
+        )
+
+        page = client.get(f"/api/v1/engage/unsubscribe/{token}")
+        assert page.status_code == 200, (
+            f"GET the unsubscribe link answered {page.status_code}, not 200 — if it is 401 "
+            f"the gateway refused it before notification-service ever saw it: "
+            f"{page.text[:300]}"
+        )
+
+        one_click = client.post(
+            f"/api/v1/engage/unsubscribe/{token}",
+            content=b"List-Unsubscribe=One-Click",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert one_click.status_code == 200, (
+            f"the RFC 8058 one-click POST answered {one_click.status_code}, not 200: "
+            f"{one_click.text[:300]}"
+        )
+        assert one_click.json() == {"unsubscribed": True}

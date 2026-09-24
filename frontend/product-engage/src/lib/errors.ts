@@ -30,3 +30,18 @@ export function failureMessage(error: unknown): string {
 export function isNotActivated(error: unknown): boolean {
   return error instanceof ApiError && error.status === 402;
 }
+
+/**
+ * Whether a failed reply means the conversation's 24-hour service window has closed.
+ *
+ * `services.OutsideServiceWindowProblem` answers `409` with `remedy: "template"` in the problem
+ * body — a platform extension member `ProblemJson` does not declare, because it is this one
+ * endpoint's own vocabulary rather than the platform's field-error convention. Matched on the
+ * status and the remedy together: a `409` from some other cause (a dedupe conflict, say) must not
+ * be read as "send a template instead" when it never said so.
+ */
+export function replyRemedy(error: unknown): "template" | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  const remedy = (error.problem as { remedy?: unknown } | null)?.remedy;
+  return remedy === "template" ? "template" : null;
+}

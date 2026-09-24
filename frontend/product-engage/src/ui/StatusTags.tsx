@@ -1,7 +1,15 @@
 import { Tag } from "@opsgrids/ui";
 import type { TagTone } from "@opsgrids/ui";
 
-import type { ConnectionStatus, DomainStatus, SuppressionReason, TemplateStatus } from "@/api/types";
+import type {
+  CampaignStatus,
+  ConnectionStatus,
+  ConversationStatus,
+  DomainStatus,
+  RecipientStatus,
+  SuppressionReason,
+  TemplateStatus,
+} from "@/api/types";
 
 /**
  * The three status vocabularies this product renders, each translated in exactly one place.
@@ -83,4 +91,63 @@ const SUPPRESSION_LABELS: Record<SuppressionReason, { label: string; tone: TagTo
 export function SuppressionReasonTag({ reason }: { reason: SuppressionReason }) {
   const { label, tone } = SUPPRESSION_LABELS[reason];
   return <Tag tone={tone}>{label}</Tag>;
+}
+
+/** A conversation's triage state. Independent of the 24-hour service window — a closed
+ *  conversation can still be inside its window, and an open one can be well outside it — so this
+ *  is never a proxy for whether a reply is possible; that answer is `WindowStatusTag`'s. */
+const CONVERSATION_LABELS: Record<ConversationStatus, { label: string; tone: TagTone }> = {
+  open: { label: "Open", tone: "positive" },
+  closed: { label: "Closed", tone: "neutral" },
+};
+
+export function ConversationStatusTag({ status }: { status: ConversationStatus }) {
+  const { label, tone } = CONVERSATION_LABELS[status];
+  return <Tag tone={tone}>{label}</Tag>;
+}
+
+/**
+ * A campaign's own lifecycle, exactly as `campaigns.status` arrives — draft through sent, and
+ * cancelled from any state before that. `paused` is named as the send driver's own state rather
+ * than folded into any other tone, because it is the one status that means "action wanted": the
+ * campaign is not finished, not cancelled, and not making progress on its own.
+ */
+const CAMPAIGN_LABELS: Record<CampaignStatus, { label: string; tone: TagTone }> = {
+  draft: { label: "Draft", tone: "neutral" },
+  scheduled: { label: "Scheduled", tone: "info" },
+  sending: { label: "Sending", tone: "warning" },
+  paused: { label: "Paused — needs attention", tone: "negative" },
+  sent: { label: "Sent", tone: "positive" },
+  cancelled: { label: "Cancelled", tone: "neutral" },
+};
+
+export function CampaignStatusTag({ status }: { status: CampaignStatus }) {
+  const { label, tone } = CAMPAIGN_LABELS[status];
+  return <Tag tone={tone}>{label}</Tag>;
+}
+
+/** One recipient's outcome. `queued` already carries the driver's in-flight claim lease — see
+ *  `RecipientStatus`'s own comment in `api/types.ts` — so there is nothing this app renders that
+ *  the wire vocabulary does not also carry. */
+const RECIPIENT_LABELS: Record<RecipientStatus, { label: string; tone: TagTone }> = {
+  queued: { label: "Queued", tone: "neutral" },
+  sent: { label: "Sent", tone: "positive" },
+  failed: { label: "Failed", tone: "negative" },
+  suppressed: { label: "Suppressed", tone: "warning" },
+};
+
+export function RecipientStatusTag({ status }: { status: RecipientStatus }) {
+  const { label, tone } = RECIPIENT_LABELS[status];
+  return <Tag tone={tone}>{label}</Tag>;
+}
+
+/** Whether a free-text reply is possible right now, exactly as the service computed it
+ *  (`within_service_window`) — never re-derived from `last_customer_message_at` here, so this
+ *  screen can never disagree with the reply endpoint about the one fact that decides it. */
+export function WindowStatusTag({ withinWindow }: { withinWindow: boolean }) {
+  return withinWindow ? (
+    <Tag tone="positive">Can reply</Tag>
+  ) : (
+    <Tag tone="warning">Template only</Tag>
+  );
 }

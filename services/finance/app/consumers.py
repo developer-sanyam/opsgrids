@@ -28,6 +28,21 @@ Four properties are load-bearing, and each has a test:
   same bytes will be refused again. An outage is retried on an exponential backoff up to
   `domain.MAX_FILING_ATTEMPTS`, and when that budget is spent it becomes a terminal `failed` row
   carrying `retry_exhausted`. Nothing loops forever, and nothing fails silently.
+* **A retry waits for its own `not_before` (ADR-0015).** `services.request_filing` hands a future
+  `not_before` to the scheduler instead of publishing this event directly, so in normal operation
+  this handler never sees one still in the future. It checks anyway, as defence in depth against a
+  hand-redelivered message or a DLQ replay: acting early would jump a backoff that exists to stop
+  hammering a struggling portal. See `services.rearm_early_filing_request`. The check forgives
+  `domain.FILING_EARLY_ARRIVAL_TOLERANCE` of clock skew between the scheduler's own clock and
+  this pod's, so ordinary scheduling latency is never mistaken for an early arrival.
+* **The tenant is bound from the envelope, never from the payload (ADR-0015 review).** A
+  `filing_requested` message can arrive two ways: published directly by this service (envelope
+  and payload always agree, since both come from the same `ctx.organization_id`), or relayed
+  through the scheduler, whose own envelope names the *scheduler's* row's organization —
+  trustworthy, because it is a column the scheduler's own row-level security enforced — while
+  the payload inside it is JSON `schedule_event` was handed, and this consumer has no way to
+  prove nothing between here and there altered it. If they ever disagree, this refuses rather
+  than trusting whichever one happens to look more convenient.
 
 The handler never raises for a business situation. A missing invoice, a document that needs no
 IRN, one already filed — all are outcomes, logged. Raising would nack the message, and the second
@@ -39,13 +54,15 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
-from app import services
+from app import domain, services
 from app.config import settings
 from app.deps import get_irp_client
 from app.models import ProcessedEvent
 from platform_core.db import assert_app_role, init_engine, session_scope
+from platform_core.errors import BusinessRuleProblem
 from platform_core.events import EventConsumer, already_processed, mark_processed
 from platform_core.logging import get_logger
 
@@ -65,25 +82,105 @@ async def file_requested_invoice(envelope: dict[str, Any]) -> None:
     """
     event_id = uuid.UUID(envelope["event_id"])
     payload = envelope["payload"]
-    organization_id = uuid.UUID(payload["organization_id"])
+    envelope_organization_id = uuid.UUID(str(envelope["organization_id"]))
+    payload_organization_id = uuid.UUID(payload["organization_id"])
     invoice_id = uuid.UUID(payload["invoice_id"])
     attempt = int(payload.get("attempt", 1))
+    not_before_raw = payload.get("not_before")
+    not_before = datetime.fromisoformat(not_before_raw) if not_before_raw else None
     client = get_irp_client()
 
-    # The GUC is set here, per message, for the whole transaction: the filing row is a
+    if payload_organization_id != envelope_organization_id:
+        # The envelope's own organization is a column its producer's row-level security
+        # enforced; the payload is JSON carried inside it, and this consumer cannot prove
+        # nothing altered it in between. Refuse rather than bind a session to whichever one
+        # happens to look right — the GUC below is what makes every write in this handler
+        # tenant-scoped, and it must never be handed an organization this message cannot back.
+        async with session_scope(organization_id=envelope_organization_id) as session:
+            if await already_processed(session, ProcessedEvent, event_id):
+                log.info("finance.filing.duplicate", event_id=str(event_id))
+                return
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+        log.error(
+            "finance.filing.organization_mismatch",
+            event_id=str(event_id),
+            envelope_organization_id=str(envelope_organization_id),
+            payload_organization_id=str(payload_organization_id),
+        )
+        return
+
+    organization_id = envelope_organization_id
+
+    # The GUC is set here, per message, for the *claim* transaction: the filing row is a
     # NOBYPASSRLS write against a forced tenant policy and only passes because of this binding.
+    # `mark_processed` runs here too, not after the call below — a redelivery of this same event
+    # must not re-register a document the first delivery may already have registered, and it is
+    # the *claim* that decides that (via `live_registration`), not the call. A process that dies
+    # after this commits but before the call returns or `record_autofile_result` runs leaves no
+    # filing row behind at all (see `stage_registration_attempt`); `app/cron.py`'s filing-reclaim
+    # sweep is what resumes such an invoice, not a queue retry.
+    #
+    # Note this `datetime.now(UTC)` is a *different* clock from the one `claim_autofile_attempt`
+    # resolves internally (`app.services`'s own, unpatched in tests that freeze this module's):
+    # this one only ever decides whether a message arrived early, never what gets written.
+    claim: services.AutofileClaim | None = None
     async with session_scope(organization_id=organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("finance.filing.duplicate", event_id=str(event_id))
             return
-        result = await services.autofile_invoice(
-            session,
-            services.service_ctx(organization_id),
-            client,
-            invoice_id=invoice_id,
-            attempt=attempt,
+
+        if not_before is not None and (
+            (not_before - datetime.now(UTC)) > domain.FILING_EARLY_ARRIVAL_TOLERANCE
+        ):
+            # Defence in depth (ADR-0015 §5): the scheduler is supposed to hold this until
+            # `not_before`, so arriving early is not the ordinary case. Re-arm rather than act.
+            ctx = services.service_ctx(organization_id)
+            services.rearm_early_filing_request(
+                session,
+                ctx,
+                invoice_id=invoice_id,
+                event_id=event_id,
+                attempt=attempt,
+                not_before=not_before,
+                payload=payload,
+            )
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+            log.warning(
+                "finance.filing.early_arrival",
+                event_id=str(event_id),
+                organization_id=str(organization_id),
+                invoice_id=str(invoice_id),
+                attempt=attempt,
+                not_before=not_before.isoformat(),
+            )
+            return
+
+        claim = await services.claim_autofile_attempt(
+            session, services.service_ctx(organization_id), invoice_id, attempt=attempt
         )
         mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+
+    if claim.outcome is not None:
+        result = claim.outcome
+    else:
+        if claim.invoice is None or claim.irp_payload is None:  # pragma: no cover
+            raise BusinessRuleProblem("a claim that did not resolve to an outcome named no invoice")
+
+        # No transaction open here at all (D3): the claim above already committed, and the
+        # record transaction below opens only after the portal has answered.
+        call_outcome = await services.call_irp_register_off_loop(client, claim.irp_payload)
+
+        async with session_scope(organization_id=organization_id) as session:
+            result = await services.record_autofile_result(
+                session,
+                services.service_ctx(organization_id),
+                claim.invoice.id,
+                call_outcome,
+                attempt=attempt,
+                retryable=claim.retryable,
+                at=claim.at,
+                client_name=client.name,
+            )
 
     log.info(
         "finance.filing.attempted",

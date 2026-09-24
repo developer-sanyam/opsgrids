@@ -31,6 +31,11 @@ export const PRODUCTS: Product[] = [
     name: "OpsGrids Trading Desk",
     description: "Commodity trading, risk and settlement.",
   },
+  {
+    product_key: "suite",
+    name: "OpsGrids Suite",
+    description: "Bundles: one subscription, several products, each cheaper than bought apart.",
+  },
 ];
 
 export const PRODUCT_NAME: Record<string, string> = Object.fromEntries(
@@ -51,6 +56,7 @@ export const PLANS: Plan[] = [
   { plan_id: "pl_procure_enterprise", product_key: "procure", code: "PRO-ENT", name: "Enterprise", state: "active", sort_order: 4 },
   { plan_id: "pl_trading_growth", product_key: "trading", code: "TRD-GROWTH", name: "Growth", state: "active", sort_order: 1 },
   { plan_id: "pl_trading_enterprise", product_key: "trading", code: "TRD-ENT", name: "Enterprise", state: "active", sort_order: 2 },
+  { plan_id: "pl_suite_duo", product_key: "suite", code: "duo", name: "Suite Duo", state: "active", sort_order: 30 },
 ];
 
 const flat = (id: string, whole: number): Price => ({
@@ -345,6 +351,22 @@ export const PLAN_VERSIONS: PlanVersion[] = [
     restricted_to_org_name: "Deccan Commodities",
     prices: [flat("pr_trading_bespoke_deccan_v1_flat", 280000)],
     subscriber_count: 1,
+  },
+  {
+    plan_version_id: "pv_suite_duo_v1",
+    plan_id: "pl_suite_duo",
+    product_key: "suite",
+    plan_name: "Suite Duo",
+    version_no: 1,
+    state: "published",
+    published_at: "2026-08-25T00:00:00Z",
+    billing_interval: "monthly",
+    currency: INR,
+    restricted_to_org_id: null,
+    restricted_to_org_name: null,
+    prices: [perSeat("pr_suite_duo_v1_seat", 582)],
+    subscriber_count: 1,
+    bundled_products: ["hrms", "crm"],
   },
 ];
 

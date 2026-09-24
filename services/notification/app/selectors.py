@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Select, exists, func, or_, select
+from sqlalchemy import Select, exists, func, literal, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -24,9 +24,11 @@ from app.models import (
     Contact,
     ContactList,
     ContactListMember,
+    Conversation,
     Delivery,
     EmailConnection,
     EmailDomain,
+    InboundMessage,
     Message,
     Preference,
     ProviderAccount,
@@ -346,7 +348,9 @@ async def get_whatsapp_connection(
 
 def domains_stmt(ctx: ScopeContext, *, status: str | None = None) -> Select[Any]:
     """Scope-filtered sending-domain list, oldest first — a setup list is read in the order it
-    was built, not newest-first like a log."""
+    was built, not newest-first like a log. `id` breaks a tie on `created_at`: rows written in one
+    transaction share a timestamp, and an `OFFSET` page over an order with ties can skip or repeat
+    a row between two requests."""
     stmt = select(EmailDomain).where(
         EmailDomain.organization_id == ctx.organization_id,
         EmailDomain.deleted_at.is_(None),
@@ -354,7 +358,7 @@ def domains_stmt(ctx: ScopeContext, *, status: str | None = None) -> Select[Any]
     stmt = ctx.apply(stmt, owner_col=EmailDomain.created_by)
     if status:
         stmt = stmt.where(EmailDomain.status == status)
-    return stmt.order_by(EmailDomain.created_at.asc())
+    return stmt.order_by(EmailDomain.created_at.asc(), EmailDomain.id.asc())
 
 
 async def get_domain(
@@ -382,7 +386,9 @@ async def get_domain_by_name(
 
 
 def senders_stmt(ctx: ScopeContext, *, domain_id: uuid.UUID | None = None) -> Select[Any]:
-    """Scope-filtered sender list."""
+    """Scope-filtered sender list, by name. `id` breaks a tie: two senders may share a display name
+    ("Support" on two domains), and an `OFFSET` page over an order with ties can skip or repeat a
+    row between two requests — a reader paging the whole list would lose one."""
     stmt = select(Sender).where(
         Sender.organization_id == ctx.organization_id,
         Sender.deleted_at.is_(None),
@@ -390,7 +396,7 @@ def senders_stmt(ctx: ScopeContext, *, domain_id: uuid.UUID | None = None) -> Se
     stmt = ctx.apply(stmt, owner_col=Sender.created_by)
     if domain_id:
         stmt = stmt.where(Sender.domain_id == domain_id)
-    return stmt.order_by(Sender.name.asc())
+    return stmt.order_by(Sender.name.asc(), Sender.id.asc())
 
 
 async def get_sender(
@@ -523,6 +529,7 @@ async def sendable_contacts(
     limit: int = 1000,
     after_id: uuid.UUID | None = None,
     list_id: uuid.UUID | None = None,
+    lock: bool = False,
 ) -> list[Contact]:
     """Contacts a campaign may send to: the organization's contacts minus every suppressed
     address, whatever the reason.
@@ -531,6 +538,15 @@ async def sendable_contacts(
     before the contact existed and for one written after — a re-imported address that once
     unsubscribed stays unreachable. Keyset-paged by id (`after_id`) so a sender can walk a large
     audience without an OFFSET that shifts under concurrent writes.
+
+    `lock=True` is `expand_campaign`'s: `SELECT ... FOR KEY SHARE` on every contact in the
+    page, held until expansion's transaction commits. Postgres's `DELETE` takes a row lock that
+    conflicts with `FOR KEY SHARE`, so a concurrent `delete_contact` on one of these rows blocks
+    until this transaction ends — the read and the copy `expand_campaign` writes into
+    `campaign_recipients` cannot straddle a deletion whose own `erase_contact_campaign_copies`
+    ran and committed before the copy existed to erase. `FOR KEY SHARE` rather than a stronger
+    mode because it is the one lock that never conflicts with another `expand_campaign` page
+    reading the same contact for a different campaign, or with an ordinary read.
     """
     suppressed = exists().where(
         Suppression.organization_id == Contact.organization_id,
@@ -555,6 +571,8 @@ async def sendable_contacts(
     if after_id is not None:
         stmt = stmt.where(Contact.id > after_id)
     stmt = stmt.order_by(Contact.id.asc()).limit(limit)
+    if lock:
+        stmt = stmt.with_for_update(key_share=True)
     return list((await session.execute(stmt)).scalars())
 
 
@@ -776,6 +794,52 @@ async def recipients_by_id(
     return {r.id: r for r in rows}
 
 
+async def get_recipient_for_unsubscribe(
+    session: AsyncSession, org_id: uuid.UUID, recipient_id: uuid.UUID
+) -> CampaignRecipient | None:
+    """One `campaign_recipients` row, by id — what a v2 unsubscribe link resolves against.
+    No campaign id: the token names the recipient row directly, not the campaign it belongs to.
+    Erased rows are invisible here — the caller (`services.unsubscribe_recipient`) treats that
+    the same as the id naming nothing at all, since there is no address left to suppress."""
+    stmt = select(CampaignRecipient).where(
+        CampaignRecipient.id == recipient_id,
+        CampaignRecipient.organization_id == org_id,
+        CampaignRecipient.erased_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def erased_recipient_ids(
+    session: AsyncSession, org_id: uuid.UUID, recipient_ids: list[uuid.UUID]
+) -> set[uuid.UUID]:
+    """Which of `recipient_ids` have since been erased — the campaign driver's last check,
+    immediately before a transport is asked to send any of them (`services.
+    drop_erased_from_batch`), closing most of the window between a batch's claim and its send.
+    """
+    if not recipient_ids:
+        return set()
+    stmt = select(CampaignRecipient.id).where(
+        CampaignRecipient.organization_id == org_id,
+        CampaignRecipient.id.in_(recipient_ids),
+        CampaignRecipient.erased_at.is_not(None),
+    )
+    return set((await session.execute(stmt)).scalars())
+
+
+async def masked_recipient_email(
+    session: AsyncSession, org_id: uuid.UUID, recipient_id: uuid.UUID
+) -> str | None:
+    """The masked address for one campaign recipient row, for a v2 unsubscribe link's
+    confirmation page — read directly off the row, never a decrypt, since the page has not
+    acted on anything yet."""
+    stmt = select(CampaignRecipient.email_masked).where(
+        CampaignRecipient.id == recipient_id,
+        CampaignRecipient.organization_id == org_id,
+        CampaignRecipient.erased_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def due_campaigns(
     session: AsyncSession, *, paused_retry_before: datetime, limit: int
 ) -> list[tuple[uuid.UUID, uuid.UUID]]:
@@ -807,3 +871,128 @@ async def due_campaigns(
 
 async def is_suppressed(session: AsyncSession, org_id: uuid.UUID, index: str) -> bool:
     return await get_suppression_by_index(session, org_id, index) is not None
+
+
+# --------------------------------------------------------------------- engage inbox (WhatsApp)
+
+
+def conversations_stmt(ctx: ScopeContext, *, conversation_status: str | None = None) -> Select[Any]:
+    """Conversations, most recently active first. `ctx.apply` is the enforcement point."""
+    stmt = select(Conversation).where(
+        Conversation.organization_id == ctx.organization_id,
+        Conversation.deleted_at.is_(None),
+    )
+    stmt = ctx.apply(stmt, owner_col=Conversation.created_by)
+    if conversation_status:
+        stmt = stmt.where(Conversation.status == conversation_status)
+    return stmt.order_by(
+        Conversation.last_customer_message_at.desc().nulls_last(),
+        Conversation.created_at.desc(),
+    )
+
+
+async def get_conversation(
+    session: AsyncSession, org_id: uuid.UUID, conversation_id: uuid.UUID, *, lock: bool = False
+) -> Conversation | None:
+    """One conversation, org-scoped. `lock=True` holds it `FOR UPDATE` for the caller's whole
+    transaction — the reply endpoint's serialisation point against the service window, which a
+    concurrent inbound webhook could otherwise move underneath it mid-check."""
+    stmt = select(Conversation).where(
+        Conversation.id == conversation_id,
+        Conversation.organization_id == org_id,
+        Conversation.deleted_at.is_(None),
+    )
+    if lock:
+        stmt = stmt.with_for_update()
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_conversation_by_address_index(
+    session: AsyncSession, org_id: uuid.UUID, channel: str, wa_address_index: str
+) -> Conversation | None:
+    """The webhook fold's lookup: does a conversation already exist for this number."""
+    stmt = select(Conversation).where(
+        Conversation.organization_id == org_id,
+        Conversation.channel == channel,
+        Conversation.wa_address_index == wa_address_index,
+        Conversation.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def thread_stmt(ctx: ScopeContext, conversation_id: uuid.UUID) -> Select[Any]:
+    """One conversation's timeline, both directions, oldest first — a `UNION ALL` of the inbound
+    and outbound tables rather than two paginated reads, so a page of the thread is one page of
+    the actual conversation and not one page of each side of it.
+
+    Bodies come back masked on the inbound side (`InboundMessage.body_masked`) and in full on
+    the outbound side (`Message.body`): only the customer's own words are PII gated behind
+    `engage.inbox.message.unmask` here — an agent's own sent reply is not a secret from the
+    agent holding the read permission that already shows it. `services.unmask_inbound_message`
+    is the audited path to the sealed side of an inbound row.
+    """
+    inbound = select(
+        InboundMessage.id,
+        literal("inbound").label("direction"),
+        InboundMessage.type.label("message_type"),
+        InboundMessage.body_masked.label("body"),
+        InboundMessage.occurred_at,
+        InboundMessage.provider_message_id,
+        InboundMessage.profile_name_masked.label("profile_name"),
+    ).where(
+        InboundMessage.organization_id == ctx.organization_id,
+        InboundMessage.conversation_id == conversation_id,
+        InboundMessage.deleted_at.is_(None),
+    )
+    outbound = select(
+        Message.id,
+        literal("outbound").label("direction"),
+        literal("text").label("message_type"),
+        Message.body.label("body"),
+        Message.created_at.label("occurred_at"),
+        Message.provider_message_id,
+        literal(None).label("profile_name"),
+    ).where(
+        Message.organization_id == ctx.organization_id,
+        Message.conversation_id == conversation_id,
+        Message.deleted_at.is_(None),
+    )
+    thread = union_all(inbound, outbound).subquery()
+    return select(thread).order_by(thread.c.occurred_at.asc())
+
+
+async def thread_messages(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    conversation_id: uuid.UUID,
+    *,
+    offset: int,
+    limit: int,
+) -> tuple[list[Any], int]:
+    """A page of `thread_stmt`, counted and fetched in one call.
+
+    Not routed through `platform_core.pagination.paginate`: that helper assumes a `select(Model)`
+    it can `.scalars()` off, and this is a `UNION ALL` of plain columns from two tables — a page
+    of rows, not a page of one ORM entity. The two-statement shape (count, then fetch) is the
+    same one `paginate` uses internally.
+    """
+    stmt = thread_stmt(ctx, conversation_id)
+    total = (
+        await session.execute(select(func.count()).select_from(stmt.order_by(None).subquery()))
+    ).scalar_one()
+    rows = (await session.execute(stmt.offset(offset).limit(limit))).all()
+    return list(rows), int(total)
+
+
+async def get_inbound_message(
+    session: AsyncSession, org_id: uuid.UUID, conversation_id: uuid.UUID, message_id: uuid.UUID
+) -> InboundMessage | None:
+    """One inbound message, scoped to both the organization and the conversation it claims to be
+    in — a message id from another conversation must not unmask through this one."""
+    stmt = select(InboundMessage).where(
+        InboundMessage.id == message_id,
+        InboundMessage.conversation_id == conversation_id,
+        InboundMessage.organization_id == org_id,
+        InboundMessage.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()

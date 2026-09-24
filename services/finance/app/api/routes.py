@@ -49,6 +49,8 @@ from app.schemas import (
     InvoiceCreate,
     InvoiceIssueIn,
     InvoiceOut,
+    ItcBalanceOut,
+    ItcLedgerEntryOut,
     LedgerReport,
     OverviewSummary,
     PaymentCreate,
@@ -74,7 +76,7 @@ router = APIRouter(tags=["finance"])
 
 #: **The tenancy chokepoint.** Opens the transaction and binds it to the caller's organization
 #: before the route body runs, so no route can read without one.
-SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 
 #: The `finance` entitlement gate, applied to every principal route as well as at the gateway.
 Entitled = Depends(require_product("finance"))
@@ -147,6 +149,11 @@ EwayRead = Annotated[
 ]
 WithholdingRead = Annotated[
     ScopeContext, Depends(require("finance.compliance.withholding.read", minimum=Scope.ORG))
+]
+#: No write dependency: every ITC ledger posting is a side effect of an IMS decision or a
+#: GSTR-3B filing, each already behind its own dangerous permission.
+ItcRead = Annotated[
+    ScopeContext, Depends(require("finance.compliance.itc.read", minimum=Scope.ORG))
 ]
 
 
@@ -261,7 +268,7 @@ async def list_filings(
     if invoice is None:
         raise NotFoundProblem("That invoice is not part of this organization")
     rows = await selectors.filings_for_invoice(session, ctx.organization_id, invoice_id)
-    return [selectors.to_filing_out(row) for row in rows]
+    return [selectors.to_filing_out(row) for row in selectors.visible_attempts(rows)]
 
 
 @router.get(
@@ -314,7 +321,7 @@ async def list_returns(
     status_filter: Annotated[
         str | None, Query(alias="status", description="draft|generated|filed")
     ] = None,
-    return_type: Annotated[str | None, Query(description="gstr1|gstr7")] = None,
+    return_type: Annotated[str | None, Query(description="gstr1|gstr7|gstr3b")] = None,
     sort: Annotated[str, Query(description="period_desc|period_asc")] = "period_desc",
 ) -> Page[GstReturnOut]:
     """The list page: one row per (registration, period, type), which is the grain the obligation
@@ -411,6 +418,60 @@ async def file_return(
     return selectors.to_return_out(ret)
 
 
+# --------------------------------------------------------------------- the ITC ledger
+# Read-only: every posting is a side effect of an IMS decision (`accrual`/`reversal`) or a
+# GSTR-3B filing (`utilisation`), each already behind its own dangerous permission.
+
+
+@router.get(
+    "/finance/gst/itc-ledger",
+    response_model=Page[ItcLedgerEntryOut],
+    summary="The input-tax-credit ledger — accrual, reversal and utilisation, newest first",
+    dependencies=[Entitled],
+)
+async def list_itc_ledger(
+    session: SessionDep,
+    ctx: ItcRead,
+    params: PageQuery,
+    gst_registration_id: Annotated[
+        uuid.UUID | None, Query(description="One registration's postings")
+    ] = None,
+    period: Annotated[str | None, Query(description="Tax period, YYYY-MM")] = None,
+    tax_head: Annotated[str | None, Query(description="igst|cgst|sgst|cess")] = None,
+    kind: Annotated[str | None, Query(description="accrual|reversal|utilisation")] = None,
+) -> Page[ItcLedgerEntryOut]:
+    stmt = selectors.itc_ledger_stmt(
+        ctx,
+        gst_registration_id=gst_registration_id,
+        period=period,
+        tax_head=tax_head,
+        kind=kind,
+    )
+    rows, total = await paginate(session, stmt, params)
+    return Page.build(
+        [selectors.to_itc_ledger_entry_out(row) for row in rows], total=total, params=params
+    )
+
+
+@router.get(
+    "/finance/gst/itc-ledger/balance",
+    response_model=ItcBalanceOut,
+    summary="The ledger's position for one registration as of the end of one period",
+    dependencies=[Entitled],
+)
+async def read_itc_balance(
+    session: SessionDep,
+    ctx: ItcRead,
+    period: Annotated[str, Query(description="Tax period, YYYY-MM")],
+    gst_registration_id: Annotated[uuid.UUID | None, Query()] = None,
+) -> ItcBalanceOut:
+    """Brought-forward plus every posting made *in* `period`, per head — what a GSTR-3B for the
+    *next* period would have on top of its own accrual and reversal to utilise. Defaults to the
+    organization's primary registration, the same default `generate_return` uses."""
+    registration = await services.registration_for(session, ctx, gst_registration_id)
+    return await selectors.itc_balance(session, ctx.organization_id, registration.id, period)
+
+
 # --------------------------------------------------------------------- e-Way bills
 
 
@@ -460,7 +521,7 @@ async def list_eway_bills_for_invoice(
     if invoice is None:
         raise NotFoundProblem("That invoice is not part of this organization")
     rows = await selectors.eway_bills_for_invoice(session, ctx.organization_id, invoice_id)
-    return [selectors.to_eway_bill_out(row) for row in rows]
+    return [selectors.to_eway_bill_out(row) for row in selectors.visible_attempts(rows)]
 
 
 @router.get(

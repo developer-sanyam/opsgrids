@@ -89,7 +89,6 @@ describe("putStoreIdentity against the gateway", () => {
       logo_text: null,
       currency: "INR",
       timezone: "Asia/Kolkata",
-      custom_domain: null,
     });
 
     const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
@@ -103,9 +102,9 @@ describe("putStoreIdentity against the gateway", () => {
       logo_text: null,
       currency: "INR",
       timezone: "Asia/Kolkata",
-      custom_domain: null,
     });
     expect(body.status).toBeUndefined();
+    expect(body.custom_domain).toBeUndefined();
   });
 });
 

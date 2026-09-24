@@ -11,6 +11,7 @@ import type {
   Company,
   Contact,
   Deal,
+  Lead,
   Owner,
 } from "./types";
 
@@ -20,12 +21,12 @@ const rupees = (n: number): number => n * 100;
 /* -------------------------------- owners -------------------------------- */
 
 export const OWNERS: Owner[] = [
-  { id: "own-1", full_name: "Sofia Marchetti", email: "sofia.marchetti@opsgrids.example.com", role: "Regional Sales Head" },
-  { id: "own-2", full_name: "Vikram Singh", email: "vikram.singh@opsgrids.example.com", role: "Account Executive" },
-  { id: "own-3", full_name: "Grace Adeyemi", email: "grace.adeyemi@opsgrids.example.com", role: "Sales Development Rep" },
-  { id: "own-4", full_name: "Kabir Malhotra", email: "kabir.malhotra@opsgrids.example.com", role: "Enterprise AE" },
-  { id: "own-5", full_name: "Emily Carter", email: "emily.carter@opsgrids.example.com", role: "Solutions Consultant" },
-  { id: "own-6", full_name: "Rahul Deshpande", email: "rahul.deshpande@opsgrids.example.com", role: "Account Manager" },
+  { id: "own-1", full_name: "Sofia Marchetti", email: "sofia.marchetti@opsgrids.example.com", role: "Regional Sales Head", is_active: true },
+  { id: "own-2", full_name: "Vikram Singh", email: "vikram.singh@opsgrids.example.com", role: "Account Executive", is_active: true },
+  { id: "own-3", full_name: "Grace Adeyemi", email: "grace.adeyemi@opsgrids.example.com", role: "Sales Development Rep", is_active: true },
+  { id: "own-4", full_name: "Kabir Malhotra", email: "kabir.malhotra@opsgrids.example.com", role: "Enterprise AE", is_active: true },
+  { id: "own-5", full_name: "Emily Carter", email: "emily.carter@opsgrids.example.com", role: "Solutions Consultant", is_active: true },
+  { id: "own-6", full_name: "Rahul Deshpande", email: "rahul.deshpande@opsgrids.example.com", role: "Account Manager", is_active: false },
 ];
 
 /* ------------------------------- companies ------------------------------- */
@@ -117,4 +118,16 @@ export const ACTIVITIES: Activity[] = [
   { id: "act-18", type: "call", subject: "Warehouse add-on confirmation", body: "Anita confirmed the add-on scope; order processed.", deal_id: "deal-16", company_id: "comp-1", contact_id: "con-2", owner_id: "own-1", occurred_at: "2026-08-04T15:05:00Z", direction: "outbound" },
   { id: "act-19", type: "task", subject: "Send MSA redlines to legal", body: "Solstice legal returned redlines on liability caps; route to our counsel.", deal_id: "deal-8", company_id: "comp-8", contact_id: "con-18", owner_id: "own-4", occurred_at: "2026-08-10T13:15:00Z", direction: null },
   { id: "act-20", type: "note", subject: "Shop-floor pilot cooling off", body: "No response from Prakash in three weeks; try a different stakeholder.", deal_id: "deal-7", company_id: "comp-7", contact_id: "con-8", owner_id: "own-3", occurred_at: "2026-07-30T12:10:00Z", direction: null },
+];
+
+/* ---------------------------------- leads --------------------------------- */
+
+// email/phone are already the masked form here — fixtures render exactly what the live
+// service returns, and the raw value never reaches this client either way.
+export const LEADS: Lead[] = [
+  { id: "lead-1", full_name: "Meera Iyer", company: "Solstice Energy", email: "m•••@s•••", phone: "•••••• 4821", source: "form", status: "new", owner_id: null, notes: "Requested a demo from the pricing page.", converted_company_id: null, converted_contact_id: null, converted_deal_id: null, converted_at: null, created_at: "2026-08-20T09:00:00Z" },
+  { id: "lead-2", full_name: "Devansh Rao", company: "Kestrel Freight", email: "d•••@k•••", phone: null, source: "manual", status: "working", owner_id: "own-2", notes: "Referral from Vikram's LinkedIn outreach.", converted_company_id: null, converted_contact_id: null, converted_deal_id: null, converted_at: null, created_at: "2026-08-18T14:30:00Z" },
+  { id: "lead-3", full_name: "Ananya Bose", company: "Cobalt Financial", email: "a•••@c•••", phone: "•••••• 7710", source: "form", status: "qualified", owner_id: "own-4", notes: "Confirmed budget for Q4; ready to convert.", converted_company_id: null, converted_contact_id: null, converted_deal_id: null, converted_at: null, created_at: "2026-08-10T11:15:00Z" },
+  { id: "lead-4", full_name: "Farhan Sheikh", company: null, email: null, phone: "•••••• 9042", source: "import", status: "disqualified", owner_id: "own-3", notes: "Not a fit — outside our supported region.", converted_company_id: null, converted_contact_id: null, converted_deal_id: null, converted_at: null, created_at: "2026-07-29T08:45:00Z" },
+  { id: "lead-5", full_name: "Priyanka Nair", company: "Umbra Studio", email: "p•••@u•••", phone: null, source: "form", status: "converted", owner_id: "own-1", notes: "Converted after the founder walkthrough.", converted_company_id: "comp-14", converted_contact_id: "con-15", converted_deal_id: "deal-14", converted_at: "2026-08-11T10:30:00Z", created_at: "2026-07-15T09:00:00Z" },
 ];

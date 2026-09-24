@@ -39,6 +39,7 @@ from app.schemas import (
     ContactPhoneRevealed,
     OwnerIn,
     OwnerOut,
+    OwnerPatch,
     ServiceInfo,
 )
 from platform_core.auth import Scope, ScopeContext, require, require_product
@@ -54,7 +55,7 @@ router = APIRouter(tags=["customer"])
 
 #: **The tenancy chokepoint.** Opens the transaction and binds it to the caller's
 #: organization before the route body runs, so no route can read or write without one.
-SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 
 #: The `crm` entitlement gate, applied to every principal route as well as at the gateway.
 Entitled = Depends(require_product("crm"))
@@ -161,6 +162,35 @@ async def create_owner(payload: OwnerIn, session: SessionDep, ctx: OwnerWrite) -
     owner = await services.create_owner(
         session, ctx, full_name=payload.full_name, email=payload.email, role=payload.role
     )
+    return selectors.owner_out(owner)
+
+
+@router.patch(
+    "/customers/owners/{owner_id}",
+    response_model=OwnerOut,
+    summary="Edit a rep, or deactivate one",
+    dependencies=[Entitled],
+)
+async def update_owner(
+    owner_id: uuid.UUID,
+    payload: OwnerPatch,
+    session: SessionDep,
+    ctx: OwnerWrite,
+) -> OwnerOut:
+    """One route for both edits and deactivation, distinguished by whether `is_active` is
+    present. Deactivating refuses (409) while the rep still owns a live company or contact —
+    reassign first. Reactivating has no such guard: a returning rep starts with an empty
+    book."""
+    owner = await selectors.get_owner(session, ctx.organization_id, owner_id)
+    if owner is None:
+        raise NotFoundProblem("That owner is not part of this organization")
+
+    if payload.is_active is False:
+        owner = await services.deactivate_owner(session, ctx, owner)
+    elif payload.is_active is True:
+        owner = await services.reactivate_owner(session, ctx, owner)
+
+    owner = await services.update_owner(session, ctx, owner, payload)
     return selectors.owner_out(owner)
 
 

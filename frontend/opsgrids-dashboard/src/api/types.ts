@@ -17,6 +17,8 @@ export interface Product {
   connects_to: string[];
   features: string[];
   is_platform: boolean;
+  /** A bundle (`suite`) is sold, never opened: a subscription to it entitles its members. */
+  is_bundle: boolean;
 }
 
 /** `ActivationOut` — whether this organisation may use a product right now. */
@@ -27,6 +29,8 @@ export interface Activation {
   activated_at: string;
   trial_ends_at: string | null;
   deactivated_at: string | null;
+  /** Keys of the subscriptions entitling it now: its own, and/or a bundle's (`suite`). */
+  entitled_by: string[];
 }
 
 /** `PriceOut` — one price on a plan version. `flat` is what ADR-0013 §2 sells. */
@@ -50,6 +54,14 @@ export interface PlanVersion {
   restricted_to_org_id: string | null;
   published_at: string | null;
   prices: Price[];
+  /** The version's feature sheet. A bundle names its members in `bundled_products`. */
+  features: Feature[];
+}
+
+/** `FeatureOut` — `value` is whatever JSON the catalogue stored. */
+export interface Feature {
+  feature_key: string;
+  value: unknown;
 }
 
 /** `PlanOut` — a product's plan with the versions this organisation may see. */
@@ -94,6 +106,8 @@ export interface Subscription {
   current_period_end: string | null;
   cancel_at: string | null;
   currency: string;
+  /** What this subscription switches on — the product itself, or a bundle's members. */
+  entitled_products: string[];
   items: SubscriptionItem[];
   dunning: Dunning | null;
 }
@@ -355,4 +369,35 @@ export interface Permission {
   default_scope: Scope;
   max_scope: Scope;
   is_dangerous: boolean;
+}
+
+// ------------------------------------------------------------------ email domains (SSO)
+
+/**
+ * `DomainOut`. `verification_host`/`verification_value` are what to publish as a DNS TXT
+ * record; `expires_at` is `null` once `verified_at` is set — the claim clock stops being read
+ * at all past that point.
+ */
+export interface Domain {
+  id: string;
+  domain: string;
+  is_primary: boolean;
+  auto_join: boolean;
+  verified_at: string | null;
+  created_at: string;
+  expires_at: string | null;
+  verification_host: string;
+  verification_value: string;
+  /** The periodic re-check's own findings. All three `null` means "never re-checked yet" —
+   * never an enforcement signal, since sign-in still gates on `verified_at` alone. */
+  last_checked_at: string | null;
+  last_check_ok: boolean | null;
+  /** Set once a re-check first finds the record missing after previously finding it; cleared
+   * the moment it is found again. Never means the domain was silently unverified. */
+  failing_since: string | null;
+}
+
+/** `DomainIn`. */
+export interface DomainCreate {
+  domain: string;
 }

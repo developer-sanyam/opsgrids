@@ -62,6 +62,18 @@ class ChargeOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class UsableMandateOut(BaseModel):
+    """Whether an organization could be debited `amount_minor` in `currency` now, and under
+    which mandate. Carries identifiers only — never card or bank details, which this platform
+    does not hold (the provider does)."""
+
+    organization_id: uuid.UUID
+    currency: str
+    amount_minor: int
+    usable: bool
+    mandate_id: uuid.UUID | None = None
+
+
 # --------------------------------------------------------------------- webhook (provider)
 
 
@@ -71,9 +83,23 @@ class WebhookAck(BaseModel):
     `duplicate` is true when the `provider_event_id` was already in the inbox — the callback was a
     re-delivery and did nothing the first time did not already do. `reconciled` is true when the
     event moved a charge to a terminal state and emitted a `commerce.payment.*`.
+
+    `provider_event_id` is the id the inbox deduplicated on: the delivery's `X-Razorpay-Event-Id`
+    header, else an id the body carried, else `derived:<sha256>` from the body's event name, entity
+    id and timestamp. It is never empty.
+
+    `ignored_reason` is set when the webhook was authentic but cannot be reconciled and never will
+    be — the provider is answered 200 (a retry could not change the outcome) and the reason is a
+    stable code: `unknown_charge` and `unattributable` (nothing here to reconcile), or
+    `illegal_transition`, `amount_mismatch`, `currency_mismatch` and `provider_id_conflict` (it
+    contradicts what this platform holds; no state was changed, an operator should look). Every
+    reason except `unattributable` — which has no tenant to record under — is kept on the inbox
+    row and audited as `payment.webhook.ignored`. Null on a webhook that was reconciled or was
+    simply a redelivery.
     """
 
     received: bool
     provider_event_id: str
     duplicate: bool
     reconciled: bool
+    ignored_reason: str | None = None

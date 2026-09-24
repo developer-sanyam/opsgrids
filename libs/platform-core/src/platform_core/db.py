@@ -23,8 +23,8 @@ route that forgets is caught by the route audit in each service's tests.
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from typing import Annotated, Any
 
 from fastapi import Depends, Request
@@ -148,30 +148,29 @@ def apply_schema_grants(
     connection.commit()
 
 
-def init_engine(settings: ServiceSettings) -> AsyncEngine:
-    """Create the process-wide engine. Called once, from the app lifespan."""
-    global _engine, _sessionmaker
-    if _engine is not None:
-        return _engine
-
-    _engine = create_async_engine(
+def _build_app_engine(
+    settings: ServiceSettings, *, pool_size: int, max_overflow: int, application_name: str
+) -> AsyncEngine:
+    """The application-role engine, built one way for both callers: the process-wide engine
+    (`init_engine`) and a background task's private bulkhead (`create_bulkhead_engine`)."""
+    engine = create_async_engine(
         settings.app_dsn,
         echo=settings.db_echo,
-        pool_size=settings.db_pool_size,
-        max_overflow=settings.db_max_overflow,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
         pool_pre_ping=True,
         connect_args={
             "server_settings": {
                 # Unqualified DDL and DML land in this service's own schema.
                 "search_path": f"{settings.db_schema},public",
-                "application_name": settings.service_name,
+                "application_name": application_name,
             }
         },
     )
 
     # Belt and braces: if a non-local GUC is ever set by mistake, it must not survive
     # the connection going back to the pool.
-    @event.listens_for(_engine.sync_engine, "reset")
+    @event.listens_for(engine.sync_engine, "reset")
     def _clear_tenant(dbapi_conn, _record, _reset_state) -> None:  # type: ignore[no-untyped-def]
         # Suppressed deliberately: this runs while a connection is being returned, often
         # because something already failed. Raising here would replace the real error
@@ -181,10 +180,72 @@ def init_engine(settings: ServiceSettings) -> AsyncEngine:
             cur.execute(f"RESET {TENANT_GUC}")
             cur.close()
 
+    return engine
+
+
+def init_engine(settings: ServiceSettings) -> AsyncEngine:
+    """Create the process-wide engine. Called once, from the app lifespan."""
+    global _engine, _sessionmaker
+    if _engine is not None:
+        return _engine
+
+    _engine = _build_app_engine(
+        settings,
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+        application_name=settings.service_name,
+    )
     _sessionmaker = async_sessionmaker(
         _engine, expire_on_commit=False, autoflush=False, class_=AsyncSession
     )
     return _engine
+
+
+def create_bulkhead_engine(settings: ServiceSettings, *, name: str) -> AsyncEngine:
+    """A private, **one-connection** application-role engine for a background task that shares
+    an API process with request traffic (the in-API sweeps: `operations`, `storefront`,
+    `document`).
+
+    Such a sweep used to check its per-tenant transactions out of the API's own pool — 3 + 2
+    connections on the edge (`DB_POOL_SIZE`/`DB_MAX_OVERFLOW`). Some of those transactions hold
+    their connection across network calls (storefront's domain probes, document's object-store
+    delete — the "network I/O inside a transaction" pattern D3 is removing), so a slow probe
+    took a fifth of the request path's connections for as long as it ran. A bulkhead is the
+    cheap structural answer: the sweep gets exactly one connection of its own, never overflows,
+    and can neither take one from the requests nor be starved by them.
+
+    Same role, DSN and tenant-GUC reset as the process engine — still the NOBYPASSRLS app role,
+    still bound per transaction by `bulkhead_scope`. Cost: one more Postgres connection per
+    API process that runs a sweep, opened lazily, and an engine object; the caller must
+    `await engine.dispose()` at shutdown. **Sequential use only:** with a pool of one, a
+    transaction that opens a second session on this engine while holding the first would wait
+    out `pool_timeout` and fail — no sweep here nests scopes.
+    """
+    return _build_app_engine(
+        settings,
+        pool_size=1,
+        max_overflow=0,
+        application_name=f"{settings.service_name}-{name}",
+    )
+
+
+def bulkhead_scope(
+    engine: AsyncEngine,
+) -> Callable[[uuid.UUID], AbstractAsyncContextManager[AsyncSession]]:
+    """`session_scope(organization_id=...)`, on `engine` instead of the process-wide one — the
+    `WorkScope` a sweep is constructed with. Same shape exactly: one transaction, the tenant
+    GUC bound first (transaction-local, as everywhere), commit on a clean exit."""
+    sessionmaker = async_sessionmaker(
+        engine, expire_on_commit=False, autoflush=False, class_=AsyncSession
+    )
+
+    @asynccontextmanager
+    async def scope(organization_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
+        async with sessionmaker() as session, session.begin():
+            await set_tenant(session, organization_id)
+            yield session
+
+    return scope
 
 
 def get_engine() -> AsyncEngine:
@@ -340,6 +401,21 @@ async def get_directory_session() -> AsyncIterator[AsyncSession]:
         yield session
 
 
+def get_directory_sessionmaker() -> async_sessionmaker[AsyncSession]:
+    """What a poll loop drains the directory reader through when there is no FastAPI request to
+    hang a `Depends` off — storefront's custom-domain sweep (ADR-0012 §6) discovers which
+    organizations hold a custom domain on this same BYPASSRLS, SELECT-only role, outside any
+    request.
+
+    Falls back to the application sessionmaker when no directory role is configured, the same
+    direction `get_directory_session` and `get_outbox_sessionmaker` fall in — the safe one to be
+    wrong in, at the cost of the bypass simply not happening.
+    """
+    if _directory_sessionmaker is None:
+        return get_sessionmaker()
+    return _directory_sessionmaker
+
+
 def init_outbox_engine(settings: ServiceSettings) -> None:
     """A third engine, for the two things that must see every tenant's outbox rows.
 
@@ -454,6 +530,12 @@ async def get_tenant_session(
 
     Opens the transaction and binds it to the caller's organization as its *first*
     statement, then yields. Commits on a clean return, rolls back on an exception.
+
+    **Declare it with `Depends(get_tenant_session, scope="function")`.** With FastAPI's
+    default scope the exit code — the commit — runs after the response has been sent, so a
+    client can be told 201 for a row its next request cannot see, or for a commit that then
+    fails. `tests/infra/test_session_dependency_scope.py` enforces this for every dependency
+    that opens a transaction and yields.
 
     It has to be the transaction opener rather than something that runs before one. A
     dependency that merely set the GUC and yielded would autobegin a transaction, and the

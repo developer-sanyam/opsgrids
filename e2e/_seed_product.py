@@ -13,7 +13,9 @@ would leave nothing to activate.
 
 **Promote `crm` and `hrms` from "soon" to "available".** `services.activate` refuses a product
 whose registry status is `soon` — rightly, since activating something with no service behind it
-sells a customer a 404.
+sells a customer a 404. Driven through `python -m app.launch` (P6) — the real operator command,
+not a hand-run `UPDATE` — so this suite exercises the same path a deploy does and gets the same
+audit row and the same refusal for a key the catalogue does not know.
 
 CRM is the only product in the catalogue that spans two services (customer-service owns the
 account book, deal-service owns the pipeline) and therefore the only one shipping **two** admin
@@ -47,11 +49,13 @@ SERVICE_DIR = Path(sys.argv[1]).resolve()
 sys.path.insert(0, str(SERVICE_DIR))
 
 from app.config import settings  # noqa: E402
-from app.models import SCHEMA  # noqa: E402
+from app.launch import main as launch_main  # noqa: E402
+from app.models import PLATFORM_ORG, SCHEMA  # noqa: E402
 
 #: The products this suite's journeys activate. `crm` for the CRM journey (two services, two
-#: admin roles); `hrms` for the Wave 0 exit journey (employee + attendance).
-PRODUCTS = ("crm", "hrms")
+#: admin roles); `hrms` for the Wave 0 exit journey (employee + attendance); `finance` for the
+#: bundle journey — the trio's third member, and product-service will not project a `soon` one.
+PRODUCTS = ("crm", "hrms", "finance")
 
 
 async def main() -> None:
@@ -64,18 +68,33 @@ async def main() -> None:
         connect_args={"server_settings": {"search_path": f"{SCHEMA},public"}},
     )
     async with engine.begin() as conn:
-        await conn.execute(text(f'TRUNCATE "{SCHEMA}"."activations", "{SCHEMA}"."outbox" CASCADE'))
-        # The only interpolation is `SCHEMA`, a constant this service defines; the product
-        # keys are bound.
+        # The sources go with the activations: a leftover source from a previous run would be
+        # ORed back into an activation this run expects to be off.
         await conn.execute(
             text(
-                f'UPDATE "{SCHEMA}"."products" SET status = \'available\' '  # noqa: S608
-                "WHERE key = ANY(:keys)"
-            ),
-            {"keys": list(PRODUCTS)},
+                f'TRUNCATE "{SCHEMA}"."activations", "{SCHEMA}"."activation_sources", '
+                f'"{SCHEMA}"."outbox" CASCADE'
+            )
         )
-
+        # `audit_logs` is tenant-policied even for a platform-sentinel row (ADR-0000 §10), so
+        # a prior run's launch-status audit rows are cleared here too — otherwise they would
+        # be the one row this seeder leaves behind indefinitely across every future run. The
+        # only interpolation in either statement is `SCHEMA`, a constant this service defines.
+        await conn.execute(
+            text(f'DELETE FROM "{SCHEMA}"."audit_logs" WHERE organization_id = :org'),  # noqa: S608
+            {"org": PLATFORM_ORG},
+        )
     await engine.dispose()
+
+    # The real operator path (P6), not a hand-run UPDATE: `python -m app.launch <key> available`
+    # per product, in this same process — `app.launch.main` takes argv directly rather than
+    # this seeder shelling out to `python -m app.launch` again, which would be a second
+    # interpreter importing the same `app` package this one already holds.
+    for key in PRODUCTS:
+        code = await launch_main([key, "available"])
+        if code != 0:
+            raise RuntimeError(f"app.launch refused to promote {key!r} to available")
+
     print(f"{', '.join(PRODUCTS)} activatable; activations and outbox cleared")
 
 

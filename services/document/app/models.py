@@ -113,6 +113,16 @@ class Asset(Base, TenantBase):
             desc("created_at"),
             postgresql_where="deleted_at IS NULL",
         ),
+        # The purge sweep's own cross-tenant discovery (ADR-0009 §8, §12) —
+        # `app/selectors.py`'s `due_purge_assets`, run on the BYPASSRLS outbox role. Deliberately
+        # **not** leading with `organization_id`: the query has no tenant to bind while asking
+        # which organizations have assets due for purging, so an org-led index would not serve
+        # it. Shipped in the sweep's own slice, not with the table — ADR-0009 §12's own rule.
+        Index(
+            "ix_assets_purge_sweep_discovery",
+            "deleted_at",
+            postgresql_where="deleted_at IS NOT NULL AND purged_at IS NULL",
+        ),
     )
 
 

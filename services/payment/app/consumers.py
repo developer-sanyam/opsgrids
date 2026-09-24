@@ -11,12 +11,22 @@ Two events raise a charge here, and they are the same act asked for by two diffe
   Neither reaches into the other's schema, and the only thing that crosses is the event.
 
 Every handler is idempotent: `already_processed` before acting, `mark_processed` in the same
-transaction as its side effects. The charge create is *also* idempotent at the database (unique
+transaction as the charge *claim*. The charge create is *also* idempotent at the database (unique
 platform key), so a redelivery is a no-op at two layers — belt and braces, because a duplicate
 charge is a duplicate debit. The retry key is per *attempt* rather than per invoice, for the
 reason ADR-0004 §6 makes unavoidable: Razorpay has no idempotency key of its own, so ours is the
 only one, and reusing the failed charge's key would deduplicate the retry into the charge that
 already failed and debit nobody at all.
+
+**The provider call happens with no transaction open.** `mark_processed` rides in the same
+transaction as `services.stage_charge`, not the provider call or `finalize_charge` — a queue
+consumer holding a connection and a row open for however long a payment processor takes is exactly
+the pool-exhaustion risk this shape exists to avoid. A process that dies after the call but before
+`finalize_charge` leaves the charge `created` with no `provider_payment_id`; the event itself will
+never be redelivered for it (this transaction already marked it processed), so `app/cron.py`'s
+stuck-charge sweep — running in this same process, `app/worker.py` — is what resumes it, not a
+queue retry. The call itself runs on a worker thread, bounded
+(`services.call_provider_charge_off_loop`), so a slow provider never blocks the event loop.
 """
 
 from __future__ import annotations
@@ -57,13 +67,28 @@ async def charge_on_invoice_finalized(envelope: dict[str, Any]) -> None:
     organization_id = uuid.UUID(payload["organization_id"])
     provider = get_provider()
 
+    from app import services
+
+    needs_call = False
+    charge = None
     async with session_scope(organization_id=organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("invoice.finalized.duplicate", event_id=str(event_id))
             return
-        from app import services
 
-        await services.create_charge(
+        if int(payload["total_minor"]) <= 0:
+            # A zero invoice — a free plan's period, a usage-only plan with no usage — is a real
+            # document with nothing to collect. Presenting a zero debit is a provider call and a
+            # bank fee that moves no money, so it is recorded as handled and nothing is raised.
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+            log.info(
+                "invoice.finalized.nothing_to_collect",
+                event_id=str(event_id),
+                invoice_id=payload.get("invoice_id"),
+            )
+            return
+
+        charge, needs_call = await services.stage_charge(
             session,
             provider,
             ChargeIn(
@@ -72,6 +97,9 @@ async def charge_on_invoice_finalized(envelope: dict[str, Any]) -> None:
                 subscription_id=uuid.UUID(payload["subscription_id"])
                 if payload.get("subscription_id")
                 else None,
+                # The billing run names the product, so a failure event can say which one
+                # dunning is about. Absent on a hand-finalized invoice, as before.
+                product_key=payload.get("product_key"),
                 amount_minor=int(payload["total_minor"]),
                 currency=payload["currency"],
                 # Platform-supplied idempotency key: one charge per finalized invoice.
@@ -79,6 +107,18 @@ async def charge_on_invoice_finalized(envelope: dict[str, Any]) -> None:
             ),
         )
         mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+
+    if needs_call:
+        # No transaction open here: this redelivery is already marked processed, so a crash
+        # between this line and the finalize below is resumed by app/cron.py's stuck-charge
+        # sweep, never by the queue.
+        result = await services.call_provider_charge_off_loop(provider, charge)
+        if result is not None:  # None: timed out — the lease lapses into the sweep
+            async with session_scope(organization_id=organization_id) as session:
+                await services.finalize_charge(
+                    session, charge.id, result, organization_id=organization_id
+                )
+
     log.info(
         "invoice.finalized.charged",
         event_id=str(event_id),
@@ -101,6 +141,15 @@ async def charge_on_dunning_retry(envelope: dict[str, Any]) -> None:
     A retry with no amount is skipped rather than debited for nothing — a zero-value debit is a
     provider call and a bank fee that collects nothing, and the failure that opened the cycle
     always carries the amount it failed to collect.
+
+    **A retry for an invoice already captured is skipped too, before it ever stages a charge.**
+    Each rung carries a fresh idempotency key (see above), so the platform-key dedupe that protects
+    every other charge-creating path does not protect this one: nothing stops it raising and
+    debiting a second charge for an invoice that is already paid. The gap is real — the charge
+    whose failure opened this cycle can itself be captured late, by the same payment, after the
+    retry is already queued (ADR-0004, PAY-A round 2) — so the invoice is checked here, immediately
+    before staging, not left to `_detect_double_collection` to notice after the money has moved a
+    second time.
     """
     event_id = uuid.UUID(envelope["event_id"])
     payload = envelope["payload"]
@@ -108,14 +157,35 @@ async def charge_on_dunning_retry(envelope: dict[str, Any]) -> None:
     amount_minor = payload.get("amount_minor")
     provider = get_provider()
 
+    from app import selectors, services
+
+    needs_call = False
+    charge = None
     async with session_scope(organization_id=organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("dunning.retry.duplicate", event_id=str(event_id))
             return
-        from app import services
+
+        raw_invoice_id = payload.get("invoice_id")
+        invoice_id = uuid.UUID(raw_invoice_id) if raw_invoice_id else None
+        if invoice_id is not None and await selectors.captured_charges_for_invoice(
+            session, organization_id, invoice_id
+        ):
+            # Most likely this charge's own late, same-payment capture landed after the retry was
+            # scheduled but before it ran. Debiting again would double-collect the invoice; the
+            # event is dropped and marked processed like any other handled delivery, so a
+            # redelivery of it is still exactly one no-op.
+            log.warning(
+                "dunning.retry.invoice_already_paid",
+                event_id=str(event_id),
+                invoice_id=str(invoice_id),
+                subscription_id=payload.get("subscription_id"),
+            )
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+            return
 
         if amount_minor:
-            await services.create_charge(
+            charge, needs_call = await services.stage_charge(
                 session,
                 provider,
                 ChargeIn(
@@ -139,6 +209,17 @@ async def charge_on_dunning_retry(envelope: dict[str, Any]) -> None:
                 subscription_id=payload.get("subscription_id"),
             )
         mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+
+    if needs_call and charge is not None:
+        # No transaction open here — see charge_on_invoice_finalized above for why, and why a
+        # crash after this point is the stuck-charge sweep's job, not a queue retry.
+        result = await services.call_provider_charge_off_loop(provider, charge)
+        if result is not None:  # None: timed out — the lease lapses into the sweep
+            async with session_scope(organization_id=organization_id) as session:
+                await services.finalize_charge(
+                    session, charge.id, result, organization_id=organization_id
+                )
+
     log.info(
         "dunning.retry.charged",
         event_id=str(event_id),

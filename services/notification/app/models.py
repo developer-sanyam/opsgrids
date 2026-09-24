@@ -299,6 +299,16 @@ class Message(Base, TenantBase):
     #: pending | sending | sent | delivered | read | failed | suppressed.
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
 
+    #: outbound | inbound. Every row this service has ever written is `outbound` — a customer's
+    #: own message lives in `InboundMessage`, never here — so the column exists for symmetry
+    #: with the conversation it may belong to rather than because this table ever holds the
+    #: other value today. Kept rather than assumed so a later projection that reads `messages`
+    #: alone (a thread view, an export) does not have to ask a second table what direction means.
+    direction: Mapped[str] = mapped_column(String(10), nullable=False, default="outbound")
+    #: The conversation this reply belongs to. Null for every message that is not a reply inside
+    #: a WhatsApp conversation — a rule-driven notification or a campaign email has no thread.
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
     #: Which rule produced this, and which event it reacted to. Null for a direct API send —
     #: the platform can notify without an automation behind it.
     rule_code: Mapped[str | None] = mapped_column(String(80))
@@ -340,6 +350,8 @@ class Message(Base, TenantBase):
             "organization_id",
             "provider_message_id",
         ),
+        # The thread view: every outbound reply in one conversation, oldest first.
+        Index("ix_messages_org_conversation", "organization_id", "conversation_id"),
         # Two rules on one event are two messages; one event twice is one message.
         UniqueConstraint("organization_id", "dedupe_key", name="uq_messages_org_dedupe"),
     )
@@ -407,6 +419,197 @@ class Preference(Base, TenantBase):
             "channel",
             "category",
             name="uq_preferences_org_recipient",
+        ),
+    )
+
+
+class Conversation(Base, TenantBase):
+    """One customer's WhatsApp thread with this organization.
+
+    `wa_address_enc` is the customer's number, sealed like any other PII at rest —
+    `wa_address_masked` is what an ordinary read returns, and `wa_address_index` is the keyed
+    blind index that makes "does a conversation already exist for this number" one indexed
+    equality rather than a decrypt of every row per inbound webhook. The unique constraint is on
+    the index for the same reason `Contact.email_index`'s is: uniqueness of the normalised
+    number without the database ever holding it in the clear.
+
+    `last_customer_message_at` is the whole of the 24-hour customer service window (`webhooks.
+    within_service_window`) — the fact that decides whether a reply may be free text or must be
+    an approved template. It only ever moves forward (`webhooks` folds with `GREATEST`), because
+    Meta redelivers and a batch is not guaranteed to arrive in order.
+
+    `contact_id` is a plain UUID, never a foreign key (ADR-0000 §10, and `customer` is a
+    different schema regardless): it names a row in `customer.contacts`, resolved by asking
+    customer-service the same way a proactive send does (`app/contacts.py`), and it is null
+    until that resolution runs or when it never finds a match — a stranger messaging the
+    business is ordinary, not an error.
+
+    `assignee_membership_id` is likewise a plain UUID naming a membership in `account`, not a
+    foreign key, and not resolved to a name here — the inbox UI reads a name for it from
+    whatever roster it already holds.
+    """
+
+    __tablename__ = "conversations"
+
+    #: whatsapp today; a column rather than a fixed value because the shape (a sealed address,
+    #: a service window, a contact link) is not WhatsApp's alone.
+    channel: Mapped[str] = mapped_column(String(20), nullable=False, default="whatsapp")
+
+    wa_address_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    wa_address_masked: Mapped[str] = mapped_column(String(40), nullable=False)
+    wa_address_index: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    #: Plain UUID naming a `customer.contacts` row. Null until resolved, or forever for a
+    #: stranger. See the class docstring.
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
+    #: The 24-hour customer service window's clock. Null means the window has never opened —
+    #: this conversation exists (an operator started it, or a message failed outside the
+    #: window) but the customer has never actually written in.
+    last_customer_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    #: open | closed. A triage state for the inbox, independent of the service window — a closed
+    #: conversation still tracks `last_customer_message_at` and a reply reopens it.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+
+    #: Plain UUID naming an `account.memberships` row. Null when unassigned.
+    assignee_membership_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
+    __table_args__ = (
+        # The webhook fold's hot path: does a conversation already exist for this number.
+        UniqueConstraint(
+            "organization_id",
+            "channel",
+            "wa_address_index",
+            name="uq_conversations_org_channel_address",
+        ),
+        # The inbox list: open conversations, most recently active first.
+        Index(
+            "ix_conversations_org_status",
+            "organization_id",
+            "status",
+            "last_customer_message_at",
+        ),
+        Index("ix_conversations_org_contact", "organization_id", "contact_id"),
+    )
+
+
+class InboundMessage(Base, TenantBase):
+    """One message a customer sent, folded from a WhatsApp webhook.
+
+    `provider_message_id` is Meta's `wamid`, unique per organization — the redelivery guard for
+    the row itself, independent of `processed_events` (which guards the *fold*, keyed by the same
+    id via `webhooks.InboundMessage.dedupe_id`, so the two never disagree in practice, but this
+    constraint is what turns a bug in that derivation into a database error instead of a
+    duplicate message in someone's inbox).
+
+    Only `type == "text"` has a body. Meta's other shapes — media, interactive replies — are not
+    parsed (`webhooks.parse_inbound`'s docstring says why), so `body_enc` is null. `body_masked`
+    is a **fixed-length** placeholder, never derived from the real text: a length- or tail-
+    revealing mask on free-form customer text leaks the one thing masking exists to hide, in a way
+    a masked phone number or email does not — there is no fixed convention for "the last four
+    characters of a sentence" the way there is for a card or an account number. Unmasking either
+    field is `engage.inbox.message.unmask` — the dangerous, audited permission
+    (`services.unmask_inbound_message`) — the only route that opens `body_enc` or `raw_enc`.
+
+    `raw_enc` is the provider's own message object, whole, **sealed** — it carries `from`, the
+    text body, and whatever Meta's next media or interactive shape puts in it, none of which may
+    sit in the clear at rest. There is no plaintext `raw` column at all: a field this table does
+    not yet know to strip (`context.from`, a location, a media caption) must not become a gap by
+    omission the way an allowlist-of-things-to-redact would.
+
+    `profile_name` is sealed the same way for the same reason — a WhatsApp display name is a
+    customer's own chosen name, and `profile_name_masked` is what an ordinary read shows.
+    """
+
+    __tablename__ = "inbound_messages"
+
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("notification.conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider_message_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: text | unknown | image | ... — whatever Meta's `type` field said. Only `text` is
+    #: interpreted; everything else is stored with `type` as given (see the class docstring).
+    type: Mapped[str] = mapped_column(String(20), nullable=False)
+    body_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    #: A constant string when a body is sealed, empty when there is none — never a function of
+    #: the real text's length or content. See `services._BODY_MASK_PLACEHOLDER`.
+    body_masked: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    #: The provider's own message object, whole, sealed. See the class docstring.
+    raw_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: The sender's WhatsApp profile name, sealed. `None` when Meta included none.
+    profile_name_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    #: `"J•••"` — first character, then a fixed run of bullets, never the name's real length.
+    profile_name_masked: Mapped[str | None] = mapped_column(String(8))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "provider_message_id", name="uq_inbound_messages_org_provider_id"
+        ),
+        # The thread view: every inbound message in one conversation, oldest first.
+        Index(
+            "ix_inbound_messages_org_conversation",
+            "organization_id",
+            "conversation_id",
+            "occurred_at",
+        ),
+    )
+
+
+class InboundDeadLetter(Base, TenantBase):
+    """One webhook item (a status or an inbound message) that failed to fold, parked here instead
+    of failing the whole `POST` it arrived in.
+
+    A single malformed or oversized item must not cost every other item in the same batch, or —
+    worse — Meta's own retry of the *whole* body, which repeats the same failure forever and
+    never lets the items beside it through either. `app/api/webhooks.py` wraps each item's fold in
+    its own `try`/`except`, and only a **permanent** failure — one no amount of redelivery will
+    ever fix — lands here; a transient one (a connection blip, a deadlock) is left to raise into a
+    5xx instead, so Meta's own retry does the job this table does not need to.
+
+    `error` is reduced to the exception's type name, its SQLSTATE and its constraint name — never
+    `str(exc)`, which for a database error can echo a parameter value straight out of the query
+    that failed (`services.record_dead_letter`'s docstring says why). `raw_enc` is sealed, the same
+    way `InboundMessage.raw_enc` is: unlike an ordinary operator worklist, a permanent error is
+    genuinely recoverable once whatever made it permanent is fixed (a schema widened, a bug
+    patched), so the item's own payload is kept, sealed, rather than discarded — `app/
+    replay_dead_letters.py` is the one place that reopens it, and every replay writes its own
+    audit row.
+
+    `provider_message_id` is unique per organization and `kind` — `services.record_dead_letter`
+    upserts on it with `ON CONFLICT DO NOTHING` rather than a plain insert, so two redeliveries of
+    the same permanently-broken item (or a replay failing again for a row a concurrent webhook has
+    already re-parked) produce one row here, not two.
+    """
+
+    __tablename__ = "inbound_dead_letters"
+
+    #: status | inbound. Which fold this item was headed for.
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    provider_message_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: The exception's type, SQLSTATE and constraint name only. Never `str(exc)`, never the
+    #: payload.
+    error: Mapped[str] = mapped_column(String(500), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: The item's own raw provider object (a status or a message), sealed — what `app/
+    #: replay_dead_letters.py` opens to retry the fold once the permanent error behind this row
+    #: has been fixed.
+    raw_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+
+    __table_args__ = (
+        Index("ix_inbound_dead_letters_org_created", "organization_id", "created_at"),
+        # The park-side idempotency guard: `services.record_dead_letter` upserts on this rather
+        # than inserting blind, so parking the same broken item twice (two redeliveries racing
+        # each other, or a replay that fails again for a row a concurrent webhook already
+        # re-parked) is one row, not a duplicate worklist entry.
+        UniqueConstraint(
+            "organization_id",
+            "kind",
+            "provider_message_id",
+            name="uq_inbound_dead_letters_org_kind_provider_id",
         ),
     )
 
@@ -682,6 +885,15 @@ class CampaignRecipient(Base, TenantBase):
     it straight back to `queued` so the next tick retries. A row stuck at `sending` because a
     process died mid-batch is reclaimed once its lease (`Settings.engage_campaign_claim_lease_
     seconds`) is stale, which is what makes a crash resumable rather than a stall.
+
+    `erased_at` is set once, by `services.erase_contact_campaign_copies`, when the contact this
+    row was addressed to is deleted or otherwise erased. The row is never removed — a campaign's
+    delivery history and stats must outlive the contact that received it, the same reason the
+    address is copied here in the first place rather than joined from `contacts` — but from that
+    moment `email_enc` no longer holds the real address: it is re-sealed over a placeholder, so
+    the ciphertext column stays valid without the original plaintext being recoverable from it.
+    `claim_campaign_batch` checks this before ever calling `pii.open_sealed`, so an erased row is
+    resolved `failed` rather than attempted.
     """
 
     __tablename__ = "campaign_recipients"
@@ -703,6 +915,9 @@ class CampaignRecipient(Base, TenantBase):
     provider_message_id: Mapped[str | None] = mapped_column(String(255))
     error: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When the contact's sealed address was crypto-shredded. Null for every row whose contact
+    #: has not been deleted or erased.
+    erased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         UniqueConstraint("campaign_id", "contact_id", name="uq_campaign_recipient"),
@@ -711,6 +926,9 @@ class CampaignRecipient(Base, TenantBase):
         ),
         Index("ix_campaign_recipients_org_campaign", "organization_id", "campaign_id", "status"),
         Index("ix_campaign_recipients_org_sent_at", "organization_id", "sent_at"),
+        #: What `services.erase_contact_campaign_copies` scans: every recipient row across every
+        #: campaign this contact was ever addressed by, in one organization.
+        Index("ix_campaign_recipients_org_contact", "organization_id", "contact_id"),
     )
 
 

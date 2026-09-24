@@ -220,3 +220,33 @@ class TestBlindIndex:
         old = blind_index("+917976603446", kind="phone", settings=_settings(key="old-key"))
         rotated = _settings(key="new-key", decrypt=["old-key"])
         assert blind_index("+917976603446", kind="phone", settings=rotated) != old
+
+
+class TestAssociatedData:
+    """`aad` binds a sealed value to the row it was written for — MINOR 8 of the 2026-09-24
+    security review, added so a service can seal a secret with (e.g.) `mfa_factor:<user_id>`
+    and have GCM itself refuse to open it under any other row's identity."""
+
+    def test_a_value_sealed_with_aad_opens_with_the_same_aad(self) -> None:
+        settings = _settings()
+        sealed, _ = seal("JBSWY3DPEHPK3PXP", kind="generic", settings=settings, aad=b"user:1")
+        assert open_sealed(sealed, settings=settings, aad=b"user:1") == "JBSWY3DPEHPK3PXP"
+
+    def test_the_wrong_aad_refuses_to_open_even_with_the_right_key(self) -> None:
+        settings = _settings()
+        sealed, _ = seal("JBSWY3DPEHPK3PXP", kind="generic", settings=settings, aad=b"user:1")
+        with pytest.raises(PiiError):
+            open_sealed(sealed, settings=settings, aad=b"user:2")
+
+    def test_no_aad_at_open_refuses_a_value_sealed_with_one(self) -> None:
+        settings = _settings()
+        sealed, _ = seal("JBSWY3DPEHPK3PXP", kind="generic", settings=settings, aad=b"user:1")
+        with pytest.raises(PiiError):
+            open_sealed(sealed, settings=settings)
+
+    def test_aad_is_optional_and_backward_compatible(self) -> None:
+        """Every existing caller omits `aad` — sealing and opening with neither must behave
+        exactly as it did before this parameter existed."""
+        settings = _settings()
+        sealed, _ = seal("JBSWY3DPEHPK3PXP", kind="generic", settings=settings)
+        assert open_sealed(sealed, settings=settings) == "JBSWY3DPEHPK3PXP"

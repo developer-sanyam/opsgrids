@@ -91,8 +91,12 @@ export interface InvoiceLine {
 /** How a supply is classified for GST. B2C is the one that needs no IRN. */
 export type SupplyType = "b2b" | "b2c" | "export" | "sez";
 
-/** One attempt at registering a document with the Invoice Registration Portal. */
-export type FilingStatus = "pending" | "filed" | "failed" | "cancelled";
+/**
+ * One attempt at registering a document with the Invoice Registration Portal. `cancelling` is a
+ * withdrawal the platform has asked for and not yet seen confirmed — it is only ever the newest
+ * row while that is true; once answered, the history shows the answer instead.
+ */
+export type FilingStatus = "pending" | "filed" | "failed" | "cancelled" | "cancelling";
 
 /**
  * An invoice's current e-invoice position, derived server-side from its newest filing attempt.
@@ -127,8 +131,12 @@ export interface EInvoiceState {
   remedy?: FilingRemedy | null;
 }
 
-/** The two corrections for a filed document. Mutually exclusive in time. */
-export type FilingRemedy = "cancel" | "credit_note";
+/**
+ * The corrections for a filed document. Mutually exclusive in time. `contact_support` follows a
+ * withdrawal the platform could not confirm before the window shut: the IRN may or may not still
+ * stand at the portal, and only a look there says which.
+ */
+export type FilingRemedy = "cancel" | "credit_note" | "contact_support";
 
 /** One row of a document's filing history. Append-only server-side: a retry is a further row. */
 export interface EInvoiceFiling {
@@ -267,6 +275,21 @@ export type ImsReason =
 /** A supplier may file an invoice, a credit note or a debit note against a recipient. */
 export type ImsDocumentType = "invoice" | "credit_note" | "debit_note";
 
+/**
+ * What an accepted document was for. Decides whether the ITC ledger accrues credit on it at all:
+ * every category but `general` is blocked under GST s. 17(5), and accepting one of those still
+ * records the decision but claims no input tax credit. Asked for on every decision, not only
+ * `accept`, so a `reject` or `pending_action` still records what the person understood the
+ * document to be.
+ */
+export type ImsExpenseCategory =
+  | "general"
+  | "motor_vehicle"
+  | "food_beverage"
+  | "membership_club_fitness"
+  | "works_contract_immovable"
+  | "personal_consumption";
+
 /** What the platform proposes for one inbound document, and why. Never applied on its own. */
 export interface ImsSuggestion {
   id: string;
@@ -293,6 +316,7 @@ export interface ImsDecision {
   note: string | null;
   suggested_action: ImsAction | null;
   suggestion_reason: ImsReason | null;
+  expense_category: ImsExpenseCategory;
   /** The subject id of whoever decided. */
   decided_by: string;
   decided_at: string;
@@ -503,7 +527,7 @@ export interface Page<T> {
 /* --------------------------------------------------------------------- GST returns
  * The outward-supplies return, assembled from the invoices already recorded. */
 
-export type ReturnType = "gstr1" | "gstr7";
+export type ReturnType = "gstr1" | "gstr7" | "gstr3b";
 export type ReturnStatus = "draft" | "generated" | "filed";
 
 /** One period's return: the record, not the snapshot. What the list page renders. */
@@ -611,10 +635,87 @@ export interface Gstr1Sections {
   docs: DocumentSeries[];
 }
 
-/** The return with its sections and its whole status trail. `sections` is null on a `draft`. */
+/* --------------------------------------------------------------------- GSTR-3B
+ * The summary return: outward liability netted against the input-tax-credit ledger. Every figure
+ * is either summed straight off the invoices GSTR-1 reads too, or read off the ITC ledger. */
+
+/** An amount broken across the four heads GST is payable under. `cess_minor` is always zero
+ * today — no table in this platform carries a cess column yet. */
+export interface TaxHeadAmounts {
+  igst_minor: Minor;
+  cgst_minor: Minor;
+  sgst_minor: Minor;
+  cess_minor: Minor;
+  total_minor: Minor;
+}
+
+/** Table 3.1. Only (a) and (b) are ever non-zero — see the finance service's `domain.py` for why
+ * (c) nil/exempt, (d) reverse-charge inward and (e) non-GST outward always report zero today. */
+export interface Gstr3bOutward {
+  taxable_supplies: TaxHeadAmounts;
+  outward_taxable_minor: Minor;
+  zero_rated: TaxHeadAmounts;
+  zero_rated_taxable_minor: Minor;
+  nil_rated_taxable_minor: Minor;
+  reverse_charge_inward_taxable_minor: Minor;
+  non_gst_taxable_minor: Minor;
+  /** Not a numbered row of the form: the taxable value of an outward reverse-charge supply this
+   * organization raised. Excluded from (a) and from `Gstr3bPayment.liability` because the
+   * recipient, not this organization, owes the tax on it. */
+  outward_reverse_charge: TaxHeadAmounts;
+  outward_reverse_charge_taxable_minor: Minor;
+}
+
+/**
+ * Table 4, in the shape Notification 14/2022-CT gave it. 4A(5) is **gross** — including credit
+ * blocked under s. 17(5) — 4B splits the reversal into the two rows the return itself asks for,
+ * 4C is the net the ledger actually carries forward, and 4D is informational and always zero:
+ * neither a Rule 37 re-claim nor a s. 16(4)/place-of-supply ineligibility is modelled.
+ */
+export interface Gstr3bItc {
+  available: TaxHeadAmounts; // 4A(5), gross
+  reversed_section_17_5: TaxHeadAmounts; // 4B(1)
+  reversed_other: TaxHeadAmounts; // 4B(2)
+  reclaimed: TaxHeadAmounts; // 4D(1) — always zero
+  ineligible_other: TaxHeadAmounts; // 4D(2) — always zero
+  total_reversed: TaxHeadAmounts; // 4B(1) + 4B(2)
+  net_eligible: TaxHeadAmounts; // 4C = 4A - 4B
+}
+
+/** One application of credit against liability in the statutory order — IGST first against IGST,
+ * then CGST, then SGST; CGST against CGST then IGST, never SGST; SGST mirrors it. */
+export interface UtilisationLine {
+  head: string;
+  against: string;
+  amount_minor: Minor;
+}
+
+/** Table 6.1 — the liability, how credit covered it, and what is left for cash. Late fee and
+ * interest are out of scope for this slice. */
+export interface Gstr3bPayment {
+  liability: TaxHeadAmounts;
+  utilisation: UtilisationLine[];
+  credit_remaining: TaxHeadAmounts;
+  cash_payable: TaxHeadAmounts;
+  /** The magnitude of any negative liability handed in — a heavy-credit-note period. Informational
+   * only: never netted into `cash_payable` and never spendable as credit. */
+  excess_liability: TaxHeadAmounts;
+}
+
+/** Every table of one GSTR-3B, and the shape the snapshot is stored in. */
+export interface Gstr3bSections {
+  outward: Gstr3bOutward;
+  itc: Gstr3bItc;
+  itc_brought_forward: TaxHeadAmounts;
+  payment: Gstr3bPayment;
+}
+
+/** The return with its sections and its whole status trail. `sections` is null on a `draft`; its
+ * concrete shape follows `ret.return_type` — `Gstr1Sections` for `gstr1`/`gstr7`, `Gstr3bSections`
+ * for `gstr3b`. */
 export interface GstReturnDetail {
   ret: GstReturn;
-  sections: Gstr1Sections | null;
+  sections: Gstr1Sections | Gstr3bSections | null;
   transitions: GstReturnTransition[];
 }
 
@@ -665,7 +766,21 @@ export interface FileReturnIn {
 
 /* --------------------------------------------------------------------- e-Way bills */
 
-export type EwayStatus = "pending" | "generated" | "failed" | "cancelled" | "expired";
+/**
+ * `submitting` and `cancelling` are a generation or a withdrawal the platform has asked for and not
+ * yet seen answered — shown only while that is true.
+ */
+export type EwayStatus =
+  | "pending"
+  | "generated"
+  | "failed"
+  | "cancelled"
+  | "expired"
+  | "submitting"
+  | "cancelling";
+
+/** `contact_support` follows a withdrawal the platform could not confirm before the window shut. */
+export type EwayRemedy = "cancel" | "contact_support";
 
 /** One recorded attempt to raise an e-Way bill. Append-only: a retry is a further row. */
 export interface EwayBill {
@@ -686,7 +801,7 @@ export interface EwayBill {
   valid_from: string | null;
   valid_until: string | null;
   /** `cancel` while the 24-hour window is open, null once it has closed. Read-only in this app. */
-  remedy: "cancel" | null;
+  remedy: EwayRemedy | null;
   error_code: string | null;
   error: string | null;
   attempted_at: string;
@@ -708,7 +823,7 @@ export interface EwayState {
   valid_until: string | null;
   terminal: boolean;
   cancellable_until: string | null;
-  remedy: "cancel" | null;
+  remedy: EwayRemedy | null;
   attempts: number;
 }
 

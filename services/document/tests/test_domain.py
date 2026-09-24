@@ -7,6 +7,7 @@ each of its five rules stops the specific thing it exists to stop.
 from __future__ import annotations
 
 import io
+import uuid
 
 import pytest
 from PIL import Image
@@ -96,7 +97,7 @@ class TestTheDecompressionBomb:
     def test_max_image_pixels_is_set_explicitly(self) -> None:
         """Pillow's default behaviour at this threshold is a *warning*, which is worse than
         either alternative. The module sets a real value at import."""
-        assert Image.MAX_IMAGE_PIXELS == domain.MAX_IMAGE_PIXELS == 50_000_000
+        assert Image.MAX_IMAGE_PIXELS == domain.MAX_IMAGE_PIXELS == 24_000_000
 
     def test_a_bomb_is_refused_before_it_is_decoded(self) -> None:
         """81 megapixels of flat colour is a few kilobytes on the wire — the attack a byte
@@ -107,8 +108,18 @@ class TestTheDecompressionBomb:
             domain.process_upload(raw)
         assert exc.value.code == "image_too_many_pixels"
 
+    def test_a_legal_sized_image_that_used_to_nearly_oom_is_now_refused(self) -> None:
+        """A 7000x7000 PNG (49 MP) was accepted under the old 50 MP ceiling and measured
+        ~489 MB peak RSS decoding, resizing and re-encoding it — against this container's 320m
+        `mem_limit`. Refusing it fast, off the header, before a single pixel decodes, is the
+        fix; see the module-level comment on MAX_IMAGE_PIXELS."""
+        raw = decompression_bomb(7000, 7000)
+        with pytest.raises(domain.ImageRejected) as exc:
+            domain.process_upload(raw)
+        assert exc.value.code == "image_too_many_pixels"
+
     def test_an_image_just_under_the_ceiling_is_accepted(self) -> None:
-        raw = decompression_bomb(7000, 7000)  # 49 MP
+        raw = decompression_bomb(4800, 4800)  # 23.04 MP, under the 24 MP ceiling
         assert domain.process_upload(raw).width == domain.MAX_LONG_EDGE
 
 
@@ -164,3 +175,17 @@ class TestKeysAndPaths:
         path = domain.public_path(org, asset)
         assert path == f"/a/{org}/{asset}"
         assert path.removeprefix("/a") == f"/{domain.storage_key(org, asset)}"
+
+    def test_parse_storage_key_is_the_inverse_of_storage_key(self) -> None:
+        org = uuid.uuid4()
+        asset = uuid.uuid4()
+        parsed = domain.parse_storage_key(domain.storage_key(org, asset))
+        assert parsed == (org, asset)
+
+    def test_parse_storage_key_refuses_a_key_this_service_never_wrote(self) -> None:
+        """The orphan sweep lists a shared bucket; an object with a key shape this service
+        never produced must be left alone rather than guessed at (`app/cron.py`)."""
+        assert domain.parse_storage_key("not-a-uuid/also-not-one") is None
+        assert domain.parse_storage_key(str(uuid.uuid4())) is None
+        assert domain.parse_storage_key(f"{uuid.uuid4()}/{uuid.uuid4()}/extra") is None
+        assert domain.parse_storage_key("") is None
