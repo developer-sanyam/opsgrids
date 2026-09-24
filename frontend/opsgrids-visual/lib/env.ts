@@ -34,14 +34,32 @@ export const LOCALE = "en-IN";
 export const TIMEZONE = "Asia/Kolkata";
 
 /**
+ * The first of the four ports the static servers take. `VISUAL_PORT_BASE` moves the block, so two
+ * checkouts (two worktrees, two branches) can run the harness at the same time: the servers are
+ * never reused (`playwright.config.ts`), so a second run on the same ports refuses to start rather
+ * than photograph the other checkout's build.
+ */
+function portBase(): number {
+  const raw = process.env["VISUAL_PORT_BASE"];
+  if (raw === undefined || raw === "") return 4910;
+  const base = Number(raw);
+  if (!Number.isInteger(base) || base < 1024 || base > 65532) {
+    throw new Error(`VISUAL_PORT_BASE must be an integer port between 1024 and 65532, got "${raw}"`);
+  }
+  return base;
+}
+
+const BASE = portBase();
+
+/**
  * Local static servers, one per target. Clear of every app's dev/preview port (43x0, 4500) and of
  * Storybook's dev server (6006), so the harness runs beside a developer's own servers.
  */
 export const PORTS = {
-  storybook: 4910,
-  dashboard: 4911,
-  crm: 4912,
-  internal: 4913,
+  storybook: BASE,
+  dashboard: BASE + 1,
+  crm: BASE + 2,
+  internal: BASE + 3,
 } as const;
 
 export const ORIGIN = {

@@ -32,7 +32,8 @@ Run these from `frontend/`, with Node 22 and pnpm 11 on PATH.
 `visual:check` and `visual:update` first build the workshop and the three apps under test
 (`opsgrids-dashboard`, `product-crm`, `opsgrids-internal`). Then they serve those builds on ports
 4910–4913 and run Playwright. A full run takes about 4 minutes on 8 workers. To run fewer
-workers, set `VISUAL_WORKERS=4`.
+workers, set `VISUAL_WORKERS=4`. To run beside another checkout's harness (a second worktree),
+move the four ports with `VISUAL_PORT_BASE=4920`; a run never reuses a server it did not start.
 
 To work on one thing, run Playwright directly after one `visual:check` has built the targets:
 
