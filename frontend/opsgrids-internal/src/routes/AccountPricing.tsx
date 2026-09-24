@@ -128,7 +128,7 @@ function ProductHistory({ product }: { product: ProductPricing }) {
               </div>
               <div className="flex flex-col items-end gap-0.5 text-xs text-faint">
                 <span className="tnum">{formatDateTime(entry.created_at)}</span>
-                <span className="mono">{entry.created_by_email_masked}</span>
+                <span className="mono">{entry.created_by_email_masked ?? "—"}</span>
               </div>
             </li>
           ))}

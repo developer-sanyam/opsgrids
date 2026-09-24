@@ -80,6 +80,11 @@ function mockAuth(roles: OperatorRole[]) {
     status: "authenticated",
     operator: null,
     login: vi.fn(),
+    beginEnrolment: vi.fn(),
+    confirmEnrolment: vi.fn(),
+    finishEnrolment: vi.fn(),
+    verifyMfa: vi.fn(),
+    cancelSignIn: vi.fn(),
     logout: vi.fn(),
     hasRole: (role) => roles.includes(role),
   };
@@ -219,6 +224,31 @@ describe("price history", () => {
     const summary = await screen.findByText(/Price history — OpsGrids CRM/);
     await userEvent.click(summary);
     expect(screen.getByText("No price changes recorded yet — still on the list price.")).toBeTruthy();
+  });
+
+  it("shows a dash rather than nothing when a history row has no attributable actor", async () => {
+    mockAuth(["owner"]);
+    vi.spyOn(client, "getOrganizationPricing").mockResolvedValue(
+      pricing([
+        product({
+          history: [
+            {
+              plan_version_id: "v1",
+              amount_minor: 100_000,
+              currency: "INR",
+              billing_interval: "month",
+              created_at: "2024-01-01T00:00:00Z",
+              created_by_email_masked: null,
+              reason: "Migrated from the legacy pricing sheet",
+            },
+          ],
+        }),
+      ]),
+    );
+    render(<ClientPricingCard org={org()} />);
+    const summary = await screen.findByText(/Price history — OpsGrids CRM/);
+    await userEvent.click(summary);
+    expect(screen.getByText("—")).toBeTruthy();
   });
 });
 

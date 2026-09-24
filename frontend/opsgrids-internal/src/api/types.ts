@@ -235,8 +235,9 @@ export interface PricingHistoryEntry {
   currency: string;
   billing_interval: BillingInterval;
   created_at: string;
-  /** PII-masked per CLAUDE.md's platform rules — never the operator's full address. */
-  created_by_email_masked: string;
+  /** PII-masked per CLAUDE.md's platform rules — never the operator's full address. `null` when
+   *  the row has no attributable actor (a migration, or a staff account since deleted). */
+  created_by_email_masked: string | null;
   reason: string;
 }
 

@@ -11,6 +11,9 @@ shapes, so the switch is a flag, not a rewrite.
 
 ## Screens
 
+- **Sign-in** — password, then a mandatory second factor (ADR-0003 addendum): an authenticator
+  code for an enrolled account, or first-time enrolment (out-of-band code → scan/enter the
+  secret → confirm → save the recovery codes, shown once) for one with none.
 - **Overview** — MRR + trend, active accounts, trials, trial→paid conversion, churn, locked/suspended.
 - **Accounts** — cross-tenant directory with status, MRR and drill-down.
 - **Account detail** — subscriptions, entitlements, usage, invoices, credit ledger, per-product

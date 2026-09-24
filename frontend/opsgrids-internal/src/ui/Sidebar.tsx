@@ -111,7 +111,7 @@ function AccountSwitcher() {
     };
   }, [open]);
 
-  const name = operator?.full_name ?? "Operator";
+  const name = operator?.display_name ?? "Operator";
   const roles = operator?.operator_roles ?? [];
   const roleText = roles.map((r) => ROLE_LABEL[r] ?? r).join(" · ") || "Operator";
 

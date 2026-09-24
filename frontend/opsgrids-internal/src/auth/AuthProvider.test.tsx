@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as authApi from "./api";
 import { AuthProvider } from "./AuthProvider";
 import { useAuth } from "./context";
-import type { OperatorMe, OperatorRole } from "./types";
+import type { OperatorMe, OperatorRole, OperatorTokenOut } from "./types";
 
 /**
  * `hasRole` is the one thing every UI permission hint in this app calls — pinned here against the
@@ -13,33 +13,40 @@ import type { OperatorMe, OperatorRole } from "./types";
  * comparison shows up here rather than only as a control that quietly never appears for a real
  * `owner` in production. Runs the live branch (this suite pins `VITE_USE_FIXTURES=false`, see
  * `vitest.config.ts`), so `operator_roles` is whatever `authApi.me` is mocked to return — not the
- * fixtures-mode stand-in, which is exercised separately below.
+ * fixtures-mode stand-in, which is exercised separately in `fixtureOperator.test.ts`.
+ *
+ * Drives the real MFA-verify path (`login` → `verifyMfa` → `me`) rather than injecting an operator
+ * directly, since that path is what actually decides `hasRole`'s answer in production.
  */
 
 function operatorWith(roles: OperatorRole[]): OperatorMe {
   return {
-    operator_id: "op_test",
+    staff_id: "op_test",
     email: "b@opsgrids.com",
-    full_name: "B Test",
+    display_name: "B Test",
     operator_roles: roles,
-    amr: ["pwd"],
-    mfa_enabled: false,
+    amr: ["pwd", "otp"],
   };
 }
 
-const LOGIN_COMPLETE = {
-  status: "complete" as const,
+const TOKEN_OUT: OperatorTokenOut = {
+  status: "complete",
   access_token: "tok",
-  token_type: "Bearer" as const,
+  token_type: "Bearer",
   expires_in: 900,
-  operator_id: "op_test",
+  operator_roles: [],
 };
 
 function RoleProbe() {
-  const { operator, hasRole, login } = useAuth();
+  const { operator, hasRole, login, verifyMfa } = useAuth();
   return (
     <div>
-      <button type="button" onClick={() => void login("b@opsgrids.com", "pw")}>
+      <button
+        type="button"
+        onClick={() =>
+          void login("b@opsgrids.com", "pw").then(() => verifyMfa("123456"))
+        }
+      >
         Sign in
       </button>
       {operator ? (
@@ -62,7 +69,8 @@ beforeEach(() => {
 
 describe("hasRole against the live operator roles", () => {
   it("recognises billing_ops and does not also grant owner or support", async () => {
-    vi.spyOn(authApi, "login").mockResolvedValue(LOGIN_COMPLETE);
+    vi.spyOn(authApi, "login").mockResolvedValue({ status: "mfa_required", pre_auth_token: "pat" });
+    vi.spyOn(authApi, "verifyMfa").mockResolvedValue(TOKEN_OUT);
     vi.spyOn(authApi, "me").mockResolvedValue(operatorWith(["billing_ops"]));
 
     render(
@@ -78,7 +86,8 @@ describe("hasRole against the live operator roles", () => {
   });
 
   it("recognises owner", async () => {
-    vi.spyOn(authApi, "login").mockResolvedValue(LOGIN_COMPLETE);
+    vi.spyOn(authApi, "login").mockResolvedValue({ status: "mfa_required", pre_auth_token: "pat" });
+    vi.spyOn(authApi, "verifyMfa").mockResolvedValue(TOKEN_OUT);
     vi.spyOn(authApi, "me").mockResolvedValue(operatorWith(["owner"]));
 
     render(
@@ -94,7 +103,8 @@ describe("hasRole against the live operator roles", () => {
   });
 
   it("recognises support, and grants nothing wider", async () => {
-    vi.spyOn(authApi, "login").mockResolvedValue(LOGIN_COMPLETE);
+    vi.spyOn(authApi, "login").mockResolvedValue({ status: "mfa_required", pre_auth_token: "pat" });
+    vi.spyOn(authApi, "verifyMfa").mockResolvedValue(TOKEN_OUT);
     vi.spyOn(authApi, "me").mockResolvedValue(operatorWith(["support"]));
 
     render(
@@ -110,7 +120,8 @@ describe("hasRole against the live operator roles", () => {
   });
 
   it("denies every role for an operator who holds none", async () => {
-    vi.spyOn(authApi, "login").mockResolvedValue(LOGIN_COMPLETE);
+    vi.spyOn(authApi, "login").mockResolvedValue({ status: "mfa_required", pre_auth_token: "pat" });
+    vi.spyOn(authApi, "verifyMfa").mockResolvedValue(TOKEN_OUT);
     vi.spyOn(authApi, "me").mockResolvedValue(operatorWith([]));
 
     render(

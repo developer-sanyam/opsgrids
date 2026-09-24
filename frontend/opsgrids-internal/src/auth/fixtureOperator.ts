@@ -9,12 +9,11 @@
 import type { OperatorMe } from "./types";
 
 export const FIXTURE_OPERATOR: OperatorMe = {
-  operator_id: "op-8f21a0c4",
+  staff_id: "op-8f21a0c4",
   email: "priya.venkatesan@opsgrids.com",
-  full_name: "Priya Venkatesan",
+  display_name: "Priya Venkatesan",
   operator_roles: ["owner"],
   amr: ["pwd"],
-  mfa_enabled: false,
 };
 
 /** A synthetic token used only in fixtures mode so the session shape is exercised end to end. */

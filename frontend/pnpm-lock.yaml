@@ -156,6 +156,9 @@ importers:
 
   opsgrids-internal:
     dependencies:
+      '@opsgrids/ui':
+        specifier: workspace:*
+        version: link:../opsgrids-ui
       react:
         specifier: ^19.0.0
         version: 19.2.8
