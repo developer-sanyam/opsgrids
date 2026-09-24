@@ -54,6 +54,7 @@ import {
   fixtureImsDetail,
   fixtureImsDocuments,
   recordFixtureDecision,
+  retryFixtureEway,
 } from "./fixtures";
 import type {
   Customer,
@@ -619,7 +620,7 @@ export async function getEwayState(invoiceId: string): Promise<EwayState> {
     const row = EWAY_BILLS.find((r) => r.bill.invoice_id === invoiceId);
     return settle(
       row
-        ? {
+        ? (row.state ?? {
             required: true,
             status: row.bill.status,
             eway_bill_no: row.bill.eway_bill_no,
@@ -629,11 +630,29 @@ export async function getEwayState(invoiceId: string): Promise<EwayState> {
             cancellable_until: null,
             remedy: row.bill.remedy,
             attempts: 1,
-          }
+          })
         : { required: false, status: null, eway_bill_no: null, valid_from: null, valid_until: null, terminal: false, cancellable_until: null, remedy: null, attempts: 0 },
     );
   }
   return apiRequest<EwayState>(`/finance/invoices/${encodeURIComponent(invoiceId)}/eway`);
+}
+
+/**
+ * Ask for another attempt at raising one document's e-Way bill, now, without waiting for the
+ * automatic retry.
+ *
+ * A `202`: the server stages the request and returns; the portal is called afterwards, by the
+ * worker, on the same claim-call-record path the automatic retry uses. The answer here is the
+ * document's position as it stands, so the screen reads what happens next from the same place it
+ * read this — by reloading. Behind its own permission (`finance.compliance.eway.retry`); offered
+ * only where `EwayState.can_retry` is true, because a portal refusal would be refused again and
+ * the server says so with a 409 rather than queueing it.
+ */
+export async function retryEwayBill(invoiceId: string): Promise<EwayState> {
+  if (USE_FIXTURES) return settle(retryFixtureEway(invoiceId), 320);
+  return apiRequest<EwayState>(`/finance/invoices/${encodeURIComponent(invoiceId)}/eway/retry`, {
+    method: "POST",
+  });
 }
 
 /* --------------------------------------------------------------------- withholding: TDS / TCS */

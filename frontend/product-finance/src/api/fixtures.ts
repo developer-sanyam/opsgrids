@@ -10,7 +10,9 @@ import type {
   CashflowPoint,
   EInvoiceFiling,
   EInvoiceState,
+  EwayBill,
   EwayBillWithInvoice,
+  EwayState,
   FilingStatus,
   Gstr3bSections,
   GstRegistration,
@@ -1125,33 +1127,175 @@ export function fixtureReturnDiff(id: string): ReturnDiff | null {
 
 /* ------------------------------- e-Way bills --------------------------------- */
 
+/** The state of a document that is being retried or has failed, as the server would derive it. */
+function ewayState(over: Partial<EwayState>): EwayState {
+  return {
+    required: true,
+    status: null,
+    eway_bill_no: null,
+    valid_from: null,
+    valid_until: null,
+    terminal: false,
+    cancellable_until: null,
+    remedy: null,
+    attempts: 0,
+    remedy_detail: null,
+    error_code: null,
+    error: null,
+    attempt: null,
+    max_attempts: 8,
+    retry_at: null,
+    can_retry: false,
+    ...over,
+  };
+}
+
+const EWAY_BASE: EwayBill = {
+  id: "",
+  invoice_id: "",
+  status: "generated",
+  effective_status: "generated",
+  eway_bill_no: null,
+  transport_mode: "road",
+  distance_km: 180,
+  vehicle_no: "MH14CD5678",
+  transporter_id: null,
+  transport_doc_no: null,
+  transport_doc_date: null,
+  over_dimensional: false,
+  consignment_value_minor: paise(1_180_000),
+  valid_from: null,
+  valid_until: null,
+  remedy: null,
+  error_code: null,
+  error: null,
+  attempted_at: "2026-09-24T06:00:00Z",
+  attempt: null,
+  retry_at: null,
+};
+
+/**
+ * Three positions, one per thing the register has to say: a bill that stands, a generation the
+ * platform is retrying (attempt 3 of 8, the countdown running), and one the portal refused. The
+ * retrying row's countdown is set relative to the moment fixtures load, so it always has a while
+ * left to run.
+ */
 export const EWAY_BILLS: EwayBillWithInvoice[] = [
   {
     bill: {
+      ...EWAY_BASE,
       id: "eway-01",
       invoice_id: "inv-INV-2026-0163",
       status: "generated",
       effective_status: "generated",
       eway_bill_no: "351009876543",
-      transport_mode: "road",
       distance_km: 420,
       vehicle_no: "MH12AB1234",
-      transporter_id: null,
       transport_doc_no: "LR-88214",
       transport_doc_date: "2026-07-28",
-      over_dimensional: false,
       consignment_value_minor: paise(4_366_000),
       valid_from: "2026-07-28T09:20:00Z",
       valid_until: "2026-07-30T09:20:00Z",
-      remedy: null,
-      error_code: null,
-      error: null,
       attempted_at: "2026-07-28T09:20:00Z",
+      attempt: 1,
     },
     invoice_number: "INV-2026-0163",
     customer_name: "Trishul Steel Works",
+    is_current: true,
+    state: null,
+  },
+  {
+    bill: {
+      ...EWAY_BASE,
+      id: "eway-02",
+      invoice_id: "inv-INV-2026-0160",
+      status: "pending",
+      effective_status: "pending",
+      error_code: "unavailable",
+      error: "connection reset by peer",
+      attempted_at: new Date(Date.now() - 60_000).toISOString(),
+      attempt: 3,
+      retry_at: new Date(Date.now() + 4 * 60_000).toISOString(),
+    },
+    invoice_number: "INV-2026-0160",
+    customer_name: "Kaveri Agro Traders",
+    is_current: true,
+    state: ewayState({
+      status: "pending",
+      attempts: 3,
+      attempt: 3,
+      error_code: "unavailable",
+      error: "connection reset by peer",
+      retry_at: new Date(Date.now() + 4 * 60_000).toISOString(),
+      can_retry: true,
+      remedy_detail:
+        "The portal did not answer. The same consignment is sent again automatically when the countdown ends.",
+    }),
+  },
+  {
+    bill: {
+      ...EWAY_BASE,
+      id: "eway-03",
+      invoice_id: "inv-INV-2026-0158",
+      status: "failed",
+      effective_status: "failed",
+      error_code: "113",
+      error: "a road movement must name the vehicle carrying it",
+      vehicle_no: null,
+      attempted_at: "2026-09-24T05:40:00Z",
+      attempt: 1,
+    },
+    invoice_number: "INV-2026-0158",
+    customer_name: "Sahyadri Components",
+    is_current: true,
+    state: ewayState({
+      status: "failed",
+      terminal: true,
+      attempts: 1,
+      attempt: 1,
+      error_code: "113",
+      error: "a road movement must name the vehicle carrying it",
+      remedy: "correct_and_resubmit",
+      remedy_detail:
+        "A road movement must name the vehicle carrying it. Add the vehicle number (Part B) and raise the bill again.",
+    }),
   },
 ];
+
+/**
+ * A person's "retry now", in fixture mode: the document goes back to being worked on, with the
+ * next attempt one minute away — what the server's request-and-return does, without a worker.
+ */
+export function retryFixtureEway(invoiceId: string): EwayState {
+  const row = EWAY_BILLS.find((r) => r.bill.invoice_id === invoiceId && r.is_current === true);
+  if (row?.state == null) {
+    throw new Error("There is nothing to retry for this document.");
+  }
+  const attempt = (row.state.attempt ?? 0) + 1;
+  const retryAt = new Date(Date.now() + 60_000).toISOString();
+  const state = ewayState({
+    status: "pending",
+    attempts: attempt,
+    attempt,
+    error_code: "unavailable",
+    error: "connection reset by peer",
+    retry_at: retryAt,
+    can_retry: true,
+    remedy_detail:
+      "The portal did not answer. The same consignment is sent again automatically when the countdown ends.",
+  });
+  row.state = state;
+  row.bill = {
+    ...row.bill,
+    status: "pending",
+    effective_status: "pending",
+    error_code: "unavailable",
+    error: "connection reset by peer",
+    attempt,
+    retry_at: retryAt,
+  };
+  return state;
+}
 
 /* ------------------------------ withholding: TDS / TCS ----------------------- */
 

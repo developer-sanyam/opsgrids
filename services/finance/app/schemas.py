@@ -1154,6 +1154,14 @@ class EwayBillWithInvoice(BaseModel):
     bill: EwayBillOut
     invoice_number: str
     customer_name: str
+    #: Whether this row is its document's newest — the attempt in flight, or the one that stands.
+    #: The register is a history, so an older `pending` row is a fact about the past, not a retry
+    #: that is still owed; only a current row carries a countdown and a retry.
+    is_current: bool = False
+    #: The document's position as of now, on its current row only (null on history rows): what
+    #: "attempt 3 of 8, retrying in 4 minutes", the failure's reason and remedy, and the
+    #: retry-now control are drawn from.
+    state: EwayState | None = None
 
 
 class GenerateEwayIn(BaseModel):

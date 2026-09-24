@@ -1329,6 +1329,31 @@ class TestTheReadModel:
         assert rows[0]["status"] == "pending"
         assert rows[0]["attempt"] == 1 and rows[0]["retry_at"] is not None
 
+    async def test_the_register_marks_the_current_row_and_carries_its_state(
+        self, client, session, org_id, monkeypatch
+    ) -> None:
+        """The register lists every attempt. Only the document's newest carries a countdown and a
+        retry — an older `pending` row is history, and showing it a "retrying in…" would be a lie."""
+        portal = ScriptedPortal(down(), down())
+        monkeypatch.setattr("app.consumers.get_eway_client", lambda: portal)
+        ctx = admin_ctx(org_id)
+        invoice = await _consignment(session, ctx, "INV-C4-V7")
+        await _first_attempt(session, ctx, org_id, invoice, portal)
+        _freeze_consumer_clock(monkeypatch)
+        await generate_requested_eway(_fire((await _scheduled(session, org_id))[0]))
+
+        res = await client.get("/api/v1/finance/eway-bills", params={"status": "pending"})
+
+        assert res.status_code == 200
+        items = res.json()["items"]
+        assert [i["bill"]["attempt"] for i in items] == [2, 1]  # newest first
+        current, history = items
+        assert current["is_current"] is True and history["is_current"] is False
+        assert history["state"] is None
+        assert current["state"]["status"] == "pending"
+        assert current["state"]["attempt"] == 2 and current["state"]["can_retry"] is True
+        assert current["state"]["retry_at"] is not None
+
 
 # --------------------------------------------------------------------- the contracts
 

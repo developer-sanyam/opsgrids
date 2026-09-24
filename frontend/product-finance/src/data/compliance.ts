@@ -18,6 +18,7 @@
 import type {
   EInvoiceFiling,
   EInvoiceState,
+  EwayState,
   EwayStatus,
   FilingRemedy,
   ImsAction,
@@ -221,6 +222,95 @@ const EWAY_TONE: Record<EwayStatus, string> = {
  * never as a failure or as done. */
 export function ewayStatusTone(status: string): string {
   return EWAY_TONE[status as EwayStatus] ?? "bg-ground text-muted";
+}
+
+/**
+ * How long until an automatic retry fires, as a person reads a countdown: `4m 05s`, `1h 02m`,
+ * `12s`. Once the moment has passed it says so rather than counting below zero — the retry is due
+ * and only waiting for the worker to pick it up, which is not the same as overdue.
+ */
+export function formatCountdown(retryAt: string, nowMs: number): { label: string; due: boolean } {
+  const remaining = Date.parse(retryAt) - nowMs;
+  if (Number.isNaN(remaining) || remaining <= 0) return { label: "any moment now", due: true };
+  const totalSeconds = Math.ceil(remaining / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (hours > 0) return { label: `${hours}h ${pad(minutes)}m`, due: false };
+  if (minutes > 0) return { label: `${minutes}m ${pad(seconds)}s`, due: false };
+  return { label: `${seconds}s`, due: false };
+}
+
+/** What a document's e-Way position says, as a screen must distinguish it. */
+export interface EwayStateView {
+  /** The short label a tag carries. Never colour alone. */
+  headline: string;
+  /** The tag's colour classes. */
+  tone: string;
+  /** One sentence: the reason, and — on a failure — what to do. Already masked by the server. */
+  detail: string | null;
+  /** The platform is still working on it: a countdown or an attempt in flight. */
+  active: boolean;
+  /** The platform has stopped and a person has to act (or decide not to). */
+  needsPerson: boolean;
+}
+
+const FAILURE_HEADLINES: Record<string, string> = {
+  retry_exhausted: "Gave up — the portal never answered",
+  stale: "Not raised — the request went stale",
+  no_registration: "Not raised — no GST registration",
+};
+
+/**
+ * The words for one document's current e-Way position while a generation is in progress or has
+ * failed. `null` for anything else — a bill that stands, a withdrawal — which the register's
+ * ordinary status tag already covers.
+ *
+ * A refusal and a spent budget are told apart on purpose: "the portal said no" (fix the named
+ * thing) and "the portal never answered" (try again) call for opposite actions, and one label for
+ * both is how somebody retries a refusal in a loop.
+ */
+export function ewayStateView(state: EwayState): EwayStateView | null {
+  const attempt = state.attempt ?? null;
+  const max = state.max_attempts ?? 0;
+  const of = attempt !== null && max > 0 ? ` — attempt ${attempt} of ${max}` : "";
+  if (state.status === "submitting") {
+    return {
+      headline: `Being raised${of}`,
+      tone: ewayStatusTone("submitting"),
+      detail: "The portal is being asked now.",
+      active: true,
+      needsPerson: false,
+    };
+  }
+  if (state.status === "pending") {
+    return {
+      headline: `Retrying${of}`,
+      tone: ewayStatusTone("pending"),
+      detail:
+        state.error_code === "rate_limited"
+          ? "The portal asked to be left alone for a while. The same consignment is sent again automatically."
+          : "The portal did not answer. The same consignment is sent again automatically — it cannot produce a second bill.",
+      active: true,
+      needsPerson: false,
+    };
+  }
+  if (state.status === "failed" && state.terminal) {
+    const code = state.error_code ?? null;
+    const headline =
+      code !== null && FAILURE_HEADLINES[code] !== undefined
+        ? FAILURE_HEADLINES[code]
+        : `Refused by the portal${code !== null ? ` (code ${code})` : ""}`;
+    return {
+      headline: headline ?? "Failed",
+      tone: ewayStatusTone("failed"),
+      detail: state.remedy_detail ?? null,
+      active: false,
+      needsPerson: true,
+    };
+  }
+  return null;
 }
 
 /** The corrections — never offered together, because only one is ever legal at a time. */

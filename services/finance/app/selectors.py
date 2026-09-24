@@ -2502,22 +2502,35 @@ async def eway_bills_with_invoice(
     the page, never one per row."""
     if not bills:
         return []
-    stmt = select(Invoice.id, Invoice.number, Invoice.customer_id).where(
+    invoice_ids = {b.invoice_id for b in bills}
+    stmt = select(Invoice).where(
         Invoice.organization_id == org_id,
-        Invoice.id.in_({b.invoice_id for b in bills}),
+        Invoice.id.in_(invoice_ids),
     )
-    rows = (await session.execute(stmt)).all()
-    numbers = {row[0]: row[1] for row in rows}
-    names = await _customer_names(session, org_id, {row[2] for row in rows})
-    customers = {row[0]: names.get(row[2], "") for row in rows}
-    return [
-        EwayBillWithInvoice(
-            bill=to_eway_bill_out(bill),
-            invoice_number=numbers.get(bill.invoice_id, ""),
-            customer_name=customers.get(bill.invoice_id, ""),
+    invoices = {inv.id: inv for inv in (await session.execute(stmt)).scalars().all()}
+    names = await _customer_names(session, org_id, {inv.customer_id for inv in invoices.values()})
+    # One batch for the whole page: each document's newest row and its attempt count — never a
+    # query per row. The newest is what the register's "current" marker and the state come from.
+    latest, counts = await latest_eway_bills(session, org_id, list(invoice_ids))
+    items: list[EwayBillWithInvoice] = []
+    for bill in bills:
+        invoice = invoices.get(bill.invoice_id)
+        current = latest.get(bill.invoice_id)
+        is_current = current is not None and current.id == bill.id
+        items.append(
+            EwayBillWithInvoice(
+                bill=to_eway_bill_out(bill),
+                invoice_number=invoice.number if invoice is not None else "",
+                customer_name=names.get(invoice.customer_id, "") if invoice is not None else "",
+                is_current=is_current,
+                state=(
+                    to_eway_state(invoice, bill, counts.get(bill.invoice_id, 0))
+                    if is_current and invoice is not None
+                    else None
+                ),
+            )
         )
-        for bill in bills
-    ]
+    return items
 
 
 # --------------------------------------------------------------------- withholding: TDS / TCS

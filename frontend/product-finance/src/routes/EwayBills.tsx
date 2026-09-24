@@ -1,21 +1,41 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { listEwayBills } from "@/api/client";
 import type { EwayStatusFilter } from "@/api/client";
-import type { EwayBillWithInvoice } from "@/api/types";
-import { EWAY_STATUS_FILTERS, ewayStatusTone } from "@/data/compliance";
+import type { EwayBillWithInvoice, Page } from "@/api/types";
+import { EWAY_STATUS_FILTERS, ewayStateView, ewayStatusTone } from "@/data/compliance";
 import { formatDateTime } from "@/lib/format";
 import { formatMoney } from "@/lib/money";
 import { problemMessage, useAsync } from "@opsgrids/client";
-import { Card, DataTable, EmptyState, ErrorState, PageHeader, Pagination, Pill, Skeleton, Tag } from "@/ui";
+import {
+  Card,
+  DataTable,
+  EmptyState,
+  ErrorState,
+  EwayStateCell,
+  PageHeader,
+  Pagination,
+  Pill,
+  Skeleton,
+  Tag,
+} from "@/ui";
 import type { Column } from "@/ui";
 import { TruckIcon } from "@opsgrids/ui";
 
+/** How often the register re-reads while something is being retried, so a retry that succeeded
+ *  or gave up shows up without a reload. Not while everything is at rest. */
+const ACTIVE_REFRESH_MS = 15_000;
+
 /**
- * A read-only register: e-Way bills are raised over the internal API by a dispatch system, not
- * from this SPA (`internal.py:152-154`, `catalogue.py:151-153` place that deliberately elsewhere).
- * This screen answers one question — "may that lorry leave" — and offers no write.
+ * The e-Way register. Bills are raised over the internal API by a dispatch system, not from this
+ * SPA (`internal.py`, `catalogue.py` place that deliberately elsewhere), so the screen answers
+ * one question — "may that lorry leave" — and offers one write: **retry now**, on a generation the
+ * platform is already retrying or gave up on for a reason that is not the portal's verdict on the
+ * consignment.
+ *
+ * The register lists every attempt, so only a document's *current* row carries the retry story
+ * (attempt, countdown, the portal's reason, the remedy); an older `pending` row is history.
  */
 export function EwayBillsPage() {
   const [status, setStatus] = useState<EwayStatusFilter>("all");
@@ -23,7 +43,34 @@ export function EwayBillsPage() {
   const [size, setSize] = useState(25);
 
   const bills = useAsync(() => listEwayBills({ status, page, size }), [status, page, size]);
-  const rows = useMemo(() => (bills.status === "success" ? bills.data.items : []), [bills]);
+  const loaded = bills.status === "success" ? bills.data : null;
+
+  // A background read that replaces the loaded page without going back through `loading`: a table
+  // that flashed to skeletons every fifteen seconds would unmount the countdowns and any dialog
+  // open on a row. A fresh load (a new filter, a new page) discards whatever it had.
+  const [refreshed, setRefreshed] = useState<Page<EwayBillWithInvoice> | null>(null);
+  useEffect(() => {
+    setRefreshed(null);
+  }, [loaded]);
+  const shown = loaded === null ? null : (refreshed ?? loaded);
+  const rows = useMemo(() => shown?.items ?? [], [shown]);
+
+  const refresh = useCallback(() => {
+    void listEwayBills({ status, page, size })
+      .then(setRefreshed)
+      // The page already on screen stays; the next tick asks again. A failed background read is
+      // not worth replacing good data with an error.
+      .catch(() => undefined);
+  }, [status, page, size]);
+
+  const inProgress = rows.some(
+    (row) => row.is_current === true && row.state != null && ewayStateView(row.state)?.active === true,
+  );
+  useEffect(() => {
+    if (!inProgress) return;
+    const id = window.setInterval(refresh, ACTIVE_REFRESH_MS);
+    return () => window.clearInterval(id);
+  }, [inProgress, refresh]);
 
   const columns: Column<EwayBillWithInvoice>[] = [
     {
@@ -80,11 +127,19 @@ export function EwayBillsPage() {
       key: "status",
       header: "Status",
       align: "right",
-      render: (row) => (
-        <Tag className={ewayStatusTone(row.bill.effective_status)}>
-          {row.bill.effective_status}
-        </Tag>
-      ),
+      render: (row) =>
+        row.is_current === true && row.state != null && ewayStateView(row.state) !== null ? (
+          <EwayStateCell
+            invoiceId={row.bill.invoice_id}
+            invoiceNumber={row.invoice_number}
+            state={row.state}
+            onRetried={refresh}
+          />
+        ) : (
+          <Tag className={ewayStatusTone(row.bill.effective_status)}>
+            {row.bill.effective_status}
+          </Tag>
+        ),
     },
   ];
 
@@ -92,8 +147,9 @@ export function EwayBillsPage() {
     <div className="rise flex flex-col gap-6">
       <PageHeader eyebrow="GST compliance" title="e-Way bills" />
       <p className="-mt-2 max-w-2xl text-sm text-muted">
-        Read-only: e-Way bills are raised by the dispatch system over its own connection, not from
-        this screen.
+        e-Way bills are raised by the dispatch system over its own connection, not from this
+        screen. When the portal does not answer, the same consignment is sent again automatically;
+        here you can see how far that has got and, where it would help, retry it now.
       </p>
 
       <Card className="flex flex-col gap-3 p-4 sm:p-5">
@@ -128,7 +184,7 @@ export function EwayBillsPage() {
             onRetry={bills.reload}
           />
         ) : null}
-        {bills.status === "success" ? (
+        {shown !== null ? (
           <>
             <DataTable
               columns={columns}
@@ -144,10 +200,10 @@ export function EwayBillsPage() {
               }
             />
             <Pagination
-              page={bills.data.page}
-              pages={bills.data.pages}
-              total={bills.data.total}
-              size={bills.data.size}
+              page={shown.page}
+              pages={shown.pages}
+              total={shown.total}
+              size={shown.size}
               noun="e-Way bills"
               onPageChange={setPage}
               onSizeChange={(n) => {

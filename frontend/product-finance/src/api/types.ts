@@ -779,8 +779,22 @@ export type EwayStatus =
   | "submitting"
   | "cancelling";
 
-/** `contact_support` follows a withdrawal the platform could not confirm before the window shut. */
-export type EwayRemedy = "cancel" | "contact_support";
+/**
+ * What a person can do about a bill, as one answer.
+ *
+ * On a **bill**: `cancel` while the 24-hour window is open, `contact_support` after a withdrawal
+ * the platform could not confirm before the window shut. On a **failed generation**: `retry_now`
+ * (the portal was down for the whole budget, or the request went stale), `register_gst`,
+ * `correct_and_resubmit` (the portal refused the contents — `remedy_detail` says which) or
+ * `not_required`.
+ */
+export type EwayRemedy =
+  | "cancel"
+  | "contact_support"
+  | "retry_now"
+  | "register_gst"
+  | "correct_and_resubmit"
+  | "not_required";
 
 /** One recorded attempt to raise an e-Way bill. Append-only: a retry is a further row. */
 export interface EwayBill {
@@ -802,9 +816,16 @@ export interface EwayBill {
   valid_until: string | null;
   /** `cancel` while the 24-hour window is open, null once it has closed. Read-only in this app. */
   remedy: EwayRemedy | null;
+  /** The portal's numbered code, or the platform's own (`unavailable`, `rate_limited`,
+   *  `retry_exhausted`, `stale`, `no_registration`). */
   error_code: string | null;
+  /** The portal's words, masked of GSTINs, vehicle numbers and other identifiers by the server. */
   error: string | null;
   attempted_at: string;
+  /** Which attempt of its generation chain wrote this row (1-based). Null on older rows. */
+  attempt?: number | null;
+  /** On a `pending` row, when the automatic retry is due. */
+  retry_at?: string | null;
 }
 
 /** One bill on a list page, with enough of its document to be recognisable. */
@@ -812,6 +833,10 @@ export interface EwayBillWithInvoice {
   bill: EwayBill;
   invoice_number: string;
   customer_name: string;
+  /** This row is its document's newest. Older rows are history: no countdown, no retry. */
+  is_current?: boolean;
+  /** The document's position as of now — on its current row only. */
+  state?: EwayState | null;
 }
 
 /** A document's current e-Way position, derived from its newest attempt. */
@@ -825,6 +850,18 @@ export interface EwayState {
   cancellable_until: string | null;
   remedy: EwayRemedy | null;
   attempts: number;
+  /** What `remedy` means for *this* failure, naming the portal's own reason. */
+  remedy_detail?: string | null;
+  error_code?: string | null;
+  /** The portal's words, masked. */
+  error?: string | null;
+  /** While a generation is being retried: which attempt the newest row belongs to, out of
+   *  `max_attempts`, and when the next one fires. */
+  attempt?: number | null;
+  max_attempts?: number;
+  retry_at?: string | null;
+  /** Whether "retry now" would be accepted. The permission to press it is a separate question. */
+  can_retry?: boolean;
 }
 
 /* --------------------------------------------------------------------- withholding: TDS / TCS */

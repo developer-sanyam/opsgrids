@@ -7,14 +7,16 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { EInvoiceState, FilingRemedy, ImsSuggestion, Invoice } from "@/api/types";
+import type { EInvoiceState, EwayState, FilingRemedy, ImsSuggestion, Invoice } from "@/api/types";
 import {
   EWAY_STATUS_FILTERS,
   complianceSummary,
+  ewayStateView,
   ewayStatusTone,
   filingErrorSentence,
   filingRowLabel,
   filingView,
+  formatCountdown,
   periodLabel,
   remedyView,
   suggestionSentence,
@@ -256,5 +258,91 @@ describe("the D3 claim states", () => {
     const filters = EWAY_STATUS_FILTERS.map((f) => f.value);
     expect(filters).toContain("submitting");
     expect(filters).toContain("cancelling");
+  });
+});
+
+describe("the e-Way retry countdown", () => {
+  const at = Date.parse("2026-09-24T10:00:00Z");
+
+  it("reads as minutes and seconds, then hours and minutes, then seconds", () => {
+    expect(formatCountdown("2026-09-24T10:04:05Z", at)).toEqual({ label: "4m 05s", due: false });
+    expect(formatCountdown("2026-09-24T11:02:00Z", at)).toEqual({ label: "1h 02m", due: false });
+    expect(formatCountdown("2026-09-24T10:00:12Z", at)).toEqual({ label: "12s", due: false });
+  });
+
+  it("rounds a partial second up so it never reads 0s while still counting", () => {
+    expect(formatCountdown("2026-09-24T10:00:00.400Z", at)).toEqual({ label: "1s", due: false });
+  });
+
+  it("says the retry is due once the moment has passed, never a negative", () => {
+    expect(formatCountdown("2026-09-24T10:00:00Z", at)).toEqual({ label: "any moment now", due: true });
+    expect(formatCountdown("2026-09-24T09:00:00Z", at)).toEqual({ label: "any moment now", due: true });
+  });
+
+  it("does not invent a countdown from a value it cannot read", () => {
+    expect(formatCountdown("not a date", at).due).toBe(true);
+  });
+});
+
+describe("what an e-Way position says", () => {
+  function state(over: Partial<EwayState>): EwayState {
+    return {
+      required: true,
+      status: null,
+      eway_bill_no: null,
+      valid_from: null,
+      valid_until: null,
+      terminal: false,
+      cancellable_until: null,
+      remedy: null,
+      attempts: 0,
+      max_attempts: 8,
+      ...over,
+    };
+  }
+
+  it("says which attempt is running, and that the platform is still working on it", () => {
+    const view = ewayStateView(state({ status: "pending", attempt: 3, error_code: "unavailable" }));
+    expect(view?.headline).toBe("Retrying — attempt 3 of 8");
+    expect(view?.active).toBe(true);
+    expect(view?.needsPerson).toBe(false);
+    expect(ewayStateView(state({ status: "submitting", attempt: 1 }))?.headline).toBe(
+      "Being raised — attempt 1 of 8",
+    );
+  });
+
+  it("does not claim an attempt number it was not given", () => {
+    expect(ewayStateView(state({ status: "pending" }))?.headline).toBe("Retrying");
+  });
+
+  it("tells a refusal from a spent budget, because they call for opposite actions", () => {
+    const refused = ewayStateView(
+      state({ status: "failed", terminal: true, error_code: "113", remedy_detail: "Add the vehicle." }),
+    );
+    const spent = ewayStateView(
+      state({ status: "failed", terminal: true, error_code: "retry_exhausted" }),
+    );
+    expect(refused?.headline).toBe("Refused by the portal (code 113)");
+    expect(refused?.detail).toBe("Add the vehicle.");
+    expect(spent?.headline).toBe("Gave up — the portal never answered");
+    expect(refused?.needsPerson).toBe(true);
+    expect(spent?.needsPerson).toBe(true);
+    expect(refused?.active).toBe(false);
+  });
+
+  it("names the other platform failures", () => {
+    expect(ewayStateView(state({ status: "failed", terminal: true, error_code: "stale" }))?.headline).toBe(
+      "Not raised — the request went stale",
+    );
+    expect(
+      ewayStateView(state({ status: "failed", terminal: true, error_code: "no_registration" }))?.headline,
+    ).toBe("Not raised — no GST registration");
+  });
+
+  it("stays silent about a bill that stands and about a failed withdrawal", () => {
+    expect(ewayStateView(state({ status: "generated" }))).toBeNull();
+    expect(ewayStateView(state({ status: "cancelled", terminal: true }))).toBeNull();
+    // A failed withdrawal is not terminal: the bill stands, so it is not a generation failure.
+    expect(ewayStateView(state({ status: "failed", terminal: false }))).toBeNull();
   });
 });
