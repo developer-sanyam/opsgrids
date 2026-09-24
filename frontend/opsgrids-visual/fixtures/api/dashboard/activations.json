@@ -1,0 +1,24 @@
+[
+  {
+    "product_key": "crm",
+    "status": "trial",
+    "entitles": true,
+    "entitled_by": [
+      "subscription"
+    ],
+    "activated_at": "2026-09-10T05:00:00Z",
+    "deactivated_at": null,
+    "trial_ends_at": "2026-09-24T05:00:00Z"
+  },
+  {
+    "product_key": "hrms",
+    "status": "active",
+    "entitles": true,
+    "entitled_by": [
+      "subscription"
+    ],
+    "activated_at": "2026-06-02T05:00:00Z",
+    "deactivated_at": null,
+    "trial_ends_at": null
+  }
+]

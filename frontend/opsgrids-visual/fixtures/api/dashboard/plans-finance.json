@@ -1,0 +1,33 @@
+[
+  {
+    "id": "b0000003-0000-4000-8000-000000000009",
+    "product_key": "finance",
+    "code": "standard",
+    "name": "Finance",
+    "state": "active",
+    "sort_order": 10,
+    "versions": [
+      {
+        "id": "b0000003-0000-4000-8000-000000000001",
+        "version_no": 1,
+        "state": "published",
+        "billing_interval": "month",
+        "currency": "INR",
+        "restricted_to_org_id": null,
+        "published_at": "2026-06-01T00:00:00Z",
+        "prices": [
+          {
+            "kind": "flat",
+            "amount_minor": 249900,
+            "currency": "INR",
+            "unit": null,
+            "unit_price_micros": null,
+            "meter_key": null
+          }
+        ],
+        "features": [],
+        "seat_classes": []
+      }
+    ]
+  }
+]

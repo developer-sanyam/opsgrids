@@ -17,8 +17,19 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   // `dist-buyer` is the storefront's second Vite output (ADR-0012 §2) and is built output like
-  // `dist`; ignoring a directory a package does not have costs nothing.
-  { ignores: ["dist", "dist-buyer", "node_modules"] },
+  // `dist`; ignoring a directory a package does not have costs nothing. `storybook-static` is the
+  // design system's workshop build; `test-results` and `playwright-report` are what the visual
+  // harness (opsgrids-visual) leaves behind.
+  {
+    ignores: [
+      "dist",
+      "dist-buyer",
+      "node_modules",
+      "storybook-static",
+      "test-results",
+      "playwright-report",
+    ],
+  },
   {
     extends: [
       js.configs.recommended,
@@ -60,7 +71,15 @@ export default tseslint.config(
     },
   },
   {
-    files: ["*.config.{ts,js}", "eslint.config.js"],
+    // A story file's exports are story objects by design (Component Story Format); Fast Refresh
+    // has nothing to preserve in them, so the only-components rule does not apply.
+    files: ["**/*.stories.{ts,tsx}"],
+    rules: {
+      "react-refresh/only-export-components": "off",
+    },
+  },
+  {
+    files: ["*.config.{ts,js}", "eslint.config.js", ".storybook/main.ts"],
     languageOptions: { globals: globals.node },
   },
 );

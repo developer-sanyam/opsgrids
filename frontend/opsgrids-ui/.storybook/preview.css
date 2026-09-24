@@ -1,0 +1,5 @@
+/* The workshop's stylesheet is an app's stylesheet: Tailwind, then the design system, and nothing
+   of its own — a story that only looks right here is a story that lies. `source("../src")` points
+   Tailwind's scanner at the components and their stories. */
+@import "tailwindcss" source("../src");
+@import "../src/styles/console.css";

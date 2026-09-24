@@ -5,6 +5,10 @@ packages:
   - "opsgrids-ui"
   - "opsgrids-client"
 
+  # The visual and accessibility regression harness (frontend/VISUAL-TESTING.md). Tooling, not a
+  # surface: nothing ships from it and no app imports it.
+  - "opsgrids-visual"
+
   # One application per surface.
   - "opsgrids-dashboard"
   - "opsgrids-admin"

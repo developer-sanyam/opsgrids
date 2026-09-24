@@ -362,6 +362,15 @@ frontend-licenses: ## Every production npm package's licence is on the [npm] all
 .PHONY: frontend-gate
 frontend-gate: frontend-typecheck frontend-lint frontend-boundaries frontend-test frontend-build frontend-audit frontend-licenses ## Every frontend row
 
+# Visual and accessibility regression (frontend/VISUAL-TESTING.md): builds the opsgrids-ui
+# workshop and three apps, then screenshots and axe-checks every story and six real pages in both
+# themes at 375/768/1280 against the committed baselines. Installs the pinned Chromium first —
+# a no-op once it is there. Slow (minutes) and platform-bound (baselines are per OS), so it is a
+# gate-full row, not a gate row.
+.PHONY: ui-visual
+ui-visual: ## Screenshots + axe over every opsgrids-ui story and six app pages, against the baselines
+	cd frontend && pnpm --filter @opsgrids/visual run visual:browsers && pnpm run visual:check
+
 # The name this had before the gate was split into rows. Kept so muscle memory still works.
 .PHONY: frontend
 frontend: frontend-gate ## Alias for frontend-gate
@@ -518,14 +527,13 @@ gate: $(GATE_STATIC) $(GATE_DB) ## The whole quality gate: every row CI runs, ru
 
 # `gate` plus the rows too slow or too stateful for every change. Later rows land here, not in
 # `gate`, each as its own target:
-#   e2e       the real services over HTTP (needs `make infra` + opsgrids_wt migrated; see e2e)
-#   images    container image scan                       (extension point — not yet a target)
-#   visual    visual regression over the component stories (extension point — not yet a target)
-#   a11y      axe over the component stories              (extension point — not yet a target)
-GATE_FULL_EXTRA := e2e
+#   e2e        the real services over HTTP (needs `make infra` + opsgrids_wt migrated; see e2e)
+#   ui-visual  screenshots + axe over every workshop story and six app pages (see ui-visual)
+#   images     container image scan                       (extension point — not yet a target)
+GATE_FULL_EXTRA := e2e ui-visual
 
 .PHONY: gate-full
-gate-full: gate $(GATE_FULL_EXTRA) ## gate + the slow rows (end-to-end today; images/visual/a11y later)
+gate-full: gate $(GATE_FULL_EXTRA) ## gate + the slow rows (end-to-end, visual + a11y regression; images later)
 	@echo "gate-full: every row passed"
 
 # ---------------------------------------------------------------- the edge (ADR-0012)
