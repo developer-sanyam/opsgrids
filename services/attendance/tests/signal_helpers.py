@@ -29,8 +29,9 @@ DELHI = (Decimal("28.613900"), Decimal("77.209000"))
 #: About five kilometres north of `MUMBAI`.
 NEAR_MUMBAI = (Decimal("19.121000"), Decimal("72.877700"))
 
-DEVICE_A = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
-DEVICE_B = "0f9e8d7c6b5a49382716f5e4d3c2b1a0"
+# Opaque client-side device hashes for the tests; not credentials.
+DEVICE_A = "a1b2c3d4e5f60718293a4b5c6d7e8f90"  # pragma: allowlist secret
+DEVICE_B = "0f9e8d7c6b5a49382716f5e4d3c2b1a0"  # pragma: allowlist secret
 
 _past_day = iter(range(1, 10_000))
 
