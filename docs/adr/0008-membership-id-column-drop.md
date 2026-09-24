@@ -50,10 +50,13 @@ length of a deploy (`infrastructure/edge/RUNBOOK.md`, "Deploying", step 6). The 
 mapped column, so dropping `membership_id` while the previous `employee` image is still serving
 would make every read fail. So the code lets go of the column one deploy before the database does:
 
-* `services/employee/app/models.py` — remove `Employee.membership_id` and the
-  `uq_employees_org_membership` index from the model (keep both in the database for now; the
-  index's absence from the model is not a drift error because the migration in step 3 removes it,
-  and `alembic check` is run after step 3, not between).
+* `services/employee/app/models.py` — mark `Employee.membership_id` `deferred=True`, so no
+  `SELECT` names it any more, and **leave the column and `uq_employees_org_membership` declared on
+  the model**. They must stay declared: CI runs `alembic check` on every commit, and a model that
+  lacks a column the database still has fails it. A deferred column is what makes the drop safe for
+  the previous image *and* keeps the check green: the image serving during the step 3 deploy never
+  selects the column, so it does not notice the column going. Removing both from the model is part of
+  step 3's own change, together with the migration.
 * `services/employee/app/schemas.py` — remove `EmployeeOut.membership_id`. **`EmployeeIn.membership_id`
   stays, and keeps refusing** with its pointer to `PATCH /api/v1/members/{membership_id}`
   (ADR-0008 Q4): removed outright, Pydantic's default would swallow the field and an integration
@@ -72,8 +75,9 @@ would make every read fail. So the code lets go of the column one deploy before 
 Deploy that. Confirm nothing reads the column: `grep -rn membership_id services/employee/app` returns
 only `EmployeeIn`'s refusal.
 
-**3. The migration — second deploy.** Below. It refuses to run without an attestation that steps 1
-and 2 happened, prints what it is about to lose, and drops the index before the column.
+**3. The migration — second deploy.** Below, in one change with deleting `Employee.membership_id`
+and its index from `models.py`. It refuses to run without an attestation that steps 1 and 2
+happened, prints what it is about to lose, and drops the index before the column.
 
 ## The precondition query
 
@@ -165,9 +169,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     # The values are gone; the shape comes back so an older image can run. Every row reads null,
     # which is what the column has held since the ADR-0008 §3 freeze for every row written after it.
-    op.add_column(
-        TABLE, sa.Column("membership_id", sa.UUID(), nullable=True), schema=SCHEMA
-    )
+    op.add_column(TABLE, sa.Column("membership_id", sa.UUID(), nullable=True), schema=SCHEMA)
     op.create_index(
         INDEX,
         TABLE,

@@ -24,6 +24,9 @@ def test_every_permission_code_is_under_the_hrms_time_module() -> None:
         "hrms.time.attendance.read",
         "hrms.time.attendance.write",
         "hrms.time.attendance.request",
+        # R22: the anti-spoofing flags, and the unmask of the address and device id behind one.
+        "hrms.time.attendance.read_sensitive",
+        "hrms.time.attendance_flag.read",
         "hrms.time.shift.read",
         "hrms.time.shift.write",
     }
@@ -57,6 +60,9 @@ def test_the_role_templates_grant_only_their_expected_scopes() -> None:
         ("hrms.time.attendance.write", "ORG"),
         # An HR administrator is also an employee with their own attendance (ADR-0006 §11).
         ("hrms.time.attendance.request", "OWN"),
+        # R22: HR reads every flag and is the one role that may unmask what is behind one.
+        ("hrms.time.attendance_flag.read", "ORG"),
+        ("hrms.time.attendance.read_sensitive", "ORG"),
         ("hrms.time.shift.read", "ORG"),
         ("hrms.time.shift.write", "ORG"),
     }
