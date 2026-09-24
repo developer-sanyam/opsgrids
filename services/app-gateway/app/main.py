@@ -110,11 +110,12 @@ ENGAGE_PUBLIC_PATH_PREFIXES = frozenset({"/api/v1/engage/unsubscribe/"})
 #: `infrastructure/edge/routes.prod.json` routes both paths through this gateway.
 #:
 #: **Kept out of `public_paths` on purpose** (they are `GatewayPolicy.webhook_paths`). A member of
-#: `public_paths` shares the anonymous per-address bucket, is public for every method and passes
-#: a browser's cookie and `Origin` through. A webhook needs the opposite on each count: its own
-#: rate-limit buckets, one method list per path (Meta's subscription handshake is a `GET`, its
-#: deliveries and Razorpay's are `POST`s; a `DELETE` to either is a 401 like any other unlisted
-#: request), and no cookie, credential or CORS surface. `tests/infra/test_route_table_parity.py`
+#: `public_paths` shares the anonymous per-address bucket and its shared ceilings, is public for
+#: every method and passes a browser's cookie and `Origin` through. A webhook needs the opposite on
+#: each count: no bucket a stranger can fill (its only limit is per address, on *rejected*
+#: deliveries), one method list per path (Meta's subscription handshake is a `GET`, its deliveries
+#: and Razorpay's are `POST`s; a `DELETE` to either is a 401 like any other unlisted request), and
+#: no cookie or `Authorization` forwarded to the service. `tests/infra/test_route_table_parity.py`
 #: pins that every `/api/v1/webhooks/*` route the production table serves is declared here.
 #:
 #: Signatures are still the owning service's job and are verified over the raw bytes, which this
@@ -124,6 +125,40 @@ WEBHOOK_PUBLIC_PATHS: Mapping[str, frozenset[str]] = MappingProxyType(
     {
         "/api/v1/webhooks/razorpay": frozenset({"POST"}),
         "/api/v1/webhooks/whatsapp": frozenset({"GET", "POST"}),
+    }
+)
+
+#: Which public path is which, **declared, and tested to be exhaustive** — every exact path in
+#: `public_paths` (bar the four the gateway serves itself) is in exactly one of these two sets, so
+#: adding a public path is a decision about its ceiling rather than a default nobody chose.
+#:
+#: *Credential* endpoints take something a stranger could guess — a password, a one-time code, a
+#: reset token, an invitation token — or create something (a sign-up), and share
+#: `anonymous_global_rate_limit` (`anon-global`). Everything else is *content* and shares
+#: `anonymous_content_global_rate_limit` (`anon-content-global`): a published catalogue, a store's
+#: identity, an enquiry, the unsubscribe link (a prefix; always content), and the session plumbing
+#: (`refresh` needs the refresh cookie, `select-org` a pre-auth token, `sso/*` a `state` this
+#: service issued) — none of which can be guessed into. Keeping the two apart is the point: with
+#: one ceiling, about a hundred storefront visitors at 60 requests a minute each exhausted it and
+#: no merchant could sign in anywhere, and a sign-in flood could take every catalogue offline.
+CREDENTIAL_PUBLIC_PATHS = frozenset(
+    {
+        "/api/v1/auth/login",
+        "/api/v1/auth/mfa/verify",
+        "/api/v1/auth/password/forgot",
+        "/api/v1/auth/password/reset",
+        "/api/v1/account/signup",
+        "/api/v1/invitations/accept",
+    }
+)
+CONTENT_PUBLIC_PATHS = frozenset(
+    {
+        "/api/v1/auth/refresh",
+        "/api/v1/auth/logout",
+        "/api/v1/auth/select-org",
+        "/api/v1/auth/sso/start",
+        "/api/v1/auth/sso/callback",
+        *STOREFRONT_PUBLIC_PATHS,
     }
 )
 
@@ -142,8 +177,12 @@ policy = GatewayPolicy(
     rate_limit=cfg.rate_limit_per_minute,
     anonymous_rate_limit=cfg.anonymous_rate_limit_per_minute,
     anonymous_global_rate_limit=cfg.anonymous_global_rate_limit_per_minute,
-    webhook_rate_limit=cfg.webhook_rate_limit_per_minute,
-    webhook_global_rate_limit=cfg.webhook_global_rate_limit_per_minute,
+    anonymous_content_global_rate_limit=cfg.anonymous_content_global_rate_limit_per_minute,
+    credential_paths=CREDENTIAL_PUBLIC_PATHS,
+    webhook_failure_limit=cfg.webhook_failure_limit_per_minute,
+    unauth_body_read_timeout=cfg.unauth_body_read_timeout_seconds,
+    unauth_body_slots_per_address=cfg.unauth_body_max_concurrent_per_address,
+    unauth_body_slots_global=cfg.unauth_body_max_concurrent_global,
     upstream_timeout=cfg.upstream_timeout_seconds,
     # Only this gateway believes `X-Forwarded-For`, and only from the proxies named here: the
     # anonymous limiter has to count the caller, not Caddy. See `Settings.trusted_proxy_cidrs`.
@@ -161,8 +200,9 @@ async def _startup(app: FastAPI) -> None:
         log.info("gateway.trusted_proxies", count=len(policy.trusted_proxies))
     elif cfg.is_production:
         # Not an error — a gateway with no proxy in front of it is legitimate — but on the
-        # production edge it is what an unset variable looks like, and the cost is silent:
-        # every anonymous caller shares Caddy's bucket and the per-address limit is a global one.
+        # production edge it is what a container started outside compose looks like (compose
+        # always supplies a default), and the cost is silent: every anonymous caller shares
+        # Caddy's bucket and the per-address limit is a global one.
         log.warning("gateway.no_trusted_proxies")
 
 

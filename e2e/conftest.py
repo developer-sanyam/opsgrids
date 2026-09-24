@@ -151,6 +151,7 @@ UPSTREAM_PORTS = {
     8160: "billing",
     8161: "subscription",
     8162: "metering",
+    8163: "payment",
     8164: "catalog",
     8171: "finance",
 }
@@ -201,9 +202,11 @@ BACKGROUND = (
     ("payment-consumer", "payment", "app.consumers"),
 )
 
-#: Booted services with no route in `routes.json`, on purpose. payment has no customer surface —
-#: a person never creates a charge — so the product gateway routes nothing to it; the billing run
-#: reaches it service to service, and its webhook is admin-gateway's.
+#: Booted services that need no route in `routes.json`, on purpose. payment has no customer
+#: surface — a person never creates a charge — so the product gateway routes nothing a *person*
+#: calls to it; the billing run reaches it service to service. The one route it does have there
+#: is the provider webhook (`/api/v1/webhooks/razorpay`, public by signature, not by token),
+#: which `UPSTREAM_PORTS` points at the booted service like any other.
 UNROUTED = frozenset({"payment"})
 
 #: The signing key for the whole run. One value shared by every process, which is what

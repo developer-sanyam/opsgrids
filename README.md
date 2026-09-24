@@ -81,7 +81,7 @@ so a service that moves is one edit there rather than a hunt through code.
 | 8100 / 8101 | `app-gateway` / `admin-gateway` |
 | 8110–8119 | identity & org — auth `8110`, account `8111`, product `8112`, config `8113` |
 | 8120–8139 | product services (HRMS, CRM, PulseBoard) |
-| 8160–8169 | money — billing `8160`, payment `8161`, eventbridge `8163` |
+| 8160–8169 | money — billing `8160`, subscription `8161`, metering `8162`, payment `8163`, catalog `8164` |
 | 8170+ | operator — admin `8170` |
 
 Backing services are offset from the HRMS stack so both can run at once: Postgres `5434`,

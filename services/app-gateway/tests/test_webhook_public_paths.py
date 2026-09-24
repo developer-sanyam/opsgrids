@@ -165,11 +165,10 @@ class TestProviderDeliveriesGetThrough:
     async def test_a_provider_does_not_spend_the_sign_in_allowance(
         self, app: FastAPI, upstream: _Upstream, redis: FakeRedis
     ) -> None:
+        """A delivery that works spends nothing anywhere: no anonymous bucket, and no bucket of
+        any kind — a webhook's only limit is its address's *rejected* deliveries."""
         await call(app, "POST", RAZORPAY, body=SIGNED)
-        # The per-address bucket and the path's own ceiling — and nothing in the anonymous ones.
-        keys = sorted(redis.store)
-        assert len(keys) == 2 and all(k.startswith(f"rl:hook:{RAZORPAY}:") for k in keys), keys
-        assert not [k for k in keys if k.startswith("rl:anon")]
+        assert redis.store == {}
 
 
 # ------------------------------------------------------------------ nothing else is let through
@@ -303,7 +302,7 @@ class TestTraversalAroundTheWebhookPaths:
         assert status == 200
         assert upstream.paths == ["/api/v1/auth/login"]
         assert [k for k in redis.store if k.startswith("rl:anon:")]
-        assert not [k for k in redis.store if k.startswith("rl:hook:")]
+        assert not [k for k in redis.store if k.startswith("rl:hook")]
 
 
 # ---------------------------------------------------------------------------- body size
@@ -348,11 +347,31 @@ class TestThePolicyThisGatewayBuilds:
 
         assert not (set(policy.webhook_paths) & policy.public_paths)
 
-    def test_the_anonymous_surface_has_a_shared_ceiling_above_one_callers_allowance(self) -> None:
+    def test_the_anonymous_surface_has_shared_ceilings_above_one_callers_allowance(self) -> None:
         from app.main import policy
 
         assert policy.anonymous_global_rate_limit > policy.anonymous_rate_limit > 0
-        assert policy.webhook_global_rate_limit > policy.webhook_rate_limit > 0
+        # Content is the busier surface and gets the bigger ceiling.
+        assert policy.anonymous_content_global_rate_limit > policy.anonymous_global_rate_limit
+        assert policy.webhook_failure_limit > 0
+
+    def test_a_webhook_has_no_shared_ceiling_only_a_per_address_failure_limit(self) -> None:
+        """The structural guarantee behind "no bucket a stranger can fill blocks a genuine
+        delivery from a different address": the policy simply has no such field."""
+        from dataclasses import fields
+
+        from platform_core.gateway import GatewayPolicy
+
+        names = {f.name for f in fields(GatewayPolicy)}
+        assert "webhook_failure_limit" in names
+        assert not {n for n in names if n.startswith("webhook_") and "global" in n}
+        assert "webhook_rate_limit" not in names
+
+    def test_the_unauthenticated_body_guard_is_on(self) -> None:
+        from app.main import policy
+
+        assert policy.unauth_body_read_timeout == 10.0
+        assert (policy.unauth_body_slots_per_address, policy.unauth_body_slots_global) == (4, 32)
 
     def test_no_proxy_is_trusted_unless_the_deployment_names_one(self) -> None:
         """The gateway as imported here has no `TRUSTED_PROXY_CIDRS`, so it believes no header:
@@ -365,8 +384,12 @@ class TestThePolicyThisGatewayBuilds:
 _LIMIT_SETTINGS = {
     "ANONYMOUS_RATE_LIMIT_PER_MINUTE": "anonymous_rate_limit_per_minute",
     "ANONYMOUS_GLOBAL_RATE_LIMIT_PER_MINUTE": "anonymous_global_rate_limit_per_minute",
-    "WEBHOOK_RATE_LIMIT_PER_MINUTE": "webhook_rate_limit_per_minute",
-    "WEBHOOK_GLOBAL_RATE_LIMIT_PER_MINUTE": "webhook_global_rate_limit_per_minute",
+    "ANONYMOUS_CONTENT_GLOBAL_RATE_LIMIT_PER_MINUTE": (
+        "anonymous_content_global_rate_limit_per_minute"
+    ),
+    "WEBHOOK_FAILURE_LIMIT_PER_MINUTE": "webhook_failure_limit_per_minute",
+    "UNAUTH_BODY_MAX_CONCURRENT_PER_ADDRESS": "unauth_body_max_concurrent_per_address",
+    "UNAUTH_BODY_MAX_CONCURRENT_GLOBAL": "unauth_body_max_concurrent_global",
 }
 
 
@@ -378,16 +401,126 @@ class TestTheLimitsCanBeTunedFromTheEnvironment:
         set. That must read as "not configured", not as a zero limit that refuses everything (or
         a parse error that stops the gateway booting)."""
         defaults = {name: getattr(Settings(), name) for name in _LIMIT_SETTINGS.values()}
-        for key in _LIMIT_SETTINGS:
+        for key in [*_LIMIT_SETTINGS, "UNAUTH_BODY_READ_TIMEOUT_SECONDS"]:
             monkeypatch.setenv(key, "")
         assert {name: getattr(Settings(), name) for name in _LIMIT_SETTINGS.values()} == defaults
-        assert defaults["anonymous_global_rate_limit_per_minute"] > 0
+        assert Settings().unauth_body_read_timeout_seconds == 10.0
+
+    def test_an_empty_ceiling_does_not_disable_the_ceiling(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`0` disables a ceiling; empty must not be read as `0`. `.env` lines that compose passes
+        through as `KEY=` fall back to the defaults, which are on."""
+        monkeypatch.setenv("ANONYMOUS_GLOBAL_RATE_LIMIT_PER_MINUTE", "")
+        monkeypatch.setenv("ANONYMOUS_CONTENT_GLOBAL_RATE_LIMIT_PER_MINUTE", "")
+        cfg = Settings()
+        assert cfg.anonymous_global_rate_limit_per_minute == 6000
+        assert cfg.anonymous_content_global_rate_limit_per_minute == 60000
 
     def test_a_value_in_the_environment_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
         for i, key in enumerate(_LIMIT_SETTINGS, start=1):
             monkeypatch.setenv(key, str(i * 111))
+        monkeypatch.setenv("UNAUTH_BODY_READ_TIMEOUT_SECONDS", "2.5")
         cfg = Settings()
-        assert [getattr(cfg, name) for name in _LIMIT_SETTINGS.values()] == [111, 222, 333, 444]
+        assert [getattr(cfg, name) for name in _LIMIT_SETTINGS.values()] == [
+            111,
+            222,
+            333,
+            444,
+            555,
+            666,
+        ]
+        assert cfg.unauth_body_read_timeout_seconds == 2.5
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("ANONYMOUS_RATE_LIMIT_PER_MINUTE", "0"),
+            ("ANONYMOUS_RATE_LIMIT_PER_MINUTE", "-5"),
+            ("RATE_LIMIT_PER_MINUTE", "0"),
+            ("WEBHOOK_FAILURE_LIMIT_PER_MINUTE", "0"),
+            ("ANONYMOUS_GLOBAL_RATE_LIMIT_PER_MINUTE", "-1"),
+            ("ANONYMOUS_CONTENT_GLOBAL_RATE_LIMIT_PER_MINUTE", "-1"),
+            ("UNAUTH_BODY_READ_TIMEOUT_SECONDS", "0"),
+            ("UNAUTH_BODY_READ_TIMEOUT_SECONDS", "-1"),
+            ("UNAUTH_BODY_MAX_CONCURRENT_PER_ADDRESS", "0"),
+            ("UNAUTH_BODY_MAX_CONCURRENT_GLOBAL", "0"),
+        ],
+    )
+    def test_a_limit_that_would_refuse_everything_stops_the_gateway_booting(
+        self, monkeypatch: pytest.MonkeyPatch, key: str, value: str
+    ) -> None:
+        """Probe P6. A per-address limit of 0 answers 429 to the first request, and a negative
+        one is nonsense; the ceilings' `0` is the only "off" and is not in this list."""
+        monkeypatch.setenv(key, value)
+        with pytest.raises(ValueError):
+            Settings()
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "ANONYMOUS_GLOBAL_RATE_LIMIT_PER_MINUTE",
+            "ANONYMOUS_CONTENT_GLOBAL_RATE_LIMIT_PER_MINUTE",
+        ],
+    )
+    def test_zero_switches_a_ceiling_off_and_only_a_ceiling(
+        self, monkeypatch: pytest.MonkeyPatch, key: str
+    ) -> None:
+        monkeypatch.setenv(key, "0")
+        assert getattr(Settings(), key.lower()) == 0
+
+
+#: The four public paths the gateway process serves itself, never routed to a service.
+_SERVED_BY_THE_GATEWAY = {"/health", "/health/ready", "/docs", "/openapi.json"}
+
+
+class TestEveryPublicPathHasADeclaredCeiling:
+    """The credential ceiling and the content ceiling are separate buckets so that a crowd of
+    storefront visitors cannot lock every merchant out of signing in (about a hundred addresses at
+    60 requests a minute exhausted the one shared 6000), and a sign-in flood cannot take every
+    catalogue offline. That only holds if each public path is put on one side deliberately."""
+
+    def test_every_public_path_is_classified_and_none_twice(self) -> None:
+        from app.main import CONTENT_PUBLIC_PATHS, CREDENTIAL_PUBLIC_PATHS, policy
+
+        public = policy.public_paths - _SERVED_BY_THE_GATEWAY
+        assert not (CREDENTIAL_PUBLIC_PATHS & CONTENT_PUBLIC_PATHS), "classified as both"
+        unclassified = public - CREDENTIAL_PUBLIC_PATHS - CONTENT_PUBLIC_PATHS
+        assert unclassified == set(), f"public but neither credential nor content: {unclassified}"
+        stray = (CREDENTIAL_PUBLIC_PATHS | CONTENT_PUBLIC_PATHS) - policy.public_paths
+        assert stray == set(), f"classified but not public: {stray}"
+
+    def test_the_policy_carries_exactly_the_declared_credential_paths(self) -> None:
+        from app.main import CREDENTIAL_PUBLIC_PATHS, policy
+
+        assert policy.credential_paths == CREDENTIAL_PUBLIC_PATHS
+        assert set(CREDENTIAL_PUBLIC_PATHS) == {
+            "/api/v1/auth/login",
+            "/api/v1/auth/mfa/verify",
+            "/api/v1/auth/password/forgot",
+            "/api/v1/auth/password/reset",
+            "/api/v1/account/signup",
+            "/api/v1/invitations/accept",
+        }
+
+    def test_a_prefix_route_is_content_because_no_credential_is_a_prefix(self) -> None:
+        from app.main import ENGAGE_PUBLIC_PATH_PREFIXES, policy
+
+        for prefix in ENGAGE_PUBLIC_PATH_PREFIXES:
+            assert not any(path.startswith(prefix) for path in policy.credential_paths)
+
+    async def test_sign_in_counts_against_the_credential_ceiling_and_a_catalogue_against_content(
+        self, app: FastAPI, upstream: _Upstream, redis: FakeRedis
+    ) -> None:
+        assert await call(app, "POST", "/api/v1/auth/login", body=b"{}") == 200
+        assert await call(app, "POST", "/api/v1/storefront/public/catalogue", body=b"{}") == 200
+        assert await call(app, "GET", "/api/v1/engage/unsubscribe/some-token") == 200
+        assert await call(app, "POST", "/api/v1/auth/refresh") == 200
+
+        credential = [k for k in redis.store if k.startswith("rl:anon-global:")]
+        content = [k for k in redis.store if k.startswith("rl:anon-content-global:")]
+        assert [redis.store[k] for k in credential] == ["1"]
+        assert [redis.store[k] for k in content] == ["3"], "catalogue, unsubscribe and refresh"
 
 
 class TestTrustedProxySettings:

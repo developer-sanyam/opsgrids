@@ -19,10 +19,17 @@ not public API.
 
 app-gateway lists exactly these two methods on exactly this path in `WEBHOOK_PUBLIC_PATHS`
 (`services/app-gateway/app/main.py`) because **Meta cannot hold one of our tokens**, so it is the
-only unauthenticated surface notification exposes. The gateway gives it its own rate-limit
-buckets (per address and per path), caps the body at 3 MiB (Meta documents up to 3 MB), strips
-cookies and `Origin`, and forwards the raw body untouched — the signature below is verified over
-those exact bytes.
+only unauthenticated surface notification exposes. The gateway caps the body at 3 MiB (Meta
+documents up to 3 MB; Caddy enforces the same cap first), gives it a deadline for the body to
+arrive, and forwards the raw body untouched — the signature below is verified over those exact
+bytes. Its one limit is per address: deliveries this service **rejects** (400/401/403/422, which
+includes a wrong verify token on the handshake) are counted, 60 a minute by default, and an address
+over that is answered 429 before its request is forwarded. A delivery that succeeds, or that fails
+on our side, is never counted, and no counter is shared between addresses, so nobody else's traffic
+can make a genuine delivery fail. Cookies, `Authorization`, `Origin` and `Referer` are dropped
+before the request is forwarded, and `Set-Cookie` / `Access-Control-*` from this service are
+dropped on the way back. The gateway's own CORS middleware still wraps the route: a request that
+carries an allowed first-party `Origin` (Meta sends none) would be given that origin's CORS headers.
 
 ## How it is trusted, since there is no token
 

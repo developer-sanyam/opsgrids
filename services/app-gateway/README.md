@@ -37,24 +37,47 @@ instead.
 
 Three kinds, each with its own buckets (Redis, one-minute windows, failing closed):
 
-- **Public paths** (sign-in, password reset, sign-up, the storefront buyer calls, the Engage
-  unsubscribe link) — per *caller* address, `ANONYMOUS_RATE_LIMIT_PER_MINUTE` (60), and a ceiling
-  over **all** of them combined, `ANONYMOUS_GLOBAL_RATE_LIMIT_PER_MINUTE` (6000; `0` disables). The
-  per-address check runs first, so one address can spend at most its own allowance of the ceiling.
+- **Public paths** — per *caller* address, `ANONYMOUS_RATE_LIMIT_PER_MINUTE` (60), and a ceiling
+  over all callers together that depends on the path. **Credential** endpoints (sign-in, MFA
+  verify, password forgot/reset, sign-up, accept-invitation) share `anon-global`
+  (`ANONYMOUS_GLOBAL_RATE_LIMIT_PER_MINUTE`, 6000); every other public path (the storefront buyer
+  calls, the unsubscribe link, session refresh, SSO) shares `anon-content-global`
+  (`ANONYMOUS_CONTENT_GLOBAL_RATE_LIMIT_PER_MINUTE`, 60000). `0` disables a ceiling. Separate so a
+  crowd of storefront visitors cannot lock out sign-in and the reverse. Which path is which is
+  declared in `app/main.py` (`CREDENTIAL_PUBLIC_PATHS`, `CONTENT_PUBLIC_PATHS`) and a test fails
+  when one is on neither. The per-address check runs first, so one address can spend at most its
+  own allowance of a ceiling.
 - **Provider webhooks** (`WEBHOOK_PUBLIC_PATHS` in `app/main.py`: Razorpay `POST`, Meta's WhatsApp
-  `GET`/`POST`) — no token, exact path and method, per-address and per-path buckets
-  (`WEBHOOK_RATE_LIMIT_PER_MINUTE`, `WEBHOOK_GLOBAL_RATE_LIMIT_PER_MINUTE`), a body cap set on the
-  route, cookies/`Authorization`/`Origin` dropped inbound and `Set-Cookie`/`Access-Control-*`
-  dropped outbound. Authenticity is the owning service's HMAC check over the raw body.
+  `GET`/`POST`) — no token, exact path and method, and **one limit: rejected deliveries per
+  address** (`WEBHOOK_FAILURE_LIMIT_PER_MINUTE`, 60). The bucket is read before a delivery is
+  forwarded and spent only when the service answers 400/401/403/422; a success or a failure on our
+  side costs nothing and no bucket is shared between addresses, so no stranger can make a genuine
+  delivery fail. The body is capped on the route, cookies/`Authorization`/`Origin`/`Referer` are
+  dropped before the request is forwarded, and `Set-Cookie`/`Access-Control-*` from the service are
+  dropped on the way back. The gateway's own CORS middleware still wraps the route, so an allowed
+  first-party `Origin` (providers send none) would be answered with that origin's CORS headers.
+  Authenticity is the owning service's HMAC check over the raw body.
 - **Everything else** needs a bearer token.
+
+**Bodies from strangers are bounded.** The gateway buffers a body whole, so for every
+unauthenticated request it buffers (public paths *and* webhooks; never an authenticated upload) the
+body must arrive within `UNAUTH_BODY_READ_TIMEOUT_SECONDS` (10, else 408), and one address may have
+`UNAUTH_BODY_MAX_CONCURRENT_PER_ADDRESS` (4) requests in flight, the process
+`UNAUTH_BODY_MAX_CONCURRENT_GLOBAL` (32) — past either, 503 with `Retry-After: 5` before a byte is
+read. Slots are held until the response is on its way and released on every way out. Every limit is
+bounds-checked at boot: a per-address limit of 0 would refuse everyone, so it stops the process.
 
 **The caller's address** is `X-Forwarded-For`, believed only when the connecting peer is inside
 `TRUSTED_PROXY_CIDRS` and read from the right (the first address that is not a trusted proxy);
-from any other peer the header is ignored. Unset means "trust nobody", so the limiter keys on the
-socket peer — right in development, wrong behind Caddy, where the peer is always Caddy and every
-caller shares one bucket. `compose.prod.yml` sets it for the edge; `0.0.0.0/0` and malformed
-entries stop the process booting. See `infrastructure/edge/RUNBOOK.md`, "Rate limiting behind
-Caddy".
+from any other peer the header is ignored. The gateway then forwards exactly one
+`X-Forwarded-For` — the address it resolved — on every request, so the address a service audits is
+the address that was rate limited. Unset means "trust nobody", so the limiter keys on the socket
+peer and the header is forwarded as received — right in development, wrong behind Caddy, where the
+peer is always Caddy and every caller shares one bucket. Entries must be private, loopback,
+link-local or unique-local ranges (anything else stops the process booting). `compose.prod.yml`
+sets it for the edge, defaulting to the three private ranges, which trusts **every container on the
+Docker networks**, not just Caddy; the runbook narrows it to Caddy's own address. See
+`infrastructure/edge/RUNBOOK.md`, "Rate limiting behind Caddy".
 
 ## Headers
 

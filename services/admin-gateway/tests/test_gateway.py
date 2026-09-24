@@ -357,3 +357,57 @@ class TestNoDatabase:
         assert not (service_dir / "migrations").exists()
         assert not (service_dir / "alembic.ini").exists()
         assert not (service_dir / "app" / "models.py").exists()
+
+
+class TestTheProductGatewaysHardeningDoesNotReachHere:
+    """The app-gateway learned to believe a proxy's `X-Forwarded-For`, to keep provider webhooks
+    out of the shared buckets and to overwrite the header it forwards. This gateway sits behind no
+    proxy that has been named, so none of that applies: its audit rows read the header it was given
+    (`platform_core.audit._client_ip`) and must keep reading exactly that."""
+
+    def test_its_policy_trusts_no_proxy_and_declares_no_webhooks_or_ceilings(self) -> None:
+        from app.main import policy
+
+        assert policy.trusted_proxies == ()
+        assert dict(policy.webhook_paths) == {}
+        assert policy.credential_paths == frozenset()
+        assert policy.anonymous_global_rate_limit == 0
+        assert policy.anonymous_content_global_rate_limit == 0
+
+    async def test_an_anonymous_request_is_forwarded_with_the_chain_it_arrived_with(
+        self, client: AsyncClient, upstream: EchoUpstream
+    ) -> None:
+        await client.post(
+            "/api/v1/auth/operator/login",
+            json={"email": "a@example.com", "password": "x"},
+            headers={"X-Forwarded-For": "203.0.113.7, 10.0.0.1"},
+        )
+        assert upstream.header("x-forwarded-for") == "203.0.113.7, 10.0.0.1"
+
+    async def test_an_authenticated_request_is_forwarded_with_the_chain_it_arrived_with(
+        self, client: AsyncClient, mint, upstream: EchoUpstream
+    ) -> None:
+        response = await client.get(
+            STAFF_ROUTE,
+            headers={**auth(mint(staff=True)), "X-Forwarded-For": "198.51.100.9, 10.0.0.1"},
+        )
+        assert response.status_code == 200
+        assert upstream.header("x-forwarded-for") == "198.51.100.9, 10.0.0.1"
+
+    async def test_a_request_without_the_header_gets_none_added(
+        self, client: AsyncClient, upstream: EchoUpstream
+    ) -> None:
+        await client.post(
+            "/api/v1/auth/operator/login", json={"email": "a@example.com", "password": "x"}
+        )
+        assert upstream.header("x-forwarded-for") is None
+
+    async def test_the_razorpay_webhook_is_still_public_here_and_takes_no_failure_bucket(
+        self, client: AsyncClient, upstream: EchoUpstream, redis: FakeRedis
+    ) -> None:
+        """Its own public entry (`public_paths`), on the ordinary anonymous branch: nothing about
+        the product gateway's failure-bucket design is applied to it."""
+        for _ in range(3):
+            response = await client.post("/api/v1/webhooks/razorpay", content=b"{}")
+            assert response.status_code == 200
+        assert not [k for k in redis.store if k.startswith("rl:hook")]
