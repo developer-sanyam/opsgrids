@@ -1030,12 +1030,18 @@ def _capture_after_failure(
     authorisation). Each is audited under its own action and logged at error, because a person
     should know a charge dunning already acted on turned out to be paid. The charge's
     `commerce.payment.captured` is emitted exactly as a normal capture's — subscription's recovery
-    is bound to every capture — and `failure_reason` is cleared."""
+    is bound to every capture — and `failure_reason` is cleared.
+
+    The log line never carries `charge.failure_reason` verbatim: for `local_failure` it is one of
+    `domain.LOCAL_FAILURE_REASONS`, a stable code, safe to log as-is; for `provider_failure` it is
+    Razorpay's free-text `error_description`, which does not belong in a structured line an
+    operator greps and an alert matches on. The audit row keeps the full reason either way — that
+    is the evidence trail, not the log."""
     log.error(
         f"payment.charge.captured_after_{variant}",
         charge_id=str(charge.id),
         organization_id=str(charge.organization_id),
-        failure_reason=charge.failure_reason,
+        failure_reason=charge.failure_reason if variant == "local_failure" else None,
     )
     before_reason = charge.failure_reason
     charge.state = CHARGE_CAPTURED
@@ -1054,6 +1060,62 @@ def _capture_after_failure(
         request=request,
     )
     _publish_payment_event(session, charge, event_type)
+
+
+async def _detect_double_collection(
+    session: AsyncSession, charge: Charge, event: WebhookEvent, *, request: Request | None
+) -> None:
+    """After `charge` just moved to `captured`, check whether the same invoice is *also* collected
+    by another charge — the two things that can put a charge back into `captured` from `failed`
+    (a dunning retry raising a fresh charge for the same invoice, and the original charge's own
+    late same-payment capture) can both land, in either order, and neither on its own looks wrong:
+    each is one charge going from `created`/`failed` to `captured`, exactly as an ordinary payment
+    does. Only comparing across the invoice's charges catches it.
+
+    Every capture runs this check — the normal path and both `_capture_after_failure` variants —
+    so it fires whichever order the two captures arrive in. **No automatic refund**: an amount this
+    small compared to the cost of refunding the wrong charge is an operator's call, made by hand,
+    against the evidence this leaves (ADR-0004, PAY-A round 2 — owner decision). A charge with no
+    `invoice_id` has nothing to compare against and is skipped.
+    """
+    if charge.invoice_id is None:
+        return
+    others = [
+        other
+        for other in await selectors.captured_charges_for_invoice(
+            session, charge.organization_id, charge.invoice_id
+        )
+        if other.id != charge.id
+    ]
+    if not others:
+        return
+    other_ids = sorted(str(other.id) for other in others)
+    log.error(
+        "payment.invoice.collected_twice",
+        organization_id=str(charge.organization_id),
+        invoice_id=str(charge.invoice_id),
+        charge_id=str(charge.id),
+        other_captured_charge_ids=other_ids,
+        amount_minor=charge.amount_minor,
+        currency=charge.currency,
+    )
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=charge.organization_id,
+        actor_id=None,
+        acting_as=f"{event.provider}-webhook",
+        action="payment.invoice.collected_twice",
+        entity="invoice",
+        entity_id=charge.invoice_id,
+        after={
+            "invoice_id": str(charge.invoice_id),
+            "other_captured_charge_ids": other_ids,
+            "amount_minor": charge.amount_minor,
+            "currency": charge.currency,
+        },
+        request=request,
+    )
 
 
 async def _reconcile_charge(
@@ -1079,7 +1141,14 @@ async def _reconcile_charge(
     **`failed -> captured` is legal in two cases**, because in both the money moved: the platform
     failed the charge itself (`attempts_exhausted`, `lookup_unavailable`), or the provider reported
     the payment failed and now reports **the same payment** captured — a bank's late authorisation.
-    Any other capture of a failed charge is an `illegal_transition` conflict."""
+    Any other capture of a failed charge is an `illegal_transition` conflict.
+
+    **Every capture also checks for a double collection** (`_detect_double_collection`): the same
+    payment that failed and later captured can settle an invoice a dunning retry — a *different*
+    charge for the same invoice — has already collected, in either order. Detected, not prevented,
+    here: reconciliation records what a provider told it, and does not refuse or refund money that
+    moved. `consumers.charge_on_dunning_retry` is the prevention, on the side that can still choose
+    not to debit."""
     if charge is None:
         raise domain.unknown_charge()
 
@@ -1158,6 +1227,7 @@ async def _reconcile_charge(
                 session, charge, event, event_type, variant=variant, request=request
             )
             await session.flush()
+            await _detect_double_collection(session, charge, event, request=request)
             return True
 
     if not domain.is_legal(charge.state, target):
@@ -1184,6 +1254,8 @@ async def _reconcile_charge(
         request=request,
     )
     _publish_payment_event(session, charge, event_type)
+    if target == CHARGE_CAPTURED:
+        await _detect_double_collection(session, charge, event, request=request)
     return True
 
 

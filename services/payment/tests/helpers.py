@@ -92,6 +92,7 @@ async def seed_charge(
     key: str,
     amount_minor: int = 1000,
     currency: str = "USD",
+    invoice_id: uuid.UUID | None = None,
     subscription_id: uuid.UUID | None = None,
     product_key: str | None = None,
 ) -> dict[str, Any]:
@@ -104,6 +105,8 @@ async def seed_charge(
         "currency": currency,
         "idempotency_key": key,
     }
+    if invoice_id is not None:
+        payload["invoice_id"] = str(invoice_id)
     if subscription_id is not None:
         payload["subscription_id"] = str(subscription_id)
     if product_key is not None:

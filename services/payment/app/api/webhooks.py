@@ -51,7 +51,10 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 #: database back. **Nothing else belongs here** — a `DataError`, a `RuntimeError`, an unrelated
 #: `IntegrityError` is a defect, and a defect stays a 500 (or the platform's 409) so it is seen and
 #: never dressed up as an outage. The `try` below wraps only the transaction, whose sole I/O is the
-#: database, which is what makes a bare `OSError` safe to claim.
+#: database, which is what makes a bare `OSError` (a `TimeoutError` included — it subclasses
+#: `OSError`) safe to claim here without also catching a provider call gone wrong: the transaction
+#: never makes one, and `tests/infra/test_io_outside_transaction.py` fails the build the day it
+#: ever does.
 TRANSIENT_DATABASE_ERRORS: tuple[type[BaseException], ...] = (
     OperationalError,
     InterfaceError,

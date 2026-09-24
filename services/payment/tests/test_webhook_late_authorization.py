@@ -22,7 +22,9 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.testing import capture_logs
 
+from app import services
 from app.providers.razorpay import RazorpayProvider
+from platform_core.db import session_scope
 from tests.helpers import (
     audit_rows,
     charge_row,
@@ -306,3 +308,98 @@ async def test_the_late_capture_changes_no_column_beyond_state_and_failure_reaso
         )
     )[0]
     assert after == before
+
+
+async def test_amount_check_precedes_the_same_payment_exemption(
+    client: AsyncClient,
+    provider: RazorpayProvider,
+    admin_session: AsyncSession,
+    org_id: uuid.UUID,
+) -> None:
+    """The identity checks run before anything is written (`_reconcile_charge`'s docstring): a
+    capture of the same payment id but for the wrong amount must still be an `amount_mismatch`
+    conflict, not applied as a late authorisation just because the payment id matched."""
+    charge = await seed_charge(client, org_id, key="late-auth-amount", amount_minor=1000)
+    await post_webhook(
+        client,
+        provider,
+        webhook_body(charge, org_id, event="payment.failed", error_description="bank"),
+        "evt_amt_f",
+    )
+
+    response = await post_webhook(
+        client,
+        provider,
+        webhook_body(
+            charge, org_id, event="payment.captured", amount_minor=999, created_at=1_700_000_900
+        ),
+        "evt_amt_c",
+    )
+
+    assert response.json()["ignored_reason"] == "amount_mismatch"
+    stored = await charge_row(admin_session, charge["id"])
+    assert stored["state"] == "failed" and stored["failure_reason"] == "bank"
+
+
+async def test_a_replayed_capture_after_a_refund_is_a_noop(
+    client: AsyncClient,
+    provider: RazorpayProvider,
+    admin_session: AsyncSession,
+    org_id: uuid.UUID,
+    engines: None,
+) -> None:
+    """A charge captured, then refunded, then the same capture redelivered under a fresh id: the
+    charge is already `captured`, so this is the ordinary idempotent no-op — not a second
+    `captured_after_*` exemption, and not a state change back over the refund."""
+    charge = await seed_charge(client, org_id, key="late-auth-refund")
+    capture = webhook_body(charge, org_id, event="payment.captured")
+    first = await post_webhook(client, provider, capture, "evt_refund_c")
+    assert first.json()["reconciled"] is True
+
+    async with session_scope(organization_id=org_id) as s:
+        locked = await services.require_charge(s, org_id, uuid.UUID(charge["id"]))
+        await services.create_refund(s, provider, locked, amount_minor=1000)
+
+    replay = await post_webhook(client, provider, capture, "evt_refund_c_replay")
+
+    assert replay.json()["reconciled"] is False and replay.json()["ignored_reason"] is None
+    assert (await emitted(admin_session, org_id)).count("commerce.payment.captured") == 1
+    assert (await charge_row(admin_session, charge["id"]))["state"] == "captured"
+
+
+class TestLateAuthorizationReplaysPageOncePerDelivery:
+    async def test_distinct_deliveries_page_but_a_true_redelivery_does_not(
+        self,
+        client: AsyncClient,
+        provider: RazorpayProvider,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        """Three distinct delivery ids of the same `authorized`-on-`failed` body each page once —
+        the alert is per delivery, not deduplicated across them — but a true redelivery (the same
+        header again) is caught as a plain duplicate before reconciliation runs a second time, and
+        pages nobody. Ties the accepted residual documented in the ADR: a body resent under fresh
+        ids pages that many times, on purpose, because deduplicating the alert is a paging-policy
+        question, not a correctness one."""
+        charge = await seed_charge(client, org_id, key="late-auth-replay-pages")
+        await post_webhook(
+            client,
+            provider,
+            webhook_body(charge, org_id, event="payment.failed", error_description="b"),
+            "evt_lap_f",
+        )
+        auth = webhook_body(charge, org_id, event="payment.authorized", created_at=1_700_000_500)
+
+        with capture_logs() as logs:
+            for i in range(3):
+                await post_webhook(client, provider, auth, f"evt_lap_{i}")
+            await post_webhook(client, provider, auth, "evt_lap_0")  # a true redelivery
+
+        pages = [e for e in logs if e["event"] == "payment.webhook.late_authorization"]
+        assert len(pages) == 3
+        audits = [
+            a
+            for a in await audit_rows(admin_session, org_id)
+            if a["action"] == "payment.webhook.late_authorization"
+        ]
+        assert len(audits) == 3

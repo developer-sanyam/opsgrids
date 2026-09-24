@@ -18,6 +18,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    CHARGE_CAPTURED,
     CHARGE_CREATED,
     MANDATE_ACTIVE,
     REFUND_FAILED,
@@ -94,6 +95,27 @@ async def get_charge_by_provider_payment_id(
         )
     )
     return result.scalar_one_or_none()
+
+
+async def captured_charges_for_invoice(
+    session: AsyncSession, organization_id: uuid.UUID, invoice_id: uuid.UUID
+) -> list[Charge]:
+    """Every charge already `captured` for `invoice_id`, within `organization_id`.
+
+    Two callers, one question — "has this invoice already been collected?" — asked at two moments:
+    a webhook that just moved a charge to `captured` checks whether *another* charge of the
+    invoice is captured too (a double collection, whichever order the two captures arrived in);
+    a dunning retry about to raise a new charge checks *before* staging it, so a settled invoice is
+    never debited again. Leads with `organization_id` (`ix_charges_org_invoice`), never RLS alone.
+    """
+    result = await session.execute(
+        select(Charge).where(
+            Charge.organization_id == organization_id,
+            Charge.invoice_id == invoice_id,
+            Charge.state == CHARGE_CAPTURED,
+        )
+    )
+    return list(result.scalars())
 
 
 async def get_provider_event(

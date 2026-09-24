@@ -32,6 +32,7 @@ from tests.helpers import (
     ignored_audits,
     inbox_rows,
     post_webhook,
+    razorpay_webhook_body,
     seed_charge,
     webhook_body,
 )
@@ -116,6 +117,68 @@ class TestAReusedDeliveryId:
         assert headerless.json()["provider_event_id"] == derived
         assert await emitted(admin_session, org_id) == ["commerce.payment.captured"]
         assert len(await inbox_rows(admin_session, org_id)) == 2  # the stale one, and the re-keyed
+
+    async def test_repeated_attempts_under_the_same_forged_header_stay_at_two_rows(
+        self,
+        client: AsyncClient,
+        provider: RazorpayProvider,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        """The forged header always collides with the row it was stolen from — that row is never
+        overwritten — so every repeat attempt runs the reuse check again and pages again, even
+        after the real event has been re-keyed and recorded once. Noise, not a leak: the inbox
+        stops growing at two rows (the stale one and the one re-keyed event), never a third."""
+        a = await seed_charge(client, org_id, key="rekey-bounded-a")
+        b = await seed_charge(client, org_id, key="rekey-bounded-b")
+        await post_webhook(
+            client, provider, webhook_body(a, org_id, event="payment.authorized"), "evt_H"
+        )
+        body_b = webhook_body(b, org_id, event="payment.captured", created_at=1_700_000_700)
+
+        with capture_logs() as logs:
+            for _ in range(5):
+                await post_webhook(client, provider, body_b, "evt_H")
+
+        reused = [e for e in logs if e["event"] == "payment.webhook.event_id_reused"]
+        assert len(reused) == 5, "the reuse check runs — and pages — on every attempt"
+        rows_now = await inbox_rows(admin_session, org_id)
+        assert len(rows_now) == 2
+        assert all(row["provider_event_id"] for row in rows_now), "no row is keyed on ''"
+        assert await emitted(admin_session, org_id) == ["commerce.payment.captured"]
+
+    async def test_a_reuse_against_a_stored_bodys_own_id_is_still_caught(
+        self,
+        client: AsyncClient,
+        provider: RazorpayProvider,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        """The stored row a forged header collides with need not have come from a header at all —
+        it may have been keyed on a body id, its own. The identity comparison reads the stored
+        payload back and re-derives from *that*, so the source of the original key does not
+        matter."""
+        a = await seed_charge(client, org_id, key="rekey-bodyid-a")
+        b = await seed_charge(client, org_id, key="rekey-bodyid-b")
+        body_a = razorpay_webhook_body(
+            event="payment.authorized",
+            provider_payment_id=a["provider_payment_id"],
+            organization_id=org_id,
+            charge_id=uuid.UUID(a["id"]),
+            event_id="evt_BODY",
+            body_id=True,
+        )
+        first = await post_webhook(client, provider, body_a, None)  # no header; the body id wins
+        assert first.json()["provider_event_id"] == "evt_BODY"
+
+        forged = webhook_body(b, org_id, event="payment.captured", created_at=1_700_000_800)
+        with capture_logs() as logs:
+            second = await post_webhook(client, provider, forged, "evt_BODY")
+
+        assert second.json()["reconciled"] is True
+        assert second.json()["provider_event_id"].startswith("derived:")
+        assert [e for e in logs if e["event"] == "payment.webhook.event_id_reused"]
+        assert (await charge_row(admin_session, b["id"]))["state"] == "captured"
 
 
 class TestTheAcceptedResidual:

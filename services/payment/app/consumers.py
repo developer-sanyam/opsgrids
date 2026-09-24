@@ -141,6 +141,15 @@ async def charge_on_dunning_retry(envelope: dict[str, Any]) -> None:
     A retry with no amount is skipped rather than debited for nothing — a zero-value debit is a
     provider call and a bank fee that collects nothing, and the failure that opened the cycle
     always carries the amount it failed to collect.
+
+    **A retry for an invoice already captured is skipped too, before it ever stages a charge.**
+    Each rung carries a fresh idempotency key (see above), so the platform-key dedupe that protects
+    every other charge-creating path does not protect this one: nothing stops it raising and
+    debiting a second charge for an invoice that is already paid. The gap is real — the charge
+    whose failure opened this cycle can itself be captured late, by the same payment, after the
+    retry is already queued (ADR-0004, PAY-A round 2) — so the invoice is checked here, immediately
+    before staging, not left to `_detect_double_collection` to notice after the money has moved a
+    second time.
     """
     event_id = uuid.UUID(envelope["event_id"])
     payload = envelope["payload"]
@@ -148,13 +157,31 @@ async def charge_on_dunning_retry(envelope: dict[str, Any]) -> None:
     amount_minor = payload.get("amount_minor")
     provider = get_provider()
 
-    from app import services
+    from app import selectors, services
 
     needs_call = False
     charge = None
     async with session_scope(organization_id=organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("dunning.retry.duplicate", event_id=str(event_id))
+            return
+
+        raw_invoice_id = payload.get("invoice_id")
+        invoice_id = uuid.UUID(raw_invoice_id) if raw_invoice_id else None
+        if invoice_id is not None and await selectors.captured_charges_for_invoice(
+            session, organization_id, invoice_id
+        ):
+            # Most likely this charge's own late, same-payment capture landed after the retry was
+            # scheduled but before it ran. Debiting again would double-collect the invoice; the
+            # event is dropped and marked processed like any other handled delivery, so a
+            # redelivery of it is still exactly one no-op.
+            log.warning(
+                "dunning.retry.invoice_already_paid",
+                event_id=str(event_id),
+                invoice_id=str(invoice_id),
+                subscription_id=payload.get("subscription_id"),
+            )
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
             return
 
         if amount_minor:
