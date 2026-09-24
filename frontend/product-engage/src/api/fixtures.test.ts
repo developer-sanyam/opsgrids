@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { CONNECTION, DOMAINS, SENDERS } from "./fixtures";
+import { CONNECTION, DOMAINS, SENDERS, SETUP } from "./fixtures";
 
 /**
  * The fixtures are design-time data, which makes them the realistic path for a credential to
@@ -29,15 +29,24 @@ describe("the fixture domains", () => {
     expect(DOMAINS.map((d) => d.status).sort()).toEqual(["pending", "verified"]);
   });
 
-  it("generates the same five records, in the same order, as the service does", () => {
+  it("every domain has a connection, so every domain has records to show", () => {
     for (const domain of DOMAINS) {
-      expect(domain.records.map((r) => r.kind)).toEqual([
-        "spf",
-        "dkim",
-        "dmarc",
-        "return_path",
-        "tracking",
-      ]);
+      expect(domain.connection_kind).not.toBeNull();
+      expect(domain.records.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("generates the same three records, in the same order, as the service does", () => {
+    for (const domain of DOMAINS) {
+      expect(domain.records.map((r) => r.kind)).toEqual(["spf", "dkim", "dmarc"]);
+    }
+  });
+
+  it("never carries the return-path or tracking records OpsGrids does not publish", () => {
+    for (const domain of DOMAINS) {
+      const kinds = domain.records.map((r) => r.kind);
+      expect(kinds).not.toContain("return_path");
+      expect(kinds).not.toContain("tracking");
     }
   });
 
@@ -51,9 +60,21 @@ describe("the fixture domains", () => {
   it("folds each status from its required records, as `fold_domain_status` does", () => {
     for (const domain of DOMAINS) {
       const required = domain.records.filter((r) => r.required);
-      const allPublished = required.length > 0 && required.every((r) => r.verified);
+      const allPublished = required.length > 0 && required.every((r) => r.status === "verified");
       expect(domain.status).toBe(allPublished ? "verified" : "pending");
     }
+  });
+});
+
+describe("the fixture setup checklist", () => {
+  it("names all five steps, in the order the service returns them", () => {
+    expect(SETUP.steps.map((s) => s.step)).toEqual([
+      "connection",
+      "domain",
+      "sender",
+      "contacts",
+      "campaign",
+    ]);
   });
 });
 

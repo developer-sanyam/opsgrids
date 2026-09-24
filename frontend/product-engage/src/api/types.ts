@@ -18,7 +18,14 @@
 export type ConnectionKind = "google" | "microsoft" | "smtp" | "platform";
 export type ConnectionStatus = "connected" | "disconnected";
 export type DomainStatus = "pending" | "verified" | "failed";
-export type DnsRecordKind = "spf" | "dkim" | "dmarc" | "return_path" | "tracking";
+/** No `return_path` or `tracking` any more — OpsGrids publishes no mail infrastructure of its
+ *  own: no bounce envelope, no link rewriting. See `app/domain.py`'s sending-identity section. */
+export type DnsRecordKind = "spf" | "dkim" | "dmarc";
+/** Whether DNS satisfies one record. `multiple` is SPF-specific (a domain may publish only one);
+ *  `mismatch` is something published at the right name that does not satisfy the requirement —
+ *  distinct from `missing` (nothing published at all) because a customer who pasted the wrong
+ *  value needs to know a value arrived. */
+export type DnsRecordStatus = "verified" | "missing" | "multiple" | "mismatch";
 
 /** `POST /engage/connection`. One connection per organization; a second is refused. */
 export interface ConnectionIn {
@@ -44,30 +51,54 @@ export interface ConnectionOut {
   daily_cap: number;
 }
 
-/** `POST /engage/domains`. */
+/** `POST /engage/domains`. Normalised server-side by `dns_check.normalize_domain_name` — a
+ *  pasted URL, a trailing dot or slash, and mixed case are all accepted and canonicalised. */
 export interface DomainIn {
   domain: string;
 }
 
-/** One record the customer publishes at their registrar, and whether DNS has it yet. */
+/** `PATCH /engage/domains/{id}`. An absent field is left alone; a change to either resets the
+ *  domain to `pending` — its DNS has to be re-checked against the new value. */
+export interface DomainPatch {
+  dkim_selector?: string;
+  spf_include?: string;
+}
+
+/**
+ * One record the customer publishes at their registrar, and whether DNS has it yet.
+ *
+ * `fqdn` is the full host DNS is actually asked about; `registrar_name` is the same record named
+ * the way a registrar's panel wants it — `@` for the apex, `google._domainkey` for a subdomain.
+ * Neither the exact DKIM value nor a Microsoft CNAME's target is ever known here — the provider
+ * mints the key, not this platform — so `value` for those is instructional text, and only SPF
+ * ever carries a `suggested_value`.
+ */
 export interface DnsRecordOut {
   kind: DnsRecordKind;
   /** The RR type as it is typed at a registrar — `TXT`, `CNAME`. */
   type: string;
-  host: string;
+  fqdn: string;
+  registrar_name: string;
   value: string;
+  suggested_value: string | null;
   /** DMARC is the one that is recommended rather than required: a domain whose security team has
    *  not settled a policy yet still sends. */
   required: boolean;
-  verified: boolean;
+  status: DnsRecordStatus;
+  instruction: string;
 }
 
 export interface DomainOut {
   id: string;
   domain: string;
   status: DomainStatus;
-  /** Returned in full on every read, so the screen shows exactly what to paste — and shows the
-   *  same values it showed yesterday. */
+  /** `google`, `microsoft`, `smtp`, or null when no provider is connected yet — in which case
+   *  `records` is empty and the screen's job is to say "connect your email provider first". */
+  connection_kind: ConnectionKind | null;
+  dkim_selector: string;
+  spf_include: string | null;
+  /** The records this domain needs *right now*, given its connection — regenerated on every
+   *  read, not a snapshot frozen at creation. */
   records: DnsRecordOut[];
   last_checked_at: string | null;
   created_at: string;
@@ -466,4 +497,29 @@ export interface CampaignRecipientOut {
   provider_message_id: string | null;
   error: string;
   sent_at: string | null;
+}
+
+/** `POST /engage/campaigns/{campaign_id}/test`. Where the rendered-exactly-as-recipients-see-it
+ *  copy went — domain verification is not required for this, unlike the real send. */
+export interface CampaignTestSendOut {
+  sent: boolean;
+  to: string;
+}
+
+/* --------------------------------------------------------------------- setup checklist */
+
+export type SetupStepName = "connection" | "domain" | "sender" | "contacts" | "campaign";
+export type SetupStepStatus = "done" | "todo" | "blocked";
+
+/** One step of `GET /engage/setup`'s get-started checklist. `link` is a route relative to this
+ *  product's own root. */
+export interface SetupStepOut {
+  step: SetupStepName;
+  status: SetupStepStatus;
+  detail: string;
+  link: string;
+}
+
+export interface SetupOut {
+  steps: SetupStepOut[];
 }

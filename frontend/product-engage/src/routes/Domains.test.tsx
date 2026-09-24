@@ -3,38 +3,45 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 
-import { ApiError } from "@opsgrids/client";
+import { ApiError, PermissionProvider } from "@opsgrids/client";
 
 import * as client from "@/api/client";
 import type { DnsRecordOut, DomainOut, Page } from "@/api/types";
 import { DomainsPage } from "./Domains";
 
 /**
- * The two writes this screen owns.
+ * The writes this screen owns: adding a domain, verifying one, editing an SMTP domain's
+ * selector/include, and deleting a domain (confirmed on the page itself, never
+ * `window.confirm`).
  *
- * Adding a domain re-reads the list, because the service mints a DKIM keypair and fills in the
- * record the pure module could not. Verifying does not: the check rewrites `records` and `status`
- * together and answers with both, so the screen shows what DNS just said rather than asking a
- * second time and risking a status that outlives the records it was folded from.
+ * Verifying and editing do not re-read the list: both rewrite `records`/`status` (or the
+ * selector/include) and answer with the whole domain, so the screen shows what the server just
+ * said rather than asking a second time and risking a stale value outliving the one it came from.
  */
 
-function records(spfVerified: boolean): DnsRecordOut[] {
+function records(spfStatus: DnsRecordOut["status"]): DnsRecordOut[] {
   return [
     {
       kind: "spf",
       type: "TXT",
-      host: "vaayu-freight.example.com",
-      value: "v=spf1 include:_spf.opsgrids.com ~all",
+      fqdn: "vaayu-freight.example.com",
+      registrar_name: "@",
+      value: "v=spf1 include:_spf.google.com ~all",
+      suggested_value: "v=spf1 include:_spf.google.com ~all",
       required: true,
-      verified: spfVerified,
+      status: spfStatus,
+      instruction: "Publish one SPF TXT record at your domain's apex that includes _spf.google.com.",
     },
     {
       kind: "dmarc",
       type: "TXT",
-      host: "_dmarc.vaayu-freight.example.com",
-      value: "v=DMARC1; p=none; rua=mailto:dmarc@opsgrids.com",
+      fqdn: "_dmarc.vaayu-freight.example.com",
+      registrar_name: "_dmarc",
+      value: "v=DMARC1; p=none; rua=mailto:dmarc@vaayu-freight.example.com",
+      suggested_value: null,
       required: false,
-      verified: false,
+      status: "missing",
+      instruction: "Recommended: publish a DMARC policy. It never blocks sending.",
     },
   ];
 }
@@ -43,26 +50,47 @@ const PENDING: DomainOut = {
   id: "b90d5e47-2c31-4a88-8f70-61d4c9a5e223",
   domain: "vaayu-freight.example.com",
   status: "pending",
-  records: records(false),
+  connection_kind: "google",
+  dkim_selector: "google",
+  spf_include: null,
+  records: records("missing"),
   last_checked_at: null,
   created_at: "2026-09-20T15:38:57Z",
+};
+
+const NO_CONNECTION: DomainOut = {
+  ...PENDING,
+  connection_kind: null,
+  records: [],
+};
+
+const SMTP_DOMAIN: DomainOut = {
+  ...PENDING,
+  connection_kind: "smtp",
+  dkim_selector: "sg1",
+  spf_include: "amazonses.com",
 };
 
 function page<T>(items: T[]): Page<T> {
   return { items, total: items.length, page: 1, size: 200, pages: items.length ? 1 : 0 };
 }
 
+const WRITE_GRANTS = ["engage.setup.domain.write:ORG", "engage.setup.domain.read:ORG"];
+const READ_ONLY_GRANTS = ["engage.setup.domain.read:ORG"];
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function mount(domains: DomainOut[]) {
+async function mount(domains: DomainOut[], grants: string[] = WRITE_GRANTS) {
   const list = vi.spyOn(client, "listDomains").mockResolvedValue(page(domains));
   const user = userEvent.setup();
   render(
-    <MemoryRouter>
-      <DomainsPage />
-    </MemoryRouter>,
+    <PermissionProvider grants={grants}>
+      <MemoryRouter>
+        <DomainsPage />
+      </MemoryRouter>
+    </PermissionProvider>,
   );
   await screen.findByLabelText("Domain");
   return { user, list };
@@ -74,7 +102,7 @@ describe("verifying a domain", () => {
     vi.spyOn(client, "verifyDomain").mockResolvedValue({
       ...PENDING,
       status: "verified",
-      records: records(true),
+      records: records("verified"),
       last_checked_at: "2026-09-21T10:15:00Z",
     });
 
@@ -101,21 +129,42 @@ describe("verifying a domain", () => {
     expect(await screen.findByText("No such sending domain")).toBeTruthy();
     expect(screen.getByText("Awaiting DNS")).toBeTruthy();
   });
+
+  it("hides the Verify button for a caller holding only the read", async () => {
+    await mount([PENDING], READ_ONLY_GRANTS);
+    expect(screen.queryByRole("button", { name: "Verify" })).toBeNull();
+  });
+});
+
+describe("a domain with no connection yet", () => {
+  it("says to connect a provider first and shows no records", async () => {
+    await mount([NO_CONNECTION]);
+
+    expect(screen.getByText("Connect your email provider first")).toBeTruthy();
+    expect(screen.getByText("No email provider connected")).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+    // Nothing to verify against yet, so there is nothing to click.
+    expect(screen.queryByRole("button", { name: "Verify" })).toBeNull();
+  });
 });
 
 describe("adding a domain", () => {
-  it("re-reads the list, because the records are minted by the write", async () => {
+  it("explains the expected shape and re-reads the list once added", async () => {
     const { user, list } = await mount([]);
     const added: DomainOut = { ...PENDING, domain: "vaayu-parcel.example.com" };
     const add = vi.spyOn(client, "addDomain").mockResolvedValue(added);
     list.mockResolvedValue(page([added]));
 
-    await user.type(screen.getByLabelText("Domain"), "Vaayu-Parcel.example.com ");
+    expect(screen.getByText("Enter just the domain, like example.com")).toBeTruthy();
+
+    await user.type(screen.getByLabelText("Domain"), "https://Vaayu-Parcel.example.com/");
     await user.click(screen.getByRole("button", { name: "Add domain" }));
 
-    // Lower-cased and trimmed on the way out: a domain name is case-insensitive, and the row it
-    // creates is compared against DNS answers that are not.
-    await waitFor(() => expect(add).toHaveBeenCalledWith({ domain: "vaayu-parcel.example.com" }));
+    // Whatever the customer typed goes to the server verbatim — normalising a pasted URL down
+    // to its bare domain is `dns_check.normalize_domain_name`'s job, not this form's.
+    await waitFor(() =>
+      expect(add).toHaveBeenCalledWith({ domain: "https://Vaayu-Parcel.example.com/" }),
+    );
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     expect(await screen.findByRole("heading", { name: "vaayu-parcel.example.com" })).toBeTruthy();
     expect((screen.getByLabelText("Domain") as HTMLInputElement).value).toBe("");
@@ -124,18 +173,17 @@ describe("adding a domain", () => {
   it("keeps the typed name and shows the service's refusal", async () => {
     const { user } = await mount([]);
     vi.spyOn(client, "addDomain").mockRejectedValue(
-      new ApiError(409, "vaayu-freight.example.com is already a sending domain", null),
+      new ApiError(422, "Enter just the domain, like example.com", null),
     );
 
-    await user.type(screen.getByLabelText("Domain"), "vaayu-freight.example.com");
+    await user.type(screen.getByLabelText("Domain"), "not a domain");
     await user.click(screen.getByRole("button", { name: "Add domain" }));
 
-    expect(
-      await screen.findByText("vaayu-freight.example.com is already a sending domain"),
-    ).toBeTruthy();
-    expect((screen.getByLabelText("Domain") as HTMLInputElement).value).toBe(
-      "vaayu-freight.example.com",
-    );
+    // The helper text under the field carries the same sentence, so the assertion is scoped to
+    // the alert the failed submit raises rather than to the string alone.
+    const alert = await screen.findByRole("alert");
+    expect(within(alert).getByText("Enter just the domain, like example.com")).toBeTruthy();
+    expect((screen.getByLabelText("Domain") as HTMLInputElement).value).toBe("not a domain");
   });
 
   it("is the empty state, so there is no panel telling the customer to use it", async () => {
@@ -153,5 +201,74 @@ describe("the record table it shows", () => {
     const table = screen.getByRole("table");
     expect(within(table).getByText("Required")).toBeTruthy();
     expect(within(table).getByText("Recommended — doesn't block sending")).toBeTruthy();
+  });
+});
+
+describe("an SMTP domain's provider settings", () => {
+  it("shows the selector and include inputs, and saves an edit through the PATCH route", async () => {
+    const { user } = await mount([SMTP_DOMAIN]);
+
+    expect((screen.getByLabelText("DKIM selector") as HTMLInputElement).value).toBe("sg1");
+    expect((screen.getByLabelText("SPF include") as HTMLInputElement).value).toBe("amazonses.com");
+
+    const edit = vi.spyOn(client, "editDomain").mockResolvedValue({
+      ...SMTP_DOMAIN,
+      dkim_selector: "sg2",
+      status: "pending",
+    });
+
+    await user.clear(screen.getByLabelText("DKIM selector"));
+    await user.type(screen.getByLabelText("DKIM selector"), "sg2");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(edit).toHaveBeenCalledWith(SMTP_DOMAIN.id, {
+        dkim_selector: "sg2",
+        spf_include: "amazonses.com",
+      }),
+    );
+  });
+
+  it("does not show the provider-settings form for a Google or Microsoft domain", async () => {
+    await mount([PENDING]);
+    expect(screen.queryByLabelText("DKIM selector")).toBeNull();
+  });
+});
+
+describe("deleting a domain", () => {
+  it("asks for confirmation in an in-app dialog, never window.confirm", async () => {
+    const { user } = await mount([PENDING]);
+    const del = vi.spyOn(client, "deleteDomain").mockResolvedValue(undefined);
+    const list = vi.spyOn(client, "listDomains").mockResolvedValue(page([]));
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/Delete this domain\?/)).toBeTruthy();
+
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(del).toHaveBeenCalledWith(PENDING.id));
+    await waitFor(() => expect(list).toHaveBeenCalled());
+  });
+
+  it("shows the service's refusal and keeps the domain when a campaign is using it", async () => {
+    const { user } = await mount([PENDING]);
+    vi.spyOn(client, "deleteDomain").mockRejectedValue(
+      new ApiError(409, "news@vaayu-freight.example.com is used by 1 campaign(s)", null),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    expect(
+      await screen.findByText("news@vaayu-freight.example.com is used by 1 campaign(s)"),
+    ).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "vaayu-freight.example.com" })).toBeTruthy();
+  });
+
+  it("hides the Delete button for a caller holding only the read", async () => {
+    await mount([PENDING], READ_ONLY_GRANTS);
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
   });
 });

@@ -1,10 +1,10 @@
 import { useCallback, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
-import { useAsync } from "@opsgrids/client";
+import { Can, useAsync } from "@opsgrids/client";
 import { GlobeIcon, RefreshIcon } from "@opsgrids/ui";
 
-import { addDomain, listDomains, verifyDomain } from "@/api/client";
+import { addDomain, deleteDomain, editDomain, listDomains, verifyDomain } from "@/api/client";
 import type { DomainOut } from "@/api/types";
 import { failureMessage } from "@/lib/errors";
 import { formatInstant } from "@/lib/format";
@@ -13,6 +13,7 @@ import {
   Announcer,
   Button,
   Card,
+  ConfirmDialog,
   DomainStatusTag,
   EmptyState,
   InlineAlert,
@@ -43,14 +44,15 @@ function AddDomainForm({ hasDomains, onAdded }: { hasDomains: boolean; onAdded: 
 
   async function submit() {
     if (submitting) return;
-    const value = domain.trim().toLowerCase();
+    const value = domain.trim();
     if (value === "") {
       setError("Which domain should mail come from?");
       setFailure(null);
       return;
     }
-    // Whether a name is a domain the customer controls is a DNS question, and the service asks
-    // DNS. Refusing a plausible-looking string here would only invent a second, weaker rule.
+    // Normalising and validating a domain name is the service's job (`dns_check.
+    // normalize_domain_name`): it strips a pasted URL down to its bare domain, and refuses
+    // anything that is not a plain public hostname with one sentence a customer can act on.
     setError(null);
     setSubmitting(true);
     setFailure(null);
@@ -74,7 +76,7 @@ function AddDomainForm({ hasDomains, onAdded }: { hasDomains: boolean; onAdded: 
         subtitle={
           hasDomains
             ? "Each domain gets its own records to publish and is verified on its own."
-            : "The domain your mail should come from. Engage generates the five records to publish and checks for them until they resolve."
+            : "Just the domain, like example.com — Engage works out what to publish once your provider is connected."
         }
       />
 
@@ -100,7 +102,8 @@ function AddDomainForm({ hasDomains, onAdded }: { hasDomains: boolean; onAdded: 
             setDomain(event.target.value);
             if (error !== null) setError(null);
           }}
-          placeholder="mail.your-company.com"
+          placeholder="example.com"
+          helper="Enter just the domain, like example.com"
           autoComplete="off"
           spellCheck={false}
           disabled={submitting}
@@ -117,12 +120,100 @@ function AddDomainForm({ hasDomains, onAdded }: { hasDomains: boolean; onAdded: 
   );
 }
 
+/** The DKIM selector and SPF include a customer names for themselves, for a domain sent through
+ *  their own SMTP provider. Neither is knowable from the connection kind alone the way Google's
+ *  and Microsoft's are. */
+function SmtpProviderSettings({
+  domain,
+  onSaved,
+}: {
+  domain: DomainOut;
+  onSaved: (domain: DomainOut) => void;
+}) {
+  const announce = useAnnounce();
+  const [selector, setSelector] = useState(domain.dkim_selector);
+  const [include, setInclude] = useState(domain.spf_include ?? "");
+  const [failure, setFailure] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const unchanged = selector === domain.dkim_selector && include === (domain.spf_include ?? "");
+
+  async function save() {
+    if (saving || unchanged) return;
+    setSaving(true);
+    setFailure(null);
+    try {
+      const updated = await editDomain(domain.id, {
+        dkim_selector: selector,
+        spf_include: include,
+      });
+      announce(`${updated.domain}'s provider settings saved. Publish the updated records, then verify.`);
+      onSaved(updated);
+    } catch (caught) {
+      setFailure(failureMessage(caught));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded-tile bg-ground p-4">
+      <SectionHeader
+        title="Your provider's DKIM and SPF"
+        subtitle="Amazon SES, SendGrid, Mailgun and similar providers each publish their own DKIM record and name their own SPF host. Enter what your provider's dashboard gives you."
+      />
+      <div aria-live="polite" className="empty:hidden">
+        {failure !== null ? (
+          <InlineAlert tone="danger" title="Those settings weren't saved">
+            {failure}
+          </InlineAlert>
+        ) : null}
+      </div>
+      <form
+        className="flex flex-col gap-3 sm:flex-row sm:items-end"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void save();
+        }}
+      >
+        <TextField
+          label="DKIM selector"
+          value={selector}
+          onChange={(event) => setSelector(event.target.value)}
+          placeholder="sg1"
+          autoComplete="off"
+          spellCheck={false}
+          disabled={saving}
+          containerClassName="flex-1"
+        />
+        <TextField
+          label="SPF include"
+          value={include}
+          onChange={(event) => setInclude(event.target.value)}
+          placeholder="amazonses.com"
+          autoComplete="off"
+          spellCheck={false}
+          disabled={saving}
+          containerClassName="flex-1"
+        />
+        <Button type="submit" variant="outline" disabled={saving || unchanged}>
+          {saving ? "Saving…" : "Save"}
+        </Button>
+      </form>
+    </div>
+  );
+}
+
 function DomainPanel({
   domain,
   onVerified,
+  onEdited,
+  onDeleteRequested,
 }: {
   domain: DomainOut;
   onVerified: (domain: DomainOut) => void;
+  onEdited: (domain: DomainOut) => void;
+  onDeleteRequested: (domain: DomainOut) => void;
 }) {
   const announce = useAnnounce();
   const [checking, setChecking] = useState(false);
@@ -160,23 +251,37 @@ function DomainPanel({
           <div className="flex min-w-0 flex-col">
             <h2 className="truncate text-lg font-bold tracking-tight">{domain.domain}</h2>
             <p className="text-sm text-muted">
-              {domain.last_checked_at === null
-                ? "DNS has not been checked yet"
-                : `DNS last checked ${formatInstant(domain.last_checked_at)}`}
+              {domain.connection_kind === null
+                ? "No email provider connected"
+                : domain.last_checked_at === null
+                  ? "DNS has not been checked yet"
+                  : `DNS last checked ${formatInstant(domain.last_checked_at)}`}
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <DomainStatusTag status={domain.status} />
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void verify()}
-            disabled={checking}
-            leadingIcon={<RefreshIcon className="size-4" />}
-          >
-            {checking ? "Checking DNS…" : "Verify"}
-          </Button>
+          <Can permission="engage.setup.domain.write" scope="ORG">
+            {domain.connection_kind !== null ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void verify()}
+                disabled={checking}
+                leadingIcon={<RefreshIcon className="size-4" />}
+              >
+                {checking ? "Checking DNS…" : "Verify"}
+              </Button>
+            ) : null}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-negative"
+              onClick={() => onDeleteRequested(domain)}
+            >
+              Delete
+            </Button>
+          </Can>
         </div>
       </div>
 
@@ -188,7 +293,19 @@ function DomainPanel({
         ) : null}
       </div>
 
-      <DomainRecordsTable records={domain.records} domainName={domain.domain} />
+      {domain.connection_kind === null ? (
+        <InlineAlert tone="info" title="Connect your email provider first" live="off">
+          Engage generates this domain's records from how you send. <Link to="/connection">Connect a provider</Link>{" "}
+          to see what to publish.
+        </InlineAlert>
+      ) : (
+        <>
+          {domain.connection_kind === "smtp" ? (
+            <SmtpProviderSettings domain={domain} onSaved={onEdited} />
+          ) : null}
+          <DomainRecordsTable records={domain.records} domainName={domain.domain} />
+        </>
+      )}
     </Card>
   );
 }
@@ -200,18 +317,23 @@ function Domains() {
   const query = params.get("q") ?? "";
 
   const [attempt, setAttempt] = useState(0);
-  /* Domains a check has rewritten since the last read. The verify route answers with the whole
-     domain, so the screen shows what DNS just said instead of asking for the list again — and
-     the map is dropped on a reload, where the server's own answer is the fresher one. */
-  const [checked, setChecked] = useState<Record<string, DomainOut>>({});
+  /* Domains a check or an edit has rewritten since the last read. The verify and edit routes
+     answer with the whole domain, so the screen shows what the server just said instead of
+     asking for the list again — and the map is dropped on a reload, where the server's own
+     answer is the fresher one. */
+  const [changed, setChanged] = useState<Record<string, DomainOut>>({});
+  const [deleting, setDeleting] = useState<DomainOut | null>(null);
+  const [deleteFailure, setDeleteFailure] = useState<string | null>(null);
+  const [deletePending, setDeletePending] = useState(false);
+  const announce = useAnnounce();
 
   const loader = useCallback(() => listDomains(), []);
   const state = useAsync(loader, [attempt]);
   const loaded = state.status === "success" ? state.data.items : NO_DOMAINS;
 
   const domains = useMemo(
-    () => loaded.map((domain) => checked[domain.id] ?? domain),
-    [loaded, checked],
+    () => loaded.map((domain) => changed[domain.id] ?? domain),
+    [loaded, changed],
   );
 
   const shown = useMemo(() => {
@@ -220,8 +342,25 @@ function Domains() {
   }, [domains, query]);
 
   function reload() {
-    setChecked({});
+    setChanged({});
     setAttempt((current) => current + 1);
+  }
+
+  async function confirmDelete() {
+    if (deleting === null || deletePending) return;
+    setDeletePending(true);
+    setDeleteFailure(null);
+    try {
+      await deleteDomain(deleting.id);
+      const name = deleting.domain;
+      setDeleting(null);
+      announce(`${name} deleted.`);
+      reload();
+    } catch (caught) {
+      setDeleteFailure(failureMessage(caught));
+    } finally {
+      setDeletePending(false);
+    }
   }
 
   return (
@@ -263,9 +402,34 @@ function Domains() {
         <DomainPanel
           key={domain.id}
           domain={domain}
-          onVerified={(next) => setChecked((current) => ({ ...current, [next.id]: next }))}
+          onVerified={(next) => setChanged((current) => ({ ...current, [next.id]: next }))}
+          onEdited={(next) => setChanged((current) => ({ ...current, [next.id]: next }))}
+          onDeleteRequested={setDeleting}
         />
       ))}
+
+      <ConfirmDialog
+        open={deleting !== null}
+        onClose={() => {
+          setDeleting(null);
+          setDeleteFailure(null);
+        }}
+        onConfirm={() => void confirmDelete()}
+        title="Delete this domain?"
+        body={
+          deleting === null
+            ? ""
+            : `${deleting.domain} and every sender on it are removed. This can't be undone. A domain used by a campaign that is not a draft or cancelled cannot be deleted${
+                deleting.connection_kind !== null
+                  ? ""
+                  : " — connect an email provider to see whether it is in use"
+              }.`
+        }
+        confirmLabel="Delete"
+        pendingLabel="Deleting…"
+        pending={deletePending}
+        {...(deleteFailure !== null ? { error: deleteFailure } : {})}
+      />
     </div>
   );
 }

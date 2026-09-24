@@ -14,9 +14,8 @@ point: a direct send cannot reach someone a rule-driven send would have skipped.
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
+import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -24,8 +23,6 @@ from datetime import UTC, date, datetime, timedelta
 from html import escape as html_escape
 from typing import Any, Final, Literal, cast
 
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy import CursorResult, case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -1851,10 +1848,14 @@ _HOST_NOT_ALLOWED = (
     "25, 465, 587, or 2525."
 )
 
-#: 2048 bits, and not a choice of ours: 1024 is being retired by the large mailbox providers, and
-#: a 4096-bit public key does not fit one 255-byte TXT character-string — a registrar that will
-#: not split it publishes a record no verifier can read.
-_DKIM_KEY_BITS = 2048
+#: One or more DNS labels — the shape a DKIM selector actually has to be, since it becomes
+#: `<selector>._domainkey.<domain>`. Checked here, at the boundary, so a selector shaped like
+#: `a..b` or `.x` is refused with a sentence naming the field rather than reaching
+#: `dns.name.from_text` inside the resolver at verify time, where dnspython's own
+#: `EmptyLabel`/`BadEscape` would otherwise surface as a 500.
+_DKIM_SELECTOR: Final = re.compile(
+    r"^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?)*$"
+)
 
 #: What a test message says. Fixed text, because its only job is to prove the path: a customer
 #: reading it needs to know which address it came from and that nothing else is expected of them.
@@ -1864,43 +1865,6 @@ TEST_SEND_BODY = (
     "Receiving it means {address} can send mail through your provider, and that sender is now "
     "usable in your campaigns.\n"
 )
-
-
-def dkim_selector(organization_id: uuid.UUID, domain_name: str) -> str:
-    """The DKIM selector for one organization's domain. Derived, never random.
-
-    The record set is stored so the setup screen shows the values it showed yesterday; a selector
-    minted from a uuid or a clock would hand the customer a different record to paste every time
-    anything regenerated it.
-
-    Derived from the organization as well as the name so two organizations adding the same domain
-    get different selectors. Only one of them owns the zone at a time, but a hand-over between
-    them is then two records published side by side rather than one record they take turns
-    breaking.
-    """
-    digest = hashlib.sha256(f"{organization_id}:{domain_name}".encode()).hexdigest()
-    return f"og{digest[:12]}"
-
-
-def _dkim_keypair() -> tuple[str, str]:
-    """A fresh signing key as `(private PEM, base64 public key)`.
-
-    The public half is base64 of the DER SubjectPublicKeyInfo, which is what `p=` in a DKIM
-    record is defined to carry — not a PEM, whose header lines and newlines no verifier strips.
-    The private half is unencrypted PEM because it is sealed by the caller a line later; a
-    passphrase on top would only move the problem to wherever that passphrase lived.
-    """
-    key = rsa.generate_private_key(public_exponent=65537, key_size=_DKIM_KEY_BITS)
-    private_pem = key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    ).decode("utf-8")
-    public_der = key.public_key().public_bytes(
-        encoding=serialization.Encoding.DER,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
-    return private_pem, base64.b64encode(public_der).decode("ascii")
 
 
 async def _submission_endpoint(
@@ -2167,6 +2131,25 @@ async def replace_connection(
         .execution_options(synchronize_session="fetch")
     )
 
+    if before["kind"] != kind:
+        # A different provider means a different SPF target and a different DKIM shape entirely
+        # (`domain.expected_records`) — every domain here was last checked against the *old*
+        # provider's requirements, and a `verified` from that check says nothing about this one.
+        # Reset to `pending` so the next `verify` re-derives and re-checks against what `kind`
+        # actually requires now, the same reasoning as the sender reset just above and in the
+        # same transaction as the credential swap that makes it true. `records` is cleared too —
+        # not just `status` — so a read between now and the next verify shows the fresh preview
+        # for the new provider rather than the old provider's records still marked `verified`.
+        await session.execute(
+            update(EmailDomain)
+            .where(
+                EmailDomain.organization_id == ctx.organization_id,
+                EmailDomain.deleted_at.is_(None),
+            )
+            .values(status="pending", records=[], updated_by=str(ctx.principal.sub))
+            .execution_options(synchronize_session="fetch")
+        )
+
     await session.flush()
 
     record_audit(
@@ -2397,41 +2380,29 @@ async def create_domain(
     domain: str,
     request: Request | None = None,
 ) -> EmailDomain:
-    """Add a sending domain and generate everything the customer has to publish for it.
+    """Add a sending domain. Nothing is generated yet — what it needs to publish depends on the
+    organization's connection, which this domain may be added before, and `verify` is what
+    derives that fresh every time it runs (`services.record_domain_check`).
 
-    The DKIM keypair is minted **here**, because `domain.dns_records_for` is pure and cannot:
-    the record it returns carries an empty value until a public key exists to fill it, and a
-    domain created without one publishes a record that can never verify — a setup flow that
-    looks complete and signs nothing.
-
-    The private half is sealed like any other secret at rest. It is the thing that lets anyone
-    sign mail as this customer, which makes it the most dangerous value in the schema.
+    `domain` is normalised and validated by `dns_check.normalize_domain_name` before anything
+    else sees it: a pasted URL becomes its bare domain, and anything that is not a plain public
+    hostname — a path, a port, an IP literal, a single label — is refused at the boundary rather
+    than accepted and stored as a host nothing can ever publish DNS for.
     """
-    name = domain.strip().lower().rstrip(".")
-    if not name or "@" in name or " " in name or "." not in name:
-        raise ValidationProblem(f"{domain!r} is not a domain name")
+    try:
+        name = dns_check.normalize_domain_name(domain)
+    except ValueError as exc:
+        raise ValidationProblem(str(exc)) from exc
 
     if await selectors.get_domain_by_name(session, ctx.organization_id, name) is not None:
         raise ConflictProblem(f"{name} is already a sending domain for this organization")
 
-    selector = dkim_selector(ctx.organization_id, name)
-    private_pem, public_key = _dkim_keypair()
-    records = _rules.dns_records_for(name, selector, f"track.{name}")
-    for record in records:
-        if record["kind"] == "dkim":
-            record["value"] = f"v=DKIM1; k=rsa; p={public_key}"
-
-    sealed, _ = pii.seal(private_pem, kind="generic", settings=settings())
     row = EmailDomain(
         organization_id=ctx.organization_id,
         created_by=str(ctx.principal.sub),
         domain=name,
-        # Folded rather than written as "pending", so one function owns what a record set means.
-        # A freshly generated set has verified nothing, so it folds to pending — which is the
-        # point: the customer has published none of this yet.
-        status=_rules.fold_domain_status(records),
-        records=records,
-        dkim_private_key_enc=sealed,
+        status="pending",
+        records=[],
     )
     session.add(row)
     await session.flush()
@@ -2444,7 +2415,7 @@ async def create_domain(
         action="engage.domain.created",
         entity="email_domain",
         entity_id=row.id,
-        after={"domain": name, "dkim_selector": selector, "status": row.status},
+        after={"domain": name, "status": row.status},
         request=request,
     )
     publish_event(
@@ -2467,10 +2438,15 @@ async def create_domain(
 
 async def load_domain_for_check(
     session: AsyncSession, ctx: ScopeContext, *, domain_id: uuid.UUID
-) -> EmailDomain:
+) -> tuple[EmailDomain, EmailConnection | None]:
     """The first of two acts a domain re-check takes: read what is on file, and nothing else.
 
-    `record_domain_check` is the second. The DNS lookups run between the two with **no
+    Returns the domain alongside the organization's *current* connection — provider-aware
+    verification needs to know which provider's rules to check against, and that answer must be
+    read here, before the DNS lookups run, rather than assumed from whatever the domain's own
+    `records` last remembered.
+
+    `record_domain_check` is the second act. The DNS lookups run between the two with **no
     transaction open at all** (D3) — a resolver having a bad day (`NoNameservers`, `Timeout`)
     must not hold a pool connection for however long it takes to time out, and unlike a portal
     charge or an e-invoice filing there is nothing here to leave inconsistent: a lookup that never
@@ -2481,7 +2457,8 @@ async def load_domain_for_check(
     row = await selectors.get_domain(session, ctx.organization_id, domain_id)
     if row is None:
         raise NotFoundProblem("No such sending domain")
-    return row
+    connection = await selectors.get_connection(session, ctx.organization_id)
+    return row, connection
 
 
 async def record_domain_check(
@@ -2500,8 +2477,10 @@ async def record_domain_check(
     applies (payment's `finalize_charge`, finance's filing record step), because nothing handed
     across a network call in between can be assumed still current.
 
-    `records` is replaced rather than mutated: `check_records` returns a copy, and JSONB only
-    notices a reassignment.
+    `records` is replaced rather than mutated: `dns_check.check_domain_records` returns a copy,
+    and JSONB only notices a reassignment. `checked` is empty when no provider was connected at
+    load time, which folds to `pending` with nothing published — exactly the "connect your email
+    provider first" state the setup screen shows.
     """
     row = await selectors.get_domain(session, ctx.organization_id, domain_id)
     if row is None:
@@ -2525,7 +2504,7 @@ async def record_domain_check(
         before={"status": was},
         after={
             "status": row.status,
-            "records": {record["kind"]: record["verified"] for record in checked},
+            "records": {record["kind"]: record["status"] for record in checked},
         },
         request=request,
     )
@@ -2564,14 +2543,161 @@ async def verify_domain(
     Kept for the unit tests that verify the DNS-folding rules against a hand-built session and do
     not care about the transaction boundary. The real caller —
     `POST /engage/domains/{id}/verify` — calls `load_domain_for_check`, awaits
-    `dns_check.check_records` with **no session and no transaction open**, and then calls
+    `dns_check.check_domain_records` with **no session and no transaction open**, and then calls
     `record_domain_check`; see `app/api/engage.py`.
     """
-    row = await load_domain_for_check(session, ctx, domain_id=domain_id)
-    checked = await dns_check.check_records(row.records, resolver=resolver)
+    row, connection = await load_domain_for_check(session, ctx, domain_id=domain_id)
+    checked = await dns_check.check_domain_records(
+        row.domain,
+        connection_kind=connection.kind if connection else None,
+        dkim_selector=row.dkim_selector,
+        spf_include=row.spf_include,
+        resolver=resolver,
+    )
     return await record_domain_check(
         session, ctx, domain_id=domain_id, checked=checked, request=request
     )
+
+
+async def update_domain_settings(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    domain_id: uuid.UUID,
+    dkim_selector: str | None,
+    spf_include: str | None,
+    request: Request | None = None,
+) -> EmailDomain:
+    """Edit the DKIM selector and/or the SMTP SPF include a customer names for themselves.
+
+    Either change resets the domain to `pending`: the records this domain needs and the answer
+    DNS gave for the old selector or include say nothing about the new one, and a domain left
+    `verified` on stale grounds is exactly the failure the whole provider-aware rewrite exists to
+    close. `verify` re-derives and re-checks on the customer's next click, same as after any
+    other change that affects what a domain must publish.
+    """
+    row = await selectors.get_domain(session, ctx.organization_id, domain_id)
+    if row is None:
+        raise NotFoundProblem("No such sending domain")
+
+    if spf_include is not None and not dns_check.is_public_fqdn(spf_include.strip().lower()):
+        raise ValidationProblem("The SPF include must be a plain hostname, like amazonses.com")
+
+    normalized_selector = dkim_selector.strip().lower() if dkim_selector is not None else None
+    if normalized_selector is not None and not _DKIM_SELECTOR.match(normalized_selector):
+        # A selector this loose reaches `dns.name.from_text` inside the resolver at verify time,
+        # where dnspython's own `EmptyLabel`/`BadEscape` would otherwise surface as a 500 rather
+        # than a sentence about the field that caused it.
+        raise ValidationProblem(
+            "The DKIM selector must look like a DNS label — letters, digits, hyphens and "
+            "underscores, like google or sg1."
+        )
+
+    changed: dict[str, Any] = {}
+    if normalized_selector is not None and normalized_selector != row.dkim_selector:
+        changed["dkim_selector"] = (row.dkim_selector, normalized_selector)
+        row.dkim_selector = normalized_selector
+    if spf_include is not None:
+        normalized_include = spf_include.strip().lower()
+        if normalized_include != (row.spf_include or ""):
+            changed["spf_include"] = (row.spf_include, normalized_include)
+            row.spf_include = normalized_include
+
+    if not changed:
+        return row
+
+    was = row.status
+    row.status = "pending"
+    # Cleared for the same reason `replace_connection` clears it on a provider switch: the
+    # records shown must never be answered against a selector or include this domain no longer
+    # asks DNS about — a stale `verified` DKIM row here would be the same class of failure this
+    # whole rewrite exists to close.
+    row.records = []
+    row.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.domain.settings_updated",
+        entity="email_domain",
+        entity_id=row.id,
+        before={"status": was, **{k: v[0] for k, v in changed.items()}},
+        after={"status": row.status, **{k: v[1] for k, v in changed.items()}},
+        request=request,
+    )
+    return row
+
+
+async def delete_domain(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    domain_id: uuid.UUID,
+    request: Request | None = None,
+) -> None:
+    """Delete a sending domain and every sender on it.
+
+    Refused (409) when any of those senders is used by a campaign that is not a draft or
+    cancelled — that campaign's record of what it sent as is not this domain's to take away, the
+    same reasoning `delete_list` already applies to a list a campaign addressed. A draft or
+    cancelled campaign never reached anyone, so its sender choice is free to go with the domain.
+    """
+    row = await selectors.get_domain(session, ctx.organization_id, domain_id)
+    if row is None:
+        raise NotFoundProblem("No such sending domain")
+
+    domain_senders = (
+        (
+            await session.execute(
+                select(Sender).where(
+                    Sender.organization_id == ctx.organization_id,
+                    Sender.domain_id == domain_id,
+                    Sender.deleted_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    for sender in domain_senders:
+        blocking = await selectors.campaigns_using_sender(session, ctx.organization_id, sender.id)
+        if blocking:
+            raise ConflictProblem(
+                f"{sender.address} is used by {blocking} campaign(s) that are not a draft or "
+                "cancelled; delete or reassign them before deleting this domain."
+            )
+
+    for sender in domain_senders:
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=ctx.organization_id,
+            actor_id=ctx.principal.sub,
+            action="engage.sender.deleted",
+            entity="sender",
+            entity_id=sender.id,
+            before={"address": sender.address, "domain": row.domain},
+            request=request,
+        )
+        await session.delete(sender)
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.domain.deleted",
+        entity="email_domain",
+        entity_id=row.id,
+        before={"domain": row.domain, "status": row.status},
+        request=request,
+    )
+    await session.delete(row)
+    await session.flush()
 
 
 async def create_sender(
@@ -4000,6 +4126,111 @@ def campaign_message(campaign: Campaign, *, to_address: str, unsubscribe: str) -
             "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
         },
     )
+
+
+async def send_campaign_test(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    campaign_id: uuid.UUID,
+    to_address: str,
+    request: Request | None = None,
+    transport: Transport | None = None,
+    resolver: dns_check.Resolver | None = None,
+) -> None:
+    """Send a test copy of a campaign exactly as a recipient would receive it.
+
+    Same subject, same body, the same List-Unsubscribe headers — prefixed `[Test] ` so nobody
+    mistakes it for the real send — through a real-looking unsubscribe link that names nobody:
+    the recipient id inside it is a fresh `uuid4()`, never a row in `campaign_recipients`, so a
+    click on it resolves nothing and suppresses nothing. That is what "exactly as recipients get
+    it" is worth proving without either touching the audience or waiting for the real send.
+
+    Domain verification is **not** part of this gate, unlike `request_send`'s: a test never
+    reaches a real recipient's mailbox, so it proves the *content* renders and the *connection*
+    accepts a message, neither of which needs the domain's DNS to be settled. A connected
+    provider and a sender that has passed its own test send are still required — there is
+    nothing to prove by mailing through a connection or a sender nobody has shown works at all.
+
+    Same shape as `send_test`: rate limited per organization, and the network call runs inside
+    this route's one transaction (claim → call → record) rather than split around it — see
+    `tests/infra/test_io_outside_transaction.py`'s allow-list entry for this route, which mirrors
+    the sender test's own unfixed instance (D3 #19).
+    """
+    cfg = settings()
+    await enforce_rate_limit(
+        f"engage.campaign_test_send:{ctx.organization_id}",
+        limit=cfg.engage_test_send_rate_limit_per_minute,
+        window_seconds=60,
+    )
+
+    campaign = await selectors.get_campaign(session, ctx.organization_id, campaign_id)
+    if campaign is None:
+        raise NotFoundProblem("No such campaign")
+
+    sender = await selectors.get_sender(session, ctx.organization_id, campaign.sender_id)
+    if sender is None:
+        raise BusinessRuleProblem("The campaign's sender no longer exists. Choose another.")
+    if not sender.usable:
+        raise BusinessRuleProblem(
+            f"{sender.address} has not passed a test send. Verify the sender before sending a test."
+        )
+    connection = await selectors.get_connection(session, ctx.organization_id)
+    if connection is None or connection.status != "connected":
+        raise BusinessRuleProblem("Connect an email provider before sending a test message.")
+
+    try:
+        recipient = _rules.normalize_recipient("email", to_address)
+    except _rules.RuleError as exc:
+        raise ValidationProblem(str(exc)) from exc
+
+    key = unsubscribe_key()
+    if key is not None:
+        token = _rules.make_unsubscribe_token_v2(ctx.organization_id, uuid.uuid4(), key)
+        unsubscribe = f"{cfg.engage_public_api_base.rstrip('/')}/engage/unsubscribe/{token}"
+    else:
+        # Same placeholder shape a customer's own link would take, minus a signature nothing can
+        # issue yet — real-looking, and no more forgeable than the environment already is.
+        unsubscribe = f"{cfg.engage_public_api_base.rstrip('/')}/engage/unsubscribe/preview"
+
+    outgoing = campaign_message(campaign, to_address=recipient, unsubscribe=unsubscribe)
+    outgoing = replace(outgoing, subject=f"[Test] {outgoing.subject}")
+
+    wire = transport
+    if wire is None:
+        wire = await _transport_for_connection(
+            connection, from_address=sender.address, resolver=resolver
+        )
+    try:
+        await wire.send(outgoing)
+    except TransportRefused as exc:
+        log.warning(
+            "engage.campaign_test_send.refused", campaign_id=str(campaign.id), error=str(exc)
+        )
+        raise BusinessRuleProblem(
+            "The provider refused the test message. Check the connection's credentials and "
+            "the sender's address."
+        ) from exc
+    except TransportUnavailable as exc:
+        log.warning(
+            "engage.campaign_test_send.unavailable", campaign_id=str(campaign.id), error=str(exc)
+        )
+        raise UpstreamUnavailableProblem(
+            "The provider could not be reached. Try again in a few minutes."
+        ) from exc
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.campaign.test_sent",
+        entity="campaign",
+        entity_id=campaign.id,
+        after={"tested_with": recipient},
+        request=request,
+    )
+    await session.flush()
 
 
 async def campaign_transport(connection: EmailConnection, sender: Sender) -> Transport:

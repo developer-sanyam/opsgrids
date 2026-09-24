@@ -99,8 +99,11 @@ Grouped by the slice that delivers it. Each slice is independently shippable.
 
 ### Slice 1 — Sending identity (foundation)
 Nothing can send until an organisation has a verified way to send.
-- `email_domain` — domain, DNS record set (SPF/DKIM/DMARC/return-path/tracking), per-record
-  verification state and last-checked time.
+- `email_domain` — domain, DNS record set (SPF/DKIM, DMARC recommended), per-record
+  verification state and last-checked time. **Revised 2026-09-24** (see §7): the record set is
+  provider-aware, derived from the organisation's connection kind at read and verify time, not
+  frozen at creation — and it does not include a return-path or a tracking record. OpsGrids
+  publishes no mail infrastructure of its own; see §7 for why and what that means.
 - `sender` — name, address, reply-to, signature, department, domain, default template.
 - Extend `provider_accounts` to `channel="email"`, sealed credentials, connection kind.
 - CRUD routes for all three (provider accounts have none today).
@@ -180,3 +183,53 @@ platform enforces a throttle derived from the connection kind they chose.
 Production today sends nothing at all: `EMAIL_TRANSPORT` defaults to `log` in the service, in
 compose, and in the edge env file, and preflight warns "NO EMAIL IS SENT" in capitals. Slice 1's
 test-send gate is what turns that from a silent default into a visible, per-organisation state.
+
+## 7. Fixing the sending flow (2026-09-24)
+
+Slice 1 shipped with a defect that blocked every customer's first campaign: `dns_records_for`
+told every organisation to publish an SPF include, a return-path CNAME, a tracking CNAME and a
+DKIM TXT that all pointed at OpsGrids mail infrastructure that was never built. The SPF include
+(`_spf.opsgrids.com`) had no DNS record of its own, so a customer who followed the instructions
+published an SPF **permerror** and broke all of their mail, not just Engage's. Nothing signed
+outgoing mail with the DKIM key the service minted. The verification check itself used substring
+containment, which a correctly merged SPF record never satisfies. And there was no way to delete
+a bad domain row once one existed — `services.create_domain`'s validation was loose enough to
+accept a full URL as a domain name.
+
+**The decision, stated plainly: customers send through their own provider — Google Workspace,
+Microsoft 365, or their own SMTP relay. OpsGrids publishes no mail infrastructure of its own.
+Bounce processing and open/click tracking are not built.** There is no platform MTA, no bounce
+envelope, and no link-rewriting proxy, and this design does not assume one exists anywhere in the
+send path. §1.3 above already chose per-organisation sending identity for the deliverability
+reason; this section is that same choice, carried all the way through to what a domain actually
+has to publish.
+
+What changed in the schema and the domain rules:
+
+- **`dns_records_for` is gone.** `domain.expected_records` derives the record set from the
+  organisation's *current* connection kind — `google`, `microsoft`, or `smtp` — computed fresh at
+  every read and every verify, never frozen at creation. A domain with no connection yet has
+  nothing to publish and shows "connect your email provider first".
+- **No return-path record, no tracking record, no OpsGrids-minted DKIM key.** Each provider
+  proves DKIM its own way: Google publishes its own TXT at a selector, Microsoft two fixed CNAMEs,
+  a customer's own SMTP provider a TXT or CNAME at a selector they name themselves
+  (`email_domains.dkim_selector`, `email_domains.spf_include` — both additive, nullable columns).
+- **SPF verification is done properly**: read every TXT at the apex, keep the ones that start
+  with `v=spf1`. Zero is `missing`. More than one is `multiple` — a domain may publish only one —
+  with a merged suggestion. Exactly one verifies iff it contains the provider's include as a whole
+  mechanism token, never a substring; otherwise it is a `mismatch`, with the existing record
+  edited in place rather than a second one to add. Every outcome carries a `suggested_value`.
+- **`dns_check.normalize_domain_name`** strips a pasted URL down to its bare domain and refuses
+  anything that is not a plain public hostname at the boundary, closing the door a full URL walked
+  through before.
+- **`DELETE /engage/domains/{id}`** exists now, refusing (409) while a sender on the domain is
+  used by a campaign that is not a draft or cancelled.
+- **`GET /engage/setup`** folds connection, domain, sender, contacts and campaign into one
+  get-started checklist, and **`POST /engage/campaigns/{id}/test`** sends a real, rendered-as-a-
+  recipient-would-see-it copy of a campaign without requiring domain verification — a test never
+  reaches a real recipient, so it proves the content and the connection, not the DNS.
+
+What did not change: the campaign send gate (`request_send`) still requires a verified domain, a
+tested sender and a connected provider — it is simply verifying against rules that can actually
+be satisfied now. `List-Unsubscribe`/`List-Unsubscribe-Post` headers and the public unsubscribe
+route were already correct and are untouched.

@@ -4,14 +4,16 @@
 network; everything that can fail because the internet is having a bad day lives here, behind an
 injectable resolver — the same port-and-adapter split `transports.py` uses, for the same reason.
 
-Two things live here, and they answer different questions about the same mechanism. Checking a
-domain's published records (`check_records` and below) asks "what does DNS say about a name this
-organization already owns", and nothing there raises — a record that cannot be read is a record
-that is not verified, and the customer is mid-setup far more often than the resolver is broken.
-The outbound dial guard (`assert_dialable` and below) asks "is it safe to open a socket to a name
-a customer typed into a form", and it raises deliberately: a submission host that resolves inside
-this service's own compose network is not a record that failed to verify, it is a request this
-process should refuse to make.
+Three things live here, and they answer different questions about the same mechanism.
+`normalize_domain_name` asks "is this a domain name at all" — pure shape, no lookup, but it lives
+beside `is_public_fqdn` because it is built entirely from that one check. Checking a domain's
+published records (`check_domain_records` and below) asks "what does DNS say about a name this
+organization already owns, given how it says it sends", and nothing there raises — a record that
+cannot be read is a record that is not verified, and the customer is mid-setup far more often than
+the resolver is broken. The outbound dial guard (`assert_dialable` and below) asks "is it safe to
+open a socket to a name a customer typed into a form", and it raises deliberately: a submission
+host that resolves inside this service's own compose network is not a record that failed to
+verify, it is a request this process should refuse to make.
 """
 
 from __future__ import annotations
@@ -25,21 +27,15 @@ import dns.asyncresolver
 import dns.exception
 import dns.resolver
 
+from app import domain as _rules
 from platform_core.logging import get_logger
 
 log = get_logger("notification.dns_check")
 
+
 #: Every way a lookup ends with nothing to compare against. `NXDOMAIN` and `NoAnswer` are the
 #: ordinary "not published yet"; `NoNameservers` and `Timeout` are the zone's or our own network's
 #: problem. All four mean the same thing to a caller asking whether the record is live: no.
-_NO_ANSWER = (
-    dns.resolver.NXDOMAIN,
-    dns.resolver.NoAnswer,
-    dns.resolver.NoNameservers,
-    dns.exception.Timeout,
-)
-
-
 class Resolver(Protocol):
     """The port. One name and one record type in, whatever is published out."""
 
@@ -65,8 +61,14 @@ class DnsPythonResolver:
     async def resolve(self, host: str, rtype: str) -> list[str]:
         try:
             answer = await self._lookup.resolve(host, rtype)
-        except _NO_ANSWER as exc:
-            log.info("dns.no_answer", host=host, rtype=rtype, reason=type(exc).__name__)
+        except dns.exception.DNSException as exc:
+            # Deliberately the broad base class, not just `_NO_ANSWER`'s four: it also covers
+            # `dns.name`'s own parsing errors (`EmptyLabel`, `BadEscape`, ...), which a
+            # customer-supplied DKIM selector shaped like `a..b` raises the moment dnspython
+            # tries to build a qname from it — before a socket is ever opened. Every one of
+            # these reads as "nothing published" rather than a 500; only the exception's type
+            # name is logged, never its message, which can echo the input back.
+            log.info("dns.lookup_failed", host=host, rtype=rtype, reason=type(exc).__name__)
             return []
         return [_answer_text(rdata) for rdata in answer]
 
@@ -91,25 +93,115 @@ def _default_resolver() -> Resolver:
     return DnsPythonResolver()
 
 
-async def check_records(
-    records: list[dict[str, Any]], *, resolver: Resolver | None = None
-) -> list[dict[str, Any]]:
-    """Return a copy of `records` with `verified` set from what DNS actually publishes.
+#: Every reason `normalize_domain_name` refuses an input reads as this one sentence. The
+#: distinction between "that's a path", "that's a port" and "that's a single label" is exactly
+#: the shape of feedback a customer does not need to fix a typo, and — more importantly — the
+#: shape of feedback that would tell a probe which check it tripped.
+INVALID_DOMAIN_MESSAGE: Final = "Enter just the domain, like example.com"
 
-    A record verifies when its expected value appears among the answers — `in`, not equality,
-    because resolvers split long TXT strings and registrars wrap and append their own.
+#: A URL scheme prefix — `https://`, `http://`, or anything else shaped like one — stripped
+#: before the rest of the checks run, so a customer who pasted a URL from their browser's address
+#: bar gets the domain out of it rather than a refusal.
+_SCHEME: Final = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://")
 
-    A record with no expected value never verifies. DKIM is generated empty until the keypair
-    exists, and the empty string is a substring of every answer, so the containment test on its
-    own would report an unsigned domain as ready to send.
+
+def normalize_domain_name(raw: str) -> str:
+    """Canonicalise a customer-typed sending domain, or raise `ValueError`.
+
+    Trims whitespace, strips a leading URL scheme, a trailing slash and a trailing dot, lowercases
+    and IDNA-encodes a unicode name — `https://opsgrids.com/` and `OpsGrids.COM.` both become
+    `opsgrids.com`. What is left after that must be a plain public hostname, and `is_public_fqdn`
+    is the one test for that: a path, a port, userinfo, a query, a fragment, a wildcard, embedded
+    whitespace, an IP literal and a single label are all refused by its label grammar, not by a
+    separate check here for each — so this function never has to enumerate them, and every one of
+    them reads back the same fixed sentence rather than a hint about which rule it tripped.
     """
+    value = raw.strip()
+    value = _SCHEME.sub("", value, count=1)
+    value = value.rstrip("/")
+    value = value.rstrip(".")
+    value = value.lower()
+    if not value:
+        raise ValueError(INVALID_DOMAIN_MESSAGE)
+    try:
+        encoded = value.encode("idna").decode("ascii")
+    except UnicodeError as exc:
+        raise ValueError(INVALID_DOMAIN_MESSAGE) from exc
+    if not is_public_fqdn(encoded):
+        raise ValueError(INVALID_DOMAIN_MESSAGE)
+    return encoded
+
+
+async def check_domain_records(
+    domain_name: str,
+    *,
+    connection_kind: str | None,
+    dkim_selector: str,
+    spf_include: str | None,
+    resolver: Resolver | None = None,
+) -> list[dict[str, Any]]:
+    """Verify a sending domain's DNS against what its *current* connection requires.
+
+    Provider-aware, and re-derived from `connection_kind` on every call rather than from
+    whatever the domain's own row remembers — a customer who switches from Google Workspace to
+    their own SMTP relay must be re-checked against Microsoft's... against *their new*
+    requirements, not have yesterday's Google check quietly keep passing. `connection_kind is
+    None` (no provider connected yet) does no lookups at all and returns nothing: there is
+    nothing to verify against, and `expected_records` agrees by returning an empty list.
+
+    SPF is one apex lookup, folded by `domain.evaluate_spf`. DKIM's shape depends on the
+    provider: Google publishes a TXT at the selector, Microsoft two CNAMEs at fixed selector
+    names, a customer's own SMTP provider either a TXT or a CNAME at a selector they name
+    themselves. DMARC is one apex-adjacent TXT lookup, never required.
+    """
+    if connection_kind is None:
+        return []
     r = resolver or _default_resolver()
+    expected = _rules.expected_records(
+        domain_name,
+        connection_kind=connection_kind,
+        dkim_selector=dkim_selector,
+        spf_include=spf_include,
+    )
+
     out: list[dict[str, Any]] = []
-    for record in records:
-        answers = await r.resolve(record["host"], record["type"])
-        expected = (record.get("value") or "").strip()
-        verified = bool(expected) and any(expected in answer for answer in answers)
-        out.append({**record, "verified": verified})
+    for record in expected:
+        kind = record["kind"]
+        if kind == "spf":
+            target = _rules.spf_target(connection_kind, spf_include)
+            if target is None:
+                out.append({**record, "status": "missing"})
+                continue
+            txts = await r.resolve(record["fqdn"], "TXT")
+            result = _rules.evaluate_spf(txts, required_include=target)
+            out.append(
+                {
+                    **record,
+                    "status": result.status,
+                    "suggested_value": result.suggested_value,
+                    "instruction": result.message,
+                }
+            )
+        elif kind == "dkim" and connection_kind == "google":
+            txts = await r.resolve(record["fqdn"], "TXT")
+            out.append({**record, "status": _rules.evaluate_dkim_txt(txts)})
+        elif kind == "dkim" and connection_kind == "microsoft":
+            cnames = await r.resolve(record["fqdn"], "CNAME")
+            out.append({**record, "status": "verified" if cnames else "missing"})
+        elif kind == "dkim" and connection_kind == "smtp":
+            if not dkim_selector:
+                out.append({**record, "status": "missing"})
+                continue
+            txts = await r.resolve(record["fqdn"], "TXT")
+            cnames = await r.resolve(record["fqdn"], "CNAME")
+            out.append({**record, "status": _rules.evaluate_dkim_smtp(txts, cnames)})
+        elif kind == "dmarc":
+            txts = await r.resolve(record["fqdn"], "TXT")
+            out.append(
+                {**record, "status": "verified" if _rules.evaluate_dmarc(txts) else "missing"}
+            )
+        else:  # pragma: no cover - defensive; expected_records emits only the kinds above
+            out.append({**record, "status": "missing"})
     return out
 
 

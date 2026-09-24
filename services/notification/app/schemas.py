@@ -251,7 +251,15 @@ class PreferenceIn(BaseModel):
 ConnectionKind = Literal["google", "microsoft", "smtp", "platform"]
 ConnectionStatus = Literal["connected", "disconnected"]
 DomainStatus = Literal["pending", "verified", "failed"]
-DnsRecordKind = Literal["spf", "dkim", "dmarc", "return_path", "tracking"]
+#: Return-path and tracking are gone from this vocabulary along with the OpsGrids mail
+#: infrastructure that would have carried them — nothing on this platform processes a bounce
+#: envelope or rewrites a link to count a click. See `app/domain.py`'s sending-identity section.
+DnsRecordKind = Literal["spf", "dkim", "dmarc"]
+#: Whether DNS satisfies one record. `multiple` is SPF-specific (a domain may publish only one);
+#: `mismatch` is something published at the right name that does not satisfy the requirement —
+#: distinct from `missing` (nothing published at all) because a customer who pasted the wrong
+#: value needs to know a value arrived.
+DnsRecordStatus = Literal["verified", "missing", "multiple", "mismatch"]
 
 
 class ConnectionIn(BaseModel):
@@ -331,32 +339,68 @@ class WhatsAppConnectionOut(BaseModel):
 class DomainIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    domain: str = Field(min_length=3, max_length=253)
+    #: Normalised by `dns_check.normalize_domain_name` before anything else sees it — a pasted
+    #: URL, a trailing dot or slash, and mixed case are all accepted and canonicalised, so the
+    #: length bound here is generous rather than exact.
+    domain: str = Field(min_length=1, max_length=2048)
+
+
+class DomainPatch(BaseModel):
+    """Edit the two things a customer names for themselves. An absent field is left alone; a
+    change to either resets the domain to `pending` — see `services.update_domain_settings`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The DKIM selector this domain's records are published at. Read by `google` and `smtp`
+    #: connections; ignored by `microsoft`, whose two selectors are fixed names
+    #: (`selector1`/`selector2`) Microsoft itself chooses.
+    dkim_selector: str | None = Field(default=None, min_length=1, max_length=63)
+    #: An SMTP provider's SPF host — `amazonses.com`, `sendgrid.net` — validated as a bare
+    #: hostname. Meaningless for `google`/`microsoft`, whose SPF target is derived from the
+    #: connection kind alone.
+    spf_include: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class DnsRecordOut(BaseModel):
     """One record the customer publishes at their registrar, and whether DNS has it yet.
 
-    The DKIM record's `value` carries the public half of the signing key. The private half has
-    no field anywhere in this module: it is sealed in the row and read only when mail is signed.
+    `fqdn` is the full host DNS is actually asked about; `registrar_name` is the same record
+    named the way a registrar's panel wants it — `@` for the apex, `google._domainkey` for a
+    subdomain — because pasting `google._domainkey.company.com.company.com` into a panel that
+    already appends the zone is the single most common way a customer publishes a record that
+    can never verify. Neither the exact DKIM value nor a Microsoft CNAME's target is ever known
+    here — the provider mints the key, not this platform — so `value` for those is instructional
+    text, and there is nothing for `suggested_value` to say beyond SPF's own arithmetic.
     """
 
     kind: DnsRecordKind
     type: str
-    host: str
+    fqdn: str
+    registrar_name: str
     value: str
+    #: Always populated for SPF; null everywhere else, where there is nothing to suggest beyond
+    #: the provider's own instructions.
+    suggested_value: str | None
     #: DMARC is the one that is recommended rather than required — a domain whose security team
     #: has not settled a policy yet still sends.
     required: bool
-    verified: bool
+    status: DnsRecordStatus
+    instruction: str
 
 
 class DomainOut(BaseModel):
     id: str
     domain: str
     status: DomainStatus
-    #: Returned in full on every read, because the setup screen's job is to show the customer
-    #: exactly what to paste — and to show the same values it showed yesterday.
+    #: `google`, `microsoft`, `smtp`, or null when the organization has not connected a provider
+    #: yet — in which case `records` is empty and the setup screen's job is to say so, not to show
+    #: a record set derived from a provider nobody has chosen.
+    connection_kind: ConnectionKind | None
+    dkim_selector: str
+    spf_include: str | None
+    #: The records this domain needs *right now*, given its connection — regenerated on every
+    #: read from the organization's current connection, not a snapshot frozen at creation. Empty
+    #: until a provider is connected.
     records: list[DnsRecordOut]
     last_checked_at: datetime | None
     created_at: datetime
@@ -631,6 +675,38 @@ class CampaignRecipientOut(BaseModel):
     provider_message_id: str | None
     error: str
     sent_at: datetime | None
+
+
+class CampaignTestSendOut(BaseModel):
+    """What `POST /engage/campaigns/{id}/test` did. Not the campaign — a test send changes
+    nothing about it — just confirmation of where the rendered copy went."""
+
+    sent: bool
+    to: str
+
+
+# --------------------------------------------------------------------- engage setup checklist
+
+SetupStepName = Literal["connection", "domain", "sender", "contacts", "campaign"]
+SetupStepStatus = Literal["done", "todo", "blocked"]
+
+
+class SetupStepOut(BaseModel):
+    """One step of the "get started" checklist, folded from whatever this organization has
+    already done — nothing here is stored; `services.build_setup_checklist` computes it fresh
+    from the same rows the rest of Engage reads."""
+
+    step: SetupStepName
+    status: SetupStepStatus
+    #: What is true right now — "Connected via Google Workspace", "2 of 3 domains verified" — or
+    #: what is missing.
+    detail: str
+    #: The frontend route this step's screen lives at, relative to the product's own root.
+    link: str
+
+
+class SetupOut(BaseModel):
+    steps: list[SetupStepOut]
 
 
 # --------------------------------------------------------------------- engage inbox (WhatsApp)

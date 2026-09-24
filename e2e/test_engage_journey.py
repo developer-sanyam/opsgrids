@@ -11,7 +11,7 @@ This file is that proof, as a permanent journey rather than a one-off script.
     2  the owner buys Engage                     402 before, a real activation event after
     3  an authenticated read of nothing           200 with an empty page, not 401, not a stack trace
     4  a connection is created                    2xx, and the secret sent is never once echoed back
-    5  a domain is added                          real DNS records, a real DKIM public key
+    5  a domain is added                          the records its connection needs, none ours
     6  the domain is verified against real DNS    honestly still pending — nothing here is faked
     7  a sender is refused on that unverified domain   422, naming the reason
     8  a second organization cannot reach the first's row by id   the IDOR/BOLA check, over HTTP
@@ -24,9 +24,10 @@ scope, and writing into it here would race whichever file pytest happens to coll
 
 Nothing here is stubbed except the one thing step 6 explicitly refuses to stub: real DNS. The
 connection points at the MailHog `make infra` already runs (`tools/dev-bootstrap/compose.yml`),
-so no mail leaves the machine; the domain step generates a real DKIM keypair and asks a real
-resolver about a name nobody has published records for, and the honest answer — still pending —
-is the assertion, not a workaround for one.
+so no mail leaves the machine; the domain step derives its record set from that connection
+(`domain.expected_records`) — no keypair minted, no OpsGrids host in the answer anywhere — and
+asks a real resolver about a name nobody has published records for, and the honest answer —
+still pending — is the assertion, not a workaround for one.
 """
 
 from __future__ import annotations
@@ -52,10 +53,11 @@ PRODUCT = "engage"
 SMTP_SUBMISSION_HOST = "smtp.gmail.com"
 SMTP_SUBMISSION_PORT = 587
 
-#: The five DNS record kinds `services.create_domain` must generate for a fresh sending domain
-#: (`app/domain.py::dns_records_for`). Asserted as a set so a record silently dropped — or one
+#: The three DNS record kinds a domain needs once it has a connection to derive them from
+#: (`app/domain.py::expected_records`) — no return-path or tracking record: OpsGrids publishes no
+#: mail infrastructure of its own. Asserted as a set so a record silently dropped — or one
 #: silently added — both fail loudly.
-DNS_RECORD_KINDS = {"spf", "dkim", "dmarc", "return_path", "tracking"}
+DNS_RECORD_KINDS = {"spf", "dkim", "dmarc"}
 
 
 @pytest.fixture(scope="session")
@@ -252,12 +254,13 @@ class TestEngageJourney:
 
     # ------------------------------------------------------------------ 5. add a domain
 
-    def test_05_creating_a_domain_returns_real_dns_records(
+    def test_05_creating_a_domain_returns_the_records_its_connection_needs(
         self, client: httpx.Client, engage_journey: dict
     ) -> None:
-        """Five records, and a DKIM value that is a real public key rather than the empty string
-        `domain.dns_records_for` produces on its own — `services.create_domain` mints the keypair
-        and fills it in, and this is the proof that the fill-in actually happens over HTTP.
+        """The record set this domain needs, derived from the `smtp` connection step 4 just
+        created (`domain.expected_records`) — none of it an OpsGrids host, because this platform
+        publishes no mail infrastructure of its own. Nothing is minted here any more: the SPF and
+        DKIM rows are instructions to publish or check, not a keypair this service generated.
         """
         domain_name = f"e2e-engage-{uuid.uuid4().hex[:10]}.example.com"
         response = client.post(
@@ -273,22 +276,23 @@ class TestEngageJourney:
         assert body["status"] == "pending", (
             "a domain with no DNS published yet reports verified — nothing has been proven"
         )
+        assert body["connection_kind"] == "smtp", (
+            "the domain was read back with no connection, or the wrong one — its record set is "
+            "derived from the connection step 4 just created"
+        )
 
         records = {record["kind"]: record for record in body["records"]}
         assert set(records) == DNS_RECORD_KINDS, (
             f"expected records for {sorted(DNS_RECORD_KINDS)}, got {sorted(records)}"
         )
-
-        dkim = records["dkim"]["value"]
-        assert dkim.startswith("v=DKIM1; k=rsa; p="), (
-            f"the DKIM record does not look like a DKIM TXT value: {dkim!r}"
+        assert all(record["status"] == "missing" for record in records.values()), (
+            "nothing has been published for this brand-new domain, so nothing should verify yet"
         )
-        public_key = dkim.removeprefix("v=DKIM1; k=rsa; p=")
-        assert len(public_key) > 100, (
-            f"the DKIM record's public key is empty or implausibly short ({len(public_key)} "
-            f"chars) — the keypair `create_domain` is supposed to mint was never filled in: "
-            f"{dkim!r}"
-        )
+        for kind in ("return_path", "tracking"):
+            assert kind not in records, (
+                f"a {kind} record was generated — OpsGrids publishes no mail infrastructure of "
+                "its own, so this record must not exist"
+            )
 
         engage_journey["domain_id"] = body["id"]
         engage_journey["domain_name"] = domain_name
@@ -320,7 +324,7 @@ class TestEngageJourney:
             "is wrong"
         )
         for record in body["records"]:
-            assert record["verified"] is False, (
+            assert record["status"] != "verified", (
                 f"the {record['kind']} record reports verified for a name nothing was ever "
                 f"published under: {record}"
             )

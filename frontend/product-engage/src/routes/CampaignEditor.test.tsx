@@ -26,6 +26,9 @@ const VERIFIED: DomainOut = {
   id: "3f6a1c20-7d84-4e1b-9c53-0a2e8b74d611",
   domain: "vaayu-logistics.example.com",
   status: "verified",
+  connection_kind: "google",
+  dkim_selector: "google",
+  spf_include: null,
   records: [],
   last_checked_at: "2026-09-19T06:12:44Z",
   created_at: "2026-08-28T11:04:09Z",
@@ -35,6 +38,9 @@ const PENDING: DomainOut = {
   id: "b90d5e47-2c31-4a88-8f70-61d4c9a5e223",
   domain: "vaayu-freight.example.com",
   status: "pending",
+  connection_kind: "google",
+  dkim_selector: "google",
+  spf_include: null,
   records: [],
   last_checked_at: null,
   created_at: "2026-09-20T15:38:57Z",
@@ -396,7 +402,11 @@ describe("the send gate", () => {
 
     await user.type(screen.getByLabelText("Subject"), "!");
     expect(send.disabled).toBe(true);
-    expect(screen.getByText(/Save your changes first — sending uses the saved draft/)).toBeTruthy();
+    expect(screen.getByText(/Save your changes first — sending .* uses the saved draft/)).toBeTruthy();
+    // The preview send reads the same saved draft, so it is disabled by the same dirty state.
+    expect((screen.getByRole("button", { name: "Send a preview" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
   });
 
   it("asks first, on the page, with the consequence, and lands focus on the safe choice", async () => {

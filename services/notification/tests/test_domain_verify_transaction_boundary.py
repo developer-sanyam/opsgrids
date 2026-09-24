@@ -1,12 +1,12 @@
 """D3: `POST /engage/domains/{id}/verify` must not hold a transaction while DNS is being asked.
 
-`services.verify_domain` used to run `dns_check.check_records` inside the one transaction the
-request's chokepoint opened for the whole handler — the docstring even argued for it. These tests
-prove the restructured shape instead: `load_domain_for_check` (a short transaction), the lookups
-themselves with no session open at all, then `record_domain_check` (a second short transaction).
-Unlike a portal charge or an e-invoice filing, a crash between the lookup and recording it leaves
-nothing inconsistent — DNS is read-only from this service's point of view — so there is no
-reconciler here, only the property that no transaction spans the network call.
+`services.verify_domain` used to run `dns_check.check_domain_records` inside the one transaction
+the request's chokepoint opened for the whole handler — the docstring even argued for it. These
+tests prove the restructured shape instead: `load_domain_for_check` (a short transaction), the
+lookups themselves with no session open at all, then `record_domain_check` (a second short
+transaction). Unlike a portal charge or an e-invoice filing, a crash between the lookup and
+recording it leaves nothing inconsistent — DNS is read-only from this service's point of view —
+so there is no reconciler here, only the property that no transaction spans the network call.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import uuid
 from collections.abc import Iterator
+from typing import Any
 
 import dns.exception
 import pytest
@@ -54,9 +55,19 @@ def _engage_principal(org_id: uuid.UUID) -> Principal:
 
 
 async def _seed_domain(session: AsyncSession, org_id: uuid.UUID) -> models.EmailDomain:
-    ctx = ctx_for(org_id, "engage.setup.domain.write", Scope.ORG)
+    """A domain behind a connected Google Workspace connection — verification needs to know how
+    the organization sends before it has anything to check DNS against at all."""
+    domain_ctx = ctx_for(org_id, "engage.setup.domain.write", Scope.ORG)
+    connection_ctx = ctx_for(org_id, "engage.setup.connection.write", Scope.ORG)
     async with session.begin():
-        row = await services.create_domain(session, ctx, domain="company.com")
+        await services.create_connection(
+            session,
+            connection_ctx,
+            kind="google",
+            username="info@company.com",
+            secret="app-password",  # pragma: allowlist secret
+        )
+        row = await services.create_domain(session, domain_ctx, domain="company.com")
     return row
 
 
@@ -71,15 +82,15 @@ class TestNoTransactionDuringTheDnsLookup:
         row = await _seed_domain(session, org_id)
 
         seen_in_transaction: list[bool] = []
-        original_check = dns_check.check_records
+        original_check = dns_check.check_domain_records
 
-        async def _spy(records: object, *, resolver: object = None) -> object:
+        async def _spy(domain_name: str, **kwargs: Any) -> object:
             seen_in_transaction.append(session.in_transaction())
-            return await original_check(records, resolver=resolver)  # type: ignore[arg-type]
+            return await original_check(domain_name, **kwargs)
 
         import app.api.engage as engage_module
 
-        monkeypatch.setattr(engage_module.dns_check, "check_records", _spy)
+        monkeypatch.setattr(engage_module.dns_check, "check_domain_records", _spy)
 
         with _as(_engage_principal(org_id)):
             response = await client.post(f"{DOMAINS}/{row.id}/verify")
@@ -98,19 +109,20 @@ class TestNoTransactionDuringTheDnsLookup:
     ) -> None:
         row = await _seed_domain(session, org_id)
         published = {
-            (record["host"], record["type"]): [record["value"]]
-            for record in row.records
-            if record["required"]
+            ("company.com", "TXT"): ["v=spf1 include:_spf.google.com ~all"],
+            ("google._domainkey.company.com", "TXT"): ["v=DKIM1; k=rsa; p=AAA"],
         }
 
         import app.api.engage as engage_module
 
-        original_check = dns_check.check_records
+        original_check = dns_check.check_domain_records
 
-        async def _fake_check_records(records: object, *, resolver: object = None) -> object:
-            return await original_check(records, resolver=FakeResolver(published))  # type: ignore[arg-type]
+        async def _fake_check(
+            domain_name: str, *, resolver: object = None, **kwargs: Any
+        ) -> object:
+            return await original_check(domain_name, resolver=FakeResolver(published), **kwargs)
 
-        monkeypatch.setattr(engage_module.dns_check, "check_records", _fake_check_records)
+        monkeypatch.setattr(engage_module.dns_check, "check_domain_records", _fake_check)
 
         with _as(_engage_principal(org_id)):
             response = await client.post(f"{DOMAINS}/{row.id}/verify")
@@ -135,10 +147,10 @@ class TestUnaffectedByAnUnreachableResolver:
 
         import app.api.engage as engage_module
 
-        async def _boom(records: object, *, resolver: object = None) -> object:
+        async def _boom(domain_name: str, **kwargs: Any) -> object:
             raise dns.exception.Timeout()
 
-        monkeypatch.setattr(engage_module.dns_check, "check_records", _boom)
+        monkeypatch.setattr(engage_module.dns_check, "check_domain_records", _boom)
 
         with _as(_engage_principal(org_id)), pytest.raises(dns.exception.Timeout):
             await client.post(f"{DOMAINS}/{row.id}/verify")

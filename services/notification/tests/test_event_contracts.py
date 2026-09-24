@@ -130,16 +130,31 @@ async def test_whatsapp_created_and_replaced_match_their_schemas(
 # --------------------------------------------------------------------- setup: domains & senders
 
 
+#: What a Google Workspace connection needs published to verify — the same shape
+#: `test_engage_identity.py` uses, kept local so this file's fixtures do not depend on another
+#: test module's private helpers.
+_GOOGLE_PUBLISHED = {
+    ("company.com", "TXT"): ["v=spf1 include:_spf.google.com ~all"],
+    ("google._domainkey.company.com", "TXT"): ["v=DKIM1; k=rsa; p=AAA"],
+}
+
+
 async def test_domain_created_and_verified_match_their_schemas(session, org_id) -> None:
     ctx = _ctx(org_id, "engage.setup.domain.write")
     async with session.begin():
+        await services.create_connection(
+            session,
+            _ctx(org_id, "engage.setup.connection.write"),
+            kind="google",
+            username="info@company.com",
+            secret="app-password",  # pragma: allowlist secret
+        )
         row = await services.create_domain(session, ctx, domain="company.com")
     await _validate(session, services.EVT_DOMAIN_CREATED)
 
-    published = {(r["host"], r["type"]): [r["value"]] for r in row.records if r["required"]}
     async with session.begin():
         await services.verify_domain(
-            session, ctx, domain_id=row.id, resolver=FakeResolver(published)
+            session, ctx, domain_id=row.id, resolver=FakeResolver(_GOOGLE_PUBLISHED)
         )
     await _validate(session, services.EVT_DOMAIN_VERIFIED)
 
@@ -147,11 +162,17 @@ async def test_domain_created_and_verified_match_their_schemas(session, org_id) 
 async def test_sender_created_and_verified_match_their_schemas(session, org_id) -> None:
     domain_ctx = _ctx(org_id, "engage.setup.domain.write")
     async with session.begin():
+        await services.create_connection(
+            session,
+            _ctx(org_id, "engage.setup.connection.write"),
+            kind="google",
+            username="info@company.com",
+            secret="app-password",  # pragma: allowlist secret
+        )
         domain = await services.create_domain(session, domain_ctx, domain="company.com")
-    published = {(r["host"], r["type"]): [r["value"]] for r in domain.records if r["required"]}
     async with session.begin():
         await services.verify_domain(
-            session, domain_ctx, domain_id=domain.id, resolver=FakeResolver(published)
+            session, domain_ctx, domain_id=domain.id, resolver=FakeResolver(_GOOGLE_PUBLISHED)
         )
 
     async with session.begin():
@@ -164,14 +185,6 @@ async def test_sender_created_and_verified_match_their_schemas(session, org_id) 
         )
     await _validate(session, services.EVT_SENDER_CREATED)
 
-    async with session.begin():
-        await services.create_connection(
-            session,
-            _ctx(org_id, "engage.setup.connection.write"),
-            kind="google",
-            username="info@company.com",
-            secret="app-password",  # pragma: allowlist secret
-        )
     wire = RecordingTransport()
     async with session.begin():
         await services.send_test(
