@@ -644,6 +644,9 @@ def _publish_payment_event(session: AsyncSession, charge: Charge, event_type: st
             "provider": charge.provider,
             "provider_payment_id": charge.provider_payment_id,
             "state": charge.state,
+            # Additive: why a failed charge failed, so subscription can record it against a trial
+            # conversion that the charge beat to the record step (ADR-0005 addendum).
+            "failure_reason": charge.failure_reason if charge.state == CHARGE_FAILED else None,
         },
         actor=_provider_actor(charge.provider),
     )

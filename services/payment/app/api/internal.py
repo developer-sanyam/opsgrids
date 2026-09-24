@@ -13,19 +13,21 @@ as though it were.
 
 from __future__ import annotations
 
+import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import services
+from app import selectors, services
 from app.deps import get_provider
 from app.providers.base import PaymentProvider
-from app.schemas import ChargeIn, ChargeOut
+from app.schemas import ChargeIn, ChargeOut, UsableMandateOut
 from platform_core.auth import require_service_token
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
+from platform_core.errors import ForbiddenProblem
 from platform_core.logging import get_logger
 
 log = get_logger("payment.internal")
@@ -89,3 +91,43 @@ async def create_charge(
         state=result_out.state,
     )
     return result_out
+
+
+#: Who may ask whether an organization can be debited. subscription's billing run asks it when a
+#: trial ends (ADR-0013 §6); nothing else has a reason to probe a customer's payment standing.
+MANDATE_READERS = frozenset({"subscription"})
+
+
+@router.get(
+    "/organizations/{organization_id}/mandates:usable",
+    response_model=UsableMandateOut,
+    summary="Could this organization be debited this amount now? — the trial-end question",
+)
+async def usable_mandate(
+    organization_id: uuid.UUID,
+    session: SessionDep,
+    request: Request,
+    currency: Annotated[str, Query(min_length=3, max_length=3)],
+    amount_minor: Annotated[int, Query(ge=0)],
+) -> UsableMandateOut:
+    """Answers with identifiers only. The transaction is bound to the organization in the path as
+    its first statement, so another organization's mandates are invisible under RLS as well as
+    filtered out by the selector."""
+    caller = getattr(request.state, "service_caller", None)
+    if caller not in MANDATE_READERS:
+        raise ForbiddenProblem("this service may not read payment standing")
+    settings: ServiceSettings = request.app.state.settings
+    async with session.begin():
+        await set_tenant(session, organization_id)
+        if not settings.is_production:
+            await assert_tenant(session, organization_id)
+        mandate = await selectors.usable_mandate(
+            session, organization_id, currency=currency, amount_minor=amount_minor
+        )
+    return UsableMandateOut(
+        organization_id=organization_id,
+        currency=currency.upper(),
+        amount_minor=amount_minor,
+        usable=mandate is not None,
+        mandate_id=mandate.id if mandate is not None else None,
+    )

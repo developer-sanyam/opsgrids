@@ -141,6 +141,9 @@ class PaymentOutcome(BaseModel):
     invoice_id: uuid.UUID | None = None
     amount_minor: int | None = Field(default=None, ge=0)
     currency: str | None = Field(default=None, min_length=3, max_length=3)
+    #: Why a failed charge failed, as payment recorded it. Kept on a trial conversion that failed
+    #: before the billing run recorded it (ADR-0005 addendum, review fix 1).
+    failure_reason: str | None = Field(default=None, max_length=200)
 
 
 class SuspendIn(BaseModel):
@@ -211,6 +214,9 @@ class SubscriptionOut(BaseModel):
     current_period_start: datetime | None = None
     current_period_end: datetime | None = None
     cancel_at: datetime | None = None
+    #: A downgrade waiting for the next period (ADR-0005 addendum §4): the version the
+    #: subscription moves to at `current_period_end`. Null when nothing is waiting.
+    pending_plan_version_id: uuid.UUID | None = None
     currency: str
     #: The products this subscription switches on. One key for an ordinary subscription; a
     #: bundle's members for a bundle — snapshotted from the pinned catalog version at subscribe

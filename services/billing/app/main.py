@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.api.admin import router as admin_router
+from app.api.health import router as health_router
 from app.api.internal import router as internal_router
 from app.api.routes import router
 from app.config import settings
@@ -24,3 +25,5 @@ app = create_app(
 # Root-mounted and excluded from the public schema: the financial record is written by other
 # services (a billing run, an operator delegate), never by a customer's own request.
 app.include_router(internal_router)
+# Root-mounted beside `/health/outbox`: run drafts never finalized, counted cross-tenant.
+app.include_router(health_router)

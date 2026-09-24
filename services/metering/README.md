@@ -30,6 +30,10 @@ make relay SERVICE=metering            # outbox relay
 - **Internal (service-token, root-mounted):** `POST /internal/v1/usage` — batch ingest, idempotent
   on `idempotency_key`. Product services emit here server-to-server; a batch is grouped by
   organization and each group is written under its own tenant GUC.
+- **Internal:** `GET /internal/v1/organizations/{org}/usage?period_start=&period_end=` — total and
+  billable quantity per meter over a closed, half-open window, summed off `usage_events` under the
+  organization's tenant binding. The billing run prices usage from it (ADR-0005 addendum,
+  2026-09-23); **only billing** may call it — the verified caller is checked, not just the token.
 - **Customer (product gateway `/api/v1/usage`):** `GET /api/v1/usage` — read-only current-period
   usage for the caller's organization, one line per meter. Guarded by
   `core.product.activation.read`; the period is the UTC calendar month until a subscription's own

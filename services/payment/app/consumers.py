@@ -76,6 +76,18 @@ async def charge_on_invoice_finalized(envelope: dict[str, Any]) -> None:
             log.info("invoice.finalized.duplicate", event_id=str(event_id))
             return
 
+        if int(payload["total_minor"]) <= 0:
+            # A zero invoice — a free plan's period, a usage-only plan with no usage — is a real
+            # document with nothing to collect. Presenting a zero debit is a provider call and a
+            # bank fee that moves no money, so it is recorded as handled and nothing is raised.
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+            log.info(
+                "invoice.finalized.nothing_to_collect",
+                event_id=str(event_id),
+                invoice_id=payload.get("invoice_id"),
+            )
+            return
+
         charge, needs_call = await services.stage_charge(
             session,
             provider,
@@ -85,6 +97,9 @@ async def charge_on_invoice_finalized(envelope: dict[str, Any]) -> None:
                 subscription_id=uuid.UUID(payload["subscription_id"])
                 if payload.get("subscription_id")
                 else None,
+                # The billing run names the product, so a failure event can say which one
+                # dunning is about. Absent on a hand-finalized invoice, as before.
+                product_key=payload.get("product_key"),
                 amount_minor=int(payload["total_minor"]),
                 currency=payload["currency"],
                 # Platform-supplied idempotency key: one charge per finalized invoice.
