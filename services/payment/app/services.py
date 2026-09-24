@@ -15,6 +15,7 @@ any `commerce.payment.*` event it stages all commit or all roll back together.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -22,6 +23,7 @@ from typing import Any
 
 from sqlalchemy import func, literal, or_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -32,6 +34,8 @@ from app.models import (
     CHARGE_CAPTURED,
     CHARGE_CREATED,
     CHARGE_FAILED,
+    INBOX_CONFLICT,
+    INBOX_PROCESSED,
     MANDATE_ACTIVE,
     REFUND_CREATED,
     AuditLog,
@@ -41,7 +45,7 @@ from app.models import (
     ProviderEvent,
     Refund,
 )
-from app.providers.base import ChargeResult, PaymentProvider, WebhookEvent
+from app.providers.base import ChargeResult, MalformedWebhook, PaymentProvider, WebhookEvent
 from app.schemas import ChargeIn, WebhookAck
 from platform_core.audit import record_audit
 from platform_core.db import assert_tenant, set_tenant
@@ -58,6 +62,22 @@ class WebhookSignatureProblem(ProblemError):
     status_code = 400
     problem_type = "invalid-webhook-signature"
     title = "Invalid webhook signature"
+
+
+class WebhookRejectedProblem(ProblemError):
+    """A signature-verified webhook this service cannot even identify: a body that is not a JSON
+    object, or a delivery that yields no usable event id (no `X-Razorpay-Event-Id` header, and a
+    body too thin to derive one from). 400, nothing recorded, no state changed — a webhook that
+    cannot be told apart from every other one cannot be deduplicated, and keying it on '' would
+    swallow every event after the first. Genuine Razorpay deliveries always carry the header, so
+    this is a malformed or hand-built request, not a retry storm waiting to happen.
+
+    Every *other* permanent condition is answered 200 and recorded (`ingest_webhook`); this is the
+    one that has nothing to record it under."""
+
+    status_code = 400
+    problem_type = "invalid-webhook"
+    title = "Invalid webhook"
 
 
 def _provider_actor(provider: str) -> dict[str, Any]:
@@ -565,6 +585,64 @@ async def create_charge(
     return await finalize_charge(session, charge.id, result, request=request)
 
 
+#: The unique indexes on `charges` that a webhook's provider ids can collide with: another charge of
+#: the same organization already holds the payment id, or the Order id, the webhook asserts for this
+#: one. Contradictory data, permanent — see `ingest_webhook`.
+_PROVIDER_ID_INDEXES = ("uq_charges_org_provider_payment_id", "uq_charges_org_provider_order_id")
+
+
+def _organization_of(event: WebhookEvent) -> uuid.UUID | None:
+    """The organization a verified webhook names in its echoed `notes`, or None when it names none
+    (a payment made on the same provider account outside this platform) or names something that is
+    not an id. Either way there is no tenant to bind."""
+    if not event.organization_id:
+        return None
+    try:
+        return uuid.UUID(event.organization_id)
+    except ValueError:
+        return None
+
+
+def _is_provider_id_collision(exc: IntegrityError) -> bool:
+    """True iff `exc` is one of `_PROVIDER_ID_INDEXES` firing — a webhook asserting a provider id
+    another charge already holds. Any other integrity error is a bug or a race, and stays one."""
+    message = str(exc.orig)
+    return any(name in message for name in _PROVIDER_ID_INDEXES)
+
+
+async def _insert_inbox(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    event: WebhookEvent,
+    charge_id: uuid.UUID | None,
+    signature: str | None,
+    disposition: str,
+    reason: str | None,
+) -> uuid.UUID | None:
+    """The idempotent inbox insert: `ON CONFLICT (organization_id, provider_event_id) DO NOTHING`.
+    Returns the new row's id, or None when the event is already there — a redelivery. The table is
+    insert-only, so `disposition` and `reason` are stated here, at the one moment they can be."""
+    stmt = (
+        pg_insert(ProviderEvent)
+        .values(
+            id=uuid.uuid4(),
+            organization_id=organization_id,
+            provider=event.provider,
+            provider_event_id=event.provider_event_id,
+            event_name=event.event_name,
+            charge_id=charge_id,
+            payload=event.raw,
+            signature=signature,
+            disposition=disposition,
+            disposition_reason=reason,
+        )
+        .on_conflict_do_nothing(index_elements=["organization_id", "provider_event_id"])
+        .returning(ProviderEvent.id)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def ingest_webhook(
     session: AsyncSession,
     provider: PaymentProvider,
@@ -572,30 +650,74 @@ async def ingest_webhook(
     signature: str | None,
     body: bytes,
     is_production: bool,
+    event_id: str | None = None,
     request: Request | None = None,
 ) -> WebhookAck:
     """Verify, record and reconcile a provider webhook — the reconciliation entry point.
 
+    `event_id` is the delivery id the transport carried — Razorpay's `X-Razorpay-Event-Id` header,
+    which its body does not repeat. It is **not** signed (the HMAC covers the body only), so it is a
+    delivery id and nothing more; see `domain.resolve_event_id`.
+
     Order is load-bearing:
 
     1. **Verify the signature** over the raw body. A failure is a 400 and nothing is recorded.
-    2. **Parse** the (now trusted) body and read the tenant from the echoed `notes`.
-    3. **Bind** the transaction to that tenant — the first DB statement — so the append-only inbox
+    2. **Parse** the (now trusted) body and **resolve the event id** the inbox is idempotent on:
+       the header, else an id the body carries, else a digest of the body's event name, entity id
+       and timestamp. A webhook that yields none is refused (400) — never keyed on `''`, which
+       would fold every event an organization receives into one.
+    3. **Attribute** it: the tenant comes from the echoed `notes`. One that names none (a payment
+       made on the same provider account outside this platform) has no tenant to record under and
+       cannot be recorded; it is logged and answered 200, because the provider redelivering it can
+       never make it attributable.
+    4. **Bind** the transaction to that tenant — the first DB statement — so the append-only inbox
        insert and the charge reconciliation satisfy row-level security.
-    4. **Record idempotently.** `ON CONFLICT (organization_id, provider_event_id) DO NOTHING`: a
-       re-delivered webhook lands one row and reconciles once. A duplicate acks and stops here.
-    5. **Reconcile** the charge and stage `commerce.payment.captured` / `.failed`.
+    5. **Record and reconcile inside a SAVEPOINT.** The inbox insert is idempotent (`ON CONFLICT
+       DO NOTHING`): a redelivery lands one row, reconciles once, and a duplicate acks and stops.
+       If reconciliation meets a **permanent** condition — a charge that is not this
+       organization's, an outcome the state machine forbids, another amount or currency — it
+       raises `domain.WebhookNotApplied`; the SAVEPOINT rolls back the attempt (the inbox row and
+       any partial write with it) and the event is recorded once more, this time as `ignored` or
+       `conflict` with a stable reason code, audited (`payment.webhook.ignored`), logged, and
+       answered **200**. A 4xx here would make the provider redeliver, for days, an event that can
+       never succeed — and record nothing. Only a bad signature (400), an unidentifiable webhook
+       (400) and a *transient* failure (the database, surfaced by the route as 503) are non-2xx;
+       a transient failure rolls the whole transaction back, so the retry starts clean.
     """
     if not provider.verify_webhook(signature=signature, body=body):
         raise WebhookSignatureProblem("could not verify the webhook signature")
 
-    event = provider.parse_webhook(body=body)
-    if not event.organization_id:
-        # Authentic (it verified) but unattributable — no tenant to bind, so nothing can be
-        # recorded under RLS. A well-formed Razorpay webhook always carries our stamped notes.
-        raise BusinessRuleProblem("webhook carries no organization reference in notes")
+    try:
+        parsed = provider.parse_webhook(body=body)
+    except MalformedWebhook as exc:
+        log.warning("payment.webhook.malformed", reason=str(exc))
+        raise WebhookRejectedProblem("the webhook body could not be read") from None
 
-    organization_id = uuid.UUID(event.organization_id)
+    resolved_id = domain.resolve_event_id(header=event_id, event=parsed)
+    if resolved_id is None:
+        log.warning("payment.webhook.no_event_id", event_name=parsed.event_name)
+        raise WebhookRejectedProblem("the webhook carries no usable event id")
+    if event_id is not None and domain.usable_event_id(event_id) is None:
+        # Present and unusable (blank, oversized, not printable ASCII): the body's own id or the
+        # derived one took over. Worth a line — a proxy mangling the header would show up here.
+        log.warning("payment.webhook.event_id_header_unusable", provider_event_id=resolved_id)
+    event = dataclasses.replace(parsed, provider_event_id=resolved_id)
+
+    organization_id = _organization_of(event)
+    if organization_id is None:
+        log.warning(
+            "payment.webhook.unattributable",
+            provider_event_id=event.provider_event_id,
+            event_name=event.event_name,
+        )
+        return WebhookAck(
+            received=True,
+            provider_event_id=event.provider_event_id,
+            duplicate=False,
+            reconciled=False,
+            ignored_reason=domain.REASON_UNATTRIBUTABLE,
+        )
+
     # First statement in the transaction — the internal analogue of the tenancy chokepoint.
     await set_tenant(session, organization_id)
     if not is_production:
@@ -604,26 +726,92 @@ async def ingest_webhook(
     # Resolve the charge *before* the inbox insert, so the append-only `provider_events` row can
     # record `charge_id` at insert time — the table is insert-only, so it can never be back-filled.
     charge = await _resolve_charge(session, organization_id, event)
+    # Read now, not after a rollback: a SAVEPOINT rollback expires the ORM row, and touching an
+    # expired attribute in async code is an error rather than a reload.
+    charge_id = charge.id if charge is not None else None
 
-    inbox_id = uuid.uuid4()
-    inbox_stmt = (
-        pg_insert(ProviderEvent)
-        .values(
-            id=inbox_id,
+    try:
+        async with session.begin_nested():
+            recorded_id = await _insert_inbox(
+                session,
+                organization_id=organization_id,
+                event=event,
+                charge_id=charge_id,
+                signature=signature,
+                disposition=INBOX_PROCESSED,
+                reason=None,
+            )
+            if recorded_id is None:
+                # Already in the inbox: a re-delivery. Idempotent — do nothing the first receipt
+                # did not.
+                return WebhookAck(
+                    received=True,
+                    provider_event_id=event.provider_event_id,
+                    duplicate=True,
+                    reconciled=False,
+                )
+            reconciled = await _reconcile_charge(session, charge, event, request=request)
+    except domain.WebhookNotApplied as verdict:
+        return await _record_not_applied(
+            session,
             organization_id=organization_id,
-            provider=event.provider,
-            provider_event_id=event.provider_event_id,
-            event_name=event.event_name,
-            charge_id=charge.id if charge is not None else None,
-            payload=event.raw,
+            event=event,
+            charge_id=charge_id,
             signature=signature,
+            verdict=verdict,
+            request=request,
         )
-        .on_conflict_do_nothing(index_elements=["organization_id", "provider_event_id"])
-        .returning(ProviderEvent.id)
+    except IntegrityError as exc:
+        if not _is_provider_id_collision(exc):
+            raise
+        return await _record_not_applied(
+            session,
+            organization_id=organization_id,
+            event=event,
+            charge_id=charge_id,
+            signature=signature,
+            verdict=domain.WebhookNotApplied(INBOX_CONFLICT, domain.REASON_PROVIDER_ID_CONFLICT),
+            request=request,
+        )
+
+    return WebhookAck(
+        received=True,
+        provider_event_id=event.provider_event_id,
+        duplicate=False,
+        reconciled=reconciled,
     )
-    recorded_id = (await session.execute(inbox_stmt)).scalar_one_or_none()
-    if recorded_id is None:
-        # Already in the inbox: a re-delivery. Idempotent — do nothing the first receipt did not.
+
+
+async def _record_not_applied(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    event: WebhookEvent,
+    charge_id: uuid.UUID | None,
+    signature: str | None,
+    verdict: domain.WebhookNotApplied,
+    request: Request | None,
+) -> WebhookAck:
+    """Keep an authentic webhook this platform cannot reconcile: the inbox row (stating why), an
+    audit row, and a log line an operator can count — and answer 200.
+
+    Runs after the SAVEPOINT rolled back, so nothing the failed attempt wrote survives, the state
+    of the charge included. The row is written once more under the same key: if another delivery of
+    this event got in first, that is a redelivery, and this one is a duplicate like any other.
+
+    Nothing here carries a body or a person: the reason is a code, the audit `after` holds the
+    event's name and id, the charge's id and state, and integer amounts and ISO currencies.
+    """
+    inbox_id = await _insert_inbox(
+        session,
+        organization_id=organization_id,
+        event=event,
+        charge_id=charge_id,
+        signature=signature,
+        disposition=verdict.disposition,
+        reason=verdict.reason,
+    )
+    if inbox_id is None:
         return WebhookAck(
             received=True,
             provider_event_id=event.provider_event_id,
@@ -631,12 +819,43 @@ async def ingest_webhook(
             reconciled=False,
         )
 
-    reconciled = await _reconcile_charge(session, charge, event, request=request)
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=None,
+        acting_as=f"{event.provider}-webhook",
+        action="payment.webhook.ignored",
+        entity="provider_event",
+        entity_id=inbox_id,
+        after={
+            "disposition": verdict.disposition,
+            "reason": verdict.reason,
+            "event_name": event.event_name,
+            "provider_event_id": event.provider_event_id,
+            "charge_id": str(charge_id) if charge_id is not None else None,
+            **verdict.facts,
+        },
+        request=request,
+    )
+    # `conflict` means an authentic provider event contradicts our records and money may have moved:
+    # error, so it pages. `ignored` is noise an operator can count: warning.
+    emit = log.error if verdict.disposition == INBOX_CONFLICT else log.warning
+    emit(
+        "payment.webhook.ignored",
+        disposition=verdict.disposition,
+        reason=verdict.reason,
+        provider_event_id=event.provider_event_id,
+        event_name=event.event_name,
+        organization_id=str(organization_id),
+        charge_id=str(charge_id) if charge_id is not None else None,
+    )
     return WebhookAck(
         received=True,
         provider_event_id=event.provider_event_id,
         duplicate=False,
-        reconciled=reconciled,
+        reconciled=False,
+        ignored_reason=verdict.reason,
     )
 
 
@@ -731,11 +950,26 @@ async def _reconcile_charge(
     """Move a charge to the outcome a webhook asserts and stage its `commerce.payment.*` event.
 
     Returns True only when a terminal outcome (`captured` / `failed`) actually moved the charge and
-    emitted an event. An unmatched charge, an intermediate `authorized`, or a redelivered terminal
-    already in that state all return False — the inbox row is kept either way.
+    emitted an event. An intermediate `authorized`, or a redelivered terminal already in that
+    state, returns False — the inbox row is kept either way.
+
+    **A permanent condition raises `domain.WebhookNotApplied`, never a `ProblemError`**: a charge
+    that is not this organization's, a payment in another currency or for another amount than the
+    charge, an outcome the state machine forbids. `ingest_webhook` runs this inside a SAVEPOINT and
+    turns the verdict into a recorded, audited 200 — an HTTP 4xx would only make the provider
+    redeliver it for days. The two payment-identity checks come first, before anything is written.
     """
     if charge is None:
-        return False
+        raise domain.unknown_charge()
+
+    contradiction = domain.contradiction(
+        charge_amount_minor=charge.amount_minor,
+        charge_currency=charge.currency,
+        event_amount_minor=event.amount_minor,
+        event_currency=event.currency,
+    )
+    if contradiction is not None:
+        raise contradiction
 
     _record_provider_ids(session, charge, event, request=request)
     target = event.outcome_state
@@ -789,7 +1023,11 @@ async def _reconcile_charge(
         _publish_payment_event(session, charge, event_type)
         return True
 
-    domain.assert_legal(charge.state, target)
+    if not domain.is_legal(charge.state, target):
+        # `captured -> failed`, or `failed -> captured` for a failure the *provider* reported (the
+        # local-failure case above is the one legal way back). Contradicts our record of the money:
+        # kept and flagged, not retried.
+        raise domain.illegal_transition(charge.state, target)
     before = charge.state
     charge.state = target
     if target == CHARGE_FAILED and event.failure_reason:

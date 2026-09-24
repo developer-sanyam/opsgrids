@@ -84,6 +84,25 @@ REFUND_PROCESSED = "processed"
 REFUND_FAILED = "failed"
 REFUND_STATES = (REFUND_CREATED, REFUND_PROCESSED, REFUND_FAILED)
 
+# --- inbox dispositions --------------------------------------------------------------
+#: What the platform did with a verified webhook, decided **before** the inbox row is written — the
+#: table is insert-only, so a disposition can never be back-filled.
+#:
+#: `processed`  reconciliation ran without meeting a permanent condition (it may still have been a
+#:              no-op: an intermediate event, a redelivered outcome). The default.
+#: `ignored`    authentic, and there is nothing here for this platform to reconcile — the charge it
+#:              names is not one of this organization's. Nothing for an operator to do.
+#: `conflict`   authentic, and it contradicts what this platform holds — an outcome the charge's
+#:              state machine forbids, or an amount or currency that is not the charge's. No state
+#:              was changed; an operator should look, because money may have moved.
+#:
+#: Every non-`processed` row carries a stable `disposition_reason` code (`domain.REASON_*`) — never
+#: free text, never any part of the body.
+INBOX_PROCESSED = "processed"
+INBOX_IGNORED = "ignored"
+INBOX_CONFLICT = "conflict"
+INBOX_DISPOSITIONS = (INBOX_PROCESSED, INBOX_IGNORED, INBOX_CONFLICT)
+
 
 class Base(_Base):
     """Schema-scoped declarative base for this service."""
@@ -305,6 +324,14 @@ class ProviderEvent(Base, TenantBase):
     instead reconciliation is recorded by the charge it updates and by the outbox event it emits,
     and this table stays strictly insert-only under the append-only trigger.
 
+    For the same reason the row states its own outcome at insert: `disposition` is `processed`, or
+    — for an authentic webhook that names a charge this organization does not have, or contradicts
+    the one it does (an illegal transition, a different amount or currency) — `ignored` /
+    `conflict` with a stable `disposition_reason`. The webhook is answered 200 either way: the
+    condition is permanent, so asking the provider to redeliver it for days would change nothing
+    and record nothing. The evidence is kept here, and the conflict is audited and logged for an
+    operator.
+
     Storing the raw `payload` and `signature` makes reconciliation replayable and auditable: if a
     projection is ever found wrong, the truth is the provider's own bytes, kept here unaltered.
     """
@@ -312,7 +339,11 @@ class ProviderEvent(Base, TenantBase):
     __tablename__ = "provider_events"
 
     provider: Mapped[str] = mapped_column(String(40), nullable=False)
-    #: The provider's unique event id (Razorpay's `x-razorpay-event-id`). Idempotency rests on it.
+    #: The provider's unique per-delivery event id (Razorpay's `X-Razorpay-Event-Id` **header** —
+    #: its body carries none), or, when the delivery has none, `derived:` + a digest of the body's
+    #: own event name, entity id and timestamp. Idempotency rests on it, so it is never empty: a
+    #: CHECK refuses the empty string, which as a key collapses every event an organization ever
+    #: receives onto one row.
     provider_event_id: Mapped[str] = mapped_column(String(120), nullable=False)
     #: The provider's event name, e.g. `payment.captured`, `payment.failed`.
     event_name: Mapped[str] = mapped_column(String(80), nullable=False)
@@ -329,11 +360,26 @@ class ProviderEvent(Base, TenantBase):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    #: What was done with the event — one of `INBOX_DISPOSITIONS`; see there.
+    disposition: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=INBOX_PROCESSED, server_default=INBOX_PROCESSED
+    )
+    #: Why it was not reconciled — a stable code, set exactly when `disposition` is not `processed`.
+    disposition_reason: Mapped[str | None] = mapped_column(String(40))
+
     __table_args__ = (
         UniqueConstraint(
             "organization_id", "provider_event_id", name="uq_provider_events_org_event_id"
         ),
         Index("ix_provider_events_org_charge", "organization_id", "charge_id"),
+        # Created NOT VALID by the migration, so a database that already holds a row keyed '' (the
+        # collision this constraint exists to prevent) still upgrades; every new row is checked.
+        CheckConstraint("length(provider_event_id) > 0", name="provider_event_id_not_empty"),
+        CheckConstraint("disposition in ('processed', 'ignored', 'conflict')", name="disposition"),
+        CheckConstraint(
+            "(disposition = 'processed') = (disposition_reason IS NULL)",
+            name="disposition_reason_matches",
+        ),
     )
 
 

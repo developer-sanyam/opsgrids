@@ -509,3 +509,133 @@ wire (real Razorpay HTTP) is out of scope here and belongs to the provider-integ
 exercised end to end in tests. A Stripe adapter forwards the key to Stripe's native idempotency
 header and may answer the two lookups trivially. The full claim/call/record contract is
 `docs/io-outside-transactions.md`.
+
+**The live adapter is bound by this, and there is a test that says so.** The Razorpay adapter is
+stubbed until B5g gives it live keys. When it does, it must implement exactly the contract above
+— `ensure_order` (`GET /orders?receipt=…`, `POST /orders` only if that found none), `find_order`
+(the GET alone, never a create), `find_payment` (`GET /orders/{id}/payments`, matched on
+`notes.charge_id`), `charge` only after that found none — and declare the connect and read
+timeout of each request it makes (`request_timeouts_seconds`), whose sum stays inside
+`provider_call_timeout_seconds`. That is not left to prose:
+`services/payment/tests/provider_contract.py::ProviderContract` is the same statement as tests —
+`ensure_order` is idempotent by receipt, `find_order` never creates, `find_payment` finds the
+payment made against its own Order, the provider call creates at most once per receipt however
+many times, and from however many processes, it is made, and the declared timeouts fit the budget.
+The stub passes it today; the live adapter's test module subclasses it and passes it unchanged
+before it can merge. `test_provider_contract.py` also runs each check against an adapter broken
+in the way the check guards against, and requires it to fail.
+
+## Addendum (2026-09-24) — webhook identity and permanent conditions (PAY-A)
+
+Two defects in how a verified Razorpay webhook was recorded, both invisible while the wire is
+stubbed and both fatal once real events flow. Neither changes §6's contract; both sit in the
+inbox (`provider_events`, insert-only) and the reconciliation in front of it.
+
+### The event id is a header, and the inbox never keys on `''`
+
+A real Razorpay body is `{entity: "event", account_id, event, contains, payload, created_at}` —
+**no top-level `id`**. The per-delivery event id is the `X-Razorpay-Event-Id` **header**. The
+adapter read it from the body and defaulted the missing value to `''`, so `(organization_id, '')`
+was the dedupe key of every event an organization received: the first was recorded, every later one
+was dropped as a "duplicate" and answered 200 — so Razorpay stopped retrying and the capture or
+failure was never reconciled, no `commerce.payment.*` event reached subscription, and dunning was
+never opened or recovered. The suite's own bodies synthesised an `id`, which is why nothing saw it.
+
+The id the inbox is idempotent on is now resolved in `domain.resolve_event_id`, in this order:
+
+1. the `X-Razorpay-Event-Id` header, if it is a usable id (printable ASCII, no whitespace, at
+   most 120 characters — the column — and not claiming the `derived:` prefix);
+2. an id the body itself carries (a fixture, or a future provider whose body has one);
+3. `derived:` + the SHA-256 of `(provider, event name, entity id, created_at)` — the body's own
+   identifying fields, the same on every redelivery of one event and different for a different
+   one. Derived only from all three; an id built from less would fold distinct events together.
+
+A webhook that yields none is **refused, 400, with no state change** — a delivery nothing tells
+apart from any other cannot be deduplicated. Genuine Razorpay deliveries always carry the header, so
+this is a hand-built or mangled request. The signature is still verified over the **raw body**
+before anything else, and a body that verified but is not a JSON object is refused the same way
+(`MalformedWebhook`, 400) rather than surfacing as a 500.
+
+The header is **not** covered by Razorpay's HMAC, which is over the body only. So it is a delivery
+id and nothing more. Reconciliation does not depend on it for correctness: a redelivery under a
+fresh id is a no-op on the charge's state (no second event), and the derived id is computed from
+signed bytes. The worst a forged header can do is suppress an event whose id the forger already
+knows, which requires a body Razorpay signed for the same organization.
+
+The database now says the same thing: `provider_events` has
+`CHECK (length(provider_event_id) > 0)`, created **`NOT VALID`** — enforced on every new row,
+without failing an upgrade on a legacy `''` row, which the append-only trigger would make
+uncorrectable. Nothing depends on validating it.
+
+### A permanent condition is recorded and answered 200, never retried
+
+`_reconcile_charge` called `assert_legal`, and `ingest_webhook` raised for a body naming no
+organization. Both were a 422, rolled back whole by the route's transaction — the
+inbox row, the audit row and the state change together. Razorpay retries any non-2xx for days, so a
+webhook that could never succeed was redelivered until its window closed, **and the authentic
+evidence was kept nowhere**. A malformed organization id in `notes` was worse: a `ValueError`, a
+500. A status code is a promise that a retry can help; these are the cases where it cannot.
+
+`ingest_webhook` now records the inbox row and reconciles **inside a SAVEPOINT**. Reconciliation
+raises a typed verdict, `domain.WebhookNotApplied` (deliberately not a `ProblemError` — it cannot
+reach the HTTP layer), for each permanent condition. The SAVEPOINT rolls the attempt back — the
+inbox row and any partial write, provider ids included — and the event is recorded once more, with
+its outcome stated, because `provider_events` is insert-only and a disposition can only be written
+when the row is:
+
+| `disposition` | `disposition_reason` | Meaning | Operator action |
+|---|---|---|---|
+| `ignored` | `unknown_charge` | The `charge_id`/payment named is not this organization's (another tenant's is invisible under RLS) | none |
+| `conflict` | `illegal_transition` | An outcome the state machine forbids: `captured -> failed`, or `failed -> captured` for a failure the **provider** reported | look — money may have moved |
+| `conflict` | `amount_mismatch` / `currency_mismatch` | The payment is not for the charge it names (integer minor units and ISO currency, exact) | look |
+| `conflict` | `provider_id_conflict` | The webhook asserts a payment or Order id another charge of the organization already holds | look |
+
+`processed` is the default: reconciliation ran without meeting any of these (it may still have been
+a no-op — an intermediate event, a redelivered outcome). A reason code is a code, never free text,
+and never any part of the body.
+
+Each recorded case also writes an audit row `payment.webhook.ignored` (entity `provider_event`,
+`after` = the reason, the event's name and id, the charge's id and state, integer amounts or ISO
+currencies — nothing from the body) and one structured log line of the same name, at `error` for a
+`conflict` and `warning` for `ignored`. The answer is 200, with `ignored_reason` on the ack. A
+redelivery of an ignored event is deduplicated like any other: the first delivery kept its row.
+
+The amount and currency checks run first, before the charge is touched, on every event that carries a
+payment entity (`captured`, `failed`, `authorized`); a body that omits either is not a mismatch —
+what the provider does not say cannot contradict the charge. **D3's rule is unchanged:** `failed ->
+captured` stays legal when the charge's `failure_reason` is one of the platform's own codes
+(`attempts_exhausted`, `lookup_unavailable`) — the money moved, the record follows it.
+
+A webhook that names **no usable organization** — a payment made on the same Razorpay account
+outside this platform, or a `notes.organization_id` that is not an id — has no tenant to record
+under (every table carries `organization_id`, and the GUC has nothing to bind). It is logged
+(`payment.webhook.unattributable`: the event's id and name only) and answered 200, because the
+provider redelivering it can never make it attributable.
+
+**What is non-2xx.** Only these: a bad signature (**400**, unchanged), a webhook that cannot be
+identified or read (**400**), and a *transient* failure to record it (**503**: the database was
+unreachable or the pool exhausted — the transaction rolls back whole, the event id is not burned,
+and the redelivery lands as a first delivery). Nothing else. A defect is still a 500, on purpose:
+only the typed verdict is treated as a permanent condition, so a bug is never recorded as
+`ignored` and answered 200.
+
+**Seeing them.** There is no Prometheus counter: `/metrics` is `platform_core`'s shared surface with
+no per-service hook, and the platform's convention is that a metric is a query over append-only
+rows. So:
+
+```sql
+SELECT disposition, disposition_reason, count(*)
+FROM payment.provider_events
+WHERE disposition <> 'processed' AND received_at > now() - interval '1 day'
+GROUP BY 1, 2;
+```
+
+and an alert on the log event `payment.webhook.ignored` at level `error` (a `conflict`).
+
+**Rejected.** Answering these 4xx with a "please stop" header — Razorpay documents none, and a
+non-2xx is a retry by definition. Updating the inbox row after the fact — it is append-only, and
+weakening the trigger for one column would weaken it for all. Recording the row and *then*
+reconciling in the same statement order, without the SAVEPOINT — a partial reconcile (provider ids,
+an audit row) would survive a conflict. A blanket `except` around reconciliation — it would turn a
+defect into silently lost payments. A digest of the whole body as the fallback id — it changes
+whenever the provider re-serialises an otherwise identical event, where the chosen tuple does not.

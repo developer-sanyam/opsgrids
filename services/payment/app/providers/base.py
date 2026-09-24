@@ -32,6 +32,25 @@ So the shape here encodes Razorpay's constraints as first-class:
 * `verify_webhook` is signature-first: a provider callback is trusted because it carries the
   provider's HMAC over the raw body, never because it carries a session or a token.
 
+**The live adapter is bound by all of this (B5g).** The Razorpay adapter in `razorpay.py` keeps
+its wire stubbed; when it is given live keys it must implement the lookup-before-create contract
+above exactly as the stub models it — `ensure_order` finds the Order by `receipt` before it
+creates one, `find_order` never creates, `find_payment` finds a payment already made against an
+Order, `charge` is reached only after that lookup found none — and declare per-request timeouts
+(`request_timeouts_seconds`) whose sum stays inside `provider_call_timeout_seconds`. Nothing else
+in the platform re-checks it: a live adapter that "just creates" debits a customer twice after a
+crash between the call and its record. The definition of done is
+`tests/provider_contract.py::ProviderContract` — every adapter, the stub today and the live one
+later, subclasses it and must pass unchanged; the live adapter's PR does not merge red on it.
+
+**Webhook identity.** A provider's per-delivery event id is not always in the body — Razorpay
+carries it in the `X-Razorpay-Event-Id` header and its body has no top-level `id`. So
+`WebhookEvent.provider_event_id` is only what `parse_webhook` could read from the body (possibly
+empty), and `services.ingest_webhook` decides the id the inbox is idempotent on (the transport's
+id, else the body's, else a digest of the body's own identifying fields) and refuses a webhook that
+yields none. An adapter must never invent a constant for it: an empty string is one key for every
+event an organization ever receives.
+
 Everything here is pure data in and pure data out — no ORM, no session. The adapter maps between
 these DTOs and the provider's wire format; the service layer maps between these DTOs and the
 `charges` / `mandates` / `provider_events` tables. That two-step keeps the provider's vocabulary
@@ -42,6 +61,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
+
+
+class MalformedWebhook(ValueError):
+    """A body that verified but cannot be read as a provider event — not JSON, or not an object.
+    Raised by `parse_webhook`; the service answers 400 and records nothing. It carries no part of
+    the body: the message is safe to log."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,11 +130,18 @@ class RefundResult:
 class WebhookEvent:
     """A verified provider callback, normalised to what reconciliation needs.
 
-    `provider_event_id` is what the inbox is idempotent on. `organization_id` and `charge_id` are
-    read from the provider's echoed metadata (Razorpay `notes`): the platform stamps them when it
-    creates the charge, and the provider returns them on every webhook about it — which is how a
-    callback that arrives before any tenant is bound still names its own tenant, authentically,
-    because the whole body was signature-verified first.
+    `provider_event_id` is what the inbox is idempotent on **once `services.ingest_webhook` has
+    resolved it**: as returned by `parse_webhook` it is only the id the body itself carries, and is
+    empty for a provider (Razorpay) whose event id travels in a header. `entity_id` and
+    `created_at` are the body's own identifying fields — the id of the payment (or other entity)
+    the event is about, and the provider's event timestamp — from which a stable id is derived when
+    no delivery id is available. `amount_minor` and `currency` are what the provider says the
+    payment was for, so reconciliation can refuse a payment that is not the charge it claims to
+    settle. `organization_id` and `charge_id` are read from the provider's echoed metadata
+    (Razorpay `notes`): the platform stamps them when it creates the charge, and the provider
+    returns them on every webhook about it — which is how a callback that arrives before any
+    tenant is bound still names its own tenant, authentically, because the whole body was
+    signature-verified first.
     """
 
     provider: str
@@ -126,6 +158,15 @@ class WebhookEvent:
     #: The Order the payment was made against, when the provider says (Razorpay: `order_id` on
     #: the payment entity). Recorded on the charge if it has none yet.
     provider_order_id: str | None = None
+    #: The entity the event is about (Razorpay: the payment's id, else the first entity the
+    #: payload carries) and the provider's event timestamp in epoch seconds — the two body fields
+    #: the fallback event id is derived from. None when the body does not carry them.
+    entity_id: str | None = None
+    created_at: int | None = None
+    #: What the provider says the payment was for, in integer minor units and an ISO currency.
+    #: None when the body does not say — reconciliation then has nothing to compare.
+    amount_minor: int | None = None
+    currency: str | None = None
 
 
 @runtime_checkable
@@ -139,6 +180,12 @@ class PaymentProvider(Protocol):
     """
 
     name: str
+    #: The connect + read timeout of every outbound request one full charge can make, in the worst
+    #: case, in call order (Razorpay: the Order lookup, the Order create, the payments lookup, the
+    #: payment create). Their **sum** must not exceed `Settings.provider_call_timeout_seconds` —
+    #: the caller stops waiting there, and a request still in flight after the lease lapses could
+    #: land a second create. `ProviderContract` asserts it for every adapter.
+    request_timeouts_seconds: tuple[float, ...]
 
     def create_mandate(
         self,
@@ -210,6 +257,9 @@ class PaymentProvider(Protocol):
     def parse_webhook(self, *, body: bytes) -> WebhookEvent:
         """Turn a verified provider body into the normalised `WebhookEvent` reconciliation uses.
 
-        Called only after `verify_webhook` returned True, so it may trust the bytes.
+        Called only after `verify_webhook` returned True, so it may trust the bytes as the
+        provider's — not that they are well-formed: a body that is not a JSON object raises
+        `MalformedWebhook`, and any field of an otherwise valid body may be missing or oddly typed.
+        Leaves `provider_event_id` empty when the body carries none; it never invents one.
         """
         ...

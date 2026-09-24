@@ -101,7 +101,13 @@ async def session(org_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
     async with maker() as s:
 
         @event.listens_for(s.sync_session, "after_begin")
-        def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+        def _bind(_session, transaction, connection) -> None:  # type: ignore[no-untyped-def]
+            # A SAVEPOINT (`begin_nested`) fires this event too, but it is not a new transaction:
+            # the GUC set for the outer one still holds, and re-applying the *fixture's*
+            # organization here would clobber the tenant a route bound for itself (the webhook
+            # binds the organization its body names, which a test may make another tenant's).
+            if transaction.nested:
+                return
             connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
 
         yield s

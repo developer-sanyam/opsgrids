@@ -28,6 +28,19 @@ What is **stubbed** — the one seam:
   exactly as production is driven by Razorpay's real webhooks. A test asserts that no network and
   no keys are needed for any of this.
 
+**The live wire (B5g) is not this module's present concern, but its contract is fixed here.** When
+`_call` becomes real HTTP it must keep the state machine the stub models: `ensure_order` is
+`GET /orders?receipt=…` then `POST /orders` only if that found none; `find_order` is the GET alone;
+`find_payment` is `GET /orders/{id}/payments` matched on `notes.charge_id`; `charge` is reached only
+after that found none. Its per-request timeouts are the ones declared below, and
+`tests/provider_contract.py::ProviderContract` must pass against it unchanged.
+
+**Webhook identity.** A real Razorpay body is `{entity: "event", account_id, event, contains,
+payload, created_at}` — no top-level `id`. The per-delivery event id is the `X-Razorpay-Event-Id`
+**header**, which `api/webhooks.py` reads and `services.ingest_webhook` prefers. `parse_webhook`
+therefore reports a body `id` only if one is present (a fixture may carry one) and otherwise leaves
+the id empty for the service to resolve; it never invents a constant.
+
 `notes` is load-bearing and real Razorpay behaviour: metadata attached to a payment is echoed
 back on every webhook about it. The platform stamps `organization_id` and `charge_id` into
 `notes` at charge-create time, so a later webhook — which arrives with no tenant context — carries
@@ -44,6 +57,7 @@ from typing import Any
 
 from app.providers.base import (
     ChargeResult,
+    MalformedWebhook,
     MandateResult,
     OrderResult,
     PaymentProvider,
@@ -53,6 +67,18 @@ from app.providers.base import (
 
 PROVIDER = "razorpay"
 
+#: The longest `event_name` the inbox column holds (`provider_events.event_name`, String(80)).
+_EVENT_NAME_MAX = 80
+
+#: The connect and read timeouts the live wire sets on **every** request, and how many requests one
+#: full charge makes at worst (Order lookup, Order create, payments lookup, payment create). Their
+#: sum is what must stay inside `Settings.provider_call_timeout_seconds` — see
+#: `RazorpayProvider.request_timeouts_seconds`. Declared now, while the wire is stubbed, so the
+#: budget is fixed before the socket code is written rather than discovered after it.
+WIRE_CONNECT_TIMEOUT_SECONDS = 2.0
+WIRE_READ_TIMEOUT_SECONDS = 5.0
+WIRE_REQUESTS_PER_CHARGE = 4
+
 #: Razorpay event name → the charge outcome it asserts. The one place this adapter admits it knows
 #: Razorpay's vocabulary; `base.py` and the service layer speak only the neutral states.
 _EVENT_OUTCOMES: dict[str, str] = {
@@ -60,6 +86,32 @@ _EVENT_OUTCOMES: dict[str, str] = {
     "payment.failed": "failed",
     "payment.authorized": "authorized",
 }
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    """`value` if it is a JSON object, else an empty one — Razorpay returns `notes: []` (a list)
+    for a payment with no notes, and a body is never trusted to have the nesting it usually has."""
+    return value if isinstance(value, dict) else {}
+
+
+def _as_text(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _as_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _entity_id(payload: dict[str, Any], event_name: str) -> str | None:
+    """The id of the entity an event is about: the one its own name points at (`refund.processed`
+    → the refund), else the payment's, else the first other entity in key order — so every event
+    a Razorpay account can send identifies itself, and does so the same way on every delivery."""
+    own = event_name.split(".", 1)[0]
+    for key in (own, "payment", *sorted(k for k in payload if k not in (own, "payment"))):
+        found = _as_text(_as_dict(_as_dict(payload.get(key)).get("entity")).get("id"))
+        if found is not None:
+            return found
+    return None
 
 
 def _fake_id(prefix: str, idempotency_key: str) -> str:
@@ -77,6 +129,13 @@ class RazorpayProvider:
     """A `PaymentProvider` for Razorpay. Network stubbed; everything else real."""
 
     name = PROVIDER
+    #: The declared worst-case budget of the live wire: one connect + read timeout per request,
+    #: four requests to charge (`WIRE_REQUESTS_PER_CHARGE`). 4 x 7s = 28s, inside the 30s
+    #: `provider_call_timeout_seconds` default. The stub opens no socket and honours none of it;
+    #: the live wire must, and `ProviderContract` holds it to the sum.
+    request_timeouts_seconds: tuple[float, ...] = (
+        WIRE_CONNECT_TIMEOUT_SECONDS + WIRE_READ_TIMEOUT_SECONDS,
+    ) * WIRE_REQUESTS_PER_CHARGE
 
     def __init__(
         self,
@@ -270,26 +329,47 @@ class RazorpayProvider:
     def parse_webhook(self, *, body: bytes) -> WebhookEvent:
         """Normalise a verified Razorpay webhook body into a `WebhookEvent`.
 
-        Razorpay's shape: a top-level `event` name and `id`, and the payment entity under
+        Razorpay's shape: a top-level `event` name and `created_at`, and the payment entity under
         `payload.payment.entity`, whose `notes` echo the metadata the platform stamped at
         charge-create time. Reconciliation reads the tenant and the charge from those notes.
+
+        **There is no top-level `id`.** The per-delivery event id is the `X-Razorpay-Event-Id`
+        header, which is not part of the body and so not something this method can see; the route
+        reads it and `services.ingest_webhook` resolves the id the inbox keys on. A body `id` is
+        reported when one exists (a test fixture may carry one) and is otherwise the empty string,
+        which the service treats as "none" — it is never itself used as a key.
+
+        Every read is defensive: the body is signed, so it is Razorpay's, but a missing or
+        oddly-typed field must not become a 500 that Razorpay retries for days.
         """
-        parsed: dict[str, Any] = json.loads(body)
-        event_name = str(parsed.get("event", ""))
-        entity: dict[str, Any] = parsed.get("payload", {}).get("payment", {}).get("entity", {})
-        notes: dict[str, Any] = entity.get("notes") or {}
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            raise MalformedWebhook("the webhook body is not valid JSON") from None
+        if not isinstance(parsed, dict):
+            raise MalformedWebhook("the webhook body is not a JSON object")
+
+        event_name = str(parsed.get("event") or "")[:_EVENT_NAME_MAX]
+        payload = _as_dict(parsed.get("payload"))
+        entity = _as_dict(_as_dict(payload.get("payment")).get("entity"))
+        notes = _as_dict(entity.get("notes"))
         return WebhookEvent(
             provider=PROVIDER,
-            # Razorpay's per-delivery event id; the inbox is idempotent on it.
-            provider_event_id=str(parsed.get("id", "")),
+            # Only a body that carries one; the header wins and is applied by the service.
+            provider_event_id=_as_text(parsed.get("id")) or "",
             event_name=event_name,
             outcome_state=_EVENT_OUTCOMES.get(event_name, "unknown"),
-            organization_id=notes.get("organization_id"),
-            charge_id=notes.get("charge_id"),
-            provider_payment_id=entity.get("id"),
-            failure_reason=entity.get("error_description"),
+            organization_id=_as_text(notes.get("organization_id")),
+            charge_id=_as_text(notes.get("charge_id")),
+            provider_payment_id=_as_text(entity.get("id")),
+            failure_reason=_as_text(entity.get("error_description")),
             raw=parsed,
-            provider_order_id=entity.get("order_id"),
+            provider_order_id=_as_text(entity.get("order_id")),
+            entity_id=_entity_id(payload, event_name),
+            created_at=_as_int(parsed.get("created_at")),
+            # Razorpay's `amount` is the smallest currency unit — the platform's minor unit.
+            amount_minor=_as_int(entity.get("amount")),
+            currency=_as_text(entity.get("currency")),
         )
 
 

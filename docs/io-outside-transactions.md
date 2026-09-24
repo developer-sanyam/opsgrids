@@ -237,15 +237,36 @@ Razorpay has no idempotency key on a payment create (ADR-0004 §6 and its addend
   refund can reach. A `payment.captured` for a charge the platform failed on its own judgement
   (`attempts_exhausted`, `lookup_unavailable`) is recorded (`failed -> captured`, audited
   `payment.charge.captured_after_local_failure`, logged at error); a failure the provider reported
-  stays final.
+  stays final — a `captured` for it is kept in the inbox as a `conflict` (`illegal_transition`),
+  audited `payment.webhook.ignored` and answered **200** with the charge untouched, not a 422 the
+  provider would redeliver for days (ADR-0004, PAY-A addendum). The same holds for a payment in
+  another amount or currency than the charge, a charge that is not the organization's, and a
+  provider id another charge already holds: reconciliation runs in a SAVEPOINT, raises a typed
+  verdict for each, and the row is recorded once more stating why. Only a bad signature, an
+  unidentifiable body and a transient database failure (503) are non-2xx.
 * **The lease outlives the call.** `charge_reclaim_after_seconds >= 2 × provider_call_timeout_seconds
   + 60` is validated at start-up (finance: `2 × portal_call_timeout_seconds + 60 ≤
   FILING_RECLAIM_AFTER`), and an adapter's per-request connect/read timeouts over `ensure_order`
   + `find_payment` + `charge` must sum under `provider_call_timeout_seconds` — otherwise an
   abandoned call could land its create after the sweep's lookup found nothing.
+* **The webhook's idempotency key is a header.** Razorpay's body has no top-level `id`; the inbox
+  deduplicates on `X-Razorpay-Event-Id`, else a body id, else `derived:` + a digest of the event
+  name, entity id and `created_at`, and refuses a webhook with none — never `''`
+  (`domain.resolve_event_id`; a database CHECK backs it).
+* **Adapters are held to the contract by a test.** `payment/tests/provider_contract.py::
+  ProviderContract` — `ensure_order` idempotent by receipt, `find_order` never creates,
+  `find_payment` by Order, create at most once per receipt, declared per-request timeouts summing
+  inside `provider_call_timeout_seconds`. The stub passes it (`test_provider_contract.py`, which
+  also requires each check to fail against an adapter broken the way it guards against); the live
+  adapter (B5g) subclasses it and passes it unchanged.
 * **Tests.** `payment/tests/test_charge_final_lookup.py` — `TestTheFinalLookup`
   (`test_exhaustion_finalizes_a_charge_whose_last_attempt_made_a_payment`, none-found,
   lookup-unavailable, lookup-timeout), `TestALateCaptureIsRecorded`,
   `TestTheWebhookRecordsTheProviderId`, `TestTheWebhookAndTheSweepSerialize`
   (`test_webhook_failed_vs_exhaustion_race_double_failed`), `TestTheLeaseOutlivesTheCall`,
-  `TestTheOrderReceipt`.
+  `TestTheOrderReceipt`. PAY-A: `test_webhook_event_identity.py` (two events for one org both
+  processed on a real, id-less body; redelivery deduplicated; header-less digest; an empty key
+  impossible in the service and in the database), `test_webhook_permanent_conditions.py` (each
+  permanent condition answered 200, kept, audited, no state change; a transient failure is a 503;
+  a redelivery of an ignored event is deduplicated), `test_webhook_domain.py`,
+  `test_provider_contract.py`.

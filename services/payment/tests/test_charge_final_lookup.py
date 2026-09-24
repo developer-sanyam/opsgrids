@@ -260,8 +260,17 @@ class TestALateCaptureIsRecorded:
             organization_id=org_id,
             charge_id=charge.id,
         )
-        assert (await _webhook(client, provider, captured)).status_code == 422
-        assert (await _read(org_id, charge.id)).state == CHARGE_FAILED
+        # A permanent condition, not a retryable one: the capture contradicts a failure the provider
+        # itself reported, so it is recorded as a conflict and answered 200 (a 422 would have the
+        # provider redeliver it for days, and record nothing). The charge is left exactly as it was.
+        res = await _webhook(client, provider, captured)
+        assert res.status_code == 200, res.text
+        assert res.json()["ignored_reason"] == "illegal_transition"
+        assert res.json()["reconciled"] is False
+        stored = await _read(org_id, charge.id)
+        assert stored.state == CHARGE_FAILED
+        assert stored.failure_reason == "card_declined"
+        assert domain.EVT_CAPTURED not in await _events(org_id, charge.id)
 
 
 class TestTheWebhookRecordsTheProviderId:

@@ -91,6 +91,9 @@ class TestTheSuspendLoop:
             subscription_id=subscription_id,
             product_key=PRODUCT,
             error_description="mandate_revoked",
+            # The charge above is 4900; the webhook must say so. It used to say the helper's default
+            # 1000, which nothing compared until amounts were checked (PAY-A).
+            amount_minor=4900,
         )
         response = await client.post(
             WEBHOOK, content=body, headers={"X-Razorpay-Signature": provider.sign(body)}
