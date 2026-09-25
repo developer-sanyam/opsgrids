@@ -11,10 +11,17 @@ import type {
   InventoryItemOut,
   PoStatus,
   PurchaseOrderOut,
+  SpendPoint,
   StatusSlice,
   SupplierOut,
+  SupplierSpend,
 } from "@/api/types";
 import { daysBetween } from "@/lib/format";
+
+/** Calendar-month labels, indexed 0 (Jan) to 11 (Dec) — mirrors the server's `MONTH_LABELS`. */
+const MONTH_LABELS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+] as const;
 
 /** Human labels for the procurement categories. */
 export const CATEGORY_LABEL: Record<Category, string> = {
@@ -68,6 +75,11 @@ export function isOutOfStock(item: InventoryItemOut): boolean {
   return item.on_hand === 0;
 }
 
+/** How many items have nothing on hand — fixture-mode mirror of the server's `out_of_stock_count`. */
+export function outOfStockCount(items: readonly InventoryItemOut[]): number {
+  return items.filter(isOutOfStock).length;
+}
+
 /** The items at or below their reorder point, most-depleted first. */
 export function lowStockItems(items: readonly InventoryItemOut[]): InventoryItemOut[] {
   return items
@@ -97,14 +109,20 @@ function pct(part: number, whole: number): number {
 }
 
 /**
- * On-time delivery rate across suppliers, weighted by spend so a big supplier's record counts
- * for more than a marginal one. Returns a 0–100 percentage.
+ * Real, spend-weighted on-time delivery rate, computed fresh from receipts — never read off a
+ * supplier's own `on_time_pct`, which is set once at creation and never revisited by a receipt
+ * (dashboard-data audit §3.5 row 13). Mirrors the server's `domain.on_time_delivery_pct`.
+ * `null`, not `0`, until this organization has received a purchase order: a 0% rate would claim
+ * every delivery was late, when in fact none has landed to judge.
  */
-export function weightedOnTimePct(suppliers: readonly SupplierOut[]): number {
-  const totalSpend = suppliers.reduce((s, sup) => s + sup.spend_minor, 0);
-  if (totalSpend === 0) return 0;
-  const weighted = suppliers.reduce((s, sup) => s + sup.on_time_pct * sup.spend_minor, 0);
-  return weighted / totalSpend;
+export function onTimeDeliveryPct(pos: readonly PurchaseOrderOut[]): number | null {
+  const received = pos.filter((po) => po.received_date !== null);
+  const totalSpend = received.reduce((sum, po) => sum + poTotalMinor(po), 0);
+  if (totalSpend === 0) return null;
+  const onTimeSpend = received
+    .filter((po) => po.received_date !== null && po.received_date <= po.expected_date)
+    .reduce((sum, po) => sum + poTotalMinor(po), 0);
+  return Math.round((onTimeSpend / totalSpend) * 1000) / 10;
 }
 
 /**
@@ -138,6 +156,46 @@ export function poStatusMix(pos: readonly PurchaseOrderOut[]): StatusSlice[] {
     const count = pos.filter((po) => po.status === key).length;
     return { key, label: PO_STATUS_LABEL[key], count, pct: pct(count, total) };
   }).filter((slice) => slice.count > 0);
+}
+
+/**
+ * Committed spend per calendar month, oldest first — the trend chart's real series. Mirrors the
+ * server's `domain.spend_trend`. Committed POs (anything past draft, excluding cancelled) are
+ * bucketed by `created_date`'s year and month; only the most recent `months` are kept.
+ */
+export function spendTrend(pos: readonly PurchaseOrderOut[], months = 12): SpendPoint[] {
+  const committed = pos.filter((po) => po.status !== "draft" && po.status !== "cancelled");
+  const byMonth = new Map<string, { month: number; spend_minor: number }>();
+  for (const po of committed) {
+    const [year, month] = po.created_date.split("-");
+    const key = `${year}-${month}`;
+    const existing = byMonth.get(key);
+    byMonth.set(key, {
+      month: Number(month),
+      spend_minor: (existing?.spend_minor ?? 0) + poTotalMinor(po),
+    });
+  }
+  return [...byMonth.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .slice(-months)
+    .map(([, { month, spend_minor }]) => ({ label: MONTH_LABELS[month - 1] ?? "", spend_minor }));
+}
+
+/** Suppliers by lifetime spend, largest first, with each one's share of the total. Mirrors the
+ *  server's `domain.top_suppliers`. */
+export function topSuppliers(suppliers: readonly SupplierOut[], limit = 6): SupplierSpend[] {
+  const grand = suppliers.reduce((sum, s) => sum + s.spend_minor, 0);
+  return suppliers
+    .slice()
+    .sort((a, b) => b.spend_minor - a.spend_minor)
+    .slice(0, limit)
+    .map((s) => ({
+      id: s.id,
+      name: s.name,
+      category: s.category,
+      spend_minor: s.spend_minor,
+      pct: pct(s.spend_minor, grand),
+    }));
 }
 
 /**
