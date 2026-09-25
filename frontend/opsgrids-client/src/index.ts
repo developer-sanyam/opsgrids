@@ -111,6 +111,7 @@ export type {
   UseNotificationsOptions,
   UseNotificationsResult,
 } from "./notifications/useNotifications";
+export { NotificationsBell } from "./notifications/NotificationsBell";
 
 export { settle } from "./fixtures";
 export { useAsync } from "./useAsync";

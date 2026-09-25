@@ -1,6 +1,6 @@
 import { Navigate, useLocation } from "react-router-dom";
 
-import { getPlatformHost, useAuth, useCan, useCurrentUser, usePermissions, usePlatformModules } from "@opsgrids/client";
+import { getPlatformHost, NotificationsBell, useAuth, useCan, useCurrentUser, usePermissions, usePlatformModules } from "@opsgrids/client";
 import { AppShell as Shell, BoxIcon, InlineAlert, moduleIcon, ReceiptIcon } from "@opsgrids/ui";
 
 import { LogoMark, useNavGroups } from "./ui";
@@ -57,6 +57,7 @@ export function AppShell() {
       user={{ name: currentUser.name, email: currentUser.email, roleLabel: currentUser.roleDisplay }}
       onSignOut={() => void logout()}
       search={{ placeholder: "Search products", fallback: { label: "Search products for", to: "/" } }}
+      notifications={<NotificationsBell />}
       helpHref="/help"
       quickActions={quickActions}
       bottomNavExtra={[{ label: "Products", icon: BoxIcon, to: "/products" }]}

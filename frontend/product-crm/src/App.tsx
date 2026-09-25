@@ -1,5 +1,5 @@
 import { AppShell as Shell, Button, InlineAlert, moduleIcon } from "@opsgrids/ui";
-import { getAuthOrigin, useAdminLinks, useAuth, useCurrentUser, usePermissions, usePlatformModules } from "@opsgrids/client";
+import { getAuthOrigin, NotificationsBell, useAdminLinks, useAuth, useCurrentUser, usePermissions, usePlatformModules } from "@opsgrids/client";
 import { DirectoryProvider } from "./data/DirectoryProvider";
 import { useDirectory } from "./data/directoryContext";
 import { useNavGroups } from "./ui";
@@ -84,6 +84,7 @@ export function AppShell() {
         user={{ name: currentUser.name, email: currentUser.email, roleLabel: currentUser.roleDisplay }}
         onSignOut={() => void logout()}
         search={{ placeholder: "Search deals", fallback: { label: "Search deals for", to: "/deals" } }}
+        notifications={<NotificationsBell />}
         banner={
           <>
             <GrantsStatusBanner />

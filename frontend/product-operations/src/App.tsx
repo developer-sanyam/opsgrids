@@ -1,5 +1,5 @@
 import { AppShell as Shell, Button, InlineAlert, moduleIcon } from "@opsgrids/ui";
-import { getAuthOrigin, useAdminLinks, useAuth, useCurrentUser, usePermissions, usePlatformModules } from "@opsgrids/client";
+import { getAuthOrigin, NotificationsBell, useAdminLinks, useAuth, useCurrentUser, usePermissions, usePlatformModules } from "@opsgrids/client";
 import { useNavGroups } from "./ui";
 import { LogoMark } from "./ui/LogoMark";
 
@@ -58,6 +58,7 @@ export function AppShell() {
         placeholder: "Search purchase orders",
         fallback: { label: "Search purchase orders for", to: "/purchase-orders" },
       }}
+      notifications={<NotificationsBell />}
       banner={<GrantsStatusBanner />}
     />
   );
