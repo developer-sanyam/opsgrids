@@ -139,6 +139,38 @@ describe("Dialog", () => {
     expect(document.activeElement).toBe(screen.getByLabelText("Comment"));
   });
 
+  /**
+   * The bug this guards: some browsers' `:focus-visible` heuristic doesn't distinguish this
+   * scripted `.focus()` from a keyboard tab, so the heading — or a form dialog's field — drew the
+   * same ring a keyboard user gets, for a click that never touched the keyboard. `console.css`
+   * suppresses the ring for exactly the element carrying this marker; this test is the JS half of
+   * that fix — that the marker lands on the right element and lifts the moment focus moves on, so
+   * a keyboard user who tabs there afterwards is never affected by it.
+   */
+  it("marks the initial focus target so it draws no ring, and clears the mark once focus moves on", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(screen.getByRole("button", { name: "Reject" }));
+    const heading = document.activeElement as HTMLElement;
+    expect(heading.getAttribute("data-initial-focus")).toBe("");
+
+    // The heading isn't itself tab-reachable (`tabIndex={-1}`), so a click on another control —
+    // rather than `user.tab()` — is what actually moves focus off it here.
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(heading.hasAttribute("data-initial-focus")).toBe(false);
+  });
+
+  it("marks a form dialog's initial field the same way, clearing it once focus moves elsewhere", async () => {
+    const user = userEvent.setup();
+    render(<Harness initialFocusField />);
+    await user.click(screen.getByRole("button", { name: "Reject" }));
+    const field = screen.getByLabelText("Comment");
+    expect(field.getAttribute("data-initial-focus")).toBe("");
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(field.hasAttribute("data-initial-focus")).toBe(false);
+  });
+
   it("closes on Escape", async () => {
     const user = userEvent.setup();
     render(<Harness />);
