@@ -12,10 +12,15 @@ export { Announcer } from "./components/Announcer";
 export { AppShell } from "./components/AppShell";
 export { Avatar } from "./components/Avatar";
 export type { AvatarSize } from "./components/Avatar";
+export { BarChart } from "./components/BarChart";
+export { BarList } from "./components/BarList";
+export type { BarListItem } from "./components/BarList";
+export { BulkActionBar } from "./components/BulkActionBar";
 export { Button } from "./components/Button";
 export type { ButtonSize, ButtonVariant } from "./components/Button";
 export { Card } from "./components/Card";
 export type { CardTone } from "./components/Card";
+export { ChartCard } from "./components/ChartCard";
 export { CheckboxGroup } from "./components/CheckboxGroup";
 export type { CheckboxOption } from "./components/CheckboxGroup";
 export { Combobox } from "./components/Combobox";
@@ -27,14 +32,30 @@ export { DateRangeField } from "./components/DateRangeField";
 export { DateTimeField } from "./components/DateTimeField";
 export { DeltaPill } from "./components/DeltaPill";
 export { Dialog } from "./components/Dialog";
+export { DonutChart } from "./components/DonutChart";
+export type { DonutSlice } from "./components/DonutChart";
+export { Drawer } from "./components/Drawer";
+export { FileUpload } from "./components/FileUpload";
+export type { StoredFile, UploadControls } from "./components/FileUpload";
+export { FilterBar } from "./components/FilterBar";
+export type { FilterChip, FilterSearch, FilterSelect } from "./components/FilterBar";
 export { FormDialog } from "./components/FormDialog";
 export { FormField } from "./components/FormField";
 export type { FieldIds } from "./components/FormField";
+export { FormSection } from "./components/FormSection";
 export { InlineAlert } from "./components/InlineAlert";
 export type { InlineAlertLive, InlineAlertTone } from "./components/InlineAlert";
 export { KpiCard } from "./components/KpiCard";
 export type { KpiTone } from "./components/KpiCard";
+export { LineChart } from "./components/LineChart";
+export type { ChartSeries, ChartTone } from "./components/LineChart";
 export { LoadMore } from "./components/LoadMore";
+export { Menu } from "./components/Menu";
+export type { MenuItem } from "./components/Menu";
+export { MetricCard } from "./components/MetricCard";
+export type { MetricTrend } from "./components/MetricCard";
+export { MobileDataCard } from "./components/MobileDataCard";
+export type { MobileCardSelection, MobileCardWiring, MobileDataField } from "./components/MobileDataCard";
 export { PageHeader } from "./components/PageHeader";
 export { Pagination } from "./components/Pagination";
 export { Pill } from "./components/Pill";
@@ -49,10 +70,21 @@ export { Select } from "./components/Select";
 export type { SelectOption } from "./components/Select";
 export { Sidebar } from "./components/Sidebar";
 export type { NavEntry, NavGroup, SidebarAccount } from "./components/Sidebar";
+export {
+  CardSkeleton,
+  ChartSkeleton,
+  DashboardSkeleton,
+  FormSkeleton,
+  TableSkeleton,
+} from "./components/Skeletons";
 export { Sparkline } from "./components/Sparkline";
 export { EmptyState, ErrorState, SectionHeader, Skeleton } from "./components/States";
 export type { ErrorStateTone } from "./components/States";
+export { Stepper, StepperActions } from "./components/Stepper";
+export type { StepItem } from "./components/Stepper";
 export { Switch } from "./components/Switch";
+export { Tabs } from "./components/Tabs";
+export type { TabItem, TabsVariant } from "./components/Tabs";
 export { Tag } from "./components/Tag";
 export type { TagTone } from "./components/Tag";
 export { TextArea } from "./components/TextArea";
@@ -62,6 +94,7 @@ export { ThemeToggle } from "./components/ThemeToggle";
 export { Toaster } from "./components/Toaster";
 export { Timeline } from "./components/Timeline";
 export type { TimelineEntry, TimelineTone } from "./components/Timeline";
+export { UnsavedChangesGuard } from "./components/UnsavedChangesGuard";
 
 export { useAnnounce } from "./lib/announcer";
 export type { Announce } from "./lib/announcer";
@@ -89,5 +122,7 @@ export { useTheme } from "./lib/theme";
 export type { Theme, ThemeControls } from "./lib/theme";
 export { useToast } from "./lib/toast";
 export type { ToastControls, ToastOptions, ToastTone } from "./lib/toast";
+export { useDebouncedValue } from "./lib/useDebouncedValue";
+export { useUnsavedChangesWarning } from "./lib/useUnsavedChangesWarning";
 
 export * from "./icons";
