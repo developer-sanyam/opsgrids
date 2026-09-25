@@ -116,6 +116,7 @@ export function OwnerPicker({ owners, value, onChange, error, onOwnerCreated, di
         onChange={(e) => onChange(e.target.value)}
         placeholder="Choose an owner"
         options={owners.map((o) => ({ value: o.id, label: o.full_name }))}
+        required
         {...(error !== undefined ? { error } : {})}
         {...(disabled !== undefined ? { disabled } : {})}
       />

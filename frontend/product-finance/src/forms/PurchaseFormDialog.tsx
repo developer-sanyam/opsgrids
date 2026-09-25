@@ -4,7 +4,7 @@ import { recordPurchase } from "@/api/client";
 import type { DocumentType, PurchaseDocument, PurchaseDocumentCreate } from "@/api/types";
 import { parseMinor } from "@/lib/money";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, Select, TextArea, TextField } from "@/ui";
+import { FormDialog, Select, TextArea, TextField, useFormDirty } from "@/ui";
 
 const GSTIN_PATTERN = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 const TAX_RATES = ["0", "0.25", "3", "5", "12", "18", "28"];
@@ -32,6 +32,10 @@ export function PurchaseFormDialog({ onClose, onSaved }: PurchaseFormDialogProps
   const [taxable, setTaxable] = useState("");
   const [taxRatePct, setTaxRatePct] = useState("18");
   const [notes, setNotes] = useState("");
+
+  const fields = { supplierGstin, supplierName, number, documentType, documentDate, taxable, taxRatePct, notes };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
 
   const [gstinError, setGstinError] = useState<string | undefined>(undefined);
   const [numberError, setNumberError] = useState<string | undefined>(undefined);
@@ -92,6 +96,7 @@ export function PurchaseFormDialog({ onClose, onSaved }: PurchaseFormDialogProps
       pending={save.pending}
       initialFocusRef={gstinRef}
       size="lg"
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? {
             error: problemMessage(save.error),
@@ -108,6 +113,7 @@ export function PurchaseFormDialog({ onClose, onSaved }: PurchaseFormDialogProps
           value={supplierGstin}
           onChange={(e) => setSupplierGstin(e.target.value.toUpperCase())}
           maxLength={15}
+          required
           error={gstinError ?? save.fieldErrors.supplier_gstin}
         />
         <TextField
@@ -124,6 +130,7 @@ export function PurchaseFormDialog({ onClose, onSaved }: PurchaseFormDialogProps
           label="Document number"
           value={number}
           onChange={(e) => setNumber(e.target.value)}
+          required
           error={numberError ?? save.fieldErrors.number}
         />
         <Select
@@ -141,6 +148,7 @@ export function PurchaseFormDialog({ onClose, onSaved }: PurchaseFormDialogProps
           type="date"
           value={documentDate}
           onChange={(e) => setDocumentDate(e.target.value)}
+          required
           error={dateError ?? save.fieldErrors.document_date}
         />
         <Select
@@ -158,6 +166,7 @@ export function PurchaseFormDialog({ onClose, onSaved }: PurchaseFormDialogProps
         value={taxable}
         onChange={(e) => setTaxable(e.target.value)}
         helper="CGST/SGST/IGST are computed from this — never entered directly."
+        required
         error={taxableError ?? save.fieldErrors.taxable_minor}
       />
 

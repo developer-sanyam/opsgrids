@@ -4,7 +4,7 @@ import { createPerson, updatePerson } from "@/api/client";
 import type { Person } from "@/api/types";
 import { withOptional } from "@/lib/optional";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, TextField } from "@opsgrids/ui";
+import { FormDialog, TextField, useFormDirty } from "@opsgrids/ui";
 
 const REF_PATTERN = /^[A-Za-z0-9_-]{1,40}$/;
 
@@ -51,6 +51,11 @@ export function PersonFormDialog({
   const [role, setRole] = useState(person?.role ?? "");
   const [location, setLocation] = useState(person?.location ?? "");
   const [capacity, setCapacity] = useState(String(person?.capacity_hours ?? 40));
+
+  const fields = { ref, name, role, location, capacity };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
+
   const [errors, setErrors] = useState<FormErrors>({});
   const refRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -103,6 +108,7 @@ export function PersonFormDialog({
       pendingLabel={editing ? "Saving…" : "Adding…"}
       pending={save.pending}
       initialFocusRef={editing ? nameRef : refRef}
+      dirty={dirty}
       {...withOptional("error", nonFieldError)}
       {...withOptional("reference", (save.error as ApiError | null)?.problem?.request_id)}
     >
@@ -114,6 +120,7 @@ export function PersonFormDialog({
           onChange={(e) => setRef(e.target.value)}
           placeholder="p13"
           helper="The stable handle timesheets, standups and task assignment join on. Cannot be changed later."
+          required
           {...withOptional("error", errors.ref ?? save.fieldErrors.ref)}
         />
       ) : null}
@@ -122,6 +129,7 @@ export function PersonFormDialog({
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
+        required
         {...withOptional("error", errors.name ?? save.fieldErrors.name)}
       />
       <TextField
@@ -144,6 +152,7 @@ export function PersonFormDialog({
         value={capacity}
         onChange={(e) => setCapacity(e.target.value)}
         helper="The billable-target hours for a standard week."
+        required
         {...withOptional("error", errors.capacity_hours ?? save.fieldErrors.capacity_hours)}
       />
     </FormDialog>

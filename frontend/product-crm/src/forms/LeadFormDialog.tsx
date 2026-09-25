@@ -4,7 +4,7 @@ import { createLead } from "@/api/client";
 import type { Lead, LeadSource, Owner } from "@/api/types";
 import { maybe } from "@/lib/optional";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, Select, TextArea, TextField } from "@opsgrids/ui";
+import { FormDialog, Select, TextArea, TextField, useFormDirty } from "@opsgrids/ui";
 
 interface LeadFormDialogProps {
   owners: Owner[];
@@ -32,6 +32,11 @@ export function LeadFormDialog({ owners, onClose, onSaved }: LeadFormDialogProps
   const [source, setSource] = useState<LeadSource>("manual");
   const [ownerId, setOwnerId] = useState("");
   const [notes, setNotes] = useState("");
+
+  const fields = { fullName, company, email, phone, source, ownerId, notes };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
+
   const [fullNameError, setFullNameError] = useState<string | undefined>(undefined);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -71,6 +76,7 @@ export function LeadFormDialog({ owners, onClose, onSaved }: LeadFormDialogProps
       pendingLabel="Adding…"
       pending={save.pending}
       initialFocusRef={nameRef}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? {
             error: problemMessage(save.error),
@@ -83,6 +89,7 @@ export function LeadFormDialog({ owners, onClose, onSaved }: LeadFormDialogProps
         label="Full name"
         value={fullName}
         onChange={(e) => setFullName(e.target.value)}
+        required
         {...maybe("error", fullNameError ?? save.fieldErrors.full_name)}
       />
       <TextField

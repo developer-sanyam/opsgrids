@@ -4,7 +4,7 @@ import { createContact, setContactPhone, updateContact } from "@/api/client";
 import type { Company, Contact, ContactStatus, Owner } from "@/api/types";
 import { maybe } from "@/lib/optional";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, InlineAlert, Select, TextField } from "@opsgrids/ui";
+import { FormDialog, InlineAlert, Select, TextField, useFormDirty } from "@opsgrids/ui";
 import { OwnerPicker } from "./OwnerPicker";
 
 const STATUS_OPTIONS: { value: ContactStatus; label: string }[] = [
@@ -50,6 +50,9 @@ export function ContactFormDialog({
   const [status, setStatus] = useState<ContactStatus>(contact?.status ?? "lead");
   // Never seeded from `contact.phone` — that's a mask, not a value this form may resend.
   const [newPhone, setNewPhone] = useState("");
+
+  const [initial] = useState({ fullName, email, companyId, ownerId, title, status, newPhone });
+  const dirty = useFormDirty(initial, { fullName, email, companyId, ownerId, title, status, newPhone });
 
   const [fullNameError, setFullNameError] = useState<string | undefined>(undefined);
   const [emailError, setEmailError] = useState<string | undefined>(undefined);
@@ -130,6 +133,7 @@ export function ContactFormDialog({
       pending={save.pending}
       initialFocusRef={nameRef}
       size="lg"
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? {
             error: problemMessage(save.error),
@@ -142,6 +146,7 @@ export function ContactFormDialog({
         label="Full name"
         value={fullName}
         onChange={(e) => setFullName(e.target.value)}
+        required
         {...maybe("error", fullNameError ?? save.fieldErrors.full_name)}
       />
       <TextField
@@ -149,6 +154,7 @@ export function ContactFormDialog({
         type="email"
         value={email}
         onChange={(e) => setEmail(e.target.value)}
+        required
         {...maybe("error", emailError ?? save.fieldErrors.email)}
       />
 
@@ -159,6 +165,7 @@ export function ContactFormDialog({
           onChange={(e) => setCompanyId(e.target.value)}
           placeholder="Choose a company"
           options={companies.map((c) => ({ value: c.id, label: c.name }))}
+          required
           {...maybe("error", companyError ?? save.fieldErrors.company_id)}
         />
         <TextField

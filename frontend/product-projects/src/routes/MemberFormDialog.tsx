@@ -4,7 +4,7 @@ import { createMember, updateMember } from "@/api/client";
 import type { MemberOut } from "@/api/types";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
 import { maybe } from "@/lib/optional";
-import { FormDialog, TextField } from "@opsgrids/ui";
+import { FormDialog, TextField, useFormDirty } from "@opsgrids/ui";
 
 const REF_PATTERN = /^[A-Za-z0-9_-]{1,40}$/;
 
@@ -32,6 +32,11 @@ export function MemberFormDialog({
   const [ref, setRef] = useState(member?.id ?? "");
   const [name, setName] = useState(member?.name ?? "");
   const [role, setRole] = useState(member?.role ?? "");
+
+  const fields = { ref, name, role };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
+
   const [errors, setErrors] = useState<FormErrors>({});
   const refRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -77,6 +82,7 @@ export function MemberFormDialog({
       pendingLabel={editing ? "Saving…" : "Adding…"}
       pending={save.pending}
       initialFocusRef={editing ? nameRef : refRef}
+      dirty={dirty}
       {...maybe("error", nonFieldError)}
       {...maybe("reference", (save.error as ApiError | null)?.problem?.request_id)}
     >
@@ -88,6 +94,7 @@ export function MemberFormDialog({
           onChange={(e) => setRef(e.target.value)}
           placeholder="p-11"
           helper="The stable handle every owner and assignee picker joins on. Cannot be changed later."
+          required
           {...maybe("error", errors.ref ?? save.fieldErrors.ref)}
         />
       ) : (
@@ -98,6 +105,7 @@ export function MemberFormDialog({
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
+        required
         {...maybe("error", errors.name ?? save.fieldErrors.name)}
         />
       <TextField

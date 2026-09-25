@@ -4,7 +4,7 @@ import { createTask } from "@/api/client";
 import type { Person, Priority, Project, Task, TaskStatus } from "@/api/types";
 import { withOptional } from "@/lib/optional";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, Select, TextField } from "@opsgrids/ui";
+import { FormDialog, Select, TextField, useFormDirty } from "@opsgrids/ui";
 import type { SelectOption } from "@opsgrids/ui";
 
 const KEY_PATTERN = /^[A-Za-z0-9_-]{1,40}$/;
@@ -54,6 +54,11 @@ export function TaskFormDialog({
   const [priority, setPriority] = useState<Priority>("medium");
   const [tags, setTags] = useState("");
   const [dueDate, setDueDate] = useState("");
+
+  const fields = { key, projectCode, title, status, assigneeRef, estimate, priority, tags, dueDate };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
+
   const [errors, setErrors] = useState<FormErrors>({});
   const keyRef = useRef<HTMLInputElement>(null);
   const titleRef = useRef<HTMLInputElement>(null);
@@ -120,6 +125,7 @@ export function TaskFormDialog({
       pending={save.pending}
       initialFocusRef={keyRef}
       size="lg"
+      dirty={dirty}
       {...withOptional("error", nonFieldError)}
       {...withOptional("reference", (save.error as ApiError | null)?.problem?.request_id)}
     >
@@ -130,6 +136,7 @@ export function TaskFormDialog({
           value={key}
           onChange={(e) => setKey(e.target.value)}
           placeholder="PB-300"
+          required
           {...withOptional("error", errors.key ?? save.fieldErrors.key)}
         />
         <Select
@@ -137,6 +144,7 @@ export function TaskFormDialog({
           value={projectCode}
           onChange={(e) => setProjectCode(e.target.value)}
           options={projectOptions}
+          required
           {...withOptional("error", errors.project_code ?? save.fieldErrors.project_code)}
         />
       </div>
@@ -146,6 +154,7 @@ export function TaskFormDialog({
         label="Title"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
+        required
         {...withOptional("error", errors.title ?? save.fieldErrors.title)}
       />
 

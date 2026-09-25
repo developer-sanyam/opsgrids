@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 import { createIncident, listAssets } from "@/api/client";
 import type { Incident, IncidentCategory, IncidentIn, Priority } from "@/api/types";
 import { ApiError, problemMessage, useAuth, useCan, useMutation } from "@opsgrids/client";
-import { Combobox, FormDialog, Select, TextArea, TextField } from "@opsgrids/ui";
+import { Combobox, FormDialog, Select, TextArea, TextField, useFormDirty } from "@opsgrids/ui";
 import type { ComboboxOption } from "@opsgrids/ui";
 
 const PRIORITY_OPTIONS: { value: Priority; label: string }[] = [
@@ -46,6 +46,10 @@ export function RaiseIncidentDialog({ onClose, onCreated }: RaiseIncidentDialogP
   // only work their own incidents, so the field is not offered to them at all.
   const canAssign = useCan("itsm.service.incident.write", "ORG");
   const [asset, setAsset] = useState<ComboboxOption | null>(null);
+
+  const fields = { summary, description, priority, category, requester, assignee, assetId: asset?.id ?? "" };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
 
   const [summaryError, setSummaryError] = useState<string | undefined>(undefined);
   const [requesterError, setRequesterError] = useState<string | undefined>(undefined);
@@ -100,6 +104,7 @@ export function RaiseIncidentDialog({ onClose, onCreated }: RaiseIncidentDialogP
       pending={save.pending}
       initialFocusRef={summaryRef}
       size="lg"
+      dirty={dirty}
       error={hasTopLevelError ? problemMessage(save.error) : undefined}
       reference={hasTopLevelError ? (save.error as ApiError).problem?.request_id : undefined}
     >
@@ -109,6 +114,7 @@ export function RaiseIncidentDialog({ onClose, onCreated }: RaiseIncidentDialogP
         value={summary}
         onChange={(e) => setSummary(e.target.value)}
         maxLength={300}
+        required
         error={summaryError ?? save.fieldErrors.summary}
       />
       <TextArea
@@ -142,6 +148,7 @@ export function RaiseIncidentDialog({ onClose, onCreated }: RaiseIncidentDialogP
           onChange={(e) => setRequester(e.target.value)}
           maxLength={120}
           helper="Who this is raised for."
+          required
           error={requesterError ?? save.fieldErrors.requester}
         />
         {canAssign ? (

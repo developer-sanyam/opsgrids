@@ -5,7 +5,7 @@ import type { Person, Project, TimesheetEntryIn, TimesheetRow } from "@/api/type
 import { formatDayMonth } from "@/lib/format";
 import { withOptional } from "@/lib/optional";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, Select, TextField } from "@opsgrids/ui";
+import { FormDialog, Select, TextField, useFormDirty } from "@opsgrids/ui";
 import type { SelectOption } from "@opsgrids/ui";
 
 interface DayDraft {
@@ -53,6 +53,9 @@ export function TimesheetEntryDialog({
   onSaved: (row: TimesheetRow, message: string) => void;
 }) {
   const [days, setDays] = useState<DayDraft[]>(() => draftsFrom(row, weekDates));
+  const [initialDays] = useState(days);
+  const dirty = useFormDirty(initialDays, days);
+
   const [dayErrors, setDayErrors] = useState<Record<string, string>>({});
   const firstFieldRef = useRef<HTMLInputElement>(null);
 
@@ -127,6 +130,7 @@ export function TimesheetEntryDialog({
       pending={save.pending}
       initialFocusRef={firstFieldRef}
       size="lg"
+      dirty={dirty}
       {...withOptional("error", nonFieldError)}
       {...withOptional("reference", (save.error as ApiError | null)?.problem?.request_id)}
     >

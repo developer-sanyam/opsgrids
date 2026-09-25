@@ -4,7 +4,7 @@ import { updateTicket } from "@/api/client";
 import type { Priority, Ticket, TicketUpdateIn } from "@/api/types";
 import { problemMessage, useMutation } from "@opsgrids/client";
 import type { ApiError } from "@opsgrids/client";
-import { FormDialog, Select, TextField } from "@opsgrids/ui";
+import { FormDialog, Select, TextField, useFormDirty } from "@opsgrids/ui";
 import { errorProp } from "@/lib/optionalProp";
 
 const PRIORITY_OPTIONS: { value: Priority; label: string }[] = [
@@ -26,6 +26,11 @@ export function EditTicketDialog({ ticket, onClose, onSaved }: EditTicketDialogP
   const [subject, setSubject] = useState(ticket.subject);
   const [priority, setPriority] = useState<Priority>(ticket.priority);
   const [tags, setTags] = useState(ticket.tags.join(", "));
+
+  const fields = { subject, priority, tags };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
+
   const [subjectError, setSubjectError] = useState<string | undefined>(undefined);
   const subjectRef = useRef<HTMLInputElement>(null);
 
@@ -71,6 +76,7 @@ export function EditTicketDialog({ ticket, onClose, onSaved }: EditTicketDialogP
       pendingLabel="Saving…"
       pending={save.pending}
       initialFocusRef={subjectRef}
+      dirty={dirty}
       {...errorProp(topLevelError)}
       {...(requestId !== undefined ? { reference: requestId } : {})}
     >
@@ -79,6 +85,7 @@ export function EditTicketDialog({ ticket, onClose, onSaved }: EditTicketDialogP
         label="Subject"
         value={subject}
         onChange={(e) => setSubject(e.target.value)}
+        required
         {...errorProp(subjectError ?? save.fieldErrors.subject)}
         maxLength={300}
       />

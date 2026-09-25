@@ -40,6 +40,7 @@ import {
   Switch,
   TextArea,
   TextField,
+  useFormDirty,
 } from "@opsgrids/ui";
 
 const ROLE_LABEL: Record<Agent["role"], string> = {
@@ -118,6 +119,11 @@ function AgentForm({
   const [role, setRole] = useState<Agent["role"]>(agent?.role ?? "agent");
   const [team, setTeam] = useState(agent?.team ?? "Tier 1");
   const [online, setOnline] = useState(agent?.online ?? false);
+
+  const fields = { name, email, role, team, online };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
+
   const [nameError, setNameError] = useState<string | undefined>(undefined);
   const [emailError, setEmailError] = useState<string | undefined>(undefined);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -164,6 +170,7 @@ function AgentForm({
       pendingLabel={agent ? "Saving…" : "Adding…"}
       pending={save.pending}
       initialFocusRef={nameRef}
+      dirty={dirty}
       {...errorProp(topLevelError)}
       {...(requestId !== undefined ? { reference: requestId } : {})}
     >
@@ -172,6 +179,7 @@ function AgentForm({
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
+        required
         {...errorProp(nameError ?? save.fieldErrors.name)}
       />
       <TextField
@@ -180,6 +188,7 @@ function AgentForm({
         type="email"
         value={email}
         onChange={(e) => setEmail(e.target.value)}
+        required
         {...errorProp(emailError ?? save.fieldErrors.email)}
       />
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -242,6 +251,11 @@ function SlaPolicyForm({
   const [businessHours, setBusinessHours] = useState(policy?.business_hours ?? "");
   const [coverage, setCoverage] = useState(policy?.coverage ?? "");
   const [targets, setTargets] = useState(policy ? targetsFrom(policy) : emptyTargets());
+
+  const fields = { name, businessHours, coverage, targets };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
+
   const [nameError, setNameError] = useState<string | undefined>(undefined);
   const [targetError, setTargetError] = useState<string | undefined>(undefined);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -300,6 +314,7 @@ function SlaPolicyForm({
       pending={save.pending}
       initialFocusRef={nameRef}
       size="lg"
+      dirty={dirty}
       {...errorProp(topLevelError)}
       {...(requestId !== undefined ? { reference: requestId } : {})}
     >
@@ -308,6 +323,7 @@ function SlaPolicyForm({
         label="Policy name"
         value={name}
         onChange={(e) => setName(e.target.value)}
+        required
         {...errorProp(nameError ?? save.fieldErrors.name)}
       />
       <TextField
@@ -344,6 +360,7 @@ function SlaPolicyForm({
               inputMode="numeric"
               value={targets[priority].first_response_min}
               onChange={(e) => setTarget(priority, "first_response_min", e.target.value)}
+              required
             />
             <TextField
               label="Resolution"
@@ -352,6 +369,7 @@ function SlaPolicyForm({
               inputMode="numeric"
               value={targets[priority].resolution_min}
               onChange={(e) => setTarget(priority, "resolution_min", e.target.value)}
+              required
             />
           </div>
         ))}

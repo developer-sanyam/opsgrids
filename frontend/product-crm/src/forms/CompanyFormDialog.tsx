@@ -6,7 +6,7 @@ import type { CompanyIn, CompanyPatch } from "@/api/wire";
 import { minorToInput, parseMinor } from "@/lib/money";
 import { maybe } from "@/lib/optional";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, Select, TextField } from "@opsgrids/ui";
+import { FormDialog, Select, TextField, useFormDirty } from "@opsgrids/ui";
 import { OwnerPicker } from "./OwnerPicker";
 
 const STATUS_OPTIONS: { value: CompanyStatus; label: string }[] = [
@@ -50,6 +50,10 @@ export function CompanyFormDialog({
     company ? minorToInput(company.annual_revenue_minor) : "",
   );
   const [currency, setCurrency] = useState(company?.currency ?? "INR");
+
+  const fields = { name, ownerId, domain, industry, sizeBand, city, country, status, revenue, currency };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
 
   const [nameError, setNameError] = useState<string | undefined>(undefined);
   const [ownerError, setOwnerError] = useState<string | undefined>(undefined);
@@ -109,6 +113,7 @@ export function CompanyFormDialog({
       pending={save.pending}
       initialFocusRef={nameRef}
       size="lg"
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? {
             error: problemMessage(save.error),
@@ -121,6 +126,7 @@ export function CompanyFormDialog({
         label="Company name"
         value={name}
         onChange={(e) => setName(e.target.value)}
+        required
         {...maybe("error", nameError ?? save.fieldErrors.name)}
       />
 

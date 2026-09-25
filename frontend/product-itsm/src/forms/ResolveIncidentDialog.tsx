@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 import { changeIncidentStatus } from "@/api/client";
 import type { Incident, IncidentStatusIn } from "@/api/types";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, TextArea } from "@opsgrids/ui";
+import { FormDialog, TextArea, useFormDirty } from "@opsgrids/ui";
 
 interface ResolveIncidentDialogProps {
   incident: Incident;
@@ -15,6 +15,8 @@ interface ResolveIncidentDialogProps {
  *  server requires a note for, so it becomes the resolution worklog entry. */
 export function ResolveIncidentDialog({ incident, onClose, onResolved }: ResolveIncidentDialogProps) {
   const [note, setNote] = useState("");
+  const [initial] = useState(note);
+  const dirty = useFormDirty(initial, note);
   const [noteError, setNoteError] = useState<string | undefined>(undefined);
   const noteRef = useRef<HTMLTextAreaElement>(null);
 
@@ -45,6 +47,7 @@ export function ResolveIncidentDialog({ incident, onClose, onResolved }: Resolve
       pendingLabel="Resolving…"
       pending={resolve.pending}
       initialFocusRef={noteRef}
+      dirty={dirty}
       error={hasTopLevelError ? problemMessage(resolve.error) : undefined}
       reference={hasTopLevelError ? (resolve.error as ApiError).problem?.request_id : undefined}
     >
@@ -56,6 +59,7 @@ export function ResolveIncidentDialog({ incident, onClose, onResolved }: Resolve
         maxLength={8000}
         rows={4}
         helper="Required — this becomes the resolution note on the activity thread."
+        required
         error={noteError ?? resolve.fieldErrors.note}
       />
     </FormDialog>
