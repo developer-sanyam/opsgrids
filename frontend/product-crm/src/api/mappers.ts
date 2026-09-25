@@ -120,7 +120,7 @@ export function summaryFromWire(row: SummaryOut): Summary {
     won_value_minor: row.won_value_minor,
     activities_this_week: row.activities_this_week,
     currency: row.currency,
-    trend: row.trend.map((t) => ({ label: t.label, value_minor: t.value_minor })),
+    trend: row.trend ? row.trend.map((t) => ({ label: t.label, value_minor: t.value_minor })) : null,
     funnel: row.funnel.map((f) => ({
       stage: f.stage,
       label: f.label,

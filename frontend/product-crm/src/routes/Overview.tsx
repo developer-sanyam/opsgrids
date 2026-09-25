@@ -1,240 +1,339 @@
 import { useCallback, useMemo, useState } from "react";
-import type { CSSProperties } from "react";
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import { getAllDeals, getSummary, listActivities } from "@/api/client";
-import type { Deal } from "@/api/types";
-import { useAuth, useCan } from "@opsgrids/client";
+import { getAllDeals, getSummary, listActivities, listLeads } from "@/api/client";
+import type { Deal, LeadStatus } from "@/api/types";
+import { scopeFor, useAsync, useCan, usePermissions } from "@opsgrids/client";
+import type { Scope } from "@opsgrids/client";
 import { useDirectory } from "@/data/directoryContext";
-import {
-  needsAttention,
-  openCount,
-  pipelineValueMinor,
-  stageFunnel,
-  winRatePct,
-} from "@/data/derive";
-import { KPI_TRENDS } from "@/data/samples";
-import { formatDate, formatMoneyCompact, nowIso } from "@/lib/format";
-import { useAsync } from "@opsgrids/client";
+import { needsAttention } from "@/data/derive";
+import { getMySubjectRef } from "@/lib/subject";
+import { formatMoneyCompact, nowIso } from "@/lib/format";
 import {
   ActivityTimeline,
+  BarList,
   Button,
   Card,
+  CardSkeleton,
+  ChartCard,
+  DonutChart,
+  EmptyState,
   ErrorState,
-  KpiCard,
+  MetricCard,
   NeedsAttention,
-  PipelineFunnel,
-  PipelineTrend,
+  PageHeader,
   SectionHeader,
   Skeleton,
+  Switch,
+  TABLET_QUERY,
+  useMediaQuery,
 } from "@/ui";
-import type { KpiTone } from "@/ui";
+import type { BarListItem, DonutSlice } from "@/ui";
 import {
-  ActivityIcon,
   BanknoteIcon,
-  CalendarIcon,
   HandshakeIcon,
   PlusIcon,
   TargetIcon,
+  UserPlusIcon,
   useToast,
 } from "@opsgrids/ui";
 import { DealFormDialog } from "@/forms/DealFormDialog";
 
-const CURRENCY = "INR";
-
+const COUNT = new Intl.NumberFormat("en-IN");
 const EMPTY_DEALS: Deal[] = [];
 
-/** The Overview top bar: breadcrumb + title, then today / New deal. The shell's own header
- *  already has a search that reaches Deals (`AppShell`'s `search.fallback`), so this doesn't
- *  repeat it. */
-function OverviewHeader({
-  orgName,
-  onCreate,
-  canCreate,
-}: {
-  orgName: string;
+/** The five lead statuses, in intake order — one `Page.total` call each. Together they add up to
+ *  the whole book, so "Leads" and "Leads by status" share these five calls rather than a sixth
+ *  unfiltered one. */
+const LEAD_STATUSES: LeadStatus[] = ["new", "working", "qualified", "converted", "disqualified"];
+
+const LEAD_STATUS_LABEL: Record<LeadStatus, string> = {
+  new: "New",
+  working: "Working",
+  qualified: "Qualified",
+  converted: "Converted",
+  disqualified: "Disqualified",
+};
+
+const LEAD_STATUS_TONE: Record<LeadStatus, DonutSlice["tone"]> = {
+  new: "info",
+  working: "accent",
+  qualified: "warning",
+  converted: "positive",
+  disqualified: "cyan",
+};
+
+interface LeadStats {
+  total: number;
+  converted: number;
+  counts: Record<LeadStatus, number>;
+}
+
+/** Five `size=1` calls, scoped to one rep when `ownerId` is given — cheap, and exact at any book
+ *  size, unlike counting a capped page. */
+async function loadLeadStats(ownerId: string | undefined): Promise<LeadStats> {
+  const pages = await Promise.all(
+    LEAD_STATUSES.map((status) => listLeads({ status, size: 1, ...(ownerId ? { ownerId } : {}) })),
+  );
+  const counts = Object.fromEntries(
+    LEAD_STATUSES.map((status, index) => [status, pages[index]?.total ?? 0]),
+  ) as Record<LeadStatus, number>;
+  const total = LEAD_STATUSES.reduce((sum, status) => sum + counts[status], 0);
+  return { total, converted: counts.converted, counts };
+}
+
+/** "All {subject}" for an ORG-scoped reader, "Your {subject}" for an OWN-scoped one or once the
+ *  "My pipeline" toggle narrows it by hand — a KPI or chart must never read as company-wide when
+ *  it is a slice (dashboard audit §2.4). */
+function scopedCaption(subject: string, mine: boolean, scope: Scope | null): string {
+  if (mine || scope !== "ORG") return `Your ${subject}`;
+  return `All ${subject}`;
+}
+
+interface OverviewHeaderProps {
   onCreate: () => void;
   canCreate: boolean;
-}) {
+  canToggleMine: boolean;
+  mine: boolean;
+  onToggleMine: (next: boolean) => void;
+}
+
+function OverviewHeader({ onCreate, canCreate, canToggleMine, mine, onToggleMine }: OverviewHeaderProps) {
   return (
-    <header className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-      <div className="flex flex-col gap-1">
-        <nav aria-label="Breadcrumb" className="text-sm font-medium text-muted">
-          Workspace <span className="text-faint">/</span>{" "}
-          <span className="text-ink-soft">{orgName}</span>
-        </nav>
-        <h1 className="display text-3xl font-extrabold leading-tight sm:text-[2.1rem]">Overview</h1>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="hidden h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold text-ink-soft shadow-card sm:inline-flex">
-          <CalendarIcon className="size-4 text-muted" />
-          <span className="tnum">{formatDate(nowIso())}</span>
-        </span>
-
-        {canCreate ? (
-          <Button size="md" leadingIcon={<PlusIcon className="size-4" />} onClick={onCreate}>
-            New deal
-          </Button>
-        ) : null}
-      </div>
-    </header>
+    <PageHeader
+      title="Overview"
+      description="Your pipeline, leads and follow-ups."
+      actions={
+        <>
+          {canToggleMine ? (
+            <Switch
+              checked={mine}
+              onChange={onToggleMine}
+              label="My pipeline"
+              description={mine ? "Showing your own deals and leads" : "Showing the whole pipeline"}
+            />
+          ) : null}
+          {canCreate ? (
+            <Button size="md" leadingIcon={<PlusIcon className="size-4" />} onClick={onCreate}>
+              New deal
+            </Button>
+          ) : null}
+        </>
+      }
+    />
   );
 }
 
-interface KpiConfig {
-  key: string;
+/** The KPI row's shared branch: a sized skeleton while its own source loads, a generic
+ *  couldn't-load-plus-retry if it failed, or the real card. One widget's failure never blanks the
+ *  other three (dashboard audit §5.0.7). */
+function MetricSlot({
+  status,
+  onRetry,
+  label,
+  children,
+}: {
+  status: "loading" | "error" | "success";
+  onRetry: () => void;
   label: string;
-  value: string;
-  deltaPct: number;
-  series: number[];
-  icon: React.ReactNode;
-  tone: KpiTone;
-}
-
-function buildKpis(deals: Deal[], activitiesThisWeek: number | null): KpiConfig[] {
-  return [
-    {
-      key: "pipeline",
-      label: "Pipeline value",
-      value: formatMoneyCompact(pipelineValueMinor(deals), CURRENCY),
-      deltaPct: KPI_TRENDS.pipeline.deltaPct,
-      series: [...KPI_TRENDS.pipeline.series],
-      icon: <BanknoteIcon className="size-5" />,
-      tone: "accent",
-    },
-    {
-      key: "open",
-      label: "Open deals",
-      value: String(openCount(deals)),
-      deltaPct: KPI_TRENDS.openDeals.deltaPct,
-      series: [...KPI_TRENDS.openDeals.series],
-      icon: <HandshakeIcon className="size-5" />,
-      tone: "info",
-    },
-    {
-      key: "win",
-      label: "Win rate",
-      value: `${winRatePct(deals)}%`,
-      deltaPct: KPI_TRENDS.winRate.deltaPct,
-      series: [...KPI_TRENDS.winRate.series],
-      icon: <TargetIcon className="size-5" />,
-      tone: "positive",
-    },
-    {
-      key: "activities",
-      label: "Activities this week",
-      value: activitiesThisWeek === null ? "—" : String(activitiesThisWeek),
-      deltaPct: KPI_TRENDS.activities.deltaPct,
-      series: [...KPI_TRENDS.activities.series],
-      icon: <ActivityIcon className="size-5" />,
-      tone: "cyan",
-    },
-  ];
+  children: ReactNode;
+}) {
+  if (status === "loading") return <CardSkeleton lines={1} label={`Loading ${label}`} />;
+  if (status === "error") {
+    return (
+      <Card className="flex flex-col justify-center gap-3 p-4 sm:p-6">
+        <p className="text-sm font-semibold text-ink">{`Couldn't load ${label.toLowerCase()}.`}</p>
+        <Button variant="secondary" size="sm" onClick={onRetry}>
+          Try again
+        </Button>
+      </Card>
+    );
+  }
+  return <>{children}</>;
 }
 
 export function OverviewPage() {
-  const { user } = useAuth();
   const toast = useToast();
   const directory = useDirectory();
+  const { grants } = usePermissions();
   const canCreateDeal = useCan("crm.pipeline.deal.write", "OWN");
   const [creating, setCreating] = useState(false);
-  const deals = useAsync(getAllDeals, []);
+  const [mine, setMine] = useState(false);
+
+  const mySubjectRef = useMemo(() => getMySubjectRef(), []);
+  const dealScope = scopeFor(grants ?? [], "crm.pipeline.deal.read");
+  const leadScope = scopeFor(grants ?? [], "crm.lead.lead.read");
+  const canToggleMine = dealScope === "ORG" && mySubjectRef !== null;
+  const scopedOwnerId = mine && mySubjectRef !== null ? mySubjectRef : undefined;
+
+  const wide = useMediaQuery(TABLET_QUERY, true);
+  const metricSize = wide ? "default" : "compact";
+
+  const summary = useAsync(() => getSummary(mine ? { owner: "me" } : {}), [mine]);
+  const deals = useAsync(
+    () => getAllDeals(scopedOwnerId ? { ownerId: scopedOwnerId } : {}),
+    [scopedOwnerId],
+  );
+  const leadStats = useAsync(() => loadLeadStats(scopedOwnerId), [scopedOwnerId]);
   const activities = useAsync(useCallback(() => listActivities({ size: 6 }), []), []);
-  const summary = useAsync(getSummary, []);
 
-  const orgName =
-    user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
-    user?.organizations[0]?.name ??
-    "OpsGrids";
-
-  const items = useMemo(
-    () => (deals.status === "success" ? deals.data.items : EMPTY_DEALS),
-    [deals],
-  );
-
-  const activitiesThisWeek = summary.status === "success" ? summary.data.activities_this_week : null;
-  const kpis = useMemo(() => buildKpis(items, activitiesThisWeek), [items, activitiesThisWeek]);
-  const funnel = useMemo(() => stageFunnel(items), [items]);
+  const items = deals.status === "success" ? deals.data.items : EMPTY_DEALS;
   const today = nowIso().slice(0, 10);
-  const attention = useMemo(() => needsAttention(items, today), [items, today]);
-  const pipelineValue = useMemo(() => pipelineValueMinor(items), [items]);
-  const recentActivities = useMemo(
-    () => (activities.status === "success" ? activities.data.items : []),
-    [activities],
-  );
+  const currentMonth = nowIso().slice(0, 7);
+  const currency = summary.status === "success" ? summary.data.currency : "INR";
+
+  const attention = useMemo(() => needsAttention(items, today).slice(0, 6), [items, today]);
+  const wonThisMonth = useMemo(() => {
+    const rows = items.filter((d) => d.stage === "closed_won" && d.close_date.slice(0, 7) === currentMonth);
+    return { count: rows.length, valueMinor: rows.reduce((sum, d) => sum + d.value_minor, 0) };
+  }, [items, currentMonth]);
+  const conversionPct =
+    leadStats.status === "success" && leadStats.data.total > 0
+      ? Math.round((leadStats.data.converted / leadStats.data.total) * 100)
+      : 0;
+
+  const funnelItems: BarListItem[] =
+    summary.status === "success"
+      ? summary.data.funnel.map((row) => ({
+          key: row.stage,
+          label: `${row.label} (${row.count})`,
+          value: row.value_minor,
+        }))
+      : [];
+  const leadSlices: DonutSlice[] =
+    leadStats.status === "success"
+      ? LEAD_STATUSES.map((status) => ({
+          key: status,
+          label: LEAD_STATUS_LABEL[status],
+          value: leadStats.data.counts[status],
+          tone: LEAD_STATUS_TONE[status],
+        }))
+      : [];
+
+  const recentActivities = activities.status === "success" ? activities.data.items : [];
 
   return (
     <div className="rise flex flex-col gap-5">
-      <OverviewHeader orgName={orgName} onCreate={() => setCreating(true)} canCreate={canCreateDeal} />
+      <OverviewHeader
+        onCreate={() => setCreating(true)}
+        canCreate={canCreateDeal}
+        canToggleMine={canToggleMine}
+        mine={mine}
+        onToggleMine={setMine}
+      />
 
-      {/* Row 1 — KPI cards */}
-      <section aria-label="Key metrics" className="cascade grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {deals.status === "loading"
-          ? Array.from({ length: 4 }).map((_, i) => (
-              <Card key={i} className="flex flex-col gap-4 p-5" style={{ "--i": i } as CSSProperties}>
-                <div className="flex justify-between">
-                  <Skeleton className="size-10 rounded-tile" />
-                  <Skeleton className="h-8 w-20" />
-                </div>
-                <Skeleton className="h-4 w-24" />
-                <Skeleton className="h-9 w-20 rounded-tile" />
-              </Card>
-            ))
-          : null}
-        {deals.status === "error" ? (
-          <Card className="p-5 sm:col-span-2 xl:col-span-4">
-            <ErrorState message={deals.error.message} onRetry={deals.reload} />
-          </Card>
-        ) : null}
-        {deals.status === "success"
-          ? kpis.map((kpi, i) => (
-              <div key={kpi.key} style={{ "--i": i } as CSSProperties}>
-                <KpiCard
-                  label={kpi.label}
-                  value={kpi.value}
-                  deltaPct={kpi.deltaPct}
-                  series={kpi.series}
-                  icon={kpi.icon}
-                  tone={kpi.tone}
-                  sample={{
-                    label: "Sample trend",
-                    title: "The figure is live; the trend and % change beside it are representative — the pipeline analytics history service isn't wired to this org yet.",
-                  }}
+      {/* Row 1 — KPI cards: leads, open pipeline, won this month, conversion. Every delta this
+          row could show needs a comparison the server doesn't yet keep (dashboard audit §3.3
+          rows 2, 9); none is invented, so none of these four cards carries a trend. */}
+      <section aria-label="Key metrics" className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <MetricSlot status={leadStats.status} onRetry={leadStats.reload} label="Leads">
+          {leadStats.status === "success" ? (
+            <MetricCard
+              label="Leads"
+              value={COUNT.format(leadStats.data.total)}
+              icon={<UserPlusIcon className="size-5" />}
+              tone="cyan"
+              size={metricSize}
+            />
+          ) : null}
+        </MetricSlot>
+
+        <MetricSlot status={summary.status} onRetry={summary.reload} label="Open pipeline">
+          {summary.status === "success" ? (
+            <MetricCard
+              label="Open Pipeline"
+              value={formatMoneyCompact(summary.data.pipeline_value_minor, summary.data.currency)}
+              icon={<BanknoteIcon className="size-5" />}
+              tone="accent"
+              size={metricSize}
+            />
+          ) : null}
+        </MetricSlot>
+
+        <MetricSlot status={deals.status} onRetry={deals.reload} label="Won this month">
+          {deals.status === "success" ? (
+            <MetricCard
+              label="Won This Month"
+              value={formatMoneyCompact(wonThisMonth.valueMinor, currency)}
+              icon={<HandshakeIcon className="size-5" />}
+              tone="positive"
+              size={metricSize}
+            />
+          ) : null}
+        </MetricSlot>
+
+        <MetricSlot status={leadStats.status} onRetry={leadStats.reload} label="Conversion">
+          {leadStats.status === "success" ? (
+            <MetricCard
+              label="Lead Conversion"
+              value={`${conversionPct}%`}
+              icon={<TargetIcon className="size-5" />}
+              tone="info"
+              size={metricSize}
+            />
+          ) : null}
+        </MetricSlot>
+      </section>
+
+      {/* Row 2 — pipeline by stage · leads by status */}
+      <section aria-label="Pipeline and leads" className="grid grid-cols-1 gap-5 xl:grid-cols-3">
+        <div className="xl:col-span-2">
+          <ChartCard
+            title="Pipeline by Stage"
+            description={scopedCaption("open deals, by stage", mine, dealScope)}
+            loading={summary.status === "loading"}
+            skeleton="bar"
+            error={
+              summary.status === "error" ? (
+                <ErrorState message={summary.error.message} onRetry={summary.reload} />
+              ) : undefined
+            }
+            empty={
+              summary.status === "success" && funnelItems.every((item) => item.value === 0) ? (
+                <EmptyState
+                  title="No open deals yet"
+                  description="Add a deal to see the pipeline fill in here."
                 />
-              </div>
-            ))
-          : null}
+              ) : undefined
+            }
+          >
+            {summary.status === "success" ? (
+              <BarList label="Open pipeline value by stage" items={funnelItems} formatValue={(v) => formatMoneyCompact(v, summary.data.currency)} />
+            ) : null}
+          </ChartCard>
+        </div>
+
+        <div className="xl:col-span-1">
+          <ChartCard
+            title="Leads by Status"
+            description={scopedCaption("leads, by status", mine, leadScope)}
+            loading={leadStats.status === "loading"}
+            skeleton="donut"
+            error={
+              leadStats.status === "error" ? (
+                <ErrorState message={leadStats.error.message} onRetry={leadStats.reload} />
+              ) : undefined
+            }
+            empty={
+              leadStats.status === "success" && leadStats.data.total === 0 ? (
+                <EmptyState
+                  title="No leads yet"
+                  description="Leads you capture appear here, broken down by status."
+                />
+              ) : undefined
+            }
+          >
+            {leadStats.status === "success" ? <DonutChart label="Leads by status" slices={leadSlices} size="sm" /> : null}
+          </ChartCard>
+        </div>
       </section>
 
-      {/* Row 2 — pipeline trend · by-stage funnel */}
-      <section aria-label="Pipeline overview" className="grid grid-cols-1 gap-5 xl:grid-cols-3">
-        <Card className="flex flex-col gap-4 p-6 xl:col-span-2">
-          <SectionHeader title="Pipeline value over time" subtitle="Open value, month by month" />
-          {deals.status === "success" ? (
-            <PipelineTrend currentMinor={pipelineValue} currency={CURRENCY} />
-          ) : (
-            <Skeleton className="h-56 w-full rounded-tile" />
-          )}
-        </Card>
-
-        <Card className="flex flex-col gap-5 p-6 xl:col-span-1">
-          <SectionHeader title="Deals by stage" subtitle="Open pipeline funnel" />
-          {deals.status === "success" ? (
-            <PipelineFunnel rollups={funnel} currency={CURRENCY} />
-          ) : deals.status === "error" ? (
-            <ErrorState message={deals.error.message} onRetry={deals.reload} />
-          ) : (
-            <Skeleton className="h-56 w-full rounded-tile" />
-          )}
-        </Card>
-      </section>
-
-      {/* Row 3 — needs attention · recent activity */}
+      {/* Row 3 — follow-ups due · recent activity */}
       <section aria-label="Follow-ups" className="grid grid-cols-1 gap-5 xl:grid-cols-3 items-start">
         <Card className="flex flex-col gap-2 p-6 xl:col-span-2">
           <SectionHeader
-            title="Needs attention"
+            title="Needs Attention"
             subtitle="Overdue, closing soon, or going quiet"
             action={
               <Link
@@ -260,7 +359,7 @@ export function OverviewPage() {
 
         <Card className="flex flex-col gap-5 p-6">
           <SectionHeader
-            title="Recent activity"
+            title="Recent Activity"
             action={
               <Link
                 to="/activities"
@@ -280,9 +379,7 @@ export function OverviewPage() {
           {activities.status === "error" ? (
             <ErrorState message={activities.error.message} onRetry={activities.reload} />
           ) : null}
-          {activities.status === "success" ? (
-            <ActivityTimeline activities={recentActivities} />
-          ) : null}
+          {activities.status === "success" ? <ActivityTimeline activities={recentActivities} /> : null}
         </Card>
       </section>
 
@@ -298,6 +395,7 @@ export function OverviewPage() {
             setCreating(false);
             toast.success(`${deal.name} created.`);
             deals.reload();
+            summary.reload();
           }}
         />
       ) : null}

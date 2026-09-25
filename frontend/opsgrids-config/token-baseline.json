@@ -235,8 +235,7 @@
     "spacing": 9
   },
   "product-crm/src/routes/Overview.tsx": {
-    "arbitrary": 1,
-    "spacing": 7
+    "spacing": 4
   },
   "product-crm/src/routes/Team.tsx": {
     "arbitrary": 1,
@@ -253,14 +252,6 @@
   "product-crm/src/ui/NeedsAttention.tsx": {
     "arbitrary": 2,
     "spacing": 1
-  },
-  "product-crm/src/ui/PipelineFunnel.tsx": {
-    "arbitrary": 1,
-    "spacing": 1
-  },
-  "product-crm/src/ui/PipelineTrend.tsx": {
-    "arbitrary": 1,
-    "spacing": 5
   },
   "product-crm/src/ui/StatusPill.tsx": {
     "spacing": 2

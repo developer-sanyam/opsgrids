@@ -151,7 +151,10 @@ export interface SummaryOut {
   won_value_minor: number;
   activities_this_week: number;
   currency: string;
-  trend: TrendPointOut[];
+  /** `null` until a dated pipeline-value history exists — the service has no snapshot of what
+   *  was open on a past day, only each deal's current stage and value. Never a placeholder
+   *  series: see `services/deal/app/schemas.py`'s `SummaryOut` docstring. */
+  trend: TrendPointOut[] | null;
   funnel: StageRollupOut[];
 }
 

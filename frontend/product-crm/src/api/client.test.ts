@@ -317,6 +317,13 @@ describe("getAllDeals", () => {
     await getAllDeals();
     expect(requestedUrl(fetchMock)).toBe("/api/v1/deals?size=200");
   });
+
+  it("narrows to one rep with ownerId", async () => {
+    const fetchMock = stubFetch({ items: [DEAL_WIRE], total: 1, ...PAGE_ENVELOPE });
+    await getAllDeals({ ownerId: "own-1" });
+    const params = new URL(requestedUrl(fetchMock), "http://localhost").searchParams;
+    expect(params.get("owner_id")).toBe("own-1");
+  });
 });
 
 describe("getDeal", () => {
@@ -380,8 +387,8 @@ describe("moveDealStage", () => {
 });
 
 describe("getSummary", () => {
-  it("calls GET /deals/summary", async () => {
-    const fetchMock = stubFetch({
+  function summaryBody(overrides: Record<string, unknown> = {}) {
+    return {
       pipeline_value_minor: 1,
       weighted_pipeline_minor: 1,
       open_deals: 1,
@@ -389,12 +396,30 @@ describe("getSummary", () => {
       won_value_minor: 0,
       activities_this_week: 3,
       currency: "INR",
-      trend: [],
+      trend: null,
       funnel: [],
-    });
+      ...overrides,
+    };
+  }
+
+  it("calls GET /deals/summary with no query when unscoped", async () => {
+    const fetchMock = stubFetch(summaryBody());
     const result = await getSummary();
     expect(requestedUrl(fetchMock)).toBe("/api/v1/deals/summary");
     expect(result.activities_this_week).toBe(3);
+    expect(result.trend).toBeNull();
+  });
+
+  it("passes owner=me for the 'My pipeline' toggle", async () => {
+    const fetchMock = stubFetch(summaryBody());
+    await getSummary({ owner: "me" });
+    expect(requestedUrl(fetchMock)).toBe("/api/v1/deals/summary?owner=me");
+  });
+
+  it("passes owner_id when a specific rep is named", async () => {
+    const fetchMock = stubFetch(summaryBody());
+    await getSummary({ ownerId: "own-1" });
+    expect(requestedUrl(fetchMock)).toBe("/api/v1/deals/summary?owner_id=own-1");
   });
 });
 
