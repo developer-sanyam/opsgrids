@@ -1569,32 +1569,33 @@ figure until this release is actually deployed — read `make edge-status` and t
 "How to read the box" for the box's own live numbers, always, before writing a ceiling.
 
 ### The owner decision: `EDGE_BUDGET_ACCEPTED_MB` (B2, review round 2; restated round 3; the
-worker-folding follow-up moved the ten-profile figure under the hard line, 2026-09-24)
+worker-folding follow-up moved the ten-profile figure under the hard line, 2026-09-24; ADR-0020's
+`insights` container added 99 MB to both figures below, 2026-09-25)
 
-**The ten profiles alone no longer need a ceiling.** At 3747 MB / 97.0% they are under the 100%
+**The ten profiles alone no longer need a ceiling.** At 3846 MB / 99.6% they are under the 100%
 hard line (though still over the 85% soft one — `preflight` warns, and proceeds, with no
 `EDGE_BUDGET_ACCEPTED_MB` set at all). If the owner wants an explicit ceiling anyway, silencing
 the warn rather than reading past it on every deploy, the ten-profile figure alone is
-`EDGE_BUDGET_ACCEPTED_MB=3747` — but nothing requires it now. A ceiling is only a live question
+`EDGE_BUDGET_ACCEPTED_MB=3846` — but nothing requires it now. A ceiling is only a live question
 again once something is added on top — the `admin` profile (admin-gateway + console, console-worker folded into console
 the same way this release folds the ten product workers in: +98 + 99 = 197 MB) brings the total to
-**3944 MB / 102.1%** — just over the hard line — or once enough of the `planned` backlog above
+**4043 MB / 104.7%** — over the hard line — or once enough of the `planned` backlog above
 lands. Nothing in a repository can shrink either scenario to fit on its own; what can change is
 which of three things the owner chooses:
 
 1. **Resize the VM** — the only option that adds headroom rather than redistributing it. The
    memory erratum (ADR-0013) recorded that the owner would not resize this box; worth asking again
-   now that ten profiles plus `admin` is only 82 MB over the hard line (102.1%) and comfortably
+   now that ten profiles plus `admin` is 181 MB over the hard line (104.7%) and comfortably
    under the 125% cap (4827 MB) either way. An 8 GB VM (~7.7 GB MemTotal) puts the ten profiles
-   near 49% and the whole planned backlog near 82%.
+   near 50% and the whole planned backlog well under it.
 2. **De-list products** — drop their profiles from `COMPOSE_PROFILES`, *after* confirming with the
    catalogue that no organization has a live activation of them (preflight refuses otherwise: a
    paying customer would lose their product). The "adds" column above is what each one frees.
 3. **Accept a deliberate overcommit** — set `EDGE_BUDGET_ACCEPTED_MB` in `.env` to the number
    preflight's own projection printed for the deploy actually being made (ten profiles plus
-   `admin`: `EDGE_BUDGET_ACCEPTED_MB=3944`), *after reading it*. Understand what it means: the
-   working set exceeds RAM by a little (82 MB at 102.1%), the kernel decides which pages live in
-   swap, and the box swaps a little more than it otherwise would. A deploy over the hard line then
+   `admin`: `EDGE_BUDGET_ACCEPTED_MB=4043`), *after reading it*. Understand what it means: the
+   working set exceeds RAM (181 MB at 104.7%), the kernel decides which pages live in
+   swap, and the box swaps more than it otherwise would. A deploy over the hard line then
    warns, loudly, naming the overcommit in MB and to one decimal, instead of refusing; a deploy
    asking for even one MB more than the ceiling still refuses.
 

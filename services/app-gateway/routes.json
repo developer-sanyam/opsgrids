@@ -85,6 +85,8 @@
     { "prefix": "/api/v1/itsm", "upstream": "http://localhost:8173", "product": "itsm" },
 
     { "prefix": "/api/v1/storefront/public", "upstream": "http://localhost:8174" },
-    { "prefix": "/api/v1/storefront", "upstream": "http://localhost:8174", "product": "storefront" }
+    { "prefix": "/api/v1/storefront", "upstream": "http://localhost:8174", "product": "storefront" },
+
+    { "prefix": "/api/v1/insights", "upstream": "http://localhost:8175" }
   ]
 }

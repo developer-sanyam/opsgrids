@@ -178,6 +178,10 @@ async def create_organization(
             "name": org.name,
             "timezone": org.timezone,
             "currency": org.currency,
+            # ADR-0020 §6/I1: insights' `org_profile` fold needs this to bucket a fresh
+            # organization's flows correctly from its very first event, without a
+            # `core.org.updated` ever having to arrive first.
+            "fiscal_year_start_month": org.fiscal_year_start_month,
             "country": org.country,
             "status": org.status,
             # Added for console's identity fold (`app/domain.py::apply_org_identity`) so a
@@ -233,6 +237,14 @@ async def update_organization(
             # all: it is fixed at `create_organization` and immutable thereafter.
             "name": org.name if "name" in changes else None,
             "country": org.country if "country" in changes else None,
+            # ADR-0020 §6/I1: unlike `name`/`country` above, these three ride on *every*
+            # `core.org.updated` regardless of what changed — insights' `org_profile` fold
+            # (and any other projection bucketing by the organization's local day or
+            # currency) converges on the next event without ever reading account back for a
+            # value this patch left untouched.
+            "timezone": org.timezone,
+            "currency": org.currency,
+            "fiscal_year_start_month": org.fiscal_year_start_month,
         },
         actor=_actor(ctx),
     )

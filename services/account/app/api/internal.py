@@ -33,6 +33,7 @@ appear in the customer-facing OpenAPI document.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -43,6 +44,9 @@ from sqlalchemy.orm import selectinload
 from app import selectors
 from app.models import Membership, MembershipRole, Organization, OrgDomain, User
 from app.schemas import (
+    OrganizationExportCursorOut,
+    OrganizationExportPageOut,
+    OrganizationExportRowOut,
     OrganizationMemberCountOut,
     OrganizationMemberCountsOut,
     OrganizationsPageOut,
@@ -51,7 +55,12 @@ from app.schemas import (
 from platform_core.auth import require_service_token
 from platform_core.cache import current_permission_version
 from platform_core.db import get_directory_session
-from platform_core.errors import ForbiddenProblem, NotFoundProblem, UnauthorizedProblem
+from platform_core.errors import (
+    ForbiddenProblem,
+    NotFoundProblem,
+    ProblemError,
+    UnauthorizedProblem,
+)
 from platform_core.logging import get_logger
 
 log = get_logger("account.internal")
@@ -283,6 +292,73 @@ async def organization_member_counts(
             OrganizationMemberCountOut(organization_id=org_id, count=count)
             for org_id, count in counts.items()
         ]
+    )
+
+
+#: insights' backfill runner and hourly snapshot sweep discover which organizations exist from
+#: this route alone (ADR-0020 §3, §6.2) — a second bulk cross-tenant surface, narrower than
+#: `TRUSTED_BULK_CALLER`'s: no name, slug or domain leaves account here, only the settings a
+#: projection needs to interpret dates and money. Its own caller check rather than widening
+#: `require_console_caller` to cover both, for the same reason `membership_lookup` below keeps
+#: its own: "any service holding an account-audience token" is already wider than this file's
+#: four-route docstring commits to, and a bulk organization listing should not get wider still
+#: by accident the next time a caller is added here.
+TRUSTED_INSIGHTS_CALLER = "insights"
+
+
+def require_insights_caller(request: Request) -> None:
+    """The narrower caller check: valid and addressed to account (`require_service_token`,
+    applied to the whole router, already checked that) and issued by insights specifically."""
+    caller = getattr(request.state, "service_caller", None)
+    if caller != TRUSTED_INSIGHTS_CALLER:
+        raise UnauthorizedProblem("Valid service token required")
+
+
+InsightsCallerDep = Annotated[None, Depends(require_insights_caller)]
+
+
+@router.get(
+    "/organizations/export",
+    response_model=OrganizationExportPageOut,
+    summary="Every organization's tenant profile, paginated — insights' backfill discovery read",
+)
+async def organizations_export(
+    session: SessionDep,
+    _insights: InsightsCallerDep,
+    after_updated_at: Annotated[datetime | None, Query()] = None,
+    after_id: Annotated[uuid.UUID | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 500,
+) -> OrganizationExportPageOut:
+    """ADR-0020 §3's org export: `organization_id`, `timezone`, `currency`,
+    `fiscal_year_start_month`, `status` and `updated_at`, and only these — the backfill runner's
+    tenant-discovery read, and the hourly snapshot sweep's, and nothing else this route.
+
+    Keyset on `(updated_at, id)` rather than `organizations_page_stmt`'s plain `id`: this is the
+    same two-column cursor every source's own `/internal/v1/insights/export/{entity}` route uses
+    (`docs/insights/api.md` §6.1), so a page insights has already read and a live
+    `core.org.updated` event agree on what "next" means. `next` is `null` once there is nothing
+    left; the caller keeps requesting with the last row's own `(updated_at, id)` until it does.
+    """
+    if (after_updated_at is None) != (after_id is None):
+        raise ProblemError("after_updated_at and after_id must be given together")
+    rows = (
+        (
+            await session.execute(
+                selectors.organizations_export_stmt(
+                    after_updated_at=after_updated_at, after_id=after_id, limit=limit
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    next_cursor = (
+        OrganizationExportCursorOut(after_updated_at=rows[-1].updated_at, after_id=rows[-1].id)
+        if len(rows) == limit
+        else None
+    )
+    return OrganizationExportPageOut(
+        rows=[OrganizationExportRowOut.model_validate(row) for row in rows], next=next_cursor
     )
 
 

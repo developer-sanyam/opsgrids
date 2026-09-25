@@ -28,7 +28,7 @@ from collections.abc import Sequence
 from alembic import op
 from sqlalchemy import text as sa_text
 
-revision: str = "5cead06f3d54"
+revision: str = "5cead06f3d54"  # pragma: allowlist secret
 down_revision: str | None = "db131f3cf5a1"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

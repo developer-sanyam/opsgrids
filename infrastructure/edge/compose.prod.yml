@@ -788,7 +788,7 @@ services:
     command: ['python', '-m', 'platform_core.edge_relay']
     environment:
       <<: *service-env
-      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,leave,customer,deal,lead,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm,console}
+      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,leave,customer,deal,lead,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm,console,insights}
     depends_on:
       product:
         condition: service_started
@@ -848,7 +848,7 @@ services:
       RABBITMQ_URL: amqp://opsgrids:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       MALLOC_ARENA_MAX: '2'
       MALLOC_TRIM_THRESHOLD_: '131072'
-      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,leave,customer,deal,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm,console}
+      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,leave,customer,deal,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm,console,insights}
       # B1 (round 2): the same variable docker compose itself already reads to decide which
       # containers to start — one source of truth for "what does this box run", so
       # OpsMonitorSettings can derive exactly which API containers/DLQ queues SHOULD exist
@@ -1162,6 +1162,41 @@ services:
     image: opsgrids-edge/notification
     command: ['./bin/worker']
     environment: *notification-env
+
+  # ---------------------------------------------------------------- insights (ADR-0020)
+  # The cross-product projection behind the role dashboards: `/api/v1/insights/*`, a **leaf** —
+  # no service ever calls it, only the SPAs read it, so its failure degrades dashboards and
+  # nothing else. Core (`profile: null`), like `account` and `notification` above: the tenant
+  # home serves every organization, whatever it has activated.
+  #
+  # `RUN_CONSUMERS_IN_API` (on by default, `x-service-env` above) folds all three of its loops —
+  # the event consumer, the hourly snapshot sweep and the backfill runner — into this one API
+  # process (`services/insights/app/main.py`), priced at the measured `api_with_worker` kind.
+  # Replaces `memory-budget.json`'s `planned.insights-api` placeholder; `insights-worker` below
+  # is the `split-workers` rollback, the same shape every other folded service uses.
+  insights:
+    <<: *service-common
+    stop_grace_period: 30s
+    image: opsgrids-edge/insights
+    build:
+      context: ../..
+      dockerfile: services/insights/Dockerfile
+    environment:
+      <<: *service-env
+      ACCOUNT_SERVICE_URL: http://account:8000
+    networks:
+      - back
+
+  # `bin/worker` runs all three of insights' own loops standalone — see `insights`'s own
+  # comment above. Off by default; the rollback behind the box-wide `split-workers` profile.
+  insights-worker:
+    <<: *background
+    profiles: ['split-workers']
+    image: opsgrids-edge/insights
+    command: ['./bin/worker']
+    environment:
+      <<: *service-env
+      ACCOUNT_SERVICE_URL: http://account:8000
 
   # ---------------------------------------------------------------- document (platform asset store; ADR-0009)
   # `/api/v1/documents` carries no `product` key in routes.prod.json — the same shape as

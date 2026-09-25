@@ -752,6 +752,84 @@ class TestOrganizationsBulkList:
         assert "/internal/v1/organizations" not in schema["paths"]
 
 
+class TestOrganizationsExport:
+    """`services/insights/app/account_client.py`'s tenant-discovery read (ADR-0020 §3, §6.2):
+    only the settings a projection needs, for trusted caller `insights` alone."""
+
+    async def test_it_needs_a_service_token(self, client: AsyncClient) -> None:
+        assert (await client.get("/internal/v1/organizations/export")).status_code == 401
+
+    async def test_a_caller_other_than_insights_is_refused(self, client: AsyncClient) -> None:
+        response = await client.get(
+            "/internal/v1/organizations/export", headers=internal_as("console")
+        )
+        assert response.status_code == 401
+
+    async def test_insights_sees_the_seeded_organization_s_profile_only(
+        self, client: AsyncClient, org: Organization
+    ) -> None:
+        response = await client.get(
+            "/internal/v1/organizations/export", headers=internal_as("insights")
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        row = next(r for r in body["rows"] if r["organization_id"] == str(org.id))
+        assert row["timezone"] == "Asia/Kolkata"
+        assert row["currency"] == "INR"
+        assert row["fiscal_year_start_month"] == 4
+        assert row["status"] == "trial"
+        assert "updated_at" in row
+        # No name, slug or domain leaves account on this route.
+        assert set(row) == {
+            "organization_id",
+            "timezone",
+            "currency",
+            "fiscal_year_start_month",
+            "status",
+            "updated_at",
+        }
+
+    async def test_keyset_pagination_terminates_with_a_null_cursor(
+        self, client: AsyncClient, admin_session: AsyncSession, org: Organization
+    ) -> None:
+        from app.schemas import OrganizationIn
+
+        async with admin_session.begin():
+            await services.create_organization(
+                admin_session,
+                OrganizationIn(name="Second Org", slug="second-org"),
+                actor_user_id=None,
+            )
+
+        first = await client.get(
+            "/internal/v1/organizations/export",
+            params={"limit": 1},
+            headers=internal_as("insights"),
+        )
+        assert first.status_code == 200
+        page = first.json()
+        assert len(page["rows"]) == 1
+        assert page["next"] is not None
+
+        second = await client.get(
+            "/internal/v1/organizations/export",
+            params={
+                "limit": 1,
+                "after_updated_at": page["next"]["after_updated_at"],
+                "after_id": page["next"]["after_id"],
+            },
+            headers=internal_as("insights"),
+        )
+        assert second.status_code == 200
+        second_page = second.json()
+        assert len(second_page["rows"]) == 1
+        assert second_page["rows"][0]["organization_id"] != page["rows"][0]["organization_id"]
+
+    async def test_the_route_is_absent_from_the_public_schema(self, client: AsyncClient) -> None:
+        schema = (await client.get("/openapi.json")).json()
+        assert "/internal/v1/organizations/export" not in schema["paths"]
+
+
 def _role(code: str, permission: str, scope: str):
     return RoleIn(
         code=code,

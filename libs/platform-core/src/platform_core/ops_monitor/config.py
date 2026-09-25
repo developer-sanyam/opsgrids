@@ -56,6 +56,7 @@ CORE_API_CONTAINERS: Final[tuple[str, ...]] = (
     "metering",
     "payment",
     "notification",
+    "insights",
 )
 
 #: The consumer queues the always-on workers bind (`compose.prod.yml`'s `profile: null`
@@ -67,6 +68,7 @@ CORE_DLQ_QUEUES: Final[tuple[str, ...]] = (
     "payment.events",
     "notification.events",
     "notification.dispatch",
+    "insights.events",
 )
 
 #: B1/m6: which API containers exist for a given `COMPOSE_PROFILES` entry — the same

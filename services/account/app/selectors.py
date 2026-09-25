@@ -18,9 +18,10 @@ and the shared helper deliberately refuses to guess at that shape.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import Select, false, func, or_, select
+from sqlalchemy import Select, false, func, literal, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import contains_eager, selectinload
 
@@ -71,6 +72,29 @@ def organizations_page_stmt(*, cursor: uuid.UUID | None, limit: int) -> Select[A
     if cursor is not None:
         stmt = stmt.where(Organization.id > cursor)
     return stmt.order_by(Organization.id).limit(limit)
+
+
+def organizations_export_stmt(
+    *, after_updated_at: datetime | None, after_id: uuid.UUID | None, limit: int
+) -> Select[Any]:
+    """Keyset page of every live organization's tenant profile, in `(updated_at, id)` order —
+    insights' backfill discovery read (`GET /internal/v1/organizations/export`,
+    ADR-0020 §3, §6.2).
+
+    `(updated_at, id)`, not plain `id` like `organizations_page_stmt` above: this is the same
+    two-column tuple ordering every source's own `/internal/v1/insights/export/{entity}` route
+    uses, so a page and a live `core.org.updated` event agree on what "next" means and a
+    concurrent edit can only ever move a row later in the page order, never off it silently.
+    `console.selectors.audit_log_page`'s `tuple_(...)` comparison is the same shape, ordered the
+    other way.
+    """
+    stmt = select(Organization).where(Organization.deleted_at.is_(None))
+    if after_updated_at is not None and after_id is not None:
+        stmt = stmt.where(
+            tuple_(Organization.updated_at, Organization.id)
+            > tuple_(literal(after_updated_at), literal(after_id))
+        )
+    return stmt.order_by(Organization.updated_at, Organization.id).limit(limit)
 
 
 async def member_counts_by_organization(session: AsyncSession) -> dict[uuid.UUID, int]:

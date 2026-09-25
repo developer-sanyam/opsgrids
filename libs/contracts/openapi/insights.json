@@ -1,0 +1,1309 @@
+{
+  "components": {
+    "schemas": {
+      "ActivityAmountOut": {
+        "properties": {
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "value",
+          "currency"
+        ],
+        "title": "ActivityAmountOut",
+        "type": "object"
+      },
+      "ActivityItemOut": {
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActivityAmountOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "mine": {
+            "title": "Mine",
+            "type": "boolean"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "product_key": {
+            "title": "Product Key",
+            "type": "string"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/ActivitySubjectOut"
+          }
+        },
+        "required": [
+          "id",
+          "occurred_at",
+          "product_key",
+          "kind",
+          "subject",
+          "mine"
+        ],
+        "title": "ActivityItemOut",
+        "type": "object"
+      },
+      "ActivityOut": {
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ActivityItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "as_of"
+        ],
+        "title": "ActivityOut",
+        "type": "object"
+      },
+      "ActivitySubjectOut": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "id"
+        ],
+        "title": "ActivitySubjectOut",
+        "type": "object"
+      },
+      "ComparisonOut": {
+        "properties": {
+          "anchor_day": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchor Day"
+          },
+          "delta_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta Pct"
+          },
+          "delta_pp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta Pp"
+          },
+          "state": {
+            "enum": [
+              "ok",
+              "no_baseline",
+              "insufficient_history"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "ComparisonOut",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "MetricOut": {
+        "description": "One entry of `SummaryOut.metrics` (`docs/insights/api.md` \u00a73).\n\nEvery field below `state` is `None` unless the widget is `\"ok\"` \u2014 a `no_access` or\n`not_active` entry carries only `state` (and, for `not_active`, `product_key`), exactly as\n`docs/insights/api.md`'s own `\"customers\": {\"state\": \"no_access\"}` example shows.",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "comparison": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ComparisonOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "history_from": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "History From"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "flow",
+                  "state",
+                  "percent",
+                  "current"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "other_currencies": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OtherCurrencyValueOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Other Currencies"
+          },
+          "product_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Product Key"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ORG",
+                  "OWN"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
+          "state": {
+            "enum": [
+              "ok",
+              "not_active",
+              "no_access",
+              "insufficient_history",
+              "unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "enum": [
+                  "money",
+                  "count",
+                  "percent"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "MetricOut",
+        "type": "object"
+      },
+      "OtherCurrencySeriesOut": {
+        "properties": {
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/SeriesPointOut"
+            },
+            "title": "Points",
+            "type": "array"
+          }
+        },
+        "required": [
+          "currency",
+          "points"
+        ],
+        "title": "OtherCurrencySeriesOut",
+        "type": "object"
+      },
+      "OtherCurrencyValueOut": {
+        "properties": {
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "currency",
+          "value"
+        ],
+        "title": "OtherCurrencyValueOut",
+        "type": "object"
+      },
+      "PeriodOut": {
+        "description": "A resolved window, echoed back so the SPA never computes a date itself\n(`docs/insights/api.md` \u00a72).",
+        "properties": {
+          "from": {
+            "format": "date",
+            "title": "From",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "to": {
+            "format": "date",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "from",
+          "to",
+          "label"
+        ],
+        "title": "PeriodOut",
+        "type": "object"
+      },
+      "RankingRowOut": {
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "person_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Person Ref"
+          },
+          "product_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Product Ref"
+          },
+          "values": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Values",
+            "type": "object"
+          }
+        },
+        "required": [
+          "values"
+        ],
+        "title": "RankingRowOut",
+        "type": "object"
+      },
+      "RankingsOut": {
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "board": {
+            "title": "Board",
+            "type": "string"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PeriodOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "product_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Product Key"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/RankingRowOut"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ORG",
+                  "OWN"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
+          "state": {
+            "enum": [
+              "ok",
+              "not_active",
+              "no_access",
+              "insufficient_history",
+              "unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "as_of",
+          "board",
+          "state"
+        ],
+        "title": "RankingsOut",
+        "type": "object"
+      },
+      "SeriesOut": {
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "grain": {
+            "enum": [
+              "day",
+              "week",
+              "month"
+            ],
+            "title": "Grain",
+            "type": "string"
+          },
+          "history_from": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "History From"
+          },
+          "metric": {
+            "title": "Metric",
+            "type": "string"
+          },
+          "other_currencies": {
+            "items": {
+              "$ref": "#/components/schemas/OtherCurrencySeriesOut"
+            },
+            "title": "Other Currencies",
+            "type": "array"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/SeriesPointOut"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "product_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Product Key"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ORG",
+                  "OWN"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
+          "state": {
+            "enum": [
+              "ok",
+              "not_active",
+              "no_access",
+              "insufficient_history",
+              "unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "enum": [
+                  "money",
+                  "count",
+                  "percent"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          }
+        },
+        "required": [
+          "as_of",
+          "timezone",
+          "metric",
+          "state",
+          "grain"
+        ],
+        "title": "SeriesOut",
+        "type": "object"
+      },
+      "SeriesPointOut": {
+        "properties": {
+          "complete": {
+            "default": true,
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "end": {
+            "format": "date",
+            "title": "End",
+            "type": "string"
+          },
+          "start": {
+            "format": "date",
+            "title": "Start",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "values": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Values"
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ],
+        "title": "SeriesPointOut",
+        "type": "object"
+      },
+      "SummaryOut": {
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "comparison": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PeriodOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "metrics": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/MetricOut"
+            },
+            "title": "Metrics",
+            "type": "object"
+          },
+          "period": {
+            "$ref": "#/components/schemas/PeriodOut"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "as_of",
+          "timezone",
+          "currency",
+          "period",
+          "metrics"
+        ],
+        "title": "SummaryOut",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "The cross-product insights projection behind the role dashboards (ADR-0020): a read-only, per-organization history of what the source services only ever hold as current state. A leaf \u2014 no service ever calls it, and it reads no other schema directly, only each source's own internal export route. I1: the schema, tenancy, the API shell (every widget returns its real state; no figures until I2-I9 land their own fact tables), the resumable backfill runner and the hourly snapshot sweep.",
+    "title": "Insights service",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/insights/activity": {
+      "get": {
+        "description": "No fact table exists yet to union over (ADR-0020 build plan, I2-I7), so this always\nanswers the honest empty page: `items: []`, no cursor. The gate is still real \u2014 a caller's\nadmitted kinds are computed the same way I2+'s query will filter on them\n(`selectors.visible_activity_kinds`) \u2014 nothing here waits on a fact table to be correct.",
+        "operationId": "activity_api_v1_insights_activity_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "products",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Products"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cross-product recent activity",
+        "tags": [
+          "insights"
+        ]
+      }
+    },
+    "/api/v1/insights/rankings": {
+      "get": {
+        "operationId": "rankings_api_v1_insights_rankings_get",
+        "parameters": [
+          {
+            "description": "sales_reps|task_assignees|enquired_products",
+            "in": "query",
+            "name": "board",
+            "required": true,
+            "schema": {
+              "description": "sales_reps|task_assignees|enquired_products",
+              "title": "Board",
+              "type": "string"
+            }
+          },
+          {
+            "description": "today|this_week|this_month|this_quarter|last_30_days|last_month|custom",
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "default": "this_month",
+              "description": "today|this_week|this_month|this_quarter|last_30_days|last_month|custom",
+              "title": "Period",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 5,
+              "maximum": 10,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RankingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Team performance and top items",
+        "tags": [
+          "insights"
+        ]
+      }
+    },
+    "/api/v1/insights/series": {
+      "get": {
+        "operationId": "series_api_v1_insights_series_get",
+        "parameters": [
+          {
+            "description": "one metric key",
+            "in": "query",
+            "name": "metric",
+            "required": true,
+            "schema": {
+              "description": "one metric key",
+              "title": "Metric",
+              "type": "string"
+            }
+          },
+          {
+            "description": "day|week|month",
+            "in": "query",
+            "name": "grain",
+            "required": true,
+            "schema": {
+              "description": "day|week|month",
+              "title": "Grain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "format": "date",
+              "title": "From",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "format": "date",
+              "title": "To",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "breakdown",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Breakdown"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeriesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One metric over time",
+        "tags": [
+          "insights"
+        ]
+      }
+    },
+    "/api/v1/insights/summary": {
+      "get": {
+        "operationId": "summary_api_v1_insights_summary_get",
+        "parameters": [
+          {
+            "description": "comma-separated metric keys, 1-16",
+            "in": "query",
+            "name": "metrics",
+            "required": true,
+            "schema": {
+              "description": "comma-separated metric keys, 1-16",
+              "title": "Metrics",
+              "type": "string"
+            }
+          },
+          {
+            "description": "today|this_week|this_month|this_quarter|last_30_days|last_month|custom",
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "default": "this_month",
+              "description": "today|this_week|this_month|this_quarter|last_30_days|last_month|custom",
+              "title": "Period",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "description": "previous_period|same_period_last_year|none",
+            "in": "query",
+            "name": "compare",
+            "required": false,
+            "schema": {
+              "default": "previous_period",
+              "description": "previous_period|same_period_last_year|none",
+              "title": "Compare",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SummaryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "KPI values and their comparisons",
+        "tags": [
+          "insights"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Health Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Liveness \u2014 is the process up?",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/outbox": {
+      "get": {
+        "description": "How far behind the relay is. **Alert on `oldest_seconds`.**\n\nA stalled relay is the platform's quietest failure. It selects, finds nothing,\nlogs nothing, sleeps, and loops \u2014 `attempts` never increments and `last_error`\nstays null, so the process looks healthy indefinitely while the outbox grows\nwithout bound and every consumer downstream starves.\n\nDeliberately **not** part of readiness. A backlog is not a reason to take the\nservice out of rotation: refusing traffic would stop new events being written\nwithout helping drain the ones already queued, which makes the incident worse.\nThis is a metric to alert on, not a health state.\n\nCounted through the outbox engine, not the application one. The app role is\nNOBYPASSRLS and this request binds no tenant, so through it `pending` would be\nzero whatever the table holds \u2014 the probe that exists to expose the stall would\nbe wired to the same blind spot that causes it.",
+        "operationId": "outbox_health_outbox_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Outbox Health Outbox Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Outbox depth and age \u2014 scrape this",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "description": "Route traffic on this; restart on /health.\n\nConflating the two restarts a healthy process that is merely waiting on a\ndependency.\n\nOnly the dependencies a service actually declares are checked. A gateway owns no\ntables, so asking it for a database is asking a question whose answer means nothing\n\u2014 and a readiness probe that reports on something the service does not use is worse\nthan no probe, because it will eventually fail for a reason nobody can act on.",
+        "operationId": "ready_health_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Ready Health Ready Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readiness \u2014 can it serve traffic?",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "description": "Reachable only on the compose `back` network (`tests/infra`'s\n`test_metrics_never_routed.py` is the lint that keeps it that way) \u2014 never behind\nCaddy or a gateway, the same rule `ops_monitor`'s own `/metrics` follows.\n\n`db_pool_in_use` is always reported when this service has a database; the three\noutbox gauges only when `outbox_model` is configured \u2014 same gate as `/health/outbox`,\nand the same reason: an app-role connection with no tenant bound sees zero rows.",
+        "operationId": "metrics_metrics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Prometheus text exposition",
+        "tags": [
+          "health"
+        ]
+      }
+    }
+  }
+}

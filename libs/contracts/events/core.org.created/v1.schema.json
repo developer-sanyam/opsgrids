@@ -2,8 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "opsgrids://contracts/core.org.created/v1",
   "title": "core.org.created",
-  "description": "An organization was created (signup or operator). Carries the settings a projection needs to interpret dates and money for it: `timezone` (IANA; account defaults it to Asia/Kolkata), `currency`, and `fiscal_year_start_month` (1-12; account defaults it to 4, April).",
-  "$comment": "Ahead of the producer (ADR-0020 slice I1): services/account/app/services.py:create_organization does not emit fiscal_year_start_month yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
+  "description": "An organization was created (signup or operator). Carries the settings a projection needs to interpret dates and money for it: `timezone` (IANA; account defaults it to Asia/Kolkata), `currency`, and `fiscal_year_start_month` (1-12; account defaults it to 4, April). `created_at` is the row's own creation instant, for a projection (console's identity fold, insights' `org_profile`) that has no other route back to account's schema (ADR-0000 §10: no cross-schema reads).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -14,7 +13,8 @@
     "currency",
     "fiscal_year_start_month",
     "country",
-    "status"
+    "status",
+    "created_at"
   ],
   "properties": {
     "organization_id": { "type": "string", "format": "uuid" },
@@ -24,6 +24,7 @@
     "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
     "fiscal_year_start_month": { "type": "integer", "minimum": 1, "maximum": 12 },
     "country": { "type": ["string", "null"] },
-    "status": { "type": "string", "minLength": 1 }
+    "status": { "type": "string", "minLength": 1 },
+    "created_at": { "type": "string", "format": "date-time" }
   }
 }

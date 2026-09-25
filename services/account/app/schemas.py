@@ -165,6 +165,42 @@ class OrganizationsPageOut(BaseModel):
     next_cursor: uuid.UUID | None
 
 
+class OrganizationExportRowOut(BaseModel):
+    """One row of `GET /internal/v1/organizations/export` — insights' tenant discovery read
+    (ADR-0020 §3, §6.2), never account's own OpenAPI: that router is excluded from the document
+    in its entirety.
+
+    Deliberately narrower than `OrganizationSummaryOut`: only what a projection needs to
+    interpret dates and money for an organization it holds no other row for. No name, slug or
+    domain leaves account on this route — `insights.org_profile`
+    (`docs/insights/data-model.md` §2) has no column for any of them.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    organization_id: uuid.UUID = Field(validation_alias="id")
+    timezone: str
+    currency: str
+    fiscal_year_start_month: int
+    status: str
+    updated_at: datetime
+
+
+class OrganizationExportCursorOut(BaseModel):
+    after_updated_at: datetime
+    after_id: uuid.UUID
+
+
+class OrganizationExportPageOut(BaseModel):
+    """A keyset page on `(updated_at, id)`, the shape every source's own
+    `GET /internal/v1/insights/export/{entity}` uses (`docs/insights/api.md` §6.1) — `next` is
+    `null` once there is nothing left, and the caller keeps requesting with
+    `after_updated_at=next.after_updated_at&after_id=next.after_id` until it does."""
+
+    rows: list[OrganizationExportRowOut]
+    next: OrganizationExportCursorOut | None
+
+
 class OrganizationMemberCountOut(BaseModel):
     organization_id: uuid.UUID
     count: int

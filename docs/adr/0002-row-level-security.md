@@ -500,3 +500,25 @@ vector. Scoping uniqueness per tenant with no verified lock, under which two org
 each hold the same verified domain and SSO routing would become ambiguous.
 
 **Consequences.** Nothing is left to build.
+
+## A fifth cross-tenant read: insights' organization export (2026-09-25, ADR-0020 slice I1)
+
+`GET /internal/v1/organizations/export` on account joins the enumerated bypass paths above,
+following the same `opsgrids_directory` (BYPASSRLS, SELECT-only) session `list_organizations`
+(console's own bulk read, itself added after this ADR's original four) already uses. It is
+narrower than that one: only `organization_id`, `timezone`, `currency`,
+`fiscal_year_start_month`, `status` and `updated_at` leave account, for trusted caller
+`insights` alone, keyset-paginated on `(updated_at, id)`. No name, slug or domain travels on it.
+
+**Why a bypass rather than a tenant-scoped loop.** Insights' backfill runner and hourly
+snapshot sweep both need to enumerate *every* organization before any one of them is chosen —
+the same shape `user_by_email` answers before an organization exists, applied to "which tenants
+does this box serve" instead of "which tenants does this person belong to". There is no tenant
+to bind a transaction-local GUC to while asking that question, so the chokepoint (§1) does not
+apply, and the narrow, column-limited bypass is the honest mechanism rather than a per-tenant
+loop that would need one already.
+
+**Blast radius.** `opsgrids_directory` already reads this far across every organization for
+`list_organizations`; this route adds no new privilege to that role, only a second, narrower
+query shape a different trusted caller may reach. See
+`services/account/app/api/internal.py:require_insights_caller`.
