@@ -132,7 +132,11 @@ function RevenueTile({
   return (
     <MetricCard
       label="Monthly Revenue"
-      value={formatMoney(overview.data?.mrr_minor ?? 0, overview.data?.currency ?? "INR")}
+      // Compact ("₹13.2L"), not the full grouped figure ("₹13,24,200") — the mockup's own
+      // "₹12,48,320" only fits because its sidebar is narrower than this console's; the exact
+      // figure is still one hover away wherever a caller needs it (Money on the account table,
+      // the Overview API response itself).
+      value={formatMoney(overview.data?.mrr_minor ?? 0, overview.data?.currency ?? "INR", { compact: true })}
       icon={<WalletIcon className="size-5" />}
       tone="accent"
       {...(revenueDelta !== null ? { trend: { value: revenueDelta, period: "vs last month" } } : {})}
@@ -140,7 +144,10 @@ function RevenueTile({
   );
 }
 
-const GRID = "grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-6";
+// 6-up needs real width per card to keep every label on one line ("Suspended Accounts") —
+// more than 1280px with the sidebar leaves. 3×2 from `lg` (1024px, where the sidebar itself
+// appears) through `xl` (1280px), 6-up only once there is room for it again at `2xl` (1536px).
+const GRID = "grid grid-cols-2 gap-4 md:grid-cols-4 lg:grid-cols-3 2xl:grid-cols-6";
 
 export function KpiRow({ orgs, overview, series, canSeeRevenue }: KpiRowProps) {
   if (orgs.status === "loading") {

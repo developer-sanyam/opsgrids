@@ -30,6 +30,21 @@ interface DonutChartProps {
    * both fighting the default ring for room start truncating a label to a single letter.
    */
   size?: "md" | "sm" | undefined;
+  /**
+   * Show each slice's value beside its share in the visible legend. Default on. Turn it off where
+   * the value is long enough to crowd the label out — a rupee figure beside a product name in a
+   * narrow card — and it still reaches a sighted user through the row's `title`, and every user of
+   * assistive technology through the data table below, which always carries value and share
+   * regardless of this prop.
+   */
+  showValue?: boolean | undefined;
+  /**
+   * `row` (default) sits the ring beside the legend from 640px and stacks them below it, the same
+   * breakpoint every other chart's legend uses. `stacked` never sits them side by side, whatever
+   * the viewport — for a card that is narrow itself even on a wide screen (three donut-ish cards
+   * sharing one dashboard row at 1280px), where "640px" describes the window, not the column.
+   */
+  layout?: "row" | "stacked" | undefined;
   className?: string | undefined;
 }
 
@@ -54,6 +69,8 @@ export function DonutChart({
   centerValue,
   centerLabel = "Total",
   size = "md",
+  showValue = true,
+  layout = "row",
   className,
 }: DonutChartProps) {
   const values = slices.map((slice) => slice.value);
@@ -63,7 +80,7 @@ export function DonutChart({
   const tones = slices.map((slice, index) => seriesTone(index, slice.tone));
 
   return (
-    <figure className={cn("m-0 flex flex-col items-center gap-6 sm:flex-row", className)}>
+    <figure className={cn("m-0 flex flex-col items-center gap-6", layout === "row" && "sm:flex-row", className)}>
       <div aria-hidden className={cn("relative shrink-0", RING[size])}>
         <svg viewBox="0 0 120 120" className="size-full -rotate-90">
           <circle cx="60" cy="60" r={RADIUS} fill="none" strokeWidth="14" className="stroke-ground" />
@@ -88,13 +105,20 @@ export function DonutChart({
           <span className="text-xs text-muted">{centerLabel}</span>
         </div>
       </div>
-      <ul aria-hidden className="flex w-full min-w-0 flex-1 flex-col gap-3 sm:max-w-sm">
+      <ul
+        aria-hidden
+        className={cn("flex w-full min-w-0 flex-1 flex-col gap-3", layout === "row" && "sm:max-w-sm")}
+      >
         {slices.map((slice, index) => (
-          <li key={slice.key} className="flex items-center gap-2 text-sm">
+          <li
+            key={slice.key}
+            className="flex items-center gap-2 text-sm"
+            title={showValue ? undefined : formatValue(slice.value)}
+          >
             <span className={cn("size-2.5 shrink-0 rounded-full", SERIES_TONE[tones[index] ?? "accent"].swatch)} />
             <span className="min-w-0 flex-1 truncate text-ink-soft">{slice.label}</span>
-            <span className="tnum font-semibold text-ink">{formatValue(slice.value)}</span>
-            <span className="tnum w-10 text-right text-muted">{shares[index]}%</span>
+            {showValue ? <span className="tnum font-semibold text-ink">{formatValue(slice.value)}</span> : null}
+            <span className="tnum w-10 shrink-0 text-right text-muted">{shares[index]}%</span>
           </li>
         ))}
       </ul>

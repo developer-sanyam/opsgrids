@@ -27,13 +27,19 @@ export interface Scale {
  * The value axis for a set of numbers: from zero (or below it, for a negative value) to the first
  * round number at or above the largest, in steps of about a third of the range. Zero is always on
  * the axis — a bar or an area measured from anywhere else misstates every value on it.
+ *
+ * `integer: true` is for a series that counts things — accounts, trials, seats — where
+ * `niceStep` would otherwise land on a fractional step (0.5, 0.2…) whenever the range is small.
+ * Half an account is never a real gridline, so this rounds the step up to the nearest whole
+ * number instead. A range wide enough for `niceStep` to already pick a whole number is unaffected.
  */
-export function scaleFor(values: readonly number[], intervals = 3): Scale {
+export function scaleFor(values: readonly number[], intervals = 3, integer = false): Scale {
   const finite = values.filter((value) => Number.isFinite(value));
   const high = Math.max(0, ...finite);
   const low = Math.min(0, ...finite);
   if (high === 0 && low === 0) return { min: 0, max: intervals, ticks: Array.from({ length: intervals + 1 }, (_, i) => i) };
-  const step = niceStep((high - low) / intervals);
+  const rawStep = niceStep((high - low) / intervals);
+  const step = integer ? Math.max(1, Math.round(rawStep)) : rawStep;
   const min = low < 0 ? -Math.ceil(-low / step) * step : 0;
   const count = Math.max(1, Math.ceil((high - min) / step));
   const ticks = Array.from({ length: count + 1 }, (_, i) => min + i * step);
@@ -65,6 +71,41 @@ export function areaPath(values: readonly number[], scale: Scale): string {
   const last = xOf(values.length - 1, values.length).toFixed(2);
   const first = xOf(0, values.length).toFixed(2);
   return `${linePath(values, scale)} L${last},${base} L${first},${base} Z`;
+}
+
+/**
+ * The same line, softened: a quadratic curve through the midpoint of each pair of points rather
+ * than a straight segment between them, so a handful of small monthly counts reads as a gentle
+ * trend instead of a jagged EKG line. Each interior point is still where the value says it is —
+ * only the join between two points bows toward it rather than snapping straight there — and the
+ * curve finishes with a plain line into the last point, which is exact.
+ */
+export function smoothLinePath(values: readonly number[], scale: Scale): string {
+  if (values.length === 0) return "";
+  const points = values.map((value, index) => ({ x: xOf(index, values.length), y: yOf(value, scale) }));
+  const first = points[0];
+  if (!first || points.length < 3) return linePath(values, scale);
+  let d = `M${first.x.toFixed(2)},${first.y.toFixed(2)}`;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const point = points[i];
+    const next = points[i + 1];
+    if (!point || !next) continue;
+    const midX = (point.x + next.x) / 2;
+    const midY = (point.y + next.y) / 2;
+    d += ` Q${point.x.toFixed(2)},${point.y.toFixed(2)} ${midX.toFixed(2)},${midY.toFixed(2)}`;
+  }
+  const last = points[points.length - 1];
+  if (last) d += ` L${last.x.toFixed(2)},${last.y.toFixed(2)}`;
+  return d;
+}
+
+/** `smoothLinePath`, closed down to the zero line, for a soft area fill. */
+export function smoothAreaPath(values: readonly number[], scale: Scale): string {
+  if (values.length === 0) return "";
+  const base = yOf(Math.max(scale.min, 0), scale).toFixed(2);
+  const last = xOf(values.length - 1, values.length).toFixed(2);
+  const first = xOf(0, values.length).toFixed(2);
+  return `${smoothLinePath(values, scale)} L${last},${base} L${first},${base} Z`;
 }
 
 export interface Arc {

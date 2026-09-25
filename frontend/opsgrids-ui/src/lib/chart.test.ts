@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { arcs, areaPath, labelStride, linePath, niceStep, percentages, scaleFor, xOf, yOf } from "./chart";
+import { arcs, areaPath, labelStride, linePath, niceStep, percentages, scaleFor, smoothAreaPath, smoothLinePath, xOf, yOf } from "./chart";
 
 describe("niceStep", () => {
   it("rounds a step up to 1, 2, 2.5 or 5 times a power of ten", () => {
@@ -39,6 +39,21 @@ describe("scaleFor", () => {
   it("ignores values that are not numbers rather than scaling to them", () => {
     expect(scaleFor([10, Number.NaN, 20])).toEqual({ min: 0, max: 20, ticks: [0, 10, 20] });
   });
+
+  it("rounds a fractional step up to a whole number when integer is set", () => {
+    // Without it: niceStep(7/3) picks 2.5, and 2.5 accounts is never a real gridline.
+    expect(scaleFor([0, 3, 7])).toEqual({ min: 0, max: 7.5, ticks: [0, 2.5, 5, 7.5] });
+    expect(scaleFor([0, 3, 7], 3, true)).toEqual({ min: 0, max: 9, ticks: [0, 3, 6, 9] });
+  });
+
+  it("rounds all the way to a single whole step for a max of 1, rather than 0, 0.5, 1", () => {
+    expect(scaleFor([0, 1, 1])).toEqual({ min: 0, max: 1, ticks: [0, 0.5, 1] });
+    expect(scaleFor([0, 1, 1], 3, true)).toEqual({ min: 0, max: 1, ticks: [0, 1] });
+  });
+
+  it("leaves a range that already lands on a whole step unaffected by integer", () => {
+    expect(scaleFor([25, 60, 137], 3, true)).toEqual(scaleFor([25, 60, 137]));
+  });
 });
 
 describe("points", () => {
@@ -59,6 +74,33 @@ describe("points", () => {
     expect(linePath([0, 50, 100], scale)).toBe("M0.00,100.00 L50.00,50.00 L100.00,0.00");
     expect(areaPath([0, 50, 100], scale)).toBe("M0.00,100.00 L50.00,50.00 L100.00,0.00 L100.00,100.00 L0.00,100.00 Z");
     expect(areaPath([], scale)).toBe("");
+  });
+});
+
+describe("smoothLinePath and smoothAreaPath", () => {
+  const scale = { min: 0, max: 100, ticks: [0, 50, 100] };
+
+  it("starts and ends exactly on the first and last real point", () => {
+    const d = smoothLinePath([0, 50, 25, 100], scale);
+    expect(d.startsWith("M0.00,100.00")).toBe(true);
+    expect(d.endsWith("L100.00,0.00")).toBe(true);
+  });
+
+  it("curves through the midpoint of each pair rather than a straight join", () => {
+    // A straight line would read "L", not "Q" — a quadratic curve is the whole point of "smooth".
+    expect(smoothLinePath([0, 50, 100], scale)).toContain("Q");
+  });
+
+  it("falls back to the plain straight line with fewer than three points, where there is nothing to smooth", () => {
+    expect(smoothLinePath([0, 100], scale)).toBe(linePath([0, 100], scale));
+    expect(smoothLinePath([50], scale)).toBe(linePath([50], scale));
+    expect(smoothLinePath([], scale)).toBe("");
+  });
+
+  it("closes down to zero for the fill, the same as the straight area", () => {
+    const d = smoothAreaPath([0, 50, 100], scale);
+    expect(d.endsWith("L100.00,100.00 L0.00,100.00 Z")).toBe(true);
+    expect(smoothAreaPath([], scale)).toBe("");
   });
 });
 

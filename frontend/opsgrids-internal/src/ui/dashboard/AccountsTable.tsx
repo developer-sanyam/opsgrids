@@ -10,6 +10,7 @@ import {
   EyeIcon,
   FilterBar,
   Menu,
+  MobileDataCard,
   Pagination,
   PauseCircleIcon,
   RefreshIcon,
@@ -17,7 +18,7 @@ import {
   Tag,
   TagIcon,
 } from "@opsgrids/ui";
-import type { Column, FilterSelect, MenuItem } from "@opsgrids/ui";
+import type { Column, FilterSelect, MenuItem, MobileCardWiring, MobileDataField } from "@opsgrids/ui";
 
 import type { OrgStateOut, SubscriptionOut } from "@/api/types";
 import type { AsyncState } from "@/lib/useAsync";
@@ -54,9 +55,18 @@ function CompanyCell({ org }: { org: OrgStateOut }) {
       <Avatar name={name} size="sm" />
       <div className="flex min-w-0 flex-col leading-tight">
         <span className="truncate text-sm font-semibold text-ink">{name}</span>
-        {org.slug ? <span className="mono truncate text-xs text-muted">{org.slug}</span> : null}
+        {org.slug ? <span className="truncate text-xs text-muted">{org.slug}</span> : null}
       </div>
     </div>
+  );
+}
+
+function DomainCell({ slug }: { slug: string | null }) {
+  if (!slug) return <span className="text-sm text-faint">—</span>;
+  return (
+    <span className="block max-w-32 truncate text-sm text-muted" title={slug}>
+      {slug}
+    </span>
   );
 }
 
@@ -245,28 +255,53 @@ export function AccountsTable({
     ];
   }
 
+  /**
+   * A phone's card: name, domain, status, Plan and Users always, Revenue only when it says
+   * something — a real amount, or "Restricted" for a role that cannot see one. A role that can
+   * see revenue on an account with none yet does not get a "—" row for it; the mockup's own
+   * phone rows never carry a field with nothing in it.
+   */
+  function accountCard(org: OrgStateOut, wiring: MobileCardWiring) {
+    const fields: MobileDataField[] = [
+      { key: "plan", label: "Plan", value: <PlanCell org={org} subsByOrg={subsByOrg} canSeeRevenue={canSeeRevenue} /> },
+      { key: "users", label: "Users", value: org.user_count !== null ? formatInt(org.user_count) : "—" },
+    ];
+    if (!canSeeRevenue || org.mrr_minor > 0) {
+      fields.push({ key: "revenue", label: "Revenue", value: <RevenueCell org={org} canSeeRevenue={canSeeRevenue} /> });
+    }
+    return (
+      <MobileDataCard
+        {...wiring}
+        leading={<Avatar name={orgLabel(org)} size="sm" />}
+        title={orgLabel(org)}
+        subtitle={org.slug}
+        status={<StatusCell lifecycle={org.lifecycle} />}
+        fields={fields}
+        actions={<Menu label={`Actions for ${orgLabel(org)}`} trigger="icon" items={actionsFor(org)} align="end" />}
+      />
+    );
+  }
+
   // Below 1280px the table keeps the columns a decision needs — company, plan, status, revenue —
   // and drops the ones a tap on the row already answers (brief §2: "tablet ... fewer columns"),
   // rather than a table left to scroll sideways to be read at all.
   const DESKTOP_ONLY = "hidden xl:table-cell";
 
   const columns: Column<OrgStateOut>[] = [
-    { key: "company", header: "Company", mobile: "title", render: (org) => <CompanyCell org={org} /> },
+    { key: "company", header: "Company", render: (org) => <CompanyCell org={org} /> },
     {
       key: "domain",
       header: "Domain",
-      mobile: "hidden",
       headerClassName: DESKTOP_ONLY,
       cellClassName: DESKTOP_ONLY,
-      render: (org) => <span className="mono text-sm text-muted">{org.slug ?? "—"}</span>,
+      render: (org) => <DomainCell slug={org.slug} />,
     },
-    { key: "plan", header: "Plan", mobile: "field", render: (org) => <PlanCell org={org} subsByOrg={subsByOrg} canSeeRevenue={canSeeRevenue} /> },
-    { key: "status", header: "Status", mobile: "status", render: (org) => <StatusCell lifecycle={org.lifecycle} /> },
+    { key: "plan", header: "Plan", render: (org) => <PlanCell org={org} subsByOrg={subsByOrg} canSeeRevenue={canSeeRevenue} /> },
+    { key: "status", header: "Status", render: (org) => <StatusCell lifecycle={org.lifecycle} /> },
     {
       key: "users",
       header: "Users",
       align: "right",
-      mobile: "field",
       headerClassName: DESKTOP_ONLY,
       cellClassName: DESKTOP_ONLY,
       sortKey: "users",
@@ -276,7 +311,6 @@ export function AccountsTable({
       key: "revenue",
       header: "Revenue",
       align: "right",
-      mobile: "field",
       sortKey: canSeeRevenue ? "revenue" : undefined,
       render: (org) => <RevenueCell org={org} canSeeRevenue={canSeeRevenue} />,
     },
@@ -284,17 +318,15 @@ export function AccountsTable({
       key: "created",
       header: "Created At",
       align: "right",
-      mobile: "hidden",
       headerClassName: DESKTOP_ONLY,
       cellClassName: DESKTOP_ONLY,
       sortKey: "created",
-      render: (org) => <span className="tnum text-muted">{formatDate(org.created_at)}</span>,
+      render: (org) => <span className="tnum whitespace-nowrap text-muted">{formatDate(org.created_at)}</span>,
     },
     {
       key: "actions",
       header: <span className="sr-only">Actions</span>,
       align: "right",
-      mobile: "actions",
       render: (org) => <Menu label={`Actions for ${orgLabel(org)}`} trigger="icon" items={actionsFor(org)} align="end" />,
     },
   ];
@@ -313,7 +345,7 @@ export function AccountsTable({
         rowKey={(org) => org.organization_id}
         caption="Every account on the platform"
         stickyHeader
-        mobileCard="auto"
+        mobileCard={accountCard}
         sort={{ key: sort.key, dir: sort.dir }}
         onSort={(key) =>
           setSort((current) =>

@@ -48,6 +48,10 @@ export function AccountGrowthCard({ series, canSee, months }: AccountGrowthCardP
         categories={points.map((p) => monthLabel(p.period))}
         series={[{ key: "new", label: "New Accounts", values: points.map((p) => p.value ?? 0) }]}
         area
+        // A count of accounts: whole-number gridlines only, and a soft curve rather than a sharp
+        // spike between two small monthly counts.
+        integer
+        smooth
         formatValue={formatInt}
       />
     </ChartCard>
@@ -105,11 +109,13 @@ export function RevenueByPlanCard({ subscriptions, canSee }: RevenueByPlanCardPr
       <DonutChart
         label="Revenue by plan"
         slices={slices}
-        // Compact even in the legend: the card sits beside two others at 1280px, and a full
-        // grouped rupee figure ("₹37,099") left no room at all for the product name beside it.
+        // The amount is still real — in the row's `title` and the accessible data table — just
+        // not a visible column: the card sits beside two others at 1280px, and a rupee figure
+        // beside a product name left no room for the name to read whole.
         formatValue={(v) => formatMoney(v, currency, { compact: true })}
         centerValue={formatMoney(total, currency, { compact: true })}
         size="sm"
+        showValue={false}
       />
     </ChartCard>
   );
@@ -160,7 +166,16 @@ export function AccountsByStatusCard({ orgs }: AccountsByStatusCardProps) {
         ) : undefined
       }
     >
-      <DonutChart label="Accounts by status" slices={slices} formatValue={formatInt} centerValue={formatInt(rows.length)} size="sm" />
+      <DonutChart
+        label="Accounts by status"
+        slices={slices}
+        formatValue={formatInt}
+        centerValue={formatInt(rows.length)}
+        size="sm"
+        // Stacked, not beside the ring: "Suspended 1 10%" needs more width than a third of the
+        // dashboard's row leaves next to even a small ring.
+        layout="stacked"
+      />
     </ChartCard>
   );
 }
