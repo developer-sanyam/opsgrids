@@ -247,9 +247,6 @@
     "arbitrary": 2,
     "spacing": 1
   },
-  "product-crm/src/ui/StatusPill.tsx": {
-    "spacing": 2
-  },
   "product-engage/src/routes/Connection.tsx": {
     "spacing": 2
   },
@@ -369,9 +366,6 @@
   "product-finance/src/ui/AgingBreakdown.tsx": {
     "colour": 1,
     "arbitrary": 1,
-    "spacing": 2
-  },
-  "product-finance/src/ui/CashflowChart.tsx": {
     "spacing": 2
   },
   "product-finance/src/ui/ComplianceCard.tsx": {
