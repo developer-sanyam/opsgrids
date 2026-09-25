@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 
 import { listPurchases } from "@/api/client";
 import type { PurchaseDocument } from "@/api/types";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { formatDate } from "@/lib/format";
 import { formatAmount } from "@/lib/money";
 import { Can, problemMessage, useAsync } from "@opsgrids/client";
@@ -19,7 +18,7 @@ import {
   Tag,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { BanknoteIcon, PlusIcon, useToast } from "@opsgrids/ui";
+import { BanknoteIcon, PlusIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
 import { PurchaseFormDialog } from "@/forms/PurchaseFormDialog";
 
 export function PurchasesPage() {

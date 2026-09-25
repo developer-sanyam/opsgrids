@@ -7,7 +7,7 @@ import { getCustomerById } from "@/api/customers";
 import type { Invoice } from "@/api/types";
 import { customerName } from "@/data/customers";
 import { outstandingMinor } from "@/data/derive";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { downloadCsv } from "@/lib/csv";
 import { formatDate } from "@/lib/format";
 import { formatAmount } from "@/lib/money";
 import { Can, problemMessage, useAsync } from "@opsgrids/client";
@@ -27,8 +27,8 @@ import {
   Skeleton,
   Tag,
 } from "@/ui";
-import type { Column } from "@/ui";
-import { PlusIcon, ReceiptIcon } from "@opsgrids/ui";
+import type { Column, TableSelection } from "@/ui";
+import { DownloadIcon, PlusIcon, ReceiptIcon, useDebouncedValue } from "@opsgrids/ui";
 
 const STATUS_FILTERS: { value: InvoiceStatusFilter; label: string }[] = [
   { value: "all", label: "All" },
@@ -81,6 +81,7 @@ export function InvoicesPage() {
   const [sort, setSort] = useState<InvoiceSort>("issued_desc");
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(25);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   // Re-seed from the URL when arriving via a link (sidebar search, "view all" on the overview).
   useEffect(() => {
@@ -104,10 +105,42 @@ export function InvoicesPage() {
     [invoices],
   );
 
+  // A ticked row is a row on screen; a new page, sort or filter invalidates the selection rather
+  // than carrying it to rows nobody saw ticked.
+  useEffect(() => {
+    setSelected(new Set());
+  }, [debouncedSearch, status, sort, page, size]);
+
+  const selection: TableSelection<Invoice> = {
+    selected,
+    onToggle: (key, next) =>
+      setSelected((prev) => {
+        const copy = new Set(prev);
+        if (next) copy.add(key);
+        else copy.delete(key);
+        return copy;
+      }),
+    onToggleAll: (next) => setSelected(next ? new Set(rows.map((inv) => inv.id)) : new Set()),
+    label: (inv) => inv.number,
+  };
+
+  function exportSelected() {
+    const chosen = rows.filter((inv) => selected.has(inv.id));
+    downloadCsv(`invoices-${new Date().toISOString().slice(0, 10)}.csv`, chosen, [
+      { header: "Invoice", value: (inv) => inv.number },
+      { header: "Customer", value: (inv) => customerName(customerById, inv.customer_id) },
+      { header: "Issued", value: (inv) => formatDate(inv.issued_date) },
+      { header: "Due", value: (inv) => formatDate(inv.due_date) },
+      { header: "Amount", value: (inv) => formatAmount(Math.abs(inv.total_minor)) },
+      { header: "Status", value: (inv) => inv.status },
+    ]);
+  }
+
   const columns: Column<Invoice>[] = [
     {
       key: "number",
       header: "Invoice",
+      mobile: "title",
       render: (inv) => (
         <div className="flex flex-col leading-tight">
           <span className="font-semibold text-ink tnum">{inv.number}</span>
@@ -174,6 +207,7 @@ export function InvoicesPage() {
       key: "status",
       header: "Status",
       align: "right",
+      mobile: "status",
       render: (inv) => <InvoiceStatusPill status={inv.status} />,
     },
   ];
@@ -266,6 +300,18 @@ export function InvoicesPage() {
               rowKey={(inv) => inv.id}
               onRowClick={(inv) => navigate(`/invoices/${inv.id}`)}
               caption="Invoices and credit notes"
+              mobileCard="auto"
+              selection={selection}
+              bulkActions={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  leadingIcon={<DownloadIcon className="size-4" />}
+                  onClick={exportSelected}
+                >
+                  Export selected
+                </Button>
+              }
               emptyState={
                 <EmptyState
                   icon={<ReceiptIcon className="size-6" />}

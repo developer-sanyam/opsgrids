@@ -6,7 +6,6 @@ import type { InventoryItemOut } from "@/api/types";
 import { CATEGORY_LABEL } from "@/data/derive";
 import { useItemCategoryOptions } from "@/data/useItemCategoryOptions";
 import { useWarehouseOptions } from "@/data/useWarehouseOptions";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import { formatMoney, formatMoneyCompact, formatNumber } from "@/lib/format";
 import { formatQty, qtyToMilli, stockValueMinor } from "@/lib/quantity";
@@ -28,7 +27,7 @@ import {
   Tag,
 } from "@/ui";
 import type { Column, StockLevel } from "@/ui";
-import { LayersIcon, PlusIcon, useToast } from "@opsgrids/ui";
+import { LayersIcon, PlusIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
 import { InventoryItemFormDialog } from "@/forms/InventoryItemFormDialog";
 import { StockAdjustmentDialog } from "@/forms/StockAdjustmentDialog";
 

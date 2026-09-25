@@ -4,7 +4,7 @@ import { useSearchParams } from "react-router-dom";
 import { DEFAULT_PAGE_SIZE, deleteProject, getAllMembers, listProjects } from "@/api/client";
 import type { ProjectHealth, ProjectOut, ProjectPhase } from "@/api/types";
 import { HEALTH_LABEL, PHASE_LABEL } from "@/data/labels";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { downloadCsv } from "@/lib/csv";
 import { formatDate } from "@/lib/format";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
@@ -26,8 +26,8 @@ import {
   Select,
   Skeleton,
 } from "@/ui";
-import type { Column, SelectOption } from "@/ui";
-import { BriefcaseIcon, useToast } from "@opsgrids/ui";
+import type { Column, SelectOption, TableSelection } from "@/ui";
+import { BriefcaseIcon, DownloadIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
 import { MilestoneFormDialog } from "./MilestoneFormDialog";
 import { ProjectDetailDialog } from "./ProjectDetailDialog";
 import { ProjectFormDialog } from "./ProjectFormDialog";
@@ -69,6 +69,7 @@ export function PortfolioPage() {
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<ProjectOut | null>(null);
   const [addingMilestoneTo, setAddingMilestoneTo] = useState<ProjectOut | null>(null);
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
 
   const canWrite = useCan(WRITE);
 
@@ -91,6 +92,12 @@ export function PortfolioPage() {
     setPage(1);
   }, [debouncedSearch, health, phase, sort]);
 
+  // A ticked row is a row on screen; a new page or filter invalidates the selection rather than
+  // carrying it to rows nobody saw ticked.
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [debouncedSearch, health, phase, sort, page, size]);
+
   const loader = useCallback(
     () =>
       listProjects({
@@ -104,6 +111,33 @@ export function PortfolioPage() {
     [debouncedSearch, health, phase, sort, page, size],
   );
   const projects = useAsync(loader, [debouncedSearch, health, phase, sort, page, size]);
+  const rows = projects.status === "success" ? projects.data.items : [];
+
+  const selection: TableSelection<ProjectOut> = {
+    selected: selectedIds,
+    onToggle: (key, next) =>
+      setSelectedIds((prev) => {
+        const copy = new Set(prev);
+        if (next) copy.add(key);
+        else copy.delete(key);
+        return copy;
+      }),
+    onToggleAll: (next) => setSelectedIds(next ? new Set(rows.map((p) => p.id)) : new Set()),
+    label: (p) => p.name,
+  };
+
+  function exportSelected() {
+    const chosen = rows.filter((p) => selectedIds.has(p.id));
+    downloadCsv(`projects-${new Date().toISOString().slice(0, 10)}.csv`, chosen, [
+      { header: "Project", value: (p) => p.name },
+      { header: "Code", value: (p) => p.code },
+      { header: "Owner", value: (p) => p.owner.name },
+      { header: "Phase", value: (p) => PHASE_LABEL[p.phase] },
+      { header: "Progress %", value: (p) => String(p.progress_pct) },
+      { header: "Target date", value: (p) => formatDate(p.target_date) },
+      { header: "Health", value: (p) => HEALTH_LABEL[p.health] },
+    ]);
+  }
 
   // The roster doesn't depend on the filters, so it loads once, separately — the source for the
   // create/edit form's owner picker.
@@ -126,6 +160,7 @@ export function PortfolioPage() {
     {
       key: "project",
       header: "Project",
+      mobile: "title",
       render: (p) => (
         <div className="flex min-w-0 flex-col leading-tight">
           <span className="truncate font-semibold text-ink">{p.name}</span>
@@ -172,6 +207,7 @@ export function PortfolioPage() {
       key: "health",
       header: "Health",
       align: "right",
+      mobile: "status",
       render: (p) => (
         <span className="inline-flex justify-end">
           <HealthPill health={p.health} />
@@ -182,6 +218,7 @@ export function PortfolioPage() {
       key: "actions",
       header: "",
       align: "right",
+      mobile: "actions",
       render: (p) => (
         <RowActions
           label={p.name}
@@ -277,9 +314,21 @@ export function PortfolioPage() {
             <DataTable
               caption="Project portfolio"
               columns={columns}
-              rows={projects.data.items}
+              rows={rows}
               rowKey={(p) => p.id}
               onRowClick={setSelected}
+              mobileCard="auto"
+              selection={selection}
+              bulkActions={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  leadingIcon={<DownloadIcon className="size-4" />}
+                  onClick={exportSelected}
+                >
+                  Export selected
+                </Button>
+              }
               emptyState={
                 <EmptyState
                   icon={<BriefcaseIcon className="size-6" />}

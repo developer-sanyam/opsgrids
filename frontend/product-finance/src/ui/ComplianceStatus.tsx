@@ -12,26 +12,25 @@ import {
   MinusCircleIcon,
   PauseCircleIcon,
   SampleChip,
-  cn,
+  StatusBadge,
 } from "@opsgrids/ui";
-
-const PILL_BASE =
-  "inline-flex items-center gap-1.5 rounded-full pl-2 pr-2.5 py-1 text-xs font-semibold whitespace-nowrap";
+import type { StatusTone } from "@opsgrids/ui";
 
 /**
- * Filing position, in the semantic pill families.
+ * Filing position, on the shared `StatusBadge`.
  *
  * Each state carries a glyph as well as a colour and a word, because a filing column is scanned
  * fast and by people who may not separate the greens from the ambers. Colour is the third cue
- * here, never the first.
+ * here, never the first. "filed", "failed", "cancelled" and "not_required" are registered words;
+ * "in_flight" and "not_filed" are not, so they take an explicit tone override.
  */
-const FILING_TONE: Record<FilingStateKey, string> = {
-  filed: "bg-present-soft text-present",
-  in_flight: "bg-info-soft text-info",
-  not_filed: "bg-late-soft text-late",
-  failed: "bg-danger-soft text-danger",
-  cancelled: "bg-late-soft text-late",
-  not_required: "bg-ground text-muted",
+const FILING_TONE: Record<FilingStateKey, StatusTone> = {
+  filed: "success",
+  in_flight: "info",
+  not_filed: "warning",
+  failed: "danger",
+  cancelled: "danger",
+  not_required: "neutral",
 };
 
 const FILING_ICON: Record<FilingStateKey, ReactNode> = {
@@ -61,18 +60,19 @@ export function FilingStatusPill({ state }: { state: EInvoiceState | undefined }
     );
   }
   return (
-    <span className={cn(PILL_BASE, FILING_TONE[view.key])} title={view.detail}>
+    <span className="inline-flex items-center gap-1.5" title={view.detail}>
       {FILING_ICON[view.key]}
-      {view.label}
+      <StatusBadge tone={FILING_TONE[view.key]} label={view.label} />
     </span>
   );
 }
 
-const IMS_TONE: Record<ImsStatus, string> = {
-  pending: "bg-late-soft text-late",
-  accepted: "bg-present-soft text-present",
-  rejected: "bg-danger-soft text-danger",
-  pending_action: "bg-info-soft text-info",
+/** "pending", "accepted" and "rejected" are registered words; "pending_action" is not. */
+const IMS_TONE: Record<ImsStatus, StatusTone> = {
+  pending: "warning",
+  accepted: "success",
+  rejected: "danger",
+  pending_action: "info",
 };
 
 const IMS_ICON: Record<ImsStatus, ReactNode> = {
@@ -85,9 +85,9 @@ const IMS_ICON: Record<ImsStatus, ReactNode> = {
 /** Where an inbound supplier document stands: undecided until a person decides it. */
 export function ImsStatusPill({ status }: { status: ImsStatus }) {
   return (
-    <span className={cn(PILL_BASE, IMS_TONE[status])}>
+    <span className="inline-flex items-center gap-1.5">
       {IMS_ICON[status]}
-      {imsStatusLabel(status)}
+      <StatusBadge tone={IMS_TONE[status]} label={imsStatusLabel(status)} />
     </span>
   );
 }

@@ -8,7 +8,6 @@ import { reasonLabel, suggestionSentence } from "@/data/compliance";
 import { readErrorMessage } from "@/lib/errors";
 import { formatDate } from "@/lib/format";
 import { formatAmount } from "@/lib/money";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { useAsync } from "@opsgrids/client";
 import {
   Card,
@@ -27,7 +26,7 @@ import {
   Tag,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { InboxIcon } from "@opsgrids/ui";
+import { InboxIcon, useDebouncedValue } from "@opsgrids/ui";
 
 const STATUS_FILTERS: { value: ImsStatusFilter; label: string }[] = [
   { value: "all", label: "All" },

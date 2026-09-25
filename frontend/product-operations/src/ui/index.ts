@@ -54,6 +54,7 @@ export type {
   RowAction,
   SelectOption,
   StepItem,
+  TableSelection,
 } from "@opsgrids/ui";
 
 export { useNavGroups } from "./useNavGroups";

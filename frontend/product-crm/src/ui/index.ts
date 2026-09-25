@@ -31,7 +31,15 @@ export {
   TABLET_QUERY,
   useMediaQuery,
 } from "@opsgrids/ui";
-export type { BarListItem, Column, DonutSlice, MetricTrend, RowAction } from "@opsgrids/ui";
+export type {
+  BarListItem,
+  Column,
+  DonutSlice,
+  KpiTone,
+  MetricTrend,
+  RowAction,
+  TableSelection,
+} from "@opsgrids/ui";
 
 export { useNavGroups } from "./useNavGroups";
 export { CompanyStatusPill, ContactStatusPill, LeadStatusPill, StagePill } from "./StatusPill";

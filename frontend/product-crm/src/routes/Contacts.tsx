@@ -5,8 +5,7 @@ import { deleteContact, listContacts } from "@/api/client";
 import type { Contact, ContactStatus } from "@/api/types";
 import { useDirectory } from "@/data/directoryContext";
 import { companyName, ownerName } from "@/data/lookups";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
-import { ArrowRightIcon, ChevronDown, MailIcon, PhoneIcon, PlusIcon, UsersIcon, cn, useToast } from "@opsgrids/ui";
+import { ArrowRightIcon, ChevronDown, cn, MailIcon, PhoneIcon, PlusIcon, useDebouncedValue, UsersIcon, useToast } from "@opsgrids/ui";
 import { formatDate, formatRelative } from "@/lib/format";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
