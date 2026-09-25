@@ -123,10 +123,12 @@ async def expand_campaign_send(
     envelope: dict[str, Any],
     *,
     batch_size: int | None = None,
+    now: datetime | None = None,
 ) -> str:
     """Expand a campaign's audience into `queued` recipient rows. Returns `expanded`,
-    `redelivered`, or `not_sending` (the campaign was cancelled before this ran, or this firing
-    was a scheduled send superseded by a reschedule — see `services.activate_scheduled_campaign`).
+    `redelivered`, or `not_sending` (the campaign was cancelled before this ran, this firing was a
+    scheduled send superseded by a reschedule, arrived too early, or failed the send gate at fire
+    time — see `services.activate_scheduled_campaign`).
 
     One transaction, acking fast: this is the whole of what runs on the shared consumer for a
     campaign send. `app/cron.py`'s driver does the sending, on its own poll loop, so a campaign
@@ -137,7 +139,12 @@ async def expand_campaign_send(
     `schedule_send` request rather than an immediate `request_send`) is activated first, in the
     same transaction as the expansion that follows it — `request_send` already left the campaign
     `sending` by the time its own event reaches here, so activation only ever has something to do
-    for a scheduled one.
+    for a scheduled one. Activation re-runs the send gate against the campaign's state right now,
+    not the state it had when it was scheduled, and pauses (never sends) a campaign that no longer
+    passes it — see `services.activate_scheduled_campaign`'s own docstring.
+
+    `now` is threaded through to that same early-arrival check purely for tests — the real
+    consumer, bound as an event handler, is always called with the default (the wall clock).
     """
     event_id = uuid.UUID(str(envelope["event_id"]))
     event_type = str(envelope["event_type"])
@@ -158,6 +165,7 @@ async def expand_campaign_send(
                 organization_id=organization_id,
                 campaign_id=campaign_id,
                 scheduled_for=scheduled_for,
+                now=now,
             )
         sending = await services.expand_campaign(
             session, organization_id=organization_id, campaign_id=campaign_id, batch_size=size
