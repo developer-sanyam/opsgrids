@@ -25,23 +25,51 @@ exists to prevent.
 
 ## Design rules
 
-**No AI-generated house style.** Specifically avoid: glowing gradients, floating cards with
-no purpose, purple-to-indigo accents, everything centred, `rounded-lg` on every surface,
-emoji as section markers, and hero sections that say nothing. If a choice would look at
-home in any generic template, it is the wrong choice here.
+*Updated 2026-09-25 to the owner's minimalist dashboard direction (the UI modernization
+brief and its mockups). Where this section once banned indigo, rounded cards and emoji, the
+owner ruled that the mockups win; the rules below replace those bans.*
 
-**Restrained palette, high contrast, deliberate hierarchy.** One accent, used sparingly for
-the single most important action on a screen. Semantic colour (success / warning / danger)
-is separate from the accent and never doubles as decoration. Every foreground/background
-pair meets WCAG AA — 4.5:1 for body text, 3:1 for large text and meaningful UI edges.
+**Minimal, light-first, spacious.** White or very light neutral ground, generous spacing,
+subtle borders, very subtle shadows, a small number of colours. It should read as a modern
+SaaS product, not a traditional ERP. Avoid glowing gradients, decorative illustration and
+hero sections that say nothing. If an element does not help someone decide or act, remove it.
+
+**Cards.** Rounded cards are the standard surface: 12px radius (`rounded-card`), a hairline
+edge (`shadow-card` draws it), no heavy shadow. Controls use 8px, badges 6px. Do not nest
+cards; group with proximity first.
+
+**One indigo accent** (`accent`), used for the primary action and the current location.
+Semantic colour (success / warning / danger / info) is separate from the accent and never
+doubles as decoration. Every foreground/background pair meets WCAG AA — 4.5:1 for body
+text, 3:1 for large text and meaningful UI edges (input borders use `field-edge`).
+`opsgrids-ui/src/styles/tokens.test.ts` checks every defined pair in light and dark.
+
+**Emoji** appear only in the home greeting ("Good morning, Sanyam 👋"). Never as section
+markers or status icons.
+
+**Buttons have a hierarchy.** Primary for create, save, submit, continue, approve. Secondary
+for cancel, back, filter, export. Destructive only for delete, suspend, remove and
+irreversible cancels. Not every action is primary.
+
+**Required fields carry a red asterisk** (`required` on `FormField`, which also sets the
+accessible name). Optional fields are unmarked.
+
+**Statuses use `StatusBadge`** and the shared status registry in `opsgrids-ui`. The same
+status word always has the same colour in every app; do not write a local pill.
+
+**Tokens, not values.** Colour, spacing, radius, shadow and type come from `console.css`.
+The `opsgrids/tokens` lint rule rejects raw colours, arbitrary values and off-scale spacing
+in feature code. Existing offenders are ratcheted down in `opsgrids-config/token-baseline.json`;
+new code is held to zero. Do not raise a baseline count.
 
 **Spacing is a 4px grid.** Use `4 · 8 · 12 · 16 · 24 · 32 · 48 · 64`. Nothing in between,
 and nothing arbitrary. Group related things with proximity before reaching for a border or
 a card — whitespace is the cheapest hierarchy there is.
 
-**Typography.** A real type scale, not ad-hoc sizes. Body copy near 65 characters per line.
-`text-wrap: balance` on headings. `font-variant-numeric: tabular-nums` anywhere digits line
-up in a column, which in this platform is most tables.
+**Typography.** A real type scale, not ad-hoc sizes: page 28, section 18, card title 15,
+body 14/13, caption 12, KPI 28/22. Weight tops out at 700. Body copy near 65 characters per
+line. `text-wrap: balance` on headings. `font-variant-numeric: tabular-nums` anywhere digits
+line up in a column, which in this platform is most tables.
 
 **Every interactive element has five states**, and none is an afterthought: rest, hover,
 focus-visible, active, disabled. Anything that hits the network has a sixth: loading.
