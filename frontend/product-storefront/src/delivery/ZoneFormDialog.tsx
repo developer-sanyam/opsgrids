@@ -3,6 +3,7 @@ import { useState } from "react";
 import { ApiError } from "@opsgrids/client";
 import {
   Button,
+  ConfirmDialog,
   Dialog,
   InlineAlert,
   RadioGroup,
@@ -10,6 +11,7 @@ import {
   Tag,
   TextArea,
   TextField,
+  useUnsavedChangesWarning,
 } from "@opsgrids/ui";
 import type { RadioOption } from "@opsgrids/ui";
 
@@ -56,6 +58,14 @@ export function ZoneFormDialog({
   const [errors, setErrors] = useState<ZoneErrors>({});
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [confirmingClose, setConfirmingClose] = useState(false);
+
+  // Compared against the same seed `values` initialised from — the caller mounts this only while
+  // it is open and unmounts it to close (the same reset every `FormDialog` relies on), so `zone`
+  // never changes under it.
+  const seed = zone ? fromZone(zone) : EMPTY_ZONE;
+  const dirty = JSON.stringify(values) !== JSON.stringify(seed);
+  useUnsavedChangesWarning(open && dirty);
 
   function set<K extends keyof ZoneFormValues>(key: K, value: ZoneFormValues[K]) {
     setValues((current) => ({ ...current, [key]: value }));
@@ -100,6 +110,17 @@ export function ZoneFormDialog({
     }
   }
 
+  // Cancel, Escape and the close control ask first when there's something to lose; a successful
+  // save closes through `onSaved` → the caller's own `open`, which never asks.
+  function requestClose() {
+    if (submitting) return;
+    if (dirty) {
+      setConfirmingClose(true);
+      return;
+    }
+    onClose();
+  }
+
   const modeOptions: RadioOption[] = [
     { value: "PROMISED", label: MODE_LABEL.PROMISED, description: MODE_DESCRIPTION.PROMISED },
     {
@@ -117,13 +138,13 @@ export function ZoneFormDialog({
   return (
     <Dialog
       open={open}
-      onClose={onClose}
+      onClose={requestClose}
       title={zone ? `Edit ${zone.name}` : "Add a zone"}
       description="A zone is a name, a delivery behaviour, and the postal codes it covers. Postal codes are added on their own screen."
       size="lg"
       footer={
         <>
-          <Button variant="ghost" onClick={onClose} disabled={submitting}>
+          <Button variant="ghost" onClick={requestClose} disabled={submitting}>
             Cancel
           </Button>
           <Button onClick={() => void submit()} disabled={submitting}>
@@ -149,6 +170,7 @@ export function ZoneFormDialog({
 
       <form
         className="flex flex-col gap-5"
+        noValidate
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
@@ -160,6 +182,7 @@ export function ZoneFormDialog({
             value={values.name}
             onChange={(event) => set("name", event.target.value)}
             placeholder="Mumbai — central"
+            required
             disabled={submitting}
             {...(errors.name !== undefined ? { error: errors.name } : {})}
           />
@@ -169,6 +192,7 @@ export function ZoneFormDialog({
             onChange={(event) => set("code", event.target.value.toUpperCase())}
             placeholder="MUM-CENTRAL"
             helper="The handle your CSV import refers to. Unique within your store."
+            required
             disabled={submitting}
             {...(errors.code !== undefined ? { error: errors.code } : {})}
           />
@@ -324,6 +348,19 @@ export function ZoneFormDialog({
           }
         />
       </form>
+
+      <ConfirmDialog
+        open={open && confirmingClose}
+        onClose={() => setConfirmingClose(false)}
+        onConfirm={() => {
+          setConfirmingClose(false);
+          onClose();
+        }}
+        title="Discard unsaved changes?"
+        body={`What you've entered in "${zone ? `Edit ${zone.name}` : "Add a zone"}" hasn't been saved and will be lost.`}
+        confirmLabel="Discard changes"
+        cancelLabel="Keep editing"
+      />
     </Dialog>
   );
 }

@@ -89,11 +89,37 @@ export function CampaignFormDialog({ campaign, onClose, onSaved }: CampaignFormD
       ? (currencyProbe.data.items[0]?.currency ?? "INR")
       : null);
 
+  // The baseline "dirty" compares currency against — starts at what the field opened on, and
+  // moves with the field itself once the probe pins it, so a value the *system* applied is never
+  // mistaken for one a person typed and would lose by closing.
+  const [currencyBaseline, setCurrencyBaseline] = useState(campaign?.currency ?? "INR");
+
   // Once the probe confirms the org already has campaigns, the field locks to their currency —
   // sync the local value so what is disabled and what would be submitted never disagree.
   useEffect(() => {
-    if (pinnedCurrency !== null) setCurrency(pinnedCurrency);
+    if (pinnedCurrency !== null) {
+      setCurrency(pinnedCurrency);
+      setCurrencyBaseline(pinnedCurrency);
+    }
   }, [pinnedCurrency]);
+
+  const dirty =
+    name !== (campaign?.name ?? "") ||
+    channel !== (campaign?.channel ?? "search") ||
+    (!campaign && status !== "draft") ||
+    audienceId !== (campaign?.audience_id ?? "") ||
+    (!campaign && currency !== currencyBaseline) ||
+    budget !== (campaign ? minorToInput(campaign.budget_minor) : "") ||
+    goal !== (campaign?.goal ?? "") ||
+    owner !== (campaign?.owner ?? "") ||
+    startDate !== (campaign?.start_date ?? today()) ||
+    endDate !== (campaign?.end_date ?? "") ||
+    (campaign !== null &&
+      (spent !== minorToInput(campaign.spent_minor) ||
+        revenue !== minorToInput(campaign.revenue_minor) ||
+        pipeline !== minorToInput(campaign.pipeline_minor) ||
+        leads !== String(campaign.leads) ||
+        conversions !== String(campaign.conversions)));
 
   const save = useMutation(
     (input: CampaignIn | CampaignPatch) =>
@@ -227,6 +253,7 @@ export function CampaignFormDialog({ campaign, onClose, onSaved }: CampaignFormD
         pending={save.pending}
         initialFocusRef={nameRef}
         size="lg"
+        dirty={dirty}
         {...(showTopError ? { error: problemMessage(save.error) } : {})}
       >
         <TextField
@@ -234,6 +261,7 @@ export function CampaignFormDialog({ campaign, onClose, onSaved }: CampaignFormD
           label="Name"
           value={name}
           onChange={(e) => setName(e.target.value)}
+          required
           error={nameError ?? namedFieldErrors.name}
         />
 
@@ -243,6 +271,7 @@ export function CampaignFormDialog({ campaign, onClose, onSaved }: CampaignFormD
             value={channel}
             onChange={(e) => setChannel(e.target.value as Channel)}
             options={CHANNEL_OPTIONS}
+            required
             error={namedFieldErrors.channel}
           />
           {!campaign ? (
@@ -279,6 +308,7 @@ export function CampaignFormDialog({ campaign, onClose, onSaved }: CampaignFormD
               onChange={(e) => setAudienceId(e.target.value)}
               placeholder="Choose an audience"
               options={audiences.map((a) => ({ value: a.id, label: a.name }))}
+              required
               error={audienceError ?? namedFieldErrors.audience_id ?? (audience404 ? problemMessage(save.error) : undefined)}
             />
           ) : null}
@@ -323,6 +353,7 @@ export function CampaignFormDialog({ campaign, onClose, onSaved }: CampaignFormD
             type="date"
             value={startDate}
             onChange={(e) => setStartDate(e.target.value)}
+            required
             error={namedFieldErrors.start_date}
           />
           <TextField

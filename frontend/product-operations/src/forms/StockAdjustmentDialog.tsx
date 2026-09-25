@@ -44,6 +44,15 @@ export function StockAdjustmentDialog({ item, onClose, onSaved }: StockAdjustmen
   const [dateError, setDateError] = useState<string | undefined>(undefined);
   const firstFieldRef = useRef<HTMLInputElement>(null);
 
+  // Create-only dialog: dirty against the blank state it opened on.
+  const dirty =
+    mode !== "delta" ||
+    delta !== "" ||
+    counted !== String(item.on_hand) ||
+    reason !== "" ||
+    note !== "" ||
+    occurredOn !== today();
+
   // One idempotency key per distinct request made from this dialog: a double-click or a retry
   // after a dropped response replays the adjustment instead of posting it twice, while a
   // corrected value is a new request with a new key.
@@ -127,6 +136,7 @@ export function StockAdjustmentDialog({ item, onClose, onSaved }: StockAdjustmen
       pendingLabel="Recording…"
       pending={save.pending}
       initialFocusRef={firstFieldRef}
+      dirty={dirty}
       {...formDialogError(save.error, save.fieldErrors)}
     >
       <RadioGroup
@@ -149,6 +159,7 @@ export function StockAdjustmentDialog({ item, onClose, onSaved }: StockAdjustmen
             value={delta}
             onChange={(e) => setDelta(e.target.value)}
             helper={`Positive adds, negative removes ${item.uom}.`}
+            required
             {...((deltaError ?? save.fieldErrors.quantity_delta) !== undefined ? { error: deltaError ?? save.fieldErrors.quantity_delta } : {})}
           />
           <Select
@@ -157,6 +168,7 @@ export function StockAdjustmentDialog({ item, onClose, onSaved }: StockAdjustmen
             onChange={(e) => setReason(e.target.value as StockMovementReason)}
             placeholder="Choose a reason"
             options={REASON_OPTIONS}
+            required
             {...((reasonError ?? save.fieldErrors.reason) !== undefined ? { error: reasonError ?? save.fieldErrors.reason } : {})}
           />
         </>
@@ -168,6 +180,7 @@ export function StockAdjustmentDialog({ item, onClose, onSaved }: StockAdjustmen
           value={counted}
           onChange={(e) => setCounted(e.target.value)}
           helper={`In ${item.uom}.`}
+          required
           {...((countedError ?? save.fieldErrors.counted_on_hand) !== undefined ? { error: countedError ?? save.fieldErrors.counted_on_hand } : {})}
         />
       )}

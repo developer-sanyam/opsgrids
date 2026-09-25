@@ -41,6 +41,16 @@ export function LeaveTypeForm({ leaveType, onClose, onSaved }: LeaveTypeFormProp
   const codeRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
+  // Compared against the same seed the fields above initialised from — this form unmounts on
+  // close (FormDialog's resetting-is-structural note), so `leaveType` never changes under it.
+  const dirty =
+    code !== (leaveType?.code ?? "") ||
+    name !== (leaveType?.name ?? "") ||
+    isPaid !== (leaveType?.is_paid ?? true) ||
+    annualQuota !== (leaveType?.annual_quota_half_days != null ? String(leaveType.annual_quota_half_days) : "") ||
+    monthlyAccrual !== (leaveType?.monthly_accrual_half_days != null ? String(leaveType.monthly_accrual_half_days) : "") ||
+    carryForwardCap !== (leaveType?.carry_forward_cap_half_days != null ? String(leaveType.carry_forward_cap_half_days) : "");
+
   const save = useMutation(
     (input: LeaveTypeIn | LeaveTypePatch) =>
       leaveType
@@ -86,6 +96,7 @@ export function LeaveTypeForm({ leaveType, onClose, onSaved }: LeaveTypeFormProp
       pendingLabel={editing ? "Saving…" : "Creating…"}
       pending={save.pending}
       initialFocusRef={editing ? nameRef : codeRef}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? {
             error: problemMessage(save.error),
@@ -101,6 +112,7 @@ export function LeaveTypeForm({ leaveType, onClose, onSaved }: LeaveTypeFormProp
         value={code}
         onChange={(e) => setCode(e.target.value)}
         disabled={editing}
+        required
         helper={editing ? "Immutable — a rename is a new type." : "Letters, numbers, hyphens and underscores."}
         error={codeError ?? save.fieldErrors.code}
       />
@@ -109,6 +121,7 @@ export function LeaveTypeForm({ leaveType, onClose, onSaved }: LeaveTypeFormProp
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
+        required
         error={nameError ?? save.fieldErrors.name}
       />
       <Switch

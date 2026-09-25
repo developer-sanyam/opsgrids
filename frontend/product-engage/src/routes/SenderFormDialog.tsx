@@ -153,6 +153,7 @@ export function SenderFormDialog({
 
       <form
         className="flex flex-col gap-5"
+        noValidate
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
@@ -165,6 +166,7 @@ export function SenderFormDialog({
           options={domainOptions}
           placeholder="Choose a verified domain"
           helper="Only verified domains can carry a sender."
+          required
           disabled={submitting}
           {...(errors.domainId !== undefined ? { error: errors.domainId } : {})}
         />
@@ -176,6 +178,7 @@ export function SenderFormDialog({
             onChange={(event) => set("name", event.target.value)}
             placeholder="Vaayu Logistics Support"
             helper="What recipients see in their inbox."
+            required
             disabled={submitting}
             {...(errors.name !== undefined ? { error: errors.name } : {})}
           />
@@ -192,6 +195,7 @@ export function SenderFormDialog({
                 ? "An address on the domain you choose above."
                 : `An address on ${chosen.domain}.`
             }
+            required
             disabled={submitting}
             {...(errors.address !== undefined ? { error: errors.address } : {})}
           />

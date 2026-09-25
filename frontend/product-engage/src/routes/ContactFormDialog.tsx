@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 
+import { useUnsavedChangesWarning } from "@opsgrids/ui";
+
 import { addContact, editContact } from "@/api/client";
 import type { ContactOut } from "@/api/types";
 import { failureMessage } from "@/lib/errors";
-import { Button, Dialog, InlineAlert, TextField } from "@/ui";
+import { Button, ConfirmDialog, Dialog, InlineAlert, TextField } from "@/ui";
 
 /**
  * Add or edit one contact.
@@ -57,8 +59,13 @@ export function ContactFormDialog({
   const [errors, setErrors] = useState<Errors>({});
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [confirmingClose, setConfirmingClose] = useState(false);
 
   const editing = contact !== null;
+  // Email always seeds blank (it's the mask, never the real address) so anything typed there is
+  // new; name seeds from the contact's own real value.
+  const dirty = values.email !== "" || values.name !== (contact === null ? "" : contact.name);
+  useUnsavedChangesWarning(open && dirty);
 
   // The dialog instance for a row is reused across opens (`Contacts` swaps `contact`, not the
   // component), so seeding has to happen here rather than in `useState`'s initializer. Email
@@ -70,6 +77,7 @@ export function ContactFormDialog({
     setValues({ email: "", name: contact === null ? "" : contact.name });
     setErrors({});
     setFailure(null);
+    setConfirmingClose(false);
   }, [open, contact]);
 
   function close() {
@@ -77,6 +85,17 @@ export function ContactFormDialog({
     setErrors({});
     setFailure(null);
     onClose();
+  }
+
+  // Cancel, Escape and the close control ask first when there's something to lose; a successful
+  // save closes through `onSaved` → the caller's own `open`, which never asks.
+  function requestClose() {
+    if (submitting) return;
+    if (dirty) {
+      setConfirmingClose(true);
+      return;
+    }
+    close();
   }
 
   function set<K extends keyof Values>(key: K, value: Values[K]) {
@@ -125,7 +144,7 @@ export function ContactFormDialog({
   return (
     <Dialog
       open={open}
-      onClose={close}
+      onClose={requestClose}
       title={editing ? "Edit contact" : "Add a contact"}
       description={
         editing
@@ -135,7 +154,7 @@ export function ContactFormDialog({
       size="md"
       footer={
         <>
-          <Button variant="ghost" onClick={close} disabled={submitting}>
+          <Button variant="ghost" onClick={requestClose} disabled={submitting}>
             Cancel
           </Button>
           <Button onClick={() => void submit()} disabled={submitting}>
@@ -159,6 +178,7 @@ export function ContactFormDialog({
 
       <form
         className="flex flex-col gap-5"
+        noValidate
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
@@ -172,7 +192,7 @@ export function ContactFormDialog({
           placeholder="priya@vaayu-logistics.example.com"
           autoComplete="off"
           spellCheck={false}
-          {...(editing ? { optional: true } : {})}
+          {...(editing ? { optional: true } : { required: true })}
           helper={editing ? "Leave blank to keep the address on file." : "Sealed as soon as it's saved."}
           disabled={submitting}
           {...(errors.email !== undefined ? { error: errors.email } : {})}
@@ -186,6 +206,19 @@ export function ContactFormDialog({
           disabled={submitting}
         />
       </form>
+
+      <ConfirmDialog
+        open={open && confirmingClose}
+        onClose={() => setConfirmingClose(false)}
+        onConfirm={() => {
+          setConfirmingClose(false);
+          close();
+        }}
+        title="Discard unsaved changes?"
+        body={`What you've entered in “${editing ? "Edit contact" : "Add a contact"}” hasn't been saved and will be lost.`}
+        confirmLabel="Discard changes"
+        cancelLabel="Keep editing"
+      />
     </Dialog>
   );
 }

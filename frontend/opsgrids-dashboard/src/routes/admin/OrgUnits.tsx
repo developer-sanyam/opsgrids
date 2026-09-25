@@ -166,6 +166,9 @@ function CreateOrgUnitDialog({
   const [codeError, setCodeError] = useState<string | undefined>(undefined);
   const nameRef = useRef<HTMLInputElement>(null);
 
+  // Create-only dialog: dirty against the blank state it opened on.
+  const dirty = name !== "" || code !== "" || parentId !== "" || kind !== "department";
+
   const save = useMutation((payload: OrgUnitCreate) => createOrgUnit(payload), {
     onSuccess: (unit) => {
       onClose();
@@ -204,6 +207,7 @@ function CreateOrgUnitDialog({
       pendingLabel="Creating…"
       pending={save.pending}
       initialFocusRef={nameRef}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? { error: problemMessage(save.error) }
         : {})}
@@ -213,6 +217,7 @@ function CreateOrgUnitDialog({
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
+        required
         error={nameError ?? save.fieldErrors.name}
       />
       <TextField
@@ -220,6 +225,7 @@ function CreateOrgUnitDialog({
         value={code}
         onChange={(e) => setCode(e.target.value)}
         helper="Cannot be changed once created."
+        required
         error={codeError ?? save.fieldErrors.code}
       />
       <Select label="Kind" options={KINDS} value={kind} onChange={(e) => setKind(e.target.value)} />
@@ -248,6 +254,14 @@ function EditOrgUnitDialog({
   const [isActive, setIsActive] = useState(unit.is_active);
   const [head, setHead] = useState<ComboboxOption | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
+
+  // `head` starts `null` and is filled in from `unit.head_membership_id` by the fetch below, so
+  // once it lands the two agree and this stays false until someone picks someone new.
+  const dirty =
+    name.trim() !== unit.name ||
+    kind !== unit.kind ||
+    isActive !== unit.is_active ||
+    (head?.id ?? null) !== unit.head_membership_id;
 
   useAsync(async () => {
     if (!unit.head_membership_id) return null;
@@ -283,6 +297,7 @@ function EditOrgUnitDialog({
       pendingLabel="Saving…"
       pending={save.pending}
       initialFocusRef={nameRef}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? { error: problemMessage(save.error) }
         : {})}
@@ -292,6 +307,7 @@ function EditOrgUnitDialog({
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
+        required
         error={save.fieldErrors.name}
       />
       <TextField label="Code" value={unit.code} disabled helper="Cannot be changed." />
@@ -342,6 +358,8 @@ function MoveOrgUnitDialog({
   const excluded = new Set(descendantIds(units, unit.id));
   excluded.add(unit.id);
 
+  const dirty = parentId !== (unit.parent_id ?? "");
+
   const save = useMutation((newParentId: string) => moveOrgUnit(unit.id, newParentId || null), {
     onSuccess: (updated) => {
       onClose();
@@ -363,6 +381,7 @@ function MoveOrgUnitDialog({
       submitLabel="Move"
       pendingLabel="Moving…"
       pending={save.pending}
+      dirty={dirty}
       {...(save.error ? { error: problemMessage(save.error) } : {})}
     >
       <Select
