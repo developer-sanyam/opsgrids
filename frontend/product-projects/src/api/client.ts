@@ -43,13 +43,6 @@ export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXT
 /** True when the app is talking to the real gateway. */
 export const LIVE = !USE_FIXTURES;
 
-/**
- * The release-burndown series has no reporting service yet, so it is representative rather than
- * live. When the app runs live that chart carries a "Sample data" chip; in fixture mode the whole
- * app is illustrative, so nothing is singled out.
- */
-export const TRENDS_ARE_SAMPLE = LIVE;
-
 /** The default page size for a screen with real server paging (Portfolio, Team). */
 export const DEFAULT_PAGE_SIZE = 25;
 
@@ -165,6 +158,13 @@ export async function listProjects(params: ListProjectsParams = {}): Promise<Pag
 export async function getAllProjects(): Promise<ProjectOut[]> {
   if (USE_FIXTURES) return PROJECTS;
   return fetchAll((page, size) => listProjects({ page, size }));
+}
+
+/** `GET /projects-workspace/projects?phase=live&size=1` → `Page.total` — the portfolio's
+ *  "Completed" count, from the server's own rollup rather than a client-side scan. */
+export async function countCompletedProjects(): Promise<number> {
+  const page = await listProjects({ phase: "live", size: 1 });
+  return page.total;
 }
 
 export async function createProject(input: ProjectIn): Promise<ProjectOut> {
@@ -355,20 +355,34 @@ export interface ListTasksParams {
   size?: number;
   stage?: TaskStage;
   project_code?: string;
+  /** `"me"` narrows to cards assigned to the caller, resolved server-side against the delivery
+   *  roster — the same filter `/projects-workspace/tasks?assignee=me` applies. */
+  assignee?: "me";
 }
 
 export async function listTasks(params: ListTasksParams = {}): Promise<Page<TaskOut>> {
   const page = params.page ?? 1;
   const size = params.size ?? DEFAULT_PAGE_SIZE;
   if (USE_FIXTURES) {
-    const filtered = TASKS.filter(
-      (t) =>
-        (!params.stage || t.stage === params.stage) &&
-        (!params.project_code || t.project_code === params.project_code),
-    );
+    // Fixture mode has no signed-in "me" to resolve against the roster, so `assignee=me` returns
+    // nothing — the same honest empty page the live route answers when the caller has no linked
+    // member row, rather than guessing at one.
+    const filtered = params.assignee === "me"
+      ? []
+      : TASKS.filter(
+          (t) =>
+            (!params.stage || t.stage === params.stage) &&
+            (!params.project_code || t.project_code === params.project_code),
+        );
     return settle(pageOf(filtered, page, size));
   }
-  const query = qs({ stage: params.stage, project_code: params.project_code, page, size });
+  const query = qs({
+    stage: params.stage,
+    project_code: params.project_code,
+    assignee: params.assignee,
+    page,
+    size,
+  });
   return apiRequest<Page<TaskOut>>(`/projects-workspace/tasks${query}`);
 }
 
@@ -379,6 +393,12 @@ export async function getAllTasks(params: { project_code?: string } = {}): Promi
     return TASKS.filter((t) => !params.project_code || t.project_code === params.project_code);
   }
   return fetchAll((page, size) => listTasks({ ...params, page, size }));
+}
+
+/** `GET /projects-workspace/tasks?assignee=me` — resolved server-side to the caller's own cards,
+ *  so one bounded call gives the Overview's "My tasks" list, never a scan. */
+export async function listMyTasks(size: number): Promise<Page<TaskOut>> {
+  return listTasks({ assignee: "me", size });
 }
 
 export async function createTask(input: TaskIn): Promise<TaskOut> {

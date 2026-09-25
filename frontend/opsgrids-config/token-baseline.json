@@ -644,8 +644,7 @@
     "spacing": 3
   },
   "product-projects/src/routes/Overview.tsx": {
-    "arbitrary": 1,
-    "spacing": 9
+    "spacing": 3
   },
   "product-projects/src/routes/Portfolio.tsx": {
     "spacing": 3
