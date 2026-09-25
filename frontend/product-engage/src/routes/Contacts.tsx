@@ -1,26 +1,30 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { Can, useAsync } from "@opsgrids/client";
+import { Can, useAsync, useCan } from "@opsgrids/client";
 import { FileTextIcon, UserPlusIcon, UsersIcon } from "@opsgrids/ui";
 
 import { deleteContact, listContacts } from "@/api/client";
 import type { ContactOut } from "@/api/types";
+import { downloadCsv } from "@/lib/csv";
 import { failureMessage } from "@/lib/errors";
 import { formatInstant } from "@/lib/format";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import {
   Announcer,
   Button,
   Card,
   ConfirmDialog,
+  DataTable,
   EmptyState,
   LoadFailure,
   PageHeader,
   Pagination,
+  RowActions,
   SearchInput,
   Skeleton,
   useAnnounce,
+  useDebouncedValue,
 } from "@/ui";
+import type { Column, TableSelection } from "@/ui";
 import { ContactFormDialog } from "./ContactFormDialog";
 import { ContactImportDialog } from "./ContactImportDialog";
 
@@ -35,47 +39,11 @@ import { ContactImportDialog } from "./ContactImportDialog";
  * every row on every keystroke.
  */
 
-function ContactRow({
-  contact,
-  onEdit,
-  onDelete,
-}: {
-  contact: ContactOut;
-  onEdit: () => void;
-  onDelete: () => void;
-}) {
-  return (
-    <tr className="border-t border-line align-top">
-      <th scope="row" className="py-3 pr-4 text-left">
-        <span className="block text-sm font-bold text-ink">
-          {contact.name === "" ? "—" : contact.name}
-        </span>
-        <span className="block font-mono text-xs text-muted">{contact.email}</span>
-      </th>
-      <td className="py-3 pr-4 text-sm text-muted">{formatInstant(contact.created_at)}</td>
-      <td className="py-3 pr-4 text-sm text-muted">{formatInstant(contact.updated_at)}</td>
-      <td className="py-3 whitespace-nowrap">
-        <Can permission="engage.audience.contact.write" scope="ORG">
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={onEdit}>
-              Edit
-              <span className="sr-only"> {contact.name === "" ? contact.email : contact.name}</span>
-            </Button>
-            <Button variant="ghost" size="sm" className="text-negative" onClick={onDelete}>
-              Delete
-              <span className="sr-only"> {contact.name === "" ? contact.email : contact.name}</span>
-            </Button>
-          </div>
-        </Can>
-      </td>
-    </tr>
-  );
-}
-
 const NO_CONTACTS: ContactOut[] = [];
 
 function Contacts() {
   const announce = useAnnounce();
+  const canWrite = useCan("engage.audience.contact.write", "ORG");
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search);
   const [page, setPage] = useState(1);
@@ -86,6 +54,7 @@ function Contacts() {
   const [deleting, setDeleting] = useState<ContactOut | null>(null);
   const [deleteFailure, setDeleteFailure] = useState<string | null>(null);
   const [deletePending, setDeletePending] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const loader = useCallback(
     () => listContacts({ search: debouncedSearch, page, size }),
@@ -124,6 +93,62 @@ function Contacts() {
     } finally {
       setDeletePending(false);
     }
+  }
+
+  const columns: Column<ContactOut>[] = [
+    {
+      key: "contact",
+      header: "Contact",
+      mobile: "title",
+      render: (contact) => (
+        <div className="flex flex-col">
+          <span className="text-sm font-bold text-ink">{contact.name === "" ? "—" : contact.name}</span>
+          <span className="font-mono text-xs text-muted">{contact.email}</span>
+        </div>
+      ),
+    },
+    { key: "created", header: "Added", render: (contact) => <span className="text-muted">{formatInstant(contact.created_at)}</span> },
+    { key: "updated", header: "Updated", render: (contact) => <span className="text-muted">{formatInstant(contact.updated_at)}</span> },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      mobile: "actions",
+      render: (contact) => (
+        <RowActions
+          label={contact.name === "" ? contact.email : contact.name}
+          actions={[
+            { label: "Edit", onSelect: () => setEditing(contact), hidden: !canWrite },
+            { label: "Delete", tone: "danger", onSelect: () => setDeleting(contact), hidden: !canWrite },
+          ]}
+        />
+      ),
+    },
+  ];
+
+  const contactSelection: TableSelection<ContactOut> | undefined =
+    state.status === "success"
+      ? {
+          selected,
+          onToggle: (key, next) =>
+            setSelected((prev) => {
+              const nextSet = new Set(prev);
+              if (next) nextSet.add(key);
+              else nextSet.delete(key);
+              return nextSet;
+            }),
+          onToggleAll: (next) => setSelected(next ? new Set(contacts.map((c) => c.id)) : new Set()),
+          label: (c) => (c.name === "" ? c.email : c.name),
+        }
+      : undefined;
+
+  function exportSelectedContacts() {
+    const chosen = contacts.filter((c) => selected.has(c.id));
+    downloadCsv(
+      "contacts.csv",
+      ["Name", "Email", "Added", "Updated"],
+      chosen.map((c) => [c.name, c.email, formatInstant(c.created_at), formatInstant(c.updated_at)]),
+    );
   }
 
   return (
@@ -193,37 +218,19 @@ function Contacts() {
 
       {state.status === "success" && contacts.length > 0 ? (
         <Card className="p-6">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[48rem] border-collapse text-left">
-              <caption className="sr-only">Contacts, their email mask and when each changed</caption>
-              <thead>
-                <tr className="text-xs font-bold uppercase tracking-wider text-faint">
-                  <th scope="col" className="pb-2 pr-4">
-                    Contact
-                  </th>
-                  <th scope="col" className="pb-2 pr-4">
-                    Added
-                  </th>
-                  <th scope="col" className="pb-2 pr-4">
-                    Updated
-                  </th>
-                  <th scope="col" className="pb-2">
-                    <span className="sr-only">Actions</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {contacts.map((contact) => (
-                  <ContactRow
-                    key={contact.id}
-                    contact={contact}
-                    onEdit={() => setEditing(contact)}
-                    onDelete={() => setDeleting(contact)}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            caption="Contacts, their email mask and when each changed"
+            rows={contacts}
+            rowKey={(contact) => contact.id}
+            columns={columns}
+            mobileCard="auto"
+            selection={contactSelection}
+            bulkActions={
+              <Button variant="outline" size="sm" onClick={exportSelectedContacts}>
+                Export selected
+              </Button>
+            }
+          />
           <Pagination
             page={state.data.page}
             pages={state.data.pages}

@@ -272,7 +272,6 @@
     "arbitrary": 1
   },
   "product-engage/src/routes/Contacts.tsx": {
-    "arbitrary": 1,
     "spacing": 1
   },
   "product-engage/src/routes/ConversationThread.tsx": {

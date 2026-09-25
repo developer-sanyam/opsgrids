@@ -106,16 +106,16 @@ describe("populated", () => {
     vi.spyOn(client, "listContacts").mockResolvedValue(page([MASKED, SECOND]));
     renderPage();
 
-    expect(await screen.findByRole("rowheader", { name: /^Priya Raghavan/ })).toBeTruthy();
+    expect(await screen.findByText("Priya Raghavan")).toBeTruthy();
     expect(screen.getByText("p•••@vaayu-logistics.example.com")).toBeTruthy();
-    expect(screen.getByRole("rowheader", { name: /^Arjun Mehta/ })).toBeTruthy();
+    expect(screen.getByText("Arjun Mehta")).toBeTruthy();
     expect(screen.getByText("a•••@vaayu-freight.example.com")).toBeTruthy();
   });
 
   it("gives the search hint the real constraint: a name substring, or an exact email", async () => {
     vi.spyOn(client, "listContacts").mockResolvedValue(page([MASKED]));
     renderPage();
-    await screen.findByRole("rowheader", { name: /^Priya Raghavan/ });
+    await screen.findByText("Priya Raghavan");
     expect(
       screen.getByPlaceholderText("Search by name, or paste an exact email address"),
     ).toBeTruthy();
@@ -227,7 +227,7 @@ describe("permission gating", () => {
       </PermissionProvider>,
     );
 
-    await screen.findByRole("rowheader", { name: /^Priya Raghavan/ });
+    await screen.findByText("Priya Raghavan");
     expect(screen.queryByRole("button", { name: "Import" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Add a contact" })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Edit/ })).toBeNull();
@@ -270,15 +270,15 @@ describe("pagination after a delete empties a page", () => {
     const user = userEvent.setup();
     renderPage();
 
-    await screen.findByRole("rowheader", { name: /^Priya Raghavan/ });
+    await screen.findByText("Priya Raghavan");
     await user.click(await screen.findByRole("button", { name: "Next page" }));
-    await screen.findByRole("rowheader", { name: /^Arjun Mehta/ });
+    await screen.findByText("Arjun Mehta");
 
     await user.click(screen.getByRole("button", { name: /Delete Arjun Mehta/ }));
     await user.click(screen.getByRole("button", { name: "Delete" }));
 
     // Lands back on page 1's contact rather than staying on an empty page 2.
-    await screen.findByRole("rowheader", { name: /^Priya Raghavan/ });
+    await screen.findByText("Priya Raghavan");
     expect(screen.queryByText("No contacts yet")).toBeNull();
     await waitFor(() => expect(spy).toHaveBeenLastCalledWith({ search: "", page: 1, size: 25 }));
   });
