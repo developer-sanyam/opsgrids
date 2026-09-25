@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -2113,9 +2114,84 @@ async def install_registration(
 
 
 @dataclass(slots=True)
+class AdminGrant:
+    """What `grant_admin_roles_to_owners` did to one organization's active owners.
+
+    `granted` is one `(membership_id, role_code)` pair per `MembershipRole` row actually
+    written — an owner already holding a role is skipped, per ADR-0007's union-only rule
+    applied to memberships rather than role grants. `role_codes` is every admin template
+    from the caller's list that resolves to a role in this organization, whether or not any
+    owner needed granting to it — the same coarse list `install_product_registration` has
+    always put on the `core.grants.changed` payload for every membership it touched, kept
+    unchanged here so the event shape does not drift between the two callers.
+    """
+
+    granted: list[tuple[uuid.UUID, str]] = field(default_factory=list)
+    role_codes: list[str] = field(default_factory=list)
+
+    @property
+    def membership_ids(self) -> list[uuid.UUID]:
+        """Every membership that picked up at least one role, in the order first granted."""
+        seen: list[uuid.UUID] = []
+        for membership_id, _ in self.granted:
+            if membership_id not in seen:
+                seen.append(membership_id)
+        return seen
+
+
+async def grant_admin_roles_to_owners(
+    session: AsyncSession, org_id: uuid.UUID, admin_role_codes: Sequence[str]
+) -> AdminGrant:
+    """Grant every one of `admin_role_codes` to every active owner membership that does not
+    already hold it.
+
+    The one piece of a product's install that organization creation never needs and every
+    other path does: the owner is the only principal guaranteed to exist when a product is
+    installed for a live tenant, so the product's admin-most role is handed to them directly
+    rather than left with no holder. Shared by `install_product_registration` (activation
+    time, and the path `tools/wire_product.py` drives) and `reconcile_registration`
+    (`tools/reconcile_permissions.py`'s fleet reconcile) so the two can never drift apart —
+    which is exactly how a role template that reached a live tenant through the reconciler
+    ended up with nobody able to hold it: only the activation path granted owners, and a
+    tenant that activated the product before the template existed never ran that path again.
+
+    Every admin template, not just one: a product spans as many services as it needs, and
+    each ships the admin role for its own slice. Granting only the first left a product's
+    owners able to use part of it and not the rest.
+    """
+    owners = await selectors.list_owner_memberships(session, org_id)
+    grant = AdminGrant()
+    for code in admin_role_codes:
+        role = await selectors.get_role_by_code(session, org_id, code)
+        if role is None:
+            continue
+        grant.role_codes.append(code)
+        for owner in owners:
+            if any(link.role_id == role.id for link in owner.roles):
+                continue
+            # `membership=owner, role=role` rather than the `*_id` columns: the
+            # back-populated relationship appends to `owner.roles` in memory immediately,
+            # the same reason `install_registration`'s widen uses `role=role,
+            # permission=permission` above it — a caller that reconciles more than one
+            # admin role code, or is asked to reconcile the same organization twice in one
+            # session (this function's own idempotency tests do exactly that), must see the
+            # grant it just added rather than re-reading a stale collection and granting it
+            # again onto a unique constraint.
+            session.add(MembershipRole(membership=owner, role=role, granted_by=None))
+            grant.granted.append((owner.id, code))
+    if grant.role_codes:
+        await session.flush()
+    return grant
+
+
+@dataclass(slots=True)
 class ReconcileSummary:
     """The per-organization report line ADR-0007 §4 names:
-    `{org_id, roles_created, grants_added, scopes_widened, memberships_without}`."""
+    `{org_id, roles_created, grants_added, scopes_widened, memberships_without}`, plus the
+    admin-role grant this reconcile also closes: a role template that reached a live tenant
+    through this path used to land with nobody able to hold it, because only the activation
+    path (`install_product_registration`) ever granted a product's admin role to its owners.
+    """
 
     organization_id: uuid.UUID
     roles_created: list[str]
@@ -2124,6 +2200,10 @@ class ReconcileSummary:
     skipped_customer_roles: list[str]
     memberships_without: int
     changed: bool
+    #: What `grant_admin_roles_to_owners` did, when the product was active for this
+    #: organization. Empty when it was not asked to run — an inactive product's owners gain
+    #: nothing, same as before this fix existed.
+    admin_grant: AdminGrant
 
 
 async def reconcile_registration(
@@ -2132,30 +2212,55 @@ async def reconcile_registration(
     registration: ProductRegistration,
     *,
     acting_as: str,
+    admin_role_codes: Sequence[str] = (),
+    product_active: bool = False,
     dry_run: bool = False,
 ) -> ReconcileSummary:
     """Reconcile one organization against `registration` — what
     `tools/reconcile_permissions.py` drives, one call per organization, inside that
     organization's own transaction (ADR-0007 §3).
 
-    An empty diff writes nothing: no audit row ("nothing happened" is not an event —
-    ADR-0007 §6), no outbox event, and no `pv` bump. A non-empty diff writes exactly one
-    audit row and publishes exactly one `core.grants.changed` event for the whole
-    organization — never per membership, because a widening touches every membership in
-    the tenant and that fan-out has no consumer today (ADR-0007 §5) — and only then bumps
-    `pv`, inside this same transaction: if the transaction rolls back, the version has
-    still moved, which costs one round of token refreshes and grants nobody anything, the
-    safe direction to be wrong in.
+    Widens the organization's system role templates exactly as before, and — new — closes
+    the gap that let a role template land with no holder: when `product_active` is true and
+    `admin_role_codes` is non-empty, every one of those templates is granted to an active
+    owner membership that does not already hold it, through the exact function
+    `install_product_registration` uses (`grant_admin_roles_to_owners`), so the two paths
+    can never drift apart again. `product_active` is the caller's job to resolve — this
+    function has no way to ask whether an organization currently has the product, and is not
+    the place to guess (see `tools/reconcile_permissions.py` for the source it uses).
 
-    `dry_run` runs the identical reconcile — the same diff, computed the same way — but
-    skips the audit row, the event and the bump. The caller (the CLI) is the one that
-    decides not to commit; this function's only job is to not pretend anything happened
-    when nothing was meant to.
+    An empty diff and no owner grant write nothing: no audit row ("nothing happened" is not
+    an event — ADR-0007 §6), no outbox event, and no `pv` bump. Otherwise this writes exactly
+    one audit row and:
+
+    - publishes exactly one `core.grants.changed` event for the whole organization when the
+      role widening itself changed anything — never per membership, because a widening
+      touches every membership in the tenant and that fan-out has no consumer today
+      (ADR-0007 §5);
+    - publishes one `core.grants.changed` event **per membership** an owner grant landed on,
+      the same shape `install_product_registration` already emits for the same operation —
+      bounded by the organization's owner count, not by its membership count, so ADR-0007
+      §5's fan-out concern does not apply to it;
+
+    and only then bumps `pv`, inside this same transaction: if the transaction rolls back,
+    the version has still moved, which costs one round of token refreshes and grants nobody
+    anything, the safe direction to be wrong in.
+
+    `dry_run` runs the identical reconcile — the same diff, the same owner grants, computed
+    the same way — but skips the audit row, the events and the bump. The caller (the CLI) is
+    the one that decides not to commit; this function's only job is to not pretend anything
+    happened when nothing was meant to.
     """
     diff = await install_registration(session, org_id, registration)
 
+    admin_grant = AdminGrant()
+    if product_active and admin_role_codes:
+        admin_grant = await grant_admin_roles_to_owners(session, org_id, admin_role_codes)
+
+    changed = diff.changed or bool(admin_grant.membership_ids)
+
     memberships_without = 0
-    if diff.changed:
+    if changed:
         memberships_without = await selectors.count_memberships_missing_grants(
             session, org_id, diff.permission_codes()
         )
@@ -2170,21 +2275,40 @@ async def reconcile_registration(
                 entity="organization",
                 entity_id=org_id,
                 before={"roles": diff.role_grants_before},
-                after={"roles": diff.role_grants_after},
-            )
-            publish_event(
-                session,
-                OutboxEvent,
-                organization_id=org_id,
-                event_type=EVT_GRANTS_CHANGED,
-                aggregate_type="organization",
-                aggregate_id=org_id,
-                payload={
-                    "organization_id": str(org_id),
-                    "role_codes": diff.role_codes(),
-                    "permission_codes": diff.permission_codes(),
+                after={
+                    "roles": diff.role_grants_after,
+                    "admin_roles": admin_grant.role_codes,
+                    "admin_role_granted_to": [str(m) for m in admin_grant.membership_ids],
                 },
             )
+            if diff.changed:
+                publish_event(
+                    session,
+                    OutboxEvent,
+                    organization_id=org_id,
+                    event_type=EVT_GRANTS_CHANGED,
+                    aggregate_type="organization",
+                    aggregate_id=org_id,
+                    payload={
+                        "organization_id": str(org_id),
+                        "role_codes": diff.role_codes(),
+                        "permission_codes": diff.permission_codes(),
+                    },
+                )
+            for membership_id in admin_grant.membership_ids:
+                publish_event(
+                    session,
+                    OutboxEvent,
+                    organization_id=org_id,
+                    event_type=EVT_GRANTS_CHANGED,
+                    aggregate_type="membership",
+                    aggregate_id=membership_id,
+                    payload={
+                        "organization_id": str(org_id),
+                        "membership_id": str(membership_id),
+                        "granted_roles": admin_grant.role_codes,
+                    },
+                )
             # Fail-loud, inside this organization's transaction: `bump_permission_version`
             # raises when Redis is unreachable, which rolls this org's writes back and
             # leaves it to be picked up by the next run — never reported as reconciled.
@@ -2197,7 +2321,8 @@ async def reconcile_registration(
         scopes_widened=len(diff.scopes_widened),
         skipped_customer_roles=diff.skipped_customer_roles,
         memberships_without=memberships_without,
-        changed=diff.changed,
+        changed=changed,
+        admin_grant=admin_grant,
     )
 
 
@@ -2233,27 +2358,11 @@ async def install_product_registration(
     registration = manifest.registration
     diff = await install_registration(session, org_id, registration)
 
-    granted: list[uuid.UUID] = []
-    granted_roles: list[str] = []
+    admin_grant = AdminGrant()
     if grant_admin_to_owners and manifest.admin_role_codes:
-        owners = await selectors.list_owner_memberships(session, org_id)
-        # Every admin template, not just one: a product spans as many services as it needs,
-        # and each ships the admin role for its own slice. Granting one left CRM's owners
-        # able to read contacts and not deals.
-        for code in manifest.admin_role_codes:
-            role = await selectors.get_role_by_code(session, org_id, code)
-            if role is None:
-                continue
-            granted_roles.append(code)
-            for owner in owners:
-                if any(link.role_id == role.id for link in owner.roles):
-                    continue
-                session.add(
-                    MembershipRole(membership_id=owner.id, role_id=role.id, granted_by=None)
-                )
-                if owner.id not in granted:
-                    granted.append(owner.id)
-        await session.flush()
+        admin_grant = await grant_admin_roles_to_owners(session, org_id, manifest.admin_role_codes)
+    granted = admin_grant.membership_ids
+    granted_roles = admin_grant.role_codes
 
     record_audit(
         session,
