@@ -5,12 +5,14 @@ import { fn } from "storybook/test";
 import { FilterIcon, InboxIcon, PlusIcon } from "../icons";
 import { Avatar } from "./Avatar";
 import { Button } from "./Button";
+import { Card } from "./Card";
 import { DataTable } from "./DataTable";
 import type { Column } from "./DataTable";
+import { MobileDataCard } from "./MobileDataCard";
 import { Pill } from "./Pill";
 import { RowActions } from "./RowActions";
 import { SearchInput } from "./SearchInput";
-import { EmptyState } from "./States";
+import { EmptyState, ErrorState } from "./States";
 import { Tag } from "./Tag";
 
 interface Deal {
@@ -212,6 +214,205 @@ export const Empty: Story = {
       />
     ),
   },
+};
+
+/* ---- v2: loading, failure, bulk actions, a pinned header, cards on a phone ------------------ */
+
+interface Account {
+  id: string;
+  company: string;
+  domain: string;
+  plan: string;
+  status: "Active" | "Trial" | "Suspended";
+  users: number;
+  revenue: number;
+  created: string;
+}
+
+const ACCOUNTS: Account[] = [
+  { id: "a-1", company: "Acme Pvt Ltd", domain: "acme.in", plan: "Enterprise", status: "Active", users: 24, revenue: 49800, created: "12 Aug 2026" },
+  { id: "a-2", company: "Global Traders", domain: "globaltraders.com", plan: "Pro", status: "Active", users: 18, revenue: 24800, created: "5 Aug 2026" },
+  { id: "a-3", company: "Shree Distributors", domain: "shreedist.com", plan: "Business", status: "Trial", users: 8, revenue: 0, created: "20 Sep 2026" },
+  { id: "a-4", company: "Rohit Enterprises", domain: "rohitent.in", plan: "Pro", status: "Active", users: 12, revenue: 24800, created: "2 Aug 2026" },
+  { id: "a-5", company: "NAC Brands", domain: "nacbrands.com", plan: "Business", status: "Suspended", users: 10, revenue: 0, created: "10 Jul 2026" },
+];
+
+const ACCOUNT_COLUMNS: Column<Account>[] = [
+  {
+    key: "company",
+    header: "Company",
+    render: (account) => (
+      <div className="flex flex-col">
+        <span className="font-semibold text-ink">{account.company}</span>
+        <span className="text-xs text-muted">{account.domain}</span>
+      </div>
+    ),
+  },
+  { key: "plan", header: "Plan", render: (account) => <Tag tone="info">{account.plan}</Tag>, mobile: "status" },
+  { key: "status", header: "Status", render: (account) => <Tag>{account.status}</Tag>, mobile: "status" },
+  { key: "users", header: "Users", align: "right", cellClassName: "tnum", render: (account) => account.users },
+  { key: "revenue", header: "Revenue", align: "right", cellClassName: "tnum", render: (account) => inr.format(account.revenue) },
+  {
+    key: "created",
+    header: "Created",
+    cellClassName: "hidden lg:table-cell text-muted",
+    headerClassName: "hidden lg:table-cell",
+    render: (account) => account.created,
+    mobile: "hidden",
+  },
+  {
+    key: "actions",
+    header: <span className="sr-only">Actions</span>,
+    align: "right",
+    mobile: "actions",
+    render: (account) => (
+      <RowActions
+        label={account.company}
+        inlineLimit={2}
+        actions={[
+          { label: "View", onSelect: fn() },
+          { label: "Change plan", onSelect: fn() },
+        ]}
+      />
+    ),
+  },
+];
+
+/** The same columns with nothing operable in the cells — for a table whose rows are links. */
+const ACCOUNT_COLUMNS_PLAIN = ACCOUNT_COLUMNS.filter((column) => column.key !== "actions");
+
+const ACCOUNT_TOOLBAR = (
+  <SearchInput label="Search accounts" placeholder="Search accounts" containerClassName="w-full sm:w-72" />
+);
+
+function AccountsTable({
+  selectable = false,
+  initiallySelected = [],
+  ...props
+}: Partial<Parameters<typeof DataTable<Account>>[0]> & { selectable?: boolean; initiallySelected?: string[] }) {
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set(initiallySelected));
+  return (
+    <Card className="p-4 md:p-5">
+      <DataTable<Account>
+        caption="All accounts"
+        columns={ACCOUNT_COLUMNS}
+        rows={ACCOUNTS}
+        rowKey={(account) => account.id}
+        toolbar={ACCOUNT_TOOLBAR}
+        {...(selectable
+          ? {
+              selection: {
+                selected,
+                label: (account: Account) => account.company,
+                onToggle: (key: string, next: boolean) =>
+                  setSelected((previous) => {
+                    const copy = new Set(previous);
+                    if (next) copy.add(key);
+                    else copy.delete(key);
+                    return copy;
+                  }),
+                onToggleAll: (next: boolean) => setSelected(next ? new Set(ACCOUNTS.map((account) => account.id)) : new Set()),
+              },
+            }
+          : {})}
+        {...props}
+      />
+    </Card>
+  );
+}
+
+/** The header stays and skeleton rows hold the body's height, so nothing moves when rows land. */
+export const Loading: Story = { render: () => <AccountsTable rows={[]} loading loadingRows={5} /> };
+
+/** The fetch failed: the error takes the body's place, and the toolbar that might fix it stays. */
+export const Failed: Story = {
+  render: () => (
+    <AccountsTable
+      errorState={
+        <ErrorState
+          title="Accounts didn't load"
+          message="The console service didn't answer. Nothing was changed."
+          action={
+            <Button size="sm" variant="outline">
+              Try again
+            </Button>
+          }
+        />
+      }
+    />
+  ),
+};
+
+/** Ticked rows bring up the bulk-action bar: the count, Clear selection, and the caller's actions. */
+export const WithBulkActions: Story = {
+  render: () => (
+    <AccountsTable
+      selectable
+      initiallySelected={["a-2", "a-4"]}
+      bulkActions={
+        <>
+          <Button size="sm" variant="outline">
+            Change plan
+          </Button>
+          <Button size="sm" variant="outline">
+            Export
+          </Button>
+        </>
+      }
+    />
+  ),
+};
+
+/** A long page of rows in its own scroll area, the header pinned; the area is a Tab stop. */
+export const StickyHeader: Story = {
+  render: () => (
+    <AccountsTable
+      stickyHeader
+      rows={Array.from({ length: 36 }, (_, index) => {
+        const base = ACCOUNTS[index % ACCOUNTS.length] ?? ACCOUNTS[0];
+        if (base === undefined) throw new Error("no accounts");
+        return { ...base, id: `s-${index}`, company: `${base.company} ${index + 1}` };
+      })}
+    />
+  ),
+};
+
+/**
+ * Below 768px each row is a generated card: title from the first column, badges from the
+ * `status` columns, figures from the rest, `RowActions` at the foot; "Created" is `hidden`.
+ */
+export const MobileCards: Story = {
+  render: () => <AccountsTable selectable initiallySelected={["a-1"]} mobileCard="auto" />,
+};
+
+/**
+ * A custom card, handed the wiring so it opens and marks exactly as its row would. The rows open
+ * a record, so no cell holds a control of its own (a button inside a button-row is not operable).
+ */
+export const MobileCardsCustom: Story = {
+  render: () => (
+    <AccountsTable
+      columns={ACCOUNT_COLUMNS_PLAIN}
+      mobileCard={(account, wiring) => (
+        <MobileDataCard
+          {...wiring}
+          title={account.company}
+          subtitle={account.domain}
+          status={<Tag tone="info">{account.plan}</Tag>}
+          fields={[
+            { key: "users", label: "Users", value: account.users },
+            { key: "revenue", label: "Revenue", value: inr.format(account.revenue) },
+          ]}
+        />
+      )}
+      onRowClick={fn()}
+      isSelected={(account) => account.id === "a-3"}
+    />
+  ),
+};
+
+export const MobileCardsLoading: Story = {
+  render: () => <AccountsTable rows={[]} loading loadingRows={3} mobileCard="auto" />,
 };
 
 export const LongText: Story = {

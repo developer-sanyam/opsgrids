@@ -5,12 +5,16 @@
  */
 
 import { useState } from "react";
-import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { stubViewport } from "../test-media";
 import { DataTable } from "./DataTable";
-import { EmptyState } from "./States";
+import type { Column, TableSelection } from "./DataTable";
+import { MobileDataCard } from "./MobileDataCard";
+import type { MobileCardWiring } from "./MobileDataCard";
+import { EmptyState, ErrorState } from "./States";
 
 interface Widget {
   id: string;
@@ -170,5 +174,183 @@ describe("DataTable", () => {
     render(<DataTable columns={COLUMNS} rows={ROWS} rowKey={(row) => row.id} caption="Widgets" />);
     expect(screen.getAllByRole("row")).toHaveLength(4);
     expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+});
+
+/** The v2 additions: loading, error, bulk actions, a pinned header and cards on a phone. */
+describe("DataTable v2", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function selection(selected: string[], overrides: Partial<TableSelection<Widget>> = {}): TableSelection<Widget> {
+    return {
+      selected: new Set(selected),
+      onToggle: vi.fn(),
+      onToggleAll: vi.fn(),
+      label: (row) => row.name,
+      ...overrides,
+    };
+  }
+
+  it("keeps the header while loading, with skeleton rows in the body's place", () => {
+    render(<DataTable columns={COLUMNS} rows={[]} rowKey={(row) => row.id} caption="Widgets" loading loadingRows={3} />);
+    const table = screen.getByRole("table", { name: "Widgets" });
+    expect(table.getAttribute("aria-busy")).toBe("true");
+    expect(screen.getAllByRole("columnheader")).toHaveLength(2);
+    expect(screen.getAllByRole("row")).toHaveLength(4);
+    expect(screen.getByText("Loading")).toBeTruthy();
+  });
+
+  it("shows loading rather than empty or failed while a fetch is in flight", () => {
+    render(
+      <DataTable
+        columns={COLUMNS}
+        rows={[]}
+        rowKey={(row) => row.id}
+        loading
+        emptyState={<p>No widgets</p>}
+        errorState={<p>Couldn't load widgets</p>}
+      />,
+    );
+    expect(screen.queryByText("No widgets")).toBeNull();
+    expect(screen.queryByText("Couldn't load widgets")).toBeNull();
+  });
+
+  it("puts the error in the body's place and keeps the toolbar that may fix it", () => {
+    render(
+      <DataTable
+        columns={COLUMNS}
+        rows={ROWS}
+        rowKey={(row) => row.id}
+        toolbar={<button type="button">Clear filters</button>}
+        errorState={<ErrorState message="The widget service didn't answer." onRetry={vi.fn()} />}
+      />,
+    );
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain("The widget service didn't answer.");
+    expect(screen.getByRole("button", { name: "Clear filters" })).toBeTruthy();
+  });
+
+  it("shows the bulk actions once something is ticked, and clears through onToggleAll(false)", async () => {
+    const user = userEvent.setup();
+    const onToggleAll = vi.fn();
+    const { rerender } = render(
+      <DataTable
+        columns={COLUMNS}
+        rows={ROWS}
+        rowKey={(row) => row.id}
+        selection={selection([])}
+        bulkActions={<button type="button">Suspend</button>}
+      />,
+    );
+    expect(screen.queryByRole("region", { name: "Bulk actions" })).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("");
+
+    rerender(
+      <DataTable
+        columns={COLUMNS}
+        rows={ROWS}
+        rowKey={(row) => row.id}
+        selection={selection(["w1", "w3"], { onToggleAll })}
+        bulkActions={<button type="button">Suspend</button>}
+      />,
+    );
+    const bar = screen.getByRole("region", { name: "Bulk actions" });
+    expect(bar.textContent).toContain("2 selected");
+    expect(screen.getByRole("status").textContent).toBe("2 selected");
+    await user.click(screen.getByRole("button", { name: "Clear selection" }));
+    expect(onToggleAll).toHaveBeenCalledWith(false);
+  });
+
+  it("makes a pinned-header table its own keyboard-scrollable region", () => {
+    render(<DataTable columns={COLUMNS} rows={ROWS} rowKey={(row) => row.id} caption="Widgets" stickyHeader />);
+    const region = screen.getByRole("region", { name: "Widgets" });
+    expect(region.tabIndex).toBe(0);
+    expect(region.className).toContain("overflow-auto");
+    expect(screen.getAllByRole("columnheader")[0]?.className).toContain("sticky");
+  });
+
+  it("stays a table on a phone when it has not asked for cards", () => {
+    stubViewport(375);
+    render(<DataTable columns={COLUMNS} rows={ROWS} rowKey={(row) => row.id} caption="Widgets" />);
+    expect(screen.getByRole("table")).toBeTruthy();
+  });
+
+  it("stays a table where the viewport cannot be measured, whatever it asked for", () => {
+    render(<DataTable columns={COLUMNS} rows={ROWS} rowKey={(row) => row.id} mobileCard="auto" />);
+    expect(screen.getByRole("table")).toBeTruthy();
+  });
+
+  it("becomes a list of cards on a phone, placing each column where it says", async () => {
+    stubViewport(375);
+    const user = userEvent.setup();
+    const onRowClick = vi.fn();
+    const onToggle = vi.fn();
+    const columns: Column<Widget>[] = [
+      { key: "name", header: "Name", render: (row) => row.name },
+      { key: "id", header: "Reference", render: (row) => row.id },
+      { key: "state", header: "State", render: () => "Active", mobile: "status" },
+      { key: "secret", header: "Internal", render: () => "hidden value", mobile: "hidden" },
+      { key: "actions", header: "Actions", render: (row) => <button type="button">Edit {row.name}</button>, mobile: "actions" },
+    ];
+    render(
+      <DataTable
+        columns={columns}
+        rows={ROWS}
+        rowKey={(row) => row.id}
+        caption="Widgets"
+        onRowClick={onRowClick}
+        selection={selection([], { onToggle })}
+        mobileCard="auto"
+      />,
+    );
+    expect(screen.queryByRole("table")).toBeNull();
+    const list = screen.getByRole("list", { name: "Widgets" });
+    const cards = within(list).getAllByRole("listitem");
+    expect(cards).toHaveLength(3);
+    const first = cards[0];
+    if (first === undefined) throw new Error("no card");
+    expect(within(first).getByText("Reference")).toBeTruthy();
+    expect(within(first).getByText("Active")).toBeTruthy();
+    expect(within(first).queryByText("hidden value")).toBeNull();
+
+    await user.click(within(first).getByRole("button", { name: "Acme Bracket" }));
+    expect(onRowClick).toHaveBeenCalledWith(ROWS[0]);
+    await user.click(within(first).getByRole("button", { name: "Edit Acme Bracket" }));
+    expect(onRowClick).toHaveBeenCalledTimes(1);
+    await user.click(within(first).getByRole("checkbox", { name: "Select Acme Bracket" }));
+    expect(onToggle).toHaveBeenCalledWith("w1", true);
+    expect(screen.getByRole("checkbox", { name: "Select all rows on this page" })).toBeTruthy();
+  });
+
+  it("hands a custom card the wiring to open, mark and select like its row", () => {
+    stubViewport(375);
+    const mobileCard = vi.fn((row: Widget, wiring: MobileCardWiring) => (
+      <MobileDataCard {...wiring} title={row.name} subtitle={row.id} />
+    ));
+    render(
+      <DataTable
+        columns={COLUMNS}
+        rows={ROWS}
+        rowKey={(row) => row.id}
+        onRowClick={vi.fn()}
+        isSelected={(row) => row.id === "w2"}
+        mobileCard={mobileCard}
+      />,
+    );
+    expect(mobileCard).toHaveBeenCalledTimes(3);
+    const wiring = mobileCard.mock.calls[1]?.[1];
+    expect(wiring?.current).toBe(true);
+    expect(typeof wiring?.onOpen).toBe("function");
+    expect(screen.getByRole("button", { name: "Bolt, M6" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("draws skeleton cards while a phone list loads", () => {
+    stubViewport(375);
+    render(<DataTable columns={COLUMNS} rows={[]} rowKey={(row) => row.id} caption="Widgets" mobileCard="auto" loading loadingRows={2} />);
+    const list = screen.getByRole("list", { name: "Widgets" });
+    expect(list.getAttribute("aria-busy")).toBe("true");
+    expect(within(list).getAllByRole("listitem")).toHaveLength(2);
   });
 });
