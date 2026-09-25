@@ -723,8 +723,12 @@ export function HomePage() {
 
       {/* Operational — the mockup's Recent Orders and a Tasks checklist, both real. Top Products
           has no source (invoice lines carry a description only, with no product link; storefront
-          has enquiries, not sales) and is not built, per the dashboard audit. */}
-      <section aria-label="Recent invoices and tasks" className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          has enquiries, not sales) and is not built, per the dashboard audit.
+          Two columns only from 1536px: at 1024–1535 (this section's own `lg:grid-cols-2` used to
+          switch here) the invoice table's Date column clipped its own value — half its card width
+          isn't enough room for Invoice/Customer/Amount/Status/Date together, so it stays full
+          width until there is. */}
+      <section aria-label="Recent invoices and tasks" className="grid grid-cols-1 gap-4 2xl:grid-cols-2">
         <Card className="flex flex-col gap-4 p-4 sm:p-6">
           <SectionHeader
             title="Recent Invoices"
