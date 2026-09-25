@@ -3,7 +3,6 @@
   "$id": "opsgrids://contracts/finance.billing.invoice.issued/v1",
   "title": "finance.billing.invoice.issued",
   "description": "An invoice or credit note was issued. Once issued, an invoice changes only by moving to `paid`. A correction is a credit note (`document_type` = credit_note, negative totals). `issued_date` and `due_date` are business dates with no timezone. Money is integer minor units of `currency`.",
-  "$comment": "Ahead of the producer (ADR-0020 slice I2): services/finance/app/services.py:create_invoice does not emit issued_date, due_date, subtotal_minor, tax_minor yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -24,20 +23,70 @@
     "requires_einvoice"
   ],
   "properties": {
-    "organization_id": { "type": "string", "format": "uuid" },
-    "invoice_id": { "type": "string", "format": "uuid" },
-    "number": { "type": "string", "minLength": 1 },
-    "document_type": { "enum": ["invoice", "credit_note"] },
-    "customer_id": { "type": "string", "format": "uuid" },
-    "status": { "enum": ["draft", "sent", "paid", "overdue", "void"] },
-    "issued_date": { "type": "string", "format": "date" },
-    "due_date": { "type": "string", "format": "date" },
-    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
-    "subtotal_minor": { "type": "integer" },
-    "tax_minor": { "type": "integer" },
-    "total_minor": { "type": "integer" },
-    "supply_type": { "type": "string", "minLength": 1 },
-    "place_of_supply": { "type": ["string", "null"] },
-    "requires_einvoice": { "type": "boolean" }
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "invoice_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "number": {
+      "type": "string",
+      "minLength": 1
+    },
+    "document_type": {
+      "enum": [
+        "invoice",
+        "credit_note"
+      ]
+    },
+    "customer_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "sent",
+        "paid",
+        "overdue",
+        "void"
+      ]
+    },
+    "issued_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "due_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$"
+    },
+    "subtotal_minor": {
+      "type": "integer"
+    },
+    "tax_minor": {
+      "type": "integer"
+    },
+    "total_minor": {
+      "type": "integer"
+    },
+    "supply_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "place_of_supply": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "requires_einvoice": {
+      "type": "boolean"
+    }
   }
 }

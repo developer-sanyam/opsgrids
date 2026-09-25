@@ -29,6 +29,7 @@ CONTRACTS = ROOT / "libs" / "contracts"
 EVENTS = CONTRACTS / "events"
 NOTIFICATION = ROOT / "services" / "notification"
 LEAD = ROOT / "services" / "lead"
+FINANCE = ROOT / "services" / "finance"
 
 
 def _schema_files() -> list[Path]:
@@ -101,6 +102,33 @@ def test_the_lead_conversion_abort_event_has_a_committed_schema() -> None:
     assert event_type in committed, (
         f"no committed schema for {event_type} — add "
         "libs/contracts/events/crm.lead.conversion_aborted/v1.schema.json"
+    )
+
+
+def _finance_purchase_recorded_event_type() -> str:
+    """`finance.billing.purchase.recorded`, read off the constant `services.py` stages it under
+    (ADR-0020 slice I2 — the one "new emission" this slice adds), from a fresh interpreter with
+    finance's own directory as cwd — the same reason and the same trick as
+    `_lead_aborted_event_type`."""
+    result = subprocess.run(
+        [sys.executable, "-c", "import app.services as s\nprint(s.EVT_PURCHASE_RECORDED)\n"],
+        cwd=FINANCE,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def test_the_finance_purchase_recorded_event_has_a_committed_schema() -> None:
+    """Nothing published this event before ADR-0020 slice I2 (`docs/insights/events.md` §2):
+    the purchase book's own outbox row needed a contract before insights could bind it."""
+    event_type = _finance_purchase_recorded_event_type()
+    assert event_type == "finance.billing.purchase.recorded"
+    committed = {path.parent.name for path in _schema_files()}
+    assert event_type in committed, (
+        f"no committed schema for {event_type} — add "
+        "libs/contracts/events/finance.billing.purchase.recorded/v1.schema.json"
     )
 
 

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import Select, and_, case, func, literal, or_, select
+from sqlalchemy import Select, and_, case, func, literal, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
@@ -2790,3 +2790,132 @@ async def withholding_rates_out(
         WithholdingRateOut.model_validate(row)
         for row in (await session.execute(stmt)).scalars().all()
     ]
+
+
+# --------------------------------------------------------------------- insights export (ADR-0020
+# slice I2, `docs/insights/api.md` §6.1)
+#
+# `GET /internal/v1/insights/export/{entity}` on `app/api/internal.py`: a read-only, tenant-bound,
+# keyset-paginated page for insights' backfill runner. Soft-deleted rows are **included** — none
+# of the three tables below has a delete path today (invoices, payments and purchase documents
+# are append-only), so `deleted_at` is always null in practice, but the query does not filter it,
+# so a future delete propagates without this route changing.
+
+
+def invoices_export_stmt(
+    org_id: uuid.UUID, *, after_updated_at: datetime | None, after_id: uuid.UUID | None, limit: int
+) -> Select[Any]:
+    """`(updated_at, id)` keyset page of every invoice and credit note, plus `paid_at`: the
+    settling payment's own `created_at`, for export only (`docs/insights/api.md` §6.1).
+
+    A `paid` invoice accepts no further allocation (`record_payment` refuses any status but
+    `sent`/`overdue`), so the payment that pushed it to `paid` is unambiguously the most recently
+    created payment holding an allocation against it — the correlated subquery below, evaluated
+    only where `status = 'paid'`.
+    """
+    paid_at = (
+        select(Payment.created_at)
+        .join(PaymentAllocation, PaymentAllocation.payment_id == Payment.id)
+        .where(
+            PaymentAllocation.organization_id == org_id,
+            PaymentAllocation.invoice_id == Invoice.id,
+        )
+        .order_by(Payment.created_at.desc())
+        .limit(1)
+        .correlate(Invoice)
+        .scalar_subquery()
+    )
+    stmt = select(
+        Invoice.id,
+        Invoice.number,
+        Invoice.document_type,
+        Invoice.status,
+        Invoice.issued_date,
+        Invoice.due_date,
+        Invoice.currency,
+        Invoice.subtotal_minor,
+        Invoice.tax_minor,
+        Invoice.total_minor,
+        Invoice.customer_id,
+        case((Invoice.status == "paid", paid_at), else_=literal(None)).label("paid_at"),
+        Invoice.created_at,
+        Invoice.updated_at,
+        Invoice.deleted_at,
+    ).where(Invoice.organization_id == org_id)
+    if after_updated_at is not None and after_id is not None:
+        stmt = stmt.where(
+            tuple_(Invoice.updated_at, Invoice.id)
+            > tuple_(literal(after_updated_at), literal(after_id))
+        )
+    return stmt.order_by(Invoice.updated_at, Invoice.id).limit(limit)
+
+
+def payments_export_stmt(
+    org_id: uuid.UUID, *, after_updated_at: datetime | None, after_id: uuid.UUID | None, limit: int
+) -> Select[Any]:
+    """`(updated_at, id)` keyset page of every payment, plus `currency` — derived the same way
+    `services.record_payment` derives it for the event: `payments` carries no currency column of
+    its own (`docs/insights/api.md` §6.1, events.md §5 finding 1). A payment with no allocation
+    (none exists today — `record_payment` requires at least one) would export `currency` as null
+    rather than guessing.
+    """
+    currency = (
+        select(Invoice.currency)
+        .join(PaymentAllocation, PaymentAllocation.invoice_id == Invoice.id)
+        .where(
+            PaymentAllocation.organization_id == org_id,
+            PaymentAllocation.payment_id == Payment.id,
+        )
+        .order_by(PaymentAllocation.created_at)
+        .limit(1)
+        .correlate(Payment)
+        .scalar_subquery()
+    )
+    stmt = select(
+        Payment.id,
+        Payment.reference,
+        Payment.customer_id,
+        Payment.received_date,
+        Payment.method,
+        currency.label("currency"),
+        Payment.amount_minor,
+        Payment.created_at,
+        Payment.updated_at,
+        Payment.deleted_at,
+    ).where(Payment.organization_id == org_id)
+    if after_updated_at is not None and after_id is not None:
+        stmt = stmt.where(
+            tuple_(Payment.updated_at, Payment.id)
+            > tuple_(literal(after_updated_at), literal(after_id))
+        )
+    return stmt.order_by(Payment.updated_at, Payment.id).limit(limit)
+
+
+def purchases_export_stmt(
+    org_id: uuid.UUID, *, after_updated_at: datetime | None, after_id: uuid.UUID | None, limit: int
+) -> Select[Any]:
+    """`(updated_at, id)` keyset page of every purchase document. `tax_minor` is computed —
+    `purchase_documents` stores the tax split across three head columns, never a combined total —
+    the same `cgst + sgst + igst` a document foots to (`docs/insights/api.md` §6.1)."""
+    tax_minor = (
+        PurchaseDocument.cgst_minor + PurchaseDocument.sgst_minor + PurchaseDocument.igst_minor
+    )
+    stmt = select(
+        PurchaseDocument.id,
+        PurchaseDocument.number,
+        PurchaseDocument.document_type,
+        PurchaseDocument.document_date,
+        PurchaseDocument.currency,
+        PurchaseDocument.taxable_minor,
+        tax_minor.label("tax_minor"),
+        PurchaseDocument.total_minor,
+        PurchaseDocument.created_at,
+        PurchaseDocument.updated_at,
+        PurchaseDocument.deleted_at,
+    ).where(PurchaseDocument.organization_id == org_id)
+    if after_updated_at is not None and after_id is not None:
+        stmt = stmt.where(
+            tuple_(PurchaseDocument.updated_at, PurchaseDocument.id)
+            > tuple_(literal(after_updated_at), literal(after_id))
+        )
+    return stmt.order_by(PurchaseDocument.updated_at, PurchaseDocument.id).limit(limit)

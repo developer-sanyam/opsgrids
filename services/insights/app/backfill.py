@@ -19,9 +19,10 @@ sweep, `app/main.py`) that does two things on one cadence, cheaper first:
 I1 registers **one** entity end to end, `account.organizations` — not through `ENTITY_REGISTRY`
 below (the account export has no per-organization page to walk; discovery's own sync step *is*
 its backfill), but as the worked example of the framework I2-I9 plug their own entities into.
-`ENTITY_REGISTRY` therefore starts empty: no `*_facts` table exists yet for anything it could
-back. A slice that adds one registers a `BackfillSource` here, in the same commit as its export
-route client and its fold — nothing else in this module changes.
+`ENTITY_REGISTRY` therefore started empty in I1: no `*_facts` table existed yet for anything it
+could back. A slice that adds one registers a `BackfillSource`, in the same commit as its export
+route client and its fold — nothing else in this module changes. I2 is the first: see the bottom
+of this file for `finance.invoices`/`payments`/`purchases`.
 
 **Ordering.** `app/main.py` calls `app/consumers.py:ensure_queue_bound` before starting this
 runner's loop, never the other way around (ADR-0020 §3, step 2): a change committed before the
@@ -98,9 +99,11 @@ class BackfillSource(Protocol):
         ...
 
 
-#: Empty in I1 (see the module docstring) — I2 registers `finance.invoices`/`payments`/
-#: `purchases`, I3 `deal.deals`, and so on, each entity's export client living beside its own
-#: fold in that slice.
+#: I2 registers `finance.invoices`/`payments`/`purchases` below (each entity's export client
+#: living beside its own fold in `app/finance_client.py`); I3-I9 append their own the same way.
+#: Populated at the bottom of this module, after `ExportPage`/`BackfillSource` are defined —
+#: `app/finance_client.py` imports both, so the population has to come after they exist, not at
+#: the top of the file, to avoid a circular import.
 ENTITY_REGISTRY: dict[str, BackfillSource] = {}
 
 
@@ -607,3 +610,19 @@ async def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(asyncio.run(main()))
+
+
+# --------------------------------------------------------------------- entity registrations
+#
+# Imported down here, not at module top, so `app/finance_client.py`'s own `from app.backfill
+# import ExportPage` (it needs the real class, not just the annotation) resolves against an
+# already-initialized module rather than racing this file's own import (ADR-0020 §3: "each
+# entity's export client living beside its own fold in that slice"). I3-I9 append their own
+# `from app import <source>_client` plus `ENTITY_REGISTRY[...] = ...` lines here, in the same
+# shape, never touching the three above.
+
+from app import finance_client  # noqa: E402
+
+ENTITY_REGISTRY["finance.invoices"] = finance_client.InvoicesExportSource()
+ENTITY_REGISTRY["finance.payments"] = finance_client.PaymentsExportSource()
+ENTITY_REGISTRY["finance.purchases"] = finance_client.PurchasesExportSource()

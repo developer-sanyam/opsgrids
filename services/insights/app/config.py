@@ -46,6 +46,11 @@ class Settings(ServiceSettings):
     #: on in development (`services/account/README.md`).
     account_service_url: str = "http://localhost:8111"
 
+    #: finance-service's internal API, for the three export routes I2 registers
+    #: (`GET /internal/v1/insights/export/{invoices,payments,purchases}`, ADR-0020 slice I2,
+    #: `docs/insights/api.md` §6.1). Same dev port `make run SERVICE=finance` uses.
+    finance_service_url: str = "http://localhost:8171"
+
     #: Paging and pacing for the backfill runner's export reads (ADR-0020 §3): "pages of 500,
     #: with a 100 ms pause between pages ... timeouts are 5 s to connect and 30 s to read, with
     #: 3 retries at 2/8/30 s."

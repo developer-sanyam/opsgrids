@@ -107,17 +107,18 @@ class TestSummaryStates:
     async def test_entitled_and_permitted_is_unavailable_not_a_fake_zero(
         self, client: AsyncClient, org_id: uuid.UUID
     ) -> None:
+        """`customers` has no fact table before I4 — an entitled, permitted caller must see the
+        honest "not computed yet", never a fabricated zero. (`revenue` moved to a real "ok" read
+        in I2; its own real-data test lives in `tests/test_finance_metrics.py`.)"""
         with as_principal(
-            principal_for(
-                org_id, entitlements=["finance"], perms=["finance.reports.summary.read:ORG"]
-            )
+            principal_for(org_id, entitlements=["crm"], perms=["crm.book.company.read:ORG"])
         ):
-            response = await client.get("/api/v1/insights/summary", params={"metrics": "revenue"})
+            response = await client.get("/api/v1/insights/summary", params={"metrics": "customers"})
         assert response.status_code == 200
-        metric = response.json()["metrics"]["revenue"]
+        metric = response.json()["metrics"]["customers"]
         assert metric["state"] == "unavailable"
-        assert metric["kind"] == "flow"
-        assert metric["unit"] == "money"
+        assert metric["kind"] == "state"
+        assert metric["unit"] == "count"
         assert metric["scope"] == "ORG"
         assert metric.get("value") is None
 

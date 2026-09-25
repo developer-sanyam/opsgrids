@@ -1298,3 +1298,90 @@ class WithholdingSummaryOut(BaseModel):
     total_cgst_minor: int
     total_sgst_minor: int
     total_igst_minor: int
+
+
+# --------------------------------------------------------------------- insights export (ADR-0020
+# slice I2, `docs/insights/api.md` §6.1)
+# `GET /internal/v1/insights/export/{entity}` — never this service's own OpenAPI document: the
+# internal router is excluded from it entirely. Read-only, tenant-bound, keyset-paginated for
+# insights' backfill runner alone.
+
+
+class InvoiceExportRowOut(BaseModel):
+    """One row of `.../export/invoices` — an invoice or credit note, plus `paid_at`, which is not
+    a column on `invoices` (`docs/insights/api.md` §6.1: "the created_at of the payment whose
+    allocation settled it, null unless status = 'paid'")."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    number: str
+    document_type: str
+    status: str
+    issued_date: date
+    due_date: date
+    currency: str
+    subtotal_minor: int
+    tax_minor: int
+    total_minor: int
+    customer_id: uuid.UUID
+    paid_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: datetime | None
+
+
+class PaymentExportRowOut(BaseModel):
+    """One row of `.../export/payments`, plus `currency` — derived from the allocated invoices,
+    since `payments` carries no currency column of its own (events.md §5 finding 1)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    reference: str
+    customer_id: uuid.UUID
+    received_date: date
+    method: str
+    currency: str | None
+    amount_minor: int
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: datetime | None
+
+
+class PurchaseExportRowOut(BaseModel):
+    """One row of `.../export/purchases` — no field beyond the event's own."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    number: str
+    document_type: str
+    document_date: date
+    currency: str
+    taxable_minor: int
+    tax_minor: int
+    total_minor: int
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: datetime | None
+
+
+class InsightsExportCursorOut(BaseModel):
+    after_updated_at: datetime
+    after_id: uuid.UUID
+
+
+class InvoiceExportPageOut(BaseModel):
+    rows: list[InvoiceExportRowOut]
+    next: InsightsExportCursorOut | None
+
+
+class PaymentExportPageOut(BaseModel):
+    rows: list[PaymentExportRowOut]
+    next: InsightsExportCursorOut | None
+
+
+class PurchaseExportPageOut(BaseModel):
+    rows: list[PurchaseExportRowOut]
+    next: InsightsExportCursorOut | None

@@ -20,6 +20,8 @@ I1 lands the platform scaffold plus the tables that hold no entity-specific busi
 Slices I2-I9 each add their own `*_facts` table(s) here, following `org_profile`'s shape: a
 version-guarded upsert target, keyed `(organization_id, id)` with the source row's own id,
 tenant-scoped and RLS-policied like everything else in this file.
+
+I2 adds finance's three: `invoice_facts`, `payment_facts`, `purchase_facts` (data-model.md §3).
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy import (
     Date as SADate,
@@ -252,4 +255,148 @@ class BackfillRun(Base):
         # §3): cross-tenant discovery on the BYPASSRLS `opsgrids_outbox` role has no tenant to
         # bind while it asks "what is due", the same shape as approval's SLA-sweep index.
         Index("ix_backfill_runs_status_next_attempt", "status", "next_attempt_at"),
+    )
+
+
+class FactMixin:
+    """The columns every `*_facts` table carries on top of its own (data-model.md §1: "Fact
+    columns"). Not a `Base` mixin on its own — each fact table still declares its own
+    `organization_id`/`id` primary key, because `(organization_id, id)` is the source row's own
+    UUID, never a surrogate.
+    """
+
+    #: The source row's `created_at`, or the payload's `created_at` where the source can backdate
+    #: it. Otherwise the envelope's `occurred_at` on the creating event — the same instant.
+    source_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: **The event version guard**: the envelope `occurred_at` for events, the source row's own
+    #: `updated_at` for exports (§1.1). Every write here is `apply iff incoming.source_updated_at
+    #: >= stored.source_updated_at` (events) or `apply iff stored.ingested_at < page_requested_at`
+    #: (exports) — never a plain overwrite.
+    source_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: Set from a delete event, a soft-deleted export row, or mark-and-sweep. Every read filters
+    #: `deleted_at IS NULL` — not enforced by this mixin, because a read that wants deleted rows
+    #: (mark-and-sweep itself) legitimately does not.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The last `backfill_runs.id` that exported this row, for mark-and-sweep (§1.1).
+    last_seen_run: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: When insights last wrote the row. Load-bearing: the export overwrite rule and
+    #: mark-and-sweep both compare against this, never against `source_updated_at`.
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class InvoiceFacts(Base, FactMixin):
+    """Finance invoices and credit notes (data-model.md §3; ADR-0020 slice I2).
+
+    Keyed `(organization_id, id)` with `id` the source `finance.invoices.id` — the same UUID in
+    both schemas. Folded from `finance.billing.invoice.issued`/`.paid`
+    (`app/consumers.py`) and from finance's own `GET /internal/v1/insights/export/invoices`
+    (`app/backfill.py`).
+    """
+
+    __tablename__ = "invoice_facts"
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    number: Mapped[str] = mapped_column(Text, nullable=False)
+    #: invoice | credit_note.
+    document_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: draft | sent | paid | overdue | void.
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: Business date, never converted (ADR-0020 §8).
+    issued_date: Mapped[date] = mapped_column(SADate, nullable=False)
+    due_date: Mapped[date] = mapped_column(SADate, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    #: Negative on a credit note. Kept alongside `total_minor` so revenue can move to net of tax
+    #: without a backfill (ADR-0020 §9, open question Q1).
+    subtotal_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tax_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    total_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: Finance's own customer id. Not used for scope — finance is ORG/ORG (ADR-0020 §4).
+    customer_ref: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    #: When the settling payment was recorded (`invoice.paid`'s `occurred_at`; the export's own
+    #: `paid_at`). Null until the invoice is paid.
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint(
+            "document_type in ('invoice', 'credit_note')", name="document_type_vocabulary"
+        ),
+        CheckConstraint(
+            "status in ('draft', 'sent', 'paid', 'overdue', 'void')",
+            name="status_vocabulary",
+        ),
+        CheckConstraint("currency ~ '^[A-Z]{3}$'", name="currency_shape"),
+        Index(
+            "ix_invoice_facts_org_issued_date",
+            "organization_id",
+            "issued_date",
+            postgresql_where=text("status not in ('draft', 'void')"),
+        ),
+        Index(
+            "ix_invoice_facts_org_source_created",
+            "organization_id",
+            "source_created_at",
+        ),
+        Index(
+            "ix_invoice_facts_org_paid_at",
+            "organization_id",
+            "paid_at",
+            postgresql_where=text("paid_at is not null"),
+        ),
+    )
+
+
+class PaymentFacts(Base, FactMixin):
+    """Finance payments — append-only at the source, so a fact is written once and only a replay
+    touches it again (data-model.md §3; ADR-0020 slice I2)."""
+
+    __tablename__ = "payment_facts"
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    reference: Mapped[str] = mapped_column(Text, nullable=False)
+    received_date: Mapped[date] = mapped_column(SADate, nullable=False)
+    method: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: Derived by finance from the allocated invoices — `payments` carries no currency column of
+    #: its own (events.md §5 finding 1).
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("currency ~ '^[A-Z]{3}$'", name="currency_shape"),
+        Index("ix_payment_facts_org_received_date", "organization_id", "received_date"),
+        Index(
+            "ix_payment_facts_org_source_created",
+            "organization_id",
+            "source_created_at",
+        ),
+    )
+
+
+class PurchaseFacts(Base, FactMixin):
+    """Finance's purchase book (data-model.md §3; ADR-0020 slice I2). "Purchases recorded" /
+    "Expenses" on the Finance dashboard sums `total_minor` here, signed by `document_type`."""
+
+    __tablename__ = "purchase_facts"
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    number: Mapped[str] = mapped_column(Text, nullable=False)
+    #: invoice | credit_note | debit_note.
+    document_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    document_date: Mapped[date] = mapped_column(SADate, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    taxable_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tax_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    total_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "document_type in ('invoice', 'credit_note', 'debit_note')",
+            name="document_type_vocabulary",
+        ),
+        CheckConstraint("currency ~ '^[A-Z]{3}$'", name="currency_shape"),
+        Index("ix_purchase_facts_org_document_date", "organization_id", "document_date"),
     )

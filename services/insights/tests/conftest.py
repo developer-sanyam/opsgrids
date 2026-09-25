@@ -45,6 +45,11 @@ TENANT_TABLES = (
     "audit_logs",
     "outbox",
     "processed_events",
+    # I2 (ADR-0020, finance): appended, never reordered or removed, so a later slice's own
+    # append lands as a one-line diff.
+    "invoice_facts",
+    "payment_facts",
+    "purchase_facts",
 )
 
 

@@ -24,9 +24,13 @@ as though it were.
 from __future__ import annotations
 
 import uuid
-from typing import Annotated
+from collections.abc import Callable
+from datetime import datetime
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
+from pydantic import BaseModel
+from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -44,10 +48,15 @@ from app.schemas import (
     GenerateEwayIn,
     ImsSyncIn,
     ImsSyncOut,
+    InsightsExportCursorOut,
+    InvoiceExportRowOut,
+    PaymentExportRowOut,
+    PurchaseExportRowOut,
 )
 from platform_core.auth import require_service_token
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
+from platform_core.errors import UnauthorizedProblem, ValidationProblem
 from platform_core.logging import get_logger
 
 log = get_logger("finance.internal")
@@ -324,3 +333,91 @@ async def sync_ims(
         portal=client.name,
     )
     return result
+
+
+# --------------------------------------------------------------------- insights export (ADR-0020
+# slice I2, `docs/insights/api.md` §6.1)
+#
+# insights' backfill runner is the only caller: a cross-tenant *discovery* of "what changed" would
+# be a much bigger surface than this service should open, so instead the caller names the
+# organization to page through, and the transaction is bound to it as the first statement — the
+# same tenancy chokepoint `_bind` already gives every other route in this file — so row-level
+# security confirms every returned row actually belongs to it.
+
+#: insights is the only caller of the export route below: a bulk, keyset-paginated read of every
+#: invoice, payment and purchase document is wider than "any service holding a finance-audience
+#: token" should reach, the same reasoning `subscription/app/api/internal.py:TRUSTED_CALLER` and
+#: `account/app/api/internal.py:TRUSTED_INSIGHTS_CALLER` give their own narrower reads.
+TRUSTED_CALLER = "insights"
+
+
+def require_insights_caller(request: Request) -> None:
+    """The narrower caller check: valid and addressed to finance (`require_service_token`,
+    applied to the whole router, already checked that) and issued by insights specifically."""
+    caller = getattr(request.state, "service_caller", None)
+    if caller != TRUSTED_CALLER:
+        raise UnauthorizedProblem("Valid service token required")
+
+
+InsightsCallerDep = Annotated[None, Depends(require_insights_caller)]
+
+#: `docs/insights/api.md` §6.1's table for finance: `invoices`, `payments`, `purchases`. A loose
+#: dict rather than a fixed enum on the route signature, the same reason `insights`' own
+#: `BackfillRun.entity` is a checked string rather than a widened CHECK constraint every slice —
+#: reviewable in a normal diff, here as the three-entry map below.
+_EXPORT_STATEMENTS: dict[str, tuple[Callable[..., Select[Any]], type[BaseModel]]] = {
+    "invoices": (selectors.invoices_export_stmt, InvoiceExportRowOut),
+    "payments": (selectors.payments_export_stmt, PaymentExportRowOut),
+    "purchases": (selectors.purchases_export_stmt, PurchaseExportRowOut),
+}
+
+
+@router.get(
+    "/insights/export/{entity}",
+    summary="A keyset page of one entity, for insights' backfill runner",
+)
+async def insights_export(
+    entity: str,
+    organization_id: uuid.UUID,
+    session: SessionDep,
+    request: Request,
+    _insights: InsightsCallerDep,
+    after_updated_at: Annotated[datetime | None, Query()] = None,
+    after_id: Annotated[uuid.UUID | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 500,
+) -> dict[str, Any]:
+    """`docs/insights/api.md` §6.1: rows ordered by `(updated_at, id)`, soft-deleted rows
+    included so a deletion propagates, `next` null once there is nothing left. The transaction
+    binds to `organization_id` as its first statement, on the NOBYPASSRLS app role — the same
+    tenancy chokepoint `_bind` gives every other route here — so a row of another organization is
+    invisible under RLS even if the query above it had a bug.
+    """
+    if (after_updated_at is None) != (after_id is None):
+        raise ValidationProblem("after_updated_at and after_id must be given together")
+    entry = _EXPORT_STATEMENTS.get(entity)
+    if entry is None:
+        raise ValidationProblem(f"Unknown export entity {entity!r}")
+    build_stmt, row_model = entry
+
+    async with session.begin():
+        await _bind(session, organization_id, request)
+        rows = (
+            await session.execute(
+                build_stmt(
+                    organization_id,
+                    after_updated_at=after_updated_at,
+                    after_id=after_id,
+                    limit=limit,
+                )
+            )
+        ).all()
+
+    next_cursor = (
+        InsightsExportCursorOut(after_updated_at=rows[-1].updated_at, after_id=rows[-1].id)
+        if len(rows) == limit
+        else None
+    )
+    return {
+        "rows": [row_model.model_validate(row) for row in rows],
+        "next": next_cursor,
+    }

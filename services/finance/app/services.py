@@ -122,6 +122,9 @@ EVT_CUSTOMER_ARCHIVED = "finance.billing.customer.archived"
 EVT_INVOICE_ISSUED = "finance.billing.invoice.issued"
 EVT_INVOICE_PAID = "finance.billing.invoice.paid"
 EVT_PAYMENT_RECEIVED = "finance.billing.payment.received"
+#: New emission (ADR-0020 slice I2): the purchase book had no event of its own before insights'
+#: `purchase_facts` needed one (docs/insights/events.md §2).
+EVT_PURCHASE_RECORDED = "finance.billing.purchase.recorded"
 #: The compliance events. `filed` is the one the auto-filing consumer both produces the trigger
 #: for and confirms against — it carries the IRN, so a consumer never has to read back to learn
 #: whether the attempt succeeded.
@@ -661,8 +664,16 @@ async def create_invoice(
             "document_type": invoice.document_type,
             "customer_id": str(invoice.customer_id),
             "status": invoice.status,
-            "total_minor": invoice.total_minor,
+            # Business dates, never converted: insights' invoice_facts key its revenue and
+            # "invoices issued" windows on these (docs/insights/events.md §2, ADR-0020 slice I2).
+            "issued_date": invoice.issued_date.isoformat(),
+            "due_date": invoice.due_date.isoformat(),
             "currency": invoice.currency,
+            # Kept alongside total_minor so revenue can move to net-of-tax without a backfill
+            # (ADR-0020 §9 open question Q1): subtotal_minor + tax_minor foots to total_minor.
+            "subtotal_minor": invoice.subtotal_minor,
+            "tax_minor": invoice.tax_minor,
+            "total_minor": invoice.total_minor,
             # Carried so an auto-filing agent can decide from the event alone whether this
             # document needs an IRN, without reading the invoice back.
             "supply_type": invoice.supply_type,
@@ -865,6 +876,16 @@ async def record_payment(
         )
         settled.append((invoice, running_paid[invoice.id]))
 
+    # `payments` has no currency column of its own (ADR-0020 events.md §5 finding 1): the
+    # payment's currency is derived from what it settles, and an allocation across invoices in
+    # different currencies is refused rather than silently reported under one of them.
+    currencies = {invoice.currency for invoice, _ in settled}
+    if len(currencies) > 1:
+        raise BusinessRuleProblem(
+            "A payment cannot allocate across invoices in different currencies"
+        )
+    payment_currency = next(iter(currencies))
+
     payment = Payment(
         organization_id=ctx.organization_id,
         created_by=str(ctx.principal.sub),
@@ -909,6 +930,10 @@ async def record_payment(
                     "number": invoice.number,
                     "payment_id": str(payment.id),
                     "amount_paid_minor": new_paid,
+                    "currency": invoice.currency,
+                    # The settling payment's own received_date, not "today" — insights'
+                    # invoice_facts.paid_at reads this (docs/insights/events.md §2).
+                    "paid_date": payment.received_date.isoformat(),
                 },
                 actor=_actor(ctx),
             )
@@ -941,6 +966,11 @@ async def record_payment(
             "payment_id": str(payment.id),
             "reference": payment.reference,
             "customer_id": str(payment.customer_id),
+            "received_date": payment.received_date.isoformat(),
+            "method": payment.method,
+            # Derived from the allocated invoices, above — `payments` carries no currency column
+            # of its own (ADR-0020 events.md §5 finding 1).
+            "currency": payment_currency,
             "amount_minor": payment.amount_minor,
             "allocations": [
                 {"invoice_id": str(a.invoice_id), "amount_minor": a.amount_minor}
@@ -2676,6 +2706,26 @@ async def record_purchase_document(
             "total_minor": purchase.total_minor,
         },
         request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_PURCHASE_RECORDED,
+        aggregate_type="purchase_document",
+        aggregate_id=purchase.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "purchase_document_id": str(purchase.id),
+            "number": purchase.number,
+            "document_type": purchase.document_type,
+            "document_date": purchase.document_date.isoformat(),
+            "currency": purchase.currency,
+            "taxable_minor": purchase.taxable_minor,
+            "tax_minor": split.total_minor,
+            "total_minor": purchase.total_minor,
+        },
+        actor=_actor(ctx),
     )
     return purchase
 

@@ -1,7 +1,8 @@
 """The backfill runner framework (ADR-0020 §3), against real PostgreSQL — resumability, the
-claim-and-drain race, and discovery's enqueue rule. `ENTITY_REGISTRY` stays empty in production
-(see `app/backfill.py`'s own docstring); every test here injects its own fake entity rather than
-depending on a real one existing.
+claim-and-drain race, and discovery's enqueue rule. Every test here injects its own fake entity
+into the functions under test via their own `registry=` parameter, rather than depending on
+`ENTITY_REGISTRY`'s real, growing contents (`finance.invoices`/`payments`/`purchases` as of I2,
+`app/finance_client.py`) — so this suite's assertions never drift with what a later slice adds.
 """
 
 from __future__ import annotations

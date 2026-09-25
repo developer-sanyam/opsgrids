@@ -12,6 +12,12 @@ I1 has no entity fact table, so every widget whose gate resolves to `"ok"` reads
 renders its state. No figures yet."). A slice that lands a fact table replaces exactly the
 `"unavailable"` branch of its own metric/board/activity kind with a real read; the gate, the
 scoping and the response shape do not change.
+
+I2 replaces that branch for `revenue`, `invoices_issued`, `payments_received` and
+`purchases_recorded` (`docs/insights/metrics.md` §4.1) with real reads over `invoice_facts`,
+`payment_facts` and `purchase_facts`. All four are `source_dates` coverage — complete from day
+one (`metrics.md` §3) — so none of them ever consults `metric_coverage`; `/series`, `/activity`
+and `/rankings` for finance are unchanged, still `"unavailable"`, pending a later pass.
 """
 
 from __future__ import annotations
@@ -21,14 +27,16 @@ from datetime import UTC, date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Select
+from sqlalchemy import Select, case, func, select
 from sqlalchemy import false as sa_false
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import access, domain
-from app.models import OrgProfile
+from app.models import InvoiceFacts, OrgProfile, PaymentFacts, PurchaseFacts
 from app.schemas import (
+    ComparisonOut,
     MetricOut,
+    OtherCurrencyValueOut,
     PeriodOut,
     RankingsOut,
     SeriesOut,
@@ -101,7 +109,151 @@ def _period_out(key: str, window: domain.Window) -> PeriodOut:
     )
 
 
-def _summary_metric(principal: Principal, key: str) -> MetricOut:
+def _window_filter(column: Any, window: domain.Window) -> Any:
+    return column.between(window.from_, window.to)
+
+
+async def _money_by_currency(
+    session: AsyncSession, stmt: Select[tuple[str, int]]
+) -> dict[str, int]:
+    """`GROUP BY currency`, dropped to a plain dict — every currency's group is summed
+    independently and never added into another (`docs/insights/metrics.md` §1: "Money is summed
+    per currency")."""
+    rows = (await session.execute(stmt)).all()
+    return {currency: int(value) for currency, value in rows if value}
+
+
+#: `docs/insights/metrics.md` §4.1: revenue is net of credit notes (they are negative), and
+#: excludes `draft`/`void` documents.
+_REVENUE_DOCUMENT_TYPES = ("invoice", "credit_note")
+_EXCLUDED_INVOICE_STATUSES = ("draft", "void")
+
+#: `purchases_recorded` / "Expenses": Σ `total_minor` signed by `document_type` — a credit note
+#: reduces spend, a debit note or an ordinary invoice adds to it (`docs/insights/metrics.md` §4.1).
+_PURCHASE_SIGN = case((PurchaseFacts.document_type == "credit_note", -1), else_=1)
+
+
+async def _revenue_by_currency(
+    session: AsyncSession, organization_id: uuid.UUID, window: domain.Window
+) -> dict[str, int]:
+    stmt = (
+        select(InvoiceFacts.currency, func.coalesce(func.sum(InvoiceFacts.total_minor), 0))
+        .where(
+            InvoiceFacts.organization_id == organization_id,
+            InvoiceFacts.deleted_at.is_(None),
+            InvoiceFacts.document_type.in_(_REVENUE_DOCUMENT_TYPES),
+            InvoiceFacts.status.notin_(_EXCLUDED_INVOICE_STATUSES),
+            _window_filter(InvoiceFacts.issued_date, window),
+        )
+        .group_by(InvoiceFacts.currency)
+    )
+    return await _money_by_currency(session, stmt)
+
+
+async def _invoices_issued_count(
+    session: AsyncSession, organization_id: uuid.UUID, window: domain.Window
+) -> int:
+    stmt = (
+        select(func.count())
+        .select_from(InvoiceFacts)
+        .where(
+            InvoiceFacts.organization_id == organization_id,
+            InvoiceFacts.deleted_at.is_(None),
+            InvoiceFacts.document_type == "invoice",
+            InvoiceFacts.status.notin_(_EXCLUDED_INVOICE_STATUSES),
+            _window_filter(InvoiceFacts.issued_date, window),
+        )
+    )
+    return int((await session.execute(stmt)).scalar_one())
+
+
+async def _payments_received_by_currency(
+    session: AsyncSession, organization_id: uuid.UUID, window: domain.Window
+) -> dict[str, int]:
+    stmt = (
+        select(PaymentFacts.currency, func.coalesce(func.sum(PaymentFacts.amount_minor), 0))
+        .where(
+            PaymentFacts.organization_id == organization_id,
+            PaymentFacts.deleted_at.is_(None),
+            _window_filter(PaymentFacts.received_date, window),
+        )
+        .group_by(PaymentFacts.currency)
+    )
+    return await _money_by_currency(session, stmt)
+
+
+async def _purchases_recorded_by_currency(
+    session: AsyncSession, organization_id: uuid.UUID, window: domain.Window
+) -> dict[str, int]:
+    stmt = (
+        select(
+            PurchaseFacts.currency,
+            func.coalesce(func.sum(PurchaseFacts.total_minor * _PURCHASE_SIGN), 0),
+        )
+        .where(
+            PurchaseFacts.organization_id == organization_id,
+            PurchaseFacts.deleted_at.is_(None),
+            _window_filter(PurchaseFacts.document_date, window),
+        )
+        .group_by(PurchaseFacts.currency)
+    )
+    return await _money_by_currency(session, stmt)
+
+
+#: The four finance flow metrics I2 lands (`docs/insights/metrics.md` §4.1). Every one is
+#: `source_dates` coverage — `NULL`/complete from day one (§3) — so, unlike a snapshot or a
+#: source-column metric, none of these ever consults `metric_coverage`: there is nothing before
+#: which their value or comparison could be `insufficient_history`.
+_FINANCE_MONEY_METRICS: dict[str, Any] = {
+    "revenue": _revenue_by_currency,
+    "payments_received": _payments_received_by_currency,
+    "purchases_recorded": _purchases_recorded_by_currency,
+}
+
+
+def _money_metric_out(
+    spec: access.MetricSpec,
+    scope_label: str,
+    org_currency_code: str,
+    by_currency: dict[str, int],
+    previous_by_currency: dict[str, int] | None,
+) -> MetricOut:
+    value = by_currency.get(org_currency_code, 0)
+    others = [
+        OtherCurrencyValueOut(currency=code, value=amount)
+        for code, amount in sorted(by_currency.items())
+        if code != org_currency_code and amount != 0
+    ]
+    comparison = None
+    if previous_by_currency is not None:
+        previous_value = previous_by_currency.get(org_currency_code, 0)
+        comparison = ComparisonOut(
+            state="ok" if previous_value != 0 else "no_baseline",
+            value=previous_value,
+            delta_pct=domain.delta_pct(value, previous_value),
+        )
+    return MetricOut(
+        state="ok",
+        kind=spec.kind,
+        unit=spec.unit,
+        scope=scope_label,
+        value=value,
+        currency=org_currency_code,
+        other_currencies=others,
+        comparison=comparison,
+        history_from=None,
+    )
+
+
+async def _summary_metric(
+    session: AsyncSession,
+    principal: Principal,
+    key: str,
+    *,
+    window: domain.Window,
+    comparison_window: domain.Window | None,
+    org_currency_code: str,
+) -> MetricOut:
     """One entry of `GET /summary`'s `metrics` map. `key` is assumed already validated against
     `app.access.METRICS` — an unknown key is a 422 at the route, never reaches here."""
     spec = access.METRICS[key]
@@ -110,9 +262,45 @@ def _summary_metric(principal: Principal, key: str) -> MetricOut:
         return MetricOut(state="not_active", product_key=gate.product_key)
     if gate.state == "no_access":
         return MetricOut(state="no_access")
-    # gate.state == "ok": no fact table exists yet for any metric (I1). An entitled, permitted
-    # caller sees an honest "not computed yet", never a fabricated zero.
-    return MetricOut(state="unavailable", kind=spec.kind, unit=spec.unit, scope=_scope_label(gate))
+    scope_label = _scope_label(gate)
+    organization_id = principal.organization_id
+
+    if key in _FINANCE_MONEY_METRICS:
+        by_currency = await _FINANCE_MONEY_METRICS[key](session, organization_id, window)
+        previous_by_currency = (
+            await _FINANCE_MONEY_METRICS[key](session, organization_id, comparison_window)
+            if comparison_window is not None
+            else None
+        )
+        return _money_metric_out(
+            spec, scope_label, org_currency_code, by_currency, previous_by_currency
+        )
+
+    if key == "invoices_issued":
+        value = await _invoices_issued_count(session, organization_id, window)
+        comparison = None
+        if comparison_window is not None:
+            previous_value = await _invoices_issued_count(
+                session, organization_id, comparison_window
+            )
+            comparison = ComparisonOut(
+                state="ok" if previous_value != 0 else "no_baseline",
+                value=previous_value,
+                delta_pct=domain.delta_pct(value, previous_value),
+            )
+        return MetricOut(
+            state="ok",
+            kind=spec.kind,
+            unit=spec.unit,
+            scope=scope_label,
+            value=value,
+            comparison=comparison,
+            history_from=None,
+        )
+
+    # No fact table exists yet for this key (I3-I9). An entitled, permitted caller sees an
+    # honest "not computed yet", never a fabricated zero.
+    return MetricOut(state="unavailable", kind=spec.kind, unit=spec.unit, scope=scope_label)
 
 
 async def build_summary(
@@ -144,13 +332,24 @@ async def build_summary(
         _period_out(compare, comparison_window) if comparison_window is not None else None
     )
 
+    metrics: dict[str, MetricOut] = {}
+    for key in metric_keys:
+        metrics[key] = await _summary_metric(
+            session,
+            principal,
+            key,
+            window=resolved.window,
+            comparison_window=comparison_window,
+            org_currency_code=currency,
+        )
+
     return SummaryOut(
         as_of=datetime.now(UTC),
         timezone=timezone,
         currency=currency,
         period=_period_out(resolved.key, resolved.window),
         comparison=comparison_out,
-        metrics={key: _summary_metric(principal, key) for key in metric_keys},
+        metrics=metrics,
     )
 
 
