@@ -1,6 +1,7 @@
 import type { Ref, TextareaHTMLAttributes } from "react";
 
 import { fieldSkin } from "../lib/field";
+import { useMarksRequired } from "../lib/formSection";
 import { FormField } from "./FormField";
 
 type NativeTextArea = Omit<
@@ -47,9 +48,11 @@ export function TextArea({
   rows = 4,
   maxLength,
   value,
+  required,
   ref,
   ...props
 }: TextAreaProps) {
+  const marksRequired = useMarksRequired();
   const length = typeof value === "string" ? value.length : 0;
   const showCounter =
     counterFrom !== undefined && maxLength !== undefined && length >= counterFrom;
@@ -60,6 +63,7 @@ export function TextArea({
       {...(helper !== undefined ? { helper } : {})}
       {...(error !== undefined ? { error } : {})}
       optional={optional}
+      required={marksRequired && required === true}
       hideLabel={hideLabel}
       {...(containerClassName !== undefined ? { className: containerClassName } : {})}
       {...(showCounter
@@ -83,6 +87,7 @@ export function TextArea({
           id={id}
           rows={rows}
           value={value}
+          required={required}
           {...(maxLength !== undefined ? { maxLength } : {})}
           aria-describedby={describedBy}
           aria-invalid={invalid || undefined}

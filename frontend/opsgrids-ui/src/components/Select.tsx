@@ -2,6 +2,7 @@ import type { Ref, SelectHTMLAttributes } from "react";
 
 import { ChevronDown } from "../icons";
 import { fieldSkin } from "../lib/field";
+import { useMarksRequired } from "../lib/formSection";
 import { FormField } from "./FormField";
 
 export interface SelectOption {
@@ -48,14 +49,17 @@ export function Select({
   placeholder,
   containerClassName,
   className,
+  required,
   ref,
   ...props
 }: SelectProps) {
+  const marksRequired = useMarksRequired();
   return (
     <FormField
       label={label}
       {...(helper !== undefined ? { helper } : {})}
       {...(error !== undefined ? { error } : {})}
+      required={marksRequired && required === true}
       hideLabel={hideLabel}
       {...(containerClassName !== undefined ? { className: containerClassName } : {})}
     >
@@ -64,6 +68,7 @@ export function Select({
           <select
             ref={ref}
             id={id}
+            required={required}
             aria-describedby={describedBy}
             aria-invalid={invalid || undefined}
             className={fieldSkin(invalid, `h-11 cursor-pointer appearance-none pr-9 ${className ?? ""}`)}

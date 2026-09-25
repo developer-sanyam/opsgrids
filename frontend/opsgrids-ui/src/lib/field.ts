@@ -6,6 +6,13 @@
 
 import { cn } from "./cn";
 
+/**
+ * A field's visible label. One string, so a control that cannot use `FormField`'s `<label>` — a
+ * drop zone, which is a button named by more than its label — still looks exactly like its
+ * neighbours, and a restyle of form labels lands on both at once.
+ */
+export const FIELD_LABEL = "text-xs font-semibold uppercase tracking-wide text-faint";
+
 /** Quiet ground fill, hairline on hover, the global violet focus ring, a negative edge when invalid. */
 export function fieldSkin(invalid: boolean, className?: string): string {
   return cn(

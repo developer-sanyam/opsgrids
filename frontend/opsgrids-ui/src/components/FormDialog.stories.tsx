@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { fn } from "storybook/test";
+import { expect, fn, screen, waitFor } from "storybook/test";
 
 import { FormDialog } from "./FormDialog";
 import { Select } from "./Select";
@@ -64,5 +64,19 @@ export const ServerError: Story = {
   args: {
     error: "A contact with this email already exists at Acme Industries.",
     reference: "c0ffee42",
+  },
+};
+
+/** `dirty`, then Escape: the discard question stacks over the form, focus on Keep editing. */
+export const UnsavedChanges: Story = {
+  args: { dirty: true },
+  play: async ({ userEvent }) => {
+    // The dialog's keyboard handling is installed in the same effect that moves focus into it, so
+    // Escape is pressed only once focus has arrived — before then it would reach nothing.
+    const form = await screen.findByRole("dialog", { name: "New contact" });
+    await waitFor(() => expect(form.contains(document.activeElement)).toBe(true));
+    await userEvent.keyboard("{Escape}");
+    const question = await screen.findByRole("dialog", { name: "Discard unsaved changes?" });
+    await waitFor(() => expect(question.contains(document.activeElement)).toBe(true));
   },
 };

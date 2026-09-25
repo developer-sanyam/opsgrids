@@ -2,6 +2,7 @@ import { useId } from "react";
 import type { ReactNode } from "react";
 
 import { cn } from "../lib/cn";
+import { FIELD_LABEL } from "../lib/field";
 
 /** The ids a control must carry for its label, helper and error to reach a screen reader. */
 export interface FieldIds {
@@ -9,6 +10,12 @@ export interface FieldIds {
   /** Pass straight to `aria-describedby`. Already joins the helper and the error. */
   describedBy: string | undefined;
   invalid: boolean;
+  /**
+   * The field is marked required. A control built on `FormField` directly puts this on
+   * `aria-required` (the wrappers carry the native `required` attribute instead), so a screen
+   * reader says "required" — the asterisk beside the label is for the eye only.
+   */
+  required: boolean;
 }
 
 interface FormFieldProps {
@@ -20,8 +27,15 @@ interface FormFieldProps {
   helper?: ReactNode | undefined;
   /** The server's message, verbatim (§2.5). Never a rewritten, friendlier version of it. */
   error?: string | undefined;
-  /** Renders `Optional` beside the label. The platform labels the optional, not the required. */
+  /** Renders `(optional)` beside the label. */
   optional?: boolean | undefined;
+  /**
+   * A red asterisk after the label (the redesign's convention, owner ruling 2026-09-25). Hidden
+   * from assistive technology, which hears "required" from the control's own state instead —
+   * see `FieldIds.required`. `TextField`, `TextArea` and `Select` set it for a `required`
+   * control inside a `FormSection`; outside one, labels are as they were.
+   */
+  required?: boolean | undefined;
   /**
    * Keep the `<label>` — real, tied to the control, read by a screen reader — but take it off the
    * screen. For a dense row where the column heading above already says what the control is: the
@@ -51,6 +65,7 @@ export function FormField({
   helper,
   error,
   optional = false,
+  required = false,
   hideLabel = false,
   labelAside,
   className,
@@ -65,9 +80,7 @@ export function FormField({
   const labelNode = (
     <label
       htmlFor={id}
-      className={
-        hideLabel ? "sr-only" : "text-xs font-semibold uppercase tracking-wide text-faint"
-      }
+      className={hideLabel ? "sr-only" : FIELD_LABEL}
     >
       {label}
       {optional ? (
@@ -82,6 +95,20 @@ export function FormField({
     </label>
   );
 
+  // Outside the `<label>`, so the label's text — the control's accessible name, and what every
+  // `getByLabelText` in the apps' tests matches — is the same with or without the mark.
+  const marked =
+    required && !hideLabel ? (
+      <span className="inline-flex items-baseline gap-1">
+        {labelNode}
+        <span aria-hidden className="text-sm font-bold leading-none text-negative">
+          *
+        </span>
+      </span>
+    ) : (
+      labelNode
+    );
+
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
       {/*
@@ -93,11 +120,11 @@ export function FormField({
         labelNode
       ) : (
         <div className="flex items-baseline justify-between gap-3">
-          {labelNode}
+          {marked}
           {labelAside}
         </div>
       )}
-      {children({ id, describedBy, invalid: error !== undefined })}
+      {children({ id, describedBy, invalid: error !== undefined, required })}
       {helper ? (
         <p id={helperId} className="text-xs text-muted">
           {helper}
