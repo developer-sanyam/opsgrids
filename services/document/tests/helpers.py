@@ -7,34 +7,46 @@ everywhere.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import uuid
 from datetime import datetime
+from typing import Any
 
 from PIL import Image
 
 from app.config import Settings
-from app.storage import ObjectStore, OrphanScanner
+from app.storage import ObjectStore, OrphanScanner, PrivateObjectStore
 from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.errors import UpstreamUnavailableProblem
 
 READ = "core.content.asset.read"
 WRITE = "core.content.asset.write"
+PRIVATE_READ = "core.content.private_document.read"
+PRIVATE_WRITE = "core.content.private_document.write"
 
 
 def principal_for(
-    org_id: uuid.UUID, perms: list[str], *, user_id: uuid.UUID | None = None
+    org_id: uuid.UUID,
+    perms: list[str],
+    *,
+    user_id: uuid.UUID | None = None,
+    subject_ref: uuid.UUID | None = None,
 ) -> Principal:
     """The principal the gateway would have forwarded.
 
-    There is no `subject_ref` here and that is not an omission: both asset permissions are
-    ORG-only, so nothing in this service ever narrows by the caller's own identity. The
-    uploader is recorded for the picker and for audit context, never as a scope input.
+    `subject_ref` defaults to `None` for the asset tests — both asset permissions are ORG-only,
+    so nothing there ever narrows by the caller's own identity. A private-document OWN test
+    passes `subject_ref` explicitly: it is the ADR-0008 employee link, a **different** value
+    from `sub` in general (`itsm`/`leave`/`crm` all draw the same distinction in their own test
+    helpers) — `sub` is who uploaded, for display and audit; `subject_ref` is what `ctx.apply`
+    actually filters an OWN grant on.
     """
     return Principal(
         sub=user_id or uuid.uuid4(),
         organization_id=org_id,
         membership_id=uuid.uuid4(),
+        subject_ref=subject_ref,
         perms=perms,
         entitlements=["core"],
     )
@@ -43,6 +55,16 @@ def principal_for(
 def ctx_for(org_id: uuid.UUID, permission: str, scope: Scope = Scope.ORG) -> ScopeContext:
     """A scope context as `require(...)` would have built it."""
     principal = principal_for(org_id, [f"{permission}:{scope.value}"])
+    return ScopeContext(principal=principal, scope=scope, permission=permission)
+
+
+def ctx_for_subject(
+    org_id: uuid.UUID, permission: str, scope: Scope, subject_ref: uuid.UUID
+) -> ScopeContext:
+    """Same as `ctx_for`, with a caller-chosen `subject_ref` — what an OWN-scoped
+    private-document test needs to prove that grant reaches the caller's own uploads
+    (`owner_subject_ref`) and nobody else's."""
+    principal = principal_for(org_id, [f"{permission}:{scope.value}"], subject_ref=subject_ref)
     return ScopeContext(principal=principal, scope=scope, permission=permission)
 
 
@@ -175,3 +197,65 @@ class FakeOrphanScanner(OrphanScanner):
             raise UpstreamUnavailableProblem("Could not take the image down right now.")
         self.objects.pop(key, None)
         self.deleted.append(key)
+
+
+# --------------------------------------------------------------------- private-object fixtures
+
+#: The smallest byte string that sniffs as a real PDF (`domain.sniff_private_content_type`) —
+#: enough to exercise "the bytes decide" without a real PDF library in the test suite.
+PDF_BYTES = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF"
+
+#: An HTML payload declared as a PDF at `initiate` — what `complete`'s real-type sniff must
+#: refuse (415) even though a presigned POST's own `Content-Type` condition already let it
+#: through the door, because that condition constrains what the client *declared*, not what the
+#: bytes actually are.
+FAKE_PDF_BYTES = b"<html><script>alert(document.cookie)</script></html>"
+
+
+class FakePrivateObjectStore(PrivateObjectStore):
+    """A `PrivateObjectStore` that keeps objects in memory instead of a real bucket.
+
+    `create_upload_post` returns a fake URL and echoes the key back as a field — a test does
+    not POST through it (there is no browser in the unit suite); it calls `seed_upload` to put
+    bytes at the key directly, simulating "the client already finished the presigned POST",
+    and asserts against `complete_private_object` from there. `test_storage_minio.py`'s own
+    private-bucket case (not shipped this slice — see the module's own skip note) is where a
+    real presigned POST is proven end to end.
+    """
+
+    def __init__(self, cfg: Settings) -> None:
+        self._cfg = cfg
+        self._client = None
+        self.objects: dict[str, bytes] = {}
+        self.deleted: list[str] = []
+        self.fail_delete = False
+
+    def seed_upload(self, key: str, data: bytes) -> None:
+        """What "the client finished the presigned POST" looks like in this fake."""
+        self.objects[key] = data
+
+    def create_upload_post(
+        self, key: str, *, content_type: str, max_bytes: int, expires_in: int
+    ) -> dict[str, Any]:
+        return {
+            "url": f"https://fake-minio.test/{self._cfg.s3_private_bucket}",
+            "fields": {"key": key, "Content-Type": content_type},
+        }
+
+    async def head(self, key: str) -> tuple[int, str] | None:
+        data = self.objects.get(key)
+        if data is None:
+            return None
+        return len(data), hashlib.sha256(data).hexdigest()
+
+    async def get(self, key: str, *, max_bytes: int) -> bytes:
+        return self.objects.get(key, b"")[: max_bytes + 1]
+
+    async def delete(self, key: str) -> None:
+        if self.fail_delete:
+            raise UpstreamUnavailableProblem("Could not remove the file right now.")
+        self.objects.pop(key, None)
+        self.deleted.append(key)
+
+    def presign_download(self, key: str, *, filename: str | None, expires_in: int) -> str:
+        return f"https://fake-minio.test/{self._cfg.s3_private_bucket}/{key}?X-Fake-Signature=1"

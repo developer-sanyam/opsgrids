@@ -40,9 +40,18 @@ from starlette.formparsers import MultiPartException, MultiPartParser
 
 from app import domain, selectors, services
 from app.config import Settings, settings
-from app.models import SCHEMA, Asset
-from app.schemas import AssetOut, AssetPage, AssetUsageOut, ServiceInfo
-from app.storage import ObjectStore, get_object_store
+from app.models import SCHEMA, Asset, PrivateObject
+from app.schemas import (
+    AssetOut,
+    AssetPage,
+    AssetUsageOut,
+    PrivateObjectDownloadOut,
+    PrivateObjectInitiateIn,
+    PrivateObjectInitiateOut,
+    PrivateObjectOut,
+    ServiceInfo,
+)
+from app.storage import ObjectStore, PrivateObjectStore, get_object_store, get_private_object_store
 from platform_core.auth import Scope, ScopeContext, require
 from platform_core.cache import enforce_rate_limit
 from platform_core.db import get_tenant_session
@@ -60,6 +69,7 @@ router = APIRouter(tags=["document"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 StoreDep = Annotated[ObjectStore, Depends(get_object_store)]
+PrivateStoreDep = Annotated[PrivateObjectStore, Depends(get_private_object_store)]
 
 #: Both permissions are ceilinged **and** defaulted at ORG in `app/catalogue.py`, so OWN, TEAM
 #: and LOCATION are unrepresentable rather than merely ungranted. The `minimum=Scope.ORG` floor
@@ -67,6 +77,18 @@ StoreDep = Annotated[ObjectStore, Depends(get_object_store)]
 #: a later edit can widen, and the floor is code in front of the query (ADR-0009 §4).
 ReadCtx = Annotated[ScopeContext, Depends(require("core.content.asset.read", minimum=Scope.ORG))]
 WriteCtx = Annotated[ScopeContext, Depends(require("core.content.asset.write", minimum=Scope.ORG))]
+
+#: **Floored at OWN, not ORG** — the ceiling is ORG (`app/catalogue.py`), but the floor here is
+#: the narrowest rung that means anything for a private document: an uploader acting on their
+#: own object. `ScopeContext.apply`/`assert_can_touch` are what actually narrow an ORG grant
+#: down to nothing extra and an OWN grant down to "mine" — this floor only keeps out a
+#: permission with no scope at all.
+PrivateReadCtx = Annotated[
+    ScopeContext, Depends(require("core.content.private_document.read", minimum=Scope.OWN))
+]
+PrivateWriteCtx = Annotated[
+    ScopeContext, Depends(require("core.content.private_document.write", minimum=Scope.OWN))
+]
 
 #: The multipart envelope — boundaries, part headers, the filename — costs a little more than
 #: the file itself, so the stream counter is allowed this much slack over the file limit before
@@ -101,6 +123,18 @@ async def _rate_limit_uploads(ctx: WriteCtx) -> None:
     await enforce_rate_limit(
         f"document.asset.upload:{ctx.organization_id}",
         limit=cfg.asset_upload_rate_limit_per_minute,
+        window_seconds=60,
+    )
+
+
+async def _rate_limit_private_uploads(ctx: PrivateWriteCtx) -> None:
+    """Same shape as `_rate_limit_uploads`: per organization, per minute, after authorization —
+    this route hands out a credential-bearing presigned URL, which is exactly the kind of thing
+    worth bounding even though it does no CPU work of its own."""
+    cfg = settings()
+    await enforce_rate_limit(
+        f"document.private_object.upload:{ctx.organization_id}",
+        limit=cfg.private_object_upload_rate_limit_per_minute,
         window_seconds=60,
     )
 
@@ -412,3 +446,171 @@ async def delete_asset(
     asset = await services.remove_asset(session, store, ctx, asset, purge=purge, request=request)
     await session.flush()
     return _to_out(asset, store)
+
+
+# ================================================================================================
+# Private objects (ADR-0009 §2, Q1) — a payslip, a signed contract, an ID scan.
+#
+# Same chokepoint rule as the public assets above: **the object key is never accepted from a
+# caller.** Every route addresses a private object by its row id, fetched under RLS with the
+# caller's scope applied (`selectors.get_private_object`); the key is read off the row.
+# ================================================================================================
+
+
+def _private_to_out(row: PrivateObject) -> PrivateObjectOut:
+    return PrivateObjectOut(
+        id=row.id,
+        status=row.status,
+        purpose=row.purpose,
+        owner_service=row.owner_service,
+        content_type=row.content_type,
+        size_bytes=row.size_bytes,
+        checksum_sha256=row.checksum_sha256,
+        original_filename=row.original_filename,
+        uploaded_by_user_id=row.uploaded_by_user_id,
+        created_at=row.created_at,
+        completed_at=row.completed_at,
+        attached_at=row.attached_at,
+    )
+
+
+@router.post(
+    "/documents/private-objects/initiate",
+    response_model=PrivateObjectInitiateOut,
+    status_code=201,
+    summary="Start a private document upload",
+    dependencies=[Depends(_rate_limit_private_uploads)],
+)
+async def initiate_private_object(
+    body: PrivateObjectInitiateIn,
+    session: SessionDep,
+    private_store: PrivateStoreDep,
+    ctx: PrivateWriteCtx,
+    request: Request,
+) -> PrivateObjectInitiateOut:
+    """`core.content.private_document.write`, floored at OWN.
+
+    Returns a presigned `multipart/form-data` POST: submit `upload_fields` as form fields, the
+    file itself as the last part named `file`, directly to `upload_url` — never through this
+    API, and never with any credential this service holds. Nothing is stored, listable, or
+    downloadable until `POST .../{id}/complete` succeeds; a client that never calls it has
+    uploaded nothing that any other route here will acknowledge.
+    """
+    cfg = settings()
+    row, presigned = await services.initiate_private_object(
+        session,
+        private_store,
+        ctx,
+        filename=body.filename,
+        content_type=body.content_type,
+        size_bytes=body.size_bytes,
+        purpose=body.purpose,
+        cfg=cfg,
+        request=request,
+    )
+    await session.flush()
+    return PrivateObjectInitiateOut(
+        id=row.id,
+        upload_url=presigned.url,
+        upload_fields=presigned.fields,
+        upload_expires_at=row.upload_expires_at,
+    )
+
+
+@router.post(
+    "/documents/private-objects/{object_id}/complete",
+    response_model=PrivateObjectOut,
+    summary="Confirm a private document upload",
+)
+async def complete_private_object(
+    object_id: uuid.UUID,
+    session: SessionDep,
+    private_store: PrivateStoreDep,
+    ctx: PrivateWriteCtx,
+    request: Request,
+) -> PrivateObjectOut:
+    """`core.content.private_document.write`, floored at OWN.
+
+    Re-reads the object directly from storage — real size, real checksum, real type from the
+    bytes — and refuses (415/422/413-shaped `BusinessRuleProblem`) rather than trusting anything
+    the `initiate` call declared. Idempotent: completing an already-`stored` row returns it
+    unchanged.
+    """
+    row = await selectors.get_private_object(session, ctx, object_id)
+    if row is None:
+        raise NotFoundProblem("No such upload")
+    cfg = settings()
+    row = await services.complete_private_object(
+        session, private_store, ctx, row, cfg=cfg, request=request
+    )
+    await session.flush()
+    return _private_to_out(row)
+
+
+@router.get(
+    "/documents/private-objects/{object_id}",
+    response_model=PrivateObjectDownloadOut,
+    summary="A private document's metadata and a signed download URL",
+)
+async def get_private_object(
+    object_id: uuid.UUID,
+    session: SessionDep,
+    private_store: PrivateStoreDep,
+    ctx: PrivateReadCtx,
+    request: Request,
+) -> PrivateObjectDownloadOut:
+    """`core.content.private_document.read`, floored at OWN.
+
+    Authorization happens twice in one call, and both are load-bearing: `require(...)` checks
+    the permission exists, and `selectors.get_private_object` narrows *which rows* an OWN grant
+    actually reaches, exactly as `ScopeContext.apply` is built to. A cross-tenant id and an
+    id belonging to a different uploader under an OWN grant are both a 404, never a 403 —
+    confirming existence is itself a disclosure.
+
+    A `pending` row (upload not yet completed) is also a 404: there is nothing to download yet,
+    and a `pending` row's `storage_key` may point at an object that failed verification.
+
+    Issuing the download URL is a sensitive read and is audited every time this is called, not
+    only when a human happens to open the link (CLAUDE.md: unmasking PII needs its own
+    permission and writes an audit row every time).
+    """
+    row = await selectors.get_private_object(session, ctx, object_id)
+    if row is None or row.status != "stored":
+        raise NotFoundProblem("No such document")
+    cfg = settings()
+    download_url, expires_at = await services.build_download(
+        session, private_store, ctx, row, cfg=cfg, request=request
+    )
+    await session.flush()
+    out = _private_to_out(row)
+    return PrivateObjectDownloadOut(
+        **out.model_dump(),
+        download_url=download_url,
+        download_url_expires_at=expires_at,
+    )
+
+
+@router.delete(
+    "/documents/private-objects/{object_id}",
+    status_code=204,
+    summary="Remove a private document before it is attached to anything",
+)
+async def delete_private_object(
+    object_id: uuid.UUID,
+    session: SessionDep,
+    private_store: PrivateStoreDep,
+    ctx: PrivateWriteCtx,
+    request: Request,
+) -> None:
+    """`core.content.private_document.write`, floored at OWN.
+
+    Hard delete — object then row — and refused (409) once a future attach step has set
+    `attached_at`. There is no `?purge=` flag here: unlike a public asset, a private object has
+    no grace window to opt out of, because nothing outside this service can reference it while
+    it is unattached.
+    """
+    row = await selectors.get_private_object(session, ctx, object_id)
+    if row is None:
+        raise NotFoundProblem("No such document")
+    await services.remove_private_object(session, private_store, ctx, row, request=request)
+    await session.flush()

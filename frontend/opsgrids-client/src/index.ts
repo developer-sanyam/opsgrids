@@ -109,3 +109,9 @@ export { useAsync } from "./useAsync";
 export type { AsyncControls, AsyncState } from "./useAsync";
 export { useMutation } from "./useMutation";
 export type { Mutation, MutationOptions } from "./useMutation";
+
+export { deletePrivateObject, uploadPrivateObject } from "./documents/privateUploads";
+export type {
+  PrivateUploadControls,
+  PrivateUploadResult,
+} from "./documents/privateUploads";

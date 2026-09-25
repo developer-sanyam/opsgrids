@@ -150,6 +150,38 @@ DOCUMENT = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # -------------------------------------------------------------- private objects (Q1)
+        # Unlike the asset permissions, **default OWN, ceiling ORG**: a private object (a
+        # payslip, an ID scan) is personal by default, and its own uploader can act on it
+        # without an ORG grant. A grant this service hands out at ORG (an admin role) can still
+        # reach every organization's object, the same ladder every other OWN-ceilinged
+        # permission in the platform uses — this is not a special case, "asset" is (ADR-0009 §4
+        # ceilings *both* asset permissions at ORG because an asset library has no owner
+        # reading; a private object is the opposite: it always has one).
+        #
+        # OWN here is `owner_subject_ref` (`app/selectors.py`), the same ADR-0008 employee link
+        # `itsm`/`crm`/`leave` read OWN against — and it inherits that ADR's own documented
+        # gap: a tenant with no HRMS activated links no membership to an employee, so this rung
+        # stays permanently empty there, the same way ADR-0008 names for those products. Named
+        # once, here, because `document` has no HRMS dependency of its own and a later reader
+        # could otherwise mistake this for a bug rather than an inherited, accepted trade-off.
+        PermissionSpec(
+            "content",
+            "private_document",
+            "write",
+            "Upload a private document for this organization, and remove one before it has "
+            "been attached to anything",
+            "OWN",
+            "ORG",
+        ),
+        PermissionSpec(
+            "content",
+            "private_document",
+            "read",
+            "Read a private document's metadata and obtain a short-lived signed download URL",
+            "OWN",
+            "ORG",
+        ),
     ],
 )
 
@@ -162,7 +194,10 @@ DOCUMENT_ROLE_TEMPLATES: list[RoleTemplate] = [
         # Worded so it reads well *merged*: the exporter concatenates each contributing
         # service's description, so a sentence that restates what account and approval have
         # already said lands in the manifest twice.
-        description=("Document's contribution to that union is the organization's image library."),
+        description=(
+            "Document's contribution to that union is the organization's image library, plus "
+            "every private document in the organization."
+        ),
         grants=DOCUMENT.all("ORG"),
     ),
     RoleTemplate(
@@ -171,14 +206,29 @@ DOCUMENT_ROLE_TEMPLATES: list[RoleTemplate] = [
         product=PRODUCT,
         description=(
             "The image library is organization content rather than billing, so it belongs to "
-            "the same role."
+            "the same role — and an administrator can read and remove any member's private "
+            "document, the same reach an HR or compliance admin needs over an employee's ID "
+            "scan or payslip."
         ),
         grants=DOCUMENT.all("ORG"),
     ),
-    # **`MEMBER` gets neither grant, deliberately.** An ordinary employee has no reason to list
-    # or upload to the organization's asset library, and "the images are public anyway so read
-    # is harmless" is an argument for adding a grant that nothing uses.
-    #
+    # `MEMBER` gets the asset grants **not at all** — still no reason to list or upload to the
+    # organization's public image library — but does get both private-document grants **at
+    # OWN**: an ordinary employee uploads their own KYC document or reads their own payslip
+    # without needing an admin role, and OWN means exactly that reach and no wider one.
+    RoleTemplate(
+        code="MEMBER",
+        name="Member",
+        product=PRODUCT,
+        description=(
+            "Every member can upload, read and remove their own private documents — a payslip, "
+            "an ID scan, a signed form — without a reason to touch anyone else's."
+        ),
+        grants=DOCUMENT.pick(
+            ("content.private_document.write", "OWN"),
+            ("content.private_document.read", "OWN"),
+        ),
+    ),
     # There is also no storefront role here, because no `storefront` product is registered
     # anywhere in the platform. When one is, whether store editing gets its own role is that
     # ADR's question, not this one's.

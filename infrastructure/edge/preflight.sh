@@ -302,7 +302,7 @@ fi
 # MinIO enforces an 8-character minimum on both its root password and any user it creates.
 # Failing here, before minio-init ever runs, turns a cryptic MinIO startup/user-creation error
 # into a preflight message that names the key — never the value.
-for key in MINIO_ROOT_PASSWORD DOCUMENT_S3_SECRET_KEY; do
+for key in MINIO_ROOT_PASSWORD DOCUMENT_S3_SECRET_KEY DOCUMENT_S3_PRIVATE_SECRET_KEY; do
 	value="${!key:-}"
 	if [ -n "$value" ] && [ "${#value}" -lt 8 ]; then
 		bad "$key is shorter than MinIO's 8-character minimum"

@@ -194,6 +194,337 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "PrivateObjectDownloadOut": {
+        "description": "`GET /private-objects/{id}` \u2014 the metadata plus a fresh, short-lived signed GET. Never\ncached and never reused past its own `download_url_expires_at`: a second `GET` issues a\nsecond URL, because authorization is re-checked on every call, not once per object.",
+        "properties": {
+          "attached_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attached At"
+          },
+          "checksum_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checksum Sha256"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "content_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Type"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "download_url": {
+            "title": "Download Url",
+            "type": "string"
+          },
+          "download_url_expires_at": {
+            "format": "date-time",
+            "title": "Download Url Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "original_filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Filename"
+          },
+          "owner_service": {
+            "title": "Owner Service",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "uploaded_by_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploaded By User Id"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "purpose",
+          "owner_service",
+          "content_type",
+          "size_bytes",
+          "checksum_sha256",
+          "original_filename",
+          "uploaded_by_user_id",
+          "created_at",
+          "completed_at",
+          "attached_at",
+          "download_url",
+          "download_url_expires_at"
+        ],
+        "title": "PrivateObjectDownloadOut",
+        "type": "object"
+      },
+      "PrivateObjectInitiateIn": {
+        "additionalProperties": false,
+        "description": "What a caller declares before a byte is sent. Every field here is a **claim**:\n`complete` re-derives `content_type` and `size_bytes` from the object itself and refuses a\nmismatch rather than trusting this body for anything but sizing the presigned upload.",
+        "properties": {
+          "content_type": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Content Type",
+            "type": "string"
+          },
+          "filename": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Filename",
+            "type": "string"
+          },
+          "purpose": {
+            "examples": [
+              "payroll.payslip"
+            ],
+            "maxLength": 128,
+            "minLength": 3,
+            "title": "Purpose",
+            "type": "string"
+          },
+          "size_bytes": {
+            "exclusiveMinimum": 0.0,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "filename",
+          "content_type",
+          "size_bytes",
+          "purpose"
+        ],
+        "title": "PrivateObjectInitiateIn",
+        "type": "object"
+      },
+      "PrivateObjectInitiateOut": {
+        "description": "The presigned upload. `upload_url` and `upload_fields` are submitted **as a\n`multipart/form-data` POST**, `upload_fields` first and the file itself last \u2014 the shape\n`generate_presigned_post` requires. Nothing here is persisted by the caller past the upload:\nthe object id is what `complete`, `GET` and `DELETE` address afterwards.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "upload_expires_at": {
+            "format": "date-time",
+            "title": "Upload Expires At",
+            "type": "string"
+          },
+          "upload_fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Upload Fields",
+            "type": "object"
+          },
+          "upload_url": {
+            "title": "Upload Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "upload_url",
+          "upload_fields",
+          "upload_expires_at"
+        ],
+        "title": "PrivateObjectInitiateOut",
+        "type": "object"
+      },
+      "PrivateObjectOut": {
+        "description": "One private object's metadata. Never the bytes, and \u2014 outside `download_url` below \u2014\nnever anything that resolves to them without going through this service again.",
+        "properties": {
+          "attached_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attached At"
+          },
+          "checksum_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checksum Sha256"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "content_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Type"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "original_filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Filename"
+          },
+          "owner_service": {
+            "title": "Owner Service",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "uploaded_by_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploaded By User Id"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "purpose",
+          "owner_service",
+          "content_type",
+          "size_bytes",
+          "checksum_sha256",
+          "original_filename",
+          "uploaded_by_user_id",
+          "created_at",
+          "completed_at",
+          "attached_at"
+        ],
+        "title": "PrivateObjectOut",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -473,6 +804,171 @@
           }
         },
         "summary": "One image's details",
+        "tags": [
+          "document"
+        ]
+      }
+    },
+    "/api/v1/documents/private-objects/initiate": {
+      "post": {
+        "description": "`core.content.private_document.write`, floored at OWN.\n\nReturns a presigned `multipart/form-data` POST: submit `upload_fields` as form fields, the\nfile itself as the last part named `file`, directly to `upload_url` \u2014 never through this\nAPI, and never with any credential this service holds. Nothing is stored, listable, or\ndownloadable until `POST .../{id}/complete` succeeds; a client that never calls it has\nuploaded nothing that any other route here will acknowledge.",
+        "operationId": "initiate_private_object_api_v1_documents_private_objects_initiate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrivateObjectInitiateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrivateObjectInitiateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start a private document upload",
+        "tags": [
+          "document"
+        ]
+      }
+    },
+    "/api/v1/documents/private-objects/{object_id}": {
+      "delete": {
+        "description": "`core.content.private_document.write`, floored at OWN.\n\nHard delete \u2014 object then row \u2014 and refused (409) once a future attach step has set\n`attached_at`. There is no `?purge=` flag here: unlike a public asset, a private object has\nno grace window to opt out of, because nothing outside this service can reference it while\nit is unattached.",
+        "operationId": "delete_private_object_api_v1_documents_private_objects__object_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "object_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Object Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove a private document before it is attached to anything",
+        "tags": [
+          "document"
+        ]
+      },
+      "get": {
+        "description": "`core.content.private_document.read`, floored at OWN.\n\nAuthorization happens twice in one call, and both are load-bearing: `require(...)` checks\nthe permission exists, and `selectors.get_private_object` narrows *which rows* an OWN grant\nactually reaches, exactly as `ScopeContext.apply` is built to. A cross-tenant id and an\nid belonging to a different uploader under an OWN grant are both a 404, never a 403 \u2014\nconfirming existence is itself a disclosure.\n\nA `pending` row (upload not yet completed) is also a 404: there is nothing to download yet,\nand a `pending` row's `storage_key` may point at an object that failed verification.\n\nIssuing the download URL is a sensitive read and is audited every time this is called, not\nonly when a human happens to open the link (CLAUDE.md: unmasking PII needs its own\npermission and writes an audit row every time).",
+        "operationId": "get_private_object_api_v1_documents_private_objects__object_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "object_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Object Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrivateObjectDownloadOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "A private document's metadata and a signed download URL",
+        "tags": [
+          "document"
+        ]
+      }
+    },
+    "/api/v1/documents/private-objects/{object_id}/complete": {
+      "post": {
+        "description": "`core.content.private_document.write`, floored at OWN.\n\nRe-reads the object directly from storage \u2014 real size, real checksum, real type from the\nbytes \u2014 and refuses (415/422/413-shaped `BusinessRuleProblem`) rather than trusting anything\nthe `initiate` call declared. Idempotent: completing an already-`stored` row returns it\nunchanged.",
+        "operationId": "complete_private_object_api_v1_documents_private_objects__object_id__complete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "object_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Object Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrivateObjectOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm a private document upload",
         "tags": [
           "document"
         ]
