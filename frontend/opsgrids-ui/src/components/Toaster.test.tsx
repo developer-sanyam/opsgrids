@@ -167,6 +167,35 @@ describe("Toaster", () => {
     expect(screen.getByText("Saved.")).toBeTruthy();
   });
 
+  it("has a warning and a system tone, each announced politely with its own word", async () => {
+    const user = userEvent.setup();
+    function ToneRaiser() {
+      const toast = useToast();
+      return (
+        <>
+          <button type="button" onClick={() => toast.warning("Invoice sent.", { description: "Reminders are off: no email on file." })}>
+            Warn
+          </button>
+          <button type="button" onClick={() => toast.system("Scheduled maintenance tonight at 23:00 IST.")}>
+            Notice
+          </button>
+        </>
+      );
+    }
+    render(
+      <Toaster>
+        <ToneRaiser />
+      </Toaster>,
+    );
+    await user.click(screen.getByRole("button", { name: "Warn" }));
+    expect(liveText("polite")).toBe("Warning: Invoice sent. Reminders are off: no email on file.");
+    await user.click(screen.getByRole("button", { name: "Notice" }));
+    expect(liveText("polite")).toBe("System: Scheduled maintenance tonight at 23:00 IST.");
+    expect(liveText("assertive")).toBe("");
+    expect(screen.getByText("Invoice sent.")).toBeTruthy();
+    expect(screen.getByText("Scheduled maintenance tonight at 23:00 IST.")).toBeTruthy();
+  });
+
   it("is a no-op outside a Toaster rather than a crash", async () => {
     const user = userEvent.setup();
     render(<Raiser />);

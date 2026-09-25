@@ -1,7 +1,10 @@
+import { useEffect, useState } from "react";
 import type { FormEvent, ReactNode, RefObject } from "react";
 
 import { cn } from "../lib/cn";
+import { useUnsavedChangesWarning } from "../lib/useUnsavedChangesWarning";
 import { Button } from "./Button";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { Dialog } from "./Dialog";
 import { InlineAlert } from "./InlineAlert";
 
@@ -31,6 +34,14 @@ interface FormDialogProps {
   /** The first control worth answering. Without it focus lands on the dialog's heading. */
   initialFocusRef?: RefObject<HTMLElement | null> | undefined;
   size?: "sm" | "md" | "lg" | undefined;
+  /**
+   * The fields hold something closing would throw away. Opt-in: while it is true, Cancel,
+   * Escape and the close control ask "Discard unsaved changes?" first, and reloading or closing
+   * the tab asks the browser's own question. Compute it from the fields — typed text differs
+   * from what the form opened with — not from "a key was pressed", or a user who typed and
+   * deleted is asked to discard nothing.
+   */
+  dirty?: boolean | undefined;
   /** The fields. See the note on resetting, below. */
   children: ReactNode;
 }
@@ -53,6 +64,11 @@ interface FormDialogProps {
  * keep the fields' `useState` in a component rendered *inside* this dialog — a `<WidgetFields>` —
  * and closing resets the form by unmounting it. State hoisted into the screen survives, and the
  * next Create opens on the last edit's leftovers.
+ *
+ * **Unsaved changes** (`dirty`) are confirmed before they are discarded, in a `ConfirmDialog`
+ * stacked over this one: Escape there means "keep editing" and returns to the form, and only
+ * "Discard changes" closes both. A successful save is not a discard — the screen closes the
+ * dialog through its own `open`, which never asks.
  */
 export function FormDialog({
   open,
@@ -68,10 +84,23 @@ export function FormDialog({
   reference,
   initialFocusRef,
   size = "md",
+  dirty = false,
   children,
 }: FormDialogProps) {
+  const [confirming, setConfirming] = useState(false);
+  useUnsavedChangesWarning(open && dirty);
+
+  // Closed from outside while the question was up: the next open starts on the form, not on it.
+  useEffect(() => {
+    if (!open) setConfirming(false);
+  }, [open]);
+
   function close() {
     if (pending) return;
+    if (dirty) {
+      setConfirming(true);
+      return;
+    }
     onClose();
   }
 
@@ -121,6 +150,18 @@ export function FormDialog({
           </Button>
         </div>
       </form>
+      <ConfirmDialog
+        open={open && confirming}
+        onClose={() => setConfirming(false)}
+        onConfirm={() => {
+          setConfirming(false);
+          onClose();
+        }}
+        title="Discard unsaved changes?"
+        body={`What you've entered in “${title}” hasn't been saved and will be lost.`}
+        confirmLabel="Discard changes"
+        cancelLabel="Keep editing"
+      />
     </Dialog>
   );
 }

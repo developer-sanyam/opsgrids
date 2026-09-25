@@ -181,3 +181,95 @@ describe("FormDialog", () => {
     expect(outerSubmit).not.toHaveBeenCalled();
   });
 });
+
+/** The unsaved-changes guard: opt-in through `dirty`, asked before anything typed is thrown away. */
+describe("FormDialog dirty", () => {
+  /** Dirty once the name differs from what the form opened with — typed and deleted is clean. */
+  function DirtyFields({ onDirty }: { onDirty: (dirty: boolean) => void }) {
+    const [name, setName] = useState("");
+    return (
+      <TextField
+        label="Name"
+        value={name}
+        onChange={(event) => {
+          setName(event.target.value);
+          onDirty(event.target.value !== "");
+        }}
+      />
+    );
+  }
+
+  function DirtyHarness({ onClose = vi.fn() }: { onClose?: () => void }) {
+    const [open, setOpen] = useState(false);
+    const [dirty, setDirty] = useState(false);
+    return (
+      <>
+        <Button onClick={() => setOpen(true)}>New widget</Button>
+        <FormDialog
+          open={open}
+          onClose={() => {
+            onClose();
+            setOpen(false);
+            setDirty(false);
+          }}
+          onSubmit={vi.fn()}
+          title="New widget"
+          submitLabel="Create widget"
+          dirty={dirty}
+        >
+          <DirtyFields onDirty={setDirty} />
+        </FormDialog>
+      </>
+    );
+  }
+
+  it("closes at once when nothing has been entered", async () => {
+    const user = userEvent.setup();
+    render(<DirtyHarness />);
+    await user.click(screen.getByRole("button", { name: "New widget" }));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("asks before Escape discards what was typed, and Keep editing goes back to the form", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(<DirtyHarness onClose={onClose} />);
+    await user.click(screen.getByRole("button", { name: "New widget" }));
+    await user.type(screen.getByLabelText("Name"), "Bracket");
+    await user.keyboard("{Escape}");
+
+    expect(screen.getByRole("dialog", { name: "Discard unsaved changes?" })).toBeTruthy();
+    // Focus is on the safe choice, and Escape here means that choice too.
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Keep editing" }));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Discard unsaved changes?" })).toBeNull();
+    expect(screen.getByLabelText("Name")).toHaveProperty("value", "Bracket");
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("closes both, and gives focus back to the opener, on Discard changes", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(<DirtyHarness onClose={onClose} />);
+    const opener = screen.getByRole("button", { name: "New widget" });
+    await user.click(opener);
+    await user.type(screen.getByLabelText("Name"), "Bracket");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "Discard changes" }));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("asks the browser to confirm a reload while the form is dirty and open", async () => {
+    const user = userEvent.setup();
+    render(<DirtyHarness />);
+    await user.click(screen.getByRole("button", { name: "New widget" }));
+    await user.type(screen.getByLabelText("Name"), "B");
+    const event = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+  });
+});

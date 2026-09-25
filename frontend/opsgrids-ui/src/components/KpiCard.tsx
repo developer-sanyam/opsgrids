@@ -1,22 +1,15 @@
 import type { ReactNode } from "react";
 
 import { cn } from "../lib/cn";
+import { ICON_TILE } from "../lib/tones";
+import type { Tone } from "../lib/tones";
 import { Card } from "./Card";
 import { DeltaPill } from "./DeltaPill";
 import { SampleChip } from "./SampleChip";
 import { Sparkline } from "./Sparkline";
 
 /** The pastel square behind the icon. Semantic families only — never a decorative sixth colour. */
-export type KpiTone = "accent" | "positive" | "info" | "cyan" | "warning" | "danger";
-
-const TONE: Record<KpiTone, string> = {
-  accent: "bg-accent-soft text-accent-ink",
-  positive: "bg-present-soft text-present",
-  info: "bg-info-soft text-info",
-  cyan: "bg-cyan-soft text-cyan",
-  warning: "bg-late-soft text-late",
-  danger: "bg-danger-soft text-danger",
-};
+export type KpiTone = Tone;
 
 interface KpiCardProps {
   label: string;
@@ -86,7 +79,7 @@ export function KpiCard({
   return (
     <Card className="flex flex-col gap-4 p-4 sm:p-6">
       <div className="flex items-start justify-between">
-        <span className={cn("grid size-10 place-items-center rounded-tile", TONE[tone])}>
+        <span className={cn("grid size-10 place-items-center rounded-tile", ICON_TILE[tone])}>
           {icon}
         </span>
         {series !== undefined ? <Sparkline data={series} tone={good ? "good" : "bad"} /> : null}

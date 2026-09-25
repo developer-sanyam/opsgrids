@@ -2,6 +2,7 @@ import { useId } from "react";
 import type { ReactNode } from "react";
 
 import { cn } from "../lib/cn";
+import { FIELD_LABEL } from "../lib/field";
 
 /** The ids a control must carry for its label, helper and error to reach a screen reader. */
 export interface FieldIds {
@@ -9,6 +10,12 @@ export interface FieldIds {
   /** Pass straight to `aria-describedby`. Already joins the helper and the error. */
   describedBy: string | undefined;
   invalid: boolean;
+  /**
+   * The field is marked required. A control built on `FormField` directly puts this on
+   * `aria-required` (the wrappers carry the native `required` attribute instead), so a screen
+   * reader says "required" — the asterisk beside the label is for the eye only.
+   */
+  required: boolean;
 }
 
 interface FormFieldProps {
@@ -20,21 +27,15 @@ interface FormFieldProps {
   helper?: ReactNode | undefined;
   /** The server's message, verbatim (§2.5). Never a rewritten, friendlier version of it. */
   error?: string | undefined;
+  /** Renders `(optional)` beside the label. */
+  optional?: boolean | undefined;
   /**
-   * A red asterisk after the label (owner brief, 2026-09-25: required fields are marked, not
-   * optional ones). The asterisk is decoration for sighted users; the control carries the fact
-   * itself with `required` / `aria-required`, which is what a screen reader announces. The
-   * components built on `FormField` (`TextField`, `Select`, `TextArea`) pass their native
-   * `required` through here, so marking a control required marks its label too.
+   * A red asterisk after the label (the redesign's convention, owner ruling 2026-09-25). Hidden
+   * from assistive technology, which hears "required" from the control's own state instead —
+   * see `FieldIds.required`. `TextField`, `TextArea` and `Select` set it for a `required`
+   * control inside a `FormSection`; outside one, labels are as they were.
    */
   required?: boolean | undefined;
-  /**
-   * Renders `(optional)` beside the label — the convention before the brief.
-   *
-   * @deprecated Mark the required fields with `required` instead. Kept, and still rendered, until
-   * the forms that use it are moved over, so no form loses the information in between.
-   */
-  optional?: boolean | undefined;
   /**
    * Keep the `<label>` — real, tied to the control, read by a screen reader — but take it off the
    * screen. For a dense row where the column heading above already says what the control is: the
@@ -63,8 +64,8 @@ export function FormField({
   label,
   helper,
   error,
-  required = false,
   optional = false,
+  required = false,
   hideLabel = false,
   labelAside,
   className,
@@ -79,7 +80,7 @@ export function FormField({
   const labelNode = (
     <label
       htmlFor={id}
-      className={hideLabel ? "sr-only" : "text-body-sm font-semibold text-ink-soft"}
+      className={hideLabel ? "sr-only" : FIELD_LABEL}
     >
       {label}
       {optional ? (
@@ -88,24 +89,19 @@ export function FormField({
         // what a screen reader reads without this.
         <>
           {" "}
-          <span className="font-medium text-faint">(optional)</span>
+          <span className="normal-case text-faint">(optional)</span>
         </>
       ) : null}
     </label>
   );
 
-  /*
-   * The asterisk sits beside the `<label>`, not inside it. Inside, it would join the label's text:
-   * the accessible name would read "Product name star" (`aria-hidden` keeps it out of that, but
-   * not out of the label's text content, which is what `getByLabelText` and a user's
-   * find-in-page match). Outside, the label is exactly the words, and the control's own
-   * `required` is what tells a screen reader.
-   */
+  // Outside the `<label>`, so the label's text — the control's accessible name, and what every
+  // `getByLabelText` in the apps' tests matches — is the same with or without the mark.
   const marked =
     required && !hideLabel ? (
-      <span className="inline-flex items-baseline gap-0.5">
+      <span className="inline-flex items-baseline gap-1">
         {labelNode}
-        <span aria-hidden className="text-body-sm font-semibold text-negative">
+        <span aria-hidden className="text-body-sm font-bold leading-none text-negative">
           *
         </span>
       </span>
@@ -128,7 +124,7 @@ export function FormField({
           {labelAside}
         </div>
       )}
-      {children({ id, describedBy, invalid: error !== undefined })}
+      {children({ id, describedBy, invalid: error !== undefined, required })}
       {helper ? (
         <p id={helperId} className="text-xs text-muted">
           {helper}

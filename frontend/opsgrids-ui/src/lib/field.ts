@@ -7,6 +7,13 @@
 import { cn } from "./cn";
 
 /**
+ * A field's visible label. One string, so a control that cannot use `FormField`'s `<label>` — a
+ * drop zone, which is a button named by more than its label — still looks exactly like its
+ * neighbours, and a restyle of form labels lands on both at once.
+ */
+export const FIELD_LABEL = "text-body-sm font-semibold text-ink-soft";
+
+/**
  * White fill and a `field-edge` border, which clears 3:1 against every surface — an empty field is
  * identified by its edge alone (WCAG 1.4.11), so the edge cannot be a decorative hairline. The
  * edge darkens on hover, turns negative when invalid, and the accent focus ring sits outside it.

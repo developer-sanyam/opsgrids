@@ -73,6 +73,56 @@ export const Info: Story = {
   ),
 };
 
+export const Warning: Story = {
+  render: () => (
+    <Toaster>
+      <Raiser
+        toasts={[
+          {
+            tone: "warning",
+            title: "Invoice sent.",
+            options: { description: "Payment reminders are off: the customer has no email on file." },
+          },
+        ]}
+      />
+    </Toaster>
+  ),
+};
+
+/** The platform speaking, not the user's action — a notice that outlives a single screen. */
+export const System: Story = {
+  render: () => (
+    <Toaster>
+      <Raiser
+        toasts={[
+          {
+            tone: "system",
+            title: "Scheduled maintenance tonight.",
+            options: { description: "OpsGrids is read-only from 23:00 to 23:30 IST." },
+          },
+        ]}
+      />
+    </Toaster>
+  ),
+};
+
+/** All five tones, each with its own icon, edge and spoken word. */
+export const AllTones: Story = {
+  render: () => (
+    <Toaster>
+      <Raiser
+        toasts={[
+          { tone: "success", title: "Product created." },
+          { tone: "info", title: "Export started.", options: { description: "We'll email you when it's ready." } },
+          { tone: "warning", title: "Stock is below the reorder level for 3 items." },
+          { tone: "system", title: "You're offline.", options: { description: "Changes save when you reconnect." } },
+          { tone: "error", title: "Couldn't reach the payments service.", options: { reference: "c0ffee42" } },
+        ]}
+      />
+    </Toaster>
+  ),
+};
+
 export const Stacked: Story = {
   render: () => (
     <Toaster>

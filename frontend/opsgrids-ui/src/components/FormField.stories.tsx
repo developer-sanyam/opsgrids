@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 
 import { fieldSkin } from "../lib/field";
+import { Card } from "./Card";
 import { FormField } from "./FormField";
 
 /**
@@ -35,9 +36,6 @@ type Story = StoryObj<typeof meta>;
 
 export const WithHelper: Story = {};
 
-/** Required fields carry a red asterisk beside the label (owner brief, 2026-09-25). */
-export const Required: Story = { args: { required: true, label: "Product name", helper: undefined } };
-
 /** The convention before the brief, kept until forms move to `required`. */
 export const Optional: Story = { args: { optional: true, label: "Purchase order number", helper: undefined } };
 
@@ -46,6 +44,32 @@ export const WithError: Story = { args: { error: "That GSTIN's checksum doesn't 
 
 export const LabelAside: Story = {
   args: { labelAside: <span className="text-xs tnum text-muted">12/15</span> },
+};
+
+/**
+ * The redesign's required mark (owner ruling, 2026-09-25): a red asterisk for the eye, and
+ * `aria-required` on the control — handed over as `required` — for a screen reader. Shown on a
+ * card, where forms live.
+ */
+export const Required: Story = {
+  args: {
+    required: true,
+    children: ({ id, describedBy, invalid, required }) => (
+      <input
+        id={id}
+        aria-describedby={describedBy}
+        aria-invalid={invalid || undefined}
+        aria-required={required || undefined}
+        defaultValue="29ABCDE1234F1Z5"
+        className={fieldSkin(invalid, "h-11")}
+      />
+    ),
+  },
+  render: (args) => (
+    <Card className="max-w-sm p-5">
+      <FormField {...args} />
+    </Card>
+  ),
 };
 
 /** Label kept for screen readers, off the screen — for a dense row whose column already says it. */
