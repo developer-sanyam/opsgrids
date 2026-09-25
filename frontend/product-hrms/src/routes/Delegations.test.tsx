@@ -181,7 +181,7 @@ describe("Delegations screen", () => {
     await user.keyboard("{ArrowDown}{Enter}");
     const endsField = screen.getByLabelText("Ends");
     endsField.focus();
-    await user.type(endsField as HTMLElement, "2026-09-25T09:00");
+    await user.type(endsField as HTMLElement, "2027-01-15T09:00");
 
     await user.click(screen.getByRole("button", { name: "Set up delegation" }));
 
