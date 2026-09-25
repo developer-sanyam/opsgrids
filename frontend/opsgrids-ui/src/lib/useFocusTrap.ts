@@ -13,6 +13,29 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(", ");
 
+/**
+ * Marks the element a dialog moves focus to on open, so `console.css` can suppress the ring for
+ * that one, scripted `.focus()` call without touching `:focus-visible` anywhere else. Browsers'
+ * own heuristic for `:focus-visible` treats a script-initiated focus the same as a keyboard one
+ * on plenty of elements — a heading with `tabIndex={-1}`, a text field — which is what used to
+ * draw a ring the instant a dialog opened, for a click that never touched the keyboard.
+ */
+const INITIAL_FOCUS_ATTR = "data-initial-focus";
+
+/**
+ * `target.focus()`, with the ring above suppressed for exactly as long as focus stays on
+ * `target`. The attribute comes off on `target`'s own next blur — not a timer — so a keyboard
+ * user who tabs away and later back to this same control still gets the ring like everywhere
+ * else; it is never removed while this initial focus is still sitting there to be seen.
+ */
+function focusWithoutInitialRing(target: HTMLElement): void {
+  target.setAttribute(INITIAL_FOCUS_ATTR, "");
+  target.focus();
+  target.addEventListener("blur", () => target.removeAttribute(INITIAL_FOCUS_ATTR), {
+    once: true,
+  });
+}
+
 export interface UseFocusTrapOptions {
   /** Whether the panel is open. The trap installs on the transition into `true` and tears down
    *  the moment it goes `false` — the same shape as `Dialog`. */
@@ -66,7 +89,7 @@ export function useFocusTrap({
     const previouslyFocused = document.activeElement as HTMLElement | null;
     // One frame later: the panel is mounted and the caller's target ref is populated.
     const target = initialFocusRef?.current ?? panelRef.current;
-    target?.focus();
+    if (target) focusWithoutInitialRing(target);
 
     function onKeyDown(event: KeyboardEvent) {
       // An overlay opened from inside this one owns Escape and the trap while it is up.

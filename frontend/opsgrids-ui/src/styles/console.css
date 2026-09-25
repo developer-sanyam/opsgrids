@@ -292,6 +292,19 @@ body {
 }
 
 /*
+ * `useFocusTrap`'s own scripted `.focus()` when a dialog opens — some browsers' `:focus-visible`
+ * heuristic doesn't distinguish that from a keyboard tab, on elements (a text field, a heading
+ * with `tabIndex={-1}`) that would otherwise draw the ring above for it. `[data-initial-focus]`
+ * marks only that one element, for only as long as focus sits there — the attribute comes off on
+ * its own next blur, in `useFocusTrap`, not here — so this never suppresses a ring a keyboard user
+ * earned, on this control or any other. Unlayered, like the rule above, so it isn't beaten by
+ * either the base-layer default ring or a field's own `focus-visible:outline-2` pairing.
+ */
+[data-initial-focus]:focus-visible {
+  outline-style: none;
+}
+
+/*
  * One page-load orchestration: a soft staggered rise, honoured only when motion is welcome.
  *
  * The end state is `transform: none`, not `translateY(0)` — the two look identical, but any

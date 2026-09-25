@@ -4,7 +4,7 @@
  * revoke end to end including the already-revoked 409.
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -79,6 +79,12 @@ function renderPage() {
 }
 
 describe("Delegations screen", () => {
+  afterEach(() => {
+    // A no-op when the "N requests moved" test below never enabled fake timers — only that test
+    // pins the clock, and it must not leak into the ones that run after it.
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     listDelegations.mockReset();
     createDelegation.mockReset();
@@ -150,6 +156,13 @@ describe("Delegations screen", () => {
   });
 
   it("shows the 'N requests moved' line only when repointed_count is greater than zero", async () => {
+    // The form refuses an "Ends" value that isn't in the future (relative to the real clock), and
+    // the values typed below are fixed timestamps — so the clock is pinned before them rather than
+    // the literals being pushed forward every time "now" catches up. Only `Date` is faked; `userEvent`
+    // and `waitFor` still rely on real timers.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-14T09:00:00Z"));
+
     listDelegations.mockResolvedValue(paged([]));
     listDelegateCandidates.mockResolvedValue([
       { employee_id: "emp-rohan", display_name: "Rohan Mehta", employee_no: "ATM-0102" },
