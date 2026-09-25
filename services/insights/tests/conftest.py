@@ -45,6 +45,12 @@ TENANT_TABLES = (
     "audit_logs",
     "outbox",
     "processed_events",
+    # I5-I7 entity facts. `enquiry_line_facts` also cascades from `enquiry_facts`'s own FK, but
+    # `TRUNCATE ... CASCADE` below covers it either order.
+    "purchase_order_facts",
+    "task_facts",
+    "enquiry_facts",
+    "enquiry_line_facts",
 )
 
 

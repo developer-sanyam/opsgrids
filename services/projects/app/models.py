@@ -26,11 +26,12 @@ unique-per-org columns (`code` / `ref`); the API exposes those, not the opaque p
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger,
     Date,
+    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -197,11 +198,18 @@ class Task(Base, TenantBase):
     due_date: Mapped[date | None] = mapped_column(Date)
     #: Estimate in story points.
     points: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: Set when the card enters `done`, cleared when it leaves (ADR-0020 §3, slice I6) — the
+    #: timestamp `insights.task_facts` needs for "tasks completed" and "points completed", which
+    #: no other column on this row records. Backdated by migration `_backfill_task_completed_at`
+    #: from this organization's own `audit_logs` for a task already `done` before this column
+    #: existed; `NULL` where no audit row said when.
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         Index("ix_tasks_org_project", "organization_id", "project_id"),
         Index("ix_tasks_org_stage", "organization_id", "stage"),
         Index("ix_tasks_org_assignee", "organization_id", "assignee_id"),
+        Index("ix_tasks_org_completed_at", "organization_id", "completed_at"),
     )
 
 

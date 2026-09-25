@@ -3,7 +3,6 @@
   "$id": "opsgrids://contracts/operations.procurement.purchase_order.updated/v1",
   "title": "operations.procurement.purchase_order.updated",
   "description": "A purchase order's fields or lines were edited. `changed` names them (`lines` when the lines were replaced); the rest is the PO's state after the edit.",
-  "$comment": "Ahead of the producer (ADR-0020 slice I5): services/operations/app/services.py:update_purchase_order does not emit number, status, supplier_id, supplier_name, raised_by_id, created_date, expected_date, currency, total_minor yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
   "type": "object",
   "additionalProperties": false,
   "required": [

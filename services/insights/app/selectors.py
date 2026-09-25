@@ -25,7 +25,7 @@ from sqlalchemy import Select
 from sqlalchemy import false as sa_false
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import access, domain
+from app import access, domain, metrics_entity_facts
 from app.models import OrgProfile
 from app.schemas import (
     MetricOut,
@@ -101,7 +101,16 @@ def _period_out(key: str, window: domain.Window) -> PeriodOut:
     )
 
 
-def _summary_metric(principal: Principal, key: str) -> MetricOut:
+async def _summary_metric(
+    session: AsyncSession,
+    principal: Principal,
+    key: str,
+    *,
+    window: domain.Window,
+    comparison_window: domain.Window | None,
+    currency: str,
+    today: date,
+) -> MetricOut:
     """One entry of `GET /summary`'s `metrics` map. `key` is assumed already validated against
     `app.access.METRICS` — an unknown key is a 422 at the route, never reaches here."""
     spec = access.METRICS[key]
@@ -110,8 +119,21 @@ def _summary_metric(principal: Principal, key: str) -> MetricOut:
         return MetricOut(state="not_active", product_key=gate.product_key)
     if gate.state == "no_access":
         return MetricOut(state="no_access")
-    # gate.state == "ok": no fact table exists yet for any metric (I1). An entitled, permitted
-    # caller sees an honest "not computed yet", never a fabricated zero.
+    # gate.state == "ok". I5-I7's own metrics compute a real value from their fact tables
+    # (`app/metrics_entity_facts.py`); every other key has no fact table yet (I2-I4, I9) and
+    # keeps I1's own honest stub — "not computed yet", never a fabricated zero.
+    computed = await metrics_entity_facts.compute(
+        key,
+        session=session,
+        gate=gate,
+        organization_id=principal.organization_id,
+        window=window,
+        comparison_window=comparison_window,
+        currency=currency,
+        today=today,
+    )
+    if computed is not None:
+        return computed
     return MetricOut(state="unavailable", kind=spec.kind, unit=spec.unit, scope=_scope_label(gate))
 
 
@@ -144,13 +166,25 @@ async def build_summary(
         _period_out(compare, comparison_window) if comparison_window is not None else None
     )
 
+    metrics = {
+        key: await _summary_metric(
+            session,
+            principal,
+            key,
+            window=resolved.window,
+            comparison_window=comparison_window,
+            currency=currency,
+            today=today,
+        )
+        for key in metric_keys
+    }
     return SummaryOut(
         as_of=datetime.now(UTC),
         timezone=timezone,
         currency=currency,
         period=_period_out(resolved.key, resolved.window),
         comparison=comparison_out,
-        metrics={key: _summary_metric(principal, key) for key in metric_keys},
+        metrics=metrics,
     )
 
 
@@ -180,18 +214,22 @@ async def build_series(
             metric=metric,
             state="not_active",
             grain=grain,
-            product_key=gate.product_key,  # type: ignore[arg-type]
+            product_key=gate.product_key,
         )
     if gate.state == "no_access":
         return SeriesOut(
-            as_of=now, timezone=timezone, metric=metric, state="no_access", grain=grain
-        )  # type: ignore[arg-type]
+            as_of=now,
+            timezone=timezone,
+            metric=metric,
+            state="no_access",
+            grain=grain,
+        )
     return SeriesOut(
         as_of=now,
         timezone=timezone,
         metric=metric,
         state="unavailable",
-        grain=grain,  # type: ignore[arg-type]
+        grain=grain,
         scope=_scope_label(gate),
         unit=spec.unit,
     )

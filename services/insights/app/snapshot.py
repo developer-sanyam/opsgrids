@@ -9,13 +9,16 @@ discovery in this platform uses (CLAUDE.md: the outbox role "may read and update
 nothing else" plus whatever narrow, named exceptions a service's own migration grants). Each
 organization's own capture then runs inside its own tenant-bound transaction.
 
-**I1 registers no capture** (`SNAPSHOT_CAPTURES` is empty): `pipeline_value`, `open_deals`,
-`weighted_pipeline` and `customers` need I3/I4's facts, and `stock_value`/`low_stock_items`/
-`out_of_stock_items` need I5's pulled read from operations. This module still runs the whole
-loop — discovery, one transaction per organization, the write through
-`app/services.upsert_daily_snapshot` — so the framework is proven and tested before any capture
-exists to plug into it. A slice that adds a capture appends one `SnapshotCapture` here, in the
-same commit as the fact table (or the pulled read) it computes from; nothing else changes.
+**I1 registered no capture** (`pipeline_value`, `open_deals`, `weighted_pipeline` and
+`customers` still await I3/I4's facts). I6 registers `open_tasks`, local and client-free
+(`app/open_tasks_capture.py`); I5 registers `stock_value`/`low_stock_items`/
+`out_of_stock_items`, a pulled read from operations that needs a live `httpx.AsyncClient` and so
+is constructed and appended to `SNAPSHOT_CAPTURES` at process-wiring time instead of living in
+this module's own static tuple (`app/stock_capture.py`, `app/main.py`/`app/worker.py`). This
+module still runs the whole loop — discovery, one transaction per organization, the write
+through `app/services.upsert_daily_snapshot` — whether or not a capture is registered. A slice
+that adds a local capture appends one `SnapshotCapture` to the tuple below, in the same commit
+as the fact table it computes from; nothing else changes.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import OrgProfile
+from app.open_tasks_capture import OpenTasksCapture
 from app.selectors import local_today
 from platform_core.logging import get_logger
 from platform_core.supervise import GuardedSweep
@@ -52,8 +56,11 @@ class SnapshotCapture(Protocol):
     ) -> None: ...
 
 
-#: Empty in I1 — see the module docstring.
-SNAPSHOT_CAPTURES: tuple[SnapshotCapture, ...] = ()
+#: I6's `open_tasks` needs no client and so is registered here directly. I5's stock captures
+#: (`app/stock_capture.py:StockCapture`) are appended at wiring time instead — see the module
+#: docstring. Append-only: I3/I4 add their own local captures the same way `OpenTasksCapture`
+#: does.
+SNAPSHOT_CAPTURES: tuple[SnapshotCapture, ...] = (OpenTasksCapture(),)
 
 #: Same shape as `app.backfill.WorkScope` — defined again here, not imported, because
 #: `app.snapshot` and `app.backfill` are independent loops that happen to share a process

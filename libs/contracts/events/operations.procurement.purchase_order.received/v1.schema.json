@@ -3,7 +3,6 @@
   "$id": "opsgrids://contracts/operations.procurement.purchase_order.received/v1",
   "title": "operations.procurement.purchase_order.received",
   "description": "An approved purchase order was received into stock. `received_date` and `expected_date` are business dates; comparing them is what on-time delivery means. Lines whose SKU matched an inventory item were posted to the stock ledger (`matched_lines`); the rest are listed in `unmatched_skus`.",
-  "$comment": "Ahead of the producer (ADR-0020 slice I5): services/operations/app/services.py:receive_purchase_order does not emit expected_date yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
   "type": "object",
   "additionalProperties": false,
   "required": [

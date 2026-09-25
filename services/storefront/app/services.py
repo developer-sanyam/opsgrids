@@ -1904,6 +1904,12 @@ async def create_enquiry_for_store(
                 "store_id": str(store.storefront_id),
                 "company": enquiry.company,
                 "line_count": len(enquiry.lines),
+                # `docs/insights/events.md` §2 (I7): `enquiry_facts`/`enquiry_line_facts` need
+                # the status (always `new` on creation) and the lines themselves — the same
+                # list the row stores, with no buyer-identifying field beyond the catalogue
+                # product and quantity.
+                "status": enquiry.status,
+                "lines": enquiry.lines,
             },
         )
     return enquiry
@@ -1922,6 +1928,7 @@ async def update_enquiry_status(
         return enquiry
 
     before = _enquiry_snapshot(enquiry)
+    from_status = enquiry.status
     enquiry.status = payload.status
     record_audit(
         session,
@@ -1934,6 +1941,22 @@ async def update_enquiry_status(
         before=before,
         after=_enquiry_snapshot(enquiry),
         request=request,
+    )
+    # `docs/insights/events.md` §2 (I7): a new emission — until this slice, this transition
+    # wrote an audit row and no event at all, so `enquiry_facts.status` had nothing to fold.
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type="storefront.enquiry.status_changed",
+        aggregate_type="enquiry",
+        aggregate_id=enquiry.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "enquiry_id": str(enquiry.id),
+            "from": from_status,
+            "to": enquiry.status,
+        },
     )
     await session.flush()
     return enquiry

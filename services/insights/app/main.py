@@ -6,6 +6,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,7 +15,8 @@ from app.api.routes import router
 from app.backfill import BackfillRunner
 from app.config import settings
 from app.models import OutboxEvent
-from app.snapshot import SnapshotSweep
+from app.snapshot import SNAPSHOT_CAPTURES, SnapshotSweep
+from app.stock_capture import StockCapture
 from platform_core.app import create_app
 from platform_core.db import (
     assert_outbox_role,
@@ -52,6 +54,7 @@ async def _start_background_worker(app: FastAPI) -> None:
     """
     app.state.background_worker_task = None
     app.state.worker_bulkhead_engine = None
+    app.state.stock_capture_client = None
     cfg = settings()
     if not cfg.run_consumers_in_api:
         return
@@ -70,10 +73,16 @@ async def _start_background_worker(app: FastAPI) -> None:
             async with bulkhead_scope(engine)(organization_id) as session:
                 yield session
 
+        # I5's pulled stock capture is the one `SnapshotCapture` that needs a live HTTP client
+        # (`app/stock_capture.py`) — its lifetime is this background group's, disposed in
+        # `_stop_background_worker`, never the API's own request-scoped clients.
+        stock_client = httpx.AsyncClient()
+        app.state.stock_capture_client = stock_client
         snapshot_sweep = SnapshotSweep(
             poll_interval=cfg.snapshot_sweep_poll_seconds,
             discovery_factory=get_outbox_sessionmaker(),
             work_scope=work_scope,
+            captures=(*SNAPSHOT_CAPTURES, StockCapture(cfg, stock_client)),
         )
         backfill_runner = BackfillRunner(
             settings=cfg, discovery_factory=get_outbox_sessionmaker(), work_scope=work_scope
@@ -114,6 +123,9 @@ async def _stop_background_worker(app: FastAPI) -> None:
     engine = getattr(app.state, "worker_bulkhead_engine", None)
     if engine is not None:
         await engine.dispose()
+    stock_client = getattr(app.state, "stock_capture_client", None)
+    if stock_client is not None:
+        await stock_client.aclose()
 
 
 app = create_app(

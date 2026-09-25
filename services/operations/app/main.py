@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from app.api.internal import router as internal_router
 from app.api.routes import router
 from app.config import settings
 from app.cron import ReconcileSweep
@@ -84,3 +85,7 @@ app = create_app(
     on_startup=_start_reconcile_sweep,
     on_shutdown=_stop_reconcile_sweep,
 )
+# Mounted directly, not through `routers=` — that list gets `/api/v1` prefixed
+# (`platform_core.app.create_app`), and `internal_router` already carries its own
+# `/internal/v1` prefix (`app/api/internal.py`), same as `account`'s and `subscription`'s.
+app.include_router(internal_router)

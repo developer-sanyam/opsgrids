@@ -776,7 +776,11 @@ async def create_task(
     points: int = 0,
     request: Request | None = None,
 ) -> Task:
-    """Create a board card on a project. `project_id` is validated by the caller."""
+    """Create a board card on a project. `project_id` is validated by the caller.
+
+    `completed_at` is stamped only for a card created directly in `done` (`docs/insights/
+    events.md` §2) — the ordinary path through `backlog` never sets it here.
+    """
     task = Task(
         organization_id=ctx.organization_id,
         created_by=str(ctx.principal.sub),
@@ -787,6 +791,7 @@ async def create_task(
         priority=priority,
         due_date=due_date,
         points=points,
+        completed_at=utcnow() if stage == "done" else None,
     )
     session.add(task)
     await session.flush()
@@ -814,6 +819,14 @@ async def create_task(
             "task_id": str(task.id),
             "project_id": str(project_id),
             "stage": stage,
+            # `docs/insights/events.md` §2 (I6): the fields `insights.task_facts` needs beyond
+            # the id and stage this already carried.
+            "title": task.title,
+            "assignee_id": str(task.assignee_id) if task.assignee_id else None,
+            "priority": task.priority,
+            "due_date": task.due_date.isoformat() if task.due_date else None,
+            "points": task.points,
+            "completed_at": task.completed_at.isoformat() if task.completed_at else None,
         },
         actor=_actor(ctx),
     )
@@ -876,10 +889,16 @@ async def update_task(
         "points": task.points,
     }
 
+    stage_before = task.stage
     if "assignee_ref" in changes:
         task.assignee_id = await _resolve_member_id(session, ctx, changes.pop("assignee_ref"))
     for field, value in changes.items():
         setattr(task, field, value)
+    # `completed_at` is set when the card enters `done` and cleared when it leaves
+    # (`docs/insights/events.md` §2, the `projects.tasks.completed_at` column ADR-0020 §3 adds).
+    # A change that never touches `stage` leaves it exactly as it was.
+    if task.stage != stage_before:
+        task.completed_at = utcnow() if task.stage == "done" else None
     task.updated_by = str(ctx.principal.sub)
     await session.flush()
 
@@ -915,6 +934,14 @@ async def update_task(
             "task_id": str(task.id),
             "project_id": str(task.project_id),
             "stage": task.stage,
+            # `docs/insights/events.md` §2 (I6): the card's full state after the change, not
+            # just `stage` — insights folds a full-state upsert, never a diff.
+            "title": task.title,
+            "assignee_id": str(task.assignee_id) if task.assignee_id else None,
+            "priority": task.priority,
+            "due_date": task.due_date.isoformat() if task.due_date else None,
+            "points": task.points,
+            "completed_at": task.completed_at.isoformat() if task.completed_at else None,
         },
         actor=_actor(ctx),
     )

@@ -3,7 +3,6 @@
   "$id": "opsgrids://contracts/projects.board.task.created/v1",
   "title": "projects.board.task.created",
   "description": "A card was added to a project's board. `assignee_id` is a delivery member id and is the column projects' OWN scope compares with the caller's subject reference. `completed_at` is non-null only for a card created directly in `done`.",
-  "$comment": "Ahead of the producer (ADR-0020 slice I6): services/projects/app/services.py:create_task does not emit title, assignee_id, priority, due_date, points, completed_at yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
   "type": "object",
   "additionalProperties": false,
   "required": [

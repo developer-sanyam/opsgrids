@@ -46,6 +46,13 @@ class Settings(ServiceSettings):
     #: on in development (`services/account/README.md`).
     account_service_url: str = "http://localhost:8111"
 
+    #: The same shape, for each source's own `GET /internal/v1/insights/export/{entity}`
+    #: (`docs/insights/api.md` §6.1): I5's purchase orders, I6's tasks, I7's enquiries. Default
+    #: ports match `services/app-gateway/routes.json`'s upstream for each product.
+    operations_service_url: str = "http://localhost:8172"
+    projects_service_url: str = "http://localhost:8170"
+    storefront_service_url: str = "http://localhost:8174"
+
     #: Paging and pacing for the backfill runner's export reads (ADR-0020 §3): "pages of 500,
     #: with a 100 ms pause between pages ... timeouts are 5 s to connect and 30 s to read, with
     #: 3 retries at 2/8/30 s."

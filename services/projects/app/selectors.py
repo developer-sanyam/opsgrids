@@ -318,6 +318,28 @@ async def get_task(session: AsyncSession, org_id: uuid.UUID, task_id: uuid.UUID)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+def tasks_export_stmt(
+    *,
+    organization_id: uuid.UUID,
+    after_updated_at: Any | None,
+    after_id: uuid.UUID | None,
+    limit: int,
+) -> Select[Any]:
+    """`GET /internal/v1/insights/export/tasks` (`docs/insights/api.md` §6.1): keyset on
+    `(updated_at, id)` ascending, soft-deleted rows included so a deletion propagates. The caller
+    binds `organization_id` with `set_tenant()` first; this still filters explicitly (RLS is the
+    net, not the filter, CLAUDE.md)."""
+    stmt = select(Task).where(Task.organization_id == organization_id)
+    if after_updated_at is not None and after_id is not None:
+        stmt = stmt.where(
+            or_(
+                Task.updated_at > after_updated_at,
+                (Task.updated_at == after_updated_at) & (Task.id > after_id),
+            )
+        )
+    return stmt.order_by(Task.updated_at.asc(), Task.id.asc()).limit(limit)
+
+
 # ------------------------------------------------------------------ project lookup maps
 
 

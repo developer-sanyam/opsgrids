@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from app.api.insights_internal import router as insights_internal_router
 from app.api.internal import router as internal_router
 from app.api.public import router as public_router
 from app.api.routes import router
@@ -85,3 +86,8 @@ app = create_app(
     redis=True,
     outbox_model=OutboxEvent,
 )
+# Mounted directly, not through `routers=` — that list gets `/api/v1` prefixed
+# (`platform_core.app.create_app`), and `insights_internal_router` already carries its own
+# `/internal/v1` prefix (`app/api/insights_internal.py`), same as `account`'s and
+# `subscription`'s.
+app.include_router(insights_internal_router)

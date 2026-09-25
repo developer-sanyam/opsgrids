@@ -231,6 +231,19 @@ def inventory_value_minor(items: Sequence[InventoryItem]) -> int:
     return sum(quantity.value_minor(it.on_hand_milli, it.unit_value_minor) for it in items)
 
 
+def inventory_value_by_currency(items: Sequence[InventoryItem]) -> dict[str, int]:
+    """The same rounded-once-per-item value as `inventory_value_minor`, grouped by each item's
+    own currency (`docs/insights/api.md` §6.3) — insights' hourly stock-value pull reports a
+    single pair when everything is in one currency, and this map when it is not. Never converted
+    or summed across currencies (ADR-0000 §8, `events.md` §5)."""
+    totals: dict[str, int] = {}
+    for it in items:
+        totals[it.currency] = totals.get(it.currency, 0) + quantity.value_minor(
+            it.on_hand_milli, it.unit_value_minor
+        )
+    return totals
+
+
 def is_low_stock(item: InventoryItem) -> bool:
     """An item is low when at or below its reorder point (whole units, compared exactly)."""
     return item.on_hand_milli <= item.reorder_point * quantity.QTY_SCALE

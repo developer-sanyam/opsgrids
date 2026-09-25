@@ -32,14 +32,19 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     DateTime,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy import (
     Date as SADate,
+)
+from sqlalchemy import (
+    desc as sa_desc,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -128,12 +133,17 @@ class OrgProfile(Base):
     )
 
 
-#: Snapshot metrics registered so far. Empty in I1 — no fact table exists yet for any of
-#: `pipeline_value`, `open_deals`, `weighted_pipeline`, `customers`, `open_tasks`, `stock_value`,
-#: `low_stock_items`, `out_of_stock_items` (data-model.md §5). `app/snapshot.py`'s sweep reads
+#: Snapshot metrics registered so far. `pipeline_value`, `open_deals`, `weighted_pipeline`,
+#: `customers` still await I3/I4's facts (data-model.md §5). `app/snapshot.py`'s sweep reads
 #: this to know what it may capture; a later slice appends to it in the same commit that adds
-#: the fact table the capture reads from.
-SNAPSHOT_METRICS: tuple[str, ...] = ()
+#: the fact table the capture reads from. I6 adds `open_tasks` (local, from `task_facts`); I5
+#: adds `stock_value`/`low_stock_items`/`out_of_stock_items` (pulled from operations).
+SNAPSHOT_METRICS: tuple[str, ...] = (
+    "open_tasks",
+    "stock_value",
+    "low_stock_items",
+    "out_of_stock_items",
+)
 
 
 class DailySnapshot(Base):
@@ -252,4 +262,147 @@ class BackfillRun(Base):
         # §3): cross-tenant discovery on the BYPASSRLS `opsgrids_outbox` role has no tenant to
         # bind while it asks "what is due", the same shape as approval's SLA-sweep index.
         Index("ix_backfill_runs_status_next_attempt", "status", "next_attempt_at"),
+    )
+
+
+class FactMixin:
+    """The five columns every `*_facts` table carries on top of its own (data-model.md §1):
+    the source row's own id as this table's own primary key alongside `organization_id`, the
+    two version-guard timestamps, the soft-delete marker, and the last backfill run that saw
+    this row. Not `TenantBase` — a fact's primary key is `(organization_id, id)` with the
+    **source's own id**, never a locally generated one, and a fact has no `created_by`/
+    `updated_by` (nobody at this organization wrote the row; a fold or an export page did).
+    """
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    organization_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    #: The source row's own `created_at`, or the payload's `created_at` where the source can
+    #: backdate it. Otherwise the envelope's `occurred_at` on the creating event.
+    source_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: The event version guard (data-model.md §1.1): the envelope `occurred_at` for events, the
+    #: source row's own `updated_at` for export pages.
+    source_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_seen_run: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class PurchaseOrderFacts(Base, FactMixin):
+    """One row per operations purchase order (I5, data-model.md §3). `owner_ref` is
+    `purchase_orders.raised_by_id` — the column operations' own OWN scope compares with the
+    caller's `subject_ref` (ADR-0020 §4)."""
+
+    __tablename__ = "purchase_order_facts"
+
+    number: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    supplier_ref: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    supplier_name: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_ref: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    created_date: Mapped[date] = mapped_column(SADate, nullable=False)
+    expected_date: Mapped[date] = mapped_column(SADate, nullable=False)
+    received_date: Mapped[date | None] = mapped_column(SADate)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    total_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("currency ~ '^[A-Z]{3}$'", name="purchase_order_facts_currency_shape"),
+        Index("ix_purchase_order_facts_org_created_date", "organization_id", "created_date"),
+        Index(
+            "ix_purchase_order_facts_org_received_date",
+            "organization_id",
+            "received_date",
+            postgresql_where=text("received_date IS NOT NULL"),
+        ),
+        Index(
+            "ix_purchase_order_facts_org_source_created_at",
+            "organization_id",
+            sa_desc("source_created_at"),
+        ),
+    )
+
+
+class TaskFacts(Base, FactMixin):
+    """One row per projects task (I6, data-model.md §3). `owner_ref` is `tasks.assignee_id` — a
+    delivery member id, and by contract the same value projects' own OWN scope compares with
+    the caller's `subject_ref` (ADR-0020 §4; the source's own comparison is `assignee_id ==
+    subject_ref`, noted as a weak link in the ADR's risk 5, and this fact mirrors it exactly
+    rather than "fixing" it into disagreement)."""
+
+    __tablename__ = "task_facts"
+
+    project_ref: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    stage: Mapped[str] = mapped_column(Text, nullable=False)
+    priority: Mapped[str] = mapped_column(Text, nullable=False)
+    points: Mapped[int] = mapped_column(Integer, nullable=False)
+    due_date: Mapped[date | None] = mapped_column(SADate)
+    owner_ref: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index(
+            "ix_task_facts_org_completed_at",
+            "organization_id",
+            "completed_at",
+            postgresql_where=text("completed_at IS NOT NULL"),
+        ),
+        Index("ix_task_facts_org_source_created_at", "organization_id", "source_created_at"),
+        Index(
+            "ix_task_facts_org_owner_open",
+            "organization_id",
+            "owner_ref",
+            postgresql_where=text("deleted_at IS NULL AND stage <> 'done'"),
+        ),
+    )
+
+
+class EnquiryFacts(Base, FactMixin):
+    """One row per storefront enquiry (I7, data-model.md §3). No owner column: enquiries are
+    ORG-only (`storefront.sales.enquiry.read`'s own maximum scope)."""
+
+    __tablename__ = "enquiry_facts"
+
+    store_ref: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    #: The buyer's own business name, as the source shows it to `enquiry.read`.
+    company: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    line_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_enquiry_facts_org_source_created_at",
+            "organization_id",
+            sa_desc("source_created_at"),
+        ),
+    )
+
+
+class EnquiryLineFacts(Base):
+    """One line of one enquiry (I7, data-model.md §3). Written once with the enquiry — an
+    enquiry is append-only at the source, so lines never change after the creating fold. A
+    real in-schema FK to `enquiry_facts` `ON DELETE CASCADE` (same-schema FKs are the ones
+    CLAUDE.md allows): a mark-and-sweep delete of the parent fact takes its lines with it."""
+
+    __tablename__ = "enquiry_line_facts"
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    enquiry_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    line_no: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_ref: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    #: The catalogue name as it was when the enquiry was sent — never re-joined against the
+    #: catalogue later, which may since have renamed or deleted the product.
+    product_name: Mapped[str] = mapped_column(Text, nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "enquiry_id"],
+            ["insights.enquiry_facts.organization_id", "insights.enquiry_facts.id"],
+            ondelete="CASCADE",
+            name="fk_enquiry_line_facts_enquiry",
+        ),
+        Index("ix_enquiry_line_facts_org_product", "organization_id", "product_ref"),
     )

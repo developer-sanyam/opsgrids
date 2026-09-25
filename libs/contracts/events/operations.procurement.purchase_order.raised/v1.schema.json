@@ -3,7 +3,6 @@
   "$id": "opsgrids://contracts/operations.procurement.purchase_order.raised/v1",
   "title": "operations.procurement.purchase_order.raised",
   "description": "A purchase order was created, usually as a draft. `raised_by_id` is the column operations' OWN scope compares with the caller's subject reference. `total_minor` is the sum of the PO's line amounts; a PO has no total column of its own.",
-  "$comment": "Ahead of the producer (ADR-0020 slice I5): services/operations/app/services.py:create_purchase_order does not emit supplier_id, supplier_name, raised_by_id, created_date, expected_date, currency, total_minor yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -172,7 +172,7 @@ def resolve_period(
             raise InvalidPeriodError(f"a custom window spans at most {MAX_CUSTOM_SPAN_DAYS} days")
         window = Window(from_, to)
 
-    return ResolvedPeriod(key=period, window=window, label=window_label(window))  # type: ignore[arg-type]
+    return ResolvedPeriod(key=period, window=window, label=window_label(window))
 
 
 def _shift_year(day: date, years: int) -> date:

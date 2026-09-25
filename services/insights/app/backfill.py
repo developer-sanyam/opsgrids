@@ -19,9 +19,11 @@ sweep, `app/main.py`) that does two things on one cadence, cheaper first:
 I1 registers **one** entity end to end, `account.organizations` — not through `ENTITY_REGISTRY`
 below (the account export has no per-organization page to walk; discovery's own sync step *is*
 its backfill), but as the worked example of the framework I2-I9 plug their own entities into.
-`ENTITY_REGISTRY` therefore starts empty: no `*_facts` table exists yet for anything it could
-back. A slice that adds one registers a `BackfillSource` here, in the same commit as its export
-route client and its fold — nothing else in this module changes.
+I5-I7 are the first through `ENTITY_REGISTRY` proper (`operations.purchase_orders`,
+`projects.tasks`, `storefront.enquiries`, each a small `BackfillSource` living beside its own
+export client — `app/operations_client.py`, `app/projects_client.py`,
+`app/storefront_client.py`); I2-I4 and I9 append their own entries the same way, in the same
+commit as their export route client and their fold — nothing else in this module changes.
 
 **Ordering.** `app/main.py` calls `app/consumers.py:ensure_queue_bound` before starting this
 runner's loop, never the other way around (ADR-0020 §3, step 2): a change committed before the
@@ -46,7 +48,7 @@ from sqlalchemy import select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app import account_client, services
+from app import account_client, operations_client, projects_client, services, storefront_client
 from app.config import Settings
 from app.models import BackfillRun
 from platform_core.logging import get_logger
@@ -100,8 +102,13 @@ class BackfillSource(Protocol):
 
 #: Empty in I1 (see the module docstring) — I2 registers `finance.invoices`/`payments`/
 #: `purchases`, I3 `deal.deals`, and so on, each entity's export client living beside its own
-#: fold in that slice.
-ENTITY_REGISTRY: dict[str, BackfillSource] = {}
+#: fold in that slice. I5-I7 register theirs below; append only — this dict is shared with
+#: whichever other slices land in parallel.
+ENTITY_REGISTRY: dict[str, BackfillSource] = {
+    "operations.purchase_orders": operations_client.SOURCE,
+    "projects.tasks": projects_client.SOURCE,
+    "storefront.enquiries": storefront_client.SOURCE,
+}
 
 
 @dataclass

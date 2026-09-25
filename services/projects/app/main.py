@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.api.internal import router as internal_router
 from app.api.routes import router
 from app.config import settings
 from app.models import OutboxEvent
@@ -17,3 +18,7 @@ app = create_app(
     # outbox engine so it is not blind to the rows the app role cannot see.
     outbox_model=OutboxEvent,
 )
+# Mounted directly, not through `routers=` — that list gets `/api/v1` prefixed
+# (`platform_core.app.create_app`), and `internal_router` already carries its own
+# `/internal/v1` prefix (`app/api/internal.py`), same as `account`'s and `subscription`'s.
+app.include_router(internal_router)

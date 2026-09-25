@@ -1060,3 +1060,32 @@ async def get_enquiry(
         .scalars()
         .one_or_none()
     )
+
+
+def enquiries_export_stmt(
+    *,
+    organization_id: uuid.UUID,
+    after_updated_at: Any | None,
+    after_id: uuid.UUID | None,
+    limit: int,
+) -> Select[tuple[Enquiry, uuid.UUID]]:
+    """`GET /internal/v1/insights/export/enquiries` (`docs/insights/api.md` §6.1): keyset on
+    `(updated_at, id)` ascending, soft-deleted rows included so a deletion propagates. Joined to
+    `storefronts` for `store_id` — an enquiry carries no `storefront_id` of its own (it is the
+    buyer's own words about themselves, not a link the row needs for anything else), and today's
+    one-storefront-per-organization constraint (`uq_storefronts_organization_id`) makes that join
+    unambiguous. The caller binds `organization_id` with `set_tenant()` first; this still filters
+    explicitly (RLS is the net, not the filter, CLAUDE.md)."""
+    stmt = (
+        select(Enquiry, Storefront.id)
+        .outerjoin(Storefront, Storefront.organization_id == Enquiry.organization_id)
+        .where(Enquiry.organization_id == organization_id)
+    )
+    if after_updated_at is not None and after_id is not None:
+        stmt = stmt.where(
+            or_(
+                Enquiry.updated_at > after_updated_at,
+                (Enquiry.updated_at == after_updated_at) & (Enquiry.id > after_id),
+            )
+        )
+    return stmt.order_by(Enquiry.updated_at.asc(), Enquiry.id.asc()).limit(limit)

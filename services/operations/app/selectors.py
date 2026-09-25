@@ -231,6 +231,28 @@ async def lines_map(
     return out
 
 
+def purchase_orders_export_stmt(
+    *,
+    organization_id: uuid.UUID,
+    after_updated_at: Any | None,
+    after_id: uuid.UUID | None,
+    limit: int,
+) -> Select[Any]:
+    """`GET /internal/v1/insights/export/purchase_orders` (`docs/insights/api.md` §6.1):
+    keyset on `(updated_at, id)` ascending, soft-deleted rows included so a deletion propagates.
+    The caller binds `organization_id` with `set_tenant()` first; this still filters explicitly
+    (RLS is the net, not the filter, CLAUDE.md)."""
+    stmt = select(PurchaseOrder).where(PurchaseOrder.organization_id == organization_id)
+    if after_updated_at is not None and after_id is not None:
+        stmt = stmt.where(
+            or_(
+                PurchaseOrder.updated_at > after_updated_at,
+                (PurchaseOrder.updated_at == after_updated_at) & (PurchaseOrder.id > after_id),
+            )
+        )
+    return stmt.order_by(PurchaseOrder.updated_at.asc(), PurchaseOrder.id.asc()).limit(limit)
+
+
 async def all_purchase_orders(session: AsyncSession, ctx: ScopeContext) -> list[PurchaseOrder]:
     """Every in-scope purchase order — powers the overview rollups."""
     return list((await session.execute(purchase_orders_stmt(ctx))).scalars().all())

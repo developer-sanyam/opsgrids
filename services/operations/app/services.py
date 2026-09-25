@@ -363,9 +363,12 @@ async def create_purchase_order(
     session.add(po)
     await session.flush()
 
+    total_minor = 0
     for spec in lines:
         quantity = int(spec["quantity"])
         unit_price_minor = int(spec["unit_price_minor"])
+        amount_minor = domain.line_amount_minor(quantity, unit_price_minor)
+        total_minor += amount_minor
         session.add(
             PurchaseOrderLine(
                 organization_id=ctx.organization_id,
@@ -376,7 +379,7 @@ async def create_purchase_order(
                 quantity=quantity,
                 uom=spec.get("uom", ""),
                 unit_price_minor=unit_price_minor,
-                amount_minor=domain.line_amount_minor(quantity, unit_price_minor),
+                amount_minor=amount_minor,
                 received_qty=int(spec.get("received_qty", 0)),
             )
         )
@@ -404,8 +407,16 @@ async def create_purchase_order(
             "organization_id": str(ctx.organization_id),
             "purchase_order_id": str(po.id),
             "number": number,
-            "supplier_id": str(supplier.id),
             "status": status,
+            # `docs/insights/events.md` §2 (I5): the fields `insights.purchase_order_facts`
+            # needs beyond the id and status this already carried.
+            "supplier_id": str(supplier.id),
+            "supplier_name": supplier.name,
+            "raised_by_id": str(raised_by_id) if raised_by_id else None,
+            "created_date": created_date.isoformat(),
+            "expected_date": expected_date.isoformat(),
+            "currency": po.currency,
+            "total_minor": total_minor,
         },
         actor=_actor(ctx),
     )
@@ -606,6 +617,9 @@ async def update_purchase_order(
         after=audit_after,
         request=request,
     )
+    total_minor = domain.po_total_minor(
+        await selectors.lines_for(session, ctx.organization_id, po.id)
+    )
     publish_event(
         session,
         OutboxEvent,
@@ -617,6 +631,17 @@ async def update_purchase_order(
             "organization_id": str(ctx.organization_id),
             "purchase_order_id": str(po.id),
             "changed": sorted(set(changes) | ({"lines"} if lines_payload is not None else set())),
+            # `docs/insights/events.md` §2 (I5): the full state after the edit, not just
+            # `changed` — insights folds a full-state upsert, never a diff.
+            "number": po.number,
+            "status": po.status,
+            "supplier_id": str(po.supplier_id),
+            "supplier_name": po.supplier_name,
+            "raised_by_id": str(po.raised_by_id) if po.raised_by_id else None,
+            "created_date": po.created_date.isoformat(),
+            "expected_date": po.expected_date.isoformat(),
+            "currency": po.currency,
+            "total_minor": total_minor,
         },
         actor=_actor(ctx),
     )
@@ -717,6 +742,12 @@ async def approve_purchase_order(
             "purchase_order_id": str(po.id),
             "number": po.number,
             "spend_applied": spend_applied,
+            # `docs/insights/events.md` §2 (I5): `on_time_delivery` and `stock_value` cards need
+            # no more than the status transition, but `revenue`-shaped parity is cheaper to keep
+            # honest than to special-case, so approval carries the same money pair every other
+            # PO transition does.
+            "currency": po.currency,
+            "total_minor": total,
         },
         actor=_actor(ctx),
     )
@@ -823,6 +854,9 @@ async def receive_purchase_order(
             "purchase_order_id": str(po.id),
             "number": po.number,
             "received_date": landed.isoformat(),
+            # `docs/insights/events.md` §2 (I5): `on_time_delivery` compares this against
+            # `received_date`.
+            "expected_date": po.expected_date.isoformat(),
             "unmatched_skus": unmatched_skus,
             "matched_lines": matched_lines,
         },
