@@ -445,43 +445,74 @@ export interface AgingBucket {
   count: number;
 }
 
-/** A month of cash movement for the cashflow chart. */
-export interface CashflowPoint {
-  label: string;
-  inflow_minor: Minor;
-  outflow_minor: Minor;
-}
-
-/** A headline KPI for the overview, pre-derived from the ledger. */
+/**
+ * A headline KPI for the overview — trimmed to the fields the Overview screen actually reads.
+ * The wire response (`services/finance/app/schemas.py`) also carries `deltaPct`/`series`/
+ * `sample`/`trend_sample`: every KPI's trend line is a representative constant with no history
+ * table behind it yet (flagged `trend_sample: true` on every one), and `cash` itself is fully
+ * representative (`sample: true`, no bank feed or ledger to derive a balance from). Those fields
+ * are deliberately not declared here — the dashboard audit's do-not-render list — so nothing on
+ * this screen can read them by accident. Real per-currency deltas come from `revenue_history`.
+ */
 export interface OverviewKpi {
   key: string;
   label: string;
   /** Amount in minor units; the UI decides compact vs full. */
   value_minor: Minor;
-  deltaPct: number;
-  /** A short trend series (already scaled to whatever unit reads best) for the sparkline. */
-  series: number[];
   caption: string;
-  /**
-   * True when `value_minor` itself is representative rather than derived from this tenant's own
-   * invoices and payments — true only for `cash` today, since there is no bank feed or ledger to
-   * derive a balance from.
-   */
-  sample?: boolean;
-  /** True when the trend (`deltaPct` + `series`) is representative even though the headline is real. */
-  trend_sample?: boolean;
 }
 
-/** Everything the Overview screen needs, in one payload. */
+/**
+ * One point of finance's real 12-month history (`MonthlyRevenuePoint`,
+ * `services/finance/app/schemas.py`). Never a sample: `revenue_minor`/`received_minor`/
+ * `outstanding_minor` are all derived from this tenant's own invoices, payments and allocations.
+ */
+export interface MonthlyRevenuePoint {
+  /** `YYYY-MM`. */
+  month: string;
+  /** e.g. `"Sep 2026"`. */
+  label: string;
+  revenue_minor: Minor;
+  received_minor: Minor;
+  outstanding_minor: Minor;
+}
+
+/**
+ * A real revenue/receivables history, scoped to one currency (`CurrencyRevenueHistory`). Finance
+ * never sums money across currencies (ADR-0000 §8), so a multi-currency tenant would get one of
+ * these per currency it has actually issued or been paid in — today this organization issues only
+ * in INR. `*_delta_pct` is `null`, not `0`, when the previous month has nothing to compare
+ * against: an invented delta is worse than no delta.
+ */
+export interface CurrencyRevenueHistory {
+  currency: string;
+  revenue_current_minor: Minor;
+  revenue_previous_minor: Minor;
+  revenue_delta_pct: number | null;
+  received_current_minor: Minor;
+  received_previous_minor: Minor;
+  received_delta_pct: number | null;
+  outstanding_current_minor: Minor;
+  outstanding_previous_minor: Minor;
+  outstanding_delta_pct: number | null;
+  /** 12 months, oldest first, ending at the current month. */
+  months: MonthlyRevenuePoint[];
+}
+
+/**
+ * Everything the Overview screen needs, trimmed to real figures. The wire response also carries
+ * `cashflow`/`cashflow_sample` — a six-month cash chart with no real cash ledger behind it, always
+ * flagged `cashflow_sample: true` — which are deliberately not declared here for the same reason
+ * `OverviewKpi`'s trend fields aren't: Overview never reads them (dashboard audit §5.8).
+ */
 export interface OverviewSummary {
   period_label: string;
   kpis: OverviewKpi[];
-  cashflow: CashflowPoint[];
   aging: AgingBucket[];
   /** Overdue invoices, largest outstanding first — the "needs attention" list. */
   attention: Invoice[];
-  /** True: the six-month cashflow chart is a representative aggregate, not a real cash ledger. */
-  cashflow_sample?: boolean;
+  /** Real, per-currency revenue/receivables history. Empty when this tenant has no invoices yet. */
+  revenue_history: CurrencyRevenueHistory[];
 }
 
 /** One line of the P&L / trial-balance summary. */
