@@ -1,7 +1,7 @@
 import { useId, useMemo, useState } from "react";
 
 import type { TrendPoint } from "@/api/types";
-import { DeltaPill, SampleChip } from "@opsgrids/ui";
+import { DeltaPill } from "@opsgrids/ui";
 
 const W = 640;
 const H = 200;
@@ -36,16 +36,14 @@ interface UtilizationTrendProps {
    * rather than a fabricated "+0%" that claims a week-over-week comparison that was never made. */
   deltaPct?: number;
   series: TrendPoint[];
-  /** Marks the series (not the live headline) as representative — `/timesheets/summary`'s
-   * history is a server-side constant until real weeks accumulate; only its last point is live. */
-  sampleHistory?: boolean;
 }
 
 /**
  * The wide utilization-over-time card: a live headline percentage with a filled area+line series
- * across the trailing weeks, a hover tooltip, and a subtle target line at 80% capacity.
+ * across the trailing weeks — real weeks only, from `/timesheets/summary` — a hover tooltip, and
+ * a subtle target line at 80% capacity.
  */
-export function UtilizationTrend({ current, deltaPct, series, sampleHistory = false }: UtilizationTrendProps) {
+export function UtilizationTrend({ current, deltaPct, series }: UtilizationTrendProps) {
   const [hover, setHover] = useState<number | null>(null);
   const gradientId = useId();
 
@@ -67,7 +65,6 @@ export function UtilizationTrend({ current, deltaPct, series, sampleHistory = fa
           <div className="flex items-center gap-2.5">
             <span className="display text-3xl font-extrabold tnum leading-none">{current}%</span>
             {deltaPct !== undefined ? <DeltaPill value={deltaPct} /> : null}
-            {sampleHistory ? <SampleChip label="Sample trend" title="The current week's figure is live; the prior weeks shown are representative until real history accumulates." /> : null}
           </div>
           <span className="text-sm text-muted">team utilization this week · trailing weeks</span>
         </div>

@@ -567,7 +567,7 @@ export interface WorkforceSlice {
   pct: number;
 }
 
-/** A point on the headcount-trend chart (sample series — see `HeadcountTrend`'s own `SampleChip`). */
+/** A point on the headcount-trend chart, computed from real employee join/exit dates. */
 export interface TrendPoint {
   label: string;
   value: number;

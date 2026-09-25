@@ -55,14 +55,6 @@ export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXT
 /** True when the app is talking to the real gateway. */
 export const LIVE = !USE_FIXTURES;
 
-/**
- * The Overview's KPI headline numbers, volume chart and both breakdowns all come from
- * `GET /support/overview` now. What has no reporting service behind it at all is the
- * week-over-week delta and sparkline beside each KPI — there is no history endpoint to draw
- * them from, live or not — so those two stay representative and carry `SampleChip`.
- */
-export const TRENDS_ARE_SAMPLE = true;
-
 /** The sort keys the queue's `GET /support/tickets` accepts (`selectors.py: SORTS`). Each key
  *  fixes its own direction server-side — there is no separate `dir` parameter. */
 export type TicketSort = "number" | "created" | "updated" | "priority";

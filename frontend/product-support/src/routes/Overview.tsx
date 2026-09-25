@@ -2,11 +2,10 @@ import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { getOverview, listAgents, listTickets, TRENDS_ARE_SAMPLE } from "@/api/client";
+import { getOverview, listAgents, listTickets } from "@/api/client";
 import type { Agent, Overview, Ticket } from "@/api/types";
 import { Can, useAsync, useAuth } from "@opsgrids/client";
 import { agentById, needsAttentionList } from "@/data/derive";
-import { KPI_DELTA, KPI_TREND } from "@/data/samples";
 import { now as clockNow } from "@/lib/clock";
 import { formatDate, formatMinutes } from "@/lib/format";
 import {
@@ -32,7 +31,6 @@ import {
   InboxIcon,
   PlusIcon,
 } from "@opsgrids/ui";
-import { SAMPLE_TREND } from "@/ui/sampleCopy";
 import { NewTicketDialog } from "@/ui/NewTicketDialog";
 
 /** A stable empty reference so derived-data memos don't churn while loading. */
@@ -96,21 +94,20 @@ interface KpiConfig {
   key: string;
   label: string;
   value: string;
-  deltaPct: number;
-  series: number[];
   icon: React.ReactNode;
   tone: KpiTone;
   goodWhen: "up" | "down";
 }
 
+/** `GET /support/overview` answers the current snapshot only — no trailing history to compare
+ *  against — so every card renders its live figure alone, with no delta and no sparkline. An
+ *  invented trend is worse than none. */
 function buildKpis(overview: Overview): KpiConfig[] {
   return [
     {
       key: "open",
       label: "Open tickets",
       value: String(overview.open_tickets),
-      deltaPct: KPI_DELTA.open,
-      series: [...KPI_TREND.open],
       icon: <InboxIcon className="size-5" />,
       tone: "accent",
       goodWhen: "down",
@@ -119,8 +116,6 @@ function buildKpis(overview: Overview): KpiConfig[] {
       key: "breaching",
       label: "Breaching SLA",
       value: String(overview.breaching_sla),
-      deltaPct: KPI_DELTA.breaching,
-      series: [...KPI_TREND.breaching],
       icon: <AlertTriangleIcon className="size-5" />,
       tone: "warning",
       goodWhen: "down",
@@ -129,8 +124,6 @@ function buildKpis(overview: Overview): KpiConfig[] {
       key: "frt",
       label: "First-response time",
       value: formatMinutes(overview.first_response_median_min),
-      deltaPct: KPI_DELTA.firstResponse,
-      series: [...KPI_TREND.firstResponse],
       icon: <ClockIcon className="size-5" />,
       tone: "info",
       goodWhen: "down",
@@ -139,8 +132,6 @@ function buildKpis(overview: Overview): KpiConfig[] {
       key: "csat",
       label: "CSAT",
       value: overview.csat_pct === null ? "—" : `${overview.csat_pct}%`,
-      deltaPct: KPI_DELTA.csat,
-      series: [...KPI_TREND.csat],
       icon: <CheckCircleIcon className="size-5" />,
       tone: "positive",
       goodWhen: "up",
@@ -249,12 +240,9 @@ export function OverviewPage() {
                 <KpiCard
                   label={kpi.label}
                   value={kpi.value}
-                  deltaPct={kpi.deltaPct}
-                  series={kpi.series}
                   icon={kpi.icon}
                   tone={kpi.tone}
                   goodWhen={kpi.goodWhen}
-                  sample={TRENDS_ARE_SAMPLE ? SAMPLE_TREND : false}
                 />
               </div>
             ))

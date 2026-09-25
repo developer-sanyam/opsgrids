@@ -1,9 +1,8 @@
 import { useId, useMemo, useState } from "react";
 
 import type { TrendPoint, TrendRange } from "@/api/types";
-import { HEADCOUNT_TREND, TREND_DELTA } from "@/data/samples";
-import { DeltaPill, SampleChip, cn } from "@opsgrids/ui";
-import { SAMPLE_DATA } from "./sampleCopy";
+import { trendDeltaPct } from "@/data/derive";
+import { DeltaPill, cn } from "@opsgrids/ui";
 
 const RANGES: { value: TrendRange; label: string }[] = [
   { value: "monthly", label: "Monthly" },
@@ -38,23 +37,24 @@ function geometry(series: TrendPoint[]): Geo {
 }
 
 interface HeadcountTrendProps {
-  /** The live current headcount shown as the headline; the series/delta are representative. */
+  /** The live current headcount shown as the headline. */
   current: number;
-  sample: boolean;
+  /** Real headcount series per range, counted from each employee's own join/exit dates. */
+  series: Record<TrendRange, TrendPoint[]>;
 }
 
 /**
- * The wide headcount-trend card: a live headline number with a representative area+line series,
- * a range toggle, and a hover tooltip. The trend history is sample data, so it is chipped.
+ * The wide headcount-trend card: a live headline number with the real area+line series (derived
+ * from every employee's `date_of_joining`/`date_of_exit`), a range toggle, and a hover tooltip.
  */
-export function HeadcountTrend({ current, sample }: HeadcountTrendProps) {
+export function HeadcountTrend({ current, series: seriesByRange }: HeadcountTrendProps) {
   const [range, setRange] = useState<TrendRange>("monthly");
   const [hover, setHover] = useState<number | null>(null);
   const gradientId = useId();
 
-  const series = HEADCOUNT_TREND[range];
+  const series = seriesByRange[range];
   const geo = useMemo(() => geometry(series), [series]);
-  const delta = TREND_DELTA[range];
+  const delta = useMemo(() => trendDeltaPct(series), [series]);
 
   const active = hover !== null ? geo.points[hover] : null;
 
@@ -66,12 +66,11 @@ export function HeadcountTrend({ current, sample }: HeadcountTrendProps) {
             <span className="display text-3xl font-extrabold tnum leading-none">
               {current}
             </span>
-            <DeltaPill value={delta} />
+            {delta !== null ? <DeltaPill value={delta} /> : null}
           </div>
           <span className="text-sm text-muted">current headcount · vs last period</span>
         </div>
         <div className="flex items-center gap-2">
-          {sample ? <SampleChip {...SAMPLE_DATA} /> : null}
           <div
             role="tablist"
             aria-label="Trend range"
