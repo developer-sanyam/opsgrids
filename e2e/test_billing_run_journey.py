@@ -50,7 +50,11 @@ class TestBillingRunJourney:
     """Ordered. Each step depends on the one before it."""
 
     def test_01_the_owner_starts_a_trial(
-        self, client: httpx.Client, billing_tenant: dict[str, Any], billing_journey: dict
+        self,
+        client: httpx.Client,
+        billing_tenant: dict[str, Any],
+        billing_journey: dict,
+        internal_get: Any,
     ) -> None:
         token = _token(client, billing_tenant)
         headers = auth_header(token)
@@ -70,14 +74,19 @@ class TestBillingRunJourney:
         assert response.status_code == 201, response.text[:400]
         body = response.json()
         assert body["state"] == "trial" and body["trial_ends_at"]
+        # The customer read carries no amounts; the priced snapshot comes from catalog's internal
+        # pin lookup, which is what subscription itself pins the version through.
+        priced = internal_get("catalog", f"/internal/v1/plan-versions/{version['id']}")
+        assert priced.status_code == 200, priced.text[:300]
+        priced_version = priced.json()
         billing_journey.update(
             token=token,
             subscription_id=body["id"],
             trial_ends_at=body["trial_ends_at"],
-            currency=version["currency"],
+            currency=priced_version["currency"],
             expected_total=sum(
                 p["amount_minor"] or 0
-                for p in version["prices"]
+                for p in priced_version["prices"]
                 if p["kind"] in ("flat", "per_seat")
             ),
         )

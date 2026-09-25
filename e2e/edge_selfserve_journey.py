@@ -111,7 +111,7 @@ def main() -> None:
     step(
         "4b a published flat monthly price",
         r.status_code == 200 and flat is not None,
-        f"{r.status_code} {flat and (flat['amount_minor'], flat['currency'])}",
+        f"{r.status_code} {flat and flat['kind']}",
     )
     r = c.get("/api/v1/operations/suppliers", headers=h)
     step(

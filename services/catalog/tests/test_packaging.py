@@ -426,21 +426,24 @@ class TestPartnerPricingIsTheAudienceOfOne:
         with as_principal(customer_principal(org_b)):
             stranger = await client.get("/api/v1/plans", params={"product_key": "pk-channel2"})
 
-        partner_amounts = {
-            price["amount_minor"]
-            for plan_out in partner.json()
-            for version in plan_out["versions"]
-            for price in version["prices"]
+        # The customer read carries no amounts at all (the owner's rule: prices are set per
+        # client by staff), so the partner version is told apart by its id, not its price.
+        partner_versions = {
+            version["id"] for plan_out in partner.json() for version in plan_out["versions"]
         }
-        stranger_amounts = {
-            price["amount_minor"]
-            for plan_out in stranger.json()
-            for version in plan_out["versions"]
-            for price in version["prices"]
+        stranger_versions = {
+            version["id"] for plan_out in stranger.json() for version in plan_out["versions"]
         }
-        assert 68595 in partner_amounts
-        assert 68595 not in stranger_amounts
-        assert 80700 in stranger_amounts
+        assert str(wholesale.id) in partner_versions
+        assert str(wholesale.id) not in stranger_versions
+        assert str(base.id) in stranger_versions
+        for body in (partner.json(), stranger.json()):
+            for plan_out in body:
+                for version in plan_out["versions"]:
+                    assert "currency" not in version
+                    for price in version["prices"]:
+                        assert "amount_minor" not in price
+                        assert "unit_price_micros" not in price
 
 
 # --------------------------------------------------------------------- seat classes: new code
