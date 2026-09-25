@@ -551,11 +551,13 @@ export function HomePage() {
           </div>
         </section>
       ) : (
-        // Two columns from 768px: the tablet rail leaves each default-sized card only ~150px at
-        // four across, not enough room for "₹12.5L" or "Suspended Accounts" without clipping —
-        // the visual harness's containment check caught it. Four across returns at 1024px, where
-        // the full sidebar's extra width is there to give each card back its room.
-        <section aria-label="Key metrics" className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        // Two columns from 768px through the desktop frame's own narrow end: the tablet rail (up
+        // to 1024px) leaves each default-sized card only ~150px at four across, not enough room
+        // for "₹12.5L" or "Suspended Accounts" without clipping — the visual harness's containment
+        // check caught it. 1024px itself is no safer: the sidebar widens from the 72px rail to the
+        // full 256px at that exact breakpoint, so a card would only trade one pinch for another.
+        // Four across waits for xl (1280px), where there is real width to spare on both counts.
+        <section aria-label="Key metrics" className="grid grid-cols-2 gap-4 xl:grid-cols-4">
           <KpiSlot
             access={revenueAccess}
             state={overview.status === "success" ? "ready" : overview.status}
