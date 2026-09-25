@@ -10,7 +10,11 @@
 
 import { createContext, useContext } from "react";
 
-export type ToastTone = "success" | "error" | "info";
+/**
+ * The five kinds of feedback the brief names (§12–14). Each has its own icon, edge colour and
+ * spoken prefix, so the kind is never carried by colour alone.
+ */
+export type ToastTone = "success" | "warning" | "error" | "info" | "system";
 
 export interface ToastOptions {
   /** A second line under the title. The detail; the title carries the fact. */
@@ -18,8 +22,10 @@ export interface ToastOptions {
   /**
    * Milliseconds before it dismisses itself, or `null` to stay until dismissed.
    *
-   * Defaults: 5000 for a success, 8000 for an error — an error is usually longer to read and
-   * more costly to miss. The clock pauses while the toast is hovered or holds focus.
+   * Defaults: 5000 for a success, 6000 for info, 7000 for a warning, 8000 for an error or a
+   * system notice — the costlier a message is to miss, the longer it stays. The clock pauses
+   * while the toast is hovered or holds focus. A system notice that stays true until something
+   * changes ("You're offline") passes `null` and is dismissed by the code that raised it.
    */
   duration?: number | null | undefined;
   /** `problem.request_id`, rendered small under the description. */
@@ -29,10 +35,20 @@ export interface ToastOptions {
 export interface ToastControls {
   /** "Widget created." Past tense, naming what happened — not "Success!". */
   success: (title: string, options?: ToastOptions) => string;
+  /**
+   * It worked, with a catch the user should act on: "Invoice sent. The customer has no email on
+   * file for reminders." Announced politely — nothing failed.
+   */
+  warning: (title: string, options?: ToastOptions) => string;
   /** The server's sentence, verbatim. Announced assertively. */
   error: (title: string, options?: ToastOptions) => string;
   /** Neither — "Export started, we'll email you when it's ready". */
   info: (title: string, options?: ToastOptions) => string;
+  /**
+   * The platform, not the user's action: "You're offline.", "Scheduled maintenance tonight at
+   * 23:00 IST.", "A new version is available." Announced politely.
+   */
+  system: (title: string, options?: ToastOptions) => string;
   /** Dismiss one by the id the three above return. */
   dismiss: (id: string) => void;
 }
@@ -41,8 +57,10 @@ export const ToastContext = createContext<ToastControls | null>(null);
 
 const NOOP: ToastControls = {
   success: () => "",
+  warning: () => "",
   error: () => "",
   info: () => "",
+  system: () => "",
   dismiss: () => undefined,
 };
 
