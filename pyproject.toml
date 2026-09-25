@@ -129,6 +129,9 @@ ignore = [
 # The demo seeders carry fixture data verbatim from the product SPAs: long single-row records,
 # print output, and display glyphs (₹, ⇄, en-dashes, ×) that must render identically to the fixtures.
 "tools/demo/seed_*.py" = ["E501", "T201", "RUF001", "RUF002"]
+# `docs/insights/api.md` §3's own worked example renders a date-range label with an en dash, not
+# a hyphen ("1–25 Sep 2026") — the SPA renders this verbatim, so the character is deliberate.
+"services/insights/app/domain.py" = ["RUF001", "RUF002"]
 # Event-name constants are not credentials. S105 matches on the variable name containing
 # "password", which is exactly what an event about a password change is called.
 "services/auth/app/services.py" = ["S105"]

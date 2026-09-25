@@ -110,7 +110,9 @@ BEGIN
     -- Product lines (skeletons)
     'opsgrids_projects', 'opsgrids_finance', 'opsgrids_operations', 'opsgrids_itsm',
     -- Storefront (ADR-0010)
-    'opsgrids_storefront'
+    'opsgrids_storefront',
+    -- Insights (ADR-0020): the cross-product projection behind the role dashboards
+    'opsgrids_insights'
   ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L NOBYPASSRLS', r, 'opsgrids');
@@ -133,7 +135,7 @@ GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology
      opsgrids_eventbridge, opsgrids_config, opsgrids_catalog, opsgrids_billing, opsgrids_metering, opsgrids_subscription,
      opsgrids_console, opsgrids_payment, opsgrids_approval,
      opsgrids_projects, opsgrids_finance, opsgrids_operations, opsgrids_itsm,
-     opsgrids_storefront;
+     opsgrids_storefront, opsgrids_insights;
 
 -- The directory reader (ADR-0002, "the cross-tenant reader").
 --

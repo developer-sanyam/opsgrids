@@ -279,6 +279,16 @@ backfill-db: ## Create/grant the opsgrids_backfill database (idempotent, needs m
 	$(COMPOSE) exec -T postgres psql -v ON_ERROR_STOP=1 -U opsgrids -d opsgrids -f - \
 	  < tools/dev-bootstrap/backfill-db.sql
 
+# The same shape again, for insights (ADR-0020): a migration up/down and the RLS-isolation suite
+# are exactly the kind of thing worth trying against real Postgres before trusting the automated
+# suite alone, and never against the shared `opsgrids` database several worktrees' dev work also
+# lands in. Migrate into it the same way `e2e`'s own comment describes:
+# `cd services/insights && DATABASE_URL=postgresql+asyncpg://opsgrids:opsgrids@localhost:5434/opsgrids_insights uv run alembic upgrade head`.
+.PHONY: insights-db
+insights-db: ## Create/grant the opsgrids_insights database (idempotent, needs make infra)
+	$(COMPOSE) exec -T postgres psql -v ON_ERROR_STOP=1 -U opsgrids -d opsgrids -f - \
+	  < tools/dev-bootstrap/insights-db.sql
+
 # The one suite where nothing is stubbed: six services, an outbox relay and an event
 # consumer, all started by the harness on ports the OS hands out, driven over real HTTP
 # against real Postgres and RabbitMQ. It needs no free port reserved and no stack stopped —

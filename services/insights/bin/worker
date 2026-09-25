@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# The event consumer, the snapshot sweep and the backfill runner, together (app/worker.py) —
+# ADR-0020 §1. `python -m app.consumers` standalone still exists for debugging the consumer
+# alone; this is what `insights-worker` runs by default (RUNBOOK.md).
+exec python -m app.worker
