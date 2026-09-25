@@ -6,7 +6,7 @@ import { outstandingMinor } from "@/data/derive";
 import { formatMoney, minorToInput, parseMinor } from "@/lib/money";
 import { today as realToday } from "@/lib/format";
 import { ApiError, fieldError, problemMessage, useAsync, useMutation } from "@opsgrids/client";
-import { Card, ErrorState, FormDialog, Select, Skeleton, TextArea, TextField } from "@/ui";
+import { Card, ErrorState, FormDialog, Select, Skeleton, TextArea, TextField, useFormDirty } from "@/ui";
 
 const METHODS: { value: PaymentMethod; label: string }[] = [
   { value: "bank_transfer", label: "Bank transfer" },
@@ -42,6 +42,10 @@ export function PaymentFormDialog({ invoice, customers, onClose, onSaved }: Paym
   const [amounts, setAmounts] = useState<Record<string, string>>(() =>
     invoice ? { [invoice.id]: minorToInput(outstandingMinor(invoice)) } : {},
   );
+
+  const fields = { customerId, reference, receivedDate, method, note, amounts };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
 
   const [referenceError, setReferenceError] = useState<string | undefined>(undefined);
   const [dateError, setDateError] = useState<string | undefined>(undefined);
@@ -139,6 +143,7 @@ export function PaymentFormDialog({ invoice, customers, onClose, onSaved }: Paym
       pending={save.pending}
       initialFocusRef={referenceRef}
       size="lg"
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? {
             error: problemMessage(save.error),
@@ -155,6 +160,7 @@ export function PaymentFormDialog({ invoice, customers, onClose, onSaved }: Paym
           onChange={(e) => setCustomerId(e.target.value)}
           placeholder="Choose a customer"
           options={customers ?? []}
+          required
           error={allocationError ?? fieldError(saveProblem, "customer_id")}
         />
       ) : null}
@@ -166,6 +172,7 @@ export function PaymentFormDialog({ invoice, customers, onClose, onSaved }: Paym
           value={reference}
           onChange={(e) => setReference(e.target.value)}
           helper="Bank UTR, cheque number or gateway reference."
+          required
           error={referenceError ?? fieldError(saveProblem, "reference")}
         />
         <TextField
@@ -173,6 +180,7 @@ export function PaymentFormDialog({ invoice, customers, onClose, onSaved }: Paym
           type="date"
           value={receivedDate}
           onChange={(e) => setReceivedDate(e.target.value)}
+          required
           error={dateError ?? fieldError(saveProblem, "received_date")}
         />
       </div>

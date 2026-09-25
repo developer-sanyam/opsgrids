@@ -1,12 +1,13 @@
 /**
- * The two hooks the design system exports for apps: the debounce ten apps copied, and the
- * browser's leave-page prompt.
+ * The three hooks the design system exports for apps: the debounce ten apps copied, the browser's
+ * leave-page prompt, and the unsaved-changes comparison every dirty check is built from.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 
 import { useDebouncedValue } from "./useDebouncedValue";
+import { useFormDirty } from "./useFormDirty";
 import { useUnsavedChangesWarning } from "./useUnsavedChangesWarning";
 
 afterEach(() => {
@@ -53,5 +54,34 @@ describe("useUnsavedChangesWarning", () => {
     const { unmount } = renderHook(() => useUnsavedChangesWarning(true));
     unmount();
     expect(fireBeforeUnload().defaultPrevented).toBe(false);
+  });
+});
+
+describe("useFormDirty", () => {
+  it("is clean when current equals the initial snapshot by value, not by reference", () => {
+    const { result } = renderHook(() =>
+      useFormDirty({ name: "Acme", tags: ["a", "b"] }, { name: "Acme", tags: ["a", "b"] }),
+    );
+    expect(result.current).toBe(false);
+  });
+
+  it("turns dirty the moment a field, including one nested, differs from the snapshot", () => {
+    const { rerender, result } = renderHook(
+      ({ current }) => useFormDirty({ name: "Acme", address: { city: "Pune" } }, current),
+      { initialProps: { current: { name: "Acme", address: { city: "Pune" } } } },
+    );
+    expect(result.current).toBe(false);
+    rerender({ current: { name: "Acme", address: { city: "Mumbai" } } });
+    expect(result.current).toBe(true);
+  });
+
+  it("goes clean again once typed text is deleted back to what the form opened with", () => {
+    const { rerender, result } = renderHook(({ current }) => useFormDirty("Acme Industries", current), {
+      initialProps: { current: "Acme Industries" },
+    });
+    rerender({ current: "Acme Industries Ltd" });
+    expect(result.current).toBe(true);
+    rerender({ current: "Acme Industries" });
+    expect(result.current).toBe(false);
   });
 });

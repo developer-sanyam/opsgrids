@@ -4,7 +4,7 @@ import { createAsset, updateAsset } from "@/api/client";
 import type { Asset, AssetIn, AssetStatus, AssetType, AssetUpdate } from "@/api/types";
 import { minorToInput, parseMinor } from "@/lib/money";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, Select, TextField } from "@opsgrids/ui";
+import { FormDialog, Select, TextField, useFormDirty } from "@opsgrids/ui";
 
 const TYPE_OPTIONS: { value: AssetType; label: string }[] = [
   { value: "laptop", label: "Laptop" },
@@ -44,6 +44,22 @@ export function AssetFormDialog({ asset, onClose, onSaved }: AssetFormDialogProp
   const [warrantyExpiresAt, setWarrantyExpiresAt] = useState(asset?.warranty_expires_at ?? "");
   const [cost, setCost] = useState(asset ? minorToInput(asset.cost_minor) : "");
   const [currency, setCurrency] = useState(asset?.cost_currency ?? "INR");
+
+  const fields = {
+    tag,
+    name,
+    type,
+    status,
+    owner,
+    location,
+    serial,
+    purchasedAt,
+    warrantyExpiresAt,
+    cost,
+    currency,
+  };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
 
   const [tagError, setTagError] = useState<string | undefined>(undefined);
   const [nameError, setNameError] = useState<string | undefined>(undefined);
@@ -111,6 +127,7 @@ export function AssetFormDialog({ asset, onClose, onSaved }: AssetFormDialogProp
       pending={save.pending}
       initialFocusRef={asset ? nameRef : tagRef}
       size="lg"
+      dirty={dirty}
       error={hasTopLevelError ? problemMessage(save.error) : undefined}
       reference={hasTopLevelError ? (save.error as ApiError).problem?.request_id : undefined}
     >
@@ -125,6 +142,7 @@ export function AssetFormDialog({ asset, onClose, onSaved }: AssetFormDialogProp
             onChange={(e) => setTag(e.target.value)}
             maxLength={40}
             placeholder="AST-1099"
+            required
             error={tagError ?? save.fieldErrors.tag}
           />
         )}
@@ -134,6 +152,7 @@ export function AssetFormDialog({ asset, onClose, onSaved }: AssetFormDialogProp
           value={name}
           onChange={(e) => setName(e.target.value)}
           maxLength={200}
+          required
           error={nameError ?? save.fieldErrors.name}
         />
       </div>

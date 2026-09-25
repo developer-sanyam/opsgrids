@@ -143,6 +143,7 @@ export type { ToastControls, ToastOptions, ToastTone } from "./lib/toast";
 export { ICON_TILE } from "./lib/tones";
 export type { Tone } from "./lib/tones";
 export { useDebouncedValue } from "./lib/useDebouncedValue";
+export { useFormDirty } from "./lib/useFormDirty";
 export { TABLET_QUERY, useMediaQuery } from "./lib/useMediaQuery";
 export { useUnsavedChangesWarning } from "./lib/useUnsavedChangesWarning";
 

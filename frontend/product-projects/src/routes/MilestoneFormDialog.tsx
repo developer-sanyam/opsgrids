@@ -5,7 +5,7 @@ import type { MemberOut, MilestoneOut, MilestoneStatus, ProjectOut } from "@/api
 import { MILESTONE_STATUS_LABEL } from "@/data/labels";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
 import { maybe } from "@/lib/optional";
-import { FormDialog, Select, TextField } from "@opsgrids/ui";
+import { FormDialog, Select, TextField, useFormDirty } from "@opsgrids/ui";
 import type { SelectOption } from "@opsgrids/ui";
 
 const STATUS_OPTIONS: SelectOption[] = (
@@ -46,6 +46,11 @@ export function MilestoneFormDialog({
   const [dueDate, setDueDate] = useState(milestone?.due_date ?? "");
   const [status, setStatus] = useState<MilestoneStatus>(milestone?.status ?? "on_track");
   const [progress, setProgress] = useState(String(milestone?.progress_pct ?? 0));
+
+  const fields = { projectCode, title, ownerRef, dueDate, status, progress };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
+
   const [errors, setErrors] = useState<FormErrors>({});
   const projectRef = useRef<HTMLSelectElement>(null);
   const titleRef = useRef<HTMLInputElement>(null);
@@ -119,6 +124,7 @@ export function MilestoneFormDialog({
       pendingLabel={editing ? "Saving…" : "Creating…"}
       pending={save.pending}
       initialFocusRef={editing || defaultProjectCode ? titleRef : projectRef}
+      dirty={dirty}
       {...maybe("error", nonFieldError)}
       {...maybe("reference", (save.error as ApiError | null)?.problem?.request_id)}
     >
@@ -131,6 +137,7 @@ export function MilestoneFormDialog({
           options={projectOptions}
           placeholder="Choose a project…"
           disabled={defaultProjectCode !== undefined}
+          required
           {...maybe("error", errors.project_code ?? save.fieldErrors.project_code)}
         />
       ) : (
@@ -147,6 +154,7 @@ export function MilestoneFormDialog({
         label="Title"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
+        required
         {...maybe("error", errors.title ?? save.fieldErrors.title)}
         />
 
@@ -164,6 +172,7 @@ export function MilestoneFormDialog({
           value={dueDate}
           onChange={(e) => setDueDate(e.target.value)}
           optional={editing}
+          required={!editing}
           {...maybe("helper", editing ? "Clear it to mark this milestone undated." : undefined)}
           {...maybe("error", errors.due_date ?? save.fieldErrors.due_date)}
         />

@@ -42,4 +42,9 @@ export const NearLimit: Story = {
 
 export const WithError: Story = { args: { value: "", error: "A reason is required when you reject a request." } };
 
+/** The native `required` marks the label too: a red asterisk beside it, never inside it. */
+export const Required: Story = {
+  args: { label: "Reason", value: "", required: true, placeholder: "Explain why you're rejecting this" },
+};
+
 export const Disabled: Story = { args: { disabled: true } };

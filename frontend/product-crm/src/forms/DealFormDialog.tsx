@@ -6,7 +6,7 @@ import { STAGES } from "@/data/stages";
 import { minorToInput, parseMinor } from "@/lib/money";
 import { maybe } from "@/lib/optional";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, Select, TextField } from "@opsgrids/ui";
+import { FormDialog, Select, TextField, useFormDirty } from "@opsgrids/ui";
 import { OwnerPicker } from "./OwnerPicker";
 
 interface DealFormDialogProps {
@@ -46,6 +46,10 @@ export function DealFormDialog({
   const [closeDate, setCloseDate] = useState(deal?.close_date ?? "");
   const [stage, setStage] = useState<DealStage>(deal?.stage ?? "lead");
   const [source, setSource] = useState(deal?.source ?? "");
+
+  const fields = { name, companyId, primaryContactId, ownerId, value, currency, closeDate, stage, source };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
 
   const [nameError, setNameError] = useState<string | undefined>(undefined);
   const [companyError, setCompanyError] = useState<string | undefined>(undefined);
@@ -130,6 +134,7 @@ export function DealFormDialog({
       pending={save.pending}
       initialFocusRef={nameRef}
       size="lg"
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? {
             error: problemMessage(save.error),
@@ -142,6 +147,7 @@ export function DealFormDialog({
         label="Deal name"
         value={name}
         onChange={(e) => setName(e.target.value)}
+        required
         {...maybe("error", nameError ?? save.fieldErrors.name)}
       />
 
@@ -155,6 +161,7 @@ export function DealFormDialog({
           }}
           placeholder="Choose a company"
           options={companies.map((c) => ({ value: c.id, label: c.name }))}
+          required
           {...maybe("error", companyError ?? save.fieldErrors.company_id)}
         />
         <Select
@@ -188,6 +195,7 @@ export function DealFormDialog({
           value={value}
           onChange={(e) => setValue(e.target.value)}
           helper="Major units, e.g. 3200000."
+          required
           {...maybe("error", valueError ?? save.fieldErrors.value_minor)}
         />
         <TextField
@@ -202,6 +210,7 @@ export function DealFormDialog({
           type="date"
           value={closeDate}
           onChange={(e) => setCloseDate(e.target.value)}
+          required
           {...maybe("error", closeDateError ?? save.fieldErrors.close_date)}
         />
       </div>

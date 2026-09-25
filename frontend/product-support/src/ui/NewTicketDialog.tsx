@@ -4,7 +4,7 @@ import { createTicket, listAgents } from "@/api/client";
 import type { Agent, Channel, Priority, Ticket, TicketCreateIn } from "@/api/types";
 import { problemMessage, useAsync, useMutation } from "@opsgrids/client";
 import type { ApiError } from "@opsgrids/client";
-import { FormDialog, Select, TextArea, TextField } from "@opsgrids/ui";
+import { FormDialog, Select, TextArea, TextField, useFormDirty } from "@opsgrids/ui";
 import { errorProp } from "@/lib/optionalProp";
 
 const PRIORITY_OPTIONS: { value: Priority; label: string }[] = [
@@ -50,6 +50,20 @@ export function NewTicketDialog({ onClose, onCreated }: NewTicketDialogProps) {
   const [assigneeId, setAssigneeId] = useState<string>("");
   const [tags, setTags] = useState("");
   const [body, setBody] = useState("");
+
+  const fields = {
+    subject,
+    requesterName,
+    requesterEmail,
+    requesterCompany,
+    priority,
+    channel,
+    assigneeId,
+    tags,
+    body,
+  };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
 
   const [subjectError, setSubjectError] = useState<string | undefined>(undefined);
   const [nameError, setNameError] = useState<string | undefined>(undefined);
@@ -137,6 +151,7 @@ export function NewTicketDialog({ onClose, onCreated }: NewTicketDialogProps) {
       pending={save.pending}
       initialFocusRef={subjectRef}
       size="lg"
+      dirty={dirty}
       {...errorProp(topLevelError)}
       {...(requestId !== undefined ? { reference: requestId } : {})}
     >
@@ -145,6 +160,7 @@ export function NewTicketDialog({ onClose, onCreated }: NewTicketDialogProps) {
         label="Subject"
         value={subject}
         onChange={(e) => setSubject(e.target.value)}
+        required
         {...errorProp(subjectError ?? save.fieldErrors.subject)}
         maxLength={300}
       />
@@ -154,6 +170,7 @@ export function NewTicketDialog({ onClose, onCreated }: NewTicketDialogProps) {
           label="Requester name"
           value={requesterName}
           onChange={(e) => setRequesterName(e.target.value)}
+          required
           {...errorProp(nameError ?? save.fieldErrors["requester.name"])}
         />
         <TextField
@@ -162,6 +179,7 @@ export function NewTicketDialog({ onClose, onCreated }: NewTicketDialogProps) {
           type="email"
           value={requesterEmail}
           onChange={(e) => setRequesterEmail(e.target.value)}
+          required
           {...errorProp(emailError ?? save.fieldErrors["requester.email"])}
         />
       </div>
@@ -211,6 +229,7 @@ export function NewTicketDialog({ onClose, onCreated }: NewTicketDialogProps) {
         rows={4}
         value={body}
         onChange={(e) => setBody(e.target.value)}
+        required
         {...errorProp(bodyError ?? save.fieldErrors.body)}
       />
     </FormDialog>

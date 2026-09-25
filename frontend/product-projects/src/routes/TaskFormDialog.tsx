@@ -5,7 +5,7 @@ import type { MemberOut, ProjectOut, TaskOut, TaskPriority, TaskStage } from "@/
 import { PRIORITY_LABEL, STAGE_LABEL } from "@/data/labels";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
 import { maybe } from "@/lib/optional";
-import { FormDialog, Select, TextField } from "@opsgrids/ui";
+import { FormDialog, Select, TextField, useFormDirty } from "@opsgrids/ui";
 import type { SelectOption } from "@opsgrids/ui";
 
 const STAGE_OPTIONS: SelectOption[] = (
@@ -50,6 +50,11 @@ export function TaskFormDialog({
   const [priority, setPriority] = useState<TaskPriority>(task?.priority ?? "medium");
   const [dueDate, setDueDate] = useState(task?.due_date ?? "");
   const [points, setPoints] = useState(String(task?.points ?? 0));
+
+  const fields = { projectCode, title, assigneeRef, stage, priority, dueDate, points };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
+
   const [errors, setErrors] = useState<FormErrors>({});
   const projectRef = useRef<HTMLSelectElement>(null);
   const titleRef = useRef<HTMLInputElement>(null);
@@ -125,6 +130,7 @@ export function TaskFormDialog({
       pendingLabel={editing ? "Saving…" : "Creating…"}
       pending={save.pending}
       initialFocusRef={editing || defaultProjectCode ? titleRef : projectRef}
+      dirty={dirty}
       {...maybe("error", nonFieldError)}
       {...maybe("reference", (save.error as ApiError | null)?.problem?.request_id)}
     >
@@ -137,6 +143,7 @@ export function TaskFormDialog({
           options={projectOptions}
           placeholder="Choose a project…"
           disabled={defaultProjectCode !== undefined}
+          required
           {...maybe("error", errors.project_code ?? save.fieldErrors.project_code)}
         />
       ) : (
@@ -153,6 +160,7 @@ export function TaskFormDialog({
         label="Title"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
+        required
         {...maybe("error", errors.title ?? save.fieldErrors.title)}
         />
 

@@ -4,7 +4,7 @@ import { createCustomer, updateCustomer } from "@/api/client";
 import type { Customer, CustomerCreate, CustomerUpdate } from "@/api/types";
 import { INDIAN_STATE_OPTIONS } from "@/data/gstStates";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, InlineAlert, Select, Switch, TextField } from "@/ui";
+import { FormDialog, InlineAlert, Select, Switch, TextField, useFormDirty } from "@/ui";
 
 const GSTIN_PATTERN = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -34,6 +34,10 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
   const [isTdsDeductor, setIsTdsDeductor] = useState(customer?.is_tds_deductor ?? false);
   const [deducts194q, setDeducts194q] = useState(customer?.deducts_tds_194q ?? false);
   const [tcsApplicable, setTcsApplicable] = useState(customer?.tcs_applicable ?? false);
+
+  const fields = { name, contactName, email, gstin, city, state, isTdsDeductor, deducts194q, tcsApplicable };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
 
   const [nameError, setNameError] = useState<string | undefined>(undefined);
   const [emailError, setEmailError] = useState<string | undefined>(undefined);
@@ -99,6 +103,7 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
       pending={save.pending}
       initialFocusRef={nameRef}
       size="lg"
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? {
             error: problemMessage(save.error),
@@ -114,6 +119,7 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
           label="Name"
           value={name}
           onChange={(e) => setName(e.target.value)}
+          required
           error={nameError ?? save.fieldErrors.name}
         />
         <TextField

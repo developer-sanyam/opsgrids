@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 import { decideRequest } from "@/api/client";
 import type { RequestDecisionIn, ServiceRequest } from "@/api/types";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, TextArea } from "@opsgrids/ui";
+import { FormDialog, TextArea, useFormDirty } from "@opsgrids/ui";
 
 interface RejectRequestDialogProps {
   request: ServiceRequest;
@@ -15,6 +15,8 @@ interface RejectRequestDialogProps {
  *  requires a note here, which becomes `decision_note`. */
 export function RejectRequestDialog({ request, onClose, onDecided }: RejectRequestDialogProps) {
   const [note, setNote] = useState("");
+  const [initial] = useState(note);
+  const dirty = useFormDirty(initial, note);
   const [noteError, setNoteError] = useState<string | undefined>(undefined);
   const noteRef = useRef<HTMLTextAreaElement>(null);
 
@@ -45,6 +47,7 @@ export function RejectRequestDialog({ request, onClose, onDecided }: RejectReque
       pendingLabel="Rejecting…"
       pending={decide.pending}
       initialFocusRef={noteRef}
+      dirty={dirty}
       error={hasTopLevelError ? problemMessage(decide.error) : undefined}
       reference={hasTopLevelError ? (decide.error as ApiError).problem?.request_id : undefined}
     >
@@ -56,6 +59,7 @@ export function RejectRequestDialog({ request, onClose, onDecided }: RejectReque
         maxLength={2000}
         rows={4}
         helper="Required — shown to the requester as the decision note."
+        required
         error={noteError ?? decide.fieldErrors.note}
       />
     </FormDialog>

@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 import { listAssets, updateIncident } from "@/api/client";
 import type { Incident, IncidentCategory, IncidentUpdate } from "@/api/types";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { Combobox, FormDialog, Select, TextArea, TextField } from "@opsgrids/ui";
+import { Combobox, FormDialog, Select, TextArea, TextField, useFormDirty } from "@opsgrids/ui";
 import type { ComboboxOption } from "@opsgrids/ui";
 
 const CATEGORY_OPTIONS: { value: IncidentCategory; label: string }[] = [
@@ -38,6 +38,11 @@ export function EditIncidentDialog({ incident, onClose, onSaved }: EditIncidentD
       ? { id: incident.affected_asset_tag, label: incident.affected_asset_tag }
       : null,
   );
+
+  const fields = { summary, description, category, assetId: asset?.id ?? "" };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
+
   const [summaryError, setSummaryError] = useState<string | undefined>(undefined);
   const summaryRef = useRef<HTMLInputElement>(null);
 
@@ -80,6 +85,7 @@ export function EditIncidentDialog({ incident, onClose, onSaved }: EditIncidentD
       pending={save.pending}
       initialFocusRef={summaryRef}
       size="lg"
+      dirty={dirty}
       error={hasTopLevelError ? problemMessage(save.error) : undefined}
       reference={hasTopLevelError ? (save.error as ApiError).problem?.request_id : undefined}
     >
@@ -89,6 +95,7 @@ export function EditIncidentDialog({ incident, onClose, onSaved }: EditIncidentD
         value={summary}
         onChange={(e) => setSummary(e.target.value)}
         maxLength={300}
+        required
         error={summaryError ?? save.fieldErrors.summary}
       />
       <TextArea

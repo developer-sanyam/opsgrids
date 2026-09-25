@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 import { setGstRegistration } from "@/api/client";
 import type { GstRegistration, GstRegistrationType } from "@/api/types";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { ConfirmDialog, FormDialog, Select, Switch, TextField } from "@/ui";
+import { ConfirmDialog, FormDialog, Select, Switch, TextField, useFormDirty } from "@/ui";
 
 const GSTIN_PATTERN = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 
@@ -37,6 +37,10 @@ export function GstRegistrationFormDialog({
     (registration?.registration_type as GstRegistrationType | undefined) ?? "regular",
   );
   const [isPrimary, setIsPrimary] = useState(registration?.is_primary ?? true);
+
+  const fields = { gstin, legalName, tradeName, registrationType, isPrimary };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
 
   const [gstinError, setGstinError] = useState<string | undefined>(undefined);
   const [legalNameError, setLegalNameError] = useState<string | undefined>(undefined);
@@ -90,6 +94,7 @@ export function GstRegistrationFormDialog({
         description="Without a registration, invoices carry no seller GSTIN, GST returns can't be generated and purchases are refused."
         submitLabel="Continue"
         initialFocusRef={firstFieldRef}
+        dirty={dirty}
       >
         <TextField
           ref={firstFieldRef}
@@ -98,12 +103,14 @@ export function GstRegistrationFormDialog({
           onChange={(e) => setGstin(e.target.value.toUpperCase())}
           maxLength={15}
           helper={derivedStateCode.length === 2 ? `Derived state code ${derivedStateCode}` : "15 characters."}
+          required
           error={gstinError}
         />
         <TextField
           label="Legal name"
           value={legalName}
           onChange={(e) => setLegalName(e.target.value)}
+          required
           error={legalNameError}
         />
         <TextField
