@@ -2,12 +2,17 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "opsgrids://contracts/engage.campaign.campaign.send_requested/v1",
   "title": "engage.campaign.campaign.send_requested",
-  "description": "A draft campaign passed the send gate. `notification.consumers.expand_campaign_send` is what turns this into `queued` recipient rows; nothing here has sent anything yet.",
+  "description": "A draft campaign passed the send gate. `notification.consumers.expand_campaign_send` is what turns this into `queued` recipient rows; nothing here has sent anything yet. A scheduled send (`POST /engage/campaigns/{id}/schedule`) reaches the same handler later: `notification.services.schedule_send` stages it as the target of a `platform.schedule.requested`, the scheduler republishes it unchanged at `due_at`, and `scheduled_for` — the instant that request was made for — is what lets the handler drop a firing a reschedule or a cancel has since superseded.",
   "type": "object",
   "additionalProperties": false,
   "required": ["organization_id", "campaign_id"],
   "properties": {
     "organization_id": { "type": "string", "format": "uuid" },
-    "campaign_id": { "type": "string", "format": "uuid" }
+    "campaign_id": { "type": "string", "format": "uuid" },
+    "scheduled_for": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Present only on a scheduled send: the `scheduled_at` this firing was requested for, compared with the campaign's current `scheduled_at` before it is activated. Absent on an immediate send, whose campaign is already `sending` when this is published."
+    }
   }
 }

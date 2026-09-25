@@ -391,6 +391,22 @@
         "title": "CampaignRecipientOut",
         "type": "object"
       },
+      "CampaignScheduleIn": {
+        "additionalProperties": false,
+        "description": "`POST /engage/campaigns/{id}/schedule`. Also how an already-`scheduled` campaign is\nrescheduled \u2014 same endpoint, same shape, a new instant.",
+        "properties": {
+          "scheduled_at": {
+            "format": "date-time",
+            "title": "Scheduled At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scheduled_at"
+        ],
+        "title": "CampaignScheduleIn",
+        "type": "object"
+      },
       "CampaignStats": {
         "properties": {
           "failed": {
@@ -3774,6 +3790,60 @@
           }
         },
         "summary": "Retry a paused campaign now, ignoring the driver's own backoff",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/campaigns/{campaign_id}/schedule": {
+      "post": {
+        "description": "202: the gate passed and the scheduler has been asked to hold the send. Calling this again\non a campaign that is already `scheduled` reschedules it to the new `scheduled_at`; calling\n`/cancel` instead withdraws it. Same gate as `/send` (409 off a draft or already-scheduled\ncampaign, 422 on anything that would make it unsendable, or a `scheduled_at` not in the\nfuture).",
+        "operationId": "schedule_campaign_api_v1_engage_campaigns__campaign_id__schedule_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignScheduleIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Schedule a draft to send later, or push back one already scheduled",
         "tags": [
           "engage"
         ]

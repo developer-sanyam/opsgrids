@@ -616,6 +616,29 @@ class CampaignIn(BaseModel):
         return _reject_header_injection(value)
 
 
+def _reject_naive_datetime(value: datetime) -> datetime:
+    """Boundary validation for anything that becomes a scheduler `due_at` (ADR-0015): a naive
+    value would be interpreted against whatever timezone the database session happens to be in,
+    silently sending at the wrong instant, so it is refused here rather than assumed to be UTC."""
+    if value.tzinfo is None:
+        raise ValueError("must include a timezone offset")
+    return value
+
+
+class CampaignScheduleIn(BaseModel):
+    """`POST /engage/campaigns/{id}/schedule`. Also how an already-`scheduled` campaign is
+    rescheduled — same endpoint, same shape, a new instant."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scheduled_at: datetime
+
+    @field_validator("scheduled_at")
+    @classmethod
+    def _scheduled_at_aware(cls, value: datetime) -> datetime:
+        return _reject_naive_datetime(value)
+
+
 class CampaignPatch(BaseModel):
     """Partial edit of a draft. An absent field is left alone."""
 

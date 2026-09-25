@@ -1359,6 +1359,7 @@ ROUTES = [
     ("delete", f"{CAMPAIGNS}/{ABSENT}", None, K_READ),
     # Drafting a campaign is not permission to send it.
     ("post", f"{CAMPAIGNS}/{ABSENT}/send", None, K_WRITE),
+    ("post", f"{CAMPAIGNS}/{ABSENT}/schedule", {"scheduled_at": "2099-01-01T00:00:00Z"}, K_WRITE),
     ("post", f"{CAMPAIGNS}/{ABSENT}/cancel", None, K_READ),
     ("post", f"{CAMPAIGNS}/{ABSENT}/resume", None, K_WRITE),
     ("get", f"{CAMPAIGNS}/{ABSENT}/stats", None, K_WRITE),
