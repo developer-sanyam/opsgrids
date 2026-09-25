@@ -438,6 +438,7 @@ async def create_company(
             "name": name,
             "status": status,
             "owner_id": str(owner_id),
+            "created_at": company.created_at.isoformat(),
         },
         actor=_actor(ctx),
     )
@@ -506,6 +507,11 @@ async def update_company(
             "organization_id": str(ctx.organization_id),
             "company_id": str(company.id),
             "changed": sorted(changes),
+            # State after the patch (ADR-0020 §3, `docs/insights/events.md` §2), so a
+            # consumer converges without reading the company back.
+            "name": company.name,
+            "status": company.status,
+            "owner_id": str(company.owner_id),
         },
         actor=_actor(ctx),
     )

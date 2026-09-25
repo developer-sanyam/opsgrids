@@ -261,6 +261,16 @@ def delta_pp(current: float, previous: float) -> float:
     return round(current - previous, 1)
 
 
+def weighted_pipeline_minor(value_minor: int, probability: int) -> int:
+    """One open deal's share of the weighted pipeline: `round_half_even(value_minor *
+    probability / 100)` — `deal.domain.weighted_pipeline_minor`'s own rule
+    (`docs/insights/metrics.md` §4.2). Computed here, in Python, one deal at a time, because
+    Postgres's `round(numeric)` rounds half away from zero, not half-even, and a summary that
+    disagreed with deal-service's own figure by a rupee on a coin-flip probability would be
+    exactly the "two definitions of one number" ADR-0020 risk 2 warns about."""
+    return round(value_minor * probability / 100)
+
+
 #: `docs/insights/api.md` §4: the point ceiling per grain for `GET /series`.
 SERIES_GRAIN_LIMITS: dict[str, int] = {"day": 92, "week": 104, "month": 36}
 

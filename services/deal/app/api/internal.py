@@ -27,17 +27,24 @@ appear as though it were.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
-from app.schemas import LeadConversionDealIn, LeadConversionDealOut
+from app.schemas import (
+    DealExportCursorOut,
+    DealExportPageOut,
+    DealExportRowOut,
+    LeadConversionDealIn,
+    LeadConversionDealOut,
+)
 from platform_core.auth import require_service_token
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
-from platform_core.errors import ForbiddenProblem
+from platform_core.errors import ForbiddenProblem, UnauthorizedProblem
 from platform_core.logging import get_logger
 
 log = get_logger("deal.internal")
@@ -91,6 +98,19 @@ def _claimed_actor(request: Request) -> uuid.UUID | None:
         return None
 
 
+#: insights' backfill runner and consumer are the only caller of the export route below
+#: (ADR-0020 §3, `docs/insights/api.md` §6.1) — narrower than `_require_caller`'s allow-list
+#: shape because there is exactly one legitimate caller, the same pattern account's own
+#: `require_insights_caller` takes for its organization export.
+TRUSTED_INSIGHTS_CALLER = "insights"
+
+
+def _require_insights_caller(request: Request) -> None:
+    caller = getattr(request.state, "service_caller", None)
+    if caller != TRUSTED_INSIGHTS_CALLER:
+        raise UnauthorizedProblem("Valid service token required")
+
+
 @router.post(
     "/organizations/{organization_id}/leads:convert",
     response_model=LeadConversionDealOut,
@@ -140,3 +160,48 @@ async def convert_lead(
 
     log.info("deal.lead_conversion.ensured", deal_id=str(deal.id))
     return LeadConversionDealOut(deal_id=str(deal.id))
+
+
+@router.get(
+    "/insights/export/deals",
+    response_model=DealExportPageOut,
+    summary="Every deal, paginated — insights' backfill read (ADR-0020 slice I3)",
+)
+async def export_deals(
+    organization_id: uuid.UUID,
+    session: SessionDep,
+    request: Request,
+    after_updated_at: Annotated[datetime | None, Query()] = None,
+    after_id: Annotated[uuid.UUID | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 500,
+) -> DealExportPageOut:
+    """`docs/insights/api.md` §6.1: keyset-paginated on `(updated_at, id)`, soft-deleted rows
+    included so a deletion propagates, shaped like `crm.pipeline.deal.*`'s full-state fields.
+
+    Restricted to `insights` (`_require_insights_caller`) and bound to the named organization
+    as the first statement (`_bind`) — the same tenancy chokepoint every other internal route
+    here uses, so a row from another organization is invisible under RLS rather than merely
+    unlisted.
+    """
+    _require_insights_caller(request)
+    async with session.begin():
+        await _bind(session, organization_id, request)
+        rows = (
+            (
+                await session.execute(
+                    selectors.deals_export_stmt(
+                        after_updated_at=after_updated_at, after_id=after_id, limit=limit
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    next_cursor = (
+        DealExportCursorOut(after_updated_at=rows[-1].updated_at, after_id=rows[-1].id)
+        if len(rows) == limit
+        else None
+    )
+    return DealExportPageOut(
+        rows=[DealExportRowOut.model_validate(row) for row in rows], next=next_cursor
+    )

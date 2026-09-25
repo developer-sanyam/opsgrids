@@ -333,3 +333,32 @@ class OwnersValidateOut(BaseModel):
     id named is a known, active owner."""
 
     invalid_owner_ids: list[str]
+
+
+# ------------------------------------------------------------------ insights export (internal)
+
+
+class CompanyExportRowOut(BaseModel):
+    """One row of `GET /internal/v1/insights/export/companies` — insights' own backfill read
+    (ADR-0020 §3, `docs/insights/api.md` §6.1). Shaped exactly like `crm.book.company.*`'s
+    full-state fields, plus the row bookkeeping every export row carries."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    status: CompanyStatus
+    owner_id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: datetime | None
+
+
+class CompanyExportCursorOut(BaseModel):
+    after_updated_at: datetime
+    after_id: uuid.UUID
+
+
+class CompanyExportPageOut(BaseModel):
+    rows: list[CompanyExportRowOut]
+    next: CompanyExportCursorOut | None

@@ -18,10 +18,10 @@ sweep, `app/main.py`) that does two things on one cadence, cheaper first:
 
 I1 registers **one** entity end to end, `account.organizations` — not through `ENTITY_REGISTRY`
 below (the account export has no per-organization page to walk; discovery's own sync step *is*
-its backfill), but as the worked example of the framework I2-I9 plug their own entities into.
-`ENTITY_REGISTRY` therefore starts empty: no `*_facts` table exists yet for anything it could
-back. A slice that adds one registers a `BackfillSource` here, in the same commit as its export
-route client and its fold — nothing else in this module changes.
+its backfill), but as the worked example of the framework I2+ plug their own entities into. I3
+and I4 are the first to do so: `deal.deals`, `lead.leads` and `customer.companies`
+(`app/crm_export.py`). A slice that adds one registers a `BackfillSource` here, in the same
+commit as its export route client and its fold — nothing else in this module changes.
 
 **Ordering.** `app/main.py` calls `app/consumers.py:ensure_queue_bound` before starting this
 runner's loop, never the other way around (ADR-0020 §3, step 2): a change committed before the
@@ -98,10 +98,21 @@ class BackfillSource(Protocol):
         ...
 
 
-#: Empty in I1 (see the module docstring) — I2 registers `finance.invoices`/`payments`/
-#: `purchases`, I3 `deal.deals`, and so on, each entity's export client living beside its own
-#: fold in that slice.
-ENTITY_REGISTRY: dict[str, BackfillSource] = {}
+#: Imported here, after `ExportPage`/`BackfillSource` are already defined above, not at the top
+#: of the module with everything else: `app.crm_export` imports `ExportPage` back from this
+#: module, and importing it before this module has finished defining that name would be a
+#: circular import that fails. By this line `app.backfill` is already in `sys.modules` with
+#: `ExportPage` bound, so `app.crm_export`'s own `from app.backfill import ExportPage` resolves.
+from app.crm_export import CompanySource, DealSource, LeadSource  # noqa: E402
+
+#: I2 registers `finance.invoices`/`payments`/`purchases`; I3 and I4 register the three CRM
+#: entities below, each entity's export client living beside its own fold in that slice
+#: (`app/crm_export.py`).
+ENTITY_REGISTRY: dict[str, BackfillSource] = {
+    "deal.deals": DealSource(),
+    "lead.leads": LeadSource(),
+    "customer.companies": CompanySource(),
+}
 
 
 @dataclass

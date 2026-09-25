@@ -147,3 +147,35 @@ class AssignmentRuleOut(BaseModel):
     mode: AssignmentMode
     owner_ids: list[str]
     cursor: int
+
+
+# ------------------------------------------------------------------ insights export (internal)
+
+
+class LeadExportRowOut(BaseModel):
+    """One row of `GET /internal/v1/insights/export/leads` — insights' own backfill read
+    (ADR-0020 §3, `docs/insights/api.md` §6.1). No name, email or phone: a lead's person is PII
+    at the source (`docs/insights/events.md` §4). `converted_at` travels here even though the
+    `created`/`updated` events also carry it after a patch, because an export row is this
+    lead's *whole* current state, read once, not a diff off an earlier one."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    status: LeadStatus
+    source: LeadSource
+    owner_id: uuid.UUID | None
+    converted_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: datetime | None
+
+
+class LeadExportCursorOut(BaseModel):
+    after_updated_at: datetime
+    after_id: uuid.UUID
+
+
+class LeadExportPageOut(BaseModel):
+    rows: list[LeadExportRowOut]
+    next: LeadExportCursorOut | None

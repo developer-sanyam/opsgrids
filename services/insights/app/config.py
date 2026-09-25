@@ -45,6 +45,14 @@ class Settings(ServiceSettings):
     #: request made on a caller's behalf. Same default port every other service dials account
     #: on in development (`services/account/README.md`).
     account_service_url: str = "http://localhost:8111"
+    #: deal-service's internal API, for the `deal.deals` export the backfill runner drains and
+    #: the `crm.pipeline.deal.*` fold's own tenant is bound against nothing further —
+    #: `docs/insights/api.md` §6.1 (I3).
+    deal_service_url: str = "http://localhost:8131"
+    #: lead-service's internal API, for the `lead.leads` export (I4).
+    lead_service_url: str = "http://localhost:8110"
+    #: customer-service's internal API, for the `customer.companies` export (I4).
+    customer_service_url: str = "http://localhost:8130"
 
     #: Paging and pacing for the backfill runner's export reads (ADR-0020 §3): "pages of 500,
     #: with a 100 ms pause between pages ... timeouts are 5 s to connect and 30 s to read, with

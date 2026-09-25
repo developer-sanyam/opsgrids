@@ -3,7 +3,6 @@
   "$id": "opsgrids://contracts/crm.book.company.updated/v1",
   "title": "crm.book.company.updated",
   "description": "A company's fields were patched. `changed` names them. `name`, `status` and `owner_id` are the company's state after the patch.",
-  "$comment": "Ahead of the producer (ADR-0020 slice I4): services/customer/app/services.py:update_company does not emit name, status, owner_id yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
   "type": "object",
   "additionalProperties": false,
   "required": ["organization_id", "company_id", "changed", "name", "status", "owner_id"],

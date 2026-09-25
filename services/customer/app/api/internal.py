@@ -33,14 +33,18 @@ appear as though it were.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
 from app.config import settings
 from app.schemas import (
+    CompanyExportCursorOut,
+    CompanyExportPageOut,
+    CompanyExportRowOut,
     ContactResolveIn,
     ContactResolveOut,
     LeadConversionIn,
@@ -52,7 +56,12 @@ from app.schemas import (
 from platform_core.auth import require_service_token
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
-from platform_core.errors import ForbiddenProblem, NotFoundProblem, ValidationProblem
+from platform_core.errors import (
+    ForbiddenProblem,
+    NotFoundProblem,
+    UnauthorizedProblem,
+    ValidationProblem,
+)
 from platform_core.logging import get_logger
 from platform_core.pii import blind_index
 
@@ -125,6 +134,18 @@ def _claimed_actor(request: Request) -> uuid.UUID | None:
         return uuid.UUID(str(sub))
     except ValueError:
         return None
+
+
+#: insights' backfill export is the only caller of the route below (ADR-0020 §3), a single
+#: named caller rather than `_require_caller`'s allow-list shape — the same pattern deal's and
+#: lead's own export routes take.
+TRUSTED_INSIGHTS_CALLER = "insights"
+
+
+def _require_insights_caller(request: Request) -> None:
+    caller = getattr(request.state, "service_caller", None)
+    if caller != TRUSTED_INSIGHTS_CALLER:
+        raise UnauthorizedProblem("Valid service token required")
 
 
 @router.get(
@@ -324,3 +345,43 @@ async def validate_owners(
         invalid = await services.invalid_owner_ids(session, organization_id, payload.owner_ids)
 
     return OwnersValidateOut(invalid_owner_ids=[str(owner_id) for owner_id in invalid])
+
+
+@router.get(
+    "/insights/export/companies",
+    response_model=CompanyExportPageOut,
+    summary="Every company, paginated — insights' backfill read (ADR-0020 slice I4)",
+)
+async def export_companies(
+    organization_id: uuid.UUID,
+    session: SessionDep,
+    request: Request,
+    after_updated_at: Annotated[datetime | None, Query()] = None,
+    after_id: Annotated[uuid.UUID | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 500,
+) -> CompanyExportPageOut:
+    """`docs/insights/api.md` §6.1: keyset-paginated on `(updated_at, id)`, soft-deleted rows
+    included so a deletion propagates, shaped like `crm.book.company.*`'s full-state fields.
+    """
+    _require_insights_caller(request)
+    async with session.begin():
+        await _bind(session, organization_id, request)
+        rows = (
+            (
+                await session.execute(
+                    selectors.companies_export_stmt(
+                        after_updated_at=after_updated_at, after_id=after_id, limit=limit
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    next_cursor = (
+        CompanyExportCursorOut(after_updated_at=rows[-1].updated_at, after_id=rows[-1].id)
+        if len(rows) == limit
+        else None
+    )
+    return CompanyExportPageOut(
+        rows=[CompanyExportRowOut.model_validate(row) for row in rows], next=next_cursor
+    )

@@ -3,7 +3,6 @@
   "$id": "opsgrids://contracts/crm.lead.updated/v1",
   "title": "crm.lead.updated",
   "description": "A lead's fields were patched. `changed` names them. `status`, `source`, `owner_id` and `converted_at` are the lead's state after the patch.",
-  "$comment": "Ahead of the producer (ADR-0020 slice I4): services/lead/app/services.py:update_lead does not emit status, source, owner_id, converted_at yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -289,3 +289,39 @@ class LeadConversionDealIn(BaseModel):
 
 class LeadConversionDealOut(BaseModel):
     deal_id: str
+
+
+# ------------------------------------------------------------------ insights export (internal)
+
+
+class DealExportRowOut(BaseModel):
+    """One row of `GET /internal/v1/insights/export/deals` — insights' own backfill read
+    (ADR-0020 §3, `docs/insights/api.md` §6.1). Shaped exactly like `crm.pipeline.deal.*`'s
+    full-state fields, plus the row bookkeeping (`id`, `created_at`, `updated_at`,
+    `deleted_at`) every export row carries and no event does."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    company_id: uuid.UUID
+    owner_id: uuid.UUID
+    value_minor: int
+    currency: str
+    stage: DealStage
+    close_date: date
+    probability: int
+    closed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: datetime | None
+
+
+class DealExportCursorOut(BaseModel):
+    after_updated_at: datetime
+    after_id: uuid.UUID
+
+
+class DealExportPageOut(BaseModel):
+    rows: list[DealExportRowOut]
+    next: DealExportCursorOut | None

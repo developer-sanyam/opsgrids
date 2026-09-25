@@ -13,9 +13,10 @@ part of reading it, so routes stay thin.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, literal, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AssignmentRule, Lead
@@ -146,3 +147,24 @@ def assignment_rule_out(rule: AssignmentRule) -> AssignmentRuleOut:
         owner_ids=[str(o) for o in rule.owner_ids],
         cursor=rule.cursor,
     )
+
+
+# ------------------------------------------------------------------ insights export (internal)
+
+
+def leads_export_stmt(
+    *, after_updated_at: datetime | None, after_id: uuid.UUID | None, limit: int
+) -> Select[Any]:
+    """Keyset page of **every** lead, soft-deleted included, in `(updated_at, id)` order —
+    insights' backfill read (`GET /internal/v1/insights/export/leads`, ADR-0020 §3,
+    `docs/insights/api.md` §6.1). No sealed field, no masked field, no `full_name`, `company`
+    or `notes` — a lead's person is PII at the source (`docs/insights/events.md` §4), and this
+    page carries only what `lead_facts` stores: `status`, `source`, `owner_id`,
+    `converted_at`.
+    """
+    stmt = select(Lead)
+    if after_updated_at is not None and after_id is not None:
+        stmt = stmt.where(
+            tuple_(Lead.updated_at, Lead.id) > tuple_(literal(after_updated_at), literal(after_id))
+        )
+    return stmt.order_by(Lead.updated_at, Lead.id).limit(limit)

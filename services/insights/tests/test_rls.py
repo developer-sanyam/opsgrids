@@ -12,7 +12,15 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import BackfillRun, DailySnapshot, MetricCoverage, OrgProfile
+from app.models import (
+    BackfillRun,
+    CompanyFact,
+    DailySnapshot,
+    DealFact,
+    LeadFact,
+    MetricCoverage,
+    OrgProfile,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -108,6 +116,71 @@ async def test_metric_coverage_is_isolated(
         )
 
     rows = (await session.execute(select(MetricCoverage))).scalars().all()
+    assert rows == []
+
+
+async def test_deal_facts_is_isolated(
+    session: AsyncSession, admin_session: AsyncSession, org_id: uuid.UUID, other_org: uuid.UUID
+) -> None:
+    async with admin_session.begin():
+        admin_session.add(
+            DealFact(
+                organization_id=other_org,
+                id=uuid.uuid4(),
+                name="Someone else's deal",
+                stage="lead",
+                value_minor=100_00,
+                currency="INR",
+                probability=20,
+                owner_ref=uuid.uuid4(),
+                company_ref=uuid.uuid4(),
+                close_date=date(2026, 12, 1),
+                source_created_at=datetime.now(UTC),
+                source_updated_at=datetime.now(UTC),
+            )
+        )
+
+    rows = (await session.execute(select(DealFact))).scalars().all()
+    assert rows == []
+
+
+async def test_lead_facts_is_isolated(
+    session: AsyncSession, admin_session: AsyncSession, org_id: uuid.UUID, other_org: uuid.UUID
+) -> None:
+    async with admin_session.begin():
+        admin_session.add(
+            LeadFact(
+                organization_id=other_org,
+                id=uuid.uuid4(),
+                status="new",
+                source="form",
+                owner_ref=uuid.uuid4(),
+                source_created_at=datetime.now(UTC),
+                source_updated_at=datetime.now(UTC),
+            )
+        )
+
+    rows = (await session.execute(select(LeadFact))).scalars().all()
+    assert rows == []
+
+
+async def test_company_facts_is_isolated(
+    session: AsyncSession, admin_session: AsyncSession, org_id: uuid.UUID, other_org: uuid.UUID
+) -> None:
+    async with admin_session.begin():
+        admin_session.add(
+            CompanyFact(
+                organization_id=other_org,
+                id=uuid.uuid4(),
+                name="Someone else's company",
+                status="prospect",
+                owner_ref=uuid.uuid4(),
+                source_created_at=datetime.now(UTC),
+                source_updated_at=datetime.now(UTC),
+            )
+        )
+
+    rows = (await session.execute(select(CompanyFact))).scalars().all()
     assert rows == []
 
 

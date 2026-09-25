@@ -39,6 +39,9 @@ from platform_core.db import TENANT_GUC, get_session
 
 TENANT_TABLES = (
     "org_profile",
+    "deal_facts",
+    "lead_facts",
+    "company_facts",
     "daily_snapshots",
     "metric_coverage",
     "backfill_runs",

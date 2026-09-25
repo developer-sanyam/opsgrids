@@ -9,26 +9,38 @@ for an OWN-scoped gate, narrows to the caller's own rows — the same rule
 
 I1 has no entity fact table, so every widget whose gate resolves to `"ok"` reads as
 `"unavailable"` here — there is nothing yet to compute (ADR-0020 build plan, I1: "every widget
-renders its state. No figures yet."). A slice that lands a fact table replaces exactly the
-`"unavailable"` branch of its own metric/board/activity kind with a real read; the gate, the
-scoping and the response shape do not change.
+renders its state. No figures yet."). I3 (deal) and I4 (lead, customer) are the first to
+replace that with a real read, for `deals_created`, `deals_won`, `deals_won_value`,
+`deals_lost`, `win_rate`, `pipeline_value`, `open_deals`, `weighted_pipeline`, `leads_created`,
+`leads_converted` and `customers` — every other metric still answers `"unavailable"` until its
+own slice lands; the gate, the scoping and the response shape do not change.
+
+**Coverage, simplified for this slice.** `deals_won`/`deals_won_value`/`deals_lost`/`win_rate`
+read `metric_coverage` if a row exists, and treat a missing row as complete (`history_from =
+NULL`) rather than unknown — the full "recompute after every completed backfill run" step
+(ADR-0020 §3) is not wired from the backfill runner in this slice (see the module's own
+`crm_export.py`), so a fresh organization's coverage is optimistic until that lands. Snapshot
+metrics (`pipeline_value`, `open_deals`, `weighted_pipeline`, `customers`) get theirs written by
+`app/snapshot.py`'s own capture the moment its first row lands, which *is* wired.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Select
+from sqlalchemy import Select, func, select
 from sqlalchemy import false as sa_false
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import access, domain
-from app.models import OrgProfile
+from app.models import CompanyFact, DailySnapshot, DealFact, LeadFact, MetricCoverage, OrgProfile
 from app.schemas import (
+    ComparisonOut,
     MetricOut,
+    OtherCurrencyValueOut,
     PeriodOut,
     RankingsOut,
     SeriesOut,
@@ -101,7 +113,284 @@ def _period_out(key: str, window: domain.Window) -> PeriodOut:
     )
 
 
-def _summary_metric(principal: Principal, key: str) -> MetricOut:
+def _utc_window(window: domain.Window, timezone: str) -> tuple[datetime, datetime]:
+    """A local-date window as a half-open UTC instant range (`docs/insights/metrics.md` §1):
+    `[from 00:00 tz, (to + 1 day) 00:00 tz)`, so a timestamp column's own org-leading index is
+    used, not a per-row cast to the caller's timezone."""
+    tz = ZoneInfo(timezone)
+    start_local = datetime.combine(window.from_, time.min, tzinfo=tz)
+    end_local = datetime.combine(window.to + timedelta(days=1), time.min, tzinfo=tz)
+    return start_local.astimezone(UTC), end_local.astimezone(UTC)
+
+
+async def _count_in_window(
+    session: AsyncSession,
+    model: Any,
+    ts_col: Any,
+    *,
+    gate: access.Gate,
+    organization_id: uuid.UUID,
+    owner_col: Any | None,
+    start: datetime,
+    end: datetime,
+    extra: tuple[Any, ...] = (),
+) -> int:
+    stmt = select(func.count()).select_from(model).where(model.deleted_at.is_(None))
+    stmt = scoped(
+        stmt,
+        gate,
+        organization_id=organization_id,
+        org_col=model.organization_id,
+        owner_col=owner_col,
+    )
+    stmt = stmt.where(ts_col >= start, ts_col < end, *extra)
+    return (await session.execute(stmt)).scalar_one()
+
+
+async def _money_by_currency_in_window(
+    session: AsyncSession,
+    model: Any,
+    ts_col: Any,
+    amount_col: Any,
+    currency_col: Any,
+    *,
+    gate: access.Gate,
+    organization_id: uuid.UUID,
+    owner_col: Any | None,
+    start: datetime,
+    end: datetime,
+    extra: tuple[Any, ...] = (),
+) -> dict[str, int]:
+    stmt = (
+        select(currency_col, func.coalesce(func.sum(amount_col), 0))
+        .where(model.deleted_at.is_(None))
+        .group_by(currency_col)
+    )
+    stmt = scoped(
+        stmt,
+        gate,
+        organization_id=organization_id,
+        org_col=model.organization_id,
+        owner_col=owner_col,
+    )
+    stmt = stmt.where(ts_col >= start, ts_col < end, *extra)
+    rows = (await session.execute(stmt)).all()
+    # A currency's group is omitted when its sum is 0 (`docs/insights/metrics.md` §1).
+    return {str(currency): int(total) for currency, total in rows if int(total) != 0}
+
+
+def _money_out(
+    by_currency: dict[str, int], org_currency: str
+) -> tuple[int, list[OtherCurrencyValueOut]]:
+    value = by_currency.get(org_currency, 0)
+    others = [
+        OtherCurrencyValueOut(currency=currency, value=amount)
+        for currency, amount in sorted(by_currency.items())
+        if currency != org_currency
+    ]
+    return value, others
+
+
+async def _coverage_history_from(
+    session: AsyncSession, organization_id: uuid.UUID, metric: str
+) -> date | None:
+    """A missing row is treated as complete (`history_from = None`) — see this module's own
+    docstring for why the "recompute after every completed run" step is not wired yet for the
+    `source_column_from_go_live` metrics this slice adds."""
+    row = await session.get(MetricCoverage, {"organization_id": organization_id, "metric": metric})
+    return row.history_from if row is not None else None
+
+
+async def _snapshot_comparison(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    metric: str,
+    dimension: str,
+    anchor_day: date,
+) -> ComparisonOut:
+    """The comparison value for a state metric (`docs/insights/metrics.md` §2): the capture of
+    `anchor_day`, or the nearest earlier one within 3 days, else `insufficient_history`."""
+    stmt = (
+        select(DailySnapshot)
+        .where(
+            DailySnapshot.organization_id == organization_id,
+            DailySnapshot.metric == metric,
+            DailySnapshot.dimension == dimension,
+            DailySnapshot.day <= anchor_day,
+            DailySnapshot.day >= anchor_day - timedelta(days=3),
+        )
+        .order_by(DailySnapshot.day.desc())
+        .limit(1)
+    )
+    row = (await session.execute(stmt)).scalars().first()
+    if row is None:
+        return ComparisonOut(state="insufficient_history")
+    return ComparisonOut(
+        state="ok", value=row.value, anchor_day=row.day if row.day != anchor_day else None
+    )
+
+
+#: Metric keys this slice (I3, I4) replaces `"unavailable"` with a real read for.
+_DEAL_FLOW_METRICS = frozenset(
+    {"deals_created", "deals_won", "deals_won_value", "deals_lost", "win_rate"}
+)
+_DEAL_STATE_METRICS = frozenset({"pipeline_value", "open_deals", "weighted_pipeline"})
+_LEAD_FLOW_METRICS = frozenset({"leads_created", "leads_converted"})
+
+
+async def _compute_deal_flow(
+    session: AsyncSession,
+    gate: access.Gate,
+    key: str,
+    *,
+    organization_id: uuid.UUID,
+    org_currency: str,
+    start: datetime,
+    end: datetime,
+) -> tuple[int | float | None, str | None, list[OtherCurrencyValueOut] | None]:
+    owner_col = DealFact.owner_ref
+    if key == "deals_created":
+        value = await _count_in_window(
+            session,
+            DealFact,
+            DealFact.source_created_at,
+            gate=gate,
+            organization_id=organization_id,
+            owner_col=owner_col,
+            start=start,
+            end=end,
+        )
+        return value, None, None
+    if key == "deals_won":
+        value = await _count_in_window(
+            session,
+            DealFact,
+            DealFact.closed_at,
+            gate=gate,
+            organization_id=organization_id,
+            owner_col=owner_col,
+            start=start,
+            end=end,
+            extra=(DealFact.stage == "closed_won",),
+        )
+        return value, None, None
+    if key == "deals_won_value":
+        by_currency = await _money_by_currency_in_window(
+            session,
+            DealFact,
+            DealFact.closed_at,
+            DealFact.value_minor,
+            DealFact.currency,
+            gate=gate,
+            organization_id=organization_id,
+            owner_col=owner_col,
+            start=start,
+            end=end,
+            extra=(DealFact.stage == "closed_won",),
+        )
+        value, others = _money_out(by_currency, org_currency)
+        return value, org_currency, others
+    if key == "deals_lost":
+        value = await _count_in_window(
+            session,
+            DealFact,
+            DealFact.closed_at,
+            gate=gate,
+            organization_id=organization_id,
+            owner_col=owner_col,
+            start=start,
+            end=end,
+            extra=(DealFact.stage == "closed_lost",),
+        )
+        return value, None, None
+    # win_rate
+    won = await _count_in_window(
+        session,
+        DealFact,
+        DealFact.closed_at,
+        gate=gate,
+        organization_id=organization_id,
+        owner_col=owner_col,
+        start=start,
+        end=end,
+        extra=(DealFact.stage == "closed_won",),
+    )
+    lost = await _count_in_window(
+        session,
+        DealFact,
+        DealFact.closed_at,
+        gate=gate,
+        organization_id=organization_id,
+        owner_col=owner_col,
+        start=start,
+        end=end,
+        extra=(DealFact.stage == "closed_lost",),
+    )
+    decided = won + lost
+    # `null` when none were decided — no percentage a full open pipeline should imply
+    # (`docs/insights/metrics.md` §4.2), never a fabricated 0%.
+    rate = round(won / decided * 100, 1) if decided else None
+    return rate, None, None
+
+
+async def _compute_lead_flow(
+    session: AsyncSession,
+    gate: access.Gate,
+    key: str,
+    *,
+    organization_id: uuid.UUID,
+    start: datetime,
+    end: datetime,
+) -> int:
+    owner_col = LeadFact.owner_ref
+    ts_col = LeadFact.source_created_at if key == "leads_created" else LeadFact.converted_at
+    return await _count_in_window(
+        session,
+        LeadFact,
+        ts_col,
+        gate=gate,
+        organization_id=organization_id,
+        owner_col=owner_col,
+        start=start,
+        end=end,
+    )
+
+
+async def _compute_deal_state(
+    session: AsyncSession, key: str, *, organization_id: uuid.UUID, org_currency: str
+) -> tuple[int, str | None, list[OtherCurrencyValueOut] | None]:
+    """Live now (`docs/insights/metrics.md` §4.2) — `Σ value_minor`/count/weighted sum of
+    non-deleted, non-closed deals. ORG-only, so no owner filter ever narrows this."""
+    open_stmt = select(DealFact).where(
+        DealFact.organization_id == organization_id,
+        DealFact.deleted_at.is_(None),
+        DealFact.stage.notin_(("closed_won", "closed_lost")),
+    )
+    open_deals = list((await session.execute(open_stmt)).scalars().all())
+    if key == "open_deals":
+        return len(open_deals), None, None
+    by_currency: dict[str, int] = {}
+    for deal in open_deals:
+        if key == "pipeline_value":
+            amount = deal.value_minor
+        else:  # weighted_pipeline
+            amount = domain.weighted_pipeline_minor(deal.value_minor, deal.probability)
+        by_currency[deal.currency] = by_currency.get(deal.currency, 0) + amount
+    value, others = _money_out(by_currency, org_currency)
+    return value, org_currency, others
+
+
+async def _summary_metric(
+    session: AsyncSession,
+    principal: Principal,
+    key: str,
+    *,
+    timezone: str,
+    org_currency: str,
+    window: domain.Window,
+    comparison_window: domain.Window | None,
+) -> MetricOut:
     """One entry of `GET /summary`'s `metrics` map. `key` is assumed already validated against
     `app.access.METRICS` — an unknown key is a 422 at the route, never reaches here."""
     spec = access.METRICS[key]
@@ -110,9 +399,128 @@ def _summary_metric(principal: Principal, key: str) -> MetricOut:
         return MetricOut(state="not_active", product_key=gate.product_key)
     if gate.state == "no_access":
         return MetricOut(state="no_access")
-    # gate.state == "ok": no fact table exists yet for any metric (I1). An entitled, permitted
-    # caller sees an honest "not computed yet", never a fabricated zero.
-    return MetricOut(state="unavailable", kind=spec.kind, unit=spec.unit, scope=_scope_label(gate))
+
+    organization_id = principal.organization_id
+    scope_label = _scope_label(gate)
+
+    if key not in _DEAL_FLOW_METRICS | _DEAL_STATE_METRICS | _LEAD_FLOW_METRICS | {"customers"}:
+        # No fact table for this key yet (I2, I5-I9). An entitled, permitted caller sees an
+        # honest "not computed yet", never a fabricated zero.
+        return MetricOut(state="unavailable", kind=spec.kind, unit=spec.unit, scope=scope_label)
+
+    value: int | float | None
+    if key in _DEAL_STATE_METRICS or key == "customers":
+        if key == "customers":
+            stmt = (
+                select(func.count())
+                .select_from(CompanyFact)
+                .where(
+                    CompanyFact.organization_id == organization_id,
+                    CompanyFact.deleted_at.is_(None),
+                    CompanyFact.status == "customer",
+                )
+            )
+            value = (await session.execute(stmt)).scalar_one()
+            currency_out, others = None, None
+        else:
+            value, currency_out, others = await _compute_deal_state(
+                session, key, organization_id=organization_id, org_currency=org_currency
+            )
+        comparison_out = None
+        if comparison_window is not None:
+            dimension = currency_out or ""
+            comparison_out = await _snapshot_comparison(
+                session,
+                organization_id=organization_id,
+                metric=key,
+                dimension=dimension,
+                anchor_day=comparison_window.to,
+            )
+            if comparison_out.state == "ok" and comparison_out.value is not None:
+                comparison_out.delta_pct = domain.delta_pct(value, comparison_out.value)
+        history_from = await _coverage_history_from(session, organization_id, key)
+        return MetricOut(
+            state="ok",
+            kind=spec.kind,
+            unit=spec.unit,
+            scope=scope_label,
+            value=value,
+            currency=currency_out,
+            other_currencies=others,
+            comparison=comparison_out,
+            history_from=history_from,
+        )
+
+    # Flow / percent metrics (deal or lead), gated by go-live coverage where it applies.
+    history_from = await _coverage_history_from(session, organization_id, key)
+    if history_from is not None and window.from_ < history_from:
+        return MetricOut(
+            state="insufficient_history", kind=spec.kind, unit=spec.unit, scope=scope_label
+        )
+
+    start, end = _utc_window(window, timezone)
+    if key in _DEAL_FLOW_METRICS:
+        value, currency_out, others = await _compute_deal_flow(
+            session,
+            gate,
+            key,
+            organization_id=organization_id,
+            org_currency=org_currency,
+            start=start,
+            end=end,
+        )
+    else:
+        value = await _compute_lead_flow(
+            session, gate, key, organization_id=organization_id, start=start, end=end
+        )
+        currency_out, others = None, None
+
+    comparison_out = None
+    if comparison_window is not None:
+        if history_from is not None and comparison_window.from_ < history_from:
+            comparison_out = ComparisonOut(state="insufficient_history")
+        else:
+            cstart, cend = _utc_window(comparison_window, timezone)
+            if key in _DEAL_FLOW_METRICS:
+                previous, _cur, _others = await _compute_deal_flow(
+                    session,
+                    gate,
+                    key,
+                    organization_id=organization_id,
+                    org_currency=org_currency,
+                    start=cstart,
+                    end=cend,
+                )
+            else:
+                previous = await _compute_lead_flow(
+                    session, gate, key, organization_id=organization_id, start=cstart, end=cend
+                )
+            if value is None or previous is None:
+                # `win_rate` with nothing decided in one of the two windows — no rate exists
+                # to compare, so no comparison is offered rather than a fabricated delta.
+                comparison_out = None
+            elif previous == 0:
+                comparison_out = ComparisonOut(state="no_baseline", value=previous, delta_pct=None)
+            elif spec.kind == "percent":
+                comparison_out = ComparisonOut(
+                    state="ok", value=previous, delta_pp=domain.delta_pp(value, previous)
+                )
+            else:
+                comparison_out = ComparisonOut(
+                    state="ok", value=previous, delta_pct=domain.delta_pct(value, previous)
+                )
+
+    return MetricOut(
+        state="ok",
+        kind=spec.kind,
+        unit=spec.unit,
+        scope=scope_label,
+        value=value,
+        currency=currency_out,
+        other_currencies=others,
+        comparison=comparison_out,
+        history_from=history_from,
+    )
 
 
 async def build_summary(
@@ -144,13 +552,26 @@ async def build_summary(
         _period_out(compare, comparison_window) if comparison_window is not None else None
     )
 
+    metrics = {
+        key: await _summary_metric(
+            session,
+            principal,
+            key,
+            timezone=timezone,
+            org_currency=currency,
+            window=resolved.window,
+            comparison_window=comparison_window,
+        )
+        for key in metric_keys
+    }
+
     return SummaryOut(
         as_of=datetime.now(UTC),
         timezone=timezone,
         currency=currency,
         period=_period_out(resolved.key, resolved.window),
         comparison=comparison_out,
-        metrics={key: _summary_metric(principal, key) for key in metric_keys},
+        metrics=metrics,
     )
 
 

@@ -130,6 +130,16 @@ async def create_deal(
     if await selectors.get_deal_by_name(session, ctx.organization_id, name):
         raise ConflictProblem("A deal with that name already exists")
 
+    resolved_probability = (
+        probability if probability is not None else STAGE_DEFAULT_PROBABILITY[stage]
+    )
+    #: Non-null only for a deal created directly in a closed stage (ADR-0020 §3,
+    #: `docs/insights/events.md` §2) — the ordinary path opens at `lead` and closes later
+    #: through `move_stage`, which is where an open deal's `closed_at` gets set.
+    resolved_closed_at = (
+        (created_at or datetime.now(UTC)) if stage in domain.TERMINAL_STAGES else None
+    )
+
     deal = Deal(
         organization_id=ctx.organization_id,
         created_by=str(ctx.principal.sub),
@@ -140,10 +150,11 @@ async def create_deal(
         currency=currency.upper(),
         stage=stage,
         owner_id=owner_id,
-        probability=(probability if probability is not None else STAGE_DEFAULT_PROBABILITY[stage]),
+        probability=resolved_probability,
         close_date=close_date,
         source=source,
         last_activity_at=last_activity_at,
+        closed_at=resolved_closed_at,
     )
     if deal_id is not None:
         deal.id = deal_id
@@ -180,6 +191,11 @@ async def create_deal(
             "value_minor": value_minor,
             "currency": deal.currency,
             "owner_id": str(owner_id),
+            "company_id": str(company_id),
+            "close_date": close_date.isoformat(),
+            "probability": resolved_probability,
+            "closed_at": resolved_closed_at.isoformat() if resolved_closed_at else None,
+            "created_at": deal.created_at.isoformat(),
         },
         actor=_actor(ctx),
     )
@@ -248,6 +264,19 @@ async def update_deal(
             "organization_id": str(ctx.organization_id),
             "deal_id": str(deal.id),
             "changed": sorted(changes),
+            # Full state after the patch (ADR-0020 §3, `docs/insights/events.md` §2), so a
+            # consumer converges without reading the deal back — never `stage`, which this
+            # patch cannot touch (see the docstring above) and `move_stage` reports on its
+            # own event instead.
+            "name": deal.name,
+            "stage": deal.stage,
+            "value_minor": deal.value_minor,
+            "currency": deal.currency,
+            "owner_id": str(deal.owner_id),
+            "company_id": str(deal.company_id),
+            "close_date": deal.close_date.isoformat(),
+            "probability": deal.probability,
+            "closed_at": deal.closed_at.isoformat() if deal.closed_at else None,
         },
         actor=_actor(ctx),
     )
@@ -314,6 +343,10 @@ async def move_stage(
     deal.probability = (
         probability if probability is not None else STAGE_DEFAULT_PROBABILITY[new_stage]
     )
+    if new_stage in domain.TERMINAL_STAGES:
+        # A closed deal moves nowhere afterwards (`domain.can_transition`), so this is set
+        # exactly once per deal and never cleared (ADR-0020 §3, `docs/insights/events.md` §2).
+        deal.closed_at = datetime.now(UTC)
     deal.updated_by = str(ctx.principal.sub)
     await session.flush()
 
@@ -341,6 +374,12 @@ async def move_stage(
             "deal_id": str(deal.id),
             "from": before,
             "to": new_stage,
+            "name": deal.name,
+            "value_minor": deal.value_minor,
+            "currency": deal.currency,
+            "owner_id": str(deal.owner_id),
+            "probability": deal.probability,
+            "closed_at": deal.closed_at.isoformat() if deal.closed_at else None,
         },
         actor=_actor(ctx),
     )

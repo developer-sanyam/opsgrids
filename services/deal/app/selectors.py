@@ -18,9 +18,10 @@ part of reading it, so routes stay thin.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, literal, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Activity, Deal
@@ -177,6 +178,23 @@ def deal_out(deal: Deal) -> DealOut:
         last_activity_at=deal.last_activity_at,
         source=deal.source,
     )
+
+
+def deals_export_stmt(
+    *, after_updated_at: datetime | None, after_id: uuid.UUID | None, limit: int
+) -> Select[Any]:
+    """Keyset page of **every** deal, soft-deleted included, in `(updated_at, id)` order —
+    insights' backfill read (`GET /internal/v1/insights/export/deals`, ADR-0020 §3,
+    `docs/insights/api.md` §6.1). Deliberately no `deleted_at IS NULL` filter, unlike every
+    customer-facing list here: a deletion has to propagate to the projection too, and a page
+    that silently dropped deleted rows would leave insights believing they still exist.
+    """
+    stmt = select(Deal)
+    if after_updated_at is not None and after_id is not None:
+        stmt = stmt.where(
+            tuple_(Deal.updated_at, Deal.id) > tuple_(literal(after_updated_at), literal(after_id))
+        )
+    return stmt.order_by(Deal.updated_at, Deal.id).limit(limit)
 
 
 def activity_out(activity: Activity) -> ActivityOut:

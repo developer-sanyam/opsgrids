@@ -536,6 +536,7 @@ async def create_lead(
             "organization_id": str(ctx.organization_id),
             "lead_id": str(lead.id),
             "source": source,
+            "status": lead.status,
             "owner_id": str(resolved_owner_id) if resolved_owner_id else None,
         },
         actor=_actor(ctx),
@@ -645,6 +646,12 @@ async def update_lead(
             "organization_id": str(ctx.organization_id),
             "lead_id": str(lead.id),
             "changed": sorted(changes),
+            # State after the patch (ADR-0020 §3, `docs/insights/events.md` §2), so a
+            # consumer converges without reading the lead back.
+            "status": lead.status,
+            "source": lead.source,
+            "owner_id": str(lead.owner_id) if lead.owner_id else None,
+            "converted_at": lead.converted_at.isoformat() if lead.converted_at else None,
         },
         actor=_actor(ctx),
     )
@@ -947,6 +954,8 @@ async def finalize_conversion(
                         "company_id": str(company_id),
                         "contact_id": str(contact_id) if contact_id else None,
                         "deal_id": str(deal_id),
+                        "owner_id": str(lead.owner_id) if lead.owner_id else None,
+                        "converted_at": lead.converted_at.isoformat(),
                     },
                     actor=_actor(ctx),
                 )

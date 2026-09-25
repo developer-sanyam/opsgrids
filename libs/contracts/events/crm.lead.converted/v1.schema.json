@@ -3,7 +3,6 @@
   "$id": "opsgrids://contracts/crm.lead.converted/v1",
   "title": "crm.lead.converted",
   "description": "A lead's conversion completed: the company, contact (null when the lead had no email) and deal it produced exist. `converted_at` is the lead row's own conversion timestamp.",
-  "$comment": "Ahead of the producer (ADR-0020 slice I4): services/lead/app/services.py:finalize_conversion does not emit owner_id, converted_at yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
   "type": "object",
   "additionalProperties": false,
   "required": [

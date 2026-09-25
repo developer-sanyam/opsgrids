@@ -37,9 +37,13 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy import (
     Date as SADate,
+)
+from sqlalchemy import (
+    desc as sa_desc,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -59,6 +63,26 @@ class Base(_Base):
 
 
 Base.metadata.schema = SCHEMA
+
+
+class FactMixin:
+    """Columns every `*_facts` table carries (data-model.md §1). Keyed `(organization_id, id)`
+    with the source row's **own** UUID as `id` — two organizations can never collide, and an id
+    means the same thing in both schemas. `source_updated_at` is the write-rule version guard,
+    `last_seen_run` and `ingested_at` are mark-and-sweep's own bookkeeping (`app/backfill.py`),
+    and `deleted_at` is set by a delete event, a soft-deleted export row, or the sweep — every
+    read filters `deleted_at IS NULL`, matching the platform's own `SoftDeleteMixin` convention
+    even though this is a projection, not a source of truth."""
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    source_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_seen_run: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class OutboxEvent(Base, OutboxMixin):
@@ -128,12 +152,132 @@ class OrgProfile(Base):
     )
 
 
-#: Snapshot metrics registered so far. Empty in I1 — no fact table exists yet for any of
-#: `pipeline_value`, `open_deals`, `weighted_pipeline`, `customers`, `open_tasks`, `stock_value`,
-#: `low_stock_items`, `out_of_stock_items` (data-model.md §5). `app/snapshot.py`'s sweep reads
-#: this to know what it may capture; a later slice appends to it in the same commit that adds
-#: the fact table the capture reads from.
-SNAPSHOT_METRICS: tuple[str, ...] = ()
+#: Pipeline stages a deal fact may carry — mirrors `deal.domain.STAGE_ORDER` (kept as its own
+#: vocabulary here, not imported: CLAUDE.md's "one process, one service" rule already keeps
+#: insights from importing `deal.app` at all, and this string set is exactly what deal's own
+#: contract commits it to, `docs/insights/data-model.md` §3).
+DEAL_STAGES: tuple[str, ...] = (
+    "lead",
+    "qualified",
+    "proposal",
+    "negotiation",
+    "closed_won",
+    "closed_lost",
+)
+#: `docs/insights/data-model.md` §3's `deal_facts` open-pipeline index and `app/selectors.py`'s
+#: state metrics both need "not a closed stage" — named once here rather than repeated.
+DEAL_CLOSED_STAGES: tuple[str, ...] = ("closed_won", "closed_lost")
+
+
+class DealFact(Base, FactMixin):
+    """`crm.pipeline.deal.*`, I3 (`docs/insights/data-model.md` §3). `owner_ref` is
+    `deals.owner_id`, by contract the column deal's own OWN scope compares with a caller's
+    `subject_ref` (ADR-0020 §4). `close_date` is always the *expected* close and never used as
+    a won/lost date; `closed_at` is the new source column (ADR §3) and is what `deals_won`,
+    `deals_lost` and the pipeline snapshots key off.
+    """
+
+    __tablename__ = "deal_facts"
+
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    stage: Mapped[str] = mapped_column(String(20), nullable=False)
+    value_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    probability: Mapped[int] = mapped_column(Integer, nullable=False)
+    owner_ref: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    #: Null only if a partial event (`stage_changed`, which carries no `company_id`) raced
+    #: ahead of the row's own `created` event — never inserted that way, only left this way by
+    #: an out-of-order fold (data-model.md §3).
+    company_ref: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    close_date: Mapped[date | None] = mapped_column(SADate)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint(f"stage in {DEAL_STAGES!r}", name="deal_facts_stage_vocabulary"),
+        CheckConstraint("currency ~ '^[A-Z]{3}$'", name="deal_facts_currency_shape"),
+        Index(
+            "ix_deal_facts_org_closed_at",
+            "organization_id",
+            "closed_at",
+            postgresql_where=text("closed_at IS NOT NULL"),
+        ),
+        Index("ix_deal_facts_org_created", "organization_id", "source_created_at"),
+        Index("ix_deal_facts_org_owner", "organization_id", "owner_ref"),
+        Index(
+            "ix_deal_facts_org_open",
+            "organization_id",
+            postgresql_where=text(
+                "deleted_at IS NULL AND stage NOT IN ('closed_won', 'closed_lost')"
+            ),
+        ),
+    )
+
+
+class LeadFact(Base, FactMixin):
+    """`crm.lead.*`, I4 (`docs/insights/data-model.md` §3). No name, email, phone or company
+    text: a lead's person is PII at the source (`docs/insights/events.md` §4) — this table
+    carries only the four columns `leads_created`/`leads_converted` and the sales-reps ranking
+    need. `owner_ref` is `leads.owner_id`, nullable because assignment can find nobody.
+    """
+
+    __tablename__ = "lead_facts"
+
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    owner_ref: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    converted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("ix_lead_facts_org_created", "organization_id", "source_created_at"),
+        Index(
+            "ix_lead_facts_org_converted",
+            "organization_id",
+            "converted_at",
+            postgresql_where=text("converted_at IS NOT NULL"),
+        ),
+        Index("ix_lead_facts_org_owner", "organization_id", "owner_ref"),
+    )
+
+
+class CompanyFact(Base, FactMixin):
+    """`crm.book.company.*`, I4 (`docs/insights/data-model.md` §3). `name` is kept as a
+    business label — the source shows it to the same `crm.book.company.read` gate this fact is
+    gated by. `owner_ref` is `companies.owner_id`.
+    """
+
+    __tablename__ = "company_facts"
+
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    owner_ref: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('customer', 'prospect', 'lead', 'churned')",
+            name="company_facts_status_vocabulary",
+        ),
+        Index(
+            "ix_company_facts_org_status",
+            "organization_id",
+            "status",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_company_facts_org_created", "organization_id", sa_desc("source_created_at")),
+    )
+
+
+#: Snapshot metrics registered so far (data-model.md §5). I3 adds `pipeline_value`,
+#: `open_deals` and `weighted_pipeline` (from `deal_facts`); I4 adds `customers` (from
+#: `company_facts`). `open_tasks`, `stock_value`, `low_stock_items` and `out_of_stock_items`
+#: still wait on I5/I6. `app/snapshot.py`'s sweep reads this to know what it may capture; a
+#: later slice appends to it in the same commit that adds the fact table the capture reads
+#: from.
+SNAPSHOT_METRICS: tuple[str, ...] = (
+    "pipeline_value",
+    "open_deals",
+    "weighted_pipeline",
+    "customers",
+)
 
 
 class DailySnapshot(Base):

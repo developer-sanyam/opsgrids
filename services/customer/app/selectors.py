@@ -17,9 +17,10 @@ part of reading it, so routes stay thin.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, func, literal, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Company, Contact, Owner
@@ -378,3 +379,23 @@ async def get_contact_by_phone_index(
         .order_by(Contact.created_at.asc())
     )
     return (await session.execute(stmt)).scalars().first()
+
+
+# ------------------------------------------------------------------ insights export (internal)
+
+
+def companies_export_stmt(
+    *, after_updated_at: datetime | None, after_id: uuid.UUID | None, limit: int
+) -> Select[Any]:
+    """Keyset page of **every** company, soft-deleted included, in `(updated_at, id)` order —
+    insights' backfill read (`GET /internal/v1/insights/export/companies`, ADR-0020 §3,
+    `docs/insights/api.md` §6.1). No `domain`, `industry`, `city`, `country` or revenue: only
+    what `company_facts` stores — `name`, `status`, `owner_id`.
+    """
+    stmt = select(Company)
+    if after_updated_at is not None and after_id is not None:
+        stmt = stmt.where(
+            tuple_(Company.updated_at, Company.id)
+            > tuple_(literal(after_updated_at), literal(after_id))
+        )
+    return stmt.order_by(Company.updated_at, Company.id).limit(limit)

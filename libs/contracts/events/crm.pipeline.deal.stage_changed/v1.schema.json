@@ -3,7 +3,6 @@
   "$id": "opsgrids://contracts/crm.pipeline.deal.stage_changed/v1",
   "title": "crm.pipeline.deal.stage_changed",
   "description": "A deal moved stage under deal's transition rule. `from` and `to` are the stages; the rest is the deal's state after the move. `closed_at` is set when `to` is closed_won or closed_lost (a closed deal moves nowhere afterwards) and null otherwise.",
-  "$comment": "Ahead of the producer (ADR-0020 slice I3): services/deal/app/services.py:move_stage does not emit name, value_minor, currency, owner_id, probability, closed_at yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -9,13 +9,12 @@ discovery in this platform uses (CLAUDE.md: the outbox role "may read and update
 nothing else" plus whatever narrow, named exceptions a service's own migration grants). Each
 organization's own capture then runs inside its own tenant-bound transaction.
 
-**I1 registers no capture** (`SNAPSHOT_CAPTURES` is empty): `pipeline_value`, `open_deals`,
-`weighted_pipeline` and `customers` need I3/I4's facts, and `stock_value`/`low_stock_items`/
-`out_of_stock_items` need I5's pulled read from operations. This module still runs the whole
-loop — discovery, one transaction per organization, the write through
-`app/services.upsert_daily_snapshot` — so the framework is proven and tested before any capture
-exists to plug into it. A slice that adds a capture appends one `SnapshotCapture` here, in the
-same commit as the fact table (or the pulled read) it computes from; nothing else changes.
+**I3/I4 register the first four captures**: `pipeline_value`, `open_deals` and
+`weighted_pipeline` from `deal_facts`, and `customers` from `company_facts`.
+`stock_value`/`low_stock_items`/`out_of_stock_items` still wait on I5's pulled read from
+operations. Each capture also records `metric_coverage` the moment its **first** row for an
+organization lands (`basis="first_capture"`, `docs/insights/metrics.md` §3) — nothing else
+computes that row for a snapshot metric, so the capture is the one place it can happen.
 """
 
 from __future__ import annotations
@@ -25,17 +24,39 @@ from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from typing import Protocol
+from typing import Any, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import OrgProfile
+from app import domain, services
+from app.models import CompanyFact, DealFact, MetricCoverage, OrgProfile
 from app.selectors import local_today
 from platform_core.logging import get_logger
 from platform_core.supervise import GuardedSweep
 
 log = get_logger("insights.snapshot")
+
+
+async def _record_first_capture_coverage(
+    session: AsyncSession, *, organization_id: uuid.UUID, metric: str, day: date
+) -> None:
+    """`metric_coverage` for a snapshot metric is "the first day it was captured"
+    (`docs/insights/metrics.md` §3) — written once, the first time this organization gets a row
+    for this metric, and never touched again (a coverage date only ever moves earlier than
+    "now", never later)."""
+    existing = await session.get(
+        MetricCoverage, {"organization_id": organization_id, "metric": metric}
+    )
+    if existing is not None:
+        return
+    await services.record_metric_coverage(
+        session,
+        organization_id=organization_id,
+        metric=metric,
+        history_from=day,
+        basis="first_capture",
+    )
 
 
 class SnapshotCapture(Protocol):
@@ -52,8 +73,163 @@ class SnapshotCapture(Protocol):
     ) -> None: ...
 
 
-#: Empty in I1 — see the module docstring.
-SNAPSHOT_CAPTURES: tuple[SnapshotCapture, ...] = ()
+#: ORG-only, non-deleted, non-closed deals — the source rows every deal-facts capture below
+#: reads (`docs/insights/metrics.md` §8, data-model.md §5's open-pipeline index).
+def _open_deals_stmt(organization_id: uuid.UUID) -> Any:
+    return select(DealFact.currency, DealFact.value_minor, DealFact.probability).where(
+        DealFact.organization_id == organization_id,
+        DealFact.deleted_at.is_(None),
+        DealFact.stage.notin_(("closed_won", "closed_lost")),
+    )
+
+
+class OpenDealsCapture:
+    """`open_deals` (I3): a plain count, no currency dimension."""
+
+    metric = "open_deals"
+
+    async def capture(
+        self, session: AsyncSession, *, organization_id: uuid.UUID, day: date, now: datetime
+    ) -> None:
+        count = (
+            await session.execute(
+                select(func.count())
+                .select_from(DealFact)
+                .where(
+                    DealFact.organization_id == organization_id,
+                    DealFact.deleted_at.is_(None),
+                    DealFact.stage.notin_(("closed_won", "closed_lost")),
+                )
+            )
+        ).scalar_one()
+        await services.upsert_daily_snapshot(
+            session,
+            organization_id=organization_id,
+            metric=self.metric,
+            dimension="",
+            day=day,
+            value=count,
+            currency=None,
+            captured_at=now,
+        )
+        await _record_first_capture_coverage(
+            session, organization_id=organization_id, metric=self.metric, day=day
+        )
+
+
+class PipelineValueCapture:
+    """`pipeline_value` (I3): `Σ value_minor` of open deals, one row per currency
+    (`docs/insights/metrics.md` §8) — never summed across currencies."""
+
+    metric = "pipeline_value"
+
+    async def capture(
+        self, session: AsyncSession, *, organization_id: uuid.UUID, day: date, now: datetime
+    ) -> None:
+        rows = (
+            await session.execute(
+                select(DealFact.currency, func.coalesce(func.sum(DealFact.value_minor), 0))
+                .where(
+                    DealFact.organization_id == organization_id,
+                    DealFact.deleted_at.is_(None),
+                    DealFact.stage.notin_(("closed_won", "closed_lost")),
+                )
+                .group_by(DealFact.currency)
+            )
+        ).all()
+        for currency, total in rows:
+            await services.upsert_daily_snapshot(
+                session,
+                organization_id=organization_id,
+                metric=self.metric,
+                dimension=currency,
+                day=day,
+                value=int(total),
+                currency=currency,
+                captured_at=now,
+            )
+        if rows:
+            await _record_first_capture_coverage(
+                session, organization_id=organization_id, metric=self.metric, day=day
+            )
+
+
+class WeightedPipelineCapture:
+    """`weighted_pipeline` (I3): `Σ round_half_even(value_minor * probability / 100)` per open
+    deal, grouped by currency — `domain.weighted_pipeline_minor`'s own rule, computed in Python
+    because Postgres's `round(numeric)` rounds half away from zero (`docs/insights/metrics.md`
+    §4.2)."""
+
+    metric = "weighted_pipeline"
+
+    async def capture(
+        self, session: AsyncSession, *, organization_id: uuid.UUID, day: date, now: datetime
+    ) -> None:
+        rows = (await session.execute(_open_deals_stmt(organization_id))).all()
+        by_currency: dict[str, int] = {}
+        for currency, value_minor, probability in rows:
+            by_currency[currency] = by_currency.get(currency, 0) + domain.weighted_pipeline_minor(
+                value_minor, probability
+            )
+        for currency, total in by_currency.items():
+            await services.upsert_daily_snapshot(
+                session,
+                organization_id=organization_id,
+                metric=self.metric,
+                dimension=currency,
+                day=day,
+                value=total,
+                currency=currency,
+                captured_at=now,
+            )
+        if rows:
+            await _record_first_capture_coverage(
+                session, organization_id=organization_id, metric=self.metric, day=day
+            )
+
+
+class CustomersCapture:
+    """`customers` (I4): a plain count of `company_facts` at `status = 'customer'`."""
+
+    metric = "customers"
+
+    async def capture(
+        self, session: AsyncSession, *, organization_id: uuid.UUID, day: date, now: datetime
+    ) -> None:
+        count = (
+            await session.execute(
+                select(func.count())
+                .select_from(CompanyFact)
+                .where(
+                    CompanyFact.organization_id == organization_id,
+                    CompanyFact.deleted_at.is_(None),
+                    CompanyFact.status == "customer",
+                )
+            )
+        ).scalar_one()
+        await services.upsert_daily_snapshot(
+            session,
+            organization_id=organization_id,
+            metric=self.metric,
+            dimension="",
+            day=day,
+            value=count,
+            currency=None,
+            captured_at=now,
+        )
+        await _record_first_capture_coverage(
+            session, organization_id=organization_id, metric=self.metric, day=day
+        )
+
+
+#: I3 registers `open_deals`, `pipeline_value` and `weighted_pipeline`; I4 adds `customers`.
+#: `stock_value`, `low_stock_items` and `out_of_stock_items` still wait on I5's pulled read.
+SNAPSHOT_CAPTURES: tuple[SnapshotCapture, ...] = (
+    OpenDealsCapture(),
+    PipelineValueCapture(),
+    WeightedPipelineCapture(),
+    CustomersCapture(),
+)
 
 #: Same shape as `app.backfill.WorkScope` — defined again here, not imported, because
 #: `app.snapshot` and `app.backfill` are independent loops that happen to share a process
