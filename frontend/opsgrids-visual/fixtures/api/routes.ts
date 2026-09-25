@@ -74,6 +74,43 @@ export const CRM_ROUTES: MockRoute[] = [
     fixture: "crm/activities.json",
     contract: { spec: "deal", path: "/api/v1/deals/activities" },
   },
+  // The overview's lead KPI and "leads by status" donut: one `size=1` call per status, read for
+  // its `total` alone (`loadLeadStats` in `product-crm/src/routes/Overview.tsx`).
+  {
+    method: "GET",
+    path: "/api/v1/leads",
+    query: { status: "new", size: "1" },
+    fixture: "crm/leads-new.json",
+    contract: { spec: "lead", path: "/api/v1/leads" },
+  },
+  {
+    method: "GET",
+    path: "/api/v1/leads",
+    query: { status: "working", size: "1" },
+    fixture: "crm/leads-working.json",
+    contract: { spec: "lead", path: "/api/v1/leads" },
+  },
+  {
+    method: "GET",
+    path: "/api/v1/leads",
+    query: { status: "qualified", size: "1" },
+    fixture: "crm/leads-qualified.json",
+    contract: { spec: "lead", path: "/api/v1/leads" },
+  },
+  {
+    method: "GET",
+    path: "/api/v1/leads",
+    query: { status: "converted", size: "1" },
+    fixture: "crm/leads-converted.json",
+    contract: { spec: "lead", path: "/api/v1/leads" },
+  },
+  {
+    method: "GET",
+    path: "/api/v1/leads",
+    query: { status: "disqualified", size: "1" },
+    fixture: "crm/leads-disqualified.json",
+    contract: { spec: "lead", path: "/api/v1/leads" },
+  },
 ];
 
 const PLANNED_PRODUCTS = ["crm", "hrms", "operations", "finance", "projects", "itsm"] as const;

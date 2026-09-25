@@ -225,8 +225,11 @@ export function OverviewPage() {
 
       {/* Row 1 — KPI cards: leads, open pipeline, won this month, conversion. Every delta this
           row could show needs a comparison the server doesn't yet keep (dashboard audit §3.3
-          rows 2, 9); none is invented, so none of these four cards carries a trend. */}
-      <section aria-label="Key metrics" className="grid grid-cols-2 gap-4 md:grid-cols-4">
+          rows 2, 9); none is invented, so none of these four cards carries a trend.
+          Four across waits for xl (1280px): at 768-1279 a default-sized card only gets ~170px,
+          not enough for a compact money value like "₹1.9 Cr" without clipping (same fix as the
+          dashboard's own KPI row). */}
+      <section aria-label="Key metrics" className="grid grid-cols-2 gap-4 xl:grid-cols-4">
         <MetricSlot status={leadStats.status} onRetry={leadStats.reload} label="Leads">
           {leadStats.status === "success" ? (
             <MetricCard
