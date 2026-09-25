@@ -35,6 +35,7 @@ import type {
   CampaignOut,
   CampaignPatch,
   CampaignRecipientOut,
+  CampaignScheduleIn,
   CampaignStatus,
   CampaignTestSendOut,
   ConnectionIn,
@@ -656,6 +657,24 @@ export async function sendCampaign(campaignId: string): Promise<CampaignOut> {
   if (USE_FIXTURES) refuseWithoutService("Sending a campaign");
   return apiRequest<CampaignOut>(`/engage/campaigns/${encodeURIComponent(campaignId)}/send`, {
     method: "POST",
+  });
+}
+
+/**
+ * Schedule a draft to send later, or push back one already `scheduled` —
+ * `POST /engage/campaigns/{campaign_id}/schedule`. Calling this again on a campaign that is
+ * already `scheduled` reschedules it to the new `scheduled_at`; the same gate as `sendCampaign`
+ * applies (a `409` off a draft or already-scheduled campaign, a `422` on anything that would
+ * make it unsendable or on a `scheduled_at` not in the future).
+ */
+export async function scheduleCampaign(
+  campaignId: string,
+  input: CampaignScheduleIn,
+): Promise<CampaignOut> {
+  if (USE_FIXTURES) refuseWithoutService("Scheduling a campaign");
+  return apiRequest<CampaignOut>(`/engage/campaigns/${encodeURIComponent(campaignId)}/schedule`, {
+    method: "POST",
+    body: input,
   });
 }
 

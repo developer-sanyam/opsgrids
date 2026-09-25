@@ -354,6 +354,26 @@ export const CAMPAIGN_DRAFT: CampaignOut = {
   updated_at: "2026-09-22T11:00:00Z",
 };
 
+export const CAMPAIGN_SCHEDULED: CampaignOut = {
+  id: "a1b2c3d4-5e6f-4718-8a1b-1c2d3e4f5a6b",
+  name: "Diwali sale announcement",
+  sender_id: "5c8e2a19-4b6f-4d02-a37e-9f15c0b8d744",
+  subject: "The Diwali sale starts tomorrow",
+  html_body: "<p>Our Diwali sale starts tomorrow.</p>",
+  text_body: "Our Diwali sale starts tomorrow.",
+  audience: "all_sendable",
+  list_id: null,
+  status: "scheduled",
+  scheduled_at: "2026-10-15T12:30:00Z",
+  started_at: null,
+  completed_at: null,
+  cancelled_at: null,
+  pause_reason: "",
+  stats: { recipients: 0, queued: 0, sent: 0, failed: 0, suppressed: 0 },
+  created_at: "2026-09-20T08:00:00Z",
+  updated_at: "2026-09-24T09:00:00Z",
+};
+
 export const CAMPAIGN_SENDING: CampaignOut = {
   id: "d2e3f4a5-6172-4839-8a1b-3d4e5f617283",
   name: "September invoice reminder",
@@ -416,6 +436,7 @@ export const CAMPAIGN_SENT: CampaignOut = {
 
 export const CAMPAIGNS: CampaignOut[] = [
   CAMPAIGN_DRAFT,
+  CAMPAIGN_SCHEDULED,
   CAMPAIGN_SENDING,
   CAMPAIGN_PAUSED,
   CAMPAIGN_SENT,

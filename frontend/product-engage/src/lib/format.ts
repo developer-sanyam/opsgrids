@@ -1,3 +1,5 @@
+import { formatInZone } from "@opsgrids/ui";
+
 import type { CampaignStatus, ConnectionKind, DnsRecordKind } from "@/api/types";
 
 /**
@@ -72,4 +74,32 @@ const CAMPAIGN_STATUS_WORDS: Record<CampaignStatus, string> = {
 
 export function campaignStatusWord(status: CampaignStatus): string {
   return CAMPAIGN_STATUS_WORDS[status];
+}
+
+export const IST_ZONE = "Asia/Kolkata";
+
+/**
+ * The IANA name a zone actually resolves to at runtime. "Asia/Kolkata" and its older alias
+ * "Asia/Calcutta" name the same zone, but which spelling `Intl` hands back for "the browser's
+ * own zone" depends on the ICU data it ships with — comparing the raw strings would then treat
+ * an Indian browser's own zone as a *different* zone from IST and show the same instant twice.
+ */
+export function canonicalZone(zone: string): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, { timeZone: zone }).resolvedOptions().timeZone;
+  } catch {
+    return zone;
+  }
+}
+
+/**
+ * A campaign's `scheduled_at`, read in the zone the browser reports plus, when that is not
+ * India Standard Time, the IST reading beside it — the zone this platform's own support and
+ * most of its customers keep. Never the zone the campaign was *scheduled in*: that choice ends
+ * the moment the instant is fixed, and this is read by whoever is looking, wherever they are.
+ */
+export function formatScheduledFor(iso: string): string {
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || IST_ZONE;
+  const local = formatInZone(iso, zone);
+  return canonicalZone(zone) === canonicalZone(IST_ZONE) ? local : `${local} (${formatInZone(iso, IST_ZONE)})`;
 }
