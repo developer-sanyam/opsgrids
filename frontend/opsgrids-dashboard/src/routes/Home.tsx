@@ -70,7 +70,9 @@ import type {
 import { formatDate, formatMoneyWhole } from "@/lib/money";
 import { resolveAccess } from "@/ui/home/access";
 import type { AccessState } from "@/ui/home/access";
+import { EmployeeWorkspace } from "@/ui/home/EmployeeWorkspace";
 import { ModulesGrid } from "@/ui/home/ModulesGrid";
+import { useHomePersona } from "@/ui/home/persona";
 import { NoAccessNotice, PlanGatedNotice } from "@/ui/home/WidgetStates";
 
 const COUNT = new Intl.NumberFormat("en-IN");
@@ -352,6 +354,13 @@ export function HomePage() {
 
   const history = overview.data?.revenue_history[0] ?? null;
   const months = history?.months ?? [];
+
+  // A caller who holds none of this page's owner-level grants sees "My Workspace" instead
+  // (mock-5's Employee View) — see `src/ui/home/persona.ts` for what counts as one.
+  const persona = useHomePersona();
+  if (persona === "employee") {
+    return <EmployeeWorkspace />;
+  }
 
   return (
     <div className="flex flex-col gap-6">
