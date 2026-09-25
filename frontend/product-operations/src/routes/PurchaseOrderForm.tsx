@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { createPurchaseOrder, getPurchaseOrder, updatePurchaseOrder } from "@/api/client";
@@ -18,11 +19,30 @@ import {
   validatePurchaseOrder,
 } from "@/lib/purchaseOrderForm";
 import type { LineDraft, LineErrors, PurchaseOrderErrors, PurchaseOrderFormValues } from "@/lib/purchaseOrderForm";
-import { Button, Card, ErrorState, InlineAlert, PageHeader, Select, Skeleton, TextArea, TextField } from "@/ui";
-import type { ComboboxOption } from "@/ui";
+import {
+  Button,
+  Card,
+  ErrorState,
+  FormSection,
+  InlineAlert,
+  PageHeader,
+  Select,
+  Skeleton,
+  Stepper,
+  StepperActions,
+  TextArea,
+  TextField,
+  UnsavedChangesGuard,
+} from "@/ui";
+import type { ComboboxOption, StepItem } from "@/ui";
 import { ArrowRightIcon, MinusCircleIcon, PlusIcon, useToast } from "@opsgrids/ui";
 import { SupplierPicker } from "@/forms/SupplierPicker";
 import { SkuPicker } from "@/forms/SkuPicker";
+
+const STEPS: StepItem[] = [
+  { id: "details", title: "Order details", description: "Supplier, warehouse, dates and notes" },
+  { id: "lines", title: "Line items", description: "What's on the order, and its total" },
+];
 
 let rowSeq = 0;
 function nextRowKey(): string {
@@ -115,6 +135,7 @@ function LineEditor({
         value={line.sku}
         onChange={(e) => onChange({ ...line, sku: e.target.value })}
         helper="Prefilled when you pick a stocked item above; type your own for services or freight."
+        required
       />
 
       <TextField
@@ -131,6 +152,7 @@ function LineEditor({
           inputMode="numeric"
           value={line.quantity}
           onChange={(e) => onChange({ ...line, quantity: e.target.value })}
+          required
           {...(quantityError !== undefined ? { error: quantityError } : {})}
         />
         <TextField
@@ -146,6 +168,7 @@ function LineEditor({
           value={line.unitPrice}
           onChange={(e) => onChange({ ...line, unitPrice: e.target.value })}
           containerClassName="col-span-2 sm:col-span-1"
+          required
           {...(unitPriceError !== undefined ? { error: unitPriceError } : {})}
         />
         <div className="col-span-2 sm:col-span-1 flex flex-col justify-end pb-2.5">
@@ -244,7 +267,7 @@ function PurchaseOrderFormBody({
   onCancel: () => void;
   onSaved: (po: PurchaseOrderOut) => void;
 }) {
-  const [values, setValues] = useState<PurchaseOrderFormValues>(() =>
+  const initialValues = useState<PurchaseOrderFormValues>(() =>
     po
       ? {
           supplierId: po.supplier_id,
@@ -256,7 +279,8 @@ function PurchaseOrderFormBody({
           lines: linesFromPo(po),
         }
       : emptyPurchaseOrder(nextRowKey()),
-  );
+  )[0];
+  const [values, setValues] = useState<PurchaseOrderFormValues>(initialValues);
   // The SKU combobox's selection is UI-only — the wire value is `LineDraft.sku`, a plain string,
   // so a free-text SKU with no inventory match still round-trips without a matching option.
   const [skuOptions, setSkuOptions] = useState<Record<string, ComboboxOption | null>>({});
@@ -265,6 +289,8 @@ function PurchaseOrderFormBody({
   );
 
   const [errors, setErrors] = useState<PurchaseOrderErrors>({});
+  const [step, setStep] = useState(0);
+  const mode = po ? ("edit" as const) : ("create" as const);
 
   const save = useMutation(
     (payload: PurchaseOrderIn | PurchaseOrderPatch) =>
@@ -274,6 +300,7 @@ function PurchaseOrderFormBody({
 
   const total = orderTotalMinor(values.lines);
   const currency = po ? po.currency : values.currency || "INR";
+  const dirty = JSON.stringify(values) !== JSON.stringify(initialValues);
 
   function updateLine(index: number, next: LineDraft) {
     setValues((v) => ({ ...v, lines: v.lines.map((line, i) => (i === index ? next : line)) }));
@@ -295,16 +322,44 @@ function PurchaseOrderFormBody({
     if (key) setSkuOptions((prev) => { const next = { ...prev }; delete next[key]; return next; });
   }
 
-  function submit() {
-    const mode = po ? ("edit" as const) : ("create" as const);
+  const detailsInvalid = Boolean(
+    errors.supplier ??
+      errors.warehouse ??
+      errors.expectedDate ??
+      save.fieldErrors.warehouse ??
+      save.fieldErrors.expected_date,
+  );
+  const linesInvalid = Boolean(errors.lines ?? errors.lineErrors);
+  const stepItems: StepItem[] = STEPS.map((item, index) => ({
+    ...item,
+    invalid: index === 0 ? detailsInvalid : linesInvalid,
+  }));
+
+  function continueToLines() {
     const found = validatePurchaseOrder(values, { mode, today: today() });
     setErrors(found);
-    if (hasErrors(found)) return;
+    if (found.supplier ?? found.warehouse ?? found.expectedDate) return;
+    setStep(1);
+  }
+
+  function submit() {
+    const found = validatePurchaseOrder(values, { mode, today: today() });
+    setErrors(found);
+    if (hasErrors(found)) {
+      if (found.supplier ?? found.warehouse ?? found.expectedDate) setStep(0);
+      return;
+    }
 
     const payload = po
       ? buildPurchaseOrderPayload(values, { mode: "edit" })
       : buildPurchaseOrderPayload(values, { mode: "create", raisedBy: raisedByName });
     void save.mutate(payload);
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (step === 0) continueToLines();
+    else submit();
   }
 
   return (
@@ -313,130 +368,155 @@ function PurchaseOrderFormBody({
       <PageHeader
         eyebrow="Procurement"
         title={po ? `Edit ${po.po_number}` : "New purchase order"}
-      />
-
-      <Card className="p-4 sm:p-6 flex flex-col gap-5">
-        {po ? (
-          <TextField label="Supplier" value={po.supplier_name} disabled helper="A draft's supplier can't be changed here — cancel and re-raise instead." />
-        ) : (
-          <SupplierPicker
-            value={supplierOption}
-            onChange={(option) => {
-              setSupplierOption(option);
-              setValues((v) => ({ ...v, supplierId: option?.id ?? null, supplierName: option?.label ?? null }));
-            }}
-            onPick={(record) => {
-              if (record && values.currency === "") setValues((v) => ({ ...v, currency: record.currency }));
-            }}
-            {...(errors.supplier !== undefined ? { error: errors.supplier } : {})}
-          />
-        )}
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Select
-            label="Warehouse"
-            value={values.warehouse}
-            onChange={(e) => setValues((v) => ({ ...v, warehouse: e.target.value }))}
-            placeholder="Choose a warehouse"
-            options={warehouseOptions}
-            {...((errors.warehouse ?? save.fieldErrors.warehouse) !== undefined
-              ? { error: errors.warehouse ?? save.fieldErrors.warehouse }
-              : {})}
-          />
-          <TextField
-            label="Expected date"
-            type="date"
-            value={values.expectedDate}
-            {...(po ? {} : { min: today() })}
-            onChange={(e) => setValues((v) => ({ ...v, expectedDate: e.target.value }))}
-            {...((errors.expectedDate ?? save.fieldErrors.expected_date) !== undefined
-              ? { error: errors.expectedDate ?? save.fieldErrors.expected_date }
-              : {})}
-          />
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          <TextField
-            label="Currency"
-            value={values.currency}
-            onChange={(e) => setValues((v) => ({ ...v, currency: e.target.value.toUpperCase() }))}
-            maxLength={3}
-            optional
-            helper={
-              po
-                ? "Leave blank to keep the order's current currency."
-                : "Leave blank to use the supplier's currency."
-            }
-            {...(save.fieldErrors.currency !== undefined ? { error: save.fieldErrors.currency } : {})}
-          />
-        </div>
-
-        <TextArea
-          label="Notes"
-          value={values.notes}
-          onChange={(e) => setValues((v) => ({ ...v, notes: e.target.value }))}
-          optional
-          maxLength={2000}
-          counterFrom={1800}
-          {...(save.fieldErrors.notes !== undefined ? { error: save.fieldErrors.notes } : {})}
-        />
-      </Card>
-
-      <Card className="p-4 sm:p-6 flex flex-col gap-4">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-lg font-bold tracking-tight">Line items</h2>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            leadingIcon={<PlusIcon className="size-4" />}
-            onClick={() => setValues((v) => ({ ...v, lines: [...v.lines, emptyLine(nextRowKey())] }))}
-            disabled={values.lines.length >= 200}
-          >
-            Add line
+        actions={
+          <Button type="button" variant="ghost" onClick={onCancel} disabled={save.pending}>
+            Cancel
           </Button>
+        }
+      />
+      <UnsavedChangesGuard when={dirty} subject={po ? po.po_number : "this purchase order"} />
+
+      <form noValidate onSubmit={handleSubmit} className="grid grid-cols-1 gap-4 md:grid-cols-4">
+        <Card className="p-3 md:col-span-1 md:self-start">
+          <Stepper steps={stepItems} current={step} onStepChange={setStep} />
+        </Card>
+
+        <div className="flex flex-col gap-6 md:col-span-3">
+          {step === 0 ? (
+            <Card className="p-4 sm:p-6">
+              <FormSection title="Order details" description="Who this order goes to, and when it's expected." headingLevel={3}>
+                {po ? (
+                  <TextField
+                    label="Supplier"
+                    value={po.supplier_name}
+                    disabled
+                    helper="A draft's supplier can't be changed here — cancel and re-raise instead."
+                    containerClassName="col-span-full"
+                  />
+                ) : (
+                  <div className="col-span-full">
+                    <SupplierPicker
+                      value={supplierOption}
+                      onChange={(option) => {
+                        setSupplierOption(option);
+                        setValues((v) => ({ ...v, supplierId: option?.id ?? null, supplierName: option?.label ?? null }));
+                      }}
+                      onPick={(record) => {
+                        if (record && values.currency === "") setValues((v) => ({ ...v, currency: record.currency }));
+                      }}
+                      {...(errors.supplier !== undefined ? { error: errors.supplier } : {})}
+                    />
+                  </div>
+                )}
+
+                <Select
+                  label="Warehouse"
+                  value={values.warehouse}
+                  onChange={(e) => setValues((v) => ({ ...v, warehouse: e.target.value }))}
+                  placeholder="Choose a warehouse"
+                  options={warehouseOptions}
+                  required
+                  {...((errors.warehouse ?? save.fieldErrors.warehouse) !== undefined
+                    ? { error: errors.warehouse ?? save.fieldErrors.warehouse }
+                    : {})}
+                />
+                <TextField
+                  label="Expected date"
+                  type="date"
+                  value={values.expectedDate}
+                  {...(po ? {} : { min: today() })}
+                  onChange={(e) => setValues((v) => ({ ...v, expectedDate: e.target.value }))}
+                  required
+                  {...((errors.expectedDate ?? save.fieldErrors.expected_date) !== undefined
+                    ? { error: errors.expectedDate ?? save.fieldErrors.expected_date }
+                    : {})}
+                />
+                <TextField
+                  label="Currency"
+                  value={values.currency}
+                  onChange={(e) => setValues((v) => ({ ...v, currency: e.target.value.toUpperCase() }))}
+                  maxLength={3}
+                  optional
+                  helper={
+                    po
+                      ? "Leave blank to keep the order's current currency."
+                      : "Leave blank to use the supplier's currency."
+                  }
+                  {...(save.fieldErrors.currency !== undefined ? { error: save.fieldErrors.currency } : {})}
+                />
+                <TextArea
+                  label="Notes"
+                  value={values.notes}
+                  onChange={(e) => setValues((v) => ({ ...v, notes: e.target.value }))}
+                  optional
+                  maxLength={2000}
+                  counterFrom={1800}
+                  containerClassName="col-span-full"
+                  {...(save.fieldErrors.notes !== undefined ? { error: save.fieldErrors.notes } : {})}
+                />
+              </FormSection>
+              <StepperActions continueLabel="Continue" className="mt-6" />
+            </Card>
+          ) : null}
+
+          {step === 1 ? (
+            <Card className="p-4 sm:p-6 flex flex-col gap-4">
+              <FormSection title="Line items" description="What's on the order." columns={1} headingLevel={3}>
+                <div className="col-span-full flex items-center justify-between gap-3">
+                  <span className="text-sm font-bold text-ink">{values.lines.length} line{values.lines.length === 1 ? "" : "s"}</span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    leadingIcon={<PlusIcon className="size-4" />}
+                    onClick={() => setValues((v) => ({ ...v, lines: [...v.lines, emptyLine(nextRowKey())] }))}
+                    disabled={values.lines.length >= 200}
+                  >
+                    Add line
+                  </Button>
+                </div>
+
+                <div aria-live="polite" className="col-span-full empty:hidden">
+                  {errors.lines ? <InlineAlert tone="danger" title={errors.lines} /> : null}
+                </div>
+
+                {values.lines.map((line, index) => (
+                  <LineEditor
+                    key={line.key}
+                    line={line}
+                    index={index}
+                    skuOption={skuOptions[line.key] ?? null}
+                    errors={errors.lineErrors?.[line.key] ?? {}}
+                    serverErrors={save.fieldErrors}
+                    currency={currency}
+                    onChange={(next) => updateLine(index, next)}
+                    onPickSku={(option, prefill) => pickSku(line.key, index, option, prefill)}
+                    onRemove={() => removeLine(index)}
+                    canRemove={values.lines.length > 1}
+                  />
+                ))}
+              </FormSection>
+
+              <div className="flex items-center justify-between border-t border-line pt-4">
+                <span className="text-sm font-bold text-ink">Order total</span>
+                <span className="display text-xl font-extrabold tnum">{formatMoney(total, currency)}</span>
+              </div>
+
+              {save.error && Object.keys(save.fieldErrors).length === 0 ? (
+                <InlineAlert tone="danger" title={problemMessage(save.error)} />
+              ) : null}
+
+              <StepperActions
+                onBack={() => setStep(0)}
+                final
+                pending={save.pending}
+                pendingLabel={po ? "Saving…" : "Creating…"}
+                continueLabel={po ? "Save changes" : "Create purchase order"}
+              />
+            </Card>
+          ) : null}
         </div>
-
-        <div aria-live="polite" className="empty:hidden">
-          {errors.lines ? <InlineAlert tone="danger" title={errors.lines} /> : null}
-        </div>
-
-        <div className="flex flex-col gap-3">
-          {values.lines.map((line, index) => (
-            <LineEditor
-              key={line.key}
-              line={line}
-              index={index}
-              skuOption={skuOptions[line.key] ?? null}
-              errors={errors.lineErrors?.[line.key] ?? {}}
-              serverErrors={save.fieldErrors}
-              currency={currency}
-              onChange={(next) => updateLine(index, next)}
-              onPickSku={(option, prefill) => pickSku(line.key, index, option, prefill)}
-              onRemove={() => removeLine(index)}
-              canRemove={values.lines.length > 1}
-            />
-          ))}
-        </div>
-
-        <div className="flex items-center justify-between border-t border-line pt-4">
-          <span className="text-sm font-bold text-ink">Order total</span>
-          <span className="display text-xl font-extrabold tnum">{formatMoney(total, currency)}</span>
-        </div>
-      </Card>
-
-      {save.error && Object.keys(save.fieldErrors).length === 0 ? (
-        <InlineAlert tone="danger" title={problemMessage(save.error)} />
-      ) : null}
-
-      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-        <Button type="button" variant="ghost" onClick={onCancel} disabled={save.pending}>
-          Cancel
-        </Button>
-        <Button type="button" variant="primary" loading={save.pending} onClick={submit}>
-          {save.pending ? (po ? "Saving…" : "Creating…") : po ? "Save changes" : "Create purchase order"}
-        </Button>
-      </div>
+      </form>
     </div>
   );
 }

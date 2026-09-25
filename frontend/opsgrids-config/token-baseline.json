@@ -598,7 +598,7 @@
     "spacing": 9
   },
   "product-operations/src/routes/PurchaseOrderForm.tsx": {
-    "spacing": 3
+    "spacing": 2
   },
   "product-operations/src/routes/PurchaseOrders.tsx": {
     "spacing": 2

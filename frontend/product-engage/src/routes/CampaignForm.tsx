@@ -15,7 +15,7 @@ import { failureMessage } from "@/lib/errors";
 import { failureText, partialNotice } from "@/lib/refs";
 import type { Refs, ResolvedLists } from "@/lib/refs";
 import type { GateField } from "@/lib/sendGate";
-import { Button, Card, InlineAlert, RadioGroup, Select, TextArea, TextField } from "@/ui";
+import { Button, Card, FormSection, InlineAlert, RadioGroup, Select, TextArea, TextField } from "@/ui";
 import type { SelectOption } from "@/ui";
 import { CampaignPreview } from "./CampaignPreview";
 import { TestSendDialog } from "./TestSendDialog";
@@ -374,6 +374,7 @@ export function CampaignForm({
             void submit();
           }}
         >
+          <FormSection title="Campaign details" headingLevel={3} columns={1}>
           <TextField
             label="Campaign name"
             value={values.name}
@@ -381,6 +382,7 @@ export function CampaignForm({
             placeholder="October delivery network update"
             helper="For you and your team — recipients never see it."
             maxLength={NAME_MAX}
+            required
             readOnly={locked}
             {...(errors.name !== undefined ? { error: errors.name } : {})}
           />
@@ -404,6 +406,7 @@ export function CampaignForm({
                   : `Only senders on verified domains are offered. A sender must have passed its test send before a campaign can go out as it.${sendersNotice === null ? "" : ` ${sendersNotice}`}`
               }
               disabled={locked}
+              required
               {...(errors.senderId !== undefined ? { error: errors.senderId } : {})}
             />
             {chosen !== null ? (
@@ -461,6 +464,7 @@ export function CampaignForm({
                     : `The number is how many contacts are on it now.${listsNotice === null ? "" : ` ${listsNotice} The list this campaign already uses is always included.`}`
                 }
                 disabled={locked || listOptions.length === 0}
+                required
                 {...(errors.listId !== undefined ? { error: errors.listId } : {})}
               />
             </div>
@@ -501,6 +505,7 @@ export function CampaignForm({
             readOnly={locked}
             {...(errors.textBody !== undefined ? { error: errors.textBody } : {})}
           />
+          </FormSection>
 
           <div className="flex flex-wrap items-center gap-3">
             <Can permission="engage.campaign.campaign.write" scope="ORG">

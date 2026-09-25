@@ -13,6 +13,7 @@ export {
   Dialog,
   EmptyState,
   ErrorState,
+  FormSection,
   InlineAlert,
   PageHeader,
   Pagination,
