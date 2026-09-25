@@ -8,6 +8,13 @@
     "core.org.organization.read:ORG",
     "core.org.unit.read:ORG",
     "core.org.location.read:ORG",
-    "core.identity.domain.read:ORG"
+    "core.identity.domain.read:ORG",
+    "core.product.activation.write:ORG",
+    "finance.reports.summary.read:ORG",
+    "finance.billing.invoice.read:ORG",
+    "finance.billing.customer.read:ORG",
+    "crm.book.company.read:ORG",
+    "crm.pipeline.activity.read:ORG",
+    "projects.board.task.read:ORG"
   ]
 }

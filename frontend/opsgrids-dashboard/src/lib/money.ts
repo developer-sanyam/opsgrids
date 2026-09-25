@@ -14,6 +14,21 @@ export function formatMoney(amountMinor: number, currency: string, locale = "en-
   }).format(major);
 }
 
+/**
+ * The same figure with no minor-unit digits — `₹12,48,320`, not `₹12,48,320.00` — for a KPI or a
+ * dense list where the paise are noise. Never used for a figure that reconciles to a ledger.
+ */
+export function formatMoneyWhole(amountMinor: number, currency: string, locale = "en-IN"): string {
+  const digits = minorUnitDigits(currency, locale);
+  const major = amountMinor / 10 ** digits;
+  return new Intl.NumberFormat(locale, {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 0,
+    minimumFractionDigits: 0,
+  }).format(major);
+}
+
 function minorUnitDigits(currency: string, locale: string): number {
   try {
     return (

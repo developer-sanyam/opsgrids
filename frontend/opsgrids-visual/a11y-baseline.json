@@ -55,6 +55,18 @@
   "page/crm/overview|light|768": {
     "region": 1
   },
+  "page/dashboard/home|dark|375": {
+    "region": 1
+  },
+  "page/dashboard/home|dark|768": {
+    "region": 1
+  },
+  "page/dashboard/home|light|375": {
+    "region": 1
+  },
+  "page/dashboard/home|light|768": {
+    "region": 1
+  },
   "page/dashboard/marketplace|dark|1280": {
     "color-contrast": 2
   },
