@@ -198,17 +198,32 @@ def apply_org_identity(
     Any of `name`/`slug`/`country`/`created_at` being `None` (an update that did not touch that
     field, or a backfill row that genuinely lacks one) leaves the corresponding current value
     alone rather than blanking it — a PATCH cannot null a field account-service's own way, and
-    neither can this. `created_at` is set once and, being a creation timestamp, never arrives a
-    second time with a different value in practice — it rides the same guard as the others only
-    so a stale replay can never touch anything, including a field it does carry.
+    neither can this.
+
+    **A gap is not stale.** The ordering guard exists so an *old* value cannot overwrite a newer
+    one, but `country` and `created_at` were added to the projection after rows were already
+    synced: for those rows the current value is not old, it is absent, and there is nothing for a
+    snapshot to resurrect. So a stale source still fills a `country`/`created_at` the projection
+    has no value for, and never overwrites one it has — which is what makes re-running the
+    backfill after this column landed actually fill it (a re-run's `updated_at` ties the one
+    already stored, and a tie is stale). `applied` stays `False` in that case: `name`/`slug` and
+    `identity_synced_at` are untouched, and the caller tells a gap fill from a no-op by comparing
+    the returned values to what it holds.
 
     Returns ``(applied, name, slug, country, created_at)`` — the fields to write, or the
-    existing ones unchanged when not applied. `created_at` travels as the ISO string the caller
-    gave it; parsing into a `datetime` for the column is the caller's job (`services.py`), same
-    as every other timestamp this module treats as an opaque ordering key.
+    existing ones unchanged when not applied (bar the gap fill above). `created_at` travels as
+    the ISO string the caller gave it; parsing into a `datetime` for the column is the caller's
+    job (`services.py`), same as every other timestamp this module treats as an opaque ordering
+    key.
     """
     if _is_stale({"occurred_at": current_synced_at}, occurred_at):
-        return False, current_name, current_slug, current_country, current_created_at
+        return (
+            False,
+            current_name,
+            current_slug,
+            current_country if current_country is not None else country,
+            current_created_at if current_created_at is not None else created_at,
+        )
     return (
         True,
         name if name is not None else current_name,

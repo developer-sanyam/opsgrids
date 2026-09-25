@@ -254,6 +254,60 @@ class TestOrgIdentity:
         assert created_at == _at(-100)
 
 
+class TestAGapIsNotStale:
+    """A stale source must not overwrite, but may fill what the projection has no value for."""
+
+    def test_a_stale_source_fills_a_missing_country_and_created_at(self) -> None:
+        applied, name, slug, country, created_at = apply_org_identity(
+            current_name="Northwind Metals",
+            current_slug="northwind-metals",
+            current_country=None,
+            current_created_at=None,
+            current_synced_at=_at(10),
+            name="Northwind Metals",
+            slug="northwind-metals",
+            country="IN",
+            created_at=_at(-100),
+            occurred_at=_at(10),  # a tie with what is stored: stale
+        )
+        assert applied is False, "name/slug and the sync stamp are not touched"
+        assert (name, slug) == ("Northwind Metals", "northwind-metals")
+        assert country == "IN"
+        assert created_at == _at(-100)
+
+    def test_a_stale_source_never_overwrites_a_value_the_projection_has(self) -> None:
+        applied, _name, _slug, country, created_at = apply_org_identity(
+            current_name="Northwind Metals",
+            current_slug="northwind-metals",
+            current_country="IN",
+            current_created_at=_at(-100),
+            current_synced_at=_at(10),
+            name="Old Name",
+            slug="old-slug",
+            country="US",
+            created_at=_at(-5),
+            occurred_at=_at(5),
+        )
+        assert applied is False
+        assert country == "IN"
+        assert created_at == _at(-100)
+
+    def test_a_stale_source_that_has_nothing_to_offer_fills_nothing(self) -> None:
+        _applied, _name, _slug, country, created_at = apply_org_identity(
+            current_name="Northwind Metals",
+            current_slug="northwind-metals",
+            current_country=None,
+            current_created_at=None,
+            current_synced_at=_at(10),
+            name=None,
+            slug=None,
+            country=None,
+            created_at=None,
+            occurred_at=_at(5),
+        )
+        assert country is None and created_at is None
+
+
 class TestMonthSequence:
     def test_the_last_n_months_end_with_the_given_month_oldest_first(self) -> None:
         keys = month_sequence(end=datetime(2026, 3, 15, tzinfo=UTC), months=4)

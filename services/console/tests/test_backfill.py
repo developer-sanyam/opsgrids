@@ -174,6 +174,63 @@ class TestBackfillCreatesProjections:
         assert states[0].country == "IN"
         assert states[0].org_created_at == datetime(2025, 1, 1, tzinfo=UTC)
 
+    async def test_a_rerun_fills_country_and_created_at_on_a_row_synced_before_they_existed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        engine_ready: None,
+        directory_session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        """The production case this whole slice hangs on: the first backfill ran when the
+        projection had no `country`/`org_created_at`, so every row is already stamped with
+        account's `updated_at`. Re-running after account exposes them reads that same
+        `updated_at` — a tie, which the ordering guard calls stale — and must still fill the gap.
+        """
+        t0 = datetime.now(UTC)
+        old_shape = {**_org_row(org_id, updated_at=t0)}
+        del old_shape["country"], old_shape["created_at"]
+        first = await _run(monkeypatch, orgs=[old_shape], subs_by_org={})
+        assert first.created == 1
+
+        directory_session.expire_all()
+        before = (await selectors.all_org_states(directory_session))[0]
+        assert before.country is None and before.org_created_at is None
+
+        second = await _run(monkeypatch, orgs=[_org_row(org_id, updated_at=t0)], subs_by_org={})
+        assert second.updated == 1, "filling the gap is a change, and is reported as one"
+        assert second.unchanged == 0
+
+        directory_session.expire_all()
+        after = (await selectors.all_org_states(directory_session))[0]
+        assert after.country == "IN"
+        assert after.org_created_at == datetime(2025, 1, 1, tzinfo=UTC)
+        assert after.name == "Northwind Metals" and after.slug == "northwind-metals"
+
+        third = await _run(monkeypatch, orgs=[_org_row(org_id, updated_at=t0)], subs_by_org={})
+        assert third.unchanged == 1, "and once filled, the next run is a no-op again"
+
+    async def test_a_stale_snapshot_never_overwrites_a_country_the_projection_already_has(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        engine_ready: None,
+        directory_session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        t0 = datetime.now(UTC)
+        await _run(
+            monkeypatch, orgs=[_org_row(org_id, country="IN", updated_at=t0)], subs_by_org={}
+        )
+
+        report = await _run(
+            monkeypatch,
+            orgs=[_org_row(org_id, country="US", updated_at=t0)],  # same updated_at: a tie
+            subs_by_org={},
+        )
+        assert report.unchanged == 1
+
+        directory_session.expire_all()
+        assert (await selectors.all_org_states(directory_session))[0].country == "IN"
+
     async def test_an_organization_with_no_subscriptions_still_gets_its_identity(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -272,17 +329,20 @@ class TestBackfillNeverOverwritesNewerState:
 
         # The backfill discovers account's row with an *older* `updated_at` than the live rename
         # above — e.g. a discovery read that raced the rename, or a retried run against a stale
-        # cache. It must not win.
+        # cache. It must not win — for the name. The live event carried no country or creation
+        # time (a rename never does), so those are gaps, and a stale snapshot may still fill them:
+        # that is the one thing it reports as an update.
         report = await _run(
             monkeypatch,
             orgs=[_org_row(org_id, name="Stale Name", updated_at=t0)],
             subs_by_org={},
         )
-        assert report.updated == 0
+        assert report.updated == 1, "only the gap fill — the name is not written"
 
         directory_session.expire_all()
         states = await selectors.all_org_states(directory_session)
         assert states[0].name == "Renamed By A Live Event"
+        assert states[0].country == "IN"
 
     async def test_it_does_not_overwrite_a_subscription_state_a_live_event_already_set(
         self,
