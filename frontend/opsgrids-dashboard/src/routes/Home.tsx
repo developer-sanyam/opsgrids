@@ -22,6 +22,7 @@ import { useNavigate } from "react-router-dom";
 
 import { getPlatformHost, problemMessage, scopeFor, useAsync, useAuth, useCan, usePermissions } from "@opsgrids/client";
 import {
+  AlertTriangleIcon,
   Button,
   CalendarIcon,
   Card,
@@ -32,9 +33,10 @@ import {
   EmptyState,
   ErrorState,
   formatRelative,
+  HeroMetricCard,
   isStatusWord,
-  KpiCard,
   LineChart,
+  MetricCard,
   PageHeader,
   ReceiptIcon,
   SectionHeader,
@@ -67,7 +69,7 @@ import type {
   Page,
   ProjectTask,
 } from "@/api/types";
-import { formatDate, formatMoneyWhole } from "@/lib/money";
+import { formatDate, formatMoneyKpi, formatMoneyWhole } from "@/lib/money";
 import { resolveAccess } from "@/ui/home/access";
 import type { AccessState } from "@/ui/home/access";
 import { ModulesGrid } from "@/ui/home/ModulesGrid";
@@ -178,7 +180,7 @@ async function loadInvoicesGroup(): Promise<InvoicesGroup> {
   return { recent: recentPage.items, statusCounts, total };
 }
 
-/** The KPI row's own loading shape — sized like `KpiCard` so nothing shifts once data lands. */
+/** The KPI row's own loading shape — sized like `MetricCard` so nothing shifts once data lands. */
 function KpiSkeleton({ label }: { label: string }) {
   return (
     <Card className="flex flex-col gap-4 p-4 sm:p-6" role="status" aria-busy="true">
@@ -187,6 +189,23 @@ function KpiSkeleton({ label }: { label: string }) {
       <Skeleton className="h-3 w-24 rounded-full" />
       <Skeleton className="h-8 w-28 rounded-tile" />
     </Card>
+  );
+}
+
+/** The phone hero's own loading shape (mock-2's Total Revenue card) — wider and shorter than a
+ *  grid tile's skeleton, so the hero doesn't jump once its real figure and bars land. */
+function HeroSkeleton() {
+  return (
+    <div className="flex items-center gap-4 rounded-card bg-accent-soft p-4 shadow-card sm:p-6" role="status" aria-busy="true">
+      <span className="sr-only">Loading total revenue</span>
+      <Skeleton className="size-12 shrink-0 rounded-full" />
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <Skeleton className="h-3 w-24 rounded-full" />
+        <Skeleton className="h-7 w-32 rounded-tile" />
+        <Skeleton className="h-3 w-28 rounded-full" />
+      </div>
+      <Skeleton className="h-10 w-16 shrink-0 rounded-tile" />
+    </div>
   );
 }
 
@@ -199,20 +218,37 @@ interface KpiSlotProps {
   canActivate: boolean;
   onStartTrial: () => void;
   onRetry: () => void;
+  /** Overrides the default grid-tile skeleton — the hero uses its own, wider shape. */
+  skeleton?: ReactNode;
+  /** The gated notice's own size. Default `true` (a grid tile); the hero passes `false` for the
+   *  full `EmptyState` its own full-width row has room for. */
+  compact?: boolean;
   children: ReactNode;
 }
 
 /**
  * The one branch every KPI card shares: unknown grants, plan-gated, no grant, a failed fetch, or
- * the real value. `KpiCard` itself only ever draws the last of these — this is what decides which
- * one it gets to.
+ * the real value. `MetricCard`/`HeroMetricCard` themselves only ever draw the last of these — this
+ * is what decides which one they get to.
  */
-function KpiSlot({ access, state, label, product, capability, canActivate, onStartTrial, onRetry, children }: KpiSlotProps) {
-  if (access === null || state === "loading") return <KpiSkeleton label={label} />;
+function KpiSlot({
+  access,
+  state,
+  label,
+  product,
+  capability,
+  canActivate,
+  onStartTrial,
+  onRetry,
+  skeleton,
+  compact = true,
+  children,
+}: KpiSlotProps) {
+  if (access === null || state === "loading") return skeleton ?? <KpiSkeleton label={label} />;
   if (access === "plan_gated") {
-    return <PlanGatedNotice product={product} canActivate={canActivate} onStartTrial={onStartTrial} compact />;
+    return <PlanGatedNotice product={product} canActivate={canActivate} onStartTrial={onStartTrial} compact={compact} />;
   }
-  if (access === "no_access") return <NoAccessNotice capability={capability} compact />;
+  if (access === "no_access") return <NoAccessNotice capability={capability} compact={compact} />;
   if (state === "error") {
     return (
       <Card className="flex flex-col justify-center gap-3 p-4 sm:p-6">
@@ -283,7 +319,7 @@ export function HomePage() {
   const goToProducts = () => navigate("/products");
 
   const firstName = firstNameOf(user?.full_name ?? "");
-  const greeting = `${greetingFor(new Date().getHours())}, ${firstName} 👋`;
+  const greetingWord = greetingFor(new Date().getHours());
 
   const customerName = (id: string): string =>
     financeCustomerNames.data?.items.find((row) => row.customer.id === id)?.customer.name ?? "Unknown customer";
@@ -320,6 +356,24 @@ export function HomePage() {
     },
   ];
 
+  /** The phone's Recent Invoices row: number and customer on the left, amount and status on the
+   *  right — a compact list row, never the label/value fields `mobileCard="auto"` would build
+   *  from the same columns. */
+  function invoiceRow(row: FinanceInvoiceSummary) {
+    return (
+      <div className="flex items-center justify-between gap-3 rounded-card bg-surface p-4 shadow-card">
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="truncate text-sm font-semibold text-ink">{row.number}</span>
+          <span className="truncate text-xs text-muted">{customerName(row.customer_id)}</span>
+        </div>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <span className="tnum text-sm font-semibold text-ink">{formatMoneyWhole(row.total_minor, row.currency)}</span>
+          {isStatusWord(row.status) ? <StatusBadge status={row.status} /> : <StatusBadge tone="neutral" label={row.status} />}
+        </div>
+      </div>
+    );
+  }
+
   const pendingTasks =
     tasksAccess === "ready" && tasks.status === "success" && tasks.data
       ? tasks.data.items.filter((task) => task.stage !== "done")
@@ -352,12 +406,27 @@ export function HomePage() {
 
   const history = overview.data?.revenue_history[0] ?? null;
   const months = history?.months ?? [];
+  // The hero's real trailing months (mock-2's mini bars) — never a decorative series.
+  const revenueBars = months.slice(-6).map((point) => point.revenue_minor);
+  const overdueInvoices =
+    invoicesAccess === "ready" && invoices.status === "success" && invoices.data ? invoices.data.statusCounts.overdue : 0;
+
+  const customersCaption =
+    scopeFor(grants ?? [], "crm.book.company.read") === "ORG"
+      ? "All companies marked as customers"
+      : "Your companies marked as customers";
 
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title={greeting}
+        title={
+          <>
+            <span className="block sm:inline">{greetingWord},</span>{" "}
+            <span className="block sm:inline">{firstName} 👋</span>
+          </>
+        }
         description="Here's what's happening with your business today."
+        descriptionClassName="hidden sm:block"
         actions={
           <span className="inline-flex h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold text-ink-soft shadow-card">
             <CalendarIcon className="size-4 text-muted" aria-hidden />
@@ -366,11 +435,123 @@ export function HomePage() {
         }
       />
 
-      {/* KPI row — the mockup's four cards, in its order. Total Revenue spans both mobile
-          columns as the phone hero (mock-2, mock-5); from 768px it takes one of four equal
-          columns like every other card. */}
-      <section aria-label="Key metrics" className="grid grid-cols-2 gap-4 md:grid-cols-4">
-        <div className="col-span-2 md:col-span-1">
+      {/* KPI row. Below 768px: the hero Total Revenue card (mock-2, mock-5) and a 2×2 grid of
+          Invoices, Customers, Pending Tasks and Overdue Invoices. From 768px: the mockup's four
+          equal columns, Total Revenue among them like every other card. */}
+      {narrow ? (
+        <section aria-label="Key metrics" className="flex flex-col gap-4">
+          <KpiSlot
+            access={revenueAccess}
+            state={overview.status === "success" ? "ready" : overview.status}
+            label="Total Revenue"
+            product="Finance"
+            capability="revenue"
+            canActivate={canActivateProducts}
+            onStartTrial={goToProducts}
+            onRetry={overview.reload}
+            skeleton={<HeroSkeleton />}
+            compact={false}
+          >
+            {overview.status === "success" ? (
+              <HeroMetricCard
+                label="Total Revenue"
+                value={history ? formatMoneyKpi(history.revenue_current_minor, history.currency) : "0"}
+                deltaPct={history?.revenue_delta_pct ?? undefined}
+                caption={history?.revenue_delta_pct != null ? "from last month" : "This month"}
+                icon={<TrendingUpIcon className="size-5" />}
+                bars={revenueBars.length > 1 ? revenueBars : undefined}
+              />
+            ) : null}
+          </KpiSlot>
+
+          <div className="grid grid-cols-2 gap-4">
+            <KpiSlot
+              access={invoicesAccess}
+              state={invoices.status === "success" ? "ready" : invoices.status}
+              label="Total Invoices"
+              product="Finance"
+              capability="invoices"
+              canActivate={canActivateProducts}
+              onStartTrial={goToProducts}
+              onRetry={invoices.reload}
+            >
+              {invoices.status === "success" && invoices.data ? (
+                <MetricCard
+                  size="compact"
+                  label="Invoices"
+                  value={COUNT.format(invoices.data.total)}
+                  icon={<ReceiptIcon className="size-4" />}
+                  tone="info"
+                />
+              ) : null}
+            </KpiSlot>
+
+            <KpiSlot
+              access={customersAccess}
+              state={customersCount.status === "success" ? "ready" : customersCount.status}
+              label="Total Customers"
+              product="CRM"
+              capability="customers"
+              canActivate={canActivateProducts}
+              onStartTrial={goToProducts}
+              onRetry={customersCount.reload}
+            >
+              {customersCount.status === "success" && customersCount.data ? (
+                <MetricCard
+                  size="compact"
+                  label="Customers"
+                  value={COUNT.format(customersCount.data.total)}
+                  icon={<UsersIcon className="size-4" />}
+                  tone="accent"
+                />
+              ) : null}
+            </KpiSlot>
+
+            <KpiSlot
+              access={tasksAccess}
+              state={tasks.status === "success" ? "ready" : tasks.status}
+              label="Pending Tasks"
+              product="Projects"
+              capability="tasks"
+              canActivate={canActivateProducts}
+              onStartTrial={goToProducts}
+              onRetry={tasks.reload}
+            >
+              {tasks.status === "success" ? (
+                <MetricCard
+                  size="compact"
+                  label="Pending Tasks"
+                  value={COUNT.format(pendingTasks.length)}
+                  icon={<ClipboardCheckIcon className="size-4" />}
+                  tone="warning"
+                />
+              ) : null}
+            </KpiSlot>
+
+            <KpiSlot
+              access={invoicesAccess}
+              state={invoices.status === "success" ? "ready" : invoices.status}
+              label="Overdue Invoices"
+              product="Finance"
+              capability="invoices"
+              canActivate={canActivateProducts}
+              onStartTrial={goToProducts}
+              onRetry={invoices.reload}
+            >
+              {invoices.status === "success" && invoices.data ? (
+                <MetricCard
+                  size="compact"
+                  label="Overdue Invoices"
+                  value={COUNT.format(overdueInvoices)}
+                  icon={<AlertTriangleIcon className="size-4" />}
+                  tone="danger"
+                />
+              ) : null}
+            </KpiSlot>
+          </div>
+        </section>
+      ) : (
+        <section aria-label="Key metrics" className="grid grid-cols-4 gap-4">
           <KpiSlot
             access={revenueAccess}
             state={overview.status === "success" ? "ready" : overview.status}
@@ -382,67 +563,59 @@ export function HomePage() {
             onRetry={overview.reload}
           >
             {overview.status === "success" ? (
-              <KpiCard
+              <MetricCard
                 label="Total Revenue"
-                value={history ? formatMoneyWhole(history.revenue_current_minor, history.currency) : "0"}
-                deltaPct={history?.revenue_delta_pct ?? undefined}
-                caption={history?.revenue_delta_pct != null ? "vs last month" : "This month"}
+                value={history ? formatMoneyKpi(history.revenue_current_minor, history.currency) : "0"}
+                trend={history?.revenue_delta_pct != null ? { value: history.revenue_delta_pct, period: "vs last month" } : undefined}
+                caption={history?.revenue_delta_pct != null ? undefined : "This month"}
                 icon={<TrendingUpIcon className="size-5" />}
                 tone="positive"
               />
             ) : null}
           </KpiSlot>
-        </div>
 
-        <KpiSlot
-          access={invoicesAccess}
-          state={invoices.status === "success" ? "ready" : invoices.status}
-          label="Total Invoices"
-          product="Finance"
-          capability="invoices"
-          canActivate={canActivateProducts}
-          onStartTrial={goToProducts}
-          onRetry={invoices.reload}
-        >
-          {invoices.status === "success" && invoices.data ? (
-            <KpiCard
-              label="Total Invoices"
-              value={COUNT.format(invoices.data.total)}
-              caption="All invoices issued"
-              icon={<ReceiptIcon className="size-5" />}
-              tone="info"
-            />
-          ) : null}
-        </KpiSlot>
+          <KpiSlot
+            access={invoicesAccess}
+            state={invoices.status === "success" ? "ready" : invoices.status}
+            label="Total Invoices"
+            product="Finance"
+            capability="invoices"
+            canActivate={canActivateProducts}
+            onStartTrial={goToProducts}
+            onRetry={invoices.reload}
+          >
+            {invoices.status === "success" && invoices.data ? (
+              <MetricCard
+                label="Total Invoices"
+                value={COUNT.format(invoices.data.total)}
+                caption="All invoices issued"
+                icon={<ReceiptIcon className="size-5" />}
+                tone="info"
+              />
+            ) : null}
+          </KpiSlot>
 
-        <KpiSlot
-          access={customersAccess}
-          state={customersCount.status === "success" ? "ready" : customersCount.status}
-          label="Total Customers"
-          product="CRM"
-          capability="customers"
-          canActivate={canActivateProducts}
-          onStartTrial={goToProducts}
-          onRetry={customersCount.reload}
-        >
-          {customersCount.status === "success" && customersCount.data ? (
-            <KpiCard
-              label="Total Customers"
-              value={COUNT.format(customersCount.data.total)}
-              caption={
-                scopeFor(grants ?? [], "crm.book.company.read") === "ORG"
-                  ? "All companies marked as customers"
-                  : "Your companies marked as customers"
-              }
-              icon={<UsersIcon className="size-5" />}
-              tone="accent"
-            />
-          ) : null}
-        </KpiSlot>
+          <KpiSlot
+            access={customersAccess}
+            state={customersCount.status === "success" ? "ready" : customersCount.status}
+            label="Total Customers"
+            product="CRM"
+            capability="customers"
+            canActivate={canActivateProducts}
+            onStartTrial={goToProducts}
+            onRetry={customersCount.reload}
+          >
+            {customersCount.status === "success" && customersCount.data ? (
+              <MetricCard
+                label="Total Customers"
+                value={COUNT.format(customersCount.data.total)}
+                caption={customersCaption}
+                icon={<UsersIcon className="size-5" />}
+                tone="accent"
+              />
+            ) : null}
+          </KpiSlot>
 
-        {/* The odd one out of the three plain cards spans both mobile columns too — a lone
-            half-width card at the end of the grid reads as a mistake, not a hierarchy. */}
-        <div className="col-span-2 md:col-span-1">
           <KpiSlot
             access={tasksAccess}
             state={tasks.status === "success" ? "ready" : tasks.status}
@@ -454,7 +627,7 @@ export function HomePage() {
             onRetry={tasks.reload}
           >
             {tasks.status === "success" ? (
-              <KpiCard
+              <MetricCard
                 label="Pending Tasks"
                 value={COUNT.format(pendingTasks.length)}
                 caption="Assigned to you"
@@ -463,8 +636,8 @@ export function HomePage() {
               />
             ) : null}
           </KpiSlot>
-        </div>
-      </section>
+        </section>
+      )}
 
       <ModulesGrid />
 
@@ -576,7 +749,7 @@ export function HomePage() {
             emptyState={
               <EmptyState title="No invoices yet" description="Invoices you issue in Finance appear here." />
             }
-            mobileCard="auto"
+            mobileCard={invoiceRow}
           />
         </Card>
 

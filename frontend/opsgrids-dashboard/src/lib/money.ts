@@ -29,6 +29,32 @@ export function formatMoneyWhole(amountMinor: number, currency: string, locale =
   }).format(major);
 }
 
+/** The same figure in short notation — `₹13.2L`, `₹97K` — for a KPI card too narrow for the
+ *  grouped form. Never used where the exact figure is what the screen is for. */
+export function formatMoneyCompact(amountMinor: number, currency: string, locale = "en-IN"): string {
+  const digits = minorUnitDigits(currency, locale);
+  const major = amountMinor / 10 ** digits;
+  return new Intl.NumberFormat(locale, {
+    style: "currency",
+    currency,
+    notation: "compact",
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1,
+  }).format(major);
+}
+
+/**
+ * `formatMoneyWhole`, unless the grouped figure is long enough to risk clipping a KPI card at
+ * phone width, in which case it compacts instead — the containment rule every dashboard card
+ * follows (owner brief: "long numbers switch to compact money, never overflow"). The mockups'
+ * own demo figures (`₹12,48,320`) are short enough to stay grouped; this only ever changes the
+ * real, larger figures a growing business produces.
+ */
+export function formatMoneyKpi(amountMinor: number, currency: string, locale = "en-IN"): string {
+  const whole = formatMoneyWhole(amountMinor, currency, locale);
+  return whole.length > 12 ? formatMoneyCompact(amountMinor, currency, locale) : whole;
+}
+
 function minorUnitDigits(currency: string, locale: string): number {
   try {
     return (

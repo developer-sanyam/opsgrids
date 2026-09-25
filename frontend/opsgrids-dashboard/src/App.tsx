@@ -1,7 +1,7 @@
 import { Navigate, useLocation } from "react-router-dom";
 
-import { useAuth, useCurrentUser, usePermissions, usePlatformModules } from "@opsgrids/client";
-import { AppShell as Shell, InlineAlert, moduleIcon } from "@opsgrids/ui";
+import { getPlatformHost, useAuth, useCan, useCurrentUser, usePermissions, usePlatformModules } from "@opsgrids/client";
+import { AppShell as Shell, BoxIcon, InlineAlert, moduleIcon, ReceiptIcon } from "@opsgrids/ui";
 
 import { LogoMark, useNavGroups } from "./ui";
 
@@ -19,18 +19,34 @@ import { LogoMark, useNavGroups } from "./ui";
  * (`useNavGroups`) already covers what `useAdminLinks` would only repeat a narrower version of.
  */
 export function AppShell() {
-  const { status, error, reloadGrants } = usePermissions();
+  const { status, error, reloadGrants, entitlements } = usePermissions();
   const { user, logout } = useAuth();
   const currentUser = useCurrentUser();
   const location = useLocation();
   const { groups, pinned } = useNavGroups();
   const modules = usePlatformModules();
+  const canIssueInvoice = useCan("finance.billing.invoice.issue", "ORG");
 
   if (user?.must_change_password === true && location.pathname !== "/account/security") {
     return <Navigate to="/account/security" replace state={{ from: location.pathname }} />;
   }
 
   if (!currentUser) return null;
+
+  // The bottom nav's raised "+" (mock-2): today's one real, permission-gated shortcut — more join
+  // it here as the products that want one grow their own create flow, never a dead entry for a
+  // product this organisation hasn't started or this caller cannot write to.
+  const quickActions =
+    (entitlements?.includes("finance") ?? false) && canIssueInvoice
+      ? [
+          {
+            key: "new-invoice",
+            label: "New Invoice",
+            icon: ReceiptIcon,
+            onSelect: () => window.location.assign(`${getPlatformHost("finance")}/invoices/new`),
+          },
+        ]
+      : [];
 
   return (
     <Shell
@@ -42,6 +58,8 @@ export function AppShell() {
       onSignOut={() => void logout()}
       search={{ placeholder: "Search products", fallback: { label: "Search products for", to: "/" } }}
       helpHref="/help"
+      quickActions={quickActions}
+      bottomNavExtra={[{ label: "Products", icon: BoxIcon, to: "/products" }]}
       banner={
         <>
           {user?.must_change_password === true ? (

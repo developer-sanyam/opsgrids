@@ -18,6 +18,7 @@ import {
   BoxIcon,
   BriefcaseIcon,
   GlobeIcon,
+  ICON_TILE,
   LifeBuoyIcon,
   MegaphoneIcon,
   NetworkIcon,
@@ -25,7 +26,7 @@ import {
   ShieldIcon,
   UsersIcon,
 } from "@opsgrids/ui";
-import type { IconProps } from "@opsgrids/ui";
+import type { IconProps, Tone } from "@opsgrids/ui";
 
 /** `PlatformProduct.iconKey` (`opsgrids-client/src/platform/catalogue.ts`) → this design system's
  * icon. `storefront`'s `"store"` key has no dedicated icon yet, so it falls back to `BoxIcon`. */
@@ -40,6 +41,23 @@ const ICONS: Record<string, ComponentType<IconProps>> = {
   shield: ShieldIcon,
   megaphone: MegaphoneIcon,
   activity: ActivityIcon,
+};
+
+/** Each module its own soft tint (mock-2, mock-4) rather than one colour repeated across every
+ *  tile — the six semantic families are a closed set, so two products can share one, but never a
+ *  seventh invented colour. */
+const TONES: Record<string, Tone> = {
+  crm: "info",
+  hrms: "accent",
+  projects: "positive",
+  finance: "warning",
+  operations: "cyan",
+  support: "danger",
+  marketing: "cyan",
+  itsm: "danger",
+  storefront: "warning",
+  engage: "accent",
+  pulseboard: "positive",
 };
 
 /** Nothing to launch (no product both activated and granted): the section does not render at
@@ -59,13 +77,14 @@ export function ModulesGrid() {
       <ul className="grid list-none grid-cols-3 gap-3 p-0">
         {modules.map((module) => {
           const Icon = ICONS[module.iconKey] ?? BoxIcon;
+          const tone = TONES[module.key] ?? "accent";
           return (
             <li key={module.key}>
               <a
                 href={module.href}
                 className="flex flex-col items-center gap-2 rounded-card bg-surface p-4 text-center shadow-card transition-colors hover:bg-ground focus-visible:bg-ground"
               >
-                <span aria-hidden className="grid size-10 place-items-center rounded-tile bg-accent-soft text-accent-ink">
+                <span aria-hidden className={`grid size-10 place-items-center rounded-tile ${ICON_TILE[tone]}`}>
                   <Icon className="size-5" />
                 </span>
                 <span className="text-xs font-semibold text-ink-soft">{module.label}</span>
