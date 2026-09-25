@@ -226,6 +226,15 @@
   "story/actions-rowactions--destructive|light|768": {
     "color-contrast": 1
   },
+  "story/charts-chartcard--sample|light|1280": {
+    "color-contrast": 1
+  },
+  "story/charts-chartcard--sample|light|375": {
+    "color-contrast": 1
+  },
+  "story/charts-chartcard--sample|light|768": {
+    "color-contrast": 1
+  },
   "story/data-display-avatar--default|dark|1280": {
     "color-contrast": 1
   },
@@ -270,6 +279,15 @@
   },
   "story/data-display-avatar--tints|light|768": {
     "color-contrast": 3
+  },
+  "story/data-display-bulkactionbar--with-destructive|dark|1280": {
+    "color-contrast": 1
+  },
+  "story/data-display-bulkactionbar--with-destructive|dark|375": {
+    "color-contrast": 1
+  },
+  "story/data-display-bulkactionbar--with-destructive|dark|768": {
+    "color-contrast": 1
   },
   "story/data-display-datatable--bulk-selection|dark|1280": {
     "color-contrast": 7
@@ -334,6 +352,24 @@
   "story/data-display-datatable--empty|dark|768": {
     "color-contrast": 2
   },
+  "story/data-display-datatable--loading|dark|1280": {
+    "color-contrast": 6
+  },
+  "story/data-display-datatable--loading|dark|375": {
+    "color-contrast": 5
+  },
+  "story/data-display-datatable--loading|dark|768": {
+    "color-contrast": 5
+  },
+  "story/data-display-datatable--loading|light|1280": {
+    "color-contrast": 6
+  },
+  "story/data-display-datatable--loading|light|375": {
+    "color-contrast": 5
+  },
+  "story/data-display-datatable--loading|light|768": {
+    "color-contrast": 5
+  },
   "story/data-display-datatable--long-text|dark|1280": {
     "color-contrast": 5
   },
@@ -352,6 +388,42 @@
   "story/data-display-datatable--long-text|light|768": {
     "color-contrast": 7
   },
+  "story/data-display-datatable--mobile-cards-custom|dark|1280": {
+    "color-contrast": 6
+  },
+  "story/data-display-datatable--mobile-cards-custom|dark|768": {
+    "color-contrast": 5
+  },
+  "story/data-display-datatable--mobile-cards-custom|light|1280": {
+    "color-contrast": 6
+  },
+  "story/data-display-datatable--mobile-cards-custom|light|768": {
+    "color-contrast": 5
+  },
+  "story/data-display-datatable--mobile-cards-loading|dark|1280": {
+    "color-contrast": 6
+  },
+  "story/data-display-datatable--mobile-cards-loading|dark|768": {
+    "color-contrast": 5
+  },
+  "story/data-display-datatable--mobile-cards-loading|light|1280": {
+    "color-contrast": 6
+  },
+  "story/data-display-datatable--mobile-cards-loading|light|768": {
+    "color-contrast": 5
+  },
+  "story/data-display-datatable--mobile-cards|dark|1280": {
+    "color-contrast": 6
+  },
+  "story/data-display-datatable--mobile-cards|dark|768": {
+    "color-contrast": 5
+  },
+  "story/data-display-datatable--mobile-cards|light|1280": {
+    "color-contrast": 6
+  },
+  "story/data-display-datatable--mobile-cards|light|768": {
+    "color-contrast": 5
+  },
   "story/data-display-datatable--sorted-by-value|dark|1280": {
     "color-contrast": 5
   },
@@ -369,6 +441,42 @@
   },
   "story/data-display-datatable--sorted-by-value|light|768": {
     "color-contrast": 8
+  },
+  "story/data-display-datatable--sticky-header|dark|1280": {
+    "color-contrast": 6
+  },
+  "story/data-display-datatable--sticky-header|dark|375": {
+    "color-contrast": 5
+  },
+  "story/data-display-datatable--sticky-header|dark|768": {
+    "color-contrast": 5
+  },
+  "story/data-display-datatable--sticky-header|light|1280": {
+    "color-contrast": 6
+  },
+  "story/data-display-datatable--sticky-header|light|375": {
+    "color-contrast": 5
+  },
+  "story/data-display-datatable--sticky-header|light|768": {
+    "color-contrast": 5
+  },
+  "story/data-display-datatable--with-bulk-actions|dark|1280": {
+    "color-contrast": 6
+  },
+  "story/data-display-datatable--with-bulk-actions|dark|375": {
+    "color-contrast": 3
+  },
+  "story/data-display-datatable--with-bulk-actions|dark|768": {
+    "color-contrast": 5
+  },
+  "story/data-display-datatable--with-bulk-actions|light|1280": {
+    "color-contrast": 6
+  },
+  "story/data-display-datatable--with-bulk-actions|light|375": {
+    "color-contrast": 3
+  },
+  "story/data-display-datatable--with-bulk-actions|light|768": {
+    "color-contrast": 5
   },
   "story/data-display-datatable--with-toolbar-and-actions|dark|1280": {
     "color-contrast": 7
@@ -414,6 +522,12 @@
   },
   "story/data-display-deltapill--rising|light|768": {
     "color-contrast": 1
+  },
+  "story/data-display-filterbar--phone-sheet|dark|375": {
+    "color-contrast": 3
+  },
+  "story/data-display-filterbar--phone-sheet|light|375": {
+    "color-contrast": 3
   },
   "story/data-display-kpicard--good-when-down|dark|1280": {
     "color-contrast": 1
@@ -1000,6 +1114,186 @@
   "story/forms-datetimefield--with-error|light|768": {
     "color-contrast": 2
   },
+  "story/forms-fileupload--dragging|dark|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--dragging|dark|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--dragging|dark|768": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--dragging|light|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--dragging|light|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--dragging|light|768": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--empty|dark|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--empty|dark|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--empty|dark|768": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--empty|light|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--empty|light|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--empty|light|768": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--failed|dark|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--failed|dark|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--failed|dark|768": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--failed|light|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--failed|light|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--failed|light|768": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--field-error|dark|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--field-error|dark|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--field-error|dark|768": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--field-error|light|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--field-error|light|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--field-error|light|768": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--long-file-name|dark|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--long-file-name|dark|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--long-file-name|dark|768": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--long-file-name|light|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--long-file-name|light|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--long-file-name|light|768": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--refused|dark|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--refused|dark|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--refused|dark|768": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--refused|light|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--refused|light|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--refused|light|768": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--single-file|dark|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--single-file|dark|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--single-file|dark|768": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--single-file|light|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--single-file|light|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--single-file|light|768": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--stored-files|dark|1280": {
+    "color-contrast": 2
+  },
+  "story/forms-fileupload--stored-files|dark|375": {
+    "color-contrast": 2
+  },
+  "story/forms-fileupload--stored-files|dark|768": {
+    "color-contrast": 2
+  },
+  "story/forms-fileupload--stored-files|light|1280": {
+    "color-contrast": 2
+  },
+  "story/forms-fileupload--stored-files|light|375": {
+    "color-contrast": 2
+  },
+  "story/forms-fileupload--stored-files|light|768": {
+    "color-contrast": 2
+  },
+  "story/forms-fileupload--uploaded|dark|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--uploaded|dark|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--uploaded|dark|768": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--uploaded|light|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--uploaded|light|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--uploaded|light|768": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--uploading|dark|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--uploading|dark|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--uploading|dark|768": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--uploading|light|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--uploading|light|375": {
+    "color-contrast": 1
+  },
+  "story/forms-fileupload--uploading|light|768": {
+    "color-contrast": 1
+  },
   "story/forms-formfield--label-aside|dark|1280": {
     "color-contrast": 1
   },
@@ -1036,6 +1330,24 @@
   "story/forms-formfield--optional|light|768": {
     "color-contrast": 2
   },
+  "story/forms-formfield--required|dark|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-formfield--required|dark|375": {
+    "color-contrast": 1
+  },
+  "story/forms-formfield--required|dark|768": {
+    "color-contrast": 1
+  },
+  "story/forms-formfield--required|light|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-formfield--required|light|375": {
+    "color-contrast": 1
+  },
+  "story/forms-formfield--required|light|768": {
+    "color-contrast": 1
+  },
   "story/forms-formfield--with-error|dark|1280": {
     "color-contrast": 1
   },
@@ -1071,6 +1383,78 @@
   },
   "story/forms-formfield--with-helper|light|768": {
     "color-contrast": 1
+  },
+  "story/forms-formsection--one-column|dark|1280": {
+    "color-contrast": 2
+  },
+  "story/forms-formsection--one-column|dark|375": {
+    "color-contrast": 2
+  },
+  "story/forms-formsection--one-column|dark|768": {
+    "color-contrast": 2
+  },
+  "story/forms-formsection--one-column|light|1280": {
+    "color-contrast": 2
+  },
+  "story/forms-formsection--one-column|light|375": {
+    "color-contrast": 2
+  },
+  "story/forms-formsection--one-column|light|768": {
+    "color-contrast": 2
+  },
+  "story/forms-formsection--three-columns|dark|1280": {
+    "color-contrast": 3
+  },
+  "story/forms-formsection--three-columns|dark|375": {
+    "color-contrast": 3
+  },
+  "story/forms-formsection--three-columns|dark|768": {
+    "color-contrast": 3
+  },
+  "story/forms-formsection--three-columns|light|1280": {
+    "color-contrast": 3
+  },
+  "story/forms-formsection--three-columns|light|375": {
+    "color-contrast": 3
+  },
+  "story/forms-formsection--three-columns|light|768": {
+    "color-contrast": 3
+  },
+  "story/forms-formsection--two-columns|dark|1280": {
+    "color-contrast": 6
+  },
+  "story/forms-formsection--two-columns|dark|375": {
+    "color-contrast": 6
+  },
+  "story/forms-formsection--two-columns|dark|768": {
+    "color-contrast": 6
+  },
+  "story/forms-formsection--two-columns|light|1280": {
+    "color-contrast": 6
+  },
+  "story/forms-formsection--two-columns|light|375": {
+    "color-contrast": 6
+  },
+  "story/forms-formsection--two-columns|light|768": {
+    "color-contrast": 6
+  },
+  "story/forms-formsection--with-errors|dark|1280": {
+    "color-contrast": 5
+  },
+  "story/forms-formsection--with-errors|dark|375": {
+    "color-contrast": 5
+  },
+  "story/forms-formsection--with-errors|dark|768": {
+    "color-contrast": 5
+  },
+  "story/forms-formsection--with-errors|light|1280": {
+    "color-contrast": 5
+  },
+  "story/forms-formsection--with-errors|light|375": {
+    "color-contrast": 5
+  },
+  "story/forms-formsection--with-errors|light|768": {
+    "color-contrast": 5
   },
   "story/forms-radiogroup--default|dark|1280": {
     "color-contrast": 1
@@ -1179,6 +1563,51 @@
   },
   "story/forms-select--with-error|light|768": {
     "color-contrast": 2
+  },
+  "story/forms-stepper--actions-saving|dark|1280": {
+    "button-name": 1
+  },
+  "story/forms-stepper--actions-saving|dark|375": {
+    "button-name": 1
+  },
+  "story/forms-stepper--actions-saving|dark|768": {
+    "button-name": 1
+  },
+  "story/forms-stepper--actions-saving|light|1280": {
+    "button-name": 1
+  },
+  "story/forms-stepper--actions-saving|light|375": {
+    "button-name": 1
+  },
+  "story/forms-stepper--actions-saving|light|768": {
+    "button-name": 1
+  },
+  "story/forms-stepper--actions|dark|1280": {
+    "color-contrast": 1
+  },
+  "story/forms-stepper--actions|dark|375": {
+    "color-contrast": 1
+  },
+  "story/forms-stepper--actions|dark|768": {
+    "color-contrast": 1
+  },
+  "story/forms-stepper--add-product-form|dark|1280": {
+    "color-contrast": 5
+  },
+  "story/forms-stepper--add-product-form|dark|375": {
+    "color-contrast": 5
+  },
+  "story/forms-stepper--add-product-form|dark|768": {
+    "color-contrast": 5
+  },
+  "story/forms-stepper--add-product-form|light|1280": {
+    "color-contrast": 4
+  },
+  "story/forms-stepper--add-product-form|light|375": {
+    "color-contrast": 4
+  },
+  "story/forms-stepper--add-product-form|light|768": {
+    "color-contrast": 4
   },
   "story/forms-textarea--empty-optional|dark|1280": {
     "color-contrast": 2
@@ -1722,5 +2151,59 @@
   },
   "story/overlays-formdialog--server-error|light|768": {
     "color-contrast": 7
+  },
+  "story/overlays-formdialog--unsaved-changes|dark|1280": {
+    "color-contrast": 8
+  },
+  "story/overlays-formdialog--unsaved-changes|dark|375": {
+    "color-contrast": 8
+  },
+  "story/overlays-formdialog--unsaved-changes|dark|768": {
+    "color-contrast": 8
+  },
+  "story/overlays-formdialog--unsaved-changes|light|1280": {
+    "color-contrast": 6
+  },
+  "story/overlays-formdialog--unsaved-changes|light|375": {
+    "color-contrast": 6
+  },
+  "story/overlays-formdialog--unsaved-changes|light|768": {
+    "color-contrast": 6
+  },
+  "story/overlays-unsavedchangesguard--clean|dark|1280": {
+    "color-contrast": 1
+  },
+  "story/overlays-unsavedchangesguard--clean|dark|375": {
+    "color-contrast": 1
+  },
+  "story/overlays-unsavedchangesguard--clean|dark|768": {
+    "color-contrast": 1
+  },
+  "story/overlays-unsavedchangesguard--clean|light|1280": {
+    "color-contrast": 1
+  },
+  "story/overlays-unsavedchangesguard--clean|light|375": {
+    "color-contrast": 1
+  },
+  "story/overlays-unsavedchangesguard--clean|light|768": {
+    "color-contrast": 1
+  },
+  "story/overlays-unsavedchangesguard--leaving-with-changes|dark|1280": {
+    "color-contrast": 2
+  },
+  "story/overlays-unsavedchangesguard--leaving-with-changes|dark|375": {
+    "color-contrast": 2
+  },
+  "story/overlays-unsavedchangesguard--leaving-with-changes|dark|768": {
+    "color-contrast": 2
+  },
+  "story/overlays-unsavedchangesguard--leaving-with-changes|light|1280": {
+    "color-contrast": 1
+  },
+  "story/overlays-unsavedchangesguard--leaving-with-changes|light|375": {
+    "color-contrast": 1
+  },
+  "story/overlays-unsavedchangesguard--leaving-with-changes|light|768": {
+    "color-contrast": 1
   }
 }
