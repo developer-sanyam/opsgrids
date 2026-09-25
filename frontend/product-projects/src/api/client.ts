@@ -167,6 +167,13 @@ export async function getAllProjects(): Promise<ProjectOut[]> {
   return fetchAll((page, size) => listProjects({ page, size }));
 }
 
+/** `GET /projects-workspace/projects?phase=live&size=1` → `Page.total` — the portfolio's
+ *  "Completed" count, from the server's own rollup rather than a client-side scan. */
+export async function countCompletedProjects(): Promise<number> {
+  const page = await listProjects({ phase: "live", size: 1 });
+  return page.total;
+}
+
 export async function createProject(input: ProjectIn): Promise<ProjectOut> {
   if (USE_FIXTURES) {
     const owner = MEMBERS.find((m) => m.id === input.owner_ref) ?? MEMBERS[0];
@@ -355,20 +362,34 @@ export interface ListTasksParams {
   size?: number;
   stage?: TaskStage;
   project_code?: string;
+  /** `"me"` narrows to cards assigned to the caller, resolved server-side against the delivery
+   *  roster — the same filter `/projects-workspace/tasks?assignee=me` applies. */
+  assignee?: "me";
 }
 
 export async function listTasks(params: ListTasksParams = {}): Promise<Page<TaskOut>> {
   const page = params.page ?? 1;
   const size = params.size ?? DEFAULT_PAGE_SIZE;
   if (USE_FIXTURES) {
-    const filtered = TASKS.filter(
-      (t) =>
-        (!params.stage || t.stage === params.stage) &&
-        (!params.project_code || t.project_code === params.project_code),
-    );
+    // Fixture mode has no signed-in "me" to resolve against the roster, so `assignee=me` returns
+    // nothing — the same honest empty page the live route answers when the caller has no linked
+    // member row, rather than guessing at one.
+    const filtered = params.assignee === "me"
+      ? []
+      : TASKS.filter(
+          (t) =>
+            (!params.stage || t.stage === params.stage) &&
+            (!params.project_code || t.project_code === params.project_code),
+        );
     return settle(pageOf(filtered, page, size));
   }
-  const query = qs({ stage: params.stage, project_code: params.project_code, page, size });
+  const query = qs({
+    stage: params.stage,
+    project_code: params.project_code,
+    assignee: params.assignee,
+    page,
+    size,
+  });
   return apiRequest<Page<TaskOut>>(`/projects-workspace/tasks${query}`);
 }
 
@@ -379,6 +400,12 @@ export async function getAllTasks(params: { project_code?: string } = {}): Promi
     return TASKS.filter((t) => !params.project_code || t.project_code === params.project_code);
   }
   return fetchAll((page, size) => listTasks({ ...params, page, size }));
+}
+
+/** `GET /projects-workspace/tasks?assignee=me` — resolved server-side to the caller's own cards,
+ *  so one bounded call gives the Overview's "My tasks" list, never a scan. */
+export async function listMyTasks(size: number): Promise<Page<TaskOut>> {
+  return listTasks({ assignee: "me", size });
 }
 
 export async function createTask(input: TaskIn): Promise<TaskOut> {

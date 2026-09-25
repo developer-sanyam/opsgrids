@@ -9,6 +9,7 @@ import type {
   MilestoneStatus,
   ProjectHealth,
   ProjectOut,
+  TaskOut,
 } from "@/api/types";
 import { daysBetween } from "@/lib/format";
 import { HEALTH_LABEL } from "./labels";
@@ -103,4 +104,14 @@ export function averageProgress(projects: readonly ProjectOut[]): number {
   if (projects.length === 0) return 0;
   const sum = projects.reduce((acc, p) => acc + p.progress_pct, 0);
   return Math.round(sum / projects.length);
+}
+
+/** Open tasks (not `done`) whose due date has already passed — the "Overdue tasks" KPI. There is
+ *  no server rollup for this (the task list has no due-date filter), so it needs the full,
+ *  every-page scan `getAllTasks()` returns rather than one capped page. An undated task is never
+ *  counted: there is no date it could have missed. */
+export function overdueTasks(tasks: readonly TaskOut[], now: string): number {
+  return tasks.filter(
+    (t) => t.stage !== "done" && t.due_date !== null && daysBetween(now, t.due_date) < 0,
+  ).length;
 }
