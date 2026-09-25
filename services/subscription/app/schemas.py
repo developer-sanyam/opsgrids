@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ServiceInfo(BaseModel):
@@ -169,6 +169,30 @@ class SuspendIn(BaseModel):
     organization_id: uuid.UUID
     operator_id: str | None = Field(default=None, max_length=64)
     reason: str | None = Field(default=None, max_length=200)
+
+
+class ReactivateIn(BaseModel):
+    """Operator-driven reactivation of a suspended subscription — `SuspendIn`'s inverse,
+    delegated from the console over /internal.
+
+    Same tenant-binding contract as `SuspendIn` (`organization_id` names the owning tenant, RLS
+    then confirms the subscription really belongs there). Unlike `SuspendIn`, `reason` is
+    **required**: lifting a hold is exactly the act whose why an audit trail must carry, and
+    `extra="forbid"` because a write accepts exactly this shape and nothing smuggled in beside it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    organization_id: uuid.UUID
+    operator_id: str | None = Field(default=None, max_length=64)
+    reason: str = Field(min_length=1, max_length=200)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("reason must not be blank")
+        return value.strip()
 
 
 # --------------------------------------------------------------------- output

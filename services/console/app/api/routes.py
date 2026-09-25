@@ -44,7 +44,7 @@ from app import (
     services,
 )
 from app.config import settings
-from app.delegation import DelegationError
+from app.delegation import DelegationConflict, DelegationError
 from app.directory_client import DirectoryLookupError
 from app.models import SCHEMA
 from app.schemas import (
@@ -72,7 +72,12 @@ from app.schemas import (
 )
 from platform_core.auth import Principal, require_operator
 from platform_core.db import get_directory_session, get_session
-from platform_core.errors import NotFoundProblem, UpstreamUnavailableProblem, ValidationProblem
+from platform_core.errors import (
+    ConflictProblem,
+    NotFoundProblem,
+    UpstreamUnavailableProblem,
+    ValidationProblem,
+)
 from platform_core.logging import get_logger
 
 log = get_logger("console.routes")
@@ -428,7 +433,8 @@ async def create_override(
     client: DelegationClientDep,
     request: Request,
 ) -> OverrideOut:
-    """Suspend a subscription or grant comp credit, by calling the owning service's internal API.
+    """Suspend or reactivate a subscription, or grant comp credit, by calling the owning
+    service's internal API.
 
     Console never writes another service's schema (ADR-0003 §2). It resolves which service owns the
     write, delegates under a service token addressed to that service by name, and records its own
@@ -444,18 +450,23 @@ async def create_override(
             amount_minor=payload.amount_minor,
             currency=payload.currency,
             reason=payload.reason,
+            operator_id=str(operator.sub),
         )
     except DelegationError as exc:
         raise ValidationProblem(str(exc)) from exc
 
     try:
         result = await delegation.deliver(cfg, spec, client=client)
+    except DelegationConflict as exc:
+        # The target is not in a state this override applies to — the operator's picture of it is
+        # stale, which is a conflict they can act on, not an outage.
+        raise ConflictProblem(str(exc)) from exc
     except DelegationError as exc:
         # The owning service refused or was unreachable. 503, not 500: the console did its part;
         # the downstream is the thing that is unavailable.
         raise UpstreamUnavailableProblem(str(exc)) from exc
 
-    entity = "subscription" if payload.action == "suspend" else "credit"
+    entity = "credit" if payload.action == "comp_grant" else "subscription"
     await services.record_override(
         session,
         organization_id=payload.organization_id,

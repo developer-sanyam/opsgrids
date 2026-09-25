@@ -233,14 +233,17 @@ class AuditListOut(BaseModel):
 class OverrideIn(BaseModel):
     """An operator override. Delegated to the owning service — console writes no foreign schema."""
 
-    #: `suspend` → subscription-service; `comp_grant` → billing-service.
-    action: Literal["suspend", "comp_grant"]
+    #: `suspend` and `reactivate` → subscription-service; `comp_grant` → billing-service.
+    action: Literal["suspend", "reactivate", "comp_grant"]
     organization_id: uuid.UUID
-    #: Required for `suspend`: the subscription to suspend in subscription-service.
+    #: Required for `suspend` and `reactivate`: the subscription to act on in
+    #: subscription-service.
     subscription_id: uuid.UUID | None = None
     #: Required for `comp_grant`: the credit to grant in billing-service.
     amount_minor: int | None = Field(default=None, ge=0)
     currency: str | None = None
+    #: Required (non-blank) for `reactivate`: lifting a hold is exactly the act whose why an audit
+    #: trail must carry. Optional for the other actions, as it always was.
     reason: str | None = None
 
 
