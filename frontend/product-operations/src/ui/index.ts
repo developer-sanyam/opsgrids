@@ -41,6 +41,7 @@ export type {
   RadioOption,
   RowAction,
   SelectOption,
+  TableSelection,
 } from "@opsgrids/ui";
 
 export { useNavGroups } from "./useNavGroups";

@@ -26,7 +26,7 @@ export {
   Select,
   Skeleton,
 } from "@opsgrids/ui";
-export type { Column, KpiTone, RowAction } from "@opsgrids/ui";
+export type { Column, KpiTone, RowAction, TableSelection } from "@opsgrids/ui";
 
 export { useNavGroups } from "./useNavGroups";
 export { CompanyStatusPill, ContactStatusPill, LeadStatusPill, StagePill } from "./StatusPill";

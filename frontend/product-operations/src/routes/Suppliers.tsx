@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { deleteSupplier, listSuppliers } from "@/api/client";
 import type { Category, SupplierOut, SupplierStatus } from "@/api/types";
 import { CATEGORY_LABEL } from "@/data/derive";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
+import { downloadCsv } from "@/lib/csv";
 import { formatMoney } from "@/lib/format";
 import {
   Avatar,
@@ -24,8 +24,8 @@ import {
   Skeleton,
   SupplierStatusPill,
 } from "@/ui";
-import type { Column } from "@/ui";
-import { FactoryIcon, PlusIcon, useToast } from "@opsgrids/ui";
+import type { Column, TableSelection } from "@/ui";
+import { DownloadIcon, FactoryIcon, PlusIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
 import { SupplierFormDialog } from "@/forms/SupplierFormDialog";
 
 const CATEGORY_FILTERS: { value: Category | "all"; label: string }[] = [
@@ -67,12 +67,46 @@ export function SuppliersPage() {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<SupplierOut | null>(null);
   const [deleting, setDeleting] = useState<SupplierOut | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const canWrite = useCan("operations.procurement.supplier.write", "ORG");
 
   const sortParam = sort === "lead_time" ? "lead_time" : sort === "on_time" ? "on_time" : sort;
   const loader = () =>
     listSuppliers({ q: debouncedSearch, category, status, sort: sortParam, page, size });
   const state = useAsync(loader, [debouncedSearch, category, status, sort, page, size]);
+  const rows = state.status === "success" ? state.data.items : [];
+
+  // A ticked row is a row on screen; a new page, sort or filter invalidates the selection rather
+  // than carrying it to rows nobody saw ticked.
+  useEffect(() => {
+    setSelected(new Set());
+  }, [debouncedSearch, category, status, sort, page, size]);
+
+  const selection: TableSelection<SupplierOut> = {
+    selected,
+    onToggle: (key, next) =>
+      setSelected((prev) => {
+        const copy = new Set(prev);
+        if (next) copy.add(key);
+        else copy.delete(key);
+        return copy;
+      }),
+    onToggleAll: (next) => setSelected(next ? new Set(rows.map((s) => s.id)) : new Set()),
+    label: (s) => s.name,
+  };
+
+  function exportSelected() {
+    const chosen = rows.filter((s) => selected.has(s.id));
+    downloadCsv(`suppliers-${new Date().toISOString().slice(0, 10)}.csv`, chosen, [
+      { header: "Supplier", value: (s) => s.name },
+      { header: "Code", value: (s) => s.code },
+      { header: "Category", value: (s) => CATEGORY_LABEL[s.category] },
+      { header: "Lead time (days)", value: (s) => String(s.lead_time_days) },
+      { header: "On-time %", value: (s) => s.on_time_pct.toFixed(1) },
+      { header: "Spend", value: (s) => formatMoney(s.spend_minor) },
+      { header: "Status", value: (s) => s.status },
+    ]);
+  }
 
   const remove = useMutation((supplier: SupplierOut) => deleteSupplier(supplier.id), {
     onSuccess: (_result, supplier) => {
@@ -87,6 +121,7 @@ export function SuppliersPage() {
       key: "name",
       header: "Supplier",
       sortKey: "name",
+      mobile: "title",
       render: (s) => (
         <button
           type="button"
@@ -143,6 +178,7 @@ export function SuppliersPage() {
       key: "status",
       header: "Status",
       align: "right",
+      mobile: "status",
       render: (s) => (
         <div className="flex justify-end">
           <SupplierStatusPill status={s.status} />
@@ -153,6 +189,7 @@ export function SuppliersPage() {
       key: "actions",
       header: "",
       align: "right",
+      mobile: "actions",
       render: (s) => (
         <RowActions
           label={s.name}
@@ -260,10 +297,22 @@ export function SuppliersPage() {
           <>
             <DataTable
               columns={columns}
-              rows={state.data.items}
+              rows={rows}
               rowKey={(s) => s.id}
               caption="Suppliers"
               onRowClick={(s) => navigate(`/suppliers/${s.id}`)}
+              mobileCard="auto"
+              selection={selection}
+              bulkActions={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  leadingIcon={<DownloadIcon className="size-4" />}
+                  onClick={exportSelected}
+                >
+                  Export selected
+                </Button>
+              }
               emptyState={
                 <EmptyState
                   icon={<FactoryIcon className="size-6" />}

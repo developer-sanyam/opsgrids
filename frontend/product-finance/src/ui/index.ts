@@ -37,6 +37,7 @@ export type {
   RadioOption,
   RowAction,
   SelectOption,
+  TableSelection,
   TimelineEntry,
   TimelineTone,
 } from "@opsgrids/ui";

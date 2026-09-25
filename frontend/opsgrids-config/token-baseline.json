@@ -262,9 +262,6 @@
     "arbitrary": 1,
     "spacing": 5
   },
-  "product-crm/src/ui/StatusPill.tsx": {
-    "spacing": 2
-  },
   "product-engage/src/routes/Connection.tsx": {
     "spacing": 2
   },
@@ -403,7 +400,7 @@
     "spacing": 4
   },
   "product-finance/src/ui/StatusPill.tsx": {
-    "spacing": 3
+    "spacing": 1
   },
   "product-hrms/src/routes/Approvals.tsx": {
     "spacing": 3
@@ -625,7 +622,7 @@
     "spacing": 4
   },
   "product-operations/src/ui/StatusPill.tsx": {
-    "spacing": 2
+    "spacing": 1
   },
   "product-operations/src/ui/TopSuppliers.tsx": {
     "spacing": 1
@@ -690,8 +687,7 @@
     "spacing": 1
   },
   "product-projects/src/ui/ProjectPills.tsx": {
-    "arbitrary": 1,
-    "spacing": 4
+    "spacing": 1
   },
   "product-projects/src/ui/StatCard.tsx": {
     "arbitrary": 1,

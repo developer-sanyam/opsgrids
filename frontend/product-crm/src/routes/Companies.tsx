@@ -1,11 +1,11 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { deleteCompany, listCompanies } from "@/api/client";
 import type { Company, CompanyStatus, Owner } from "@/api/types";
 import { useDirectory } from "@/data/directoryContext";
 import { ownerName } from "@/data/lookups";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { downloadCsv } from "@/lib/csv";
 import { formatMoneyCompact } from "@/lib/format";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
@@ -25,8 +25,8 @@ import {
   Select,
   Skeleton,
 } from "@/ui";
-import type { Column } from "@/ui";
-import { BuildingIcon, GlobeIcon, MapPinIcon, PlusIcon, useToast } from "@opsgrids/ui";
+import type { Column, TableSelection } from "@/ui";
+import { BuildingIcon, DownloadIcon, GlobeIcon, MapPinIcon, PlusIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
 import { CompanyFormDialog } from "@/forms/CompanyFormDialog";
 
 type StatusFilter = CompanyStatus | "all";
@@ -52,6 +52,7 @@ function buildColumns(
     {
       key: "name",
       header: "Company",
+      mobile: "title",
       render: (c) => (
         <div className="flex items-center gap-3">
           <span className="grid size-9 shrink-0 place-items-center rounded-tile bg-accent-soft text-accent-ink">
@@ -84,6 +85,7 @@ function buildColumns(
       header: "Location",
       cellClassName: "hidden lg:table-cell",
       headerClassName: "hidden lg:table-cell",
+      mobile: "hidden",
       render: (c) => (
         <span className="inline-flex items-center gap-1.5 text-muted">
           <MapPinIcon className="size-4 text-faint" />
@@ -91,7 +93,12 @@ function buildColumns(
         </span>
       ),
     },
-    { key: "status", header: "Status", render: (c) => <CompanyStatusPill status={c.status} /> },
+    {
+      key: "status",
+      header: "Status",
+      mobile: "status",
+      render: (c) => <CompanyStatusPill status={c.status} />,
+    },
     {
       key: "owner",
       header: "Owner",
@@ -118,6 +125,7 @@ function buildColumns(
       key: "actions",
       header: "",
       align: "right",
+      mobile: "actions",
       render: (c) => (
         <RowActions
           label={c.name}
@@ -142,6 +150,7 @@ export function CompaniesPage() {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Company | null>(null);
   const [deleting, setDeleting] = useState<Company | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const directory = useDirectory();
   const { owners, contacts } = directory;
   const canWrite = useCan("crm.book.company.write", "OWN");
@@ -151,6 +160,12 @@ export function CompaniesPage() {
     [debouncedSearch, status, page, size],
   );
   const companies = useAsync(loader, [debouncedSearch, status, page, size]);
+
+  // A ticked row is a row on screen (DataTable's contract for select-all); a new page or filter
+  // invalidates it rather than carrying a stale selection across to rows nobody saw ticked.
+  useEffect(() => {
+    setSelected(new Set());
+  }, [debouncedSearch, status, page, size]);
 
   const remove = useMutation((company: Company) => deleteCompany(company.id), {
     onSuccess: (_result, company) => {
@@ -180,6 +195,32 @@ export function CompaniesPage() {
       );
     return sorted;
   }, [companies, sort, contacts]);
+
+  const selection: TableSelection<Company> = {
+    selected,
+    onToggle: (key, next) =>
+      setSelected((prev) => {
+        const copy = new Set(prev);
+        if (next) copy.add(key);
+        else copy.delete(key);
+        return copy;
+      }),
+    onToggleAll: (next) => setSelected(next ? new Set(rows.map((c) => c.id)) : new Set()),
+    label: (c) => c.name,
+  };
+
+  function exportSelected() {
+    const chosen = rows.filter((c) => selected.has(c.id));
+    downloadCsv(`companies-${new Date().toISOString().slice(0, 10)}.csv`, chosen, [
+      { header: "Name", value: (c) => c.name },
+      { header: "Domain", value: (c) => c.domain },
+      { header: "Industry", value: (c) => c.industry },
+      { header: "City", value: (c) => c.city },
+      { header: "Status", value: (c) => c.status },
+      { header: "Owner", value: (c) => ownerName(owners, c.owner_id) },
+      { header: "Annual revenue", value: (c) => formatMoneyCompact(c.annual_revenue_minor, c.currency) },
+    ]);
+  }
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -257,6 +298,18 @@ export function CompaniesPage() {
               columns={columns}
               rows={rows}
               rowKey={(c) => c.id}
+              mobileCard="auto"
+              selection={selection}
+              bulkActions={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  leadingIcon={<DownloadIcon className="size-4" />}
+                  onClick={exportSelected}
+                >
+                  Export selected
+                </Button>
+              }
               emptyState={
                 <EmptyState
                   icon={<BuildingIcon className="size-6" />}
