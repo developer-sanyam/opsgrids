@@ -39,31 +39,34 @@ interface KpiRowProps {
 interface Kpi {
   key: string;
   label: string;
+  /** "Accounts", "Active" — mock-1's phone and tablet row, where "Total Accounts" would wrap or
+   *  clip four-across. Falls back to `label` for a KPI that only ever renders wide. */
+  shortLabel?: string;
   value: string;
   icon: ReactNode;
   tone: "accent" | "positive" | "info" | "cyan" | "warning" | "danger";
   trend?: MetricTrend;
-  /** Only the first four show on a phone (brief §2, mock-1's 2×2 grid) — Users and Revenue need
-   *  more width than a two-up phone row has to spare. */
+  /** Only the first four show below 768px (brief §2, mock-1's four-across phone row) — Users and
+   *  Revenue need more width than that row has to spare. */
   wideOnly?: boolean;
 }
 
 /**
  * One KPI, at the size the brief asks for — `default` (icon beside the figures) from 768px,
- * `compact` (stacked) below it. Picked once from `useMediaQuery`, never both rendered and one
- * hidden with CSS: that would put every KPI's label in the document twice — for a test, or a
- * screen reader in a browser slow to apply the stylesheet, to trip over.
+ * `tile` (icon above them, four across) below it. Picked once from `useMediaQuery`, never both
+ * rendered and one hidden with CSS: that would put every KPI's label in the document twice — for
+ * a test, or a screen reader in a browser slow to apply the stylesheet, to trip over.
  */
 function KpiTile({ kpi }: { kpi: Kpi }) {
   const wide = useMediaQuery(TABLET_QUERY, true);
   if (kpi.wideOnly && !wide) return null;
   return (
     <MetricCard
-      label={kpi.label}
+      label={wide ? kpi.label : (kpi.shortLabel ?? kpi.label)}
       value={kpi.value}
       icon={kpi.icon}
       tone={kpi.tone}
-      size={wide ? "default" : "compact"}
+      size={wide ? "default" : "tile"}
       {...(kpi.trend ? { trend: kpi.trend } : {})}
     />
   );
@@ -144,10 +147,12 @@ function RevenueTile({
   );
 }
 
-// 6-up needs real width per card to keep every label on one line ("Suspended Accounts") —
-// more than 1280px with the sidebar leaves. 3×2 from `lg` (1024px, where the sidebar itself
-// appears) through `xl` (1280px), 6-up only once there is room for it again at `2xl` (1536px).
-const GRID = "grid grid-cols-2 gap-4 md:grid-cols-4 lg:grid-cols-3 2xl:grid-cols-6";
+// Four across even on a phone (mock-1's Accounts/Active/Trial/Suspended row), a tighter gap below
+// 768px where the tile itself is smaller. 6-up needs real width per card to keep every label on
+// one line ("Suspended Accounts") — more than 1280px with the sidebar leaves. 3×2 from `lg`
+// (1024px, where the sidebar itself appears) through `xl` (1280px), 6-up only once there is room
+// for it again at `2xl` (1536px).
+const GRID = "grid grid-cols-4 gap-2 md:gap-4 lg:grid-cols-3 2xl:grid-cols-6";
 
 export function KpiRow({ orgs, overview, series, canSeeRevenue }: KpiRowProps) {
   if (orgs.status === "loading") {
@@ -187,14 +192,36 @@ export function KpiRow({ orgs, overview, series, canSeeRevenue }: KpiRowProps) {
     {
       key: "total",
       label: "Total Accounts",
+      shortLabel: "Accounts",
       value: formatInt(total),
       icon: <BuildingIcon className="size-5" />,
       tone: "info",
       ...(totalDelta !== null ? { trend: { value: totalDelta, period: "vs last month" } } : {}),
     },
-    { key: "active", label: "Active Accounts", value: formatInt(active), icon: <CheckCircleIcon className="size-5" />, tone: "positive" },
-    { key: "trial", label: "Trial Accounts", value: formatInt(trial), icon: <ClockIcon className="size-5" />, tone: "warning" },
-    { key: "suspended", label: "Suspended Accounts", value: formatInt(suspended), icon: <PauseCircleIcon className="size-5" />, tone: "danger" },
+    {
+      key: "active",
+      label: "Active Accounts",
+      shortLabel: "Active",
+      value: formatInt(active),
+      icon: <CheckCircleIcon className="size-5" />,
+      tone: "positive",
+    },
+    {
+      key: "trial",
+      label: "Trial Accounts",
+      shortLabel: "Trial",
+      value: formatInt(trial),
+      icon: <ClockIcon className="size-5" />,
+      tone: "warning",
+    },
+    {
+      key: "suspended",
+      label: "Suspended Accounts",
+      shortLabel: "Suspended",
+      value: formatInt(suspended),
+      icon: <PauseCircleIcon className="size-5" />,
+      tone: "danger",
+    },
     { key: "users", label: "Total Users", value: formatInt(userTotal), icon: <UsersIcon className="size-5" />, tone: "cyan", wideOnly: true },
   ];
 

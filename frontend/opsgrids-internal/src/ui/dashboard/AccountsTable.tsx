@@ -4,6 +4,7 @@ import {
   Avatar,
   BuildingIcon,
   Card,
+  CloseIcon,
   DataTable,
   EmptyState,
   ErrorState,
@@ -14,11 +15,13 @@ import {
   Pagination,
   PauseCircleIcon,
   RefreshIcon,
+  SearchIcon,
+  SearchInput,
   StatusBadge,
   Tag,
   TagIcon,
 } from "@opsgrids/ui";
-import type { Column, FilterSelect, MenuItem, MobileCardWiring, MobileDataField } from "@opsgrids/ui";
+import type { Column, FilterSelect, MenuItem, MobileCardWiring } from "@opsgrids/ui";
 
 import type { OrgStateOut, SubscriptionOut } from "@/api/types";
 import type { AsyncState } from "@/lib/useAsync";
@@ -122,6 +125,27 @@ function PlanCell({
   );
 }
 
+/** The phone row's plan pill (mock-1): the plan name alone where one is known, never the
+ *  "Product · Plan" pairing `PlanCell` reads for a full table cell — a chip beside a status chip
+ *  has no room for both. */
+function planChipLabel(
+  org: OrgStateOut,
+  subsByOrg: Map<string, SubscriptionOut[]>,
+  canSeeRevenue: boolean,
+): string | null {
+  if (canSeeRevenue) {
+    const subs = subsByOrg.get(org.organization_id) ?? [];
+    if (subs.length === 0) return null;
+    if (subs.length > 1) return `${subs.length} products`;
+    const only = subs[0];
+    return only ? (only.plan_name ?? productLabel(only.product_key)) : null;
+  }
+  if (org.active_products.length === 0) return null;
+  if (org.active_products.length > 1) return `${org.active_products.length} products`;
+  const only = org.active_products[0];
+  return only ? productLabel(only) : null;
+}
+
 function RevenueCell({ org, canSeeRevenue }: { org: OrgStateOut; canSeeRevenue: boolean }) {
   if (!canSeeRevenue) {
     return (
@@ -132,6 +156,64 @@ function RevenueCell({ org, canSeeRevenue }: { org: OrgStateOut; canSeeRevenue: 
   }
   if (org.mrr_minor <= 0) return <span className="text-sm text-faint">—</span>;
   return <span className="tnum font-semibold text-ink">{formatMoney(org.mrr_minor, org.currency ?? "INR")}</span>;
+}
+
+/**
+ * The phone header's search (mock-1): an icon button that expands into a real search field in
+ * place of the heading, rather than a search box sitting open above the list at all times — there
+ * is no room for one beside "Accounts (128)" at this width. Collapsing clears the query, the same
+ * as `FilterBar`'s own "Clear all" does for the desktop search it stands in for here.
+ */
+function MobileAccountSearch({
+  open,
+  onOpenChange,
+  value,
+  onChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenChange(true)}
+        aria-label="Search accounts"
+        className="grid size-10 shrink-0 place-items-center rounded-tile border border-field-edge bg-surface text-ink-soft transition-colors hover:bg-ground"
+      >
+        <SearchIcon className="size-4.5" />
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex w-full items-center gap-1">
+      <SearchInput
+        label="Search accounts"
+        placeholder="Search accounts, domain, owner…"
+        value={value}
+        onDebouncedChange={onChange}
+        containerClassName="h-10 flex-1"
+        // Mounted only by the user's own tap on the search icon; moving focus into the field they
+        // asked for is the focus management, not a surprise on page load.
+        // eslint-disable-next-line jsx-a11y/no-autofocus
+        autoFocus
+      />
+      <button
+        type="button"
+        onClick={() => {
+          onOpenChange(false);
+          onChange("");
+        }}
+        aria-label="Close search"
+        className="grid size-10 shrink-0 place-items-center rounded-tile text-ink-soft transition-colors hover:bg-ground"
+      >
+        <CloseIcon className="size-4.5" />
+      </button>
+    </div>
+  );
 }
 
 function compareOrgs(a: OrgStateOut, b: OrgStateOut, sort: Sort): number {
@@ -160,6 +242,7 @@ export function AccountsTable({
   const [plan, setPlan] = useState("");
   const [status, setStatus] = useState("");
   const [region, setRegion] = useState("");
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [sort, setSort] = useState<Sort>({ key: "created", dir: "desc" });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -256,28 +339,31 @@ export function AccountsTable({
   }
 
   /**
-   * A phone's card: name, domain, status, Plan and Users always, Revenue only when it says
-   * something — a real amount, or "Restricted" for a role that cannot see one. A role that can
-   * see revenue on an account with none yet does not get a "—" row for it; the mockup's own
-   * phone rows never carry a field with nothing in it.
+   * A phone's row (mock-1): a logo/initial avatar, the name with its domain underneath, and the
+   * plan and status as two chips on the right. Tapping the row opens the account — the same drill
+   * down the desktop table's row click does — so there is nowhere here for Users or Revenue, or
+   * for a per-row action menu the mockup's list never shows either; both stay one tap away on the
+   * account page.
    */
   function accountCard(org: OrgStateOut, wiring: MobileCardWiring) {
-    const fields: MobileDataField[] = [
-      { key: "plan", label: "Plan", value: <PlanCell org={org} subsByOrg={subsByOrg} canSeeRevenue={canSeeRevenue} /> },
-      { key: "users", label: "Users", value: org.user_count !== null ? formatInt(org.user_count) : "—" },
-    ];
-    if (!canSeeRevenue || org.mrr_minor > 0) {
-      fields.push({ key: "revenue", label: "Revenue", value: <RevenueCell org={org} canSeeRevenue={canSeeRevenue} /> });
-    }
+    const planText = planChipLabel(org, subsByOrg, canSeeRevenue);
     return (
       <MobileDataCard
         {...wiring}
+        // `DataTable` never got an `onRowClick` here (the desktop table opens an account only
+        // from its row menu), but the mockup's phone row opens on tap regardless — wired directly
+        // rather than by adding one to the whole table, which would also make the desktop row's
+        // own "..." menu click bubble into a navigation.
+        onOpen={() => onView(org)}
         leading={<Avatar name={orgLabel(org)} size="sm" />}
         title={orgLabel(org)}
         subtitle={org.slug}
-        status={<StatusCell lifecycle={org.lifecycle} />}
-        fields={fields}
-        actions={<Menu label={`Actions for ${orgLabel(org)}`} trigger="icon" items={actionsFor(org)} align="end" />}
+        status={
+          <>
+            {planText ? <Tag tone="info">{planText}</Tag> : null}
+            <StatusCell lifecycle={org.lifecycle} />
+          </>
+        }
       />
     );
   }
@@ -334,9 +420,23 @@ export function AccountsTable({
   return (
     <Card className="flex flex-col gap-4 p-4 sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-base font-bold text-ink">
-          All Accounts{orgs.status === "success" ? ` (${formatInt(filtered.length)})` : ""}
+        <h2 className={`text-base font-bold text-ink${mobileSearchOpen ? " hidden md:block" : ""}`}>
+          <span className="md:hidden">Accounts</span>
+          <span className="hidden md:inline">All Accounts</span>
+          {orgs.status === "success" ? ` (${formatInt(filtered.length)})` : ""}
         </h2>
+        {/* The phone header (mock-1): a search icon that expands in place of the heading, no "+"
+            beside it — there is no create-account API for this console to call. Plan/Status/Region
+            stay a `md:`-and-up affordance; the embedded dashboard card is a glance at the list,
+            not the full management screen `routes/Accounts.tsx` is. */}
+        <div className={mobileSearchOpen ? "flex-1 md:hidden" : "md:hidden"}>
+          <MobileAccountSearch
+            open={mobileSearchOpen}
+            onOpenChange={setMobileSearchOpen}
+            value={search}
+            onChange={(value) => { setSearch(value); resetPage(); }}
+          />
+        </div>
       </div>
 
       <DataTable
@@ -354,23 +454,25 @@ export function AccountsTable({
         }
         loading={orgs.status === "loading"}
         toolbar={
-          <FilterBar
-            label="Filter accounts"
-            search={{
-              label: "Search accounts",
-              placeholder: "Search accounts, domain, owner…",
-              value: search,
-              onChange: (v) => { setSearch(v); resetPage(); },
-            }}
-            filters={filters}
-            onClearAll={() => {
-              setSearch("");
-              setPlan("");
-              setStatus("");
-              setRegion("");
-              resetPage();
-            }}
-          />
+          <div className="hidden md:block">
+            <FilterBar
+              label="Filter accounts"
+              search={{
+                label: "Search accounts",
+                placeholder: "Search accounts, domain, owner…",
+                value: search,
+                onChange: (v) => { setSearch(v); resetPage(); },
+              }}
+              filters={filters}
+              onClearAll={() => {
+                setSearch("");
+                setPlan("");
+                setStatus("");
+                setRegion("");
+                resetPage();
+              }}
+            />
+          </div>
         }
         errorState={orgs.status === "error" ? <ErrorState message={orgs.error.message} onRetry={onRetry} /> : undefined}
         emptyState={

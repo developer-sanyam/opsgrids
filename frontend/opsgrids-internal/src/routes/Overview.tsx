@@ -82,8 +82,14 @@ export function OverviewPage() {
   return (
     <div className="rise flex flex-col gap-5">
       <PageHeader
-        title="Super Admin Dashboard"
+        title={
+          <>
+            <span className="sm:hidden">Super Admin</span>
+            <span className="hidden sm:inline">Super Admin Dashboard</span>
+          </>
+        }
         description="Manage all accounts, monitor usage, and oversee the platform."
+        descriptionClassName="hidden sm:block"
         actions={
           canSeeRevenue ? (
             <Select

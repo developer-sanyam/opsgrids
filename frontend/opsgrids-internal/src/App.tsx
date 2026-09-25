@@ -1,8 +1,8 @@
-import { AppShell as Shell } from "@opsgrids/ui";
+import { AppShell as Shell, LayersIcon } from "@opsgrids/ui";
 
 import { useAuth } from "@/auth/context";
 import { EnvBadge, useNavGroups } from "./ui";
-import { LogoMark } from "./ui/icons";
+import { BuildingsIcon, LogoMark } from "./ui/icons";
 
 const ROLE_LABEL: Record<string, string> = {
   owner: "Owner",
@@ -43,6 +43,13 @@ export function AppShell() {
       user={{ name, email: operator?.email ?? "", roleLabel }}
       onSignOut={() => void logout()}
       search={{ placeholder: "Search accounts", fallback: { label: "Search accounts for", to: "/accounts" } }}
+      // The phone bottom nav (mock-1): Overview, Accounts, Subscriptions, More. No `modules` (a
+      // customer's products are not this console's concern) and no quick-action "+" (nothing here
+      // is created from a sheet), so these two are the whole of what sits between Home and More.
+      bottomNavExtra={[
+        { to: "/accounts", label: "Accounts", icon: BuildingsIcon },
+        { to: "/subscriptions", label: "Subscriptions", icon: LayersIcon },
+      ]}
     />
   );
 }

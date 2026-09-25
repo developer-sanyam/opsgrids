@@ -116,7 +116,10 @@ describe("OverviewPage — populated", () => {
   it("renders the header copy approved for this dashboard", async () => {
     mockAllSuccess();
     renderOverview();
-    await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: "Super Admin Dashboard" })).toBeTruthy());
+    // The full title and the description are the `sm:`-and-up copy — the phone header (mock-1)
+    // shortens the title to "Super Admin" and drops the description, both by CSS class rather
+    // than a second render, so both texts are present in the tree at every width.
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Super Admin/ })).toBeTruthy());
     expect(screen.getByText("Manage all accounts, monitor usage, and oversee the platform.")).toBeTruthy();
   });
 
@@ -257,7 +260,7 @@ describe("OverviewPage — loading", () => {
     vi.spyOn(client, "listSubscriptions").mockReturnValue(new Promise(() => {}));
     vi.spyOn(client, "listAudit").mockReturnValue(new Promise(() => {}));
     renderOverview();
-    expect(screen.getByRole("heading", { level: 1, name: "Super Admin Dashboard" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 1, name: /Super Admin/ })).toBeTruthy();
   });
 });
 

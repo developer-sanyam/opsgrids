@@ -1,4 +1,4 @@
-import { ChartCard, DonutChart, EmptyState, ErrorState, LineChart, ShieldIcon, WalletIcon } from "@opsgrids/ui";
+import { ChartCard, DonutChart, EmptyState, ErrorState, LineChart, ShieldIcon, TABLET_QUERY, useMediaQuery, WalletIcon } from "@opsgrids/ui";
 import type { ChartTone, DonutSlice } from "@opsgrids/ui";
 
 import type { MetricsSeriesOut, OrgStateOut, SubscriptionOut } from "@/api/types";
@@ -33,6 +33,9 @@ interface AccountGrowthCardProps {
 export function AccountGrowthCard({ series, canSee, months }: AccountGrowthCardProps) {
   const data = series.status === "success" ? series.data : null;
   const points = data?.new_organizations ?? [];
+  // A short chart on a phone (mock-1: ≈140px) — `sm` (128px) is the closest step below the
+  // default `md` (192px) the closed height scale offers.
+  const wide = useMediaQuery(TABLET_QUERY, true);
 
   return (
     <ChartCard
@@ -48,6 +51,7 @@ export function AccountGrowthCard({ series, canSee, months }: AccountGrowthCardP
         categories={points.map((p) => monthLabel(p.period))}
         series={[{ key: "new", label: "New Accounts", values: points.map((p) => p.value ?? 0) }]}
         area
+        height={wide ? "md" : "sm"}
         // A count of accounts: whole-number gridlines only, and a soft curve rather than a sharp
         // spike between two small monthly counts.
         integer
