@@ -58,7 +58,7 @@ export function ChartCard({
   const Heading = headingLevel === 2 ? "h2" : "h3";
 
   return (
-    <Card className={cn("flex min-w-0 flex-col gap-4 p-4 md:p-5", className)}>
+    <Card className={cn("flex min-w-0 flex-col gap-4 p-4 sm:p-6", className)}>
       <section aria-labelledby={headingId} className="flex min-w-0 flex-col gap-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex min-w-0 flex-col gap-0.5">

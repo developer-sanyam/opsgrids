@@ -66,7 +66,7 @@ export const Required: Story = {
     ),
   },
   render: (args) => (
-    <Card className="max-w-sm p-5">
+    <Card className="max-w-sm p-4 sm:p-6">
       <FormField {...args} />
     </Card>
   ),

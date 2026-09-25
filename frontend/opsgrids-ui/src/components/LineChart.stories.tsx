@@ -16,7 +16,7 @@ const meta = {
     series: [{ key: "accounts", label: "New accounts", values: [22, 48, 41, 66, 58, 91, 84, 118, 137] }],
   },
   render: (args) => (
-    <Card className="max-w-3xl p-4 md:p-5">
+    <Card className="max-w-3xl p-4 sm:p-6">
       <LineChart {...args} />
     </Card>
   ),

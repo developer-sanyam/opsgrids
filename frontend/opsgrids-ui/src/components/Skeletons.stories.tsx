@@ -21,7 +21,7 @@ export const Dashboard: Story = {};
 
 export const Table: Story = {
   render: () => (
-    <Card className="p-4 md:p-5">
+    <Card className="p-4 sm:p-6">
       <TableSkeleton label="Loading accounts" rows={6} columns={5} />
     </Card>
   ),
@@ -48,13 +48,13 @@ export const Form: Story = {
 export const Charts: Story = {
   render: () => (
     <div className="grid gap-4 xl:grid-cols-3">
-      <Card className="p-5">
+      <Card className="p-4 sm:p-6">
         <ChartSkeleton label="Loading account growth" variant="area" />
       </Card>
-      <Card className="p-5">
+      <Card className="p-4 sm:p-6">
         <ChartSkeleton label="Loading tickets per day" variant="bar" />
       </Card>
-      <Card className="p-5">
+      <Card className="p-4 sm:p-6">
         <ChartSkeleton label="Loading revenue by plan" variant="donut" />
       </Card>
     </div>

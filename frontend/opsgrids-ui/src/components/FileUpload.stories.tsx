@@ -44,7 +44,7 @@ const meta = {
     onUpload: instant,
   },
   render: (args) => (
-    <Card className="max-w-xl p-4 md:p-5">
+    <Card className="max-w-xl p-4 sm:p-6">
       <FileUpload<string> {...args} />
     </Card>
   ),

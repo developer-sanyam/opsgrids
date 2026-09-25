@@ -53,8 +53,7 @@ function Marker({ index, status, invalid }: { index: number; status: Status; inv
         invalid
           ? "bg-negative-soft text-negative"
           : status === "current"
-            ? // `text-surface`, not white: it holds contrast on the accent in both themes.
-              "bg-accent text-surface"
+            ? "bg-accent text-on-accent"
             : status === "complete"
               ? "bg-accent-soft text-accent-ink"
               : "border border-line bg-surface text-muted",

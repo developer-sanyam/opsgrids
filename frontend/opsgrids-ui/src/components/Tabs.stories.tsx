@@ -39,7 +39,7 @@ function Stateful({
   const [value, setValue] = useState(initial);
   const current = items.find((item) => item.id === value);
   return (
-    <Card className="max-w-3xl p-4 md:p-5">
+    <Card className="max-w-3xl p-4 sm:p-6">
       <Tabs
         label="Account sections"
         items={items}

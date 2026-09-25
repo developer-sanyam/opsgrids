@@ -71,7 +71,7 @@ function ChartBlocks({ variant }: { variant: "area" | "bar" | "donut" }) {
 
 function KpiBlocks() {
   return (
-    <Card className="flex flex-col gap-4 p-5">
+    <Card className="flex flex-col gap-4 p-4 sm:p-6">
       <Block className="size-10 rounded-tile" />
       <Block className="h-3 w-1/2 rounded-full" />
       <Block className="h-7 w-2/3 rounded-full" />
@@ -110,7 +110,7 @@ interface CardSkeletonProps {
 export function CardSkeleton({ lines = 3, label = "Loading", className }: CardSkeletonProps) {
   return (
     <Loading label={label} className={className}>
-      <Card className="p-5">
+      <Card className="p-4 sm:p-6">
         <CardBlocks lines={lines} />
       </Card>
     </Loading>
@@ -205,16 +205,16 @@ export function DashboardSkeleton({ label = "Loading dashboard", className }: Da
         ))}
       </div>
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <Card className="flex flex-col gap-4 p-5 xl:col-span-2">
+        <Card className="flex flex-col gap-4 p-4 sm:p-6 xl:col-span-2">
           <Block className="h-5 w-40 rounded-full" />
           <ChartBlocks variant="area" />
         </Card>
-        <Card className="flex flex-col gap-4 p-5">
+        <Card className="flex flex-col gap-4 p-4 sm:p-6">
           <Block className="h-5 w-32 rounded-full" />
           <ChartBlocks variant="donut" />
         </Card>
       </div>
-      <Card className="p-5">
+      <Card className="p-4 sm:p-6">
         <TableBlocks rows={4} columns={4} />
       </Card>
     </Loading>

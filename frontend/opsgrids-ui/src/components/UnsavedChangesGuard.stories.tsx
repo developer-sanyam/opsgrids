@@ -11,7 +11,7 @@ import { UnsavedChangesGuard } from "./UnsavedChangesGuard";
 function EditPurchaseOrder() {
   const [supplier, setSupplier] = useState("");
   return (
-    <Card className="flex max-w-lg flex-col gap-4 p-5">
+    <Card className="flex max-w-lg flex-col gap-4 p-4 sm:p-6">
       <h1 className="text-lg font-bold text-ink">New purchase order</h1>
       <TextField label="Supplier" value={supplier} onChange={(event) => setSupplier(event.target.value)} />
       <Link to="/orders" className="self-start text-sm font-semibold text-accent-ink underline">

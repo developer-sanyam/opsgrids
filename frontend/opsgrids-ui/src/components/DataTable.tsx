@@ -147,17 +147,27 @@ function placeOf<T>(column: Column<T>, columns: Column<T>[]): NonNullable<Column
   return !explicitTitle && columns[0] === column ? "title" : "field";
 }
 
+/**
+ * A body row's cells — the tick-box cell and a data cell. One definition, shared by the skeleton
+ * rows, so a loaded table is exactly as tall as the placeholder it replaces.
+ */
+const SELECT_CELL = "w-10 py-3.5 pl-3 pr-0 align-middle";
+const BODY_CELL = "py-3.5 px-3 align-middle";
+
+/** Where an empty or a failed table's message sits, in the body's place. */
+const STATE_SLOT = "py-14";
+
 /** Skeleton cells sized like text, so the rows that replace them take the same height. */
 function SkeletonRows({ count, columns, selectable }: { count: number; columns: number; selectable: boolean }) {
   return Array.from({ length: count }, (_, index) => (
     <tr key={index} className="border-b border-line/70 last:border-0">
       {selectable ? (
-        <td className="w-10 py-3.5 pl-3 pr-0 align-middle">
+        <td className={SELECT_CELL}>
           <Skeleton className="size-4" />
         </td>
       ) : null}
       {Array.from({ length: columns }, (_, cell) => (
-        <td key={cell} className="py-3.5 px-3 align-middle">
+        <td key={cell} className={BODY_CELL}>
           {index === 0 && cell === 0 ? <span className="sr-only">Loading</span> : null}
           <Skeleton className={cn("h-4", cell === 0 ? "w-3/4" : "w-1/2")} />
         </td>
@@ -213,7 +223,7 @@ export function DataTable<T>({
     return (
       <div className="flex flex-col gap-4">
         {toolbar}
-        <div className="py-14">{errorState}</div>
+        <div className={STATE_SLOT}>{errorState}</div>
       </div>
     );
   }
@@ -222,7 +232,7 @@ export function DataTable<T>({
     return (
       <div className="flex flex-col gap-4">
         {toolbar}
-        <div className="py-14">{emptyState}</div>
+        <div className={STATE_SLOT}>{emptyState}</div>
       </div>
     );
   }
@@ -434,7 +444,7 @@ export function DataTable<T>({
                   >
                     {selection ? (
                       <td
-                        className="w-10 py-3.5 pl-3 pr-0 align-middle"
+                        className={SELECT_CELL}
                         // The tick box is its own control inside a row that may itself be one.
                         // Without this, selecting a row for a bulk delete also opens it.
                         onClick={(event) => event.stopPropagation()}
@@ -453,7 +463,7 @@ export function DataTable<T>({
                       <td
                         key={col.key}
                         className={cn(
-                          "py-3.5 px-3 align-middle",
+                          BODY_CELL,
                           col.align === "right" ? "text-right" : "text-left",
                           col.cellClassName,
                         )}

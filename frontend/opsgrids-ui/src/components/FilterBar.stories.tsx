@@ -40,7 +40,7 @@ function Accounts({
   const [query, setQuery] = useState(initial.query ?? "");
   const [mine, setMine] = useState(initial.mine ?? false);
   return (
-    <Card className="p-4 md:p-5">
+    <Card className="p-4 sm:p-6">
       <FilterBar
         label="Filter accounts"
         search={{ label: "Search accounts", placeholder: "Search accounts, domain, owner…", value: query, onChange: setQuery }}

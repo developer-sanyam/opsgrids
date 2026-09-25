@@ -15,7 +15,7 @@ const meta = {
     ],
   },
   render: (args) => (
-    <Card className="max-w-md p-4 md:p-5">
+    <Card className="max-w-md p-4 sm:p-6">
       <DonutChart {...args} />
     </Card>
   ),

@@ -195,7 +195,7 @@ export function Menu({
           {...triggerProps}
           className="grid size-9 place-items-center rounded-full text-ink-soft transition-colors hover:bg-ground"
         >
-          {icon ?? <MoreHorizontalIcon className="size-[18px]" />}
+          {icon ?? <MoreHorizontalIcon className="size-5" />}
         </button>
       ) : (
         <Button

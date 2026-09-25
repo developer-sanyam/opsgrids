@@ -71,7 +71,7 @@ export function MetricCard({
   const Arrow = rising ? ArrowUp : ArrowDown;
 
   return (
-    <Card className={cn("flex min-w-0", compact ? "flex-col gap-3 p-4" : "items-start gap-4 p-5", className)}>
+    <Card className={cn("flex min-w-0", compact ? "flex-col gap-3 p-4" : "items-start gap-4 p-4 sm:p-6", className)}>
       {icon ? (
         <span
           aria-hidden

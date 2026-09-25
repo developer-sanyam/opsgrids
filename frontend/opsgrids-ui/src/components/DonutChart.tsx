@@ -76,7 +76,7 @@ export function DonutChart({
           <span className="text-xs text-muted">{centerLabel}</span>
         </div>
       </div>
-      <ul aria-hidden className="flex w-full min-w-0 flex-1 flex-col gap-2.5 sm:max-w-sm">
+      <ul aria-hidden className="flex w-full min-w-0 flex-1 flex-col gap-3 sm:max-w-sm">
         {slices.map((slice, index) => (
           <li key={slice.key} className="flex items-center gap-2 text-sm">
             <span className={cn("size-2.5 shrink-0 rounded-full", SERIES_TONE[tones[index] ?? "accent"].swatch)} />

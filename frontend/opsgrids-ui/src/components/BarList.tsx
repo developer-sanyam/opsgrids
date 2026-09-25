@@ -44,7 +44,7 @@ export function BarList({
 
   return (
     <figure className={cn("m-0", className)}>
-      <ul aria-hidden className="flex flex-col gap-3.5">
+      <ul aria-hidden className="flex flex-col gap-4">
         {items.map((item, index) => (
           <li key={item.key} className="flex flex-col gap-1.5">
             <div className="flex items-baseline gap-3 text-sm">

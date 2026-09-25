@@ -134,7 +134,7 @@ export function ChartTooltip({ left, children }: { left: number; children: React
     <div
       aria-hidden
       className={cn(
-        "pointer-events-none absolute top-0 z-10 flex flex-col gap-0.5 rounded-tile bg-ink px-2.5 py-1.5",
+        "pointer-events-none absolute top-0 z-10 flex flex-col gap-0.5 rounded-tile bg-ink px-3 py-1.5",
         "text-xs font-semibold whitespace-nowrap text-surface shadow-float",
         left < 20 ? "" : left > 80 ? "-translate-x-full" : "-translate-x-1/2",
       )}

@@ -292,7 +292,7 @@ function AccountsTable({
 }: Partial<Parameters<typeof DataTable<Account>>[0]> & { selectable?: boolean; initiallySelected?: string[] }) {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set(initiallySelected));
   return (
-    <Card className="p-4 md:p-5">
+    <Card className="p-4 sm:p-6">
       <DataTable<Account>
         caption="All accounts"
         columns={ACCOUNT_COLUMNS}
