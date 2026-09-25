@@ -84,6 +84,7 @@ function MyRequestsList() {
     {
       key: "request",
       header: "Request",
+      mobile: "title",
       render: (r) => (
         <div className="flex flex-col leading-tight">
           <span className="font-semibold text-ink">{requestTypeCopy(r.request_type).title}</span>
@@ -94,6 +95,7 @@ function MyRequestsList() {
     {
       key: "status",
       header: "Status",
+      mobile: "status",
       render: (r) => {
         const copy = myRequestStatusCopy(r.status, r.application_state, r.approver_name);
         return (
@@ -207,6 +209,7 @@ function MyRequestsList() {
             columns={columns}
             rows={filtered}
             rowKey={(r) => r.id}
+            mobileCard="auto"
             onRowClick={(r) =>
               navigate(`/approvals/requests/${r.id}`, {
                 state: scope === "mine" ? { from: "mine" } : undefined,

@@ -5,7 +5,6 @@ import { useNavigate } from "react-router-dom";
 import { deleteCatalogItem, listCatalog, listRequests } from "@/api/client";
 import type { CatalogCategory, CatalogItem, RequestStatus, ServiceRequest } from "@/api/types";
 import { catalogCategoryLabel, relativeTime } from "@/lib/format";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
   Avatar,
@@ -26,6 +25,7 @@ import {
   Button,
   ClockIcon,
   ConfirmDialog,
+  DownloadIcon,
   GridIcon,
   KeyIcon,
   LaptopIcon,
@@ -36,8 +36,10 @@ import {
   UserPlusIcon,
   useToast,
 } from "@opsgrids/ui";
+import type { TableSelection } from "@opsgrids/ui";
 import { CatalogItemFormDialog } from "@/forms/CatalogItemFormDialog";
 import { RaiseRequestDialog } from "@/forms/RaiseRequestDialog";
+import { downloadCsv, toCsv } from "@/lib/exportCsv";
 
 const CAN_RAISE = "itsm.service.request.write";
 /** Administering the catalog is its own ORG-only permission, not the one a requester holds. */
@@ -132,7 +134,6 @@ export function RequestsPage() {
   const navigate = useNavigate();
   const toast = useToast();
   const [search, setSearch] = useState("");
-  const debouncedSearch = useDebouncedValue(search);
   const [status, setStatus] = useState<StatusFilter>("all");
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(25);
@@ -140,16 +141,17 @@ export function RequestsPage() {
   const [catalogCreating, setCatalogCreating] = useState(false);
   const [catalogEditing, setCatalogEditing] = useState<CatalogItem | null>(null);
   const [catalogDeleting, setCatalogDeleting] = useState<CatalogItem | null>(null);
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
 
   const canRaise = useCan(CAN_RAISE, "OWN");
   const canAdminCatalog = useCan(CAN_ADMIN_CATALOG, "ORG");
 
   const catalogState = useAsync(useCallback(() => listCatalog(), []), []);
   const requestsLoader = useCallback(
-    () => listRequests({ search: debouncedSearch, status, page, size }),
-    [debouncedSearch, status, page, size],
+    () => listRequests({ search, status, page, size }),
+    [search, status, page, size],
   );
-  const requestsState = useAsync(requestsLoader, [debouncedSearch, status, page, size]);
+  const requestsState = useAsync(requestsLoader, [search, status, page, size]);
 
   const retireCatalogItem = useMutation((item: CatalogItem) => deleteCatalogItem(item.id), {
     onSuccess: (_result, item) => {
@@ -170,11 +172,13 @@ export function RequestsPage() {
       {
         key: "id",
         header: "ID",
+        mobile: "field",
         render: (r) => <span className="tnum font-semibold text-ink-soft">{r.id}</span>,
       },
       {
         key: "type",
         header: "Request type",
+        mobile: "title",
         render: (r) => (
           <div className="flex min-w-0 max-w-[18rem] flex-col">
             <span className="truncate font-semibold text-ink">{r.catalog_item_name}</span>
@@ -197,6 +201,7 @@ export function RequestsPage() {
       {
         key: "status",
         header: "Status",
+        mobile: "status",
         render: (r) => <RequestStatusPill status={r.status} />,
       },
       {
@@ -225,6 +230,36 @@ export function RequestsPage() {
   );
 
   const hasFilters = search.trim() !== "" || status !== "all";
+
+  const selection: TableSelection<ServiceRequest> = {
+    selected: selectedIds,
+    onToggle: (key, next) =>
+      setSelectedIds((prev) => {
+        const nextSet = new Set(prev);
+        if (next) nextSet.add(key);
+        else nextSet.delete(key);
+        return nextSet;
+      }),
+    onToggleAll: (next) => setSelectedIds(next ? new Set(requests.map((r) => r.id)) : new Set()),
+    label: (r) => r.id,
+  };
+
+  function exportSelected() {
+    const rows = requests.filter((r) => selectedIds.has(r.id));
+    const csv = toCsv(
+      ["ID", "Request type", "Subject", "Requester", "Status", "With", "Updated"],
+      rows.map((r) => [
+        r.id,
+        r.catalog_item_name,
+        r.subject,
+        r.requester,
+        r.status,
+        r.assignee ?? "",
+        r.updated_at,
+      ]),
+    );
+    downloadCsv(`requests-selected-${rows.length}.csv`, csv);
+  }
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -325,8 +360,8 @@ export function RequestsPage() {
               label="Search requests"
               placeholder="Search by ID, requester or subject…"
               value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
+              onDebouncedChange={(next) => {
+                setSearch(next);
                 setPage(1);
               }}
               containerClassName="lg:max-w-sm"
@@ -371,6 +406,18 @@ export function RequestsPage() {
                 rowKey={(r) => r.id}
                 caption="Service requests"
                 onRowClick={(r) => navigate(`/requests/${r.id}`)}
+                mobileCard="auto"
+                selection={selection}
+                bulkActions={
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    leadingIcon={<DownloadIcon className="size-4" />}
+                    onClick={exportSelected}
+                  >
+                    Export selected
+                  </Button>
+                }
                 emptyState={
                   <EmptyState
                     icon={<TicketIcon className="size-6" />}

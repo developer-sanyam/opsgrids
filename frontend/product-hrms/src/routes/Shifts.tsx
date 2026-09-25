@@ -42,8 +42,13 @@ function ShiftsSection() {
   });
 
   const columns: Column<ShiftOut>[] = [
-    { key: "code", header: "Code", render: (s) => <span className="tnum font-semibold">{s.code}</span> },
-    { key: "name", header: "Name", render: (s) => s.name },
+    {
+      key: "code",
+      header: "Code",
+      mobile: "field",
+      render: (s) => <span className="tnum font-semibold">{s.code}</span>,
+    },
+    { key: "name", header: "Name", mobile: "title", render: (s) => s.name },
     {
       key: "hours",
       header: "Hours",
@@ -59,6 +64,7 @@ function ShiftsSection() {
       key: "actions",
       header: "",
       align: "right",
+      mobile: "actions",
       render: (s) => (
         <RowActions
           label={s.name}
@@ -97,6 +103,7 @@ function ShiftsSection() {
           rows={shifts.data.items}
           rowKey={(s) => s.id}
           caption="Shifts"
+          mobileCard="auto"
           emptyState={
             <EmptyState
               icon={<ClockIcon className="size-6" />}
@@ -159,8 +166,13 @@ function GeofencesSection() {
   });
 
   const columns: Column<GeofenceOut>[] = [
-    { key: "location", header: "Location", render: (g) => <span className="tnum font-semibold">{g.location_code}</span> },
-    { key: "name", header: "Name", render: (g) => g.name },
+    {
+      key: "location",
+      header: "Location",
+      mobile: "field",
+      render: (g) => <span className="tnum font-semibold">{g.location_code}</span>,
+    },
+    { key: "name", header: "Name", mobile: "title", render: (g) => g.name },
     {
       key: "center",
       header: "Center",
@@ -171,6 +183,7 @@ function GeofencesSection() {
       key: "actions",
       header: "",
       align: "right",
+      mobile: "actions",
       render: (g) => (
         <RowActions
           label={g.name}
@@ -213,6 +226,7 @@ function GeofencesSection() {
           rows={geofences.data.items}
           rowKey={(g) => g.id}
           caption="Geo-fences"
+          mobileCard="auto"
           emptyState={
             <EmptyState
               icon={<MapPinIcon className="size-6" />}

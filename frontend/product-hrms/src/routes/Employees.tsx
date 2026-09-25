@@ -7,7 +7,6 @@ import type { EmployeeOut, EmployeeStatus } from "@/api/types";
 import { resolveDepartment } from "@/data/departments";
 import { Can, useAsync } from "@opsgrids/client";
 import { employmentLabel } from "@/lib/format";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import {
   Avatar,
   Button,
@@ -78,7 +77,6 @@ export function EmployeesPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
-  const debouncedSearch = useDebouncedValue(search);
   const [status, setStatus] = useState<StatusFilter>("all");
   const [departmentId, setDepartmentId] = useState<string>("");
   const [page, setPage] = useState(1);
@@ -95,8 +93,8 @@ export function EmployeesPage() {
   const orgUnitMap = orgUnits.status === "success" ? orgUnits.data : new Map<string, string>();
 
   const query = useAsync(
-    () => listEmployees({ q: debouncedSearch, status, departmentId: departmentId || undefined, page, size: PAGE_SIZE }),
-    [debouncedSearch, status, departmentId, page],
+    () => listEmployees({ q: search, status, departmentId: departmentId || undefined, page, size: PAGE_SIZE }),
+    [search, status, departmentId, page],
   );
 
   // Server paging, appended — `LoadMore`'s own contract. A filter change resets the window.
@@ -110,7 +108,7 @@ export function EmployeesPage() {
   }
 
   const total = query.status === "success" ? query.data.total : 0;
-  const filtersActive = debouncedSearch !== "" || status !== "all" || departmentId !== "";
+  const filtersActive = search !== "" || status !== "all" || departmentId !== "";
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -139,8 +137,8 @@ export function EmployeesPage() {
             label="Search employees"
             placeholder="Search by name, ID or role…"
             value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
+            onDebouncedChange={(next) => {
+              setSearch(next);
               resetWindow();
             }}
             containerClassName="lg:max-w-xs"

@@ -5,24 +5,18 @@ import type {
   RequestStatus,
   SlaState,
 } from "@/api/types";
-import {
-  assetStatusLabel,
-  incidentStatusLabel,
-  requestStatusLabel,
-  slaLabel,
-} from "@/lib/format";
-import { CheckIcon, cn } from "@opsgrids/ui";
-
-const PILL_BASE =
-  "inline-flex items-center gap-1.5 rounded-full pl-2 pr-2.5 py-1 text-xs font-semibold whitespace-nowrap";
+import { StatusBadge } from "@opsgrids/ui";
+import type { StatusTone } from "@opsgrids/ui";
 
 /* ------------------------------- priority ------------------------------- */
 
-const PRIORITY_TONE: Record<Priority, string> = {
-  P1: "bg-danger-soft text-danger",
-  P2: "bg-late-soft text-late",
-  P3: "bg-info-soft text-info",
-  P4: "bg-ground text-muted",
+/** `P1`–`P4` aren't words the shared registry knows — they're ITSM's own severity codes — so
+ *  every one takes an explicit tone. Missing from the registry: `P1`, `P2`, `P3`, `P4`. */
+const PRIORITY_TONE: Record<Priority, StatusTone> = {
+  P1: "danger",
+  P2: "warning",
+  P3: "info",
+  P4: "neutral",
 };
 
 const PRIORITY_TEXT: Record<Priority, string> = {
@@ -32,98 +26,42 @@ const PRIORITY_TEXT: Record<Priority, string> = {
   P4: "Low",
 };
 
-/**
- * Priority band. The code (P1–P4) and its word both carry the level, so the pill never relies on
- * colour alone. P1 fills a square dot to stand out even in monochrome.
- */
+/** Priority band. The code (P1–P4) and its word both carry the level, on the tone's tint. */
 export function PriorityPill({ priority }: { priority: Priority }) {
-  return (
-    <span className={cn(PILL_BASE, PRIORITY_TONE[priority])} title={PRIORITY_TEXT[priority]}>
-      <span className="size-1.5 rounded-[2px] bg-current" aria-hidden />
-      <span className="tnum">{priority}</span>
-      <span className="font-medium opacity-80">· {PRIORITY_TEXT[priority]}</span>
-    </span>
-  );
+  return <StatusBadge tone={PRIORITY_TONE[priority]} label={`${priority} · ${PRIORITY_TEXT[priority]}`} />;
 }
 
 /* ---------------------------- incident status ---------------------------- */
 
-const INCIDENT_TONE: Record<IncidentStatus, string> = {
-  new: "bg-info-soft text-info",
-  in_progress: "bg-cyan-soft text-cyan",
-  on_hold: "bg-late-soft text-late",
-  resolved: "bg-present-soft text-present",
-  closed: "bg-ground text-muted",
-};
-
+/** Every incident status is a registered word — the registry's tone applies as-is. */
 export function IncidentStatusPill({ status }: { status: IncidentStatus }) {
-  return (
-    <span className={cn(PILL_BASE, INCIDENT_TONE[status])}>
-      <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      {incidentStatusLabel(status)}
-    </span>
-  );
+  return <StatusBadge status={status} />;
 }
 
 /* -------------------------------- SLA state ------------------------------- */
 
-const SLA_TONE: Record<SlaState, string> = {
-  met: "bg-present-soft text-present",
-  on_track: "bg-present-soft text-present",
-  at_risk: "bg-late-soft text-late",
-  breached: "bg-danger-soft text-danger",
-};
-
-/**
- * SLA clock state. Always labelled in words ("On track", "At risk", "Breached", "Met") so the
- * meaning never rests on colour. `met` carries a check glyph to distinguish a satisfied, stopped
- * clock from a still-running `on_track` one that shares its green.
- */
+/** Every SLA state is a registered word too. */
 export function SlaPill({ state }: { state: SlaState }) {
-  return (
-    <span className={cn(PILL_BASE, SLA_TONE[state])}>
-      {state === "met" ? (
-        <CheckIcon className="size-3" strokeWidth={2.6} aria-hidden />
-      ) : (
-        <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      )}
-      {slaLabel(state)}
-    </span>
-  );
+  return <StatusBadge status={state} />;
 }
 
 /* ---------------------------- request status ----------------------------- */
 
-const REQUEST_TONE: Record<RequestStatus, string> = {
-  approval: "bg-late-soft text-late",
-  in_progress: "bg-info-soft text-info",
-  fulfilled: "bg-present-soft text-present",
-  rejected: "bg-danger-soft text-danger",
-};
-
+/** `approval` isn't registered (the registry has `approved`, a different word) — it takes an
+ *  explicit tone and ITSM's own wording. Missing from the registry: `approval`. */
 export function RequestStatusPill({ status }: { status: RequestStatus }) {
-  return (
-    <span className={cn(PILL_BASE, REQUEST_TONE[status])}>
-      <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      {requestStatusLabel(status)}
-    </span>
-  );
+  if (status === "approval") return <StatusBadge tone="warning" label="Awaiting approval" />;
+  return <StatusBadge status={status} />;
 }
 
 /* ----------------------------- asset status ------------------------------ */
 
-const ASSET_TONE: Record<AssetStatus, string> = {
-  in_use: "bg-present-soft text-present",
-  in_stock: "bg-info-soft text-info",
-  in_repair: "bg-late-soft text-late",
-  retired: "bg-ground text-muted",
-};
-
+/** `in_use`, `in_stock` and `in_repair` aren't registered words — ITSM's own asset lifecycle —
+ *  so they take an explicit tone. Missing from the registry: `in_use`, `in_stock`, `in_repair`.
+ *  `retired` is registered and gets the shared tone. */
 export function AssetStatusPill({ status }: { status: AssetStatus }) {
-  return (
-    <span className={cn(PILL_BASE, ASSET_TONE[status])}>
-      <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      {assetStatusLabel(status)}
-    </span>
-  );
+  if (status === "in_use") return <StatusBadge tone="success" label="In use" />;
+  if (status === "in_stock") return <StatusBadge tone="info" label="In stock" />;
+  if (status === "in_repair") return <StatusBadge tone="warning" label="In repair" />;
+  return <StatusBadge status={status} />;
 }
