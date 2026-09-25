@@ -1,4 +1,5 @@
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense } from "react";
+import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
@@ -9,21 +10,49 @@ import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
 import { RequireAuth } from "./auth/RequireAuth";
 import { DashboardPage } from "./routes/Dashboard";
-import { EmployeesPage } from "./routes/Employees";
-import { EmployeeDetailPage } from "./routes/EmployeeDetail";
-import { AttendancePage } from "./routes/Attendance";
-import { ShiftsPage } from "./routes/Shifts";
-import { LeavePage } from "./routes/Leave";
-import { LeaveTypesPage } from "./routes/LeaveTypes";
-import { ApprovalsPage } from "./routes/Approvals";
-import { RequestDetailPage } from "./routes/RequestDetail";
-import { MyRequestsPage } from "./routes/MyRequests";
-import { DelegationsPage } from "./routes/Delegations";
-import { ApprovalSettingsPage } from "./routes/ApprovalSettings";
 import { LoginPage } from "./routes/Login";
 import { LinkOutPage } from "./routes/LinkOut";
 import { NotFoundPage } from "./routes/NotFound";
+import { RouteFallback } from "./routes/RouteFallback";
 import { LogoMark } from "./ui/LogoMark";
+
+// The dashboard (the landing screen after sign-in) and login stay on the critical path.
+// Everything else — the directory, attendance, shifts, leave and the whole approvals group —
+// is real weight a session that only ever checks today's dashboard should never download, so
+// each feature group gets its own chunk, loaded once its route is visited.
+const EmployeesPage = lazy(() =>
+  import("./routes/Employees").then((m) => ({ default: m.EmployeesPage })),
+);
+const EmployeeDetailPage = lazy(() =>
+  import("./routes/EmployeeDetail").then((m) => ({ default: m.EmployeeDetailPage })),
+);
+const AttendancePage = lazy(() =>
+  import("./routes/Attendance").then((m) => ({ default: m.AttendancePage })),
+);
+const ShiftsPage = lazy(() => import("./routes/Shifts").then((m) => ({ default: m.ShiftsPage })));
+const LeavePage = lazy(() => import("./routes/Leave").then((m) => ({ default: m.LeavePage })));
+const LeaveTypesPage = lazy(() =>
+  import("./routes/LeaveTypes").then((m) => ({ default: m.LeaveTypesPage })),
+);
+const ApprovalsPage = lazy(() =>
+  import("./routes/Approvals").then((m) => ({ default: m.ApprovalsPage })),
+);
+const RequestDetailPage = lazy(() =>
+  import("./routes/RequestDetail").then((m) => ({ default: m.RequestDetailPage })),
+);
+const MyRequestsPage = lazy(() =>
+  import("./routes/MyRequests").then((m) => ({ default: m.MyRequestsPage })),
+);
+const DelegationsPage = lazy(() =>
+  import("./routes/Delegations").then((m) => ({ default: m.DelegationsPage })),
+);
+const ApprovalSettingsPage = lazy(() =>
+  import("./routes/ApprovalSettings").then((m) => ({ default: m.ApprovalSettingsPage })),
+);
+
+function lazyRoute(path: string, element: ReactNode) {
+  return { path, element: <Suspense fallback={<RouteFallback />}>{element}</Suspense> };
+}
 
 // ADR-0003 addendum: sign-in only ever happens on the dashboard, the one host the refresh
 // cookie lives on. Set in production builds only (`publish-web.sh`); unset in dev, where this
@@ -61,17 +90,17 @@ const router = createBrowserRouter([
         ),
         children: [
           { index: true, element: <DashboardPage /> },
-          { path: "employees", element: <EmployeesPage /> },
-          { path: "employees/:employeeId", element: <EmployeeDetailPage /> },
-          { path: "attendance", element: <AttendancePage /> },
-          { path: "shifts", element: <ShiftsPage /> },
-          { path: "leave", element: <LeavePage /> },
-          { path: "leave/types", element: <LeaveTypesPage /> },
-          { path: "approvals", element: <ApprovalsPage /> },
-          { path: "approvals/mine", element: <MyRequestsPage /> },
-          { path: "approvals/requests/:requestId", element: <RequestDetailPage /> },
-          { path: "approvals/delegations", element: <DelegationsPage /> },
-          { path: "approvals/settings", element: <ApprovalSettingsPage /> },
+          lazyRoute("employees", <EmployeesPage />),
+          lazyRoute("employees/:employeeId", <EmployeeDetailPage />),
+          lazyRoute("attendance", <AttendancePage />),
+          lazyRoute("shifts", <ShiftsPage />),
+          lazyRoute("leave", <LeavePage />),
+          lazyRoute("leave/types", <LeaveTypesPage />),
+          lazyRoute("approvals", <ApprovalsPage />),
+          lazyRoute("approvals/mine", <MyRequestsPage />),
+          lazyRoute("approvals/requests/:requestId", <RequestDetailPage />),
+          lazyRoute("approvals/delegations", <DelegationsPage />),
+          lazyRoute("approvals/settings", <ApprovalSettingsPage />),
           // Departments, Locations and Team Members are administered in the admin console
           // (`opsgrids-admin`) — these are honest link-outs, not a rebuild of that CRUD inside
           // this app (`frontend/CLAUDE.md`: no forking). Every other placeholder the audit found
