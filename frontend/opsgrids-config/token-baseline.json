@@ -177,7 +177,7 @@
     "spacing": 1
   },
   "opsgrids-ui/src/components/AppShell.tsx": {
-    "arbitrary": 8
+    "arbitrary": 1
   },
   "opsgrids-ui/src/components/Card.stories.tsx": {
     "spacing": 1
@@ -207,9 +207,7 @@
     "spacing": 1
   },
   "opsgrids-ui/src/components/Sidebar.tsx": {
-    "arbitrary": 5,
-    "spacing": 5,
-    "radius": 1
+    "spacing": 3
   },
   "opsgrids-ui/src/components/States.stories.tsx": {
     "spacing": 2

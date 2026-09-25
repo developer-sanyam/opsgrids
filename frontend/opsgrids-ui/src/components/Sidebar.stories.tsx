@@ -1,90 +1,108 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { MemoryRouter } from "react-router-dom";
-import { fn } from "storybook/test";
 
 import {
-  ActivityIcon,
-  BarChartIcon,
   BoardIcon,
-  BuildingIcon,
-  FunnelIcon,
+  BriefcaseIcon,
   HomeIcon,
-  LifeBuoyIcon,
+  ReceiptIcon,
   SettingsIcon,
+  ShieldIcon,
   UsersIcon,
 } from "../icons";
+import type { ModuleLink, NavGroup } from "./Sidebar";
 import { Sidebar } from "./Sidebar";
-import type { NavGroup } from "./Sidebar";
+
+function Mark() {
+  return (
+    <span
+      className="grid size-7 shrink-0 place-items-center rounded-tile bg-accent text-xs font-bold text-on-accent"
+      aria-hidden
+    >
+      R
+    </span>
+  );
+}
 
 const GROUPS: NavGroup[] = [
   {
     title: "Pipeline",
     items: [
       { to: "/", label: "Overview", icon: HomeIcon, end: true },
-      { to: "/leads", label: "Leads", icon: FunnelIcon, badge: "12" },
       { to: "/deals", label: "Deals", icon: BoardIcon, count: "48" },
-      { to: "/activities", label: "Activities", icon: ActivityIcon },
-    ],
-  },
-  {
-    title: "Records",
-    items: [
-      { to: "/companies", label: "Companies", icon: BuildingIcon, count: "126" },
-      { to: "/contacts", label: "Contacts", icon: UsersIcon, count: "1,204" },
-      { to: "/reports", label: "Reports", icon: BarChartIcon },
+      { to: "/contacts", label: "Contacts", icon: UsersIcon },
     ],
   },
 ];
 
-function Mark() {
-  return (
-    <span className="grid size-8 shrink-0 place-items-center rounded-tile bg-accent text-sm font-bold text-on-accent" aria-hidden>
-      R
-    </span>
-  );
-}
+const MODULES: ModuleLink[] = [
+  { key: "hrms", label: "HRMS", href: "https://people.opsgrids.com", icon: UsersIcon },
+  { key: "finance", label: "Finance", href: "https://finance.opsgrids.com", icon: ReceiptIcon },
+];
+
+const ADMIN: ModuleLink[] = [
+  { key: "users", label: "Users", href: "/admin/members", icon: UsersIcon },
+  { key: "audit-logs", label: "Audit Logs", href: "/admin/audit", icon: ShieldIcon },
+];
 
 const meta = {
-  title: "Navigation/Sidebar",
+  title: "Layout/Sidebar",
   component: Sidebar,
   args: {
     groups: GROUPS,
-    pinned: [
-      { to: "/settings", label: "Settings", icon: SettingsIcon },
-      { to: "/help", label: "Help", icon: LifeBuoyIcon },
-    ],
-    account: { name: "Sofia Marchetti", email: "sofia@acme.example", organizationName: "Acme Industries" },
-    onSignOut: fn(),
+    pinned: [{ to: "/settings", label: "Settings", icon: SettingsIcon }],
+    user: { name: "Sofia Marchetti", email: "sofia@acme.example", roleLabel: "Sales Manager" },
     logo: <Mark />,
-    product: { name: "OpsGrids Revenue", tagline: "Sales workspace" },
-    search: { label: "Search deals", placeholder: "Search deals", to: "/deals" },
+    productName: "OpsGrids Revenue",
   },
-  decorators: [
-    (Story) => (
-      <MemoryRouter initialEntries={["/deals"]}>
-        <div className="h-180 w-62">
-          <Story />
-        </div>
-      </MemoryRouter>
-    ),
-  ],
+  render: (args) => (
+    <MemoryRouter initialEntries={["/"]}>
+      <div className="shell-side-h shell-sidebar-w">
+        <Sidebar {...args} />
+      </div>
+    </MemoryRouter>
+  ),
 } satisfies Meta<typeof Sidebar>;
 
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+/** This app's own nav and pinned Settings. No cross-product modules or admin links passed. */
 export const Default: Story = {};
 
-/** For a count that is a problem (overdue invoices) rather than merely new. */
-export const DangerBadge: Story = { args: { badgeTone: "danger" } };
-
-export const NoOrganization: Story = {
-  args: { account: { name: "Oluwaseun Adeyemi-Carter", email: "oluwaseun.adeyemi-carter@a-very-long-domain.example" } },
+/** Modules and Admin groups appear only once the app supplies them — never empty headings. */
+export const WithModulesAndAdmin: Story = {
+  args: { modules: MODULES, adminLinks: ADMIN },
 };
 
-export const AccountMenuOpen: Story = {
-  play: async ({ canvas, userEvent }) => {
-    await userEvent.click(canvas.getByRole("button", { name: /Sofia Marchetti/ }));
-    await canvas.findByRole("menuitem", { name: "Sign out" });
+/** The 72px tablet rail: labels move off-screen (still read by a screen reader) and a native
+ *  tooltip names each icon on hover. */
+export const Collapsed: Story = {
+  args: { modules: MODULES, adminLinks: ADMIN, collapsed: true },
+  render: (args) => (
+    <MemoryRouter initialEntries={["/"]}>
+      <div className="shell-side-h shell-rail-w">
+        <Sidebar {...args} />
+      </div>
+    </MemoryRouter>
+  ),
+};
+
+/** No tenant modules — the staff console's shape: this app's own nav and identity only. */
+export const StaffConsole: Story = {
+  args: {
+    groups: [
+      {
+        title: "Console",
+        items: [
+          { to: "/", label: "Overview", icon: HomeIcon, end: true },
+          { to: "/accounts", label: "Accounts", icon: BriefcaseIcon },
+        ],
+      },
+    ],
+    pinned: undefined,
+    modules: undefined,
+    adminLinks: undefined,
+    user: { name: "Jordan Blake", email: "jordan@opsgrids.com", roleLabel: "Owner" },
   },
 };

@@ -675,6 +675,15 @@ export const SquareIcon = (p: IconProps) => (
   </Base>
 );
 
+export const StoreIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M4 9V5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5V9" />
+    <path d="M3 9h18l-1.2 4.2a2 2 0 0 1-1.92 1.45H6.12A2 2 0 0 1 4.2 13.2L3 9Z" />
+    <path d="M5 14.6V19a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4.4" />
+    <path d="M9.5 20v-4a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 16v4" />
+  </Base>
+);
+
 export const SunIcon = (p: IconProps) => (
   <Base {...p}>
     <circle cx="12" cy="12" r="4" />
