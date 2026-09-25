@@ -89,13 +89,17 @@ async def lifecycle_counts(session: AsyncSession) -> dict[str, int]:
     return counts
 
 
-def to_org_state_out(state: OrgCommercialState) -> OrgStateOut:
+def to_org_state_out(state: OrgCommercialState, *, user_count: int | None = None) -> OrgStateOut:
     """Shape one commercial snapshot the way the operator list and detail composite render it —
     `lifecycle` computed server-side (the same bucket `lifecycle_counts` uses, so the client never
     reimplements the rule), plus the mirrored identity fields. Not a plain
     `OrgStateOut.model_validate(state)`: the model's own `org_created_at` column is named to
     avoid colliding with `TenantBase`'s bookkeeping `created_at`, so it is remapped explicitly
     here rather than by an attribute-name coincidence.
+
+    `user_count` is the one field this doesn't have from `state` at all — merged in live from
+    account-service by the caller (`GET /admin/organizations`), `None` everywhere else (the
+    detail composite has no reason to make that extra call twice in one request).
     """
     return OrgStateOut(
         organization_id=state.organization_id,
@@ -111,6 +115,7 @@ def to_org_state_out(state: OrgCommercialState) -> OrgStateOut:
         trial_ends_at=state.trial_ends_at,
         locked=state.locked,
         updated_at=state.updated_at,
+        user_count=user_count,
     )
 
 

@@ -34,7 +34,15 @@ from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import delegation, directory_client, pagination, pricing, selectors, services
+from app import (
+    account_client,
+    delegation,
+    directory_client,
+    pagination,
+    pricing,
+    selectors,
+    services,
+)
 from app.config import settings
 from app.delegation import DelegationError
 from app.directory_client import DirectoryLookupError
@@ -49,6 +57,8 @@ from app.schemas import (
     OrganizationPricingOut,
     OrganizationsOut,
     OrgDetailOut,
+    OrgMemberOut,
+    OrgMembersOut,
     OverrideIn,
     OverrideOut,
     SeriesPointOut,
@@ -63,6 +73,9 @@ from app.schemas import (
 from platform_core.auth import Principal, require_operator
 from platform_core.db import get_directory_session, get_session
 from platform_core.errors import NotFoundProblem, UpstreamUnavailableProblem, ValidationProblem
+from platform_core.logging import get_logger
+
+log = get_logger("console.routes")
 
 router = APIRouter(tags=["console"])
 
@@ -112,12 +125,32 @@ async def info() -> ServiceInfo:
     summary="Every organization's commercial state, with platform MRR/trial/churn metrics",
 )
 async def list_organizations(
-    session: DirectorySessionDep, operator: OperatorReadAny
+    session: DirectorySessionDep, operator: OperatorReadAny, client: DelegationClientDep
 ) -> OrganizationsOut:
+    # The call goes first, before this request's directory session has run a query: no database
+    # connection is held while account-service answers (docs/io-outside-transactions.md).
+    # Best-effort: a member-count outage must not blank a list that otherwise renders fine off
+    # console's own schema (`account_client.member_counts`'s own docstring).
+    counts: dict[str, int] | None
+    try:
+        counts = await account_client.member_counts(settings(), client=client)
+    except account_client.AccountLookupError as exc:
+        log.warning("console.organizations.member_counts_unavailable", error=str(exc)[:300])
+        counts = None
+
     states = await selectors.all_org_states(session)
     metrics = await selectors.platform_metrics(session)
+
     return OrganizationsOut(
-        organizations=[selectors.to_org_state_out(s) for s in states],
+        organizations=[
+            selectors.to_org_state_out(
+                s,
+                # Account answered and this organization is not in its counts: it has no
+                # members, which is a real 0. Only an unreachable account is `null` (unknown).
+                user_count=None if counts is None else counts.get(str(s.organization_id), 0),
+            )
+            for s in states
+        ],
         metrics=MetricsOut(**metrics),
     )
 
@@ -173,6 +206,59 @@ async def get_organization_detail(
         country=directory.get("country"),
         created_at=directory["created_at"],
         commercial=selectors.to_org_state_out(commercial) if commercial is not None else None,
+    )
+
+
+@router.get(
+    "/admin/organizations/{organization_id}/users",
+    response_model=OrgMembersOut,
+    summary="One organization's members — staff-only, email masked, delegated to account-service",
+)
+async def get_organization_members(
+    organization_id: uuid.UUID,
+    request: Request,
+    app_session: AppSessionDep,
+    client: DelegationClientDep,
+    operator: OperatorReadAny,
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=200)] = 25,
+) -> OrgMembersOut:
+    """The Users tab: id, name, a masked email, status, joined/last-active and roles by name,
+    one page at a time. Console writes no PII of its own — every field here is delegated to
+    account-service's own staff-only member read (`app/directory_client.py`), which does the
+    masking. Same forwarded-operator-token shape as `get_organization_detail`, and the same
+    "every staff read writes an audit row" rule, its own action so `/admin/audit` can tell a
+    member-list read apart from a plain detail read.
+    """
+    operator_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    try:
+        page_data = await directory_client.list_members(
+            settings(),
+            organization_id,
+            operator_token=operator_token,
+            client=client,
+            page=page,
+            size=size,
+        )
+    except DirectoryLookupError as exc:
+        raise UpstreamUnavailableProblem(str(exc)) from exc
+    if page_data is None:
+        raise NotFoundProblem("No such organization")
+
+    await services.record_organization_members_read(
+        app_session,
+        organization_id=organization_id,
+        actor_id=operator.sub,
+        operator_label=f"operator:{operator.sub}",
+        request=request,
+    )
+
+    return OrgMembersOut(
+        members=[OrgMemberOut.model_validate(m) for m in page_data["items"]],
+        total=int(page_data["total"]),
+        page=int(page_data["page"]),
+        size=int(page_data["size"]),
+        pages=int(page_data["pages"]),
     )
 
 

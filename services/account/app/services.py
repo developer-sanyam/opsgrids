@@ -2511,3 +2511,28 @@ async def record_operator_directory_read(
         entity_id=organization_id,
         request=request,
     )
+
+
+async def record_operator_members_read(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    request: Request | None = None,
+) -> None:
+    """The audit row for an operator's staff-only read of one organization's member list
+    (`app/api/admin.py`'s `list_members_for_operator`). Same bypass-then-narrow shape and the
+    same reason as `record_operator_directory_read`, but its own action: a member list exposes
+    several people's PII (masked, but still) in one call, which is worth telling apart from an
+    operator reading the organization's own commercial identity.
+    """
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=actor_id,
+        acting_as=f"operator:{actor_id}",
+        action="organization.members_viewed",
+        entity="membership",
+        request=request,
+    )

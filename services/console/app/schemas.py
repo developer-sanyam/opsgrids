@@ -52,6 +52,14 @@ class OrgStateOut(BaseModel):
     trial_ends_at: datetime | None
     locked: bool
     updated_at: datetime
+    #: The accounts list's Users column — merged in live from account-service's own bulk count
+    #: (`GET /internal/v1/organizations/member-counts`), never folded and stored: no `core.*`
+    #: event tells console when a membership is added or removed, so a stored count would only
+    #: ever be as fresh as the last one-off backfill run. `0` is real (account answered and lists
+    #: no members for this organization); `None` means *unknown* — account-service could not be
+    #: reached in time (best-effort: a list that already renders the rest of the row should not
+    #: go blank for one enrichment call failing), or nothing has merged a count into this row.
+    user_count: int | None = None
 
 
 class MetricsOut(BaseModel):
@@ -132,6 +140,35 @@ class OrgDetailOut(BaseModel):
     country: str | None
     created_at: datetime
     commercial: OrgStateOut | None
+
+
+class OrgMemberOut(BaseModel):
+    """One member of an organization, as the staff Users tab renders it — mirrors
+    account-service's own `OrganizationMemberOut` field for field, but re-published under
+    console's own contract (`app/directory_client.py`'s composite) rather than proxying its
+    JSON verbatim, so account's internal shape can move without silently moving console's own
+    OpenAPI surface. The email is masked at account-service; nothing here ever sees the
+    plaintext, and there is no unmask path — out of scope by the brief that added this route.
+    """
+
+    id: uuid.UUID
+    name: str
+    email_masked: str
+    status: str
+    joined_at: datetime | None
+    last_active_at: datetime | None
+    roles: list[str]
+
+
+class OrgMembersOut(BaseModel):
+    """`GET /admin/organizations/{id}/users` — one page of an organization's members,
+    delegated to account-service's own staff-only directory read."""
+
+    members: list[OrgMemberOut]
+    total: int
+    page: int
+    size: int
+    pages: int
 
 
 class SubscriptionOut(BaseModel):

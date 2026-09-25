@@ -40,10 +40,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
 from app.config import settings
-from app.schemas import OrganizationDirectoryOut
+from app.schemas import OrganizationDirectoryOut, OrganizationMemberOut
 from platform_core.auth import OPERATOR_AUDIENCE, decode_token, require_service_token
 from platform_core.db import get_directory_session, session_scope
 from platform_core.errors import ForbiddenProblem, NotFoundProblem, UnauthorizedProblem
+from platform_core.pagination import Page, PageQuery, paginate
 
 router = APIRouter(prefix="/admin/directory", tags=["account-admin"])
 
@@ -133,3 +134,44 @@ async def get_organization_for_operator(
             request=request,
         )
     return OrganizationDirectoryOut.model_validate(org)
+
+
+@router.get(
+    "/organizations/{organization_id}/members",
+    response_model=Page[OrganizationMemberOut],
+    summary="One organization's members — staff-only, email masked",
+)
+async def list_members_for_operator(
+    organization_id: uuid.UUID,
+    request: Request,
+    session: DirectorySessionDep,
+    _console: ConsoleServiceDep,
+    operator_sub: OperatorSubDep,
+    params: PageQuery,
+) -> Page[OrganizationMemberOut]:
+    """The Users tab and the Users column's per-org detail (ui/backend-data-2): id, name, a
+    masked email, status, joined/last-active and roles by name. Unmasking is out of scope —
+    there is no path here that ever returns the plaintext.
+
+    Same two-credential and bypass-then-narrow shape as `get_organization_for_operator` above:
+    the list itself runs on the BYPASSRLS directory session (there is no tenant to bind for a
+    cross-tenant caller), and the read is audited in its own tenant-bound transaction afterward.
+    404 first, same as the detail route, so a caller cannot page an organization that does not
+    exist and learn something from the shape of the (empty) response instead.
+    """
+    org = await selectors.get_organization(session, organization_id)
+    if org is None:
+        raise NotFoundProblem("No such organization")
+
+    stmt = selectors.organization_members_stmt(organization_id)
+    rows, total = await paginate(session, stmt, params)
+    items = [selectors.to_operator_member_out(m) for m in rows]
+
+    async with session_scope(organization_id) as audit_session:
+        await services.record_operator_members_read(
+            audit_session,
+            organization_id=organization_id,
+            actor_id=operator_sub,
+            request=request,
+        )
+    return Page.build(items, total=total, params=params)

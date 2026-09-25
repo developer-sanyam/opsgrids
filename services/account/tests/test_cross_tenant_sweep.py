@@ -218,6 +218,15 @@ ALLOW_LIST: dict[Route, str] = {
         "route rather than something this one leaves untested. Covered directly instead in "
         "test_admin_directory.py."
     ),
+    ("GET", f"{PREFIX}/admin/directory/organizations/{{organization_id}}/members"): (
+        "The sibling of the organization directory read above and reachable the same way and "
+        "only that way: console's service token AND the operator's own token in "
+        "X-Operator-Token, verified via JWKS, never through get_principal — so overriding "
+        "get_principal to 'be tenant B' has no effect and it answers 401 unconditionally "
+        "without those headers. The cross-tenant property this sweep proves for tenant routes "
+        "is proven for this one directly, in both directions (A's people never appear under "
+        "B's id and B's never under A's), in test_admin_members.py."
+    ),
 }
 
 SWEPT = [route for route in ROUTES if route not in ALLOW_LIST]

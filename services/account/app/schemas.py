@@ -113,6 +113,23 @@ class OrganizationDirectoryOut(BaseModel):
     created_at: datetime
 
 
+class OrganizationMemberOut(BaseModel):
+    """One member of an organization, as a staff operator may see it — never `MemberOut`,
+    the colleague-facing shape, and never a plaintext email: PII is masked by default, and
+    unmasking needs its own permission plus an audit row every time (CLAUDE.md), neither of
+    which this read is. `id` is the membership id, the same identifier the tenant-facing
+    member endpoints use, so a support ticket can cross-reference one.
+    """
+
+    id: uuid.UUID
+    name: str
+    email_masked: str
+    status: str
+    joined_at: datetime | None
+    last_active_at: datetime | None
+    roles: list[str]
+
+
 class OrganizationSummaryOut(BaseModel):
     """One row of `GET /internal/v1/organizations` — console's backfill discovery read
     (`services/console/app/account_client.py`), never account's own OpenAPI: that router is
@@ -146,6 +163,21 @@ class OrganizationsPageOut(BaseModel):
 
     items: list[OrganizationSummaryOut]
     next_cursor: uuid.UUID | None
+
+
+class OrganizationMemberCountOut(BaseModel):
+    organization_id: uuid.UUID
+    count: int
+
+
+class OrganizationMemberCountsOut(BaseModel):
+    """Every organization's member count in one call — console's `/admin/organizations` list
+    merges this in live rather than folding and storing it, since no event today tells console
+    when a membership is added or removed: computed fresh on every request instead of ever
+    going stale between one-off backfill runs, at the cost of one extra internal call per list
+    read rather than none."""
+
+    counts: list[OrganizationMemberCountOut]
 
 
 # --------------------------------------------------------------------- structure

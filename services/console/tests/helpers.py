@@ -99,6 +99,45 @@ def as_principal(principal: Principal) -> Iterator[None]:
         app.dependency_overrides.pop(get_principal, None)
 
 
+class Downstream:
+    """A mock transport that answers by URL path and records every request it saw.
+
+    `routes` maps a path **suffix** to either a `httpx.Response` or a callable taking the request
+    and returning one; the first suffix a request's path ends with wins, and a path nothing
+    matches is a 503 — the same "downstream unavailable" default the `client` fixture installs.
+    Installed on the app with `install()`; `calls` is what a test asserts the delegated hops on.
+    """
+
+    def __init__(self, routes: dict[str, Any]) -> None:
+        self.routes = routes
+        self.calls: list[Any] = []
+
+    def _handle(self, request: Any) -> Any:
+        import httpx
+
+        self.calls.append(request)
+        for suffix, answer in self.routes.items():
+            if request.url.path.endswith(suffix):
+                return answer(request) if callable(answer) else answer
+        return httpx.Response(503)
+
+    def install(self) -> None:
+        from collections.abc import AsyncIterator
+
+        import httpx
+
+        from app.api.routes import get_delegation_client
+
+        downstream = self
+
+        async def _override() -> AsyncIterator[httpx.AsyncClient]:
+            transport = httpx.MockTransport(downstream._handle)
+            async with httpx.AsyncClient(transport=transport) as mock_client:
+                yield mock_client
+
+        app.dependency_overrides[get_delegation_client] = _override
+
+
 def make_fake_resolver(prices: dict[str, tuple[int, str]]):
     """A price resolver keyed by plan_version_id, so the fold needs no catalog or broker."""
 

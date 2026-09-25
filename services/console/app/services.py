@@ -556,3 +556,32 @@ async def record_organization_read(
             entity_id=organization_id,
             request=request,
         )
+
+
+async def record_organization_members_read(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID | None,
+    operator_label: str,
+    request: Request | None,
+) -> None:
+    """Record that an operator read one organization's member list, bound to that organization.
+
+    Same bypass-then-narrow shape and reasoning as `record_organization_read`, and its own
+    action (`organization.members_viewed`, matching account-service's own audit row for the
+    same call) rather than reusing `organization.viewed` — a member list exposes several
+    people's PII in one call, worth telling apart in `/admin/audit`.
+    """
+    async with session.begin():
+        await set_tenant(session, organization_id)
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=organization_id,
+            actor_id=actor_id,
+            acting_as=operator_label,
+            action="organization.members_viewed",
+            entity="membership",
+            request=request,
+        )

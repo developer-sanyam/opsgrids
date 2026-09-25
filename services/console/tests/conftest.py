@@ -17,6 +17,7 @@ import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+import httpx
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -27,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # so only one may be on the path in a given process.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.api.routes import get_delegation_client
 from app.config import settings
 from app.main import app
 from app.models import SCHEMA
@@ -155,8 +157,13 @@ async def client(
 
     The read API uses `get_directory_session`; the override endpoint uses `get_session`. Overriding
     both routes every endpoint through a session the test can also read, while leaving each path's
-    own transaction and tenant binding intact. `get_delegation_client` is left for the override test
-    to override with a mock transport.
+    own transaction and tenant binding intact.
+
+    `get_delegation_client` defaults to a client whose every downstream call is refused (503), so a
+    test that does not care about account/catalog/subscription never reaches a real service that
+    happens to be listening on this machine's dev ports — the list routes' best-effort enrichment
+    (member counts, plan names) simply degrades to `null`, exactly as it does in production when
+    one is down. A test that does care overrides it with its own mock transport.
     """
 
     async def _directory() -> AsyncIterator[AsyncSession]:
@@ -165,8 +172,16 @@ async def client(
     async def _app() -> AsyncIterator[AsyncSession]:
         yield app_plain_session
 
+    async def _downstream_unavailable() -> AsyncIterator[httpx.AsyncClient]:
+        transport = httpx.MockTransport(lambda request: httpx.Response(503))
+        async with httpx.AsyncClient(transport=transport) as downstream:
+            yield downstream
+
     app.dependency_overrides[get_directory_session] = _directory
     app.dependency_overrides[get_session] = _app
+    # `setdefault`, not assignment: a module whose autouse fixture already wired its own
+    # downstream (test_pricing's `FakeUpstreams`) runs before this one and must keep it.
+    app.dependency_overrides.setdefault(get_delegation_client, _downstream_unavailable)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
     app.dependency_overrides.clear()
