@@ -180,8 +180,9 @@ export interface AttentionItem {
 
 /**
  * Mirrors `SummaryOut` — `GET /deals/summary`, the server's own rollup over the caller's scope.
- * The headline figures agree with what `data/derive.ts` computes client-side over the deal list
- * (both are live); `trend`'s earlier points are representative history, its last point live.
+ * The headline figures are the server's real totals, computed live from the deals and activities
+ * in scope — the Overview reads these instead of counting a page of `getAllDeals()`, which is
+ * capped and wrong once an org's book passes 200 rows.
  */
 export interface Summary {
   pipeline_value_minor: number;
@@ -189,9 +190,10 @@ export interface Summary {
   open_deals: number;
   win_rate_pct: number;
   won_value_minor: number;
-  /** Touches logged in the trailing seven days — live, unlike the fabricated figure this replaces. */
+  /** Touches logged in the trailing seven days. */
   activities_this_week: number;
   currency: string;
-  trend: TrendPoint[];
+  /** `null` until a dated pipeline-value history exists — no chart may treat this as a series. */
+  trend: TrendPoint[] | null;
   funnel: StageRollup[];
 }
