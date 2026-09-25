@@ -10,6 +10,12 @@ export interface OrganizationChoice {
   slug: string;
   name: string;
   roles: string[];
+  /** Index-aligned with `roles` — display labels from the `roles` table, falling back to
+   * the code itself for one the server has no name for. Optional in the type only so a
+   * fixture identity (offline/demo mode) built before this field existed still type-checks;
+   * the real server always sends it. `useCurrentUser` treats an absent entry as a missing
+   * name, same as an empty one. */
+  role_names?: string[];
 }
 
 /** `TokenOut` — a completed sign-in. The refresh token is an httpOnly cookie, not in the body. */
@@ -45,6 +51,8 @@ export interface MeOut {
   organization_id: string | null;
   membership_id: string | null;
   roles: string[];
+  /** Index-aligned with `roles`, same source and fallback as `OrganizationChoice.role_names`. */
+  role_names?: string[];
   amr: string[];
   must_change_password: boolean;
   mfa_enabled: boolean;

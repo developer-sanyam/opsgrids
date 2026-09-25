@@ -34,6 +34,7 @@ function meIn(organizationId: string): MeOut {
     organization_id: organizationId,
     membership_id: `m-${organizationId}`,
     roles: [],
+    role_names: [],
     amr: [],
     must_change_password: false,
     mfa_enabled: false,
