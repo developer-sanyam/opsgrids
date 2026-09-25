@@ -624,3 +624,168 @@ class TestMetricsSeries:
     async def test_an_unauthenticated_request_is_refused(self, client: AsyncClient) -> None:
         response = await client.get("/api/v1/admin/metrics/series")
         assert response.status_code == 401
+
+
+# --------------------------------------------------------------------- audit and usage paging
+
+
+class TestAuditAndUsagePaging:
+    async def test_organization_id_filters_audit_to_one_org(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+        org_b: uuid.UUID,
+    ) -> None:
+        from app.models import AuditLog
+
+        async with admin_session.begin():
+            admin_session.add_all(
+                [
+                    AuditLog(organization_id=org_id, action="override.suspend", entity="x"),
+                    AuditLog(organization_id=org_b, action="override.suspend", entity="x"),
+                ]
+            )
+
+        with as_principal(operator_principal(roles=["support"])):
+            response = await client.get(
+                "/api/v1/admin/audit", params={"organization_id": str(org_id)}
+            )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert len(body["audit"]) == 1
+        assert body["audit"][0]["organization_id"] == str(org_id)
+
+    async def test_organization_id_filters_usage_to_one_org(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+        org_b: uuid.UUID,
+    ) -> None:
+        from app.models import UsageSummary
+
+        async with admin_session.begin():
+            admin_session.add_all(
+                [
+                    UsageSummary(
+                        organization_id=org_id, meter_key="seats", period="2026-01", quantity=5
+                    ),
+                    UsageSummary(
+                        organization_id=org_b, meter_key="seats", period="2026-01", quantity=9
+                    ),
+                ]
+            )
+
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            response = await client.get(
+                "/api/v1/admin/usage", params={"organization_id": str(org_id)}
+            )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert len(body["usage"]) == 1
+        assert body["usage"][0]["organization_id"] == str(org_id)
+
+    async def test_no_params_returns_the_existing_envelope_shape(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        from app.models import AuditLog
+
+        async with admin_session.begin():
+            admin_session.add(
+                AuditLog(organization_id=org_id, action="override.suspend", entity="x")
+            )
+
+        with as_principal(operator_principal(roles=["support"])):
+            response = await client.get("/api/v1/admin/audit")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert "audit" in body
+        assert body["next_cursor"] is None, "one row never fills a 200-row page"
+
+    async def test_a_cursor_pages_through_every_audit_row_with_no_gaps_or_repeats(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from app.models import AuditLog
+
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        async with admin_session.begin():
+            admin_session.add_all(
+                [
+                    AuditLog(
+                        organization_id=org_id,
+                        action="override.suspend",
+                        entity="x",
+                        at=base + timedelta(minutes=i),
+                    )
+                    for i in range(5)
+                ]
+            )
+
+        seen: list[str] = []
+        cursor: str | None = None
+        with as_principal(operator_principal(roles=["support"])):
+            for _ in range(10):
+                params = {"limit": 2}
+                if cursor is not None:
+                    params["cursor"] = cursor
+                response = await client.get("/api/v1/admin/audit", params=params)
+                assert response.status_code == 200, response.text
+                body = response.json()
+                seen.extend(row["id"] for row in body["audit"])
+                cursor = body["next_cursor"]
+                if cursor is None:
+                    break
+        assert len(seen) == 5
+        assert len(set(seen)) == 5, "a page boundary must never repeat a row"
+
+    async def test_a_cursor_pages_through_every_usage_row(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        from app.models import UsageSummary
+
+        async with admin_session.begin():
+            admin_session.add_all(
+                [
+                    UsageSummary(
+                        organization_id=org_id,
+                        meter_key=f"meter-{i}",
+                        period="2026-01",
+                        quantity=i,
+                    )
+                    for i in range(5)
+                ]
+            )
+
+        seen: list[str] = []
+        cursor: str | None = None
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            for _ in range(10):
+                params = {"limit": 2}
+                if cursor is not None:
+                    params["cursor"] = cursor
+                response = await client.get("/api/v1/admin/usage", params=params)
+                assert response.status_code == 200, response.text
+                body = response.json()
+                seen.extend(row["meter_key"] for row in body["usage"])
+                cursor = body["next_cursor"]
+                if cursor is None:
+                    break
+        assert len(seen) == 5
+        assert len(set(seen)) == 5
+
+    async def test_a_malformed_audit_cursor_is_422_not_500(self, client: AsyncClient) -> None:
+        with as_principal(operator_principal(roles=["support"])):
+            response = await client.get(
+                "/api/v1/admin/audit", params={"cursor": "not-a-real-cursor"}
+            )
+        assert response.status_code == 422
+
+    async def test_a_malformed_usage_cursor_is_422_not_500(self, client: AsyncClient) -> None:
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            response = await client.get(
+                "/api/v1/admin/usage", params={"cursor": "not-a-real-cursor"}
+            )
+        assert response.status_code == 422

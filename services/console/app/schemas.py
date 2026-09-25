@@ -165,6 +165,10 @@ class UsageOut(BaseModel):
 
 class UsageListOut(BaseModel):
     usage: list[UsageOut]
+    #: The `cursor` to request for the next page, or `None` on the last one (or when the
+    #: caller never asked for paging at all — every existing consumer of this envelope keeps
+    #: working unchanged, it simply now reads a `limit`-sized page instead of the whole table).
+    next_cursor: str | None = None
 
 
 class AuditOut(BaseModel):
@@ -183,6 +187,10 @@ class AuditOut(BaseModel):
 
 class AuditListOut(BaseModel):
     audit: list[AuditOut]
+    #: The `cursor` to request for the next page, or `None` once there isn't one — the default
+    #: page (200, unfiltered) is exactly what this route always returned, so an existing caller
+    #: that ignores this field sees no change.
+    next_cursor: str | None = None
 
 
 class OverrideIn(BaseModel):

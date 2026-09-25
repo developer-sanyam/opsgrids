@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, literal, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain
@@ -114,28 +114,56 @@ def to_org_state_out(state: OrgCommercialState) -> OrgStateOut:
     )
 
 
-async def all_usage(session: AsyncSession) -> Sequence[UsageSummary]:
-    """Every organization's usage rollups."""
-    return (
-        (
-            await session.execute(
-                select(UsageSummary).order_by(
-                    UsageSummary.organization_id, UsageSummary.meter_key, UsageSummary.period
-                )
-            )
+async def all_usage(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID | None = None,
+    limit: int | None = None,
+    after: tuple[uuid.UUID, str, str] | None = None,
+) -> Sequence[UsageSummary]:
+    """Every organization's usage rollups, oldest-organization-first — optionally narrowed to
+    one organization and paged with a keyset cursor on the same `(organization_id, meter_key,
+    period)` ordering the unfiltered read already used, so an org-scoped page and the platform
+    page agree on what "next" means. `limit=None` is the pre-pagination behaviour (every row,
+    still used by the RLS-bypass companion test) — every real caller passes one.
+    """
+    stmt = select(UsageSummary).order_by(
+        UsageSummary.organization_id, UsageSummary.meter_key, UsageSummary.period
+    )
+    if organization_id is not None:
+        stmt = stmt.where(UsageSummary.organization_id == organization_id)
+    if after is not None:
+        after_org, after_meter, after_period = after
+        stmt = stmt.where(
+            tuple_(UsageSummary.organization_id, UsageSummary.meter_key, UsageSummary.period)
+            > tuple_(literal(after_org), literal(after_meter), literal(after_period))
         )
-        .scalars()
-        .all()
-    )
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return (await session.execute(stmt)).scalars().all()
 
 
-async def recent_audit(session: AsyncSession, *, limit: int = 200) -> Sequence[AuditLog]:
-    """The most recent operator-override audit rows across every organization."""
-    return (
-        (await session.execute(select(AuditLog).order_by(AuditLog.at.desc()).limit(limit)))
-        .scalars()
-        .all()
-    )
+async def recent_audit(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID | None = None,
+    limit: int = 200,
+    after: tuple[datetime, uuid.UUID] | None = None,
+) -> Sequence[AuditLog]:
+    """The most recent operator-override audit rows, newest first — optionally narrowed to one
+    organization and paged with a keyset cursor. Ordered `at DESC, id DESC`: several audit rows
+    can share the same `at` (two overrides in the same request-second), so `id` is the
+    tiebreaker a plain-`at` cursor would otherwise silently skip or repeat rows around.
+    """
+    stmt = select(AuditLog).order_by(AuditLog.at.desc(), AuditLog.id.desc()).limit(limit)
+    if organization_id is not None:
+        stmt = stmt.where(AuditLog.organization_id == organization_id)
+    if after is not None:
+        after_at, after_id = after
+        stmt = stmt.where(
+            tuple_(AuditLog.at, AuditLog.id) < tuple_(literal(after_at), literal(after_id))
+        )
+    return (await session.execute(stmt)).scalars().all()
 
 
 async def platform_metrics(session: AsyncSession) -> dict[str, Any]:

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from datetime import datetime
 from typing import Annotated
 
 import httpx
@@ -33,7 +34,7 @@ from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import delegation, directory_client, pricing, selectors, services
+from app import delegation, directory_client, pagination, pricing, selectors, services
 from app.config import settings
 from app.delegation import DelegationError
 from app.directory_client import DirectoryLookupError
@@ -258,24 +259,75 @@ async def list_subscriptions(
     return SubscriptionsOut(subscriptions=rows)
 
 
+#: The page size every admin list here defaults and caps to — audit's own long-standing "latest
+#: 200" made real as a page rather than a hardcoded slice, and usage's new one now that it is no
+#: longer read in full every call.
+DEFAULT_LIST_LIMIT = 200
+MAX_LIST_LIMIT = 500
+
+OrganizationIdFilter = Annotated[
+    uuid.UUID | None,
+    Query(description="Narrow the list to one organization's rows."),
+]
+ListLimit = Annotated[int, Query(ge=1, le=MAX_LIST_LIMIT)]
+ListCursor = Annotated[
+    str | None,
+    Query(description="The `next_cursor` from a previous page. Omit for the first page."),
+]
+
+
 @router.get(
     "/admin/usage",
     response_model=UsageListOut,
     summary="Every organization's usage rollups, by meter and period",
 )
-async def list_usage(session: DirectorySessionDep, operator: OperatorBilling) -> UsageListOut:
-    rows = await selectors.all_usage(session)
-    return UsageListOut(usage=[UsageOut.model_validate(r) for r in rows])
+async def list_usage(
+    session: DirectorySessionDep,
+    operator: OperatorBilling,
+    organization_id: OrganizationIdFilter = None,
+    cursor: ListCursor = None,
+    limit: ListLimit = DEFAULT_LIST_LIMIT,
+) -> UsageListOut:
+    after = None
+    if cursor is not None:
+        raw_org, meter_key, period = pagination.decode_cursor(cursor, expected_parts=3)
+        after = (uuid.UUID(raw_org), meter_key, period)
+    rows = await selectors.all_usage(
+        session, organization_id=organization_id, limit=limit, after=after
+    )
+    next_cursor = (
+        pagination.encode_cursor(str(rows[-1].organization_id), rows[-1].meter_key, rows[-1].period)
+        if len(rows) == limit
+        else None
+    )
+    return UsageListOut(usage=[UsageOut.model_validate(r) for r in rows], next_cursor=next_cursor)
 
 
 @router.get(
     "/admin/audit",
     response_model=AuditListOut,
-    summary="Recent operator-override audit rows across every organization",
+    summary="Recent operator-override audit rows, optionally narrowed to one organization",
 )
-async def list_audit(session: DirectorySessionDep, operator: OperatorAudit) -> AuditListOut:
-    rows = await selectors.recent_audit(session)
-    return AuditListOut(audit=[AuditOut.model_validate(r) for r in rows])
+async def list_audit(
+    session: DirectorySessionDep,
+    operator: OperatorAudit,
+    organization_id: OrganizationIdFilter = None,
+    cursor: ListCursor = None,
+    limit: ListLimit = DEFAULT_LIST_LIMIT,
+) -> AuditListOut:
+    after = None
+    if cursor is not None:
+        raw_at, raw_id = pagination.decode_cursor(cursor, expected_parts=2)
+        after = (datetime.fromisoformat(raw_at), uuid.UUID(raw_id))
+    rows = await selectors.recent_audit(
+        session, organization_id=organization_id, limit=limit, after=after
+    )
+    next_cursor = (
+        pagination.encode_cursor(rows[-1].at.isoformat(), str(rows[-1].id))
+        if len(rows) == limit
+        else None
+    )
+    return AuditListOut(audit=[AuditOut.model_validate(r) for r in rows], next_cursor=next_cursor)
 
 
 @router.post(
