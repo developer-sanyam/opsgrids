@@ -15,8 +15,6 @@ import type {
   ItemCategoryOut,
   ItemVariantOut,
   PurchaseOrderOut,
-  SpendPoint,
-  SpendRange,
   StockMovementOut,
   SupplierOut,
   SupplierStatus,
@@ -386,53 +384,6 @@ export const UOMS: UomOut[] = [
 export const ITEM_ATTRIBUTES: Record<string, ItemAttributeOut[]> = {};
 
 export const ITEM_VARIANTS: Record<string, ItemVariantOut[]> = {};
-
-/* --------------------------- spend over time (rep) ------------------------ */
-
-/** Committed spend per period, in minor units. Representative history for the trend chart. */
-export const SPEND_TREND: Record<SpendRange, SpendPoint[]> = {
-  monthly: [
-    { label: "Jan", spend_minor: inr(2_38_00_000) },
-    { label: "Feb", spend_minor: inr(2_04_00_000) },
-    { label: "Mar", spend_minor: inr(3_12_00_000) },
-    { label: "Apr", spend_minor: inr(2_76_00_000) },
-    { label: "May", spend_minor: inr(3_44_00_000) },
-    { label: "Jun", spend_minor: inr(2_98_00_000) },
-    { label: "Jul", spend_minor: inr(3_82_00_000) },
-    { label: "Aug", spend_minor: inr(3_18_00_000) },
-    { label: "Sep", spend_minor: inr(2_64_00_000) },
-    { label: "Oct", spend_minor: inr(3_56_00_000) },
-    { label: "Nov", spend_minor: inr(4_02_00_000) },
-    { label: "Dec", spend_minor: inr(3_74_00_000) },
-  ],
-  quarterly: [
-    { label: "Q1", spend_minor: inr(7_54_00_000) },
-    { label: "Q2", spend_minor: inr(9_18_00_000) },
-    { label: "Q3", spend_minor: inr(9_64_00_000) },
-    { label: "Q4", spend_minor: inr(11_32_00_000) },
-  ],
-  yearly: [
-    { label: "2022", spend_minor: inr(24_60_00_000) },
-    { label: "2023", spend_minor: inr(29_80_00_000) },
-    { label: "2024", spend_minor: inr(31_45_00_000) },
-    { label: "2025", spend_minor: inr(35_90_00_000) },
-    { label: "2026", spend_minor: inr(37_68_00_000) },
-  ],
-};
-
-/** Percent change to show next to the spend headline, per range (representative). */
-export const SPEND_DELTA: Record<SpendRange, number> = {
-  monthly: -3.6,
-  quarterly: 4.8,
-  yearly: 6.1,
-};
-
-/** A representative on-time delivery rate for the KPI, with its short trailing series. */
-export const ON_TIME_SAMPLE = {
-  ratePct: 92.1,
-  rateDelta: 1.4,
-  series: [88, 90, 89, 91, 93, 92, 92],
-};
 
 /* -------------------------------- warehouses ------------------------------- */
 

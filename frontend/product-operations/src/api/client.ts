@@ -15,6 +15,18 @@
 import { apiRequest, settle } from "@opsgrids/client";
 import { milliToQty } from "@/lib/quantity";
 import {
+  attentionItems,
+  inventoryValueMinor,
+  lowStockItems,
+  openPoCount,
+  onTimeDeliveryPct,
+  outOfStockCount,
+  poStatusMix,
+  spendByCategory,
+  spendTrend,
+  topSuppliers,
+} from "@/data/derive";
+import {
   FIXTURE_TODAY,
   INVENTORY,
   ITEM_ATTRIBUTES,
@@ -40,6 +52,7 @@ import type {
   ItemVariantIn,
   ItemVariantOut,
   ItemVariantPatch,
+  OverviewOut,
   Page,
   PoStatus,
   PurchaseOrderIn,
@@ -67,14 +80,6 @@ export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXT
 
 /** True when the app is talking to the real gateway. */
 export const LIVE = !USE_FIXTURES;
-
-/**
- * The Overview's trend history (KPI deltas / sparklines and the spend-over-time series) has no
- * reporting service yet, so it is representative rather than live. When the app runs live those
- * surfaces carry a "Sample data" chip; in fixture mode the whole app is illustrative, so nothing
- * is singled out.
- */
-export const TRENDS_ARE_SAMPLE = LIVE;
 
 /** The real default page size for a paginated list screen. */
 const DEFAULT_PAGE_SIZE = 25;
@@ -1144,4 +1149,34 @@ export async function deleteWarehouse(id: string): Promise<void> {
 export async function searchInventory(q: string): Promise<InventoryItemOut[]> {
   const result = await listInventory({ q, size: 20, sort: "sku" });
   return result.items;
+}
+
+/* --------------------------------- overview -------------------------------- */
+
+/**
+ * `GET /operations/overview` — the dashboard's single server-side rollup: open POs, stock value,
+ * low/out-of-stock counts, the real spend-weighted on-time rate, and the spend/status/supplier
+ * breakdowns, computed over every row for this organization (never a client-side scan of one
+ * fetched page). Fixture mode derives the identical shape from the same seed arrays every other
+ * fixture function reads, using the pure rollups in `data/derive.ts` that mirror the server's
+ * `app/domain.py` exactly.
+ */
+export async function getOverview(): Promise<OverviewOut> {
+  if (USE_FIXTURES) {
+    const currency = SUPPLIERS[0]?.currency ?? "INR";
+    return settle({
+      open_pos: openPoCount(PURCHASE_ORDERS),
+      inventory_value_minor: inventoryValueMinor(INVENTORY),
+      low_stock_count: lowStockItems(INVENTORY).length,
+      out_of_stock_count: outOfStockCount(INVENTORY),
+      on_time_pct: onTimeDeliveryPct(PURCHASE_ORDERS),
+      currency,
+      spend_trend: spendTrend(PURCHASE_ORDERS),
+      spend_by_category: spendByCategory(PURCHASE_ORDERS),
+      po_status_mix: poStatusMix(PURCHASE_ORDERS),
+      top_suppliers: topSuppliers(SUPPLIERS),
+      attention: attentionItems(PURCHASE_ORDERS, INVENTORY, FIXTURE_TODAY),
+    });
+  }
+  return apiRequest<OverviewOut>("/operations/overview");
 }

@@ -589,10 +589,6 @@
     "colour": 1,
     "spacing": 3
   },
-  "product-operations/src/routes/Overview.tsx": {
-    "arbitrary": 2,
-    "spacing": 10
-  },
   "product-operations/src/routes/PurchaseOrderDetail.tsx": {
     "arbitrary": 1,
     "spacing": 9
@@ -609,26 +605,12 @@
   "product-operations/src/routes/Suppliers.tsx": {
     "spacing": 2
   },
-  "product-operations/src/ui/CategoryBreakdown.tsx": {
-    "spacing": 2
-  },
   "product-operations/src/ui/NeedsAttention.tsx": {
     "arbitrary": 2,
     "spacing": 4
   },
-  "product-operations/src/ui/SpendTrend.tsx": {
-    "arbitrary": 1,
-    "spacing": 6
-  },
-  "product-operations/src/ui/StatusMix.tsx": {
-    "arbitrary": 1,
-    "spacing": 4
-  },
   "product-operations/src/ui/StatusPill.tsx": {
     "spacing": 2
-  },
-  "product-operations/src/ui/TopSuppliers.tsx": {
-    "spacing": 1
   },
   "product-projects/src/api/fixtures.ts": {
     "spacing": 10

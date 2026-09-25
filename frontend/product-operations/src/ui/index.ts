@@ -6,18 +6,24 @@
 
 export {
   Avatar,
+  BarList,
   Button,
   Card,
+  CardSkeleton,
+  ChartCard,
   CheckboxGroup,
   Combobox,
   ConfirmDialog,
   DataTable,
   DeltaPill,
+  DonutChart,
   EmptyState,
   ErrorState,
   FormDialog,
   InlineAlert,
   KpiCard,
+  LineChart,
+  MetricCard,
   PageHeader,
   Pagination,
   Pill,
@@ -34,9 +40,11 @@ export {
   TextField,
 } from "@opsgrids/ui";
 export type {
+  BarListItem,
   CheckboxOption,
   Column,
   ComboboxOption,
+  DonutSlice,
   KpiTone,
   RadioOption,
   RowAction,
@@ -44,11 +52,6 @@ export type {
 } from "@opsgrids/ui";
 
 export { useNavGroups } from "./useNavGroups";
-export { SpendTrend } from "./SpendTrend";
-export { CategoryBreakdown } from "./CategoryBreakdown";
-export { StatusMix } from "./StatusMix";
-export type { MiniStat } from "./StatusMix";
 export { NeedsAttention } from "./NeedsAttention";
-export { TopSuppliers } from "./TopSuppliers";
 export { PoStatusPill, SupplierStatusPill, StockPill } from "./StatusPill";
 export type { StockLevel } from "./StatusPill";
