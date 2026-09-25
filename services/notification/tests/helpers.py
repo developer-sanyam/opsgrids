@@ -19,12 +19,14 @@ def principal_for(
     entitlements: list[str] | None = None,
     amr: list[str] | None = None,
     subject_ref: uuid.UUID | None = None,
+    membership_id: uuid.UUID | None = None,
 ) -> Principal:
     """The principal the gateway would have forwarded for a notification caller."""
     return Principal(
         sub=uuid.uuid4(),
         organization_id=org_id,
         subject_ref=subject_ref,
+        membership_id=membership_id,
         perms=perms,
         entitlements=entitlements if entitlements is not None else ["notification"],
         amr=amr or [],

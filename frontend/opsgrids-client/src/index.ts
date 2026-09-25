@@ -87,6 +87,23 @@ export type { CurrentUser } from "./platform/useCurrentUser";
 export { useAdminLinks } from "./platform/useAdminLinks";
 export type { AdminLink, AdminLinkKey } from "./platform/useAdminLinks";
 
+export {
+  fetchMyNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+} from "./notifications/api";
+export type {
+  FetchNotificationsParams,
+  MarkAllReadResult,
+  NotificationItem,
+  NotificationPage,
+} from "./notifications/api";
+export { useNotifications } from "./notifications/useNotifications";
+export type {
+  UseNotificationsOptions,
+  UseNotificationsResult,
+} from "./notifications/useNotifications";
+
 export { settle } from "./fixtures";
 export { useAsync } from "./useAsync";
 export type { AsyncControls, AsyncState } from "./useAsync";

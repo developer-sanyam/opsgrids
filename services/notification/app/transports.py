@@ -131,6 +131,24 @@ class LogTransport:
 
 
 @dataclass
+class InAppTransport:
+    """The in-app feed's "provider". There is no network on the other end of it.
+
+    A `Message` staged on the `in_app` channel is already the whole of the delivery — its row
+    *is* what `GET /notifications/me` (`app/inbox.py`) reads. `send` therefore does no I/O and
+    cannot fail: there is no address to reject and no socket to time out, so it never raises
+    `TransportRefused` or `TransportUnavailable`. The dispatcher's claim/send/record cycle still
+    runs unchanged, which is the point — reusing it is what "no new event infrastructure" means
+    for this channel.
+    """
+
+    name = "in_app"
+
+    async def send(self, message: Outgoing) -> Receipt:
+        return Receipt(provider=self.name)
+
+
+@dataclass
 class RecordingTransport:
     """Keeps what it was asked to send. For tests only — never registered by `build`."""
 
@@ -413,5 +431,9 @@ def build(cfg: object) -> dict[str, Transport]:
         transports["whatsapp"] = LogTransport("whatsapp")
     else:
         raise ValueError(f"Unknown whatsapp transport {whatsapp_kind!r}")
+
+    # No `kind` setting to branch on: unlike email and whatsapp, `in_app` has exactly one
+    # implementation and no credentials to be half-configured without.
+    transports["in_app"] = InAppTransport()
 
     return transports

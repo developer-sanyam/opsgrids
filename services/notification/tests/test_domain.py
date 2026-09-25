@@ -114,6 +114,16 @@ def test_an_unreachable_channel_is_refused() -> None:
         domain.normalize_recipient("carrier_pigeon", "anything")
 
 
+def test_in_app_recipient_is_a_membership_id() -> None:
+    membership_id = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+    assert domain.normalize_recipient("in_app", f"  {membership_id}  ") == membership_id
+
+
+def test_in_app_refuses_anything_that_is_not_a_uuid() -> None:
+    with pytest.raises(domain.RuleError):
+        domain.normalize_recipient("in_app", "not-a-membership-id")
+
+
 # --------------------------------------------------------------------- rule coherence
 
 
