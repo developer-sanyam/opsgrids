@@ -9,6 +9,17 @@
             },
             "title": "Audit",
             "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
           }
         },
         "required": [
@@ -391,6 +402,107 @@
         "title": "OrgDetailOut",
         "type": "object"
       },
+      "OrgMemberOut": {
+        "description": "One member of an organization, as the staff Users tab renders it \u2014 mirrors\naccount-service's own `OrganizationMemberOut` field for field, but re-published under\nconsole's own contract (`app/directory_client.py`'s composite) rather than proxying its\nJSON verbatim, so account's internal shape can move without silently moving console's own\nOpenAPI surface. The email is masked at account-service; nothing here ever sees the\nplaintext, and there is no unmask path \u2014 out of scope by the brief that added this route.",
+        "properties": {
+          "email_masked": {
+            "title": "Email Masked",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "joined_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Joined At"
+          },
+          "last_active_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Active At"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Roles",
+            "type": "array"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "email_masked",
+          "status",
+          "joined_at",
+          "last_active_at",
+          "roles"
+        ],
+        "title": "OrgMemberOut",
+        "type": "object"
+      },
+      "OrgMembersOut": {
+        "description": "`GET /admin/organizations/{id}/users` \u2014 one page of an organization's members,\ndelegated to account-service's own staff-only directory read.",
+        "properties": {
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/OrgMemberOut"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "members",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "OrgMembersOut",
+        "type": "object"
+      },
       "OrgStateOut": {
         "description": "One organization's commercial snapshot.",
         "properties": {
@@ -502,6 +614,17 @@
             "format": "date-time",
             "title": "Updated At",
             "type": "string"
+          },
+          "user_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Count"
           }
         },
         "required": [
@@ -566,6 +689,7 @@
           "action": {
             "enum": [
               "suspend",
+              "reactivate",
               "comp_grant"
             ],
             "title": "Action",
@@ -738,6 +862,17 @@
             "title": "Is Bespoke",
             "type": "boolean"
           },
+          "plan_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Name"
+          },
           "plan_version_id": {
             "format": "uuid",
             "title": "Plan Version Id",
@@ -828,6 +963,17 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "plan_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Name"
           },
           "plan_version_id": {
             "format": "uuid",
@@ -1024,6 +1170,17 @@
             "title": "Organization Id",
             "type": "string"
           },
+          "plan_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Name"
+          },
           "plan_version_id": {
             "anyOf": [
               {
@@ -1038,6 +1195,17 @@
           "product_key": {
             "title": "Product Key",
             "type": "string"
+          },
+          "product_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Product Name"
           },
           "slug": {
             "anyOf": [
@@ -1097,6 +1265,17 @@
       },
       "UsageListOut": {
         "properties": {
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
           "usage": {
             "items": {
               "$ref": "#/components/schemas/UsageOut"
@@ -1192,6 +1371,57 @@
     "/api/v1/admin/audit": {
       "get": {
         "operationId": "list_audit_api_v1_admin_audit_get",
+        "parameters": [
+          {
+            "description": "Narrow the list to one organization's rows.",
+            "in": "query",
+            "name": "organization_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Narrow the list to one organization's rows.",
+              "title": "Organization Id"
+            }
+          },
+          {
+            "description": "The `next_cursor` from a previous page. Omit for the first page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` from a previous page. Omit for the first page.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -1202,9 +1432,19 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
-        "summary": "Recent operator-override audit rows across every organization",
+        "summary": "Recent operator-override audit rows, optionally narrowed to one organization",
         "tags": [
           "console"
         ]
@@ -1458,9 +1698,76 @@
         ]
       }
     },
+    "/api/v1/admin/organizations/{organization_id}/users": {
+      "get": {
+        "description": "The Users tab: id, name, a masked email, status, joined/last-active and roles by name,\none page at a time. Console writes no PII of its own \u2014 every field here is delegated to\naccount-service's own staff-only member read (`app/directory_client.py`), which does the\nmasking. Same forwarded-operator-token shape as `get_organization_detail`, and the same\n\"every staff read writes an audit row\" rule, its own action so `/admin/audit` can tell a\nmember-list read apart from a plain detail read.",
+        "operationId": "get_organization_members_api_v1_admin_organizations__organization_id__users_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgMembersOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One organization's members \u2014 staff-only, email masked, delegated to account-service",
+        "tags": [
+          "console"
+        ]
+      }
+    },
     "/api/v1/admin/overrides": {
       "post": {
-        "description": "Suspend a subscription or grant comp credit, by calling the owning service's internal API.\n\nConsole never writes another service's schema (ADR-0003 \u00a72). It resolves which service owns the\nwrite, delegates under a service token addressed to that service by name, and records its own\naudit row bound to the target organization.",
+        "description": "Suspend or reactivate a subscription, or grant comp credit, by calling the owning\nservice's internal API.\n\nConsole never writes another service's schema (ADR-0003 \u00a72). It resolves which service owns the\nwrite, delegates under a service token addressed to that service by name, and records its own\naudit row bound to the target organization.",
         "operationId": "create_override_api_v1_admin_overrides_post",
         "requestBody": {
           "content": {
@@ -1524,6 +1831,57 @@
     "/api/v1/admin/usage": {
       "get": {
         "operationId": "list_usage_api_v1_admin_usage_get",
+        "parameters": [
+          {
+            "description": "Narrow the list to one organization's rows.",
+            "in": "query",
+            "name": "organization_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Narrow the list to one organization's rows.",
+              "title": "Organization Id"
+            }
+          },
+          {
+            "description": "The `next_cursor` from a previous page. Omit for the first page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` from a previous page. Omit for the first page.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -1534,6 +1892,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Every organization's usage rollups, by meter and period",
