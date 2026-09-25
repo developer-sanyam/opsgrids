@@ -75,6 +75,24 @@
     },
     {
       "action": "read",
+      "default_scope": "OWN",
+      "description": "Read a private document's metadata and obtain a short-lived signed download URL",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "content",
+      "resource": "private_document"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Upload a private document for this organization, and remove one before it has been attached to anything",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "content",
+      "resource": "private_document"
+    },
+    {
+      "action": "read",
       "default_scope": "ORG",
       "description": "Read the audit trail",
       "is_dangerous": false,
@@ -259,7 +277,7 @@
     {
       "code": "ORG_OWNER",
       "cross_product": false,
-      "description": "Runs the account: billing, product activation, members and roles. Deliberately separate from a product administrator \u2014 owning the company is not the same job as administering its HR data. Account's template already grants every `core` permission at ORG over its own specs; this is approval's contribution to that union. It is what guarantees every organization ends ADR-0007's reconcile with at least one holder of decide:ORG, so the unassigned queue always has an owner. Document's contribution to that union is the organization's image library.",
+      "description": "Runs the account: billing, product activation, members and roles. Deliberately separate from a product administrator \u2014 owning the company is not the same job as administering its HR data. Account's template already grants every `core` permission at ORG over its own specs; this is approval's contribution to that union. It is what guarantees every organization ends ADR-0007's reconcile with at least one holder of decide:ORG, so the unassigned queue always has an owner. Document's contribution to that union is the organization's image library, plus every private document in the organization.",
       "grants": [
         {
           "code": "core.approval.delegation.write",
@@ -291,6 +309,14 @@
         },
         {
           "code": "core.content.asset.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.content.private_document.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.content.private_document.write",
           "scope": "ORG"
         },
         {
@@ -381,7 +407,7 @@
     {
       "code": "ORG_ADMIN",
       "cross_product": false,
-      "description": "Manages people and structure, but not billing. The organization's administrator. SLA policy is organization configuration, not billing, so it is in scope for the role defined as people and structure. The image library is organization content rather than billing, so it belongs to the same role.",
+      "description": "Manages people and structure, but not billing. The organization's administrator. SLA policy is organization configuration, not billing, so it is in scope for the role defined as people and structure. The image library is organization content rather than billing, so it belongs to the same role \u2014 and an administrator can read and remove any member's private document, the same reach an HR or compliance admin needs over an employee's ID scan or payslip.",
       "grants": [
         {
           "code": "core.approval.delegation.write",
@@ -405,6 +431,14 @@
         },
         {
           "code": "core.content.asset.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.content.private_document.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.content.private_document.write",
           "scope": "ORG"
         },
         {
@@ -463,7 +497,7 @@
     {
       "code": "MEMBER",
       "cross_product": false,
-      "description": "Everyone. Sees the organization chart and edits their own profile. Everyone raises requests, decides what the routing chain sends them, and may hand over while away. Holding decide:OWN is not authority by itself \u2014 ADR-0006 \u00a76's eligibility check is what actually decides who may answer.",
+      "description": "Everyone. Sees the organization chart and edits their own profile. Everyone raises requests, decides what the routing chain sends them, and may hand over while away. Holding decide:OWN is not authority by itself \u2014 ADR-0006 \u00a76's eligibility check is what actually decides who may answer. Every member can upload, read and remove their own private documents \u2014 a payslip, an ID scan, a signed form \u2014 without a reason to touch anyone else's.",
       "grants": [
         {
           "code": "core.approval.delegation.write",
@@ -475,6 +509,14 @@
         },
         {
           "code": "core.approval.request.read",
+          "scope": "OWN"
+        },
+        {
+          "code": "core.content.private_document.read",
+          "scope": "OWN"
+        },
+        {
+          "code": "core.content.private_document.write",
           "scope": "OWN"
         },
         {

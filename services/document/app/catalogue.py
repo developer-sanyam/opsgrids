@@ -224,6 +224,7 @@ DOCUMENT_ROLE_TEMPLATES: list[RoleTemplate] = [
             "Every member can upload, read and remove their own private documents — a payslip, "
             "an ID scan, a signed form — without a reason to touch anyone else's."
         ),
+        is_default=True,
         grants=DOCUMENT.pick(
             ("content.private_document.write", "OWN"),
             ("content.private_document.read", "OWN"),

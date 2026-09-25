@@ -75,11 +75,16 @@ def test_member_holds_only_the_private_document_grants_at_own() -> None:
     assert {g.code for g in template.grants} == PRIVATE_CODES
     assert {g.scope for g in template.grants} == {"OWN"}
     assert not any("asset" in g.code for g in template.grants)
+    # `MEMBER` is `core`'s default role — account's and approval's copies both mark it so, and
+    # the exporter requires every service contributing to a shared role template to agree
+    # (`tools/export_permissions.py`'s `_merge_template`): disagreeing here is a bug to fix at
+    # the source, not something a merge can paper over.
+    assert template.is_default
 
 
-def test_role_templates_are_exactly_three_and_none_is_default() -> None:
+def test_role_templates_are_exactly_three_and_only_member_is_default() -> None:
     assert [t.code for t in DOCUMENT_ROLE_TEMPLATES] == ["ORG_OWNER", "ORG_ADMIN", "MEMBER"]
-    assert not any(t.is_default for t in DOCUMENT_ROLE_TEMPLATES)
+    assert [t.is_default for t in DOCUMENT_ROLE_TEMPLATES] == [False, False, True]
 
 
 def test_there_is_no_storefront_role() -> None:
