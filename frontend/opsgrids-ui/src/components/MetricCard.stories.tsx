@@ -60,15 +60,35 @@ export const Row: Story = {
   ),
 };
 
-/** The phone's two-up row (mock-1, mock-5): stacked and smaller. */
+/** The phone home's 2×2 grid (mock-2, mock-5): icon still to the figures' left, at phone scale. */
 export const CompactRow: Story = {
   render: () => (
-    <div className="grid max-w-md grid-cols-2 gap-3">
-      <MetricCard size="compact" label="Accounts" value="128" icon={<BuildingIcon className="size-4" />} trend={{ value: 12 }} />
-      <MetricCard size="compact" label="Active" value="112" tone="positive" icon={<CheckCircleIcon className="size-4" />} trend={{ value: 8 }} />
-      <MetricCard size="compact" label="Trial" value="12" tone="warning" icon={<ClockIcon className="size-4" />} trend={{ value: 20 }} />
+    <div className="grid max-w-sm grid-cols-2 gap-3">
+      <MetricCard size="compact" label="Invoices" value="168" icon={<BuildingIcon className="size-4" />} trend={{ value: 12 }} />
+      <MetricCard size="compact" label="Customers" value="856" tone="positive" icon={<CheckCircleIcon className="size-4" />} trend={{ value: 8 }} />
+      <MetricCard size="compact" label="Pending Tasks" value="18" tone="warning" icon={<ClockIcon className="size-4" />} trend={{ value: -6, goodWhen: "down" }} />
       <MetricCard
         size="compact"
+        label="Overdue Invoices"
+        value="6"
+        tone="danger"
+        icon={<MinusCircleIcon className="size-4" />}
+        trend={{ value: -33, goodWhen: "down" }}
+      />
+    </div>
+  ),
+};
+
+/** Four across in one row (mock-1's phone and tablet Accounts/Active/Trial/Suspended row): the
+ *  icon moves above the figures because there is no width to spare beside them at this scale. */
+export const TileRow: Story = {
+  render: () => (
+    <div className="grid max-w-md grid-cols-4 gap-2">
+      <MetricCard size="tile" label="Accounts" value="128" icon={<BuildingIcon className="size-4" />} trend={{ value: 12 }} />
+      <MetricCard size="tile" label="Active" value="112" tone="positive" icon={<CheckCircleIcon className="size-4" />} trend={{ value: 8 }} />
+      <MetricCard size="tile" label="Trial" value="12" tone="warning" icon={<ClockIcon className="size-4" />} trend={{ value: 20 }} />
+      <MetricCard
+        size="tile"
         label="Suspended"
         value="4"
         tone="danger"
@@ -80,6 +100,11 @@ export const CompactRow: Story = {
 };
 
 export const WithoutIcon: Story = { args: { icon: undefined, label: "Average order value", value: "₹2,480", trend: { value: 3.4, period: "vs last quarter" } } };
+
+/** No comparison period exists for this figure: a plain caption instead of an invented delta. */
+export const WithCaption: Story = {
+  args: { trend: undefined, label: "Pending Tasks", value: "18", caption: "Assigned to you", icon: <ClockIcon className="size-5" />, tone: "warning" },
+};
 
 export const LongValue: Story = {
   args: { label: "Gross merchandise value this financial year to date", value: "₹12,34,56,78,901", icon: <WalletIcon className="size-5" />, tone: "cyan" },

@@ -235,4 +235,15 @@ describe("MetricCard", () => {
     rerender(<MetricCard label="Open incidents" value="9" trend={{ value: 14, goodWhen: "down" }} />);
     expect(container.querySelector("svg")?.getAttribute("class")).toContain("text-negative");
   });
+
+  it("shows a plain caption instead of a trend when there is no comparison period", () => {
+    render(<MetricCard label="Pending Tasks" value="18" caption="Assigned to you" />);
+    expect(screen.getByText("Assigned to you")).toBeTruthy();
+    expect(screen.queryByText(/Up|Down/)).toBeNull();
+  });
+
+  it("marks the headline figure so the containment check can find it, at every size", () => {
+    render(<MetricCard label="Accounts" value="128" size="tile" />);
+    expect(screen.getByText("128").hasAttribute("data-kpi-value")).toBe(true);
+  });
 });

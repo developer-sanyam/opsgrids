@@ -92,9 +92,13 @@ export interface AppShellProps {
   /** The mobile "+" sheet's contents — already permission-filtered by the app. Omitted (or `[]`)
    *  hides the raised button; a sheet with nothing in it is not a control. */
   quickActions?: QuickAction[] | undefined;
-  /** The bottom nav's optional fourth slot ("Reports", or whatever this app has) — never invented
-   *  when the app doesn't supply one. */
-  bottomNavExtra?: NavEntry | undefined;
+  /**
+   * The bottom nav's own app-specific destinations, between Modules/the "+" and More — "Products"
+   * for the ecosystem home, "Accounts" and "Subscriptions" for the staff console. Never invented
+   * when the app doesn't supply any; the bar still ends in Home, then whatever this app gave it,
+   * then More.
+   */
+  bottomNavExtra?: NavEntry[] | undefined;
   /** Grants/directory status banners — rendered once, at the top of the routed content, replacing
    *  the near-identical copy eleven apps used to render above the shell. */
   banner?: ReactNode | undefined;
@@ -355,13 +359,8 @@ export function AppShell({
       expanded: quickActionsOpen,
     });
   }
-  if (bottomNavExtra) {
-    bottomItems.push({
-      key: "extra",
-      label: bottomNavExtra.label,
-      icon: bottomNavExtra.icon,
-      to: bottomNavExtra.to,
-    });
+  for (const entry of bottomNavExtra ?? []) {
+    bottomItems.push({ key: `extra-${entry.to}`, label: entry.label, icon: entry.icon, to: entry.to });
   }
   bottomItems.push({
     key: "more",

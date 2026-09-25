@@ -34,16 +34,41 @@ interface MetricCardProps {
    */
   trend?: MetricTrend | undefined;
   /**
-   * `default`: icon beside the figures, for a desktop KPI row. `compact`: stacked and smaller,
-   * for the two-up row on a phone (mock-1, mock-5).
+   * `default`: icon beside the figures, for a desktop KPI row. `compact`: the same icon-left
+   * arrangement at phone scale, for the 2×2 grid a phone home screen uses (mock-2, mock-5).
+   * `tile`: icon stacked above the figures at the smallest scale, for four KPIs across one phone
+   * or tablet row where there is no width to spare beside the icon (mock-1's Accounts/Active/
+   * Trial/Suspended row).
    */
-  size?: "default" | "compact" | undefined;
+  size?: "default" | "compact" | "tile" | undefined;
+  /**
+   * A quiet line under the value for a figure with no comparison period to trend against —
+   * "Assigned to you", "All invoices issued" — never shown alongside `trend`; a card has one or
+   * the other, not both.
+   */
+  caption?: string | undefined;
   /** The figure is representative, not live: the amber chip. */
   sample?: boolean | { label?: string | undefined; title?: string | undefined } | undefined;
   className?: string | undefined;
 }
 
 const PERCENT = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+
+function Trend({ trend, size }: { trend: MetricTrend; size: "sm" | "md" }) {
+  const rising = trend.value >= 0;
+  const good = rising === ((trend.goodWhen ?? "up") === "up");
+  const Arrow = rising ? ArrowUp : ArrowDown;
+  return (
+    <p className={cn("flex flex-wrap items-center gap-x-1.5", size === "sm" ? "text-xs" : "text-sm")}>
+      <span className="tnum inline-flex items-center gap-0.5 font-semibold text-ink">
+        <Arrow className={cn("size-3.5", good ? "text-positive" : "text-negative")} strokeWidth={2.4} aria-hidden />
+        <span className="sr-only">{rising ? "Up" : "Down"} </span>
+        {PERCENT.format(Math.abs(trend.value))}%
+      </span>
+      {trend.period ? <span className="text-muted">{trend.period}</span> : null}
+    </p>
+  );
+}
 
 /**
  * The KPI card as the brief draws it (§6): a small icon, a label, a large value, and — only when
@@ -54,6 +79,11 @@ const PERCENT = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
  * "Up" or "Down" read to a screen reader ahead of the figure. The colour (green when the move is
  * good for this metric, red when it is not) reaches the arrow; the figure itself stays on ink, so
  * it is legible whichever way it went.
+ *
+ * One layout, three scales (`size`) — never a second, per-app KPI card. `default` and `compact`
+ * both put the icon to the figures' left, exactly the mockups' desktop and phone-grid cards;
+ * `tile` stacks the icon above them, for the one row width forces four KPIs across even on a
+ * phone.
  */
 export function MetricCard({
   label,
@@ -62,16 +92,32 @@ export function MetricCard({
   tone = "accent",
   trend,
   size = "default",
+  caption,
   sample = false,
   className,
 }: MetricCardProps) {
+  if (size === "tile") {
+    return (
+      <Card className={cn("flex min-w-0 flex-col items-start gap-1.5 p-3", className)}>
+        {icon ? (
+          <span aria-hidden className={cn("grid size-8 shrink-0 place-items-center rounded-tile", ICON_TILE[tone])}>
+            {icon}
+          </span>
+        ) : null}
+        <p className="min-w-0 truncate text-caption font-medium text-muted">{label}</p>
+        <p data-kpi-value className="tnum min-w-0 font-bold leading-tight text-ink text-base">
+          {value}
+        </p>
+        {trend !== undefined ? <Trend trend={trend} size="sm" /> : caption ? <p className="text-caption text-faint">{caption}</p> : null}
+        {sample ? <SampleChip {...(sample === true ? {} : sample)} /> : null}
+      </Card>
+    );
+  }
+
   const compact = size === "compact";
-  const rising = trend !== undefined && trend.value >= 0;
-  const good = trend !== undefined && rising === ((trend.goodWhen ?? "up") === "up");
-  const Arrow = rising ? ArrowUp : ArrowDown;
 
   return (
-    <Card className={cn("flex min-w-0", compact ? "flex-col gap-3 p-4" : "items-start gap-4 p-4 sm:p-6", className)}>
+    <Card className={cn("flex min-w-0", compact ? "items-start gap-3 p-3" : "items-start gap-4 p-4 sm:p-6", className)}>
       {icon ? (
         <span
           aria-hidden
@@ -82,19 +128,19 @@ export function MetricCard({
       ) : null}
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex flex-wrap items-center gap-2">
-          <p className={cn("min-w-0 font-medium text-muted", compact ? "text-xs" : "text-sm")}>{label}</p>
+          <p className={cn("min-w-0 truncate font-medium text-muted", compact ? "text-xs" : "text-sm")}>{label}</p>
           {sample ? <SampleChip {...(sample === true ? {} : sample)} /> : null}
         </div>
-        <p className={cn("tnum font-bold leading-tight text-ink", compact ? "text-xl" : "text-2xl")}>{value}</p>
+        <p
+          data-kpi-value
+          className={cn("tnum min-w-0 font-bold leading-tight text-ink", compact ? "text-xl" : "text-2xl")}
+        >
+          {value}
+        </p>
         {trend !== undefined ? (
-          <p className={cn("flex flex-wrap items-center gap-x-1.5", compact ? "text-xs" : "text-sm")}>
-            <span className="tnum inline-flex items-center gap-0.5 font-semibold text-ink">
-              <Arrow className={cn("size-3.5", good ? "text-positive" : "text-negative")} strokeWidth={2.4} aria-hidden />
-              <span className="sr-only">{rising ? "Up" : "Down"} </span>
-              {PERCENT.format(Math.abs(trend.value))}%
-            </span>
-            {trend.period ? <span className="text-muted">{trend.period}</span> : null}
-          </p>
+          <Trend trend={trend} size={compact ? "sm" : "md"} />
+        ) : caption ? (
+          <p className={cn("text-faint", compact ? "text-xs" : "text-sm")}>{caption}</p>
         ) : null}
       </div>
     </Card>
