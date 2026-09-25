@@ -14,6 +14,21 @@ export function formatMoney(amountMinor: number, currency: string, locale = "en-
   }).format(major);
 }
 
+/**
+ * The same figure with no minor-unit digits — `₹12,48,320`, not `₹12,48,320.00` — for a KPI or a
+ * dense list where the paise are noise. Never used for a figure that reconciles to a ledger.
+ */
+export function formatMoneyWhole(amountMinor: number, currency: string, locale = "en-IN"): string {
+  const digits = minorUnitDigits(currency, locale);
+  const major = amountMinor / 10 ** digits;
+  return new Intl.NumberFormat(locale, {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 0,
+    minimumFractionDigits: 0,
+  }).format(major);
+}
+
 function minorUnitDigits(currency: string, locale: string): number {
   try {
     return (
@@ -25,12 +40,21 @@ function minorUnitDigits(currency: string, locale: string): number {
   }
 }
 
-/** A date from the wire, for people. */
+/** `Intl`'s own "short" month abbreviates September as "Sept" in some English locales and "Sep" in
+ * others — a column of dates whose width depends on the reader's browser. Fixed here the same way
+ * `@opsgrids/ui`'s `lib/datetime.ts` fixes it: a literal list, not CLDR's. */
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** A date from the wire, for people — `12 Sep 2026`, always a three-letter month. */
 export function formatDate(iso: string | null, locale = "en-IN"): string {
   if (!iso) return "—";
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat(locale, { day: "numeric", month: "short", year: "numeric" }).format(date);
+  const parts = new Intl.DateTimeFormat(locale, { day: "numeric", year: "numeric" }).formatToParts(date);
+  const day = parts.find((part) => part.type === "day")?.value ?? String(date.getDate());
+  const year = parts.find((part) => part.type === "year")?.value ?? String(date.getFullYear());
+  const month = SHORT_MONTHS[date.getMonth()] ?? "";
+  return `${day} ${month} ${year}`;
 }
 
 /** Whole days from now to `iso`, negative when past. */

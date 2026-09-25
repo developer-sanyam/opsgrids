@@ -63,6 +63,28 @@ describe("LineChart", () => {
     await user.keyboard("{Escape}");
     expect(plot.textContent).not.toContain("25 Aug");
   });
+
+  it("categoryStride overrides the default thinning, for a caller that knows its own width", () => {
+    const months = Array.from({ length: 12 }, (_, index) => `M${index + 1}`);
+    render(
+      <LineChart
+        label="Revenue by month"
+        categories={months}
+        categoryStride={3}
+        series={[{ key: "revenue", label: "Revenue", values: months.map((_, index) => index * 10) }]}
+      />,
+    );
+    // Every third label, and always the last (`CategoryAxis`'s own rule) — not the default's
+    // every second. Both the visible axis and the off-screen table say "M1"; only the axis is a
+    // `<span>`, so the tag tells the two apart.
+    const isAxisLabel = (text: string) => screen.getAllByText(text).some((el) => el.tagName === "SPAN");
+    expect(isAxisLabel("M1")).toBe(true);
+    expect(isAxisLabel("M4")).toBe(true);
+    expect(isAxisLabel("M7")).toBe(true);
+    expect(isAxisLabel("M12")).toBe(true);
+    expect(isAxisLabel("M2")).toBe(false);
+    expect(isAxisLabel("M3")).toBe(false);
+  });
 });
 
 describe("BarChart", () => {

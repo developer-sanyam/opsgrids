@@ -1,0 +1,65 @@
+{
+  "items": [
+    {
+      "customer": {
+        "id": "fc000000-0000-4000-8000-000000000001",
+        "name": "Rohit Sharma",
+        "contact_name": "Rohit Sharma",
+        "email": "rohit@rohitenterprises.example",
+        "gstin": "27AAAPL1234C1Z5",
+        "city": "Mumbai",
+        "state": "Maharashtra",
+        "is_tds_deductor": false,
+        "deducts_tds_194q": false,
+        "tcs_applicable": false
+      },
+      "receivables_minor": 0,
+      "overdue_minor": 0,
+      "invoice_count": 4,
+      "last_invoice_date": "2026-09-20",
+      "standing": "good"
+    },
+    {
+      "customer": {
+        "id": "fc000000-0000-4000-8000-000000000002",
+        "name": "Priya Mehta",
+        "contact_name": "Priya Mehta",
+        "email": "priya@mehtatraders.example",
+        "gstin": null,
+        "city": "Pune",
+        "state": "Maharashtra",
+        "is_tds_deductor": false,
+        "deducts_tds_194q": false,
+        "tcs_applicable": false
+      },
+      "receivables_minor": 1245000,
+      "overdue_minor": 0,
+      "invoice_count": 2,
+      "last_invoice_date": "2026-09-18",
+      "standing": "good"
+    },
+    {
+      "customer": {
+        "id": "fc000000-0000-4000-8000-000000000003",
+        "name": "Global Traders",
+        "contact_name": "Anand Kulkarni",
+        "email": "accounts@globaltraders.example",
+        "gstin": "27AAECG5678D1Z2",
+        "city": "Nagpur",
+        "state": "Maharashtra",
+        "is_tds_deductor": true,
+        "deducts_tds_194q": false,
+        "tcs_applicable": false
+      },
+      "receivables_minor": 4800000,
+      "overdue_minor": 4800000,
+      "invoice_count": 6,
+      "last_invoice_date": "2026-08-30",
+      "standing": "overdue"
+    }
+  ],
+  "total": 3,
+  "page": 1,
+  "size": 200,
+  "pages": 1
+}

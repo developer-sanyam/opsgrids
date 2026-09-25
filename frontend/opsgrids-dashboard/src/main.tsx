@@ -13,6 +13,7 @@ import { RequireAuth } from "./auth/RequireAuth";
 import { AcceptInvitationPage } from "./routes/AcceptInvitation";
 import { ForgotPasswordPage } from "./routes/ForgotPassword";
 import { HelpPage } from "./routes/Help";
+import { HomePage } from "./routes/Home";
 import { InvoicesPage } from "./routes/Invoices";
 import { LoginPage } from "./routes/Login";
 import { MarketplacePage } from "./routes/Marketplace";
@@ -81,7 +82,12 @@ const router = createBrowserRouter([
           </RequireAuth>
         ),
         children: [
-          { index: true, element: <MarketplacePage /> },
+          // Home is the Owner/Executive dashboard (dashboard audit §5.4). The Marketplace it
+          // replaced here moved to `/products`; the sidebar's "Products" entry and the search
+          // box's `to` both still point at `/`, which is shell/layout territory owned by
+          // `ui/p3-shell` — they need to move to `/products` when that branch lands.
+          { index: true, element: <HomePage /> },
+          { path: "products", element: <MarketplacePage /> },
           { path: "subscriptions", element: <SubscriptionsPage /> },
           { path: "invoices", element: <InvoicesPage /> },
           { path: "help", element: <HelpPage /> },

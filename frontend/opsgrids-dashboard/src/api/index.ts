@@ -7,9 +7,14 @@ import { apiRequest } from "@opsgrids/client";
 
 import type {
   Activation,
+  Company,
   CreditBalance,
+  DealActivity,
   Domain,
   DomainCreate,
+  FinanceCustomerSummary,
+  FinanceInvoiceSummary,
+  FinanceOverview,
   Invitation,
   InvitationCreate,
   InvitationCreated,
@@ -28,6 +33,7 @@ import type {
   Permission,
   Plan,
   Product,
+  ProjectTask,
   Role,
   RoleWrite,
   SignupRequest,
@@ -307,4 +313,52 @@ export function verifyDomain(id: string): Promise<Domain> {
 /** `DELETE /domains/{id}`. */
 export function releaseDomain(id: string): Promise<void> {
   return apiRequest<void>(`/domains/${id}`, { method: "DELETE" });
+}
+
+// ------------------------------------------------------------------ the owner/executive home
+//
+// Every tenant token shares audience `app` (`services/app-gateway/app/config.py`), so this same
+// session reads every product's own summary endpoints through the gateway. `src/routes/Home.tsx`
+// calls each of these only once the caller's entitlement and grants say it may — never to find
+// out whether it may.
+
+/** `GET /finance/overview`, trimmed to `revenue_history` (see `FinanceOverview`). Needs
+ * `finance.reports.summary.read:ORG`. */
+export function getFinanceOverview(): Promise<FinanceOverview> {
+  return apiRequest<FinanceOverview>("/finance/overview");
+}
+
+/** `GET /finance/invoices` — newest-first by the service's own default (`sort=issued_desc`), so
+ * `size` alone gives the most recent documents with no extra sort parameter. A `status` narrows
+ * to one lifecycle state, for a `Page.total` count. Needs `finance.billing.invoice.read:ORG`. */
+export function listFinanceInvoices(params: { status?: string; size: number }): Promise<Page<FinanceInvoiceSummary>> {
+  return apiRequest<Page<FinanceInvoiceSummary>>(
+    `/finance/invoices${query({ status: params.status, size: params.size })}`,
+  );
+}
+
+/** `GET /finance/customers` — a bounded directory read to resolve `customer_id` to a name, the
+ * same convenience `product-finance`'s own `getCustomerById` uses; never the page a person
+ * browses. Needs `finance.billing.customer.read:ORG`. */
+export function listFinanceCustomers(): Promise<Page<FinanceCustomerSummary>> {
+  return apiRequest<Page<FinanceCustomerSummary>>(`/finance/customers${query({ size: 200 })}`);
+}
+
+/** `GET /customers?status=customer&size=1` → `Page.total` — companies marked as customers.
+ * Needs `crm.book.company.read`. */
+export function countCrmCustomers(): Promise<Page<Company>> {
+  return apiRequest<Page<Company>>(`/customers${query({ status: "customer", size: 1 })}`);
+}
+
+/** `GET /deals/activities` — real timestamps (`occurred_at`), newest first. Needs
+ * `crm.pipeline.activity.read`. */
+export function listDealActivities(size: number): Promise<Page<DealActivity>> {
+  return apiRequest<Page<DealActivity>>(`/deals/activities${query({ size })}`);
+}
+
+/** `GET /projects-workspace/tasks?assignee=me` — resolved server-side to the caller's own cards,
+ * so one bounded call gives both the Pending Tasks count and the Tasks list, never a scan. Needs
+ * `projects.board.task.read`. */
+export function listMyTasks(size: number): Promise<Page<ProjectTask>> {
+  return apiRequest<Page<ProjectTask>>(`/projects-workspace/tasks${query({ assignee: "me", size })}`);
 }
