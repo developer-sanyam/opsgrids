@@ -23,7 +23,13 @@ class ServiceInfo(BaseModel):
     schema_name: str
 
 
-# --------------------------------------------------------------------- customer output
+# --------------------------------------------------------------------- operator/internal output
+#
+# PriceOut / PlanVersionOut / PlanOut carry the actual amounts. They are for the admin API
+# (`api/admin.py`) and the console-internal API (`api/console_internal.py`) — staff and
+# sibling services, never a tenant caller. The tenant read (`api/routes.py`) uses the
+# Tenant* schemas below instead, because pricing is negotiated per organization by staff and
+# a client must never receive a list price (docs/commerce-packaging.md).
 
 
 class PriceOut(BaseModel):
@@ -93,6 +99,57 @@ class PlanOut(BaseModel):
     state: str
     sort_order: int
     versions: list[PlanVersionOut] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------- tenant (customer) output
+
+
+class TenantPriceOut(BaseModel):
+    """A price component as a tenant caller may see it — its shape, never its amount.
+
+    No `amount_minor`, `currency` or `unit_price_micros`: the owner's rule is that pricing is
+    set per client by staff, so a client must not receive a list price. `kind` still tells the
+    client a flat offer exists to start a trial against, without saying what it costs.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    kind: str
+    unit: str | None = None
+    meter_key: str | None = None
+
+
+class TenantPlanVersionOut(BaseModel):
+    """A priced-snapshot's packaging, as a tenant may see it — no amount, no currency.
+
+    `restricted_to_org_id` is still echoed: the customer read only ever returns versions the
+    caller is allowed to see, so for them it is either NULL or their own organization, and that
+    is not pricing information.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    version_no: int
+    state: str
+    billing_interval: str
+    restricted_to_org_id: uuid.UUID | None = None
+    published_at: datetime | None = None
+    prices: list[TenantPriceOut] = Field(default_factory=list)
+    features: list[FeatureOut] = Field(default_factory=list)
+    seat_classes: list[SeatClassOut] = Field(default_factory=list)
+
+
+class TenantPlanOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    product_key: str
+    code: str
+    name: str
+    state: str
+    sort_order: int
+    versions: list[TenantPlanVersionOut] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------- internal read (pin lookup)

@@ -521,6 +521,163 @@
         "title": "ServiceInfo",
         "type": "object"
       },
+      "TenantPlanOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "product_key": {
+            "title": "Product Key",
+            "type": "string"
+          },
+          "sort_order": {
+            "title": "Sort Order",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/TenantPlanVersionOut"
+            },
+            "title": "Versions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "product_key",
+          "code",
+          "name",
+          "state",
+          "sort_order"
+        ],
+        "title": "TenantPlanOut",
+        "type": "object"
+      },
+      "TenantPlanVersionOut": {
+        "description": "A priced-snapshot's packaging, as a tenant may see it \u2014 no amount, no currency.\n\n`restricted_to_org_id` is still echoed: the customer read only ever returns versions the\ncaller is allowed to see, so for them it is either NULL or their own organization, and that\nis not pricing information.",
+        "properties": {
+          "billing_interval": {
+            "title": "Billing Interval",
+            "type": "string"
+          },
+          "features": {
+            "items": {
+              "$ref": "#/components/schemas/FeatureOut"
+            },
+            "title": "Features",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "prices": {
+            "items": {
+              "$ref": "#/components/schemas/TenantPriceOut"
+            },
+            "title": "Prices",
+            "type": "array"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "restricted_to_org_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restricted To Org Id"
+          },
+          "seat_classes": {
+            "items": {
+              "$ref": "#/components/schemas/SeatClassOut"
+            },
+            "title": "Seat Classes",
+            "type": "array"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "version_no": {
+            "title": "Version No",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "version_no",
+          "state",
+          "billing_interval"
+        ],
+        "title": "TenantPlanVersionOut",
+        "type": "object"
+      },
+      "TenantPriceOut": {
+        "description": "A price component as a tenant caller may see it \u2014 its shape, never its amount.\n\nNo `amount_minor`, `currency` or `unit_price_micros`: the owner's rule is that pricing is\nset per client by staff, so a client must not receive a list price. `kind` still tells the\nclient a flat offer exists to start a trial against, without saying what it costs.",
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "meter_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meter Key"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "TenantPriceOut",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -899,7 +1056,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PlanOut"
+                  "$ref": "#/components/schemas/TenantPlanOut"
                 }
               }
             },
@@ -945,7 +1102,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/PlanOut"
+                    "$ref": "#/components/schemas/TenantPlanOut"
                   },
                   "title": "Response List Plans Api V1 Plans Get",
                   "type": "array"

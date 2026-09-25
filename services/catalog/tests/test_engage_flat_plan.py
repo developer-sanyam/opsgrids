@@ -87,16 +87,17 @@ def as_principal(principal: Principal) -> Iterator[None]:
 def _flat_price(plans: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """The one offer a marketplace card shows: the first published version's flat price.
 
-    The dashboard's `flatPrice`, line for line — a published version, a `flat` price, and an
-    amount that is not null. If this returns None for a product, its card has no price and no
-    "Start trial" button, whatever the product catalogue says about its status.
+    The dashboard's `trialOffer`, line for line — a published version with a `flat` price. The
+    customer read no longer says what it costs (pricing is set per client), only that the offer
+    exists. If this returns None for a product, its card has no "Start trial" button, whatever
+    the product catalogue says about its status.
     """
     for plan in plans:
         for version in plan["versions"]:
             if version["state"] != "published":
                 continue
             for price in version["prices"]:
-                if price["kind"] == "flat" and price["amount_minor"] is not None:
+                if price["kind"] == "flat":
                     return version, price
     return None
 
@@ -152,14 +153,16 @@ async def test_engage_resolves_to_a_published_flat_price_a_trial_can_pin(
         version, price = offer
         assert version["id"] == version_id, "this id is what 'Start trial' posts as plan_version_id"
         assert version["billing_interval"] == "month"
-        assert version["currency"] == "INR"
         assert version["restricted_to_org_id"] is None, "a public price, visible to every org"
         assert price["kind"] == "flat"
-        assert price["currency"] == "INR"
         assert price["unit"] is None, "a flat price has no unit"
-        # Money is integer minor units (ADR-0000 §8): an int, never a float or a decimal string.
-        assert type(price["amount_minor"]) is int
-        assert price["amount_minor"] == amount_minor
+        # The customer read never carries what it costs: prices are set per client by staff.
+        assert "currency" not in version
+        assert "amount_minor" not in price
+        assert "currency" not in price
+        assert "unit_price_micros" not in price
+        # The amount is still there for the services that need it, through the internal pin
+        # lookup below: money is integer minor units (ADR-0000 §8).
         assert amount_minor > 0, "a zero price is not a placeholder, it is free"
 
         # The version the card posts must also pin. `POST /subscriptions` resolves it through

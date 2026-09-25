@@ -33,7 +33,12 @@ M_REPLY = "engage.inbox.message.reply"
 M_UNMASK = "engage.inbox.message.unmask"
 ALL = [f"{p}:ORG" for p in (C_READ, C_WRITE, M_REPLY, M_UNMASK)]
 
-NOW = datetime(2026, 9, 23, 12, 0, 0, tzinfo=UTC)
+# `webhooks.within_service_window` has no injectable clock at the routes this file drives — both
+# `services.py` and `api/engage.py` call it without a `now=` override, so it reads the real wall
+# clock. NOW has to track that same clock rather than pin a date, or the 24-hour window check
+# drifts out of sync with reality and the window-boundary tests fail for a reason that has nothing
+# to do with the behaviour they're proving.
+NOW = datetime.now(UTC)
 
 
 @contextlib.contextmanager
