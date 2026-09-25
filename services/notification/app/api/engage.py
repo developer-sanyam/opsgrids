@@ -46,6 +46,7 @@ from app.schemas import (
     CampaignOut,
     CampaignPatch,
     CampaignRecipientOut,
+    CampaignScheduleIn,
     CampaignStats,
     CampaignStatus,
     CampaignTestSendOut,
@@ -1320,6 +1321,31 @@ async def send_campaign(
     """202: the gate passed and the fan-out is staged. Sending happens after the commit, in the
     worker; progress is read back from the campaign's stats and recipients."""
     row = await services.request_send(session, ctx, campaign_id=campaign_id, request=request)
+    return await _one_campaign_out(session, row)
+
+
+@router.post(
+    "/engage/campaigns/{campaign_id}/schedule",
+    response_model=CampaignOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Schedule a draft to send later, or push back one already scheduled",
+    dependencies=[Entitled],
+)
+async def schedule_campaign(
+    campaign_id: uuid.UUID,
+    body: CampaignScheduleIn,
+    session: SessionDep,
+    ctx: CampaignSend,
+    request: Request,
+) -> CampaignOut:
+    """202: the gate passed and the scheduler has been asked to hold the send. Calling this again
+    on a campaign that is already `scheduled` reschedules it to the new `scheduled_at`; calling
+    `/cancel` instead withdraws it. Same gate as `/send` (409 off a draft or already-scheduled
+    campaign, 422 on anything that would make it unsendable, or a `scheduled_at` not in the
+    future)."""
+    row = await services.schedule_send(
+        session, ctx, campaign_id=campaign_id, scheduled_at=body.scheduled_at, request=request
+    )
     return await _one_campaign_out(session, row)
 
 

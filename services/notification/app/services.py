@@ -77,7 +77,7 @@ from platform_core.errors import (
     UpstreamUnavailableProblem,
     ValidationProblem,
 )
-from platform_core.events import publish_event
+from platform_core.events import publish_event, schedule_event
 from platform_core.logging import get_logger
 
 log = get_logger("notification.services")
@@ -3897,35 +3897,26 @@ async def delete_campaign(
     await session.flush()
 
 
-async def request_send(
-    session: AsyncSession,
-    ctx: ScopeContext,
-    *,
-    campaign_id: uuid.UUID,
-    request: Request | None = None,
-) -> Campaign:
-    """**The send gate.** Moves a draft to `sending` and stages the fan-out event.
-
-    409 when the campaign is not a draft (sent twice, or cancelled). 422 when it is a draft
-    that may not go: no subject or body, a sender that never passed its test send, a domain
-    that fell out of verification, no connected provider, a missing list, an audience with
-    nobody sendable in it right now, or unsubscribe links that cannot be signed — mail without a
-    working unsubscribe link is not sent at all.
+async def _ensure_campaign_sendable(
+    session: AsyncSession, ctx: ScopeContext, row: Campaign
+) -> None:
+    """The send gate's own rules, shared by `request_send` and `schedule_send` (ADR-0015): no
+    subject or body, a sender that never passed its test send, a domain that fell out of
+    verification, no connected provider, a missing list, an audience with nobody sendable in it
+    right now, or unsubscribe links that cannot be signed — mail without a working unsubscribe
+    link is not sent at all. Raises `BusinessRuleProblem` (422) on the first rule that fails.
 
     The "nobody sendable" check reads `selectors.sendable_contacts(..., limit=1)` rather than
     trust `audience`/`list_id` alone: a list that exists can still hold only suppressed or
     deleted contacts, and `all_sendable` can name an org with none at all. Catching that here,
-    before `status` ever moves to `sending`, is what keeps a campaign from completing as `sent`
-    with `recipient_count = 0` for a reason a human could have been told about up front instead —
-    contacts removed *after* this check still expand to nobody and still end up `sent` with zero
-    recipients (see `expand_campaign`'s own docstring), which is the one case this gate cannot
-    close because the audience has not shrunk yet when it runs.
+    before `status` ever moves to `sending` or `scheduled`, is what keeps a campaign from
+    completing as `sent` with `recipient_count = 0` for a reason a human could have been told
+    about up front instead — contacts removed *after* this check still expand to nobody and
+    still end up `sent` with zero recipients (see `expand_campaign`'s own docstring), which is
+    the one case this gate cannot close because the audience has not shrunk yet when it runs. A
+    scheduled campaign gets this check again, for the *state at the time it was scheduled*
+    only — nothing re-validates it the instant it actually fires.
     """
-    row = await selectors.get_campaign(session, ctx.organization_id, campaign_id, lock=True)
-    if row is None:
-        raise NotFoundProblem("No such campaign")
-    if row.status != "draft":
-        raise ConflictProblem(f"Only a draft can be sent; this campaign is {row.status}")
     if not row.subject.strip():
         raise BusinessRuleProblem("Add a subject before sending.")
     if not (row.text_body.strip() or row.html_body.strip()):
@@ -3971,6 +3962,35 @@ async def request_send(
         )
     _check_public_base(settings())
 
+
+def _campaign_send_idempotency_key(campaign_id: uuid.UUID, scheduled_at: datetime) -> str:
+    """One scheduled-job row per distinct instant asked for. Rescheduling asks for a new instant
+    and so gets a fresh key — the previous job, if the scheduler has not fired it yet, is left in
+    place rather than cancelled (ADR-0015 has no cancel primitive yet); `activate_scheduled_
+    campaign` is what makes that harmless by dropping a firing that no longer matches the
+    campaign's current `scheduled_at`."""
+    return f"engage-campaign-send:{campaign_id}:{scheduled_at.astimezone(UTC).isoformat()}"
+
+
+async def request_send(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    campaign_id: uuid.UUID,
+    request: Request | None = None,
+) -> Campaign:
+    """**The send gate.** Moves a draft to `sending` and stages the fan-out event.
+
+    409 when the campaign is not a draft (sent twice, or cancelled). 422 when it is a draft
+    that may not go — see `_ensure_campaign_sendable`.
+    """
+    row = await selectors.get_campaign(session, ctx.organization_id, campaign_id, lock=True)
+    if row is None:
+        raise NotFoundProblem("No such campaign")
+    if row.status != "draft":
+        raise ConflictProblem(f"Only a draft can be sent; this campaign is {row.status}")
+    await _ensure_campaign_sendable(session, ctx, row)
+
     row.status = "sending"
     row.started_at = datetime.now(UTC)
     row.updated_by = str(ctx.principal.sub)
@@ -3985,7 +4005,7 @@ async def request_send(
         action="engage.campaign.send_requested",
         entity="campaign",
         entity_id=row.id,
-        after={"sender": sender.address, "audience": row.audience},
+        after={"sender_id": str(row.sender_id), "audience": row.audience},
         request=request,
     )
     publish_event(
@@ -3999,6 +4019,112 @@ async def request_send(
         actor=_actor(ctx),
     )
     return row
+
+
+async def schedule_send(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    campaign_id: uuid.UUID,
+    scheduled_at: datetime,
+    request: Request | None = None,
+    now: datetime | None = None,
+) -> Campaign:
+    """Gate a future send exactly like `request_send`, but hold it for the scheduler (ADR-0015)
+    instead of publishing immediately. Moves a draft — or an already-`scheduled` campaign, to
+    reschedule it — to `scheduled`; `activate_scheduled_campaign` is what flips it to `sending`,
+    the moment the scheduler's own job for it actually fires.
+
+    409 when the campaign is not a draft or already `scheduled` (sending, paused, sent or
+    cancelled). 422 when `scheduled_at` is not in the future, or the campaign fails the same
+    checks `request_send` applies. Callable a second time on a `scheduled` campaign to
+    reschedule it — see `_campaign_send_idempotency_key`'s docstring for how a stale, previously
+    scheduled firing is made harmless rather than cancelled outright.
+    """
+    now = now or datetime.now(UTC)
+    if scheduled_at <= now:
+        raise ValidationProblem("scheduled_at must be in the future")
+    row = await selectors.get_campaign(session, ctx.organization_id, campaign_id, lock=True)
+    if row is None:
+        raise NotFoundProblem("No such campaign")
+    if row.status not in ("draft", "scheduled"):
+        raise ConflictProblem(
+            f"Only a draft or scheduled campaign can be scheduled; this campaign is {row.status}"
+        )
+    await _ensure_campaign_sendable(session, ctx, row)
+
+    before_status = row.status
+    row.status = "scheduled"
+    row.scheduled_at = scheduled_at
+    row.updated_by = str(ctx.principal.sub)
+    row.updated_at = now
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.campaign.scheduled",
+        entity="campaign",
+        entity_id=row.id,
+        before={"status": before_status},
+        after={"status": "scheduled", "scheduled_at": scheduled_at.isoformat()},
+        request=request,
+    )
+    schedule_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        due_at=scheduled_at,
+        idempotency_key=_campaign_send_idempotency_key(campaign_id, scheduled_at),
+        target_event_type=EVT_CAMPAIGN_SEND_REQUESTED,
+        target_aggregate_type="campaign",
+        target_aggregate_id=row.id,
+        target_payload={
+            "organization_id": str(ctx.organization_id),
+            "campaign_id": str(row.id),
+            "scheduled_for": scheduled_at.astimezone(UTC).isoformat(),
+        },
+        target_actor=_actor(ctx),
+    )
+    return row
+
+
+async def activate_scheduled_campaign(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    campaign_id: uuid.UUID,
+    scheduled_for: datetime,
+) -> bool:
+    """Flip a `scheduled` campaign to `sending` when the scheduler's own job for it fires.
+    Returns whether it did.
+
+    `scheduled_for` is the instant `schedule_send` staged this particular firing for, carried on
+    the event so it can be checked against the campaign's *current* `scheduled_at`: a reschedule
+    stages a fresh `platform.schedule.requested` without cancelling the one it replaces
+    (`_campaign_send_idempotency_key`'s docstring — ADR-0015 has no cancel primitive), so the
+    instant a superseded job eventually fires no longer matches and this drops it rather than
+    start a second send. A campaign that was cancelled, or already moved on, is not `scheduled`
+    either by the time this runs, so it is dropped the same way as a matter of course. Called
+    from `app/consumers.py:expand_campaign_send`, in the same transaction as the expansion that
+    follows it — a dropped firing here means `expand_campaign` right after it is a no-op too,
+    since it only ever acts on a campaign that is `sending`.
+    """
+    row = await selectors.get_campaign(session, organization_id, campaign_id, lock=True)
+    if row is None or row.status != "scheduled":
+        return False
+    if row.scheduled_at is None or row.scheduled_at.astimezone(UTC) != scheduled_for.astimezone(
+        UTC
+    ):
+        return False
+    row.status = "sending"
+    row.started_at = datetime.now(UTC)
+    row.updated_by = CAMPAIGN_ACTOR
+    row.updated_at = row.started_at
+    await session.flush()
+    return True
 
 
 async def cancel_campaign(

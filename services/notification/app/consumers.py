@@ -36,6 +36,7 @@ import asyncio
 import uuid
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -124,23 +125,40 @@ async def expand_campaign_send(
     batch_size: int | None = None,
 ) -> str:
     """Expand a campaign's audience into `queued` recipient rows. Returns `expanded`,
-    `redelivered`, or `not_sending` (the campaign was cancelled before this ran).
+    `redelivered`, or `not_sending` (the campaign was cancelled before this ran, or this firing
+    was a scheduled send superseded by a reschedule — see `services.activate_scheduled_campaign`).
 
     One transaction, acking fast: this is the whole of what runs on the shared consumer for a
     campaign send. `app/cron.py`'s driver does the sending, on its own poll loop, so a campaign
     of any size never risks `notification.events`'s `consumer_timeout` and never delays another
     product's event behind it.
+
+    A payload carrying `scheduled_for` (ADR-0015: this firing came from the scheduler, off a
+    `schedule_send` request rather than an immediate `request_send`) is activated first, in the
+    same transaction as the expansion that follows it — `request_send` already left the campaign
+    `sending` by the time its own event reaches here, so activation only ever has something to do
+    for a scheduled one.
     """
     event_id = uuid.UUID(str(envelope["event_id"]))
     event_type = str(envelope["event_type"])
     organization_id = uuid.UUID(str(envelope["organization_id"]))
-    campaign_id = uuid.UUID(str((envelope.get("payload") or {})["campaign_id"]))
+    payload = envelope.get("payload") or {}
+    campaign_id = uuid.UUID(str(payload["campaign_id"]))
+    scheduled_for_raw = payload.get("scheduled_for")
+    scheduled_for = datetime.fromisoformat(scheduled_for_raw) if scheduled_for_raw else None
     size = batch_size or settings().engage_campaign_batch_size
 
     async with _session_scope(organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("campaign.redelivered", campaign_id=str(campaign_id))
             return "redelivered"
+        if scheduled_for is not None:
+            await services.activate_scheduled_campaign(
+                session,
+                organization_id=organization_id,
+                campaign_id=campaign_id,
+                scheduled_for=scheduled_for,
+            )
         sending = await services.expand_campaign(
             session, organization_id=organization_id, campaign_id=campaign_id, batch_size=size
         )

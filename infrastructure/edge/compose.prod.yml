@@ -530,8 +530,15 @@ services:
         # The secret is unavoidably a positional argument to `admin user add` — `mc`'s admin
         # API has no env-var form for it — so it is visible in this container's own process
         # list for the moment this one line runs, same as any `docker run -e PASSWORD=...`
-        # secret; it never appears in a log, in `docker inspect`, or in this file.
-        mc admin user add og "$$DOCUMENT_S3_ACCESS_KEY" "$$DOCUMENT_S3_SECRET_KEY"
+        # secret; it never appears in a log, in `docker inspect`, or in this file. Neither does
+        # the access key: `mc` prints it on success ("Added user `<key>`") and inside the URL of
+        # every failure, so its output is captured, printed only on failure, and redacted.
+        add_out=$$(mc admin user add og "$$DOCUMENT_S3_ACCESS_KEY" "$$DOCUMENT_S3_SECRET_KEY" 2>&1) || {
+          add_out=$${add_out//$$DOCUMENT_S3_ACCESS_KEY/<redacted>}
+          echo "$${add_out//$$DOCUMENT_S3_SECRET_KEY/<redacted>}" >&2
+          exit 1
+        }
+        echo "scoped document user ready"
         cat > /tmp/document-write.json <<JSON
         {
           "Version": "2012-10-17",
@@ -545,11 +552,11 @@ services:
         }
         JSON
         mc admin policy create og document-write /tmp/document-write.json
-        attach_out=$$(mc admin policy attach og document-write --user "$$DOCUMENT_S3_ACCESS_KEY" 2>&1) && echo "$$attach_out" || {
+        attach_out=$$(mc admin policy attach og document-write --user "$$DOCUMENT_S3_ACCESS_KEY" 2>&1) && echo "document-write attached to the scoped user" || {
           case "$$attach_out" in
           *"already in effect"*) echo "document-write already attached to the scoped user" ;;
           *)
-            echo "$$attach_out" >&2
+            echo "$${attach_out//$$DOCUMENT_S3_ACCESS_KEY/<redacted>}" >&2
             exit 1
             ;;
           esac
@@ -560,7 +567,12 @@ services:
         # user above deliberately does not hold. No always-on container is ever handed this
         # credential — only a one-off `docker compose run` an operator starts by hand for an orphan
         # scan; the API container reads only `DOCUMENT_S3_ACCESS_KEY`/`_SECRET_KEY`.
-        mc admin user add og "$$DOCUMENT_S3_ORPHAN_ACCESS_KEY" "$$DOCUMENT_S3_ORPHAN_SECRET_KEY"
+        orphan_add_out=$$(mc admin user add og "$$DOCUMENT_S3_ORPHAN_ACCESS_KEY" "$$DOCUMENT_S3_ORPHAN_SECRET_KEY" 2>&1) || {
+          orphan_add_out=$${orphan_add_out//$$DOCUMENT_S3_ORPHAN_ACCESS_KEY/<redacted>}
+          echo "$${orphan_add_out//$$DOCUMENT_S3_ORPHAN_SECRET_KEY/<redacted>}" >&2
+          exit 1
+        }
+        echo "orphan-sweep user ready"
         cat > /tmp/document-orphan-sweep.json <<JSON
         {
           "Version": "2012-10-17",
@@ -579,11 +591,11 @@ services:
         }
         JSON
         mc admin policy create og document-orphan-sweep /tmp/document-orphan-sweep.json
-        orphan_attach_out=$$(mc admin policy attach og document-orphan-sweep --user "$$DOCUMENT_S3_ORPHAN_ACCESS_KEY" 2>&1) && echo "$$orphan_attach_out" || {
+        orphan_attach_out=$$(mc admin policy attach og document-orphan-sweep --user "$$DOCUMENT_S3_ORPHAN_ACCESS_KEY" 2>&1) && echo "document-orphan-sweep attached to the scoped user" || {
           case "$$orphan_attach_out" in
           *"already in effect"*) echo "document-orphan-sweep already attached to the scoped user" ;;
           *)
-            echo "$$orphan_attach_out" >&2
+            echo "$${orphan_attach_out//$$DOCUMENT_S3_ORPHAN_ACCESS_KEY/<redacted>}" >&2
             exit 1
             ;;
           esac

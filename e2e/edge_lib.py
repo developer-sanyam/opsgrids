@@ -144,20 +144,17 @@ def login(c: httpx.Client, email: str, password: str) -> str:
 def find_flat_offer(plans: list[dict]) -> tuple[dict, dict] | None:
     """The one price a marketplace card shows: the first published version with a flat price.
 
-    Mirrors `flatPrice()` in `frontend/opsgrids-dashboard/src/routes/Marketplace.tsx` exactly —
+    Mirrors `trialOffer()` in `frontend/opsgrids-dashboard/src/routes/Marketplace.tsx` exactly —
     that function (not "the first published version", which need not be the priced one) is what
-    decides whether a card's "Start 14-day trial" button exists at all.
+    decides whether a card's "Start 14-day trial" button exists at all. The customer read no
+    longer carries amounts (pricing is set per client), so a flat price is recognised by its kind.
     """
     for plan in plans:
         for version in plan.get("versions", []):
             if version.get("state") != "published":
                 continue
             price = next(
-                (
-                    p
-                    for p in version.get("prices", [])
-                    if p.get("kind") == "flat" and p.get("amount_minor") is not None
-                ),
+                (p for p in version.get("prices", []) if p.get("kind") == "flat"),
                 None,
             )
             if price is not None:

@@ -33,24 +33,24 @@ export interface Activation {
   entitled_by: string[];
 }
 
-/** `PriceOut` — one price on a plan version. `flat` is what ADR-0013 §2 sells. */
+/**
+ * `TenantPriceOut` — a price component's shape, never its amount. Pricing is negotiated per
+ * organization by staff (the owner's call), so a client never reads a list price off this API;
+ * `kind` is enough to tell a flat offer exists to start a trial against.
+ */
 export interface Price {
-  id: string;
   kind: "flat" | "per_seat" | "usage" | string;
-  amount_minor: number | null;
-  currency: string;
   unit: string | null;
-  unit_price_micros: number | null;
   meter_key: string | null;
 }
 
-/** `PlanVersionOut` — an immutable, published version a subscription pins to. */
+/** `TenantPlanVersionOut` — an immutable, published version a subscription pins to. No amount
+ * or currency: those are set per organization by staff, not read off the catalogue. */
 export interface PlanVersion {
   id: string;
   version_no: number;
   state: string;
   billing_interval: string;
-  currency: string;
   restricted_to_org_id: string | null;
   published_at: string | null;
   prices: Price[];
