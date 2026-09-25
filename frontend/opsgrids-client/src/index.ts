@@ -86,6 +86,14 @@ export { useCurrentUser } from "./platform/useCurrentUser";
 export type { CurrentUser } from "./platform/useCurrentUser";
 export { useAdminLinks } from "./platform/useAdminLinks";
 export type { AdminLink, AdminLinkKey } from "./platform/useAdminLinks";
+export { useGlobalSearch } from "./platform/useGlobalSearch";
+export type {
+  GlobalSearchGroup,
+  GlobalSearchResultItem,
+  GlobalSearchState,
+  GlobalSearchStatus,
+  UseGlobalSearchOptions,
+} from "./platform/useGlobalSearch";
 
 export { settle } from "./fixtures";
 export { useAsync } from "./useAsync";

@@ -73,6 +73,9 @@ export interface RequestOptions {
   /** `fetch`'s credentials mode. Only needed alongside `baseUrl`: a cross-origin call needs
    *  `"include"` or the browser withholds the cookie the call exists to use. */
   credentials?: RequestCredentials | undefined;
+  /** Abort the request — a debounced search firing a new query cancels the one it superseded,
+   *  rather than letting a slow, stale response race a fresh one onto the screen. */
+  signal?: AbortSignal | undefined;
 }
 
 async function readProblem(res: Response): Promise<ProblemJson | null> {
@@ -98,7 +101,7 @@ async function performRequest<T>(
   options: RequestOptions,
   allowRefresh: boolean,
 ): Promise<T> {
-  const { method = "GET", body, auth = true, signalUnauthorized = true, baseUrl, credentials } =
+  const { method = "GET", body, auth = true, signalUnauthorized = true, baseUrl, credentials, signal } =
     options;
 
   const headers: Record<string, string> = { ...options.headers, Accept: "application/json" };
@@ -112,6 +115,7 @@ async function performRequest<T>(
     method,
     headers,
     ...(credentials ? { credentials } : {}),
+    ...(signal ? { signal } : {}),
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
 
