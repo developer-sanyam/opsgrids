@@ -1,19 +1,32 @@
-import { Fragment, useState } from "react";
+import { useState } from "react";
 
 import { ApiError, problemMessage, useAsync } from "@opsgrids/client";
-import { Card, ChevronRight, EmptyState, ErrorState, Skeleton, Tag } from "@opsgrids/ui";
-import type { TagTone } from "@opsgrids/ui";
+import {
+  Button,
+  Card,
+  DataTable,
+  Drawer,
+  EmptyState,
+  ErrorState,
+  Skeleton,
+  StatusBadge,
+  statusTone,
+} from "@opsgrids/ui";
+import type { Column, StatusTone, TableSelection } from "@opsgrids/ui";
 
 import { getCreditBalance, getOrganization, listInvoices } from "@/api";
 import type { Invoice } from "@/api/types";
+import { downloadCsv } from "@/lib/csv";
 import { formatDate, formatMoney } from "@/lib/money";
 import { PageHeader } from "@/ui";
 
-const STATE_TONE: Record<string, TagTone> = {
-  draft: "neutral",
-  open: "info",
-  paid: "positive",
-  void: "negative",
+/**
+ * `void` and `uncollectible` mean something different here than the shared registry's general
+ * sense of those words (see `opsgrids-ui/src/lib/status.ts`), so they take an explicit tone
+ * rather than the registry's — a `StatusBadge` tone override, listed in the sprint report.
+ */
+const STATE_TONE_OVERRIDE: Record<string, StatusTone> = {
+  void: "danger",
   uncollectible: "warning",
 };
 
@@ -31,9 +44,73 @@ async function loadCreditBalance(): Promise<{ balance_minor: number; currency: s
 export function InvoicesPage() {
   const invoices = useAsync(loadInvoices, []);
   const credit = useAsync(loadCreditBalance, []);
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [inspecting, setInspecting] = useState<Invoice | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const forbidden = invoices.status === "error" && invoices.error instanceof ApiError && invoices.error.status === 403;
+
+  const columns: Column<Invoice>[] =
+    invoices.status === "success"
+      ? [
+          { key: "number", header: "Number", mobile: "title", render: (inv) => <span className="font-semibold text-ink">{inv.number}</span> },
+          {
+            key: "period",
+            header: "Period",
+            render: (inv) => (
+              <span className="text-ink-soft">
+                {formatDate(inv.period_start)} – {formatDate(inv.period_end)}
+              </span>
+            ),
+          },
+          {
+            key: "state",
+            header: "State",
+            mobile: "status",
+            render: (inv) => (
+              <StatusBadge tone={STATE_TONE_OVERRIDE[inv.state] ?? statusTone(inv.state) ?? "neutral"} label={inv.state} />
+            ),
+          },
+          {
+            key: "total",
+            header: "Total",
+            align: "right",
+            cellClassName: "tnum",
+            render: (inv) => <span className="text-ink">{formatMoney(inv.total_minor, inv.currency)}</span>,
+          },
+        ]
+      : [];
+
+  const invoiceSelection: TableSelection<Invoice> | undefined =
+    invoices.status === "success"
+      ? {
+          selected,
+          onToggle: (key, next) =>
+            setSelected((prev) => {
+              const nextSet = new Set(prev);
+              if (next) nextSet.add(key);
+              else nextSet.delete(key);
+              return nextSet;
+            }),
+          onToggleAll: (next) => setSelected(next ? new Set(invoices.data.map((inv) => inv.id)) : new Set()),
+          label: (inv) => inv.number,
+        }
+      : undefined;
+
+  function exportSelectedInvoices() {
+    if (invoices.status !== "success") return;
+    const chosen = invoices.data.filter((inv) => selected.has(inv.id));
+    downloadCsv(
+      "invoices.csv",
+      ["Number", "Period start", "Period end", "State", "Total"],
+      chosen.map((inv) => [
+        inv.number,
+        inv.period_start,
+        inv.period_end,
+        inv.state,
+        formatMoney(inv.total_minor, inv.currency),
+      ]),
+    );
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -63,89 +140,63 @@ export function InvoicesPage() {
         <ErrorState title="Couldn't load invoices" message={problemMessage(invoices.error)} onRetry={invoices.reload} />
       ) : null}
 
-      {invoices.status === "success" && invoices.data.length === 0 ? (
-        <EmptyState
-          title="No invoices yet"
-          description="The first one is issued when a trial becomes a paid subscription."
-        />
-      ) : null}
-
-      {invoices.status === "success" && invoices.data.length > 0 ? (
-        <Card className="overflow-x-auto p-0">
-          <table className="w-full min-w-[36rem] text-left text-sm">
-            <thead>
-              <tr className="text-xs uppercase tracking-wide text-muted">
-                <th className="px-5 py-3 font-semibold">
-                  <span className="sr-only">Expand</span>
-                </th>
-                <th className="px-5 py-3 font-semibold">Number</th>
-                <th className="px-5 py-3 font-semibold">Period</th>
-                <th className="px-5 py-3 font-semibold">State</th>
-                <th className="px-5 py-3 text-right font-semibold">Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {invoices.data.map((inv) => {
-                const open = expanded === inv.id;
-                return (
-                  <Fragment key={inv.id}>
-                    <tr className="border-t border-line">
-                      <td className="px-3 py-3">
-                        <button
-                          type="button"
-                          onClick={() => setExpanded(open ? null : inv.id)}
-                          aria-expanded={open}
-                          aria-controls={`invoice-${inv.id}-lines`}
-                          aria-label={`${open ? "Collapse" : "Expand"} invoice ${inv.number}`}
-                          className="grid size-8 place-items-center rounded-full text-ink-soft transition-colors hover:bg-ground"
-                        >
-                          <ChevronRight className={open ? "size-4 rotate-90 transition-transform" : "size-4 transition-transform"} />
-                        </button>
-                      </td>
-                      <td className="px-5 py-3 font-semibold text-ink">{inv.number}</td>
-                      <td className="px-5 py-3 text-ink-soft">
-                        {formatDate(inv.period_start)} – {formatDate(inv.period_end)}
-                      </td>
-                      <td className="px-5 py-3">
-                        <Tag tone={STATE_TONE[inv.state] ?? "neutral"}>{inv.state}</Tag>
-                      </td>
-                      <td className="px-5 py-3 text-right tabular-nums text-ink">{formatMoney(inv.total_minor, inv.currency)}</td>
-                    </tr>
-                    {open ? (
-                      <tr id={`invoice-${inv.id}-lines`} className="border-t border-line bg-ground/50">
-                        <td colSpan={5} className="px-5 py-4">
-                          {inv.lines.length === 0 ? (
-                            <p className="text-sm text-muted">This invoice has no line items.</p>
-                          ) : (
-                            <table className="w-full text-left text-sm">
-                              <thead>
-                                <tr className="text-xs uppercase tracking-wide text-faint">
-                                  <th className="py-1.5 pr-3 font-semibold">Description</th>
-                                  <th className="py-1.5 pr-3 font-semibold">Quantity</th>
-                                  <th className="py-1.5 text-right font-semibold">Amount</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {inv.lines.map((line) => (
-                                  <tr key={line.id}>
-                                    <td className="py-1.5 pr-3 text-ink-soft">{line.description}</td>
-                                    <td className="py-1.5 pr-3 tabular-nums text-ink-soft">{line.quantity}</td>
-                                    <td className="py-1.5 text-right tabular-nums text-ink">{formatMoney(line.amount_minor, inv.currency)}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          )}
-                        </td>
-                      </tr>
-                    ) : null}
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
+      {invoices.status === "success" ? (
+        <Card className="p-0">
+          <DataTable
+            rows={invoices.data}
+            rowKey={(inv) => inv.id}
+            columns={columns}
+            mobileCard="auto"
+            selection={invoiceSelection}
+            bulkActions={
+              <Button variant="outline" size="sm" onClick={exportSelectedInvoices}>
+                Export selected
+              </Button>
+            }
+            onRowClick={(inv) => setInspecting(inv)}
+            emptyState={
+              <EmptyState
+                title="No invoices yet"
+                description="The first one is issued when a trial becomes a paid subscription."
+              />
+            }
+          />
         </Card>
       ) : null}
+
+      <Drawer
+        open={inspecting !== null}
+        onClose={() => setInspecting(null)}
+        title={inspecting ? `Invoice ${inspecting.number}` : "Invoice"}
+        description={
+          inspecting ? `${formatDate(inspecting.period_start)} – ${formatDate(inspecting.period_end)}` : undefined
+        }
+      >
+        {inspecting ? (
+          inspecting.lines.length === 0 ? (
+            <p className="text-sm text-muted">This invoice has no line items.</p>
+          ) : (
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="text-xs uppercase tracking-wide text-faint">
+                  <th className="py-1.5 pr-3 font-semibold">Description</th>
+                  <th className="py-1.5 pr-3 font-semibold">Quantity</th>
+                  <th className="py-1.5 text-right font-semibold">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {inspecting.lines.map((line) => (
+                  <tr key={line.id} className="border-t border-line">
+                    <td className="py-1.5 pr-3 text-ink-soft">{line.description}</td>
+                    <td className="py-1.5 pr-3 tabular-nums text-ink-soft">{line.quantity}</td>
+                    <td className="py-1.5 text-right tabular-nums text-ink">{formatMoney(line.amount_minor, inspecting.currency)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )
+        ) : null}
+      </Drawer>
     </div>
   );
 }

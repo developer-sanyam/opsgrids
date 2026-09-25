@@ -48,6 +48,7 @@ export function ChannelsPage() {
     {
       key: "channel",
       header: "Channel",
+      mobile: "title",
       render: (r) => <ChannelBadge channel={r.channel} />,
     },
     {
@@ -158,6 +159,7 @@ export function ChannelsPage() {
             columns={columns}
             rows={rows}
             rowKey={(r) => r.channel}
+            mobileCard="auto"
             emptyState={
               <EmptyState
                 icon={<MegaphoneIcon className="size-6" />}
