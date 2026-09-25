@@ -36,6 +36,13 @@ interface LineChartProps {
   formatValue?: ((value: number) => string) | undefined;
   /** The plot's height. Default `md` (192px). */
   height?: keyof typeof HEIGHT | undefined;
+  /**
+   * Show every `n`th category label instead of the default computed from a typical card's width
+   * (`labelStride`). The default thins well for the few-word, short labels most charts here plot;
+   * a caller with many categories and a longer label (twelve month names on a phone-width card)
+   * knows its own worst case better than a fixed room-for-six guess does.
+   */
+  categoryStride?: number | undefined;
   className?: string | undefined;
 }
 
@@ -59,6 +66,7 @@ export function LineChart({
   area,
   formatValue = defaultFormat,
   height = "md",
+  categoryStride,
   className,
 }: LineChartProps) {
   const gradient = useId();
@@ -158,7 +166,11 @@ export function LineChart({
             </ChartTooltip>
           ) : null}
         </div>
-        <CategoryAxis categories={categories} stride={labelStride(count)} position={(index) => xOf(index, count)} />
+        <CategoryAxis
+          categories={categories}
+          stride={categoryStride ?? labelStride(count)}
+          position={(index) => xOf(index, count)}
+        />
       </div>
       <ChartDataTable
         caption={label}

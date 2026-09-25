@@ -11,7 +11,7 @@ describe("formatMoney", () => {
 
 describe("formatDate", () => {
   it("renders a wire date for a person, and an em dash for nothing", () => {
-    expect(formatDate("2026-09-20T00:00:00Z")).toBe("20 Sept 2026");
+    expect(formatDate("2026-09-20T00:00:00Z")).toBe("20 Sep 2026");
     expect(formatDate(null)).toBe("—");
     expect(formatDate("not-a-date")).toBe("—");
   });

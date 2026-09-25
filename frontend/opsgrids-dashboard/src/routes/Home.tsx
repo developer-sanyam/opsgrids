@@ -16,7 +16,7 @@
  * service computes a performance figure for a person. Inventing either would be exactly the
  * "sample" data the dashboard audit spent itself removing.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -26,7 +26,6 @@ import {
   CalendarIcon,
   Card,
   ChartCard,
-  CheckSquareIcon,
   ClipboardCheckIcon,
   DataTable,
   DonutChart,
@@ -41,6 +40,7 @@ import {
   SectionHeader,
   Select,
   Skeleton,
+  SquareIcon,
   statusLabel,
   StatusBadge,
   Timeline,
@@ -118,6 +118,37 @@ function seriesValue(point: MonthlyRevenuePoint, key: SeriesKey): number {
   if (key === "revenue") return point.revenue_minor;
   if (key === "received") return point.received_minor;
   return point.outstanding_minor;
+}
+
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "Oct '25", "Nov", "Dec", "Jan '26" — a phone-width alternative to the server's own "Oct 2025",
+ * short enough to survive a three-a-side axis (`categoryStride`) on a 375px card. The year marks
+ * only the first point and wherever it actually changes, the way a wall calendar would. */
+function compactMonthLabels(points: readonly MonthlyRevenuePoint[]): string[] {
+  return points.map((point, index) => {
+    const [year, monthNumber] = point.month.split("-");
+    const name = SHORT_MONTHS[Number(monthNumber ?? "1") - 1] ?? point.label;
+    const previousYear = points[index - 1]?.month.split("-")[0];
+    return index === 0 || year !== previousYear ? `${name} '${(year ?? "").slice(2)}` : name;
+  });
+}
+
+/** Below the brief's tablet boundary (768px) twelve month names need thinning to every third, not
+ * the LineChart default's every second — a JS check because it drives label *content*
+ * (`compactMonthLabels`), not only a class name a media query could switch on its own. */
+function useNarrowViewport(): boolean {
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(max-width: 767px)").matches,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const list = window.matchMedia("(max-width: 767px)");
+    const onChange = () => setNarrow(list.matches);
+    list.addEventListener("change", onChange);
+    return () => list.removeEventListener("change", onChange);
+  }, []);
+  return narrow;
 }
 
 function byDueDateSoonestFirst(a: ProjectTask, b: ProjectTask): number {
@@ -245,6 +276,7 @@ export function HomePage() {
   );
 
   const [seriesKey, setSeriesKey] = useState<SeriesKey>("revenue");
+  const narrow = useNarrowViewport();
 
   const financeHost = getPlatformHost("finance");
   const projectsHost = getPlatformHost("projects");
@@ -262,6 +294,7 @@ export function HomePage() {
       header: "Invoice",
       render: (row) => <span className="font-semibold text-ink">{row.number}</span>,
       mobile: "title",
+      cellClassName: "whitespace-nowrap",
     },
     { key: "customer", header: "Customer", render: (row) => customerName(row.customer_id), mobile: "field" },
     {
@@ -278,7 +311,13 @@ export function HomePage() {
         isStatusWord(row.status) ? <StatusBadge status={row.status} /> : <StatusBadge tone="neutral" label={row.status} />,
       mobile: "status",
     },
-    { key: "date", header: "Date", render: (row) => formatDate(row.issued_date), mobile: "field" },
+    {
+      key: "date",
+      header: "Date",
+      render: (row) => formatDate(row.issued_date),
+      mobile: "field",
+      cellClassName: "whitespace-nowrap",
+    },
   ];
 
   const pendingTasks =
@@ -350,7 +389,6 @@ export function HomePage() {
                 caption={history?.revenue_delta_pct != null ? "vs last month" : "This month"}
                 icon={<TrendingUpIcon className="size-5" />}
                 tone="positive"
-                figure="money"
               />
             ) : null}
           </KpiSlot>
@@ -402,27 +440,33 @@ export function HomePage() {
           ) : null}
         </KpiSlot>
 
-        <KpiSlot
-          access={tasksAccess}
-          state={tasks.status === "success" ? "ready" : tasks.status}
-          label="Pending Tasks"
-          product="Projects"
-          capability="tasks"
-          canActivate={canActivateProducts}
-          onStartTrial={goToProducts}
-          onRetry={tasks.reload}
-        >
-          {tasks.status === "success" ? (
-            <KpiCard
-              label="Pending Tasks"
-              value={COUNT.format(pendingTasks.length)}
-              caption="Assigned to you"
-              icon={<ClipboardCheckIcon className="size-5" />}
-              tone="warning"
-            />
-          ) : null}
-        </KpiSlot>
+        {/* The odd one out of the three plain cards spans both mobile columns too — a lone
+            half-width card at the end of the grid reads as a mistake, not a hierarchy. */}
+        <div className="col-span-2 md:col-span-1">
+          <KpiSlot
+            access={tasksAccess}
+            state={tasks.status === "success" ? "ready" : tasks.status}
+            label="Pending Tasks"
+            product="Projects"
+            capability="tasks"
+            canActivate={canActivateProducts}
+            onStartTrial={goToProducts}
+            onRetry={tasks.reload}
+          >
+            {tasks.status === "success" ? (
+              <KpiCard
+                label="Pending Tasks"
+                value={COUNT.format(pendingTasks.length)}
+                caption="Assigned to you"
+                icon={<ClipboardCheckIcon className="size-5" />}
+                tone="warning"
+              />
+            ) : null}
+          </KpiSlot>
+        </div>
       </section>
+
+      <ModulesGrid />
 
       {/* Analytics — a large area chart of finance's own real 12-month history, and a donut of
           invoices by status (the honest form of the mockup's "Orders by status"; §12–13 of the
@@ -468,7 +512,8 @@ export function HomePage() {
             {overview.status === "success" && history && months.length > 0 ? (
               <LineChart
                 label={`${SERIES_OPTIONS.find((option) => option.value === seriesKey)?.label ?? "Revenue"} by month`}
-                categories={months.map((point) => point.label)}
+                categories={narrow ? compactMonthLabels(months) : months.map((point) => point.label)}
+                categoryStride={narrow ? 3 : undefined}
                 series={[
                   {
                     key: seriesKey,
@@ -568,7 +613,7 @@ export function HomePage() {
             <ul className="flex list-none flex-col gap-1 p-0">
               {upcomingTasks.map((task) => (
                 <li key={task.id} className="-mx-2 flex items-center gap-3 rounded-tile px-2 py-3">
-                  <CheckSquareIcon aria-hidden className="size-4 shrink-0 text-faint" />
+                  <SquareIcon aria-hidden className="size-4 shrink-0 text-faint" />
                   <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-soft">{task.title}</span>
                   <StatusBadge status={task.priority} />
                   <span className="shrink-0 text-xs text-muted tnum">
@@ -608,8 +653,6 @@ export function HomePage() {
           )}
         </Card>
       ) : null}
-
-      <ModulesGrid />
     </div>
   );
 }

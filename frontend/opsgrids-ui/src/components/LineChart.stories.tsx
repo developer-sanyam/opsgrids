@@ -75,6 +75,30 @@ export const NegativeValues: Story = {
   },
 };
 
+/** A caller that knows its card is phone-width thins the axis itself with `categoryStride`,
+ * rather than the default's fixed room for six — twelve month names need every third, not every
+ * second, to clear a narrow card. */
+export const CustomStride: Story = {
+  args: {
+    label: "Revenue by month",
+    categories: ["Oct '25", "Nov", "Dec", "Jan '26", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep"],
+    categoryStride: 3,
+    formatValue: lakh,
+    series: [
+      {
+        key: "revenue",
+        label: "Revenue",
+        values: [860000, 875000, 910000, 895000, 930000, 960000, 985000, 1005000, 1040000, 1075000, 1114500, 1248320],
+      },
+    ],
+  },
+  render: (args) => (
+    <Card className="max-w-xs p-4 sm:p-6">
+      <LineChart {...args} />
+    </Card>
+  ),
+};
+
 /** Nothing yet: a flat line at zero on a small default axis, not a divide-by-zero. */
 export const AllZero: Story = {
   args: {
