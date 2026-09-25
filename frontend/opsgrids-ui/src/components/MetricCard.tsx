@@ -104,7 +104,7 @@ export function MetricCard({
             {icon}
           </span>
         ) : null}
-        <p className="min-w-0 truncate text-caption font-medium text-muted">{label}</p>
+        <p className="min-w-0 text-caption font-medium text-muted">{label}</p>
         <p data-kpi-value className="tnum min-w-0 font-bold leading-tight text-ink text-base">
           {value}
         </p>
@@ -128,7 +128,7 @@ export function MetricCard({
       ) : null}
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex flex-wrap items-center gap-2">
-          <p className={cn("min-w-0 truncate font-medium text-muted", compact ? "text-xs" : "text-sm")}>{label}</p>
+          <p className={cn("min-w-0 font-medium text-muted", compact ? "text-xs" : "text-sm")}>{label}</p>
           {sample ? <SampleChip {...(sample === true ? {} : sample)} /> : null}
         </div>
         <p

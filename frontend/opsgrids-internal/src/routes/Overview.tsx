@@ -123,23 +123,35 @@ export function OverviewPage() {
 
       <KpiRow orgs={orgs} overview={overview} series={series} canSeeRevenue={canSeeRevenue} />
 
-      <section aria-label="Analytics" className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <AccountGrowthCard series={series} canSee={canSeeRevenue} months={months} />
-        <RevenueByPlanCard subscriptions={subscriptions} canSee={canSeeRevenue} />
-        <AccountsByStatusCard orgs={orgs} />
-      </section>
-
-      <AccountsTable
-        orgs={orgs}
-        onRetry={retry}
-        subscriptions={subscriptions}
-        canSeeRevenue={canSeeRevenue}
-        canWriteOverrides={canWriteOverrides}
-        onView={openAccount}
-        onPricing={openPricing}
-        onSuspend={(org) => setRowAction({ kind: "suspend", org: toOrgRef(org) })}
-        onReactivate={(org) => setRowAction({ kind: "reactivate", org: toOrgRef(org) })}
-      />
+      {/* Below `xl` (mock-1's phone and tablet frames): growth chart, then the accounts list,
+          then Revenue by Plan and Accounts by Status — `order` only, so a screen reader still
+          reads these four regions in the same sequence regardless of width. From `xl` (the
+          desktop frame) all three charts sit in one row and the table returns to full width
+          below them, exactly the DOM order already gives for anyone not reading by sight. */}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <div className="order-1">
+          <AccountGrowthCard series={series} canSee={canSeeRevenue} months={months} />
+        </div>
+        <div className="order-3 xl:order-2">
+          <RevenueByPlanCard subscriptions={subscriptions} canSee={canSeeRevenue} />
+        </div>
+        <div className="order-4 xl:order-3">
+          <AccountsByStatusCard orgs={orgs} />
+        </div>
+        <div className="order-2 xl:order-4 xl:col-span-3">
+          <AccountsTable
+            orgs={orgs}
+            onRetry={retry}
+            subscriptions={subscriptions}
+            canSeeRevenue={canSeeRevenue}
+            canWriteOverrides={canWriteOverrides}
+            onView={openAccount}
+            onPricing={openPricing}
+            onSuspend={(org) => setRowAction({ kind: "suspend", org: toOrgRef(org) })}
+            onReactivate={(org) => setRowAction({ kind: "reactivate", org: toOrgRef(org) })}
+          />
+        </div>
+      </div>
 
       <section aria-label="Activity and attention" className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <RecentActivityCard audit={audit} orgNameById={orgNameById} canSee={canSeeAudit} />

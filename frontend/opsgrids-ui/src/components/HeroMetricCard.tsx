@@ -83,7 +83,7 @@ export function HeroMetricCard({
       </span>
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex flex-wrap items-center gap-2">
-          <p className="min-w-0 truncate text-sm font-medium text-ink-soft">{label}</p>
+          <p className="min-w-0 text-sm font-medium text-ink-soft">{label}</p>
           {sample ? <SampleChip {...(sample === true ? {} : sample)} /> : null}
         </div>
         <p data-kpi-value className="tnum min-w-0 truncate text-2xl font-bold leading-tight text-ink">
