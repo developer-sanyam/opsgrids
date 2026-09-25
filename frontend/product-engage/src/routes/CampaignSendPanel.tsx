@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import { Can } from "@opsgrids/client";
-import { MailIcon, SendIcon } from "@opsgrids/ui";
+import { CalendarIcon, MailIcon, SendIcon } from "@opsgrids/ui";
 
 import { sendCampaign } from "@/api/client";
 import type { CampaignOut } from "@/api/types";
@@ -11,6 +11,7 @@ import type { ResolvedLists } from "@/lib/refs";
 import { explainSendFailure } from "@/lib/sendGate";
 import type { GateField, GateNext, SendGateReason } from "@/lib/sendGate";
 import { Button, Card, ConfirmDialog, InlineAlert, useAnnounce } from "@/ui";
+import { CampaignScheduleDialog } from "./CampaignScheduleDialog";
 import { CampaignTestSendDialog } from "./CampaignTestSendDialog";
 
 /**
@@ -90,6 +91,7 @@ export function CampaignSendPanel({
   resolved,
   dirty,
   onSent,
+  onScheduled,
   onFocusField,
 }: {
   campaign: CampaignOut;
@@ -99,6 +101,10 @@ export function CampaignSendPanel({
   /** The form beside this has changes that are not saved. */
   dirty: boolean;
   onSent: (campaign: CampaignOut) => void;
+  /** The service accepted a schedule: the campaign as it now holds it, and the sentence to
+   *  announce. Scheduling moves the campaign off this panel entirely (draft → scheduled), so the
+   *  caller reloads rather than holding the result here. */
+  onScheduled: (campaign: CampaignOut, message: string) => void;
   onFocusField: (field: GateField) => void;
 }) {
   const announce = useAnnounce();
@@ -106,6 +112,7 @@ export function CampaignSendPanel({
   const [pending, setPending] = useState(false);
   const [reason, setReason] = useState<SendGateReason | null>(null);
   const [testing, setTesting] = useState(false);
+  const [scheduling, setScheduling] = useState(false);
 
   async function send() {
     if (pending) return;
@@ -182,10 +189,18 @@ export function CampaignSendPanel({
           >
             Send a preview
           </Button>
+          <Button
+            variant="outline"
+            onClick={() => setScheduling(true)}
+            disabled={dirty}
+            leadingIcon={<CalendarIcon className="size-4" />}
+          >
+            Schedule
+          </Button>
           {dirty ? (
             <span className="w-full text-xs text-muted">
-              Save your changes first — sending (and testing) uses the saved draft, not what is on
-              screen.
+              Save your changes first — sending (and scheduling) uses the saved draft, not what is
+              on screen.
             </span>
           ) : null}
         </div>
@@ -211,6 +226,16 @@ export function CampaignSendPanel({
         onSent={(message) => {
           setTesting(false);
           announce(message);
+        }}
+      />
+
+      <CampaignScheduleDialog
+        open={scheduling}
+        campaign={campaign}
+        onClose={() => setScheduling(false)}
+        onScheduled={(updated, message) => {
+          setScheduling(false);
+          onScheduled(updated, message);
         }}
       />
     </Card>

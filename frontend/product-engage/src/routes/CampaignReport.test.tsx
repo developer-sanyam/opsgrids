@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -6,7 +6,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { ApiError, PermissionProvider } from "@opsgrids/client";
 
 import * as client from "@/api/client";
-import { CAMPAIGN_PAUSED, CAMPAIGN_SENDING, CAMPAIGN_SENT } from "@/api/fixtures";
+import { CAMPAIGN_PAUSED, CAMPAIGN_SCHEDULED, CAMPAIGN_SENDING, CAMPAIGN_SENT } from "@/api/fixtures";
 import type {
   CampaignOut,
   CampaignRecipientOut,
@@ -60,6 +60,7 @@ const LIST: ContactListOut = {
 const SENT: CampaignOut = { ...CAMPAIGN_SENT, sender_id: SENDER.id };
 const SENDING: CampaignOut = { ...CAMPAIGN_SENDING, sender_id: SENDER.id };
 const PAUSED: CampaignOut = { ...CAMPAIGN_PAUSED, sender_id: SENDER.id };
+const SCHEDULED: CampaignOut = { ...CAMPAIGN_SCHEDULED, sender_id: SENDER.id };
 
 const ROWS: CampaignRecipientOut[] = [
   {
@@ -480,5 +481,73 @@ describe("a paused campaign", () => {
     vi.spyOn(client, "listCampaignRecipients").mockResolvedValue(page([]));
     renderReport(PAUSED);
     expect(await screen.findByText("The send driver could not find a route to send on.")).toBeTruthy();
+  });
+});
+
+describe("a scheduled campaign", () => {
+  function mockScheduled(campaign: CampaignOut = SCHEDULED) {
+    mockRefs();
+    vi.spyOn(client, "getCampaign").mockResolvedValue(campaign);
+    vi.spyOn(client, "listCampaignRecipients").mockResolvedValue(page([]));
+  }
+
+  it("says when it goes out and offers to change it, beside Cancel", async () => {
+    mockScheduled();
+    renderReport(SCHEDULED);
+
+    await screen.findByRole("heading", { level: 2, name: "Delivery" });
+    // Scoped to the `<p>`: the timeline below also has a "Scheduled for" label, on a `<dt>`.
+    expect(screen.getByText(/Scheduled for/, { selector: "p" })).toBeTruthy();
+    // 2026-10-15T12:30:00Z is 15 Oct, 6:00 pm IST.
+    expect(screen.getByText("15 Oct, 6:00 pm IST", { selector: "span" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reschedule" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel campaign" })).toBeTruthy();
+  });
+
+  it("hides Reschedule from a caller who can write but not send, without hiding Cancel", async () => {
+    mockScheduled();
+    renderReport(SCHEDULED, READ_WRITE);
+    await screen.findByRole("heading", { level: 2, name: "Delivery" });
+    expect(screen.queryByRole("button", { name: "Reschedule" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Cancel campaign" })).toBeTruthy();
+  });
+
+  it("reschedules through the same dialog and reloads the page on success", async () => {
+    mockScheduled();
+    const rescheduled: CampaignOut = { ...SCHEDULED, scheduled_at: "2026-11-01T09:00:00Z" };
+    const schedule = vi.spyOn(client, "scheduleCampaign").mockResolvedValue(rescheduled);
+    vi.spyOn(client, "getCampaign").mockResolvedValueOnce(SCHEDULED).mockResolvedValue(rescheduled);
+    const user = userEvent.setup();
+    renderReport(SCHEDULED);
+
+    await user.click(await screen.findByRole("button", { name: "Reschedule" }));
+    expect(screen.getByRole("heading", { name: "Reschedule this campaign" })).toBeTruthy();
+    const field = screen.getByLabelText("Send at") as HTMLInputElement;
+    // The dialog opens on the campaign's current schedule, not blank.
+    expect(field.value).toBe("2026-10-15T18:00");
+
+    fireEvent.change(field, { target: { value: "2099-11-01T14:30" } });
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.click(screen.getByRole("button", { name: "Reschedule campaign" }));
+
+    await waitFor(() => expect(schedule).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("cancels a scheduled campaign through the existing cancel dialog", async () => {
+    mockScheduled();
+    const cancel = vi
+      .spyOn(client, "cancelCampaign")
+      .mockResolvedValue({ ...SCHEDULED, status: "cancelled", cancelled_at: "2026-09-25T09:00:00Z" });
+    vi.spyOn(client, "getCampaign")
+      .mockResolvedValueOnce(SCHEDULED)
+      .mockResolvedValue({ ...SCHEDULED, status: "cancelled", cancelled_at: "2026-09-25T09:00:00Z" });
+    const user = userEvent.setup();
+    renderReport(SCHEDULED);
+
+    await user.click(await screen.findByRole("button", { name: "Cancel campaign" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel campaign" }));
+    await waitFor(() => expect(cancel).toHaveBeenCalledWith(SCHEDULED.id));
+    expect(await screen.findByText("Cancelled", { selector: "dt" })).toBeTruthy();
   });
 });

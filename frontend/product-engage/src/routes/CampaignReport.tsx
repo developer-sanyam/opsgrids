@@ -2,15 +2,17 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { Can } from "@opsgrids/client";
+import { CalendarIcon } from "@opsgrids/ui";
 
 import { cancelCampaign, getCampaign, resumeCampaign } from "@/api/client";
 import type { CampaignOut, CampaignStats } from "@/api/types";
 import { failureMessage } from "@/lib/errors";
-import { campaignStatusWord, formatInstant, formatNumber } from "@/lib/format";
+import { campaignStatusWord, formatInstant, formatNumber, formatScheduledFor } from "@/lib/format";
 import { usePolling } from "@/lib/usePolling";
 import { Button, CampaignStatusTag, Card, ConfirmDialog, InlineAlert } from "@/ui";
 import { CampaignPreview } from "./CampaignPreview";
 import { CampaignRecipients } from "./CampaignRecipients";
+import { CampaignScheduleDialog } from "./CampaignScheduleDialog";
 
 /**
  * A campaign once it has left `draft`: what it said, who it went to, and how it is going.
@@ -92,6 +94,9 @@ function Counts({ stats }: { stats: CampaignStats }) {
 function Timeline({ campaign }: { campaign: CampaignOut }) {
   const rows: { label: string; at: string }[] = [
     { label: "Drafted", at: campaign.created_at },
+    ...(campaign.scheduled_at === null
+      ? []
+      : [{ label: "Scheduled for", at: campaign.scheduled_at }]),
     ...(campaign.started_at === null ? [] : [{ label: "Started sending", at: campaign.started_at }]),
     ...(campaign.completed_at === null ? [] : [{ label: "Finished", at: campaign.completed_at }]),
     ...(campaign.cancelled_at === null ? [] : [{ label: "Cancelled", at: campaign.cancelled_at }]),
@@ -131,6 +136,7 @@ function ReportView({
   const [cancelFailure, setCancelFailure] = useState<string | null>(null);
   const [resumePending, setResumePending] = useState(false);
   const [resumeFailure, setResumeFailure] = useState<string | null>(null);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
 
   async function confirmCancel() {
     if (cancelPending) return;
@@ -232,19 +238,43 @@ function ReportView({
             <h2 className="text-base font-bold text-ink">Delivery</h2>
             <CampaignStatusTag status={campaign.status} />
           </div>
-          <Can permission="engage.campaign.campaign.write" scope="ORG">
-            {CANCELLABLE.has(campaign.status) ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-negative"
-                onClick={() => setCancelling(true)}
-              >
-                Cancel campaign
-              </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {campaign.status === "scheduled" ? (
+              <Can permission="engage.campaign.campaign.send" scope="ORG">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  leadingIcon={<CalendarIcon className="size-4" />}
+                  onClick={() => setScheduleOpen(true)}
+                >
+                  Reschedule
+                </Button>
+              </Can>
             ) : null}
-          </Can>
+            <Can permission="engage.campaign.campaign.write" scope="ORG">
+              {CANCELLABLE.has(campaign.status) ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-negative"
+                  onClick={() => setCancelling(true)}
+                >
+                  Cancel campaign
+                </Button>
+              ) : null}
+            </Can>
+          </div>
         </div>
+
+        {campaign.status === "scheduled" && campaign.scheduled_at !== null ? (
+          <p className="text-sm text-muted">
+            Scheduled for{" "}
+            <span className="font-semibold text-ink">
+              {formatScheduledFor(campaign.scheduled_at)}
+            </span>
+            .
+          </p>
+        ) : null}
 
         <Counts stats={campaign.stats} />
         <Timeline campaign={campaign} />
@@ -299,6 +329,16 @@ function ReportView({
         pendingLabel="Cancelling…"
         pending={cancelPending}
         {...(cancelFailure !== null ? { error: cancelFailure } : {})}
+      />
+
+      <CampaignScheduleDialog
+        open={scheduleOpen}
+        campaign={campaign}
+        onClose={() => setScheduleOpen(false)}
+        onScheduled={(_updated, message) => {
+          setScheduleOpen(false);
+          onChanged(message);
+        }}
       />
     </div>
   );
