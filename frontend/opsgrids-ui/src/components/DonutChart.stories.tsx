@@ -53,3 +53,18 @@ export const Empty: Story = {
     ],
   },
 };
+
+/**
+ * The `sm` ring, for a donut sharing one row with two other cards (a Super Admin dashboard's
+ * Account Growth, Revenue by Plan and Accounts by Status at 1280px) — a narrower card than the
+ * default story's, where the full-size ring would leave a long label and a wide money value
+ * fighting over what's left and truncating the label to a single letter.
+ */
+export const Compact: Story = {
+  args: { size: "sm" },
+  render: (args) => (
+    <Card className="max-w-72 p-4">
+      <DonutChart {...args} />
+    </Card>
+  ),
+};

@@ -1,267 +1,167 @@
-import { useMemo } from "react";
-import type { CSSProperties, ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 
-import { getOverview, listOrganizations } from "@/api/client";
-import type { BreakdownSegment, MetricsOverviewOut, OrgStateOut } from "@/api/types";
-import { daysUntil, formatPercent, relativeDays } from "@/lib/format";
+import { CheckCircleIcon, PageHeader, Select } from "@opsgrids/ui";
+
+import { getMetricsSeries, getOverview, listAudit, listOrganizations, listSubscriptions } from "@/api/client";
+import type { OrgStateOut, OverrideResult, PricingOrgRef } from "@/api/types";
+import { useAuth } from "@/auth/context";
 import { useAsync } from "@/lib/useAsync";
-import {
-  BreakdownBar,
-  Card,
-  EnvBadge,
-  ErrorState,
-  KpiCard,
-  Money,
-  OrgIdentity,
-  SectionHeader,
-  Skeleton,
-} from "@/ui";
-import type { KpiTone } from "@/ui";
-import { BuildingsIcon, GaugeIcon, LayersIcon, LockIcon, RepeatIcon } from "@/ui/icons";
+import { AccountGrowthCard, AccountsByStatusCard, RevenueByPlanCard } from "@/ui/dashboard/Charts";
+import { AccountsTable } from "@/ui/dashboard/AccountsTable";
+import { RecentActivityCard, TrialsEndingCard } from "@/ui/dashboard/ActivityPanels";
+import { KpiRow } from "@/ui/dashboard/Kpis";
+import { ReactivateAction, SuspendAction } from "./AccountActions";
 
-interface KpiConfig {
-  key: string;
-  label: string;
-  value: string;
-  icon: ReactNode;
-  tone: KpiTone;
-  caption: string;
+const MONTH_OPTIONS = [
+  { value: "3", label: "Last 3 months" },
+  { value: "6", label: "Last 6 months" },
+  { value: "12", label: "Last 12 months" },
+];
+
+type RowAction = { kind: "suspend" | "reactivate"; org: PricingOrgRef };
+
+function toOrgRef(org: OrgStateOut): PricingOrgRef {
+  return { organization_id: org.organization_id, name: org.name ?? org.slug ?? org.organization_id };
 }
 
 /**
- * `GET /admin/metrics/overview` carries no historical series and no period-over-period delta — see
- * `types.ts`'s `MetricsOverviewOut`. Every tile below is a plain current figure; none fabricates a
- * trend the API doesn't send.
+ * The Super Admin Dashboard (mock-1): every account on the platform, its revenue and lifecycle,
+ * and the accounts that need an operator's attention. `owner` sees the whole page; `billing_ops`
+ * and `support` each see a narrower one — the same `require_operator` role matrix the admin
+ * gateway enforces, applied here only to decide which billing- or audit-gated route this page
+ * calls at all, never as the only thing standing between a caller and the data (CLAUDE.md).
  */
-function buildKpis(m: MetricsOverviewOut, lockedAccounts: number): KpiConfig[] {
-  return [
-    {
-      key: "mrr",
-      label: "Monthly recurring revenue",
-      value: new Intl.NumberFormat("en-IN", {
-        style: "currency",
-        currency: m.currency ?? "INR",
-        notation: "compact",
-        maximumFractionDigits: 1,
-      }).format(m.mrr_minor / 100),
-      icon: <GaugeIcon className="size-5" />,
-      tone: "accent",
-      caption: "current",
-    },
-    {
-      key: "active",
-      label: "Active subscriptions",
-      value: String(m.active_subscriptions),
-      icon: <BuildingsIcon className="size-5" />,
-      tone: "active",
-      caption: `${m.organization_count} organizations total`,
-    },
-    {
-      key: "trials",
-      label: "Trials started",
-      value: String(m.trials_started),
-      icon: <LayersIcon className="size-5" />,
-      tone: "trial",
-      caption: `${m.trial_conversions} converted`,
-    },
-    {
-      key: "conversion",
-      label: "Trial → paid conversion",
-      // The service sends rates as fractions (0.4321), not percentages.
-      value: formatPercent(m.trial_conversion_rate * 100),
-      icon: <RepeatIcon className="size-5" />,
-      tone: "comp",
-      caption: "of trials started",
-    },
-    {
-      key: "churn",
-      label: "Churn",
-      value: formatPercent(m.churn_rate * 100),
-      icon: <GaugeIcon className="size-5" />,
-      tone: "pastdue",
-      caption: `${m.churned} churned`,
-    },
-    {
-      key: "locked",
-      label: "Locked accounts",
-      value: String(lockedAccounts),
-      icon: <LockIcon className="size-5" />,
-      tone: "suspended",
-      caption: `${m.organizations_by_lifecycle.suspended} suspended`,
-    },
-  ];
-}
-
-function lifecycleSegments(m: MetricsOverviewOut): BreakdownSegment[] {
-  const c = m.organizations_by_lifecycle;
-  return [
-    { key: "active", label: "Active", count: c.active, tone: "active" },
-    { key: "trial", label: "Trial", count: c.trial, tone: "trial" },
-    { key: "suspended", label: "Suspended", count: c.suspended, tone: "suspended" },
-    { key: "churned", label: "Churned", count: c.churned, tone: "cancelled" },
-    { key: "none", label: "No subscription", count: c.none, tone: "accent" },
-  ];
-}
-
-interface Attention {
-  org: OrgStateOut;
-  reason: string;
-  weight: number;
-}
-
-/** `OrgStateOut` carries no lifecycle status — only `locked` and `trial_ends_at` are real fields
- *  to flag from. There is no way to surface "past due" from this endpoint (see `types.ts`). */
-function attentionRows(orgs: OrgStateOut[]): Attention[] {
-  const rows: Attention[] = [];
-  for (const org of orgs) {
-    if (org.locked) {
-      rows.push({ org, reason: "Locked — access suspended", weight: 2 });
-      continue;
-    }
-    const left = daysUntil(org.trial_ends_at);
-    if (left !== null && left <= 12) {
-      rows.push({ org, reason: `Trial ends ${relativeDays(org.trial_ends_at)}`, weight: 1 });
-    }
-  }
-  return rows.sort((a, b) => b.weight - a.weight);
-}
-
 export function OverviewPage() {
-  const overview = useAsync(getOverview, []);
-  const orgs = useAsync(() => listOrganizations(), []);
+  const { hasRole } = useAuth();
+  const navigate = useNavigate();
+  const [months, setMonths] = useState(6);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [rowAction, setRowAction] = useState<RowAction | null>(null);
+  const [banner, setBanner] = useState<OverrideResult | null>(null);
 
-  const attention = useMemo(
-    () => (orgs.status === "success" ? attentionRows(orgs.data.organizations) : []),
-    [orgs],
+  const canSeeRevenue = hasRole("owner") || hasRole("billing_ops");
+  const canSeeAudit = hasRole("owner") || hasRole("support");
+  const canWriteOverrides = hasRole("owner") || hasRole("billing_ops");
+
+  const retry = useCallback(() => setReloadKey((k) => k + 1), []);
+
+  const orgs = useAsync(() => listOrganizations().then((r) => r.organizations), [reloadKey]);
+  const overview = useAsync(
+    () => (canSeeRevenue ? getOverview() : Promise.resolve(null)),
+    [canSeeRevenue, reloadKey],
   );
-  const lockedAccounts = useMemo(
-    () => (orgs.status === "success" ? orgs.data.organizations.filter((o) => o.locked).length : 0),
-    [orgs],
+  const series = useAsync(
+    () => (canSeeRevenue ? getMetricsSeries(months) : Promise.resolve(null)),
+    [canSeeRevenue, months, reloadKey],
   );
+  const subscriptions = useAsync(
+    () => (canSeeRevenue ? listSubscriptions().then((r) => r.subscriptions) : Promise.resolve(null)),
+    [canSeeRevenue, reloadKey],
+  );
+  const audit = useAsync(
+    () => (canSeeAudit ? listAudit().then((r) => r.audit) : Promise.resolve(null)),
+    [canSeeAudit, reloadKey],
+  );
+
+  const orgNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    if (orgs.status === "success") {
+      for (const org of orgs.data) map.set(org.organization_id, org.name ?? org.slug ?? org.organization_id);
+    }
+    return map;
+  }, [orgs]);
+
+  function openAccount(org: OrgStateOut) {
+    navigate(`/accounts/${org.organization_id}`);
+  }
+  function openPricing(org: OrgStateOut) {
+    navigate(`/accounts/${org.organization_id}#pricing`);
+  }
 
   return (
     <div className="rise flex flex-col gap-5">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex flex-col gap-1">
-          <span className="text-sm font-semibold text-accent">Cross-tenant · all organizations</span>
-          <h1 className="display text-3xl font-extrabold leading-tight sm:text-[2.1rem]">Overview</h1>
-          <p className="max-w-2xl text-sm text-muted">
-            Revenue, lifecycle and the accounts that need an operator's attention — projected from
-            the commerce event stream.
-          </p>
-        </div>
-        <EnvBadge />
-      </header>
+      <PageHeader
+        title="Super Admin Dashboard"
+        description="Manage all accounts, monitor usage, and oversee the platform."
+        actions={
+          canSeeRevenue ? (
+            <Select
+              label="Period"
+              hideLabel
+              value={String(months)}
+              onChange={(e) => setMonths(Number(e.target.value))}
+              options={MONTH_OPTIONS}
+              containerClassName="min-w-40"
+            />
+          ) : undefined
+        }
+      />
 
-      {/* KPI row */}
-      <section aria-label="Key metrics" className="cascade grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {overview.status === "loading"
-          ? Array.from({ length: 6 }).map((_, i) => (
-              <Card key={i} className="flex flex-col gap-4 p-5" style={{ "--i": i } as CSSProperties}>
-                <div className="flex justify-between">
-                  <Skeleton className="size-10 rounded-tile" />
-                  <Skeleton className="h-8 w-20" />
-                </div>
-                <Skeleton className="h-4 w-28" />
-                <Skeleton className="h-9 w-24 rounded-tile" />
-              </Card>
-            ))
-          : null}
-        {overview.status === "error" ? (
-          <Card className="p-5 sm:col-span-2 xl:col-span-3">
-            <ErrorState message={overview.error.message} />
-          </Card>
-        ) : null}
-        {overview.status === "success"
-          ? buildKpis(overview.data, lockedAccounts).map((kpi, i) => (
-              <div key={kpi.key} style={{ "--i": i } as CSSProperties}>
-                <KpiCard
-                  label={kpi.label}
-                  value={kpi.value}
-                  deltaPct={null}
-                  series={[]}
-                  icon={kpi.icon}
-                  tone={kpi.tone}
-                  caption={kpi.caption}
-                  hideSparkline
-                />
-              </div>
-            ))
-          : null}
+      {banner ? (
+        <div role="status" className="flex items-start gap-3 rounded-card bg-present-soft px-4 py-3 text-sm text-present">
+          <CheckCircleIcon className="mt-1 size-5 shrink-0" />
+          <div className="flex flex-col">
+            <span className="font-semibold">Override accepted</span>
+            <span className="text-present/80">Delegated to {banner.delegated_to}-service.</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setBanner(null)}
+            className="ml-auto text-xs font-semibold text-present/70 hover:text-present"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
+      <KpiRow orgs={orgs} overview={overview} series={series} canSeeRevenue={canSeeRevenue} />
+
+      <section aria-label="Analytics" className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <AccountGrowthCard series={series} canSee={canSeeRevenue} months={months} />
+        <RevenueByPlanCard subscriptions={subscriptions} canSee={canSeeRevenue} />
+        <AccountsByStatusCard orgs={orgs} />
       </section>
 
-      {/* Lifecycle breakdown */}
-      <Card className="flex flex-col gap-5 p-6">
-        <SectionHeader
-          title="Organizations by lifecycle"
-          subtitle="Real counts from the platform metrics projection"
-        />
-        {overview.status === "success" ? (
-          <BreakdownBar segments={lifecycleSegments(overview.data)} unit="organizations" />
-        ) : overview.status === "error" ? (
-          <ErrorState message={overview.error.message} />
-        ) : (
-          <Skeleton className="h-40 w-full" />
-        )}
-      </Card>
+      <AccountsTable
+        orgs={orgs}
+        onRetry={retry}
+        subscriptions={subscriptions}
+        canSeeRevenue={canSeeRevenue}
+        canWriteOverrides={canWriteOverrides}
+        onView={openAccount}
+        onPricing={openPricing}
+        onSuspend={(org) => setRowAction({ kind: "suspend", org: toOrgRef(org) })}
+        onReactivate={(org) => setRowAction({ kind: "reactivate", org: toOrgRef(org) })}
+      />
 
-      {/* Needs attention */}
-      <Card className="flex flex-col gap-4 p-6">
-        <SectionHeader
-          title="Needs attention"
-          subtitle="Locked accounts and trials about to lapse"
-          action={
-            <Link to="/accounts" className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors">
-              All accounts
-            </Link>
-          }
+      <section aria-label="Activity and attention" className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <RecentActivityCard audit={audit} orgNameById={orgNameById} canSee={canSeeAudit} />
+        <TrialsEndingCard orgs={orgs} onOpen={openAccount} />
+      </section>
+
+      {rowAction?.kind === "suspend" ? (
+        <SuspendAction
+          org={rowAction.org}
+          onClose={() => setRowAction(null)}
+          onDone={(result) => {
+            setBanner(result);
+            setRowAction(null);
+            retry();
+          }}
         />
-        {orgs.status === "loading" ? (
-          <div className="flex flex-col gap-3">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className="h-14 w-full" />
-            ))}
-          </div>
-        ) : orgs.status === "error" ? (
-          <ErrorState message={orgs.error.message} />
-        ) : attention.length === 0 ? (
-          <p className="py-6 text-center text-sm text-muted">
-            Nothing needs attention — every account is unlocked with no trial ending soon.
-          </p>
-        ) : (
-          <ul className="flex flex-col divide-y divide-line">
-            {attention.map(({ org, reason }) => (
-              <li key={org.organization_id}>
-                <Link
-                  to={`/accounts/${org.organization_id}`}
-                  className="flex flex-wrap items-center gap-3 py-3 transition-colors hover:bg-ground/60"
-                >
-                  <OrgIdentity
-                    name={org.name}
-                    slug={org.slug}
-                    organizationId={org.organization_id}
-                    className="min-w-0 max-w-xs"
-                  />
-                  <span className="text-sm text-muted">{reason}</span>
-                  <span className="ml-auto flex items-center gap-4">
-                    {org.mrr_minor > 0 ? (
-                      <Money minor={org.mrr_minor} currency={org.currency ?? "INR"} className="text-sm font-semibold" />
-                    ) : (
-                      <span className="text-sm text-faint">no MRR</span>
-                    )}
-                    {org.locked ? (
-                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-danger">
-                        <LockIcon className="size-3.5" /> Locked
-                      </span>
-                    ) : null}
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
+      ) : null}
+      {rowAction?.kind === "reactivate" ? (
+        <ReactivateAction
+          org={rowAction.org}
+          onClose={() => setRowAction(null)}
+          onDone={(result) => {
+            setBanner(result);
+            setRowAction(null);
+            retry();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

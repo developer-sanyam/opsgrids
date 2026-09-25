@@ -55,7 +55,7 @@
   },
   "opsgrids-internal/src/routes/AccountActions.tsx": {
     "arbitrary": 1,
-    "spacing": 10
+    "spacing": 9
   },
   "opsgrids-internal/src/routes/AccountDetail.tsx": {
     "spacing": 6
@@ -78,8 +78,7 @@
     "spacing": 3
   },
   "opsgrids-internal/src/routes/Overview.tsx": {
-    "arbitrary": 1,
-    "spacing": 4
+    "spacing": 1
   },
   "opsgrids-internal/src/routes/Plans.tsx": {
     "colour": 1,

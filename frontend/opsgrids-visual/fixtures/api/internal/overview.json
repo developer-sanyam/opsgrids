@@ -9,10 +9,10 @@
   "churn_rate": 0.1538,
   "organization_count": 10,
   "organizations_by_lifecycle": {
-    "active": 4,
+    "active": 6,
     "trial": 3,
     "suspended": 1,
-    "churned": 1,
-    "none": 1
+    "churned": 0,
+    "none": 0
   }
 }

@@ -127,6 +127,7 @@ export type { Theme, ThemeControls } from "./lib/theme";
 export { useToast } from "./lib/toast";
 export type { ToastControls, ToastOptions, ToastTone } from "./lib/toast";
 export { useDebouncedValue } from "./lib/useDebouncedValue";
+export { TABLET_QUERY, useMediaQuery } from "./lib/useMediaQuery";
 export { useUnsavedChangesWarning } from "./lib/useUnsavedChangesWarning";
 
 export * from "./icons";

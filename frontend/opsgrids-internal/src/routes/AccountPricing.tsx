@@ -463,7 +463,7 @@ export function ClientPricingCard({ org }: { org: PricingOrgRef }) {
   ];
 
   return (
-    <Card className="flex flex-col gap-4 p-6">
+    <Card id="pricing" className="flex scroll-mt-6 flex-col gap-4 p-6">
       <SectionHeader
         title="Client pricing"
         subtitle="Agreed per client — the customer app itself never shows a price."

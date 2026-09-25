@@ -1,0 +1,59 @@
+{
+  "audit": [
+    {
+      "id": "a0000000-0000-4000-8000-000000000005",
+      "organization_id": "06000000-0000-4000-8000-000000000006",
+      "actor_id": "7e6d5c4b-3a29-4180-9f8e-7d6c5b4a3928",
+      "acting_as": "operator:owner",
+      "action": "suspend",
+      "entity": "subscription",
+      "entity_id": "c0000000-0000-4000-8000-000000000006",
+      "reason": "Non-payment after dunning window closed",
+      "at": "2026-09-15T04:10:00Z"
+    },
+    {
+      "id": "a0000000-0000-4000-8000-000000000004",
+      "organization_id": "01000000-0000-4000-8000-000000000001",
+      "actor_id": "7e6d5c4b-3a29-4180-9f8e-7d6c5b4a3928",
+      "acting_as": "operator:owner",
+      "action": "organization.read",
+      "entity": "organization",
+      "entity_id": null,
+      "reason": null,
+      "at": "2026-09-14T14:22:00Z"
+    },
+    {
+      "id": "a0000000-0000-4000-8000-000000000003",
+      "organization_id": "07000000-0000-4000-8000-000000000007",
+      "actor_id": "7e6d5c4b-3a29-4180-9f8e-7d6c5b4a3928",
+      "acting_as": "operator:owner",
+      "action": "comp_grant",
+      "entity": "credit",
+      "entity_id": null,
+      "reason": "3 months complimentary — migration goodwill",
+      "at": "2026-09-13T09:05:00Z"
+    },
+    {
+      "id": "a0000000-0000-4000-8000-000000000002",
+      "organization_id": "03000000-0000-4000-8000-000000000003",
+      "actor_id": null,
+      "acting_as": null,
+      "action": "reactivate",
+      "entity": "subscription",
+      "entity_id": "c0000000-0000-4000-8000-000000000003",
+      "reason": "Payment received — dunning hold cleared",
+      "at": "2026-09-12T11:48:00Z"
+    },
+    {
+      "id": "a0000000-0000-4000-8000-000000000001",
+      "organization_id": "05000000-0000-4000-8000-000000000005",
+      "actor_id": "7e6d5c4b-3a29-4180-9f8e-7d6c5b4a3928",
+      "acting_as": "operator:owner",
+      "action": "organization.members.read",
+      "entity": "organization",
+      "entity_id": null,
+      "reason": null,
+      "at": "2026-09-10T16:30:00Z"
+    }
+  ]
+}

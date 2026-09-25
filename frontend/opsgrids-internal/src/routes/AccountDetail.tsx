@@ -331,7 +331,7 @@ export function AccountDetailPage() {
         <SuspendAction org={pricingOrg} onClose={() => setAction(null)} onDone={handleDone} />
       ) : null}
       {action === "reactivate" ? (
-        <ReactivateAction org={pricingOrg} onClose={() => setAction(null)} />
+        <ReactivateAction org={pricingOrg} onClose={() => setAction(null)} onDone={handleDone} />
       ) : null}
       {action === "comp" ? (
         <CompGrantAction org={pricingOrg} onClose={() => setAction(null)} onDone={handleDone} />

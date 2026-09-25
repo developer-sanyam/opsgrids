@@ -22,11 +22,22 @@ interface DonutChartProps {
   centerValue?: string | undefined;
   /** The word under it. Default "Total". */
   centerLabel?: string | undefined;
+  /**
+   * The ring's diameter. Default `md` (144px), sized for a donut on its own or beside one other
+   * card. `sm` (96px) leaves more of a narrow card's width to the legend's text — three donut-ish
+   * cards sharing one row at 1280px (a Super Admin dashboard's Revenue-by-plan and Accounts-by-
+   * status, side by side with a line chart) is exactly when a long label and a wide money value
+   * both fighting the default ring for room start truncating a label to a single letter.
+   */
+  size?: "md" | "sm" | undefined;
   className?: string | undefined;
 }
 
 const RADIUS = 46;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
+
+const RING: Record<"md" | "sm", string> = { md: "size-36", sm: "size-24" };
+const CENTER_VALUE: Record<"md" | "sm", string> = { md: "text-xl", sm: "text-base" };
 
 /**
  * Parts of a whole as a ring, with the total in the middle and a legend of value and share — the
@@ -42,6 +53,7 @@ export function DonutChart({
   formatValue = defaultFormat,
   centerValue,
   centerLabel = "Total",
+  size = "md",
   className,
 }: DonutChartProps) {
   const values = slices.map((slice) => slice.value);
@@ -52,7 +64,7 @@ export function DonutChart({
 
   return (
     <figure className={cn("m-0 flex flex-col items-center gap-6 sm:flex-row", className)}>
-      <div aria-hidden className="relative size-36 shrink-0">
+      <div aria-hidden className={cn("relative shrink-0", RING[size])}>
         <svg viewBox="0 0 120 120" className="size-full -rotate-90">
           <circle cx="60" cy="60" r={RADIUS} fill="none" strokeWidth="14" className="stroke-ground" />
           {ring.map((arc, index) =>
@@ -72,7 +84,7 @@ export function DonutChart({
           )}
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="tnum text-xl font-bold leading-tight text-ink">{centerValue ?? formatValue(total)}</span>
+          <span className={cn("tnum font-bold leading-tight text-ink", CENTER_VALUE[size])}>{centerValue ?? formatValue(total)}</span>
           <span className="text-xs text-muted">{centerLabel}</span>
         </div>
       </div>

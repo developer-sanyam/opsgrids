@@ -125,6 +125,18 @@ describe("DonutChart", () => {
       ["Suspended", "4", "3%"],
     ]);
   });
+
+  it("draws a smaller ring at size=sm, for a card sharing its row with two others", () => {
+    const { container, rerender } = render(
+      <DonutChart label="Accounts by status" slices={[{ key: "active", label: "Active", value: 1 }]} />,
+    );
+    const ringAt = () => container.querySelector("[aria-hidden]");
+    expect(ringAt()?.className).toContain("size-36");
+    rerender(
+      <DonutChart label="Accounts by status" slices={[{ key: "active", label: "Active", value: 1 }]} size="sm" />,
+    );
+    expect(ringAt()?.className).toContain("size-24");
+  });
 });
 
 describe("ChartCard", () => {

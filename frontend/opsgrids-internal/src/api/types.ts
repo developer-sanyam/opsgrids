@@ -49,13 +49,21 @@ export interface SubscriptionStateEntry {
   [key: string]: unknown;
 }
 
-/** `OrgStateOut` — one organization's commercial snapshot. `name`/`slug` are mirrored from
- *  account-service's directory and are `null` until the identity fold or the backfill has
- *  reached this organization — still no seat count, which this projection does not carry at all. */
+/** `OrgStateOut` — one organization's commercial snapshot. `name`/`slug`/`country`/`created_at`
+ *  are mirrored from account-service's directory and are `null` until the identity fold or the
+ *  backfill has reached this organization. `lifecycle` is computed server-side
+ *  (`selectors.lifecycle_of`): `suspended` (any subscription locked) beats `active` (any
+ *  subscription active) beats `trial` beats `churned` (history but nothing live) beats `none`
+ *  (the fold has never touched this organization) — the client never reimplements this rule.
+ *  `user_count` is merged in live from account-service's bulk member-count read: `null` means
+ *  that call could not be reached in time, never "zero members". */
 export interface OrgStateOut {
   organization_id: string;
   name: string | null;
   slug: string | null;
+  country: string | null;
+  created_at: string | null;
+  lifecycle: "suspended" | "active" | "trial" | "churned" | "none";
   mrr_minor: number;
   currency: string | null;
   active_products: string[];
@@ -63,6 +71,7 @@ export interface OrgStateOut {
   trial_ends_at: string | null;
   locked: boolean;
   updated_at: string;
+  user_count: number | null;
 }
 
 /** `MetricsOut` — platform-wide commercial metrics, computed off the transition log. */
@@ -94,12 +103,31 @@ export interface LifecycleCountsOut {
   none: number;
 }
 
-/** `MetricsOverviewOut` — `GET /admin/metrics/overview`. There is no historical series, no
- *  period-over-period delta and no revenue-this-period figure in this payload — those are Overview
- *  dashboard concepts this endpoint does not (yet) compute. */
+/** `MetricsOverviewOut` — `GET /admin/metrics/overview`. A live snapshot: no historical series and
+ *  no period-over-period delta of its own — those come from `GET /admin/metrics/series` below. */
 export interface MetricsOverviewOut extends MetricsOut {
   organization_count: number;
   organizations_by_lifecycle: LifecycleCountsOut;
+}
+
+/** One point on a monthly series. `value` is `null` for a month before this series has any
+ *  visibility at all — never `0`, which would claim a real, counted "nothing happened" the data
+ *  cannot back. A delta between two points is only ever shown when **both** are non-null. */
+export interface SeriesPointOut {
+  period: string;
+  value: number | null;
+}
+
+/** `MetricsSeriesOut` — `GET /admin/metrics/series?months=`. Monthly account growth and commercial
+ *  history, oldest first; every series carries the same ordered list of periods. Feeds the account
+ *  growth chart and every "vs last month" delta. */
+export interface MetricsSeriesOut {
+  currency: string | null;
+  mrr_minor: SeriesPointOut[];
+  new_organizations: SeriesPointOut[];
+  trials_started: SeriesPointOut[];
+  trial_conversions: SeriesPointOut[];
+  churned: SeriesPointOut[];
 }
 
 /** `OrgDetailOut` — `GET /admin/organizations/{id}`. The *only* place the console reads an
@@ -117,15 +145,19 @@ export interface OrgDetailOut {
 }
 
 /** `SubscriptionOut` — one row of `GET /admin/subscriptions`, flattened from every org's
- *  `subscription_states`. `name`/`slug` are the same account-service mirror as `OrgStateOut`'s;
- *  there is still no subscription id, no product/plan name and no seat count in this projection. */
+ *  `subscription_states`. `name`/`slug` are the same account-service mirror as `OrgStateOut`'s.
+ *  `product_name`/`plan_name` are catalog's display names, best-effort — `null` when catalog could
+ *  not be reached or no longer knows the version; there is still no subscription id or seat count
+ *  in this projection. */
 export interface SubscriptionOut {
   organization_id: string;
   name: string | null;
   slug: string | null;
   product_key: string;
+  product_name: string | null;
   state: string;
   plan_version_id: string | null;
+  plan_name: string | null;
   amount_minor: number;
   currency: string | null;
   trial_ends_at: string | null;
@@ -170,11 +202,16 @@ export interface AuditListOut {
 
 /* --------------------------- override I/O (console) --------------------------- */
 
-/** `OverrideIn` — `POST /admin/overrides`. `delegation.py` resolves exactly two actions today;
- *  posting anything else is a 400 ("unknown override action"). There is no `reactivate` and no
- *  `bespoke_price` action on this endpoint — bespoke pricing is `POST .../pricing` (below). */
+/** `OverrideIn` — `POST /admin/overrides`. `delegation.py` resolves exactly three actions;
+ *  posting anything else is a 400 ("unknown override action"). There is no `bespoke_price` action
+ *  on this endpoint — bespoke pricing is `POST .../pricing` (below).
+ *
+ *  `reactivate` requires a non-blank `reason` (at most 200 characters) — `delegation.py` rejects a
+ *  blank one before the call ever reaches subscription-service, because lifting a hold is exactly
+ *  the act whose why an audit trail must carry. */
 export type OverrideRequest =
   | { action: "suspend"; organization_id: string; subscription_id: string; reason: string }
+  | { action: "reactivate"; organization_id: string; subscription_id: string; reason: string }
   | {
       action: "comp_grant";
       organization_id: string;
