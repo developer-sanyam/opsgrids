@@ -92,3 +92,11 @@ export { useAsync } from "./useAsync";
 export type { AsyncControls, AsyncState } from "./useAsync";
 export { useMutation } from "./useMutation";
 export type { Mutation, MutationOptions } from "./useMutation";
+
+export {
+  ASSET_ACCEPTED_TYPES,
+  ASSET_MAX_UPLOAD_BYTES,
+  ASSET_PUBLIC_HELPER,
+  uploadAsset,
+} from "./documents/assets";
+export type { AssetOut, UploadAssetControls } from "./documents/assets";

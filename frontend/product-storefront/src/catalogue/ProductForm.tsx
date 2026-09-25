@@ -1,11 +1,20 @@
 import { useRef, useState } from "react";
 
-import { problemMessage, useMutation } from "@opsgrids/client";
+import {
+  ASSET_ACCEPTED_TYPES,
+  ASSET_MAX_UPLOAD_BYTES,
+  ASSET_PUBLIC_HELPER,
+  problemMessage,
+  uploadAsset,
+  useMutation,
+} from "@opsgrids/client";
 import type { ApiError } from "@opsgrids/client";
-import { Button, FormDialog, InlineAlert, Select, Switch, TextField } from "@opsgrids/ui";
+import { Button, FileUpload, FormDialog, InlineAlert, Select, Switch, TextField } from "@opsgrids/ui";
+import type { StoredFile } from "@opsgrids/ui";
 
+import { UPLOAD_NEEDS_SERVICE, USE_FIXTURES } from "@/api/client";
+import { resolveImageSrc } from "@/theme/render/assetSrc";
 import { createProduct, updateProduct } from "./api";
-import { isHttpsImageUrl } from "./imageUrl";
 import {
   emptyProductForm,
   fromProduct,
@@ -146,6 +155,20 @@ export function ProductForm({
   }
 
   const hasVariants = values.variants.length > 0;
+
+  // The product's existing image, carried into the field as its one starting file — `product`
+  // never changes while this dialog is open, so this is worth computing once rather than on
+  // every keystroke elsewhere in the form.
+  const currentImagePreview = product?.image_url ? resolveImageSrc(product.image_url) : null;
+  const initialImageFiles: StoredFile<string>[] = product?.image_url
+    ? [
+        {
+          name: "Current image",
+          value: product.image_url,
+          ...(currentImagePreview !== null ? { previewUrl: currentImagePreview } : {}),
+        },
+      ]
+    : [];
 
   return (
     <FormDialog
@@ -323,20 +346,23 @@ export function ProductForm({
         error={errors.deliveryEtaMinutes ?? save.fieldErrors.delivery_eta_minutes}
       />
 
-      <TextField
-        label="Image address"
-        value={values.imageUrl}
-        onChange={(e) => set("imageUrl", e.target.value)}
-        placeholder="https://"
+      <FileUpload<string>
+        label="Product image"
+        accept={[...ASSET_ACCEPTED_TYPES]}
+        maxSize={ASSET_MAX_UPLOAD_BYTES}
+        maxFiles={1}
         optional
-        helper="A full https:// address, with a preview below. Uploads aren't available on this box yet."
-        error={errors.imageUrl ?? save.fieldErrors.image_url}
+        helper={ASSET_PUBLIC_HELPER}
+        initialFiles={initialImageFiles}
+        disabled={save.pending}
+        error={save.fieldErrors.image_url}
+        onUpload={async (file, controls) => {
+          if (USE_FIXTURES) throw new Error(UPLOAD_NEEDS_SERVICE);
+          const asset = await uploadAsset(file, controls);
+          return asset.public_path;
+        }}
+        onChange={(files) => set("imageUrl", files[0] ?? "")}
       />
-      {values.imageUrl.trim() !== "" && isHttpsImageUrl(values.imageUrl.trim()) ? (
-        <div className="h-24 w-full overflow-hidden rounded-tile border border-line bg-ground">
-          <img src={values.imageUrl.trim()} alt="" className="h-full w-full object-cover" />
-        </div>
-      ) : null}
 
       <Select
         label="Status"
