@@ -712,6 +712,8 @@ class TestOrganizationsBulkList:
         assert row["slug"] == "acme"
         assert row["name"] == "Acme Technologies"
         assert "updated_at" in row
+        assert "created_at" in row
+        assert "country" in row
 
     async def test_keyset_pagination_terminates_with_a_null_cursor(
         self, client: AsyncClient, admin_session: AsyncSession, org: Organization

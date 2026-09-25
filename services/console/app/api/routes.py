@@ -26,16 +26,26 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
-from typing import Annotated
+from datetime import datetime
+from typing import Annotated, Any
 
 import httpx
-from fastapi import APIRouter, Depends, Header, status
+from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import delegation, directory_client, pricing, selectors, services
+from app import (
+    account_client,
+    catalog_client,
+    delegation,
+    directory_client,
+    pagination,
+    pricing,
+    selectors,
+    services,
+)
 from app.config import settings
-from app.delegation import DelegationError
+from app.delegation import DelegationConflict, DelegationError
 from app.directory_client import DirectoryLookupError
 from app.models import SCHEMA
 from app.schemas import (
@@ -44,12 +54,15 @@ from app.schemas import (
     LifecycleCountsOut,
     MetricsOut,
     MetricsOverviewOut,
+    MetricsSeriesOut,
     OrganizationPricingOut,
     OrganizationsOut,
     OrgDetailOut,
-    OrgStateOut,
+    OrgMemberOut,
+    OrgMembersOut,
     OverrideIn,
     OverrideOut,
+    SeriesPointOut,
     ServiceInfo,
     SetPricingIn,
     SetPricingOut,
@@ -60,7 +73,15 @@ from app.schemas import (
 )
 from platform_core.auth import Principal, require_operator
 from platform_core.db import get_directory_session, get_session
-from platform_core.errors import NotFoundProblem, UpstreamUnavailableProblem, ValidationProblem
+from platform_core.errors import (
+    ConflictProblem,
+    NotFoundProblem,
+    UpstreamUnavailableProblem,
+    ValidationProblem,
+)
+from platform_core.logging import get_logger
+
+log = get_logger("console.routes")
 
 router = APIRouter(tags=["console"])
 
@@ -110,12 +131,32 @@ async def info() -> ServiceInfo:
     summary="Every organization's commercial state, with platform MRR/trial/churn metrics",
 )
 async def list_organizations(
-    session: DirectorySessionDep, operator: OperatorReadAny
+    session: DirectorySessionDep, operator: OperatorReadAny, client: DelegationClientDep
 ) -> OrganizationsOut:
+    # The call goes first, before this request's directory session has run a query: no database
+    # connection is held while account-service answers (docs/io-outside-transactions.md).
+    # Best-effort: a member-count outage must not blank a list that otherwise renders fine off
+    # console's own schema (`account_client.member_counts`'s own docstring).
+    counts: dict[str, int] | None
+    try:
+        counts = await account_client.member_counts(settings(), client=client)
+    except account_client.AccountLookupError as exc:
+        log.warning("console.organizations.member_counts_unavailable", error=str(exc)[:300])
+        counts = None
+
     states = await selectors.all_org_states(session)
     metrics = await selectors.platform_metrics(session)
+
     return OrganizationsOut(
-        organizations=[OrgStateOut.model_validate(s) for s in states],
+        organizations=[
+            selectors.to_org_state_out(
+                s,
+                # Account answered and this organization is not in its counts: it has no
+                # members, which is a real 0. Only an unreachable account is `null` (unknown).
+                user_count=None if counts is None else counts.get(str(s.organization_id), 0),
+            )
+            for s in states
+        ],
         metrics=MetricsOut(**metrics),
     )
 
@@ -170,7 +211,60 @@ async def get_organization_detail(
         status=str(directory.get("status", "unknown")),
         country=directory.get("country"),
         created_at=directory["created_at"],
-        commercial=OrgStateOut.model_validate(commercial) if commercial is not None else None,
+        commercial=selectors.to_org_state_out(commercial) if commercial is not None else None,
+    )
+
+
+@router.get(
+    "/admin/organizations/{organization_id}/users",
+    response_model=OrgMembersOut,
+    summary="One organization's members — staff-only, email masked, delegated to account-service",
+)
+async def get_organization_members(
+    organization_id: uuid.UUID,
+    request: Request,
+    app_session: AppSessionDep,
+    client: DelegationClientDep,
+    operator: OperatorReadAny,
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=200)] = 25,
+) -> OrgMembersOut:
+    """The Users tab: id, name, a masked email, status, joined/last-active and roles by name,
+    one page at a time. Console writes no PII of its own — every field here is delegated to
+    account-service's own staff-only member read (`app/directory_client.py`), which does the
+    masking. Same forwarded-operator-token shape as `get_organization_detail`, and the same
+    "every staff read writes an audit row" rule, its own action so `/admin/audit` can tell a
+    member-list read apart from a plain detail read.
+    """
+    operator_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    try:
+        page_data = await directory_client.list_members(
+            settings(),
+            organization_id,
+            operator_token=operator_token,
+            client=client,
+            page=page,
+            size=size,
+        )
+    except DirectoryLookupError as exc:
+        raise UpstreamUnavailableProblem(str(exc)) from exc
+    if page_data is None:
+        raise NotFoundProblem("No such organization")
+
+    await services.record_organization_members_read(
+        app_session,
+        organization_id=organization_id,
+        actor_id=operator.sub,
+        operator_label=f"operator:{operator.sub}",
+        request=request,
+    )
+
+    return OrgMembersOut(
+        members=[OrgMemberOut.model_validate(m) for m in page_data["items"]],
+        total=int(page_data["total"]),
+        page=int(page_data["page"]),
+        size=int(page_data["size"]),
+        pages=int(page_data["pages"]),
     )
 
 
@@ -191,26 +285,101 @@ async def metrics_overview(
     )
 
 
+#: Bounded the same way every other admin list here already is (`recent_audit`'s 200): a chart
+#: has no use for a decade of monthly points, and an unbounded value would mean replaying the
+#: entire revenue-events table further than any caller actually asked for.
+MAX_SERIES_MONTHS = 36
+
+
+@router.get(
+    "/admin/metrics/series",
+    response_model=MetricsSeriesOut,
+    summary="Monthly MRR, new organizations, trials, conversions and churn",
+)
+async def metrics_series(
+    session: DirectorySessionDep,
+    operator: OperatorBilling,
+    months: Annotated[
+        int,
+        Query(
+            ge=1,
+            le=MAX_SERIES_MONTHS,
+            description="How many trailing calendar months to return, ending with the current one.",
+        ),
+    ] = 12,
+) -> MetricsSeriesOut:
+    data = await selectors.metrics_series(session, months=months)
+
+    def _points(values: dict[str, int | None]) -> list[SeriesPointOut]:
+        return [SeriesPointOut(period=period, value=values[period]) for period in data["periods"]]
+
+    return MetricsSeriesOut(
+        currency=data["currency"],
+        mrr_minor=_points(data["mrr_minor"]),
+        new_organizations=_points(data["new_organizations"]),
+        trials_started=_points(data["trials_started"]),
+        trial_conversions=_points(data["trial_conversions"]),
+        churned=_points(data["churned"]),
+    )
+
+
 @router.get(
     "/admin/subscriptions",
     response_model=SubscriptionsOut,
     summary="Every organization's subscriptions, flattened from their snapshots",
 )
 async def list_subscriptions(
-    session: DirectorySessionDep, operator: OperatorBilling
+    session: DirectorySessionDep, operator: OperatorBilling, client: DelegationClientDep
 ) -> SubscriptionsOut:
     states = await selectors.all_org_states(session)
+
+    # Display names come from catalog in a couple of calls total, never one per row: the batch
+    # plan-version names read, and the public flat plans (whose plan name is the product's display
+    # name). Best-effort, like `list_organizations`' member counts — a name outage must not blank a
+    # list that otherwise renders fine off console's own schema.
+    version_ids: list[uuid.UUID] = []
+    for state in states:
+        for entry in state.subscription_states.values():
+            try:
+                version_ids.append(uuid.UUID(str(entry["plan_version_id"])))
+            except (KeyError, ValueError):
+                continue  # a tombstone or an entry with no pin has no plan to name
+    plan_names: dict[uuid.UUID, dict[str, Any]] = {}
+    product_names: dict[str, str] = {}
+    if version_ids:
+        try:
+            plan_names = await catalog_client.get_plan_version_names(
+                settings(), version_ids, client=client
+            )
+            product_names = {
+                str(p["product_key"]): str(p["product_name"])
+                for p in await catalog_client.get_public_flat_plans(
+                    settings(),
+                    client=client,
+                    request_timeout=catalog_client.ENRICHMENT_TIMEOUT_SECONDS,
+                )
+            }
+        except catalog_client.CatalogError as exc:
+            log.warning("console.subscriptions.names_unavailable", error=str(exc)[:300])
+
     rows: list[SubscriptionOut] = []
     for state in states:
         for product_key, entry in sorted(state.subscription_states.items()):
+            raw_version = entry.get("plan_version_id")
+            try:
+                named = plan_names.get(uuid.UUID(str(raw_version)))
+            except ValueError:
+                named = None
             rows.append(
                 SubscriptionOut(
                     organization_id=state.organization_id,
                     name=state.name,
                     slug=state.slug,
                     product_key=product_key,
+                    product_name=product_names.get(product_key),
                     state=str(entry.get("state")),
-                    plan_version_id=entry.get("plan_version_id"),
+                    plan_version_id=raw_version,
+                    plan_name=named["plan_name"] if named else None,
                     amount_minor=int(entry.get("amount_minor", 0)),
                     currency=entry.get("currency"),
                     trial_ends_at=entry.get("trial_ends_at"),
@@ -219,24 +388,75 @@ async def list_subscriptions(
     return SubscriptionsOut(subscriptions=rows)
 
 
+#: The page size every admin list here defaults and caps to — audit's own long-standing "latest
+#: 200" made real as a page rather than a hardcoded slice, and usage's new one now that it is no
+#: longer read in full every call.
+DEFAULT_LIST_LIMIT = 200
+MAX_LIST_LIMIT = 500
+
+OrganizationIdFilter = Annotated[
+    uuid.UUID | None,
+    Query(description="Narrow the list to one organization's rows."),
+]
+ListLimit = Annotated[int, Query(ge=1, le=MAX_LIST_LIMIT)]
+ListCursor = Annotated[
+    str | None,
+    Query(description="The `next_cursor` from a previous page. Omit for the first page."),
+]
+
+
 @router.get(
     "/admin/usage",
     response_model=UsageListOut,
     summary="Every organization's usage rollups, by meter and period",
 )
-async def list_usage(session: DirectorySessionDep, operator: OperatorBilling) -> UsageListOut:
-    rows = await selectors.all_usage(session)
-    return UsageListOut(usage=[UsageOut.model_validate(r) for r in rows])
+async def list_usage(
+    session: DirectorySessionDep,
+    operator: OperatorBilling,
+    organization_id: OrganizationIdFilter = None,
+    cursor: ListCursor = None,
+    limit: ListLimit = DEFAULT_LIST_LIMIT,
+) -> UsageListOut:
+    after = None
+    if cursor is not None:
+        raw_org, meter_key, period = pagination.decode_cursor(cursor, expected_parts=3)
+        after = (uuid.UUID(raw_org), meter_key, period)
+    rows = await selectors.all_usage(
+        session, organization_id=organization_id, limit=limit, after=after
+    )
+    next_cursor = (
+        pagination.encode_cursor(str(rows[-1].organization_id), rows[-1].meter_key, rows[-1].period)
+        if len(rows) == limit
+        else None
+    )
+    return UsageListOut(usage=[UsageOut.model_validate(r) for r in rows], next_cursor=next_cursor)
 
 
 @router.get(
     "/admin/audit",
     response_model=AuditListOut,
-    summary="Recent operator-override audit rows across every organization",
+    summary="Recent operator-override audit rows, optionally narrowed to one organization",
 )
-async def list_audit(session: DirectorySessionDep, operator: OperatorAudit) -> AuditListOut:
-    rows = await selectors.recent_audit(session)
-    return AuditListOut(audit=[AuditOut.model_validate(r) for r in rows])
+async def list_audit(
+    session: DirectorySessionDep,
+    operator: OperatorAudit,
+    organization_id: OrganizationIdFilter = None,
+    cursor: ListCursor = None,
+    limit: ListLimit = DEFAULT_LIST_LIMIT,
+) -> AuditListOut:
+    after = None
+    if cursor is not None:
+        raw_at, raw_id = pagination.decode_cursor(cursor, expected_parts=2)
+        after = (datetime.fromisoformat(raw_at), uuid.UUID(raw_id))
+    rows = await selectors.recent_audit(
+        session, organization_id=organization_id, limit=limit, after=after
+    )
+    next_cursor = (
+        pagination.encode_cursor(rows[-1].at.isoformat(), str(rows[-1].id))
+        if len(rows) == limit
+        else None
+    )
+    return AuditListOut(audit=[AuditOut.model_validate(r) for r in rows], next_cursor=next_cursor)
 
 
 @router.post(
@@ -251,7 +471,8 @@ async def create_override(
     client: DelegationClientDep,
     request: Request,
 ) -> OverrideOut:
-    """Suspend a subscription or grant comp credit, by calling the owning service's internal API.
+    """Suspend or reactivate a subscription, or grant comp credit, by calling the owning
+    service's internal API.
 
     Console never writes another service's schema (ADR-0003 §2). It resolves which service owns the
     write, delegates under a service token addressed to that service by name, and records its own
@@ -267,18 +488,23 @@ async def create_override(
             amount_minor=payload.amount_minor,
             currency=payload.currency,
             reason=payload.reason,
+            operator_id=str(operator.sub),
         )
     except DelegationError as exc:
         raise ValidationProblem(str(exc)) from exc
 
     try:
         result = await delegation.deliver(cfg, spec, client=client)
+    except DelegationConflict as exc:
+        # The target is not in a state this override applies to — the operator's picture of it is
+        # stale, which is a conflict they can act on, not an outage.
+        raise ConflictProblem(str(exc)) from exc
     except DelegationError as exc:
         # The owning service refused or was unreachable. 503, not 500: the console did its part;
         # the downstream is the thing that is unavailable.
         raise UpstreamUnavailableProblem(str(exc)) from exc
 
-    entity = "subscription" if payload.action == "suspend" else "credit"
+    entity = "credit" if payload.action == "comp_grant" else "subscription"
     await services.record_override(
         session,
         organization_id=payload.organization_id,

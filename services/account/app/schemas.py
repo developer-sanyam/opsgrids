@@ -113,6 +113,23 @@ class OrganizationDirectoryOut(BaseModel):
     created_at: datetime
 
 
+class OrganizationMemberOut(BaseModel):
+    """One member of an organization, as a staff operator may see it — never `MemberOut`,
+    the colleague-facing shape, and never a plaintext email: PII is masked by default, and
+    unmasking needs its own permission plus an audit row every time (CLAUDE.md), neither of
+    which this read is. `id` is the membership id, the same identifier the tenant-facing
+    member endpoints use, so a support ticket can cross-reference one.
+    """
+
+    id: uuid.UUID
+    name: str
+    email_masked: str
+    status: str
+    joined_at: datetime | None
+    last_active_at: datetime | None
+    roles: list[str]
+
+
 class OrganizationSummaryOut(BaseModel):
     """One row of `GET /internal/v1/organizations` — console's backfill discovery read
     (`services/console/app/account_client.py`), never account's own OpenAPI: that router is
@@ -122,6 +139,11 @@ class OrganizationSummaryOut(BaseModel):
     stay current (`id`, `slug`, `name`), plus `updated_at` so the caller can stamp its own fold
     with this row's own freshness rather than "now" — the same ordering guard a live
     `core.org.updated` event gets, applied to a snapshot instead of a transition.
+
+    `created_at` and `country` were added for console's Status/Region/Created list filters
+    (`services/console/app/backfill.py`) — both are immutable-enough (country rarely changes,
+    created_at never does) that the backfill folds them once and a live `core.org.*` event
+    keeps them current thereafter.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -130,6 +152,8 @@ class OrganizationSummaryOut(BaseModel):
     slug: str
     name: str
     status: str
+    country: str | None
+    created_at: datetime
     updated_at: datetime
 
 
@@ -139,6 +163,21 @@ class OrganizationsPageOut(BaseModel):
 
     items: list[OrganizationSummaryOut]
     next_cursor: uuid.UUID | None
+
+
+class OrganizationMemberCountOut(BaseModel):
+    organization_id: uuid.UUID
+    count: int
+
+
+class OrganizationMemberCountsOut(BaseModel):
+    """Every organization's member count in one call — console's `/admin/organizations` list
+    merges this in live rather than folding and storing it, since no event today tells console
+    when a membership is added or removed: computed fresh on every request instead of ever
+    going stale between one-off backfill runs, at the cost of one extra internal call per list
+    read rather than none."""
+
+    counts: list[OrganizationMemberCountOut]
 
 
 # --------------------------------------------------------------------- structure

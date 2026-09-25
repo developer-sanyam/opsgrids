@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import INVOICE_DRAFT, CreditLedgerEntry, Invoice, TaxRate
+from app.schemas import InvoiceAdminOut
 from platform_core.auth import ScopeContext
 
 
@@ -236,8 +237,39 @@ def admin_credit_ledger_query(
     return stmt
 
 
+def admin_invoices_query(*, organization_id: uuid.UUID) -> Select[tuple[Invoice]]:
+    """One organization's invoices for the staff Billing tab, newest period first — filtered by
+    the mandatory `organization_id`, **not** scoped: there is no tenant on a staff read. Run on
+    the directory session (BYPASSRLS, SELECT-only on `invoices` and `credit_ledger`), so the
+    `WHERE organization_id = ...` here is the filter and the audit row the route writes is the
+    trail — RLS is not what narrows this read. Paginated by the caller. Lines are deliberately
+    not loaded: `InvoiceAdminOut` has none.
+    """
+    return (
+        select(Invoice)
+        .where(Invoice.organization_id == organization_id)
+        .order_by(Invoice.period_start.desc(), Invoice.created_at.desc(), Invoice.id.desc())
+    )
+
+
+def to_invoice_admin_out(invoice: Invoice) -> InvoiceAdminOut:
+    return InvoiceAdminOut(
+        id=invoice.id,
+        organization_id=invoice.organization_id,
+        number=invoice.number,
+        status=invoice.state,
+        period_start=invoice.period_start,
+        period_end=invoice.period_end,
+        total_minor=invoice.total_minor,
+        currency=invoice.currency,
+        issued_at=invoice.finalized_at,
+        voided_at=invoice.voided_at,
+    )
+
+
 __all__ = [
     "admin_credit_ledger_query",
+    "admin_invoices_query",
     "billing_drafts_health",
     "credit_balance",
     "effective_tax_rate",
@@ -247,4 +279,5 @@ __all__ = [
     "get_reversal_of",
     "list_invoices",
     "pack_remaining",
+    "to_invoice_admin_out",
 ]

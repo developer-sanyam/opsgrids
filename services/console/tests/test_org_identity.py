@@ -37,6 +37,8 @@ def _org_event(
     *,
     slug: str | None = None,
     name: str | None = None,
+    country: str | None = None,
+    created_at: str | None = None,
     changed: list[str] | None = None,
     **kw,
 ) -> dict:
@@ -44,9 +46,12 @@ def _org_event(
     if event == "created":
         payload["slug"] = slug
         payload["name"] = name
+        payload["country"] = country
+        payload["created_at"] = created_at
     else:
         payload["changed"] = changed if changed is not None else (["name"] if name else [])
         payload["name"] = name
+        payload["country"] = country
     return envelope(f"core.org.{event}", organization_id=org, payload=payload, **kw)
 
 
@@ -126,6 +131,88 @@ class TestOrgIdentityFold:
         directory_session.expire_all()
         states = await selectors.all_org_states(directory_session)
         assert states[0].name == "Northwind Group", "a stale replay resurrected an old name"
+
+    async def test_a_created_event_sets_country_and_org_created_at(
+        self, engine_ready: None, directory_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        await _fold(
+            _org_event(
+                "created",
+                org_id,
+                slug="northwind-metals",
+                name="Northwind Metals",
+                country="IN",
+                created_at="2025-01-15T00:00:00+00:00",
+            )
+        )
+
+        states = await selectors.all_org_states(directory_session)
+        assert states[0].country == "IN"
+        assert states[0].org_created_at is not None
+        assert states[0].org_created_at.isoformat() == "2025-01-15T00:00:00+00:00"
+
+    async def test_an_update_that_changes_country_does_not_touch_created_at(
+        self, engine_ready: None, directory_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        await _fold(
+            _org_event(
+                "created",
+                org_id,
+                slug="northwind-metals",
+                name="Northwind Metals",
+                country="IN",
+                created_at="2025-01-15T00:00:00+00:00",
+            )
+        )
+        await _fold(_org_event("updated", org_id, country="US", changed=["country"]))
+
+        directory_session.expire_all()
+        states = await selectors.all_org_states(directory_session)
+        assert states[0].country == "US"
+        assert states[0].org_created_at.isoformat() == "2025-01-15T00:00:00+00:00"
+
+    async def test_a_stale_replayed_created_event_fills_a_gap_but_never_renames(
+        self, engine_ready: None, directory_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """A row folded before `org_created_at` existed has a name and no creation time. A DLQ
+        replay of the original create is stale — and must not bring the old name back — but it
+        may still supply the creation time the row is missing."""
+        t0 = datetime.now(UTC)
+        await _fold(
+            _org_event(
+                "created", org_id, slug="northwind-metals", name="Northwind Metals", occurred_at=t0
+            )
+        )
+        await _fold(
+            _org_event(
+                "updated",
+                org_id,
+                name="Northwind Group",
+                changed=["name"],
+                occurred_at=t0 + timedelta(minutes=10),
+            )
+        )
+        directory_session.expire_all()
+        assert (await selectors.all_org_states(directory_session))[0].org_created_at is None
+
+        await _fold(
+            _org_event(
+                "created",
+                org_id,
+                slug="northwind-metals",
+                name="Northwind Metals",
+                country="IN",
+                created_at="2025-01-15T00:00:00+00:00",
+                occurred_at=t0,
+            )
+        )
+
+        directory_session.expire_all()
+        state = (await selectors.all_org_states(directory_session))[0]
+        assert state.name == "Northwind Group", "a stale replay must not resurrect the old name"
+        assert state.country == "IN"
+        assert state.org_created_at is not None
+        assert state.org_created_at.isoformat() == "2025-01-15T00:00:00+00:00"
 
     async def test_the_flattened_subscription_list_carries_the_same_name(
         self, engine_ready: None, directory_session: AsyncSession, org_id: uuid.UUID

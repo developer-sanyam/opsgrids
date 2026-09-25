@@ -42,12 +42,14 @@
 
     { "prefix": "/api/v1/admin/organizations", "upstream": "http://localhost:8170", "staff_only": true },
     { "prefix": "/api/v1/admin/metrics/overview", "upstream": "http://localhost:8170", "staff_only": true },
+    { "prefix": "/api/v1/admin/metrics/series", "upstream": "http://localhost:8170", "staff_only": true },
     { "prefix": "/api/v1/admin/subscriptions", "upstream": "http://localhost:8170", "staff_only": true },
     { "prefix": "/api/v1/admin/overrides", "upstream": "http://localhost:8170", "staff_only": true },
     { "prefix": "/api/v1/admin/usage", "upstream": "http://localhost:8170", "staff_only": true },
     { "prefix": "/api/v1/admin/audit", "upstream": "http://localhost:8170", "staff_only": true },
 
     { "prefix": "/api/v1/admin/credit-ledger", "upstream": "http://localhost:8160", "staff_only": true },
+    { "prefix": "/api/v1/admin/invoices", "upstream": "http://localhost:8160", "staff_only": true },
 
     { "prefix": "/api/v1/webhooks", "upstream": "http://localhost:8163" }
   ]

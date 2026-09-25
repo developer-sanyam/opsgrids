@@ -42,7 +42,12 @@ from sqlalchemy.orm import selectinload
 
 from app import selectors
 from app.models import Membership, MembershipRole, Organization, OrgDomain, User
-from app.schemas import OrganizationsPageOut, OrganizationSummaryOut
+from app.schemas import (
+    OrganizationMemberCountOut,
+    OrganizationMemberCountsOut,
+    OrganizationsPageOut,
+    OrganizationSummaryOut,
+)
 from platform_core.auth import require_service_token
 from platform_core.cache import current_permission_version
 from platform_core.db import get_directory_session
@@ -255,6 +260,29 @@ async def list_organizations(
     return OrganizationsPageOut(
         items=[OrganizationSummaryOut.model_validate(row) for row in rows],
         next_cursor=next_cursor,
+    )
+
+
+@router.get(
+    "/organizations/member-counts",
+    response_model=OrganizationMemberCountsOut,
+    summary="Every organization's member count, in one call — console's accounts-list Users column",
+)
+async def organization_member_counts(
+    session: SessionDep, _console: ConsoleCallerDep
+) -> OrganizationMemberCountsOut:
+    """Console merges this into `/admin/organizations` live rather than folding and storing it:
+    no `core.*` event tells console when a membership is added or removed, so a stored count
+    would only ever be as fresh as the last one-off backfill run. One bulk query here costs the
+    same as the per-org reads it replaces would have cost in total, without an N+1 on the list
+    (CLAUDE.md).
+    """
+    counts = await selectors.member_counts_by_organization(session)
+    return OrganizationMemberCountsOut(
+        counts=[
+            OrganizationMemberCountOut(organization_id=org_id, count=count)
+            for org_id, count in counts.items()
+        ]
     )
 
 

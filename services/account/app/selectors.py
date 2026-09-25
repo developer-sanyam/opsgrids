@@ -38,8 +38,9 @@ from app.models import (
     RolePermission,
     User,
 )
-from app.schemas import DomainOut, GrantOut, MemberOut, OrgUnitNode, RoleOut
+from app.schemas import DomainOut, GrantOut, MemberOut, OrganizationMemberOut, OrgUnitNode, RoleOut
 from platform_core.auth import Scope, ScopeContext
+from platform_core.pii import mask
 
 # --------------------------------------------------------------------- organizations
 
@@ -70,6 +71,21 @@ def organizations_page_stmt(*, cursor: uuid.UUID | None, limit: int) -> Select[A
     if cursor is not None:
         stmt = stmt.where(Organization.id > cursor)
     return stmt.order_by(Organization.id).limit(limit)
+
+
+async def member_counts_by_organization(session: AsyncSession) -> dict[uuid.UUID, int]:
+    """Every organization's member count in one query — console's `/admin/organizations` Users
+    column (`GET /internal/v1/organizations/member-counts`). `removed` is excluded, the same
+    membership-count convention the tenant-facing member list uses: a removed row is history,
+    not a seat anyone currently holds.
+    """
+    stmt = (
+        select(Membership.organization_id, func.count())
+        .where(Membership.status != "removed")
+        .group_by(Membership.organization_id)
+    )
+    rows = (await session.execute(stmt)).all()
+    return {row[0]: int(row[1]) for row in rows}
 
 
 # --------------------------------------------------------------------- members
@@ -300,6 +316,40 @@ def to_member_out(membership: Membership, user: User) -> MemberOut:
         roles=sorted(mr.role.code for mr in membership.roles),
         joined_at=membership.joined_at,
         started_on=membership.started_on,
+    )
+
+
+def organization_members_stmt(organization_id: uuid.UUID) -> Select[Any]:
+    """Every membership of one organization, for the staff-only operator members read
+    (`app/api/admin.py`) — deliberately every status, not just active: `list_memberships`'s own
+    reasoning applies here too, and a support ticket routinely starts with "why can't this
+    removed person log in any more" rather than only ever asking about someone still active.
+    """
+    return (
+        select(Membership)
+        .where(Membership.organization_id == organization_id)
+        .options(
+            selectinload(Membership.user),
+            selectinload(Membership.roles).selectinload(MembershipRole.role),
+        )
+        .order_by(Membership.created_at)
+    )
+
+
+def to_operator_member_out(membership: Membership) -> OrganizationMemberOut:
+    """Shape one membership the staff read renders — email masked with the same platform
+    masker every sealed PII field uses (`platform_core.pii.mask`), never the plaintext, and
+    never a decrypt: this route has no unmask path at all.
+    """
+    user = membership.user
+    return OrganizationMemberOut(
+        id=membership.id,
+        name=membership.display_name or user.full_name,
+        email_masked=mask(user.email, kind="email"),
+        status=membership.status,
+        joined_at=membership.joined_at,
+        last_active_at=membership.last_active_at,
+        roles=sorted(mr.role.name for mr in membership.roles),
     )
 
 

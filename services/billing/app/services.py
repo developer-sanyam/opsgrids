@@ -731,3 +731,31 @@ async def record_operator_credit_ledger_read(
             entity="credit_ledger",
             request=request,
         )
+
+
+async def record_operator_invoices_read(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    request: Request | None = None,
+) -> None:
+    """The audit row for a staff read of one organization's invoices
+    (`GET /admin/invoices?organization_id=...`). Unlike the credit ledger's, this route **always**
+    names one organization — there is no platform-wide invoice overview — so every call writes
+    one. Same bypass-then-narrow shape and reasoning as `record_operator_credit_ledger_read`: the
+    rows already came from the BYPASSRLS directory session; this is billing's own local,
+    tenant-bound write of who looked.
+    """
+    async with session.begin():
+        await set_tenant(session, organization_id)
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=organization_id,
+            actor_id=actor_id,
+            acting_as=f"operator:{actor_id}",
+            action="invoices.viewed",
+            entity="invoice",
+            request=request,
+        )

@@ -826,6 +826,62 @@ async def suspend(
     return subscription
 
 
+async def reactivate(
+    session: AsyncSession,
+    subscription: Subscription,
+    *,
+    operator_id: str,
+    reason: str,
+    request: Request | None = None,
+) -> Subscription:
+    """Lift a suspension — `suspend`'s inverse, the write the operator console delegates over
+    /internal.
+
+    Only a `suspended` subscription may be reactivated. Any other state is a **409**, not the
+    state machine's own 422: the request is well-formed and the lifecycle does allow *some*
+    moves from there, it is just that this one is not applicable to what the subscription
+    currently is — the caller's picture of it is stale, which is what a conflict means.
+
+    Emits `commerce.subscription.activated`, which the product-service projection turns back
+    into an entitling activation and console's fold into a live, MRR-paying subscription again.
+    Money follows the platform's existing "back from suspension mid-period" policy exactly, by
+    calling the same `charge_uncovered_remainder` the dunning-recovery resume calls: a period
+    that rolled while suspended was not charged (the customer was not served), and the rest of
+    the current one, from now, is — never a second, operator-only rule for the same situation.
+    Anyone with the billing-ops role may lift a suspension whoever placed it; the reason and the
+    operator's id are on the transition row either way.
+    """
+    from app import selectors
+
+    if reason.strip().lower() in domain.RESERVED_REASONS:
+        raise BusinessRuleProblem(
+            f"{reason!r} is a reason only the platform's own machinery records; "
+            "describe the operator's reason in words of your own"
+        )
+    await selectors.lock_subscription(
+        session, subscription.organization_id, subscription.id, skip_locked=False
+    )
+    if subscription.state != STATE_SUSPENDED:
+        raise ConflictProblem(
+            f"cannot reactivate a subscription that is {subscription.state}: "
+            "only a suspended one can be reactivated"
+        )
+    decision = domain.decide(from_state=subscription.state, to_state=STATE_ACTIVE, reason=reason)
+    subscription.suspended_at = None
+    _transition(
+        session,
+        subscription,
+        decision,
+        actor={"type": "operator", "id": operator_id},
+        request=request,
+        from_plan_version_id=subscription.plan_version_id,
+        to_plan_version_id=subscription.plan_version_id,
+    )
+    await charge_uncovered_remainder(session, subscription, at=datetime.now(UTC))
+    await session.flush()
+    return subscription
+
+
 # ----------------------------------------------------------------------- dunning (ADR-0005)
 
 #: The service actor on every write the dunning machinery makes. There is no human in this path:
