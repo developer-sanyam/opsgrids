@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import type { CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
@@ -28,7 +28,6 @@ import {
   NeedsAttention,
   PoStatusPill,
   SampleChip,
-  SearchInput,
   SectionHeader,
   Skeleton,
   SpendTrend,
@@ -43,10 +42,11 @@ const EMPTY_POS: PurchaseOrderOut[] = [];
 const EMPTY_INVENTORY: InventoryItemOut[] = [];
 const EMPTY_SUPPLIERS: SupplierOut[] = [];
 
-/** The Overview's top bar: breadcrumb + title, then a search that actually searches, and New PO. */
+/** The Overview's top bar: breadcrumb + title, then New PO. The shell's own header already has a
+ *  search that reaches Purchase Orders (`AppShell`'s `search.fallback`), so this doesn't repeat
+ *  it. */
 function OverviewHeader({ orgName }: { orgName: string }) {
   const navigate = useNavigate();
-  const [query, setQuery] = useState("");
 
   return (
     <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -59,22 +59,6 @@ function OverviewHeader({ orgName }: { orgName: string }) {
       </div>
 
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const q = query.trim();
-            navigate(q ? `/purchase-orders?q=${encodeURIComponent(q)}` : "/purchase-orders");
-          }}
-          className="sm:w-64"
-        >
-          <SearchInput
-            label="Search purchase orders"
-            placeholder="Search POs…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-        </form>
-
         <Can permission="operations.procurement.purchase_order.write" scope="OWN">
           <Button
             size="md"

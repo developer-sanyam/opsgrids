@@ -236,7 +236,7 @@
     "spacing": 9
   },
   "product-crm/src/routes/Overview.tsx": {
-    "arbitrary": 2,
+    "arbitrary": 1,
     "spacing": 7
   },
   "product-crm/src/routes/Team.tsx": {
@@ -414,7 +414,7 @@
     "spacing": 5
   },
   "product-hrms/src/routes/Dashboard.tsx": {
-    "arbitrary": 2,
+    "arbitrary": 1,
     "spacing": 7
   },
   "product-hrms/src/routes/Delegations.tsx": {
@@ -497,7 +497,7 @@
     "spacing": 9
   },
   "product-itsm/src/routes/Overview.tsx": {
-    "arbitrary": 2,
+    "arbitrary": 1,
     "spacing": 8
   },
   "product-itsm/src/routes/RequestDetail.tsx": {
@@ -654,7 +654,7 @@
     "spacing": 3
   },
   "product-projects/src/routes/Overview.tsx": {
-    "arbitrary": 2,
+    "arbitrary": 1,
     "spacing": 9
   },
   "product-projects/src/routes/Portfolio.tsx": {
@@ -712,7 +712,7 @@
     "spacing": 9
   },
   "product-pulseboard/src/routes/Overview.tsx": {
-    "arbitrary": 3,
+    "arbitrary": 2,
     "spacing": 16
   },
   "product-pulseboard/src/routes/People.tsx": {
@@ -851,7 +851,7 @@
     "spacing": 3
   },
   "product-support/src/routes/Overview.tsx": {
-    "arbitrary": 2,
+    "arbitrary": 1,
     "spacing": 9
   },
   "product-support/src/routes/Queue.tsx": {

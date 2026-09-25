@@ -35,6 +35,9 @@ export function AppShell() {
             <EnvBadge />
           </span>
         ),
+        // The 72px tablet rail has no room beside the mark for the environment badge — just the
+        // mark there, unclipped; the expanded sidebar and mobile header keep the full version.
+        compactMark: <LogoMark className="size-7" />,
       }}
       nav={groups}
       user={{ name, email: operator?.email ?? "", roleLabel }}

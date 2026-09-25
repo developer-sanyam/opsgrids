@@ -14,6 +14,7 @@ import {
   PlusIcon,
   SearchIcon,
 } from "../icons";
+import { cn } from "../lib/cn";
 import { useFocusTrap } from "../lib/useFocusTrap";
 import { Avatar } from "./Avatar";
 import { BottomNavigation } from "./BottomNavigation";
@@ -27,12 +28,21 @@ import type { ModuleLink, NavEntry, NavGroup } from "./Sidebar";
 
 const CommandMenu = lazy(() => import("./CommandMenu").then((m) => ({ default: m.CommandMenu })));
 
+/** A display preference, never anything sensitive — same reasoning as the theme toggle's own key. */
+const DESKTOP_COLLAPSE_KEY = "opsgrids.shell.sidebar-collapsed";
+
 type IconType = ComponentType<SVGProps<SVGSVGElement>>;
 
 export interface AppShellProduct {
   name: string;
-  /** The product's mark — an `<img>`, an inline SVG, whatever the app's `LogoMark` renders. */
+  /** The product's mark — an `<img>`, an inline SVG, whatever the app's `LogoMark` renders. Shown
+   *  in the expanded sidebar and the mobile header, where there is room beside it for something
+   *  like an environment badge. */
   mark: ReactNode;
+  /** The mark alone, for the 72px tablet rail, which has no room for anything beside it —
+   *  environment or status badges belong in the expanded sidebar or the page, not here. Defaults
+   *  to `mark`, which is already just the mark for every app that doesn't pass one of its own. */
+  compactMark?: ReactNode | undefined;
 }
 
 /** Display only — never an authorization decision (`frontend/CLAUDE.md`). */
@@ -214,6 +224,15 @@ export function AppShell({
   const [modulesOpen, setModulesOpen] = useState(false);
   const [quickActionsOpen, setQuickActionsOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
+  // The desktop (>=1024px) sidebar's own collapse-to-rail, remembered per browser — distinct from
+  // the tablet rail below it, which is always collapsed and has no persistent state of its own.
+  const [desktopCollapsed, setDesktopCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(DESKTOP_COLLAPSE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   const drawerRef = useRef<HTMLDivElement>(null);
   const drawerCloseRef = useRef<HTMLButtonElement>(null);
   const mainRef = useRef<HTMLElement>(null);
@@ -230,6 +249,14 @@ export function AppShell({
     }
     mainRef.current?.focus();
   }, [pathname]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DESKTOP_COLLAPSE_KEY, desktopCollapsed ? "1" : "0");
+    } catch {
+      // Persistence is best-effort; the current render already reflects the choice.
+    }
+  }, [desktopCollapsed]);
 
   useFocusTrap({
     open: navDrawerOpen,
@@ -302,7 +329,6 @@ export function AppShell({
     modules,
     adminLinks,
     user,
-    logo: product.mark,
     productName: product.name,
     ...(badgeTone !== undefined ? { badgeTone } : {}),
   };
@@ -362,20 +388,17 @@ export function AppShell({
       </a>
 
       <div className="flex min-h-dvh w-full">
-        {/* Desktop sidebar, 1280px and up — flush against the viewport edge, a hairline the only
-            separation from the content column (the audit's "flush white panel, hairline right
-            edge", not a floating card). */}
-        <div className="hidden shell-sidebar-w shrink-0 border-r border-line bg-surface xl:block">
-          <div className="shell-side-h sticky top-0">
-            <Sidebar {...sidebarShared} />
-          </div>
-        </div>
-
-        {/* Tablet icon rail, 768–1279px */}
-        <div className="hidden shell-rail-w shrink-0 border-r border-line bg-surface md:block xl:hidden">
+        {/* Tablet icon rail, 768–1023px — always collapsed, no persistent state of its own.
+            "Expand navigation" opens the temporary nav-drawer overlay (the same one the mobile
+            header's menu button and the bottom nav's More button open), rather than growing this
+            column in place — there usually isn't enough room at this width to keep it open. Only
+            the mark — there is no space beside it for an environment or status badge, so
+            `compactMark` (falling back to `mark`) is what shows here rather than whatever richer
+            thing the expanded sidebar and mobile header do. */}
+        <div className="hidden shell-rail-w shrink-0 border-r border-line bg-surface md:block lg:hidden">
           <div className="shell-side-h sticky top-0 flex flex-col">
             <div className="min-h-0 flex-1">
-              <Sidebar {...sidebarShared} collapsed />
+              <Sidebar {...sidebarShared} logo={product.compactMark ?? product.mark} collapsed />
             </div>
             <button
               type="button"
@@ -385,6 +408,37 @@ export function AppShell({
               className="grid h-12 shrink-0 place-items-center border-t border-line text-ink-soft transition-colors hover:bg-ground"
             >
               <ChevronRightIcon className="size-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Desktop, 1024px and up — the full sidebar by default (the owner's mockups), flush
+            against the viewport edge with a hairline the only separation from the content column.
+            Its own collapse control shrinks it to the same rail the tablet width shows, in place
+            rather than as an overlay — there is room to keep it open here — and the choice is
+            remembered per browser. */}
+        <div
+          className={cn(
+            "hidden shrink-0 border-r border-line bg-surface lg:block",
+            desktopCollapsed ? "shell-rail-w" : "shell-sidebar-w",
+          )}
+        >
+          <div className="shell-side-h sticky top-0 flex flex-col">
+            <div className="min-h-0 flex-1">
+              <Sidebar
+                {...sidebarShared}
+                logo={desktopCollapsed ? (product.compactMark ?? product.mark) : product.mark}
+                collapsed={desktopCollapsed}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => setDesktopCollapsed((collapsed) => !collapsed)}
+              aria-label={desktopCollapsed ? "Expand navigation" : "Collapse navigation"}
+              aria-expanded={!desktopCollapsed}
+              className="grid h-12 shrink-0 place-items-center border-t border-line text-ink-soft transition-colors hover:bg-ground"
+            >
+              <ChevronRightIcon className={desktopCollapsed ? "size-4" : "size-4 rotate-180"} />
             </button>
           </div>
         </div>
@@ -414,7 +468,7 @@ export function AppShell({
             className={
               layout === "full-bleed"
                 ? "min-w-0 flex-1 shell-content-bottom-pad focus:outline-none"
-                : "mx-auto w-full shell-content-max shell-content-bottom-pad px-4 pb-16 pt-4 sm:px-6 sm:pt-6 focus:outline-none"
+                : "mx-auto w-full shell-content-max shell-content-bottom-pad px-3 pb-16 pt-3 sm:px-6 sm:pt-6 focus:outline-none"
             }
           >
             {banner ? (
@@ -433,7 +487,7 @@ export function AppShell({
       {navDrawerOpen ? (
         <div
           ref={drawerRef}
-          className="fixed inset-0 z-50 xl:hidden"
+          className="fixed inset-0 z-50 lg:hidden"
           role="dialog"
           aria-modal="true"
           aria-label="Navigation"
@@ -453,7 +507,7 @@ export function AppShell({
             >
               <CloseIcon className="size-5" />
             </button>
-            <Sidebar {...sidebarShared} onNavigate={() => setNavDrawerOpen(false)} />
+            <Sidebar {...sidebarShared} logo={product.mark} onNavigate={() => setNavDrawerOpen(false)} />
           </div>
         </div>
       ) : null}

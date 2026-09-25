@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import type { CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -25,7 +25,7 @@ import {
   WorkforceMix,
 } from "@/ui";
 import type { KpiTone, MiniStat } from "@/ui";
-import { CalendarCheckIcon, CalendarIcon, CheckSquareIcon, PlusIcon, SearchIcon, UsersIcon } from "@opsgrids/ui";
+import { CalendarCheckIcon, CalendarIcon, CheckSquareIcon, PlusIcon, UsersIcon } from "@opsgrids/ui";
 
 /** The real clock — never a frozen fixture date. */
 function todayISO(): string {
@@ -38,12 +38,13 @@ const EMPTY_EMPLOYEES: EmployeeOut[] = [];
 /** A stable empty org-unit map, used while the tree loads or when the org has none to read. */
 const EMPTY_ORG_UNITS: ReadonlyMap<string, string> = new Map();
 
-/** The Dashboard's top bar: breadcrumb + title, then the search / date / add controls. Every
- *  control here does real work — the old period select changed nothing and is gone, along with
- *  the notification bell's permanently-on unread dot (no notifications backend exists). */
+/** The Dashboard's top bar: breadcrumb + title, then the date / add controls. Every control here
+ *  does real work — the old period select changed nothing and is gone, along with the
+ *  notification bell's permanently-on unread dot (no notifications backend exists). The shell's
+ *  own header already has a search that reaches Employees (`AppShell`'s `search.fallback`), so
+ *  this doesn't repeat it. */
 function DashboardHeader({ orgName }: { orgName: string }) {
   const navigate = useNavigate();
-  const [query, setQuery] = useState("");
   const today = useMemo(() => new Date(), []);
 
   return (
@@ -59,28 +60,6 @@ function DashboardHeader({ orgName }: { orgName: string }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const q = query.trim();
-            navigate(q ? `/employees?q=${encodeURIComponent(q)}` : "/employees");
-          }}
-          className="hidden h-11 min-w-0 items-center gap-2 rounded-full bg-surface px-4 shadow-card focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2 md:flex md:w-60"
-        >
-          <SearchIcon className="size-[18px] shrink-0 text-faint" />
-          <label htmlFor="dash-search" className="sr-only">
-            Search employees
-          </label>
-          <input
-            id="dash-search"
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search employees…"
-            className="min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-faint focus:outline-none"
-          />
-        </form>
-
         <span className="hidden h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold text-ink-soft shadow-card sm:inline-flex">
           <CalendarIcon className="size-4 text-muted" />
           <span className="tnum">

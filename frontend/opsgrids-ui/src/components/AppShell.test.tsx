@@ -17,6 +17,9 @@ import { ThemeProvider } from "./ThemeProvider";
 beforeEach(() => {
   // jsdom doesn't implement scrolling; the shell resets it on every route change.
   window.scrollTo = vi.fn();
+  // The desktop sidebar's collapse preference persists across page loads — and, without this,
+  // across tests in this file too.
+  localStorage.clear();
 });
 
 const BASE_PROPS: AppShellProps = {
@@ -103,6 +106,58 @@ describe("AppShell — the mobile/tablet nav drawer", () => {
     renderShell();
     await user.click(screen.getByRole("button", { name: "More" }));
     expect(screen.getByRole("dialog", { name: "Navigation" })).toBeTruthy();
+  });
+
+  it("the tablet rail's own expand control opens the same overlay, not the desktop column", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    // Distinct names by default: the desktop column starts expanded ("Collapse navigation") and
+    // the tablet rail is always collapsed ("Expand navigation") — clicking the rail's opens the
+    // temporary overlay, it does not touch the desktop column's own state.
+    await user.click(screen.getByRole("button", { name: "Expand navigation" }));
+    expect(screen.getByRole("dialog", { name: "Navigation" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Collapse navigation" })).toBeTruthy();
+  });
+});
+
+describe("AppShell — the desktop sidebar's own collapse", () => {
+  it("starts expanded and collapses to the rail in place, without opening the nav-drawer overlay", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    expect(screen.getByRole("button", { name: "Collapse navigation" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Collapse navigation" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // Now both the desktop column and the tablet rail read "Expand navigation".
+    expect(screen.getAllByRole("button", { name: "Expand navigation" }).length).toBe(2);
+  });
+
+  it("remembers the choice for the next mount, in this browser", async () => {
+    const user = userEvent.setup();
+    const { unmount } = renderShell();
+    await user.click(screen.getByRole("button", { name: "Collapse navigation" }));
+    unmount();
+
+    renderShell();
+    expect(screen.getAllByRole("button", { name: "Expand navigation" }).length).toBe(2);
+  });
+
+  it("uses the compact mark once collapsed — the tablet rail (always collapsed) already does", async () => {
+    const user = userEvent.setup();
+    renderShell({
+      product: { name: "OpsGrids Internal", mark: <span>Full mark</span>, compactMark: <span>Compact mark</span> },
+    });
+    // The always-collapsed tablet rail already renders the compact mark; the expanded desktop
+    // column and the mobile header still render the full one.
+    const fullBefore = screen.getAllByText("Full mark").length;
+    const compactBefore = screen.getAllByText("Compact mark").length;
+    expect(fullBefore).toBeGreaterThan(0);
+    expect(compactBefore).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("button", { name: "Collapse navigation" }));
+    // Collapsing the desktop column swaps its mark too: one more compact, one fewer full.
+    expect(screen.getAllByText("Compact mark").length).toBe(compactBefore + 1);
+    expect(screen.getAllByText("Full mark").length).toBe(fullBefore - 1);
   });
 });
 

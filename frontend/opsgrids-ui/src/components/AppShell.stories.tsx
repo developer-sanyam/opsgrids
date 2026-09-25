@@ -130,6 +130,15 @@ export const CommandMenuOpen: Story = {
   },
 };
 
+/** The desktop (>=1024px) sidebar collapsed to the rail by its own control — in place, not the
+ *  narrow-screen overlay. The choice persists per browser. */
+export const DesktopCollapsed: Story = {
+  play: async ({ canvas, userEvent }) => {
+    await userEvent.click(canvas.getByRole("button", { name: "Collapse navigation" }));
+    await canvas.findByRole("button", { name: "Expand navigation" });
+  },
+};
+
 /** No `modules`, no `quickActions`: the staff console's shape — the bottom nav loses those slots
  *  rather than showing them empty, and the sidebar's Modules and Admin groups don't render. */
 export const StaffConsole: Story = {
