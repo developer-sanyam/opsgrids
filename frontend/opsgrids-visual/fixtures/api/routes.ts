@@ -124,9 +124,27 @@ export const INTERNAL_ROUTES: MockRoute[] = [
   },
   {
     method: "GET",
+    path: "/api/v1/admin/metrics/series",
+    fixture: "internal/series.json",
+    contract: { spec: "console", path: "/api/v1/admin/metrics/series" },
+  },
+  {
+    method: "GET",
     path: "/api/v1/admin/organizations",
     fixture: "internal/organizations.json",
     contract: { spec: "console", path: "/api/v1/admin/organizations" },
+  },
+  {
+    method: "GET",
+    path: "/api/v1/admin/subscriptions",
+    fixture: "internal/subscriptions.json",
+    contract: { spec: "console", path: "/api/v1/admin/subscriptions" },
+  },
+  {
+    method: "GET",
+    path: "/api/v1/admin/audit",
+    fixture: "internal/audit.json",
+    contract: { spec: "console", path: "/api/v1/admin/audit" },
   },
 ];
 

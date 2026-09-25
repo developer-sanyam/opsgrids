@@ -116,7 +116,7 @@ export const PAGES: PageSpec[] = [
     routes: [...INTERNAL.routes],
     surface: "page/internal/overview",
     path: "/",
-    ready: heading("Overview"),
+    ready: heading("Super Admin Dashboard"),
     capture: "fullpage",
   },
   {

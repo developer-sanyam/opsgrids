@@ -37,6 +37,15 @@ for (const spec of PAGES) {
             }
             await expect(spec.ready(page)).toBeVisible();
 
+            // Never wider than the viewport it was given — a horizontal scrollbar on a page is
+            // always a bug here, not a design choice, and this catches it even when a screenshot
+            // diff alone would not (two same-sized images can still both be wrong).
+            const overflow = await page.evaluate(() => ({
+              scrollWidth: document.documentElement.scrollWidth,
+              clientWidth: document.documentElement.clientWidth,
+            }));
+            expect.soft(overflow.scrollWidth, "page wider than the viewport").toBeLessThanOrEqual(overflow.clientWidth);
+
             await expect
               .soft(page)
               .toHaveScreenshot(snapshotName(spec.surface, theme, width), { fullPage: spec.capture === "fullpage" });

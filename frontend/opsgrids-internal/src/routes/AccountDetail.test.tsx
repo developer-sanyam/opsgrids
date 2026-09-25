@@ -58,6 +58,9 @@ describe("AccountDetailPage", () => {
         organization_id: "org_a1f09c",
         name: "Northwind Metals",
         slug: "northwind-metals",
+        country: "IN",
+        created_at: "2024-02-11T00:00:00Z",
+        lifecycle: "active",
         mrr_minor: 420_000_00,
         currency: "INR",
         active_products: ["trading"],
@@ -67,6 +70,7 @@ describe("AccountDetailPage", () => {
         trial_ends_at: null,
         locked: false,
         updated_at: "2026-08-23T14:20:00Z",
+        user_count: 45,
       },
     });
     vi.spyOn(client, "listSubscriptions").mockResolvedValue({
@@ -76,8 +80,10 @@ describe("AccountDetailPage", () => {
           name: "Northwind Metals",
           slug: "northwind-metals",
           product_key: "trading",
+          product_name: "OpsGrids Trading Desk",
           state: "active",
           plan_version_id: "pv_1",
+          plan_name: "Enterprise",
           amount_minor: 420_000_00,
           currency: "INR",
           trial_ends_at: null,

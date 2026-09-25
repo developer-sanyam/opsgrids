@@ -1,6 +1,6 @@
 import { useId } from "react";
 
-import { areaPath, defaultFormat, labelStride, linePath, scaleFor, xOf, yOf } from "../lib/chart";
+import { areaPath, defaultFormat, labelStride, linePath, scaleFor, smoothAreaPath, smoothLinePath, xOf, yOf } from "../lib/chart";
 import { cn } from "../lib/cn";
 import { SERIES_TONE, seriesTone } from "../lib/tones";
 import type { Tone } from "../lib/tones";
@@ -36,6 +36,19 @@ interface LineChartProps {
   formatValue?: ((value: number) => string) | undefined;
   /** The plot's height. Default `md` (192px). */
   height?: keyof typeof HEIGHT | undefined;
+  /**
+   * The value axis ticks on whole numbers only (never 0.5) — for a series that counts things
+   * (accounts, trials, seats), where a small range would otherwise land `niceStep` on a
+   * fraction. Leaves a wider-ranged series, or one that is not a count, unaffected.
+   */
+  integer?: boolean | undefined;
+  /**
+   * Curves the join between two points instead of a straight segment — a soft trend line rather
+   * than a jagged one, for a series of small counts where sharp spikes read as noise. Every real
+   * point still sits exactly where its value says; nothing is invented between them, only the
+   * line's approach to each point is rounded off. Default off: a straight line never misreads.
+   */
+  smooth?: boolean | undefined;
   className?: string | undefined;
 }
 
@@ -49,8 +62,8 @@ interface LineChartProps {
  * each in the tooltip a pointer gets on hover.
  *
  * The value axis starts at zero and ends on a round number; category labels thin out rather than
- * overlap on a narrow card. Values are plotted as given — no smoothing, which invents values
- * between the real ones.
+ * overlap on a narrow card. Values are plotted exactly as given — `smooth` softens how the line
+ * approaches each one, never where the point itself sits.
  */
 export function LineChart({
   label,
@@ -59,14 +72,18 @@ export function LineChart({
   area,
   formatValue = defaultFormat,
   height = "md",
+  integer = false,
+  smooth = false,
   className,
 }: LineChartProps) {
   const gradient = useId();
   const count = categories.length;
-  const scale = scaleFor(series.flatMap((one) => one.values));
+  const scale = scaleFor(series.flatMap((one) => one.values), 3, integer);
   const filled = area ?? series.length === 1;
   const { active, handlers } = useChartCursor(count, "points");
   const tones = series.map((one, index) => seriesTone(index, one.tone));
+  const drawLine = smooth ? smoothLinePath : linePath;
+  const drawArea = smooth ? smoothAreaPath : areaPath;
 
   return (
     <figure className={cn("m-0 flex flex-col gap-3", className)}>
@@ -102,13 +119,13 @@ export function LineChart({
             </defs>
             {filled
               ? series.map((one, index) => (
-                  <path key={one.key} d={areaPath(one.values, scale)} fill={`url(#${gradient}-${index})`} />
+                  <path key={one.key} d={drawArea(one.values, scale)} fill={`url(#${gradient}-${index})`} />
                 ))
               : null}
             {series.map((one, index) => (
               <path
                 key={one.key}
-                d={linePath(one.values, scale)}
+                d={drawLine(one.values, scale)}
                 fill="none"
                 strokeWidth={2.25}
                 strokeLinecap="round"

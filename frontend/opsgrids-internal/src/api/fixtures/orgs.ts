@@ -275,6 +275,19 @@ function contributesMrr(state: string): boolean {
   return state === "active" || state === "past_due";
 }
 
+/** Mirrors `services/console/app/selectors.py::lifecycle_of` exactly, so a fixtures-mode screen
+ *  never disagrees with what the live projection would compute for the same subscription states:
+ *  `suspended` (locked) beats `active` beats `trial` beats `churned` (history, nothing live) beats
+ *  `none` (no subscription has ever touched this organization). */
+function lifecycleFor(seed: OrgSeed): OrgStateOut["lifecycle"] {
+  if (seed.locked) return "suspended";
+  const statuses = new Set(seed.subscriptions.map((s) => s.state));
+  if (statuses.has("active")) return "active";
+  if (statuses.has("trial")) return "trial";
+  if (statuses.size > 0) return "churned";
+  return "none";
+}
+
 function subMonthlyMinor(seed: SubSeed): number {
   const version = planVersionById(seed.plan_version_id);
   return version ? versionMonthlyMinor(version) : 0;
@@ -354,6 +367,9 @@ export function orgStateFor(organizationId: string): OrgStateOut | undefined {
     organization_id: seed.id,
     name: seed.name,
     slug: seed.slug,
+    country: seed.country,
+    created_at: seed.created_at,
+    lifecycle: lifecycleFor(seed),
     mrr_minor: mrrMinor,
     currency: "INR",
     active_products: activeProducts,
@@ -361,6 +377,9 @@ export function orgStateFor(organizationId: string): OrgStateOut | undefined {
     trial_ends_at: seed.trial_ends_at,
     locked: seed.locked,
     updated_at: seed.updated_at,
+    // Standing in for account-service's live member-count merge: the seat totals this fixture
+    // already carries per subscription, summed — never a fresh made-up figure.
+    user_count: subs.reduce((sum, s) => sum + s.seats, 0),
   };
 }
 

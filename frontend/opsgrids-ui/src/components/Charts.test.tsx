@@ -125,6 +125,41 @@ describe("DonutChart", () => {
       ["Suspended", "4", "3%"],
     ]);
   });
+
+  it("drops the value from the visible legend at showValue=false, keeping it in the title and the data table", () => {
+    render(
+      <DonutChart
+        label="Revenue by plan"
+        showValue={false}
+        slices={[{ key: "operations", label: "Operations", value: 37099 }]}
+      />,
+    );
+    const item = screen.getByTitle("37,099");
+    expect(within(item).queryByText("37,099")).toBeNull();
+    expect(within(item).getByText("Operations")).toBeTruthy();
+    expect(within(item).getByText("100%")).toBeTruthy();
+    const table = screen.getByRole("table", { name: "Revenue by plan. Total: 37,099" });
+    expect(rowsOf(table).slice(1)).toEqual([["Operations", "37,099", "100%"]]);
+  });
+
+  it("never sits the legend beside the ring at layout=stacked", () => {
+    const { container } = render(
+      <DonutChart label="Revenue by plan" layout="stacked" slices={[{ key: "operations", label: "Operations", value: 1 }]} />,
+    );
+    expect(container.querySelector("figure")?.className).not.toContain("sm:flex-row");
+  });
+
+  it("draws a smaller ring at size=sm, for a card sharing its row with two others", () => {
+    const { container, rerender } = render(
+      <DonutChart label="Accounts by status" slices={[{ key: "active", label: "Active", value: 1 }]} />,
+    );
+    const ringAt = () => container.querySelector("[aria-hidden]");
+    expect(ringAt()?.className).toContain("size-36");
+    rerender(
+      <DonutChart label="Accounts by status" slices={[{ key: "active", label: "Active", value: 1 }]} size="sm" />,
+    );
+    expect(ringAt()?.className).toContain("size-24");
+  });
 });
 
 describe("ChartCard", () => {

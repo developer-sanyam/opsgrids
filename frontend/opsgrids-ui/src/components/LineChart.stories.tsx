@@ -82,3 +82,19 @@ export const AllZero: Story = {
     series: [{ key: "refunds", label: "Refunds", values: WEEKS.map(() => 0) }],
   },
 };
+
+/**
+ * Small monthly counts, `integer` and `smooth` together (a Super Admin dashboard's Account
+ * Growth): whole-number gridlines only — never "0.5 accounts" — and the join between two points
+ * curved rather than a sharp spike, since a jagged line reads as noise at this scale. Every point
+ * still sits exactly on its real value.
+ */
+export const IntegerCounts: Story = {
+  args: {
+    label: "New accounts per month",
+    categories: ["Apr", "May", "Jun", "Jul", "Aug", "Sep"],
+    integer: true,
+    smooth: true,
+    series: [{ key: "new", label: "New accounts", values: [0, 0, 1, 0, 1, 1] }],
+  },
+};
