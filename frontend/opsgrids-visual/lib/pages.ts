@@ -136,7 +136,9 @@ export const PAGES: PageSpec[] = [
     routes: [...INTERNAL.routes],
     surface: "page/internal/overview",
     path: "/",
-    ready: heading("Super Admin Dashboard"),
+    // "Super Admin" alone below 640px (mock-1's phone header), the full "Super Admin Dashboard"
+    // from `sm` up — a substring every width's heading carries.
+    ready: heading("Super Admin"),
     capture: "fullpage",
   },
   {
