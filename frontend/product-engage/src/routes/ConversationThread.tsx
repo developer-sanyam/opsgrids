@@ -17,7 +17,7 @@ import {
   replyToConversation,
 } from "@/api/client";
 import type { ConversationMessageOut, ConversationOut } from "@/api/types";
-import { CRM_CONTACTS_URL } from "@/lib/dashboard";
+import { crmContactsUrl } from "@/lib/dashboard";
 import { failureMessage, replyRemedy } from "@/lib/errors";
 import { formatInstant } from "@/lib/format";
 import { usePolling } from "@/lib/usePolling";
@@ -309,7 +309,7 @@ export function ConversationThread({
 
       {conversation.contact_id !== null ? (
         <a
-          href={CRM_CONTACTS_URL}
+          href={crmContactsUrl()}
           target="_blank"
           rel="noreferrer"
           className="inline-flex w-fit items-center gap-1.5 text-xs font-medium text-accent underline decoration-1 underline-offset-2 hover:text-accent-strong"

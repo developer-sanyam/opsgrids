@@ -55,4 +55,35 @@ describe("CommandMenu", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(ITEMS[0]?.onSelect).not.toHaveBeenCalled();
   });
+
+  it("offers no fallback until something is typed", () => {
+    render(
+      <CommandMenu
+        open
+        onClose={vi.fn()}
+        items={ITEMS}
+        placeholder="Search"
+        fallback={{ label: "Search deals for", onSubmit: vi.fn() }}
+      />,
+    );
+    expect(screen.queryByText(/Search deals for/)).toBeNull();
+  });
+
+  it("runs the fallback with the typed query when nothing matches", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(
+      <CommandMenu
+        open
+        onClose={vi.fn()}
+        items={ITEMS}
+        placeholder="Search"
+        fallback={{ label: "Search deals for", onSubmit }}
+      />,
+    );
+    await user.type(screen.getByRole("combobox"), "acme");
+    await screen.findByText("Search deals for “acme”");
+    await user.keyboard("{Enter}");
+    expect(onSubmit).toHaveBeenCalledWith("acme");
+  });
 });

@@ -28,7 +28,7 @@ export {
 } from "@opsgrids/ui";
 export type { Column, KpiTone, RowAction } from "@opsgrids/ui";
 
-export { Sidebar } from "./Sidebar";
+export { useNavGroups } from "./useNavGroups";
 export { CompanyStatusPill, ContactStatusPill, LeadStatusPill, StagePill } from "./StatusPill";
 export { OwnerBadge } from "./OwnerBadge";
 export { ActivityTimeline } from "./ActivityTimeline";

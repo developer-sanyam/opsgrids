@@ -218,8 +218,8 @@ export function Sidebar({
   onNavigate,
 }: SidebarProps) {
   return (
-    <aside className="flex h-full w-full flex-col rounded-card bg-surface shadow-card">
-      <div className={cn("flex items-center gap-2.5 border-b border-line p-3", collapsed && "justify-center")}>
+    <aside className="flex h-full w-full flex-col bg-surface">
+      <div className={cn("flex items-center gap-2.5 p-4", collapsed && "justify-center")}>
         {logo}
         <span className={cn("truncate text-body font-bold text-ink", collapsed && "sr-only")}>
           {productName}

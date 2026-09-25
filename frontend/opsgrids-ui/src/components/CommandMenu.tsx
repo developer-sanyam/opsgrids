@@ -22,6 +22,13 @@ interface CommandMenuProps {
   onClose: () => void;
   items: CommandMenuItem[];
   placeholder: string;
+  /**
+   * The last resort when nothing above is what was meant: "Search deals for “acme”" against the
+   * app's own `?q=` list route (the pattern every sidebar search used before this palette existed —
+   * the report's API gaps: there is no global search endpoint yet). Shown once something has been
+   * typed, after every matched item, never in place of them.
+   */
+  fallback?: { label: string; onSubmit: (query: string) => void } | undefined;
 }
 
 /** Case-insensitive substring match on the label and its group, so typing "crm" finds a "CRM"
@@ -42,7 +49,7 @@ function matches(item: CommandMenuItem, query: string): boolean {
  * server-backed search yet (the report's API gaps): v1 is navigation over what the shell already
  * has, not a query against the backend.
  */
-export function CommandMenu({ open, onClose, items, placeholder }: CommandMenuProps) {
+export function CommandMenu({ open, onClose, items, placeholder, fallback }: CommandMenuProps) {
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -50,7 +57,21 @@ export function CommandMenu({ open, onClose, items, placeholder }: CommandMenuPr
   const base = useId();
   const listboxId = `${base}-listbox`;
 
-  const filtered = useMemo(() => items.filter((item) => matches(item, query)), [items, query]);
+  const matched = useMemo(() => items.filter((item) => matches(item, query)), [items, query]);
+  const trimmed = query.trim();
+  const displayed = useMemo<CommandMenuItem[]>(() => {
+    if (!fallback || trimmed === "") return matched;
+    return [
+      ...matched,
+      {
+        key: "fallback-search",
+        label: `${fallback.label} “${trimmed}”`,
+        group: "Search",
+        icon: SearchIcon,
+        onSelect: () => fallback.onSubmit(trimmed),
+      },
+    ];
+  }, [matched, fallback, trimmed]);
 
   useEffect(() => {
     setActiveIndex(0);
@@ -70,15 +91,15 @@ export function CommandMenu({ open, onClose, items, placeholder }: CommandMenuPr
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    if (filtered.length === 0) return;
+    if (displayed.length === 0) return;
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setActiveIndex((index) => (index + 1) % filtered.length);
+      setActiveIndex((index) => (index + 1) % displayed.length);
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      setActiveIndex((index) => (index - 1 + filtered.length) % filtered.length);
+      setActiveIndex((index) => (index - 1 + displayed.length) % displayed.length);
     } else if (event.key === "Enter") {
-      const item = filtered[activeIndex];
+      const item = displayed[activeIndex];
       if (item) {
         event.preventDefault();
         choose(item);
@@ -86,9 +107,9 @@ export function CommandMenu({ open, onClose, items, placeholder }: CommandMenuPr
     }
   }
 
-  // Grouped in stable order of first appearance, so "Go to" always leads.
+  // Grouped in stable order of first appearance, so "Go to" always leads and "Search" trails.
   const groups: string[] = [];
-  for (const item of filtered) if (!groups.includes(item.group)) groups.push(item.group);
+  for (const item of displayed) if (!groups.includes(item.group)) groups.push(item.group);
   const optionId = (key: string) => `${base}-option-${key}`;
 
   return createPortal(
@@ -114,7 +135,7 @@ export function CommandMenu({ open, onClose, items, placeholder }: CommandMenuPr
             aria-expanded={true}
             aria-controls={listboxId}
             aria-autocomplete="list"
-            aria-activedescendant={filtered[activeIndex] ? optionId(filtered[activeIndex].key) : undefined}
+            aria-activedescendant={displayed[activeIndex] ? optionId(displayed[activeIndex].key) : undefined}
             autoComplete="off"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -128,7 +149,7 @@ export function CommandMenu({ open, onClose, items, placeholder }: CommandMenuPr
         </div>
 
         <div className="max-h-96 overflow-y-auto p-2">
-          {filtered.length === 0 ? (
+          {displayed.length === 0 ? (
             <p className="px-3 py-6 text-center text-sm text-muted">
               No matches for &ldquo;{query.trim()}&rdquo;.
             </p>
@@ -140,7 +161,7 @@ export function CommandMenu({ open, onClose, items, placeholder }: CommandMenuPr
                     {group}
                   </p>
                   <ul>
-                    {filtered
+                    {displayed
                       .map((item, index) => ({ item, index }))
                       .filter(({ item }) => item.group === group)
                       .map(({ item, index }) => {

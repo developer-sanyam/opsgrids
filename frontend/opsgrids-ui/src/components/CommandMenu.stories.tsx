@@ -48,3 +48,12 @@ export const KeyboardNavigation: Story = {
     await userEvent.keyboard("{ArrowDown}");
   },
 };
+
+/** Nothing above matches "acme" — the last resort: search this app's own list for it. */
+export const WithFallback: Story = {
+  args: { fallback: { label: "Search deals for", onSubmit: fn() } },
+  play: async ({ canvas, userEvent }) => {
+    await userEvent.type(canvas.getByRole("combobox"), "acme");
+    await canvas.findByText("Search deals for “acme”");
+  },
+};

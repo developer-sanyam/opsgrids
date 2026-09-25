@@ -354,7 +354,6 @@ body {
   --shell-mobile-header-h: 56px;
   --shell-bottom-nav-h: 64px;
   --shell-content-max: 1440px;
-  --shell-frame-max: 1600px;
   /* How far a `position: fixed` element on a phone needs to clear the bottom nav. Zero above
      the breakpoint the nav disappears at, so `Toaster`'s desktop anchor is untouched. */
   --shell-bottom-inset: 0px;
@@ -386,14 +385,10 @@ body {
   max-width: var(--shell-content-max);
 }
 
-.shell-frame-max {
-  max-width: var(--shell-frame-max);
-}
-
-/* The sidebar and rail columns: pinned under the frame's own padding (`top-4` = 1rem) for exactly
-   the viewport height that leaves, so each scrolls its own nav independently of the page. */
+/* The sidebar and rail columns: pinned flush to the viewport's full height, so each scrolls its
+   own nav independently of the page. */
 .shell-side-h {
-  height: calc(100dvh - 2rem);
+  height: 100dvh;
 }
 
 /* The mobile/tablet nav panel's width — the same "as wide as a phone comfortably allows, capped

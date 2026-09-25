@@ -29,7 +29,7 @@ export {
 } from "@opsgrids/ui";
 export type { Column, FieldIds, KpiTone, RowAction, SelectOption } from "@opsgrids/ui";
 
-export { Sidebar } from "./Sidebar";
+export { useNavGroups } from "./useNavGroups";
 export { CampaignStatusPill } from "./StatusPill";
 export { ChannelBadge } from "./ChannelBadge";
 export { CHANNEL_COLOR, CHANNEL_ICON, CHANNEL_TONE } from "./channelMeta";

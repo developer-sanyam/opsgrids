@@ -52,6 +52,12 @@ export interface QuickAction {
 export interface CommandMenuConfig {
   /** Both the header trigger's visible text and the palette's input placeholder. */
   placeholder: string;
+  /**
+   * The palette's last resort — "Search deals for “acme”" navigating to this app's own `?q=` list
+   * route, the pattern every sidebar search used before this palette existed. Omit it and the
+   * palette is navigation-only, once nothing typed matches a nav item, module or quick action.
+   */
+  fallback?: { label: string; to: string } | undefined;
 }
 
 export interface AppShellProps {
@@ -87,16 +93,35 @@ export interface AppShellProps {
   badgeTone?: "accent" | "danger" | undefined;
 }
 
-/** The account menu the header (desktop, tablet and mobile alike) shows: identity plus sign out,
- *  built from `Menu` rather than a bespoke popover. */
-function AccountMenu({ user, onSignOut }: { user: AppShellUser; onSignOut: () => void }) {
+/**
+ * The account menu: identity plus sign out, built from `Menu` rather than a bespoke popover.
+ * `bare` (the mobile header) shows the avatar alone; the desktop/tablet header additionally names
+ * the person and trails a chevron — `Menu`'s own label-trigger shape, just fed an avatar as its
+ * icon instead of a word.
+ */
+function AccountMenu({
+  user,
+  onSignOut,
+  bare = false,
+}: {
+  user: AppShellUser;
+  onSignOut: () => void;
+  bare?: boolean | undefined;
+}) {
+  const items = [{ label: "Sign out", icon: <LogOutIcon className="size-5" aria-hidden />, onSelect: onSignOut }];
+  if (bare) {
+    return (
+      <Menu label={`Account menu — ${user.name}`} trigger="icon" icon={<Avatar name={user.name} size="sm" />} align="end" items={items} />
+    );
+  }
   return (
     <Menu
-      label={`Account menu — ${user.name}`}
-      trigger="icon"
+      label={user.name}
+      trigger="label"
+      variant="ghost"
       icon={<Avatar name={user.name} size="sm" />}
       align="end"
-      items={[{ label: "Sign out", icon: <LogOutIcon className="size-5" aria-hidden />, onSelect: onSignOut }]}
+      items={items}
     />
   );
 }
@@ -106,19 +131,20 @@ function SearchTrigger({ placeholder, onOpen }: { placeholder: string; onOpen: (
     <button
       type="button"
       onClick={onOpen}
-      className="flex h-10 w-full max-w-sm items-center gap-2 rounded-full border border-field-edge bg-surface px-3 text-sm text-muted transition-colors hover:bg-ground"
+      className="flex h-11 w-full max-w-md items-center gap-2 rounded-full bg-sunken px-4 text-sm text-muted transition-colors hover:bg-ground"
     >
       <SearchIcon className="size-4.5 shrink-0 text-faint" aria-hidden />
       <span className="truncate">{placeholder}</span>
-      <kbd className="ml-auto hidden shrink-0 items-center gap-0.5 rounded-chip border border-line bg-ground px-1.5 py-0.5 text-caption font-semibold text-faint sm:inline-flex">
+      <kbd className="ml-auto hidden shrink-0 items-center gap-0.5 rounded-chip border border-line bg-surface px-1.5 py-0.5 text-caption font-semibold text-faint sm:inline-flex">
         <CommandIcon className="size-3" />K
       </kbd>
     </button>
   );
 }
 
-/** The tablet-and-desktop header: search trigger, the notifications slot, a help link and the
- *  account menu. Hidden below 768px, where `MobileHeader` takes over. */
+/** The tablet-and-desktop header: a wide search trigger, the notifications slot, a help link and
+ *  the account menu — flush on the page's own ground, no card of its own. Hidden below 768px,
+ *  where `MobileHeader` takes over. */
 function TopBar({
   search,
   onOpenSearch,
@@ -133,7 +159,7 @@ function TopBar({
   profile: ReactNode;
 }) {
   return (
-    <header className="shell-header-h mb-3 hidden items-center gap-3 rounded-card border border-line bg-surface px-4 md:flex">
+    <header className="shell-header-h hidden shrink-0 items-center gap-3 px-4 sm:px-6 md:flex">
       <div className="min-w-0 flex-1">
         {search ? <SearchTrigger placeholder={search.placeholder} onOpen={onOpenSearch} /> : null}
       </div>
@@ -260,6 +286,16 @@ export function AppShell({
     return items;
   }, [nav, modules, quickActions, navigate]);
 
+  // A local binding, not a `search.fallback` access, so the narrowing below survives into the
+  // closure `onSubmit` captures (property-access narrowing does not; a `const` binding's does).
+  const fallbackConfig = search?.fallback;
+  const commandFallback = fallbackConfig
+    ? {
+        label: fallbackConfig.label,
+        onSubmit: (query: string) => navigate(`${fallbackConfig.to}?q=${encodeURIComponent(query)}`),
+      }
+    : undefined;
+
   const sidebarShared = {
     groups: nav,
     pinned,
@@ -309,8 +345,6 @@ export function AppShell({
     expanded: navDrawerOpen,
   });
 
-  const profileMenu = <AccountMenu user={user} onSignOut={onSignOut} />;
-
   return (
     <div className="min-h-dvh bg-ground">
       <a
@@ -327,17 +361,19 @@ export function AppShell({
         Skip to main content
       </a>
 
-      <div className="mx-auto flex shell-frame-max gap-4 p-3 sm:p-4">
-        {/* Desktop sidebar, 1280px and up */}
-        <div className="hidden shell-sidebar-w shrink-0 xl:block">
-          <div className="shell-side-h sticky top-4">
+      <div className="flex min-h-dvh w-full">
+        {/* Desktop sidebar, 1280px and up — flush against the viewport edge, a hairline the only
+            separation from the content column (the audit's "flush white panel, hairline right
+            edge", not a floating card). */}
+        <div className="hidden shell-sidebar-w shrink-0 border-r border-line bg-surface xl:block">
+          <div className="shell-side-h sticky top-0">
             <Sidebar {...sidebarShared} />
           </div>
         </div>
 
         {/* Tablet icon rail, 768–1279px */}
-        <div className="hidden shell-rail-w shrink-0 md:block xl:hidden">
-          <div className="shell-side-h sticky top-4 flex flex-col gap-2">
+        <div className="hidden shell-rail-w shrink-0 border-r border-line bg-surface md:block xl:hidden">
+          <div className="shell-side-h sticky top-0 flex flex-col">
             <div className="min-h-0 flex-1">
               <Sidebar {...sidebarShared} collapsed />
             </div>
@@ -346,7 +382,7 @@ export function AppShell({
               onClick={() => setNavDrawerOpen(true)}
               aria-label="Expand navigation"
               aria-expanded={navDrawerOpen}
-              className="grid h-10 shrink-0 place-items-center rounded-card border border-line bg-surface text-ink-soft shadow-card transition-colors hover:bg-ground"
+              className="grid h-12 shrink-0 place-items-center border-t border-line text-ink-soft transition-colors hover:bg-ground"
             >
               <ChevronRightIcon className="size-4" />
             </button>
@@ -361,14 +397,14 @@ export function AppShell({
             onOpenNav={() => setNavDrawerOpen(true)}
             {...(search ? { search: { placeholder: search.placeholder, onOpen: () => setCommandOpen(true) } } : {})}
             notifications={notifications}
-            profile={profileMenu}
+            profile={<AccountMenu user={user} onSignOut={onSignOut} bare />}
           />
           <TopBar
             search={search}
             onOpenSearch={() => setCommandOpen(true)}
             notifications={notifications}
             helpHref={helpHref}
-            profile={profileMenu}
+            profile={<AccountMenu user={user} onSignOut={onSignOut} />}
           />
 
           <main
@@ -378,10 +414,12 @@ export function AppShell({
             className={
               layout === "full-bleed"
                 ? "min-w-0 flex-1 shell-content-bottom-pad focus:outline-none"
-                : "mx-auto w-full shell-content-max shell-content-bottom-pad pb-16 focus:outline-none"
+                : "mx-auto w-full shell-content-max shell-content-bottom-pad px-4 pb-16 pt-4 sm:px-6 sm:pt-6 focus:outline-none"
             }
           >
-            {banner}
+            {banner ? (
+              <div className="empty:hidden flex flex-col gap-3 mb-4 empty:mb-0">{banner}</div>
+            ) : null}
             <Outlet />
           </main>
         </div>
@@ -405,21 +443,17 @@ export function AppShell({
             onClick={() => setNavDrawerOpen(false)}
             aria-hidden
           />
-          <div className="shell-drawer-w absolute left-0 top-0 flex h-full flex-col p-3">
-            <div className="mb-2 flex justify-end">
-              <button
-                ref={drawerCloseRef}
-                type="button"
-                onClick={() => setNavDrawerOpen(false)}
-                aria-label="Close navigation"
-                className="grid size-9 place-items-center rounded-full bg-surface text-ink shadow-card"
-              >
-                <CloseIcon className="size-5" />
-              </button>
-            </div>
-            <div className="min-h-0 flex-1">
-              <Sidebar {...sidebarShared} onNavigate={() => setNavDrawerOpen(false)} />
-            </div>
+          <div className="shell-drawer-w absolute left-0 top-0 h-full shadow-overlay">
+            <button
+              ref={drawerCloseRef}
+              type="button"
+              onClick={() => setNavDrawerOpen(false)}
+              aria-label="Close navigation"
+              className="absolute right-3 top-3 z-10 grid size-9 place-items-center rounded-full bg-surface text-ink shadow-card"
+            >
+              <CloseIcon className="size-5" />
+            </button>
+            <Sidebar {...sidebarShared} onNavigate={() => setNavDrawerOpen(false)} />
           </div>
         </div>
       ) : null}
@@ -483,6 +517,7 @@ export function AppShell({
             onClose={() => setCommandOpen(false)}
             items={commandItems}
             placeholder={search.placeholder}
+            {...(commandFallback ? { fallback: commandFallback } : {})}
           />
         </Suspense>
       ) : null}

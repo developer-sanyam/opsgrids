@@ -7,7 +7,7 @@ export { OrgIdentity } from "./OrgIdentity";
 export { SearchInput } from "./SearchInput";
 export { PageHeader } from "./PageHeader";
 export { ThemeToggle } from "./ThemeToggle";
-export { Sidebar } from "./Sidebar";
+export { useNavGroups } from "./useNavGroups";
 export { Modal } from "./Modal";
 export { Money } from "./Money";
 export { EnvBadge } from "./EnvBadge";

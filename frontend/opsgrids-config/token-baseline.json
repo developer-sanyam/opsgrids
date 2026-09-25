@@ -1,7 +1,4 @@
 {
-  "opsgrids-dashboard/src/App.tsx": {
-    "arbitrary": 2
-  },
   "opsgrids-dashboard/src/routes/AcceptInvitation.tsx": {
     "spacing": 1
   },
@@ -47,11 +44,6 @@
   "opsgrids-dashboard/src/ui/forms.tsx": {
     "arbitrary": 2,
     "spacing": 5
-  },
-  "opsgrids-internal/src/App.tsx": {
-    "arbitrary": 8,
-    "spacing": 2,
-    "radius": 1
   },
   "opsgrids-internal/src/routes/AccountActions.tsx": {
     "arbitrary": 1,
@@ -153,12 +145,6 @@
   },
   "opsgrids-internal/src/ui/SearchInput.tsx": {
     "arbitrary": 1
-  },
-  "opsgrids-internal/src/ui/Sidebar.tsx": {
-    "colour": 1,
-    "arbitrary": 6,
-    "spacing": 13,
-    "radius": 2
   },
   "opsgrids-internal/src/ui/States.tsx": {
     "colour": 1,
@@ -645,9 +631,6 @@
   "product-operations/src/ui/TopSuppliers.tsx": {
     "spacing": 1
   },
-  "product-projects/src/App.tsx": {
-    "arbitrary": 1
-  },
   "product-projects/src/api/fixtures.ts": {
     "spacing": 10
   },
@@ -714,9 +697,6 @@
   "product-projects/src/ui/StatCard.tsx": {
     "arbitrary": 1,
     "spacing": 1
-  },
-  "product-pulseboard/src/App.tsx": {
-    "arbitrary": 1
   },
   "product-pulseboard/src/routes/Board.tsx": {
     "arbitrary": 1,
@@ -856,9 +836,6 @@
   "product-storefront/src/routes/editor/index.tsx": {
     "arbitrary": 1,
     "spacing": 1
-  },
-  "product-support/src/App.tsx": {
-    "arbitrary": 1
   },
   "product-support/src/routes/Agents.tsx": {
     "arbitrary": 1,

@@ -22,7 +22,7 @@ export {
 } from "@opsgrids/ui";
 export type { Column, KpiTone } from "@opsgrids/ui";
 
-export { Sidebar } from "./Sidebar";
+export { useNavGroups } from "./useNavGroups";
 export { HeadcountByDepartment } from "./HeadcountByDepartment";
 export { HeadcountTrend } from "./HeadcountTrend";
 export { WorkforceMix } from "./WorkforceMix";
