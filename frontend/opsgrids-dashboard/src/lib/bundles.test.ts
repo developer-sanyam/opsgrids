@@ -8,7 +8,6 @@ const version = (features: PlanVersion["features"]): PlanVersion => ({
   version_no: 1,
   state: "published",
   billing_interval: "month",
-  currency: "INR",
   restricted_to_org_id: null,
   published_at: null,
   prices: [],

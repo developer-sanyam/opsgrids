@@ -25,12 +25,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
+from app.api.admin import get_product_registry
 from app.main import app
 from app.models import OutboxEvent, PlanVersion
 from app.schemas import FeatureIn, PlanCreateIn, PriceIn, VersionCreateIn
 from platform_core.auth import Principal, get_principal
 from platform_core.errors import BusinessRuleProblem
-from tests.helpers import customer_principal, operator_principal
+from tests.helpers import FakeRegistry, customer_principal, operator_principal
 
 pytestmark = pytest.mark.integration
 
@@ -169,6 +170,60 @@ class TestBespokeVisibility:
         with as_principal(customer_principal(org_a, perms=[])):
             resp = await client.get("/api/v1/plans", params={"product_key": "widgets"})
         assert resp.status_code == 403
+
+    async def test_the_customer_http_read_carries_no_list_price(
+        self, client, platform_session: AsyncSession, org_a: uuid.UUID
+    ) -> None:
+        """Pricing is negotiated per organization by staff, so a tenant caller must never
+        receive one off this API — not the amount, not the currency it would be denominated in.
+        """
+        async with platform_session.begin():
+            plan = await _make_plan(platform_session, product_key="thingamajigs")
+            await _make_published_version(platform_session, plan, amount_minor=999_00)
+
+        with as_principal(customer_principal(org_a)):
+            resp = await client.get("/api/v1/plans", params={"product_key": "thingamajigs"})
+
+        assert resp.status_code == 200
+        versions = [v for p in resp.json() for v in p["versions"]]
+        assert len(versions) == 1
+        version = versions[0]
+        assert "currency" not in version
+        assert len(version["prices"]) == 1
+        price = version["prices"][0]
+        assert price["kind"] == "flat", "the offer's shape is still visible, just not its amount"
+        assert "amount_minor" not in price
+        assert "currency" not in price
+        assert "unit_price_micros" not in price
+
+    async def test_the_operator_authoring_read_still_carries_the_price(
+        self, client, platform_session: AsyncSession
+    ) -> None:
+        """The same amount, read back through the route staff author it with — the operator
+        audience is who sets a price, so this route must keep it."""
+        async with platform_session.begin():
+            plan = await _make_plan(platform_session, product_key="hrms")
+
+        # The authoring route reads product-service's registry off app state, which the test
+        # app never sets; give it the same dict-backed stand-in the bundle tests use.
+        app.dependency_overrides[get_product_registry] = lambda: FakeRegistry.default()
+        try:
+            with as_principal(operator_principal(staff=True)):
+                resp = await client.post(
+                    f"/api/v1/admin/catalog/plans/{plan.id}/versions",
+                    json={
+                        "currency": "USD",
+                        "prices": [{"kind": "flat", "amount_minor": 4200, "currency": "USD"}],
+                        "features": [],
+                    },
+                )
+        finally:
+            app.dependency_overrides.pop(get_product_registry, None)
+
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["prices"][0]["amount_minor"] == 4200
+        assert body["prices"][0]["currency"] == "USD"
 
 
 # --------------------------------------------------------------------- immutability

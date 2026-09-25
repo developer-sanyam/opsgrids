@@ -202,7 +202,7 @@ def _api_steps(
         log,
         "2b a published flat price exists (the card's 'Start 14-day trial' condition)",
         offer is not None,
-        f"{r.status_code} {offer and (offer[1].get('amount_minor'), offer[1].get('currency'))}",
+        f"{r.status_code} {offer and offer[1].get('kind')}",
     )
     assert offer is not None  # _require already aborted otherwise
     version, _price = offer

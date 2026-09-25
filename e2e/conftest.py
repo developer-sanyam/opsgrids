@@ -767,6 +767,32 @@ def operator_call(platform: Platform) -> Any:
 
 
 @pytest.fixture(scope="session")
+def internal_get(platform: Platform) -> Any:
+    """GET a service's `/internal/v1` API with a service token, like `operator_call` but a read.
+
+    The customer catalogue read no longer carries prices (they are set per client by staff), so
+    a journey that needs the amount a plan version costs reads it here, the way subscription
+    and console do.
+    """
+    from platform_core.config import ServiceSettings
+    from platform_core.internal_auth import mint_service_token
+
+    caller = ServiceSettings(
+        service_name="e2e-operator", db_schema="public", internal_service_token=INTERNAL_TOKEN
+    )
+
+    def _get(service: str, path: str) -> httpx.Response:
+        token = mint_service_token(caller, audience=service)
+        return httpx.get(
+            f"{platform.url(service)}{path}",
+            headers={"X-Internal-Token": token, "X-Calling-Service": "e2e-operator"},
+            timeout=15.0,
+        )
+
+    return _get
+
+
+@pytest.fixture(scope="session")
 def bundle_tenant(platform: Platform, tenants: dict[str, Any]) -> dict[str, Any]:
     """A fresh organization for the bundle journey, with a signed-in owner and nothing bought —
     over HTTP (C8), exactly like `tenants` and `approval_tenant`.

@@ -34,16 +34,16 @@ const PRODUCT_HOSTS: Record<string, string> = {
 const PRICING_CONTACT_EMAIL = "info@opsgrids.com";
 
 /**
- * The plan version a trial pins to: the first published version with a flat price. This no
- * longer means a displayed price — pricing is agreed per client — but the same published,
- * flat-priced version is still what `startTrial` needs and still what decides whether a
- * product can be started at all.
+ * The plan version a trial pins to: the first published version with a flat price. The API
+ * never tells this app what that price is — pricing is agreed per client — but the same
+ * published, flat-priced version is still what `startTrial` needs and still what decides
+ * whether a product can be started at all.
  */
 function trialOffer(plans: Plan[]): PlanVersion | null {
   for (const plan of plans) {
     for (const version of plan.versions) {
       if (version.state !== "published") continue;
-      const hasFlatPrice = version.prices.some((p) => p.kind === "flat" && p.amount_minor !== null);
+      const hasFlatPrice = version.prices.some((p) => p.kind === "flat");
       if (hasFlatPrice) return version;
     }
   }
