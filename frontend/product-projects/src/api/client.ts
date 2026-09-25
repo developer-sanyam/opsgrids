@@ -43,13 +43,6 @@ export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXT
 /** True when the app is talking to the real gateway. */
 export const LIVE = !USE_FIXTURES;
 
-/**
- * The release-burndown series has no reporting service yet, so it is representative rather than
- * live. When the app runs live that chart carries a "Sample data" chip; in fixture mode the whole
- * app is illustrative, so nothing is singled out.
- */
-export const TRENDS_ARE_SAMPLE = LIVE;
-
 /** The default page size for a screen with real server paging (Portfolio, Team). */
 export const DEFAULT_PAGE_SIZE = 25;
 
