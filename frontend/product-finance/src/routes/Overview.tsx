@@ -1,10 +1,10 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { getOverview } from "@/api/client";
+import { getOverview, listInvoices, listPayments } from "@/api/client";
 import { getCustomerById } from "@/api/customers";
-import type { Customer, Invoice, OverviewKpi } from "@/api/types";
+import type { Customer, Invoice, InvoiceStatus, MonthlyRevenuePoint, Payment } from "@/api/types";
 import { Can, problemMessage, useAsync, useAuth } from "@opsgrids/client";
 import { customerName } from "@/data/customers";
 import { daysOverdue, outstandingMinor } from "@/data/derive";
@@ -15,15 +15,21 @@ import {
   Avatar,
   Button,
   Card,
-  CashflowChart,
+  ChartCard,
   ComplianceCard,
+  DonutChart,
+  EmptyState,
   ErrorState,
   KpiCard,
-  SampleChip,
+  LineChart,
   SectionHeader,
+  Select,
   Skeleton,
+  statusLabel,
+  TABLET_QUERY,
+  useMediaQuery,
 } from "@/ui";
-import type { KpiTone } from "@/ui";
+import type { ChartTone, DonutSlice, KpiTone } from "@/ui";
 import {
   AlertTriangleIcon,
   CalendarIcon,
@@ -33,12 +39,83 @@ import {
   WalletIcon,
 } from "@opsgrids/ui";
 
-/** Per-KPI presentation: icon, pastel tone, and whether a rise reads as bad news. */
-const KPI_STYLE: Record<string, { icon: ReactNode; tone: KpiTone; invert: boolean }> = {
-  revenue: { icon: <TrendingUpIcon className="size-5" />, tone: "accent", invert: false },
-  receivables: { icon: <ReceiptIcon className="size-5" />, tone: "info", invert: false },
-  overdue: { icon: <AlertTriangleIcon className="size-5" />, tone: "danger", invert: true },
-  cash: { icon: <WalletIcon className="size-5" />, tone: "cyan", invert: false },
+/** Every invoice status, in the order the "Invoices by status" donut and its counts render. */
+const INVOICE_STATUSES: InvoiceStatus[] = ["draft", "sent", "paid", "overdue", "void"];
+
+const STATUS_TONE: Record<InvoiceStatus, ChartTone> = {
+  paid: "positive",
+  sent: "info",
+  draft: "warning",
+  overdue: "danger",
+  void: "cyan",
+};
+
+type SeriesKey = "revenue" | "received" | "outstanding";
+
+const SERIES_OPTIONS: { value: SeriesKey; label: string }[] = [
+  { value: "revenue", label: "Revenue" },
+  { value: "received", label: "Received" },
+  { value: "outstanding", label: "Outstanding" },
+];
+
+function seriesValue(point: MonthlyRevenuePoint, key: SeriesKey): number {
+  if (key === "revenue") return point.revenue_minor;
+  if (key === "received") return point.received_minor;
+  return point.outstanding_minor;
+}
+
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "Oct '25", "Nov", "Dec", "Jan '26" — short enough that twelve months of labels survive a
+ *  three-a-side axis (`categoryStride`) on a 375px card without spilling out of it. The year marks
+ *  only the first point and wherever it actually changes, the way a wall calendar would. */
+function compactMonthLabels(points: readonly MonthlyRevenuePoint[]): string[] {
+  return points.map((point, index) => {
+    const [year, monthNumber] = point.month.split("-");
+    const name = SHORT_MONTHS[Number(monthNumber ?? "1") - 1] ?? point.label;
+    const previousYear = points[index - 1]?.month.split("-")[0];
+    return index === 0 || year !== previousYear ? `${name} '${(year ?? "").slice(2)}` : name;
+  });
+}
+
+/** The change against the prior month, captioned with the real month name — never invented.
+ *  `null` (the prior month has nothing to compare against) falls back to a caption that states the
+ *  period instead of a manufactured percentage. */
+function trendCaption(deltaPct: number | null, previousLabel: string | undefined, fallback: string): string {
+  return deltaPct !== null && previousLabel ? `vs ${previousLabel}` : fallback;
+}
+
+interface InvoiceStatusCounts {
+  counts: Record<InvoiceStatus, number>;
+  total: number;
+}
+
+async function loadInvoiceStatusCounts(): Promise<InvoiceStatusCounts> {
+  const [draft, sent, paid, overdue, voidPage] = await Promise.all([
+    listInvoices({ status: "draft", size: 1 }),
+    listInvoices({ status: "sent", size: 1 }),
+    listInvoices({ status: "paid", size: 1 }),
+    listInvoices({ status: "overdue", size: 1 }),
+    listInvoices({ status: "void", size: 1 }),
+  ]);
+  const counts: Record<InvoiceStatus, number> = {
+    draft: draft.total,
+    sent: sent.total,
+    paid: paid.total,
+    overdue: overdue.total,
+    void: voidPage.total,
+  };
+  const total = INVOICE_STATUSES.reduce((sum, status) => sum + counts[status], 0);
+  return { counts, total };
+}
+
+/** Per-KPI presentation: icon, pastel tone, and whether a rise reads as good news. Keyed so every
+ *  lookup below is exact — never an optional fallback for a card that always renders. */
+const KPI_STYLE: Record<"revenue" | "receivables" | "overdue" | "received", { icon: ReactNode; tone: KpiTone; goodWhen: "up" | "down" }> = {
+  revenue: { icon: <TrendingUpIcon className="size-5" />, tone: "accent", goodWhen: "up" },
+  receivables: { icon: <ReceiptIcon className="size-5" />, tone: "info", goodWhen: "up" },
+  overdue: { icon: <AlertTriangleIcon className="size-5" />, tone: "danger", goodWhen: "down" },
+  received: { icon: <WalletIcon className="size-5" />, tone: "positive", goodWhen: "up" },
 };
 
 function OverviewHeader({ orgName, period }: { orgName: string; period: string }) {
@@ -53,6 +130,11 @@ function OverviewHeader({ orgName, period }: { orgName: string; period: string }
         <h1 className="display text-3xl font-extrabold leading-tight sm:text-[2.1rem]">
           Overview
         </h1>
+        {period ? (
+          <p className="max-w-2xl text-sm text-muted">
+            Receivables, collections and compliance for {period}.
+          </p>
+        ) : null}
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -71,25 +153,6 @@ function OverviewHeader({ orgName, period }: { orgName: string; period: string }
         </Can>
       </div>
     </header>
-  );
-}
-
-function KpiValue({ kpi }: { kpi: OverviewKpi }) {
-  const style = KPI_STYLE[kpi.key] ?? { icon: <ReceiptIcon className="size-5" />, tone: "accent" as KpiTone, invert: false };
-  return (
-    <KpiCard
-      label={kpi.label}
-      value={formatMoneyCompact(kpi.value_minor)}
-      deltaPct={kpi.deltaPct}
-      series={kpi.series}
-      icon={style.icon}
-      tone={style.tone}
-      caption={kpi.caption}
-      captionPlacement="label"
-      figure="money"
-      goodWhen={style.invert ? "down" : "up"}
-      sample={kpi.sample ? true : kpi.trend_sample ? { label: "Sample trend" } : false}
-    />
   );
 }
 
@@ -127,12 +190,89 @@ function AttentionRow({
   );
 }
 
+/** One payment in the "recent payments" list — there is no payment-detail screen to link to, so
+ *  each row is informational rather than a navigation target. */
+function PaymentRow({
+  payment,
+  customerById,
+}: {
+  payment: Payment;
+  customerById: ReadonlyMap<string, Customer> | undefined;
+}) {
+  const name = customerName(customerById, payment.customer_id);
+  return (
+    <div className="flex items-center gap-3 rounded-tile px-2 py-3 -mx-2">
+      <Avatar name={name} size="md" />
+      <div className="flex min-w-0 flex-1 flex-col leading-tight">
+        <span className="truncate text-sm font-bold text-ink">{name}</span>
+        <span className="truncate text-xs text-muted tnum">
+          {payment.reference} · {formatDate(payment.received_date)}
+        </span>
+      </div>
+      <span className="money shrink-0 text-sm font-bold text-positive">
+        {formatMoney(payment.amount_minor)}
+      </span>
+    </div>
+  );
+}
+
+function InvoicesByStatusCard({
+  state,
+  data,
+  error,
+  onRetry,
+}: {
+  state: "loading" | "success" | "error";
+  data: InvoiceStatusCounts | null;
+  error: Error | null;
+  onRetry: () => void;
+}) {
+  const slices: DonutSlice[] = INVOICE_STATUSES.map((status) => ({
+    key: status,
+    label: statusLabel(status),
+    value: data?.counts[status] ?? 0,
+    tone: STATUS_TONE[status],
+  }));
+
+  return (
+    <ChartCard
+      title="Invoices by status"
+      description="Every invoice you've issued, by where it stands"
+      loading={state === "loading"}
+      skeleton="donut"
+      error={state === "error" ? <ErrorState message={problemMessage(error)} onRetry={onRetry} /> : undefined}
+      empty={
+        state === "success" && data && data.total === 0 ? (
+          <EmptyState title="No invoices yet" description="Invoices you issue appear here, by status." />
+        ) : undefined
+      }
+      action={
+        state === "success" && data && data.total > 0 ? (
+          <Link to="/invoices" className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors">
+            View all
+          </Link>
+        ) : undefined
+      }
+    >
+      {data && data.total > 0 ? (
+        <DonutChart label="Invoices by status" slices={slices} centerValue={String(data.total)} size="sm" />
+      ) : null}
+    </ChartCard>
+  );
+}
+
 export function OverviewPage() {
   const { user } = useAuth();
   const overview = useAsync(getOverview, []);
   // The directory resolves `customer_id` to a name; it never gates the screen from rendering.
   const customers = useAsync(getCustomerById, []);
   const customerById = customers.status === "success" ? customers.data : undefined;
+
+  const invoiceStatus = useAsync(loadInvoiceStatusCounts, []);
+  const recentPayments = useAsync(() => listPayments({ size: 5 }), []);
+
+  const narrow = !useMediaQuery(TABLET_QUERY, true);
+  const [seriesKey, setSeriesKey] = useState<SeriesKey>("revenue");
 
   const orgName =
     user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
@@ -145,6 +285,17 @@ export function OverviewPage() {
     () => (overview.status === "success" ? overview.data.attention : []),
     [overview],
   );
+
+  const history = overview.status === "success" ? (overview.data.revenue_history[0] ?? null) : null;
+  const months = history?.months ?? [];
+  const previousMonthLabel = months.length >= 2 ? months[months.length - 2]?.label : undefined;
+
+  const overdueKpi =
+    overview.status === "success" ? overview.data.kpis.find((k) => k.key === "overdue") : undefined;
+  const receivablesKpi =
+    overview.status === "success" ? overview.data.kpis.find((k) => k.key === "receivables") : undefined;
+  const revenueKpi =
+    overview.status === "success" ? overview.data.kpis.find((k) => k.key === "revenue") : undefined;
 
   return (
     <div className="rise flex flex-col gap-5">
@@ -172,25 +323,101 @@ export function OverviewPage() {
             <ErrorState message={problemMessage(overview.error)} onRetry={overview.reload} />
           </Card>
         ) : null}
-        {overview.status === "success"
-          ? overview.data.kpis.map((kpi, i) => (
-              <div key={kpi.key} style={{ "--i": i } as CSSProperties}>
-                <KpiValue kpi={kpi} />
-              </div>
-            ))
-          : null}
+        {overview.status === "success" ? (
+          <>
+            <div style={{ "--i": 0 } as CSSProperties}>
+              <KpiCard
+                label="Revenue this period"
+                value={formatMoneyCompact(history?.revenue_current_minor ?? revenueKpi?.value_minor ?? 0)}
+                deltaPct={history?.revenue_delta_pct ?? undefined}
+                caption={trendCaption(history?.revenue_delta_pct ?? null, previousMonthLabel, "This month")}
+                figure="money"
+                icon={KPI_STYLE.revenue.icon}
+                tone={KPI_STYLE.revenue.tone}
+                goodWhen={KPI_STYLE.revenue.goodWhen}
+              />
+            </div>
+            <div style={{ "--i": 1 } as CSSProperties}>
+              <KpiCard
+                label="Outstanding receivables"
+                value={formatMoneyCompact(history?.outstanding_current_minor ?? receivablesKpi?.value_minor ?? 0)}
+                deltaPct={history?.outstanding_delta_pct ?? undefined}
+                caption={trendCaption(history?.outstanding_delta_pct ?? null, previousMonthLabel, "Across all open invoices")}
+                figure="money"
+                icon={KPI_STYLE.receivables.icon}
+                tone={KPI_STYLE.receivables.tone}
+                goodWhen={KPI_STYLE.receivables.goodWhen}
+              />
+            </div>
+            <div style={{ "--i": 2 } as CSSProperties}>
+              <KpiCard
+                label="Overdue"
+                value={formatMoneyCompact(overdueKpi?.value_minor ?? 0)}
+                caption={overdueKpi?.caption ?? "Past the due date"}
+                figure="money"
+                icon={KPI_STYLE.overdue.icon}
+                tone={KPI_STYLE.overdue.tone}
+                goodWhen={KPI_STYLE.overdue.goodWhen}
+              />
+            </div>
+            <div style={{ "--i": 3 } as CSSProperties}>
+              <KpiCard
+                label="Received this period"
+                value={formatMoneyCompact(history?.received_current_minor ?? 0)}
+                deltaPct={history?.received_delta_pct ?? undefined}
+                caption={trendCaption(history?.received_delta_pct ?? null, previousMonthLabel, "This month")}
+                figure="money"
+                icon={KPI_STYLE.received.icon}
+                tone={KPI_STYLE.received.tone}
+                goodWhen={KPI_STYLE.received.goodWhen}
+              />
+            </div>
+          </>
+        ) : null}
       </section>
 
-      {/* Row 2 — cashflow · aging */}
-      <section aria-label="Cash and receivables" className="grid grid-cols-1 gap-5 xl:grid-cols-3">
+      {/* Row 2 — revenue by month · receivables aging */}
+      <section aria-label="Revenue and receivables" className="grid grid-cols-1 gap-5 xl:grid-cols-3">
         <Card className="flex flex-col gap-5 p-6 xl:col-span-2">
           <SectionHeader
-            title="Cashflow"
-            subtitle="Money in and out, last six months"
-            action={overview.status === "success" && overview.data.cashflow_sample ? <SampleChip /> : undefined}
+            title="Revenue by month"
+            subtitle="Real revenue, receipts and receivables — the last 12 months"
+            action={
+              overview.status === "success" && months.length > 0 ? (
+                <Select
+                  label="Series"
+                  hideLabel
+                  options={SERIES_OPTIONS}
+                  value={seriesKey}
+                  onChange={(e) => setSeriesKey(e.target.value as SeriesKey)}
+                  containerClassName="w-36"
+                />
+              ) : undefined
+            }
           />
           {overview.status === "success" ? (
-            <CashflowChart data={overview.data.cashflow} />
+            months.length > 0 ? (
+              <LineChart
+                label={`${SERIES_OPTIONS.find((o) => o.value === seriesKey)?.label ?? "Revenue"} by month`}
+                categories={narrow ? compactMonthLabels(months) : months.map((p) => p.label)}
+                categoryStride={narrow ? 3 : undefined}
+                series={[
+                  {
+                    key: seriesKey,
+                    label: SERIES_OPTIONS.find((o) => o.value === seriesKey)?.label ?? "Revenue",
+                    values: months.map((p) => seriesValue(p, seriesKey)),
+                  },
+                ]}
+                area
+                smooth
+                formatValue={formatMoneyCompact}
+              />
+            ) : (
+              <EmptyState
+                title="No revenue history yet"
+                description="Revenue by month appears once invoices span two months."
+              />
+            )
           ) : overview.status === "error" ? (
             <ErrorState message={problemMessage(overview.error)} onRetry={overview.reload} />
           ) : (
@@ -210,12 +437,57 @@ export function OverviewPage() {
         </Card>
       </section>
 
-      {/* Row 3 — GST compliance */}
+      {/* Row 3 — invoices by status · recent payments */}
+      <section aria-label="Invoices and payments" className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <InvoicesByStatusCard
+          state={invoiceStatus.status}
+          data={invoiceStatus.status === "success" ? invoiceStatus.data : null}
+          error={invoiceStatus.status === "error" ? invoiceStatus.error : null}
+          onRetry={invoiceStatus.reload}
+        />
+
+        <Card className="flex flex-col gap-3 p-6">
+          <SectionHeader
+            title="Recent payments"
+            subtitle="Latest receipts, most recent first"
+            action={
+              recentPayments.status === "success" && recentPayments.data.total > 0 ? (
+                <Link to="/payments" className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors">
+                  View all
+                </Link>
+              ) : undefined
+            }
+          />
+          {recentPayments.status === "loading" ? (
+            <div className="flex flex-col gap-2 py-2">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <Skeleton key={i} className="h-14 w-full rounded-tile" />
+              ))}
+            </div>
+          ) : null}
+          {recentPayments.status === "error" ? (
+            <ErrorState message={problemMessage(recentPayments.error)} onRetry={recentPayments.reload} />
+          ) : null}
+          {recentPayments.status === "success" ? (
+            recentPayments.data.items.length === 0 ? (
+              <EmptyState title="No payments yet" description="Payments you record appear here." />
+            ) : (
+              <div className="flex flex-col divide-y divide-line/70">
+                {recentPayments.data.items.map((payment) => (
+                  <PaymentRow key={payment.id} payment={payment} customerById={customerById} />
+                ))}
+              </div>
+            )
+          ) : null}
+        </Card>
+      </section>
+
+      {/* Row 4 — GST compliance */}
       <section aria-label="GST compliance">
         <ComplianceCard customerById={customerById} />
       </section>
 
-      {/* Row 4 — needs attention */}
+      {/* Row 5 — needs attention */}
       <section aria-label="Needs attention">
         <Card className="flex flex-col gap-3 p-6">
           <SectionHeader
