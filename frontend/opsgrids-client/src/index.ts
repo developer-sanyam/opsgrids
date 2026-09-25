@@ -73,6 +73,20 @@ export {
   setUnauthorizedHandler,
 } from "./session";
 
+export {
+  configurePlatformHosts,
+  getPlatformHost,
+  PLATFORM_PRODUCTS,
+  resetPlatformHosts,
+} from "./platform/catalogue";
+export type { PlatformProduct, PlatformProductKey } from "./platform/catalogue";
+export { usePlatformModules } from "./platform/usePlatformModules";
+export type { PlatformModule } from "./platform/usePlatformModules";
+export { useCurrentUser } from "./platform/useCurrentUser";
+export type { CurrentUser } from "./platform/useCurrentUser";
+export { useAdminLinks } from "./platform/useAdminLinks";
+export type { AdminLink, AdminLinkKey } from "./platform/useAdminLinks";
+
 export { settle } from "./fixtures";
 export { useAsync } from "./useAsync";
 export type { AsyncControls, AsyncState } from "./useAsync";
