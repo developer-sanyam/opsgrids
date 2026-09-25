@@ -212,6 +212,9 @@ function ClaimDomainDialog({
   const [localError, setLocalError] = useState<string | undefined>(undefined);
   const domainRef = useRef<HTMLInputElement>(null);
 
+  // Create-only dialog: dirty against the blank state it opened on.
+  const dirty = domain !== "";
+
   const claim = useMutation((value: string) => claimDomain({ domain: value }), {
     onSuccess: (result) => onClaimed(result),
   });
@@ -237,6 +240,7 @@ function ClaimDomainDialog({
       pendingLabel="Claiming…"
       pending={claim.pending}
       initialFocusRef={domainRef}
+      dirty={dirty}
       {...(claim.error && Object.keys(claim.fieldErrors).length === 0
         ? { error: problemMessage(claim.error) }
         : {})}
@@ -247,6 +251,7 @@ function ClaimDomainDialog({
         placeholder="acme.com"
         value={domain}
         onChange={(e) => setDomain(e.target.value)}
+        required
         error={localError ?? claim.fieldErrors.domain}
         helper="You'll be shown a DNS TXT record to publish before this domain can be used for sign-in."
       />

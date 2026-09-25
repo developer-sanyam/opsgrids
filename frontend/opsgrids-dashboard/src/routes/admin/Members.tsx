@@ -407,6 +407,17 @@ function MemberForm({
   const [startedOn, setStartedOn] = useState(member.started_on ?? "");
   const nameRef = useRef<HTMLInputElement>(null);
 
+  // The same comparison `submit` below uses to build the patch — nothing to send means nothing
+  // changed. `manager` starts `null` and is filled in from `member.manager_membership_id` by the
+  // fetch below, so once it lands the two agree and this stays false until someone picks a new one.
+  const dirty =
+    displayName.trim() !== (member.display_name ?? "") ||
+    jobTitle.trim() !== (member.job_title ?? "") ||
+    orgUnitId !== (member.org_unit_id ?? "") ||
+    (manager?.id ?? null) !== member.manager_membership_id ||
+    locationCodes.join(",") !== member.location_codes.join(",") ||
+    startedOn !== (member.started_on ?? "");
+
   useAsync(async () => {
     if (!member.manager_membership_id) return null;
     const found = await getMember(member.manager_membership_id);
@@ -443,6 +454,7 @@ function MemberForm({
       pending={save.pending}
       size="lg"
       initialFocusRef={nameRef}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? { error: problemMessage(save.error) }
         : {})}
@@ -518,6 +530,10 @@ function RoleAssignDialog({
 }) {
   const [selected, setSelected] = useState<string[]>(member.roles);
 
+  // Order-independent: a checkbox group's own order isn't meaningful, only the set is.
+  const dirty =
+    JSON.stringify([...selected].sort()) !== JSON.stringify([...member.roles].sort());
+
   const save = useMutation((codes: string[]) => setMemberRoles(member.id, codes), {
     onSuccess: (updated) => {
       onClose();
@@ -535,6 +551,7 @@ function RoleAssignDialog({
       submitLabel="Save roles"
       pendingLabel="Saving…"
       pending={save.pending}
+      dirty={dirty}
       {...(save.error ? { error: problemMessage(save.error) } : {})}
     >
       {roles.length === 0 ? (
@@ -565,6 +582,9 @@ function InviteDialog({ roles, onClose, onSaved }: { roles: Role[]; onClose: () 
   const [created, setCreated] = useState<InvitationCreated | null>(null);
   const [copied, setCopied] = useState(false);
   const emailRef = useRef<HTMLInputElement>(null);
+
+  // Create-only dialog: dirty against the blank state it opened on.
+  const dirty = email !== "" || roleCodes.length > 0 || expiresInDays !== "14";
 
   const save = useMutation((payload: InvitationCreate) => createInvitation(payload), {
     onSuccess: (invitation) => {
@@ -631,6 +651,7 @@ function InviteDialog({ roles, onClose, onSaved }: { roles: Role[]; onClose: () 
       pendingLabel="Creating…"
       pending={save.pending}
       initialFocusRef={emailRef}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? { error: problemMessage(save.error) }
         : {})}
@@ -641,6 +662,7 @@ function InviteDialog({ roles, onClose, onSaved }: { roles: Role[]; onClose: () 
         type="email"
         value={email}
         onChange={(e) => setEmail(e.target.value)}
+        required
         error={emailError ?? save.fieldErrors.email}
       />
       <div className="max-h-48 overflow-y-auto">

@@ -32,6 +32,15 @@ export function CategoryForm({
   const keyRef = useRef<HTMLInputElement>(null);
   const labelRef = useRef<HTMLInputElement>(null);
 
+  // Compared against the same seed the fields above initialised from — this form unmounts on
+  // close (FormDialog's resetting-is-structural note), so `category` never changes under it.
+  const dirty =
+    key !== (category?.key ?? "") ||
+    label !== (category?.label ?? "") ||
+    blurb !== (category?.blurb ?? "") ||
+    imageUrl !== (category?.image_url ?? "") ||
+    isActive !== (category?.is_active ?? true);
+
   const save = useMutation(
     (input: CategoryInput) =>
       category ? updateCategory(category.id, input) : createCategory(input),
@@ -79,6 +88,7 @@ export function CategoryForm({
       pendingLabel={category ? "Saving…" : "Creating…"}
       pending={save.pending}
       initialFocusRef={category ? labelRef : keyRef}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? { error: problemMessage(save.error), reference: (save.error as ApiError).problem?.request_id }
         : {})}
@@ -90,6 +100,7 @@ export function CategoryForm({
         onChange={(event) => setKey(event.target.value.toLowerCase())}
         helper={category ? "Set once, when the category is created." : "Lowercase, e.g. fasteners."}
         disabled={category !== null}
+        required
         error={keyError ?? save.fieldErrors.key}
       />
       <TextField
@@ -97,6 +108,7 @@ export function CategoryForm({
         label="Label"
         value={label}
         onChange={(event) => setLabel(event.target.value)}
+        required
         error={labelError ?? save.fieldErrors.label}
       />
       <TextArea

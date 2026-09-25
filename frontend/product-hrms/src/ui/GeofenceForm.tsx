@@ -28,6 +28,15 @@ export function GeofenceForm({ geofence, onClose, onSaved }: GeofenceFormProps) 
   const [nameError, setNameError] = useState<string | undefined>(undefined);
   const nameRef = useRef<HTMLInputElement>(null);
 
+  // Compared against the same seed the fields above initialised from — this form unmounts on
+  // close (FormDialog's resetting-is-structural note), so `geofence` never changes under it.
+  const dirty =
+    locationCode !== (geofence?.location_code ?? "") ||
+    name !== (geofence?.name ?? "") ||
+    centerLat !== (geofence?.center_lat ?? "") ||
+    centerLng !== (geofence?.center_lng ?? "") ||
+    radiusM !== String(geofence?.radius_m ?? 100);
+
   const save = useMutation(
     (input: GeofenceIn | GeofencePatch) =>
       geofence ? updateGeofence(geofence.id, input as GeofencePatch) : createGeofence(input as GeofenceIn),
@@ -81,6 +90,7 @@ export function GeofenceForm({ geofence, onClose, onSaved }: GeofenceFormProps) 
       pendingLabel={editing ? "Saving…" : "Creating…"}
       pending={save.pending}
       initialFocusRef={nameRef}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? {
             error: problemMessage(save.error),
@@ -99,6 +109,7 @@ export function GeofenceForm({ geofence, onClose, onSaved }: GeofenceFormProps) 
           onChange={(e) => setLocationCode(e.target.value)}
           options={locationOptions}
           placeholder="Choose a location…"
+          required
           error={locationError ?? save.fieldErrors.location_code}
         />
       )}
@@ -107,6 +118,7 @@ export function GeofenceForm({ geofence, onClose, onSaved }: GeofenceFormProps) 
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
+        required
         error={nameError ?? save.fieldErrors.name}
       />
       <div className="grid grid-cols-2 gap-4">
@@ -115,6 +127,7 @@ export function GeofenceForm({ geofence, onClose, onSaved }: GeofenceFormProps) 
           value={centerLat}
           onChange={(e) => setCenterLat(e.target.value)}
           helper="Decimal degrees, e.g. 12.9716"
+          required
           error={save.fieldErrors.center_lat}
         />
         <TextField
@@ -122,6 +135,7 @@ export function GeofenceForm({ geofence, onClose, onSaved }: GeofenceFormProps) 
           value={centerLng}
           onChange={(e) => setCenterLng(e.target.value)}
           helper="Decimal degrees, e.g. 77.5946"
+          required
           error={save.fieldErrors.center_lng}
         />
       </div>
@@ -132,6 +146,7 @@ export function GeofenceForm({ geofence, onClose, onSaved }: GeofenceFormProps) 
         max={100000}
         value={radiusM}
         onChange={(e) => setRadiusM(e.target.value)}
+        required
         error={save.fieldErrors.radius_m}
       />
     </FormDialog>

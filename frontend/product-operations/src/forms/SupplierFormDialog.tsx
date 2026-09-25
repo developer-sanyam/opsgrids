@@ -55,6 +55,19 @@ export function SupplierFormDialog({ supplier, onClose, onSaved }: SupplierFormD
   const [emailError, setEmailError] = useState<string | undefined>(undefined);
   const firstFieldRef = useRef<HTMLInputElement>(null);
 
+  // Compared against the same seed the fields above initialised from — this form unmounts on
+  // close (FormDialog's resetting-is-structural note), so `supplier` never changes under it.
+  const dirty =
+    code !== (supplier?.code ?? "") ||
+    name !== (supplier?.name ?? "") ||
+    category !== (supplier?.category ?? "") ||
+    status !== (supplier?.status ?? "active") ||
+    leadTime !== String(supplier?.lead_time_days ?? 0) ||
+    currency !== (supplier?.currency ?? "INR") ||
+    contactName !== (supplier?.contact_name ?? "") ||
+    contactEmail !== (supplier?.contact_email ?? "") ||
+    location !== (supplier?.location ?? "");
+
   const save = useMutation(
     (input: SupplierIn | SupplierPatch) =>
       supplier
@@ -135,6 +148,7 @@ export function SupplierFormDialog({ supplier, onClose, onSaved }: SupplierFormD
       pending={save.pending}
       initialFocusRef={firstFieldRef}
       size="lg"
+      dirty={dirty}
       {...formDialogError(save.error, save.fieldErrors)}
     >
       <div className="grid gap-4 sm:grid-cols-2">
@@ -144,6 +158,7 @@ export function SupplierFormDialog({ supplier, onClose, onSaved }: SupplierFormD
           value={code}
           onChange={(e) => setCode(e.target.value)}
           disabled={supplier !== null}
+          required
           helper={supplier ? "A supplier's code can't change." : "Letters, numbers, - and _."}
           {...((codeError ?? save.fieldErrors.code) !== undefined ? { error: codeError ?? save.fieldErrors.code } : {})}
         />
@@ -151,6 +166,7 @@ export function SupplierFormDialog({ supplier, onClose, onSaved }: SupplierFormD
           label="Name"
           value={name}
           onChange={(e) => setName(e.target.value)}
+          required
           {...((nameError ?? save.fieldErrors.name) !== undefined ? { error: nameError ?? save.fieldErrors.name } : {})}
         />
       </div>
@@ -162,6 +178,7 @@ export function SupplierFormDialog({ supplier, onClose, onSaved }: SupplierFormD
           onChange={(e) => setCategory(e.target.value as Category)}
           placeholder="Choose a category"
           options={CATEGORY_OPTIONS}
+          required
           {...((categoryError ?? save.fieldErrors.category) !== undefined ? { error: categoryError ?? save.fieldErrors.category } : {})}
         />
         <Select

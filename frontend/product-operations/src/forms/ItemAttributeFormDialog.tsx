@@ -55,6 +55,13 @@ export function ItemAttributeFormDialog({
   const [valueError, setValueError] = useState<string | undefined>(undefined);
   const firstFieldRef = useRef<HTMLInputElement>(null);
 
+  // Compared against the same seed the fields above initialised from — this form unmounts on
+  // close (FormDialog's resetting-is-structural note), so `attribute` never changes under it.
+  const dirty =
+    key !== (attribute?.key ?? "") ||
+    valueType !== (attribute?.value_type ?? "text") ||
+    value !== currentValue(attribute);
+
   const save = useMutation(
     (input: ItemAttributeIn) => setItemAttribute(itemId, key.trim(), input),
     { onSuccess: (saved) => onSaved(saved) },
@@ -111,6 +118,7 @@ export function ItemAttributeFormDialog({
       pendingLabel={attribute ? "Saving…" : "Adding…"}
       pending={save.pending}
       initialFocusRef={firstFieldRef}
+      dirty={dirty}
       {...formDialogError(save.error, save.fieldErrors)}
     >
       <TextField
@@ -119,6 +127,7 @@ export function ItemAttributeFormDialog({
         value={key}
         onChange={(e) => setKey(e.target.value)}
         disabled={attribute !== null}
+        required
         helper={attribute ? "A key can't change once set — remove and re-add instead." : "gsm, width, shade, composition…"}
         {...((keyError ?? save.fieldErrors.key) !== undefined ? { error: keyError ?? save.fieldErrors.key } : {})}
       />
@@ -151,6 +160,7 @@ export function ItemAttributeFormDialog({
           type={valueType === "date" ? "date" : "text"}
           inputMode={valueType === "number" ? "numeric" : undefined}
           helper={valueType === "number" ? "A whole number, e.g. 180." : undefined}
+          required
           {...((valueError ?? save.fieldErrors[`value_${valueType}`]) !== undefined
             ? { error: valueError ?? save.fieldErrors[`value_${valueType}`] }
             : {})}

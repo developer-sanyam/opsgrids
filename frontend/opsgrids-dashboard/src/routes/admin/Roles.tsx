@@ -228,6 +228,19 @@ function RoleForm({
 
   const grouped = useMemo(() => groupPermissions(permissions), [permissions]);
 
+  // A read-only system role can't be edited, so it's never "dirty" — closing it never discards
+  // anything. Otherwise compared against the same seed the fields above initialised from.
+  const initialCode = role ? role.code : seedFrom ? `${seedFrom.code}_COPY` : "";
+  const initialGrants = new Map((source?.grants ?? []).map((g) => [g.permission_code, g.scope]));
+  const grantsKey = (m: Map<string, Scope>) =>
+    Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b)).join(",");
+  const dirty =
+    !readOnly &&
+    (name.trim() !== (source?.name ?? "") ||
+      code !== initialCode ||
+      description.trim() !== (source?.description ?? "") ||
+      grantsKey(grants) !== grantsKey(initialGrants));
+
   const save = useMutation(
     (payload: RoleWrite) => (role ? updateRole(role.id, payload) : createRole(payload)),
     { onSuccess: (result) => { onClose(); onSaved(result); } },
@@ -283,6 +296,7 @@ function RoleForm({
       pending={save.pending}
       size="lg"
       initialFocusRef={nameRef}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? { error: problemMessage(save.error) }
         : {})}
@@ -299,6 +313,7 @@ function RoleForm({
             label="Name"
             value={name}
             onChange={(e) => setName(e.target.value)}
+            required
             error={nameError ?? save.fieldErrors.name}
           />
           <TextField
@@ -307,6 +322,7 @@ function RoleForm({
             onChange={(e) => setCode(e.target.value.toUpperCase().replace(/\s+/g, "_"))}
             helper={role ? "Cannot be changed." : "Cannot be changed once created."}
             disabled={role !== null}
+            required
             error={codeError ?? save.fieldErrors.code}
           />
           <TextArea label="Description" optional value={description} onChange={(e) => setDescription(e.target.value)} />

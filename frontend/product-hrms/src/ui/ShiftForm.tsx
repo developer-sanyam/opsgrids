@@ -26,6 +26,16 @@ export function ShiftForm({ shift, onClose, onSaved }: ShiftFormProps) {
   const codeRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
+  // Compared against the same seed the fields above initialised from — this form unmounts on
+  // close (FormDialog's resetting-is-structural note), so `shift` never changes under it.
+  const dirty =
+    code !== (shift?.code ?? "") ||
+    name !== (shift?.name ?? "") ||
+    startTime !== (shift?.start_time.slice(0, 5) ?? "") ||
+    endTime !== (shift?.end_time.slice(0, 5) ?? "") ||
+    graceMinutes !== String(shift?.grace_minutes ?? 0) ||
+    isNight !== (shift?.is_night ?? false);
+
   const save = useMutation(
     (input: ShiftIn | ShiftPatch) =>
       shift ? updateShift(shift.id, input as ShiftPatch) : createShift(input as ShiftIn),
@@ -76,6 +86,7 @@ export function ShiftForm({ shift, onClose, onSaved }: ShiftFormProps) {
       pendingLabel={editing ? "Saving…" : "Creating…"}
       pending={save.pending}
       initialFocusRef={editing ? nameRef : codeRef}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? {
             error: problemMessage(save.error),
@@ -91,6 +102,7 @@ export function ShiftForm({ shift, onClose, onSaved }: ShiftFormProps) {
         value={code}
         onChange={(e) => setCode(e.target.value)}
         disabled={editing}
+        required
         helper={editing ? "Immutable — a rename is a new shift." : "Letters, numbers, hyphens and underscores."}
         error={codeError ?? save.fieldErrors.code}
       />
@@ -99,6 +111,7 @@ export function ShiftForm({ shift, onClose, onSaved }: ShiftFormProps) {
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
+        required
         error={nameError ?? save.fieldErrors.name}
       />
       <div className="grid grid-cols-2 gap-4">
@@ -107,6 +120,7 @@ export function ShiftForm({ shift, onClose, onSaved }: ShiftFormProps) {
           type="time"
           value={startTime}
           onChange={(e) => setStartTime(e.target.value)}
+          required
           error={save.fieldErrors.start_time}
         />
         <TextField
@@ -114,6 +128,7 @@ export function ShiftForm({ shift, onClose, onSaved }: ShiftFormProps) {
           type="time"
           value={endTime}
           onChange={(e) => setEndTime(e.target.value)}
+          required
           error={save.fieldErrors.end_time}
         />
       </div>

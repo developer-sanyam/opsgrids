@@ -35,6 +35,10 @@ export function CheckInDialog({ onClose, onSaved }: CheckInDialogProps) {
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [locationDenied, setLocationDenied] = useState(false);
 
+  // Create-only dialog: dirty against the blank state it opened on. `coords` is read
+  // automatically, never typed, so it does not count toward what closing would throw away.
+  const dirty = workMode !== "office" || locationCode !== "" || shiftId !== "" || notes !== "";
+
   useEffect(() => {
     let active = true;
     listShifts({ size: 100 }).then((page) => {
@@ -86,6 +90,7 @@ export function CheckInDialog({ onClose, onSaved }: CheckInDialogProps) {
       submitLabel="Check in"
       pendingLabel="Checking in…"
       pending={save.pending}
+      dirty={dirty}
       {...(save.error ? { error: problemMessage(save.error) } : {})}
     >
       <Select

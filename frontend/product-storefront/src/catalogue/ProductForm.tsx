@@ -119,6 +119,11 @@ export function ProductForm({
   const codeRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
+  // Compared against the same seed `values` initialised from — this form unmounts on close
+  // (FormDialog's resetting-is-structural note), so `product` never changes under it.
+  const seed = product ? fromProduct(product) : emptyProductForm(categories[0]?.id ?? "");
+  const dirty = JSON.stringify(values) !== JSON.stringify(seed);
+
   const save = useMutation(
     (input: ReturnType<typeof toProductInput>) =>
       product ? updateProduct(product.id, input) : createProduct(input),
@@ -153,6 +158,7 @@ export function ProductForm({
       pending={save.pending}
       initialFocusRef={product ? nameRef : codeRef}
       size="lg"
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? { error: problemMessage(save.error), reference: (save.error as ApiError).problem?.request_id }
         : {})}
@@ -165,6 +171,7 @@ export function ProductForm({
           onChange={(e) => set("code", e.target.value)}
           helper={product ? "Set once, when the product is created." : "What a buyer quotes on a PO."}
           disabled={product !== null}
+          required
           error={errors.code ?? save.fieldErrors.code}
         />
         <TextField
@@ -172,6 +179,7 @@ export function ProductForm({
           label="Name"
           value={values.name}
           onChange={(e) => set("name", e.target.value)}
+          required
           error={errors.name ?? save.fieldErrors.name}
         />
       </div>
@@ -189,6 +197,7 @@ export function ProductForm({
           value={values.categoryId}
           options={categories.map((c) => ({ value: c.id, label: c.label }))}
           onChange={(e) => set("categoryId", e.target.value)}
+          required
           error={errors.categoryId ?? save.fieldErrors.category_id}
         />
       </div>
@@ -222,6 +231,7 @@ export function ProductForm({
             inputMode="decimal"
             value={values.priceMin}
             onChange={(e) => set("priceMin", e.target.value)}
+            required
             error={errors.priceMin ?? save.fieldErrors.price_min_minor}
           />
           <TextField
@@ -230,6 +240,7 @@ export function ProductForm({
             value={values.priceMax}
             onChange={(e) => set("priceMax", e.target.value)}
             helper="Equal to the min for a single published price."
+            required
             error={errors.priceMax ?? save.fieldErrors.price_max_minor}
           />
           <TextField

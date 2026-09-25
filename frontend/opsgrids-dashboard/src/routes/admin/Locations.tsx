@@ -141,6 +141,17 @@ function LocationForm({
   const [codeError, setCodeError] = useState<string | undefined>(undefined);
   const nameRef = useRef<HTMLInputElement>(null);
 
+  // Compared against the same seed the fields above initialised from — this form unmounts on
+  // close (FormDialog's resetting-is-structural note), so `location` never changes under it.
+  const dirty =
+    name !== (location?.name ?? "") ||
+    code !== (location?.code ?? "") ||
+    timezone !== (location?.timezone ?? "Asia/Kolkata") ||
+    country !== (location?.country ?? "") ||
+    line1 !== String(location?.address?.line1 ?? "") ||
+    city !== String(location?.address?.city ?? "") ||
+    isActive !== (location?.is_active ?? true);
+
   const save = useMutation(
     (payload: LocationCreate | LocationPatch) =>
       location ? updateLocation(location.id, payload as LocationPatch) : createLocation(payload as LocationCreate),
@@ -187,6 +198,7 @@ function LocationForm({
       pendingLabel={location ? "Saving…" : "Creating…"}
       pending={save.pending}
       initialFocusRef={nameRef}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? { error: problemMessage(save.error) }
         : {})}
@@ -196,6 +208,7 @@ function LocationForm({
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
+        required
         error={nameError ?? save.fieldErrors.name}
       />
       {location ? (
@@ -206,6 +219,7 @@ function LocationForm({
           value={code}
           onChange={(e) => setCode(e.target.value)}
           helper="Cannot be changed once created."
+          required
           error={codeError ?? save.fieldErrors.code}
         />
       )}

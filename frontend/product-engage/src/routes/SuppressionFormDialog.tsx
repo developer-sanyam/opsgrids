@@ -1,9 +1,11 @@
 import { useState } from "react";
 
+import { useUnsavedChangesWarning } from "@opsgrids/ui";
+
 import { addSuppression } from "@/api/client";
 import type { SuppressionOut } from "@/api/types";
 import { failureMessage } from "@/lib/errors";
-import { Button, Dialog, InlineAlert, TextField } from "@/ui";
+import { Button, ConfirmDialog, Dialog, InlineAlert, TextField } from "@/ui";
 
 /**
  * Suppress an address by hand.
@@ -34,12 +36,28 @@ export function SuppressionFormDialog({
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [confirmingClose, setConfirmingClose] = useState(false);
+
+  const dirty = email !== EMPTY;
+  useUnsavedChangesWarning(open && dirty);
 
   function close() {
     setEmail(EMPTY);
     setError(null);
     setFailure(null);
+    setConfirmingClose(false);
     onClose();
+  }
+
+  // Cancel, Escape and the close control ask first when there's something to lose; a successful
+  // save closes through `onSaved` → the caller's own `open`, which never asks.
+  function requestClose() {
+    if (submitting) return;
+    if (dirty) {
+      setConfirmingClose(true);
+      return;
+    }
+    close();
   }
 
   async function submit() {
@@ -67,13 +85,13 @@ export function SuppressionFormDialog({
   return (
     <Dialog
       open={open}
-      onClose={close}
+      onClose={requestClose}
       title="Suppress an address"
       description="Nothing Engage sends will go to this address until the suppression is lifted."
       size="sm"
       footer={
         <>
-          <Button variant="ghost" onClick={close} disabled={submitting}>
+          <Button variant="ghost" onClick={requestClose} disabled={submitting}>
             Cancel
           </Button>
           <Button onClick={() => void submit()} disabled={submitting}>
@@ -91,6 +109,7 @@ export function SuppressionFormDialog({
       </div>
 
       <form
+        noValidate
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
@@ -107,10 +126,24 @@ export function SuppressionFormDialog({
           placeholder="priya@vaayu-logistics.example.com"
           autoComplete="off"
           spellCheck={false}
+          required
           disabled={submitting}
           {...(error !== null ? { error } : {})}
         />
       </form>
+
+      <ConfirmDialog
+        open={open && confirmingClose}
+        onClose={() => setConfirmingClose(false)}
+        onConfirm={() => {
+          setConfirmingClose(false);
+          close();
+        }}
+        title="Discard unsaved changes?"
+        body="What you've entered in “Suppress an address” hasn't been saved and will be lost."
+        confirmLabel="Discard changes"
+        cancelLabel="Keep editing"
+      />
     </Dialog>
   );
 }
