@@ -12,11 +12,13 @@ import {
   RowActions,
   SearchInput,
   Skeleton,
-  Tag,
+  StatusBadge,
+  useDebouncedValue,
   useToast,
 } from "@opsgrids/ui";
-import type { Column } from "@opsgrids/ui";
+import type { Column, TableSelection } from "@opsgrids/ui";
 
+import { downloadCsv } from "@/lib/csv";
 import { CategoryForm } from "./CategoryForm";
 import { deleteCategory, listCategories } from "./api";
 import type { CategoryOut } from "./types";
@@ -28,17 +30,46 @@ export function CategoriesPage() {
   const toast = useToast();
   const canWrite = useCan(WRITE, "ORG");
   const canRead = useCan(READ, "ORG");
-  const [query, setQuery] = useState("");
+  const [rawQuery, setRawQuery] = useState("");
+  const query = useDebouncedValue(rawQuery);
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(25);
   const [editing, setEditing] = useState<CategoryOut | null>(null);
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<CategoryOut | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const categories = useAsync(
     () => listCategories({ q: query, page, size }),
     [query, page, size],
   );
+
+  const categorySelection: TableSelection<CategoryOut> | undefined =
+    categories.status === "success"
+      ? {
+          selected,
+          onToggle: (key, next) =>
+            setSelected((prev) => {
+              const nextSet = new Set(prev);
+              if (next) nextSet.add(key);
+              else nextSet.delete(key);
+              return nextSet;
+            }),
+          onToggleAll: (next) =>
+            setSelected(next ? new Set(categories.data.items.map((c) => c.id)) : new Set()),
+          label: (c) => c.label,
+        }
+      : undefined;
+
+  function exportSelectedCategories() {
+    if (categories.status !== "success") return;
+    const chosen = categories.data.items.filter((c) => selected.has(c.id));
+    downloadCsv(
+      "categories.csv",
+      ["Category", "Key", "Status", "Products"],
+      chosen.map((c) => [c.label, c.key, c.is_active ? "Active" : "Inactive", String(c.line_count)]),
+    );
+  }
 
   const remove = useMutation((category: CategoryOut) => deleteCategory(category.id), {
     onSuccess: (_result, category) => {
@@ -78,14 +109,21 @@ export function CategoriesPage() {
               <DataTable
                 rows={categories.data.items}
                 rowKey={(c) => c.id}
+                mobileCard="auto"
+                selection={categorySelection}
+                bulkActions={
+                  <Button variant="outline" size="sm" onClick={exportSelectedCategories}>
+                    Export selected
+                  </Button>
+                }
                 toolbar={
                   <div className="flex flex-wrap items-center justify-between gap-4">
                     <SearchInput
                       label="Search categories"
                       placeholder="Search categories"
-                      value={query}
+                      value={rawQuery}
                       onChange={(e) => {
-                        setQuery(e.target.value);
+                        setRawQuery(e.target.value);
                         setPage(1);
                       }}
                     />
@@ -104,7 +142,7 @@ export function CategoriesPage() {
                     }
                     action={
                       query ? (
-                        <Button variant="outline" onClick={() => setQuery("")}>
+                        <Button variant="outline" onClick={() => setRawQuery("")}>
                           Clear search
                         </Button>
                       ) : canWrite ? (
@@ -118,6 +156,7 @@ export function CategoriesPage() {
                     {
                       key: "label",
                       header: "Category",
+                      mobile: "title",
                       render: (c) => (
                         <div className="flex flex-col gap-0.5">
                           <span className="font-bold text-ink">{c.label}</span>
@@ -128,11 +167,8 @@ export function CategoriesPage() {
                     {
                       key: "status",
                       header: "Status",
-                      render: (c) => (
-                        <Tag tone={c.is_active ? "positive" : "neutral"}>
-                          {c.is_active ? "Active" : "Inactive"}
-                        </Tag>
-                      ),
+                      mobile: "status",
+                      render: (c) => <StatusBadge status={c.is_active ? "active" : "inactive"} />,
                     },
                     {
                       key: "count",
@@ -145,6 +181,7 @@ export function CategoriesPage() {
                       key: "actions",
                       header: "",
                       align: "right",
+                      mobile: "actions",
                       render: (c) => (
                         <RowActions
                           label={c.label}

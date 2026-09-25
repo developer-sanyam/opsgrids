@@ -14,11 +14,14 @@ import {
   SearchInput,
   Select,
   Skeleton,
-  Tag,
+  StatusBadge,
+  statusTone,
+  useDebouncedValue,
   useToast,
 } from "@opsgrids/ui";
-import type { Column, TagTone } from "@opsgrids/ui";
+import type { Column, StatusTone, TableSelection } from "@opsgrids/ui";
 
+import { downloadCsv } from "@/lib/csv";
 import { getEnquiry, listEnquiries, updateEnquiryStatus } from "./api";
 import { ENQUIRY_TRANSITIONS } from "./types";
 import type { EnquiryOut, EnquiryStatus } from "./types";
@@ -34,10 +37,15 @@ const STATUS_OPTIONS = [
   { value: "lost", label: "Lost" },
 ];
 
-const STATUS_TONE: Record<EnquiryStatus, TagTone> = {
-  new: "info",
+/**
+ * `new` and `won` are registered words the shared registry already tones the way this app always
+ * has. `contacted` isn't a word the registry knows, and `lost` means something different here than
+ * the registry's general sense of it (see `opsgrids-ui/src/lib/status.ts`) — a lost enquiry is a
+ * closed-out fact, not the failure `lost` reads as for a sales deal — so both take an explicit
+ * tone instead.
+ */
+const STATUS_TONE_OVERRIDE: Partial<Record<EnquiryStatus, StatusTone>> = {
   contacted: "warning",
-  won: "positive",
   lost: "neutral",
 };
 
@@ -47,6 +55,10 @@ const STATUS_LABEL: Record<EnquiryStatus, string> = {
   won: "Won",
   lost: "Lost",
 };
+
+function enquiryTone(status: EnquiryStatus): StatusTone {
+  return STATUS_TONE_OVERRIDE[status] ?? statusTone(status) ?? "neutral";
+}
 
 function EnquiryDetail({
   id,
@@ -89,7 +101,7 @@ function EnquiryDetail({
               <p className="text-lg font-bold text-ink">{detail.data.name}</p>
               <p className="text-sm text-muted">{detail.data.company}</p>
             </div>
-            <Tag tone={STATUS_TONE[detail.data.status]}>{STATUS_LABEL[detail.data.status]}</Tag>
+            <StatusBadge tone={enquiryTone(detail.data.status)} label={STATUS_LABEL[detail.data.status]} />
           </div>
 
           <dl className="grid gap-3 sm:grid-cols-2">
@@ -161,16 +173,45 @@ function EnquiryDetail({
 
 export function EnquiriesPage() {
   const canRead = useCan(READ, "ORG");
-  const [query, setQuery] = useState("");
+  const [rawQuery, setRawQuery] = useState("");
+  const query = useDebouncedValue(rawQuery);
   const [status, setStatus] = useState<EnquiryStatus | "">("");
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(25);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const enquiries = useAsync(
     () => listEnquiries({ q: query, ...(status ? { status } : {}), page, size }),
     [query, status, page, size],
   );
+
+  const enquirySelection: TableSelection<EnquiryOut> | undefined =
+    enquiries.status === "success"
+      ? {
+          selected,
+          onToggle: (key, next) =>
+            setSelected((prev) => {
+              const nextSet = new Set(prev);
+              if (next) nextSet.add(key);
+              else nextSet.delete(key);
+              return nextSet;
+            }),
+          onToggleAll: (next) =>
+            setSelected(next ? new Set(enquiries.data.items.map((e) => e.id)) : new Set()),
+          label: (e) => e.name,
+        }
+      : undefined;
+
+  function exportSelectedEnquiries() {
+    if (enquiries.status !== "success") return;
+    const chosen = enquiries.data.items.filter((e) => selected.has(e.id));
+    downloadCsv(
+      "enquiries.csv",
+      ["From", "Company", "Requirement", "Status", "Received"],
+      chosen.map((e) => [e.name, e.company, e.requirement, STATUS_LABEL[e.status], new Date(e.created_at).toLocaleDateString()]),
+    );
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -202,14 +243,21 @@ export function EnquiriesPage() {
               <DataTable
                 rows={enquiries.data.items}
                 rowKey={(e) => e.id}
+                mobileCard="auto"
+                selection={enquirySelection}
+                bulkActions={
+                  <Button variant="outline" size="sm" onClick={exportSelectedEnquiries}>
+                    Export selected
+                  </Button>
+                }
                 toolbar={
                   <div className="flex flex-wrap items-center gap-3">
                     <SearchInput
                       label="Search enquiries"
                       placeholder="Name or company"
-                      value={query}
+                      value={rawQuery}
                       onChange={(e) => {
-                        setQuery(e.target.value);
+                        setRawQuery(e.target.value);
                         setPage(1);
                       }}
                     />
@@ -238,7 +286,7 @@ export function EnquiriesPage() {
                         <Button
                           variant="outline"
                           onClick={() => {
-                            setQuery("");
+                            setRawQuery("");
                             setStatus("");
                           }}
                         >
@@ -253,6 +301,7 @@ export function EnquiriesPage() {
                     {
                       key: "name",
                       header: "From",
+                      mobile: "title",
                       render: (e) => (
                         <div className="flex flex-col gap-0.5">
                           <span className="font-bold text-ink">{e.name}</span>
@@ -268,7 +317,8 @@ export function EnquiriesPage() {
                     {
                       key: "status",
                       header: "Status",
-                      render: (e) => <Tag tone={STATUS_TONE[e.status]}>{STATUS_LABEL[e.status]}</Tag>,
+                      mobile: "status",
+                      render: (e) => <StatusBadge tone={enquiryTone(e.status)} label={STATUS_LABEL[e.status]} />,
                     },
                     {
                       key: "created_at",
@@ -280,6 +330,7 @@ export function EnquiriesPage() {
                       key: "actions",
                       header: "",
                       align: "right",
+                      mobile: "actions",
                       render: (e) => (
                         <RowActions label={e.name} actions={[{ label: "View", onSelect: () => setOpenId(e.id) }]} />
                       ),

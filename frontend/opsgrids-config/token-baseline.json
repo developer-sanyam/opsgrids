@@ -3,8 +3,7 @@
     "spacing": 1
   },
   "opsgrids-dashboard/src/routes/Invoices.tsx": {
-    "arbitrary": 1,
-    "spacing": 17
+    "spacing": 7
   },
   "opsgrids-dashboard/src/routes/Login.tsx": {
     "spacing": 1
@@ -24,16 +23,11 @@
   "opsgrids-dashboard/src/routes/Signup.tsx": {
     "spacing": 1
   },
-  "opsgrids-dashboard/src/routes/Subscriptions.tsx": {
-    "arbitrary": 1,
-    "spacing": 11
-  },
   "opsgrids-dashboard/src/routes/admin/Domains.tsx": {
     "spacing": 2
   },
   "opsgrids-dashboard/src/routes/admin/Members.tsx": {
-    "arbitrary": 2,
-    "spacing": 10
+    "arbitrary": 1
   },
   "opsgrids-dashboard/src/routes/admin/OrgUnits.tsx": {
     "spacing": 2
@@ -269,7 +263,6 @@
     "arbitrary": 1
   },
   "product-engage/src/routes/Contacts.tsx": {
-    "arbitrary": 1,
     "spacing": 1
   },
   "product-engage/src/routes/ConversationThread.tsx": {
@@ -303,7 +296,6 @@
     "arbitrary": 1
   },
   "product-engage/src/routes/Suppressions.tsx": {
-    "arbitrary": 1,
     "spacing": 1
   },
   "product-engage/src/routes/WhatsAppConnection.tsx": {
@@ -551,9 +543,6 @@
   },
   "product-marketing/src/ui/StatTile.tsx": {
     "arbitrary": 1
-  },
-  "product-marketing/src/ui/StatusPill.tsx": {
-    "spacing": 2
   },
   "product-operations/src/routes/Inventory.tsx": {
     "spacing": 2

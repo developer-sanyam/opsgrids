@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { Can, useAsync } from "@opsgrids/client";
+import { Can, useAsync, useCan } from "@opsgrids/client";
 import { LayersIcon } from "@opsgrids/ui";
 
 import { deleteList, listLists } from "@/api/client";
 import type { ContactListOut } from "@/api/types";
+import { downloadCsv } from "@/lib/csv";
 import { failureMessage } from "@/lib/errors";
 import { useFocusHeading } from "@/lib/useFocusHeading";
 import { formatInstant, formatNumber } from "@/lib/format";
@@ -14,13 +15,16 @@ import {
   Button,
   Card,
   ConfirmDialog,
+  DataTable,
   EmptyState,
   LoadFailure,
   PageHeading,
   Pagination,
+  RowActions,
   Skeleton,
   useAnnounce,
 } from "@/ui";
+import type { Column, TableSelection } from "@/ui";
 import { ContactListFormDialog } from "./ContactListFormDialog";
 
 /**
@@ -29,52 +33,11 @@ import { ContactListFormDialog } from "./ContactListFormDialog";
  * itself, which would only ever be the count of the one page it happened to fetch.
  */
 
-function ListRow({
-  list,
-  onRename,
-  onDelete,
-}: {
-  list: ContactListOut;
-  onRename: () => void;
-  onDelete: () => void;
-}) {
-  return (
-    <tr className="border-t border-line align-top">
-      <th scope="row" className="py-3 pr-4 text-left">
-        <Link
-          to={`/lists/${list.id}`}
-          className="text-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-        >
-          {list.name}
-        </Link>
-        {list.description !== "" ? (
-          <span className="mt-1 block text-xs text-muted">{list.description}</span>
-        ) : null}
-      </th>
-      <td className="py-3 pr-4 text-sm tabular-nums text-ink">{formatNumber(list.member_count)}</td>
-      <td className="py-3 pr-4 text-sm text-muted">{formatInstant(list.updated_at)}</td>
-      <td className="py-3 whitespace-nowrap">
-        <Can permission="engage.audience.list.write" scope="ORG">
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={onRename}>
-              Rename
-              <span className="sr-only"> {list.name}</span>
-            </Button>
-            <Button variant="ghost" size="sm" className="text-negative" onClick={onDelete}>
-              Delete
-              <span className="sr-only"> {list.name}</span>
-            </Button>
-          </div>
-        </Can>
-      </td>
-    </tr>
-  );
-}
-
 const NO_LISTS: ContactListOut[] = [];
 
 function ContactLists() {
   const announce = useAnnounce();
+  const canWrite = useCan("engage.audience.list.write", "ORG");
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(25);
   const [creating, setCreating] = useState(false);
@@ -82,6 +45,7 @@ function ContactLists() {
   const [deleting, setDeleting] = useState<ContactListOut | null>(null);
   const [deleteFailure, setDeleteFailure] = useState<string | null>(null);
   const [deletePending, setDeletePending] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const loader = useCallback(() => listLists({ page, size }), [page, size]);
   const state = useAsync(loader, [page, size]);
@@ -120,6 +84,67 @@ function ContactLists() {
     } finally {
       setDeletePending(false);
     }
+  }
+
+  const columns: Column<ContactListOut>[] = [
+    {
+      key: "list",
+      header: "List",
+      mobile: "title",
+      render: (list) => (
+        <div className="flex flex-col">
+          <Link
+            to={`/lists/${list.id}`}
+            className="text-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            {list.name}
+          </Link>
+          {list.description !== "" ? <span className="text-xs text-muted">{list.description}</span> : null}
+        </div>
+      ),
+    },
+    { key: "members", header: "Members", cellClassName: "tnum", render: (list) => formatNumber(list.member_count) },
+    { key: "updated", header: "Updated", render: (list) => <span className="text-muted">{formatInstant(list.updated_at)}</span> },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      mobile: "actions",
+      render: (list) => (
+        <RowActions
+          label={list.name}
+          actions={[
+            { label: "Rename", onSelect: () => setRenaming(list), hidden: !canWrite },
+            { label: "Delete", tone: "danger", onSelect: () => setDeleting(list), hidden: !canWrite },
+          ]}
+        />
+      ),
+    },
+  ];
+
+  const listSelection: TableSelection<ContactListOut> | undefined =
+    state.status === "success"
+      ? {
+          selected,
+          onToggle: (key, next) =>
+            setSelected((prev) => {
+              const nextSet = new Set(prev);
+              if (next) nextSet.add(key);
+              else nextSet.delete(key);
+              return nextSet;
+            }),
+          onToggleAll: (next) => setSelected(next ? new Set(lists.map((l) => l.id)) : new Set()),
+          label: (list) => list.name,
+        }
+      : undefined;
+
+  function exportSelectedLists() {
+    const chosen = lists.filter((list) => selected.has(list.id));
+    downloadCsv(
+      "contact-lists.csv",
+      ["List", "Description", "Members", "Updated"],
+      chosen.map((list) => [list.name, list.description, String(list.member_count), formatInstant(list.updated_at)]),
+    );
   }
 
   return (
@@ -164,37 +189,19 @@ function ContactLists() {
 
       {state.status === "success" && lists.length > 0 ? (
         <Card className="p-6">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-3xl border-collapse text-left">
-              <caption className="sr-only">Contact lists, their size and when each last changed</caption>
-              <thead>
-                <tr className="text-xs font-bold uppercase tracking-wider text-faint">
-                  <th scope="col" className="pb-2 pr-4">
-                    List
-                  </th>
-                  <th scope="col" className="pb-2 pr-4">
-                    Members
-                  </th>
-                  <th scope="col" className="pb-2 pr-4">
-                    Updated
-                  </th>
-                  <th scope="col" className="pb-2">
-                    <span className="sr-only">Actions</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {lists.map((list) => (
-                  <ListRow
-                    key={list.id}
-                    list={list}
-                    onRename={() => setRenaming(list)}
-                    onDelete={() => setDeleting(list)}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            caption="Contact lists, their size and when each last changed"
+            rows={lists}
+            rowKey={(list) => list.id}
+            columns={columns}
+            mobileCard="auto"
+            selection={listSelection}
+            bulkActions={
+              <Button variant="outline" size="sm" onClick={exportSelectedLists}>
+                Export selected
+              </Button>
+            }
+          />
           <Pagination
             page={state.data.page}
             pages={state.data.pages}

@@ -54,12 +54,14 @@ export function DemandReport({ store }: { store: StoreOut }) {
     {
       key: "postal_code",
       header: "Postal code",
+      mobile: "title",
       cellClassName: "tnum font-bold",
       render: (row) => row.postal_code,
     },
     {
       key: "outcome",
       header: "What they were told",
+      mobile: "status",
       render: (row) => (
         <Tag tone={isUnmetDemand(row.outcome) ? "warning" : "neutral"}>
           {demandOutcomeLabel(row.outcome)}
@@ -181,44 +183,13 @@ export function DemandReport({ store }: { store: StoreOut }) {
         ) : null}
 
         {state.status === "success" && rows.length > 0 ? (
-          <>
-            {/* Four nowrap headers come to more than 390px on their own, so below `sm` the table
-                scrolled sideways and cut off "Times asked" — the one number the merchant opened
-                this report for. Measured in Chrome; the same markup passed in jsdom, which has no
-                layout engine. The stacked list below carries the same four facts. */}
-            <div className="hidden sm:block">
-              <DataTable
-                columns={columns}
-                rows={rows}
-                rowKey={(row) => `${row.postal_code}-${row.outcome}`}
-                caption="Postal codes people checked, most asked first"
-              />
-            </div>
-
-            <ul className="m-0 flex list-none flex-col gap-2 p-1 sm:hidden">
-              {rows.map((row) => (
-                <li
-                  key={`${row.postal_code}-${row.outcome}`}
-                  className="flex items-center justify-between gap-3 rounded-tile border border-line p-3"
-                >
-                  <div className="flex min-w-0 flex-col gap-1">
-                    <span className="font-bold tnum">{row.postal_code}</span>
-                    <Tag tone={isUnmetDemand(row.outcome) ? "warning" : "neutral"}>
-                      {demandOutcomeLabel(row.outcome)}
-                    </Tag>
-                  </div>
-                  <div className="shrink-0 text-right">
-                    <span className="block text-lg font-extrabold tnum">
-                      {row.checks.toLocaleString("en-IN")}
-                    </span>
-                    <span className="block text-xs text-muted">
-                      asked · last {formatShortDate(row.last_checked_on)}
-                    </span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </>
+          <DataTable
+            columns={columns}
+            rows={rows}
+            rowKey={(row) => `${row.postal_code}-${row.outcome}`}
+            caption="Postal codes people checked, most asked first"
+            mobileCard="auto"
+          />
         ) : null}
       </Card>
     </div>

@@ -4,7 +4,6 @@ import { Link } from "react-router-dom";
 import { deleteAudience, getAudiences, getCampaigns } from "@/api/client";
 import type { Audience, Campaign } from "@/api/types";
 import { campaignsForAudience } from "@/data/derive";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import { formatMoneyCompact, formatNumber } from "@/lib/format";
 import {
@@ -19,7 +18,7 @@ import {
   SearchInput,
   Skeleton,
 } from "@/ui";
-import { ArrowRightIcon, PlusIcon, UsersIcon, useToast } from "@opsgrids/ui";
+import { ArrowRightIcon, PlusIcon, UsersIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
 import { AudienceFormDialog } from "@/forms/AudienceFormDialog";
 
 const WRITE_PERMISSION = "marketing.analytics.campaign.write";

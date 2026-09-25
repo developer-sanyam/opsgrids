@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { Can, useAsync } from "@opsgrids/client";
+import { Can, useAsync, useCan } from "@opsgrids/client";
 import { ShieldIcon } from "@opsgrids/ui";
 
 import { listSuppressions, removeSuppression } from "@/api/client";
 import type { SuppressionOut, SuppressionReason } from "@/api/types";
+import { downloadCsv } from "@/lib/csv";
 import { failureMessage } from "@/lib/errors";
 import { formatInstant } from "@/lib/format";
 import {
@@ -12,16 +13,18 @@ import {
   Button,
   Card,
   ConfirmDialog,
+  DataTable,
   EmptyState,
   LoadFailure,
   PageHeader,
   Pagination,
+  RowActions,
   Select,
   Skeleton,
   SuppressionReasonTag,
   useAnnounce,
 } from "@/ui";
-import type { SelectOption } from "@/ui";
+import type { Column, SelectOption, TableSelection } from "@/ui";
 import { SuppressionFormDialog } from "./SuppressionFormDialog";
 
 /**
@@ -41,42 +44,18 @@ const REASON_OPTIONS: SelectOption[] = [
   { value: "complained", label: "Complained" },
 ];
 
-function SuppressionRow({
-  suppression,
-  onRemove,
-}: {
-  suppression: SuppressionOut;
-  onRemove: () => void;
-}) {
-  return (
-    <tr className="border-t border-line align-top">
-      <th scope="row" className="py-3 pr-4 text-left font-mono text-sm text-ink">
-        {suppression.email}
-      </th>
-      <td className="py-3 pr-4">
-        <SuppressionReasonTag reason={suppression.reason} />
-      </td>
-      <td className="py-3 pr-4 text-sm text-muted">{formatInstant(suppression.created_at)}</td>
-      <td className="py-3 whitespace-nowrap">
-        {suppression.reason === "manual" ? (
-          <Can permission="engage.audience.suppression.write" scope="ORG">
-            <Button variant="ghost" size="sm" className="text-negative" onClick={onRemove}>
-              Remove
-              <span className="sr-only"> suppression on {suppression.email}</span>
-            </Button>
-          </Can>
-        ) : (
-          <span className="text-xs text-faint">Reported automatically</span>
-        )}
-      </td>
-    </tr>
-  );
-}
+const REASON_LABEL: Record<SuppressionReason, string> = {
+  manual: "Added by hand",
+  unsubscribed: "Unsubscribed",
+  bounced: "Bounced",
+  complained: "Complained",
+};
 
 const NO_SUPPRESSIONS: SuppressionOut[] = [];
 
 function Suppressions() {
   const announce = useAnnounce();
+  const canWrite = useCan("engage.audience.suppression.write", "ORG");
   const [reason, setReason] = useState<SuppressionReason | "">("");
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(25);
@@ -84,6 +63,7 @@ function Suppressions() {
   const [removing, setRemoving] = useState<SuppressionOut | null>(null);
   const [removeFailure, setRemoveFailure] = useState<string | null>(null);
   const [removePending, setRemovePending] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const loader = useCallback(
     () => listSuppressions({ ...(reason === "" ? {} : { reason }), page, size }),
@@ -121,6 +101,62 @@ function Suppressions() {
     } finally {
       setRemovePending(false);
     }
+  }
+
+  const columns: Column<SuppressionOut>[] = [
+    {
+      key: "address",
+      header: "Address",
+      mobile: "title",
+      render: (s) => <span className="font-mono text-sm text-ink">{s.email}</span>,
+    },
+    {
+      key: "reason",
+      header: "Reason",
+      mobile: "status",
+      render: (s) => <SuppressionReasonTag reason={s.reason} />,
+    },
+    { key: "added", header: "Added", render: (s) => <span className="text-muted">{formatInstant(s.created_at)}</span> },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      mobile: "actions",
+      render: (s) =>
+        s.reason === "manual" ? (
+          <RowActions
+            label={`suppression on ${s.email}`}
+            actions={[{ label: "Remove", tone: "danger", onSelect: () => setRemoving(s), hidden: !canWrite }]}
+          />
+        ) : (
+          <span className="text-xs text-faint">Reported automatically</span>
+        ),
+    },
+  ];
+
+  const suppressionSelection: TableSelection<SuppressionOut> | undefined =
+    state.status === "success"
+      ? {
+          selected,
+          onToggle: (key, next) =>
+            setSelected((prev) => {
+              const nextSet = new Set(prev);
+              if (next) nextSet.add(key);
+              else nextSet.delete(key);
+              return nextSet;
+            }),
+          onToggleAll: (next) => setSelected(next ? new Set(suppressions.map((s) => s.id)) : new Set()),
+          label: (s) => s.email,
+        }
+      : undefined;
+
+  function exportSelectedSuppressions() {
+    const chosen = suppressions.filter((s) => selected.has(s.id));
+    downloadCsv(
+      "suppressions.csv",
+      ["Address", "Reason", "Added"],
+      chosen.map((s) => [s.email, REASON_LABEL[s.reason], formatInstant(s.created_at)]),
+    );
   }
 
   return (
@@ -176,38 +212,19 @@ function Suppressions() {
 
       {state.status === "success" && suppressions.length > 0 ? (
         <Card className="p-6">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[44rem] border-collapse text-left">
-              <caption className="sr-only">
-                Suppressed addresses, the reason for each and when it was added
-              </caption>
-              <thead>
-                <tr className="text-xs font-bold uppercase tracking-wider text-faint">
-                  <th scope="col" className="pb-2 pr-4">
-                    Address
-                  </th>
-                  <th scope="col" className="pb-2 pr-4">
-                    Reason
-                  </th>
-                  <th scope="col" className="pb-2 pr-4">
-                    Added
-                  </th>
-                  <th scope="col" className="pb-2">
-                    <span className="sr-only">Actions</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {suppressions.map((suppression) => (
-                  <SuppressionRow
-                    key={suppression.id}
-                    suppression={suppression}
-                    onRemove={() => setRemoving(suppression)}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            caption="Suppressed addresses, the reason for each and when it was added"
+            rows={suppressions}
+            rowKey={(s) => s.id}
+            columns={columns}
+            mobileCard="auto"
+            selection={suppressionSelection}
+            bulkActions={
+              <Button variant="outline" size="sm" onClick={exportSelectedSuppressions}>
+                Export selected
+              </Button>
+            }
+          />
           <Pagination
             page={state.data.page}
             pages={state.data.pages}
