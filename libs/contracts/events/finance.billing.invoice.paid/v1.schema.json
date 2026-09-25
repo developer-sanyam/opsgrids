@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/finance.billing.invoice.paid/v1",
+  "title": "finance.billing.invoice.paid",
+  "description": "An invoice's allocations reached its total and it moved to `paid`, inside the payment's own transaction. `amount_paid_minor` is the cumulative amount allocated to it. `paid_date` is the settling payment's `received_date`.",
+  "$comment": "Ahead of the producer (ADR-0020 slice I2): services/finance/app/services.py:record_payment does not emit currency, paid_date yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "invoice_id",
+    "number",
+    "payment_id",
+    "amount_paid_minor",
+    "currency",
+    "paid_date"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "invoice_id": { "type": "string", "format": "uuid" },
+    "number": { "type": "string", "minLength": 1 },
+    "payment_id": { "type": "string", "format": "uuid" },
+    "amount_paid_minor": { "type": "integer", "minimum": 0 },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "paid_date": { "type": "string", "format": "date" }
+  }
+}

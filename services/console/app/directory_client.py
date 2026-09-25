@@ -24,6 +24,7 @@ straight to account, bypassing console, is refused.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import httpx
 
@@ -74,4 +75,43 @@ async def get_organization(
     if response.status_code != 200:
         raise DirectoryLookupError(f"account-service refused the lookup: {response.status_code}")
     payload: dict[str, object] = response.json()
+    return payload
+
+
+async def list_members(
+    settings: Settings,
+    organization_id: uuid.UUID,
+    *,
+    operator_token: str,
+    client: httpx.AsyncClient,
+    page: int,
+    size: int,
+) -> dict[str, Any] | None:
+    """One page of the organization's members, or `None` when account-service has no such
+    organization. Same two-credential shape as `get_organization` — the same route family,
+    `app/api/admin.py`'s `list_members_for_operator`, just the paginated sibling."""
+    url = (
+        f"{settings.account_public_url}/api/v1/admin/directory/organizations/"
+        f"{organization_id}/members"
+    )
+    try:
+        response = await client.get(
+            url,
+            params={"page": page, "size": size},
+            headers={
+                "X-Internal-Token": mint_service_token(
+                    settings, audience="account", caller="console"
+                ),
+                "X-Operator-Token": operator_token,
+            },
+        )
+    except httpx.HTTPError as exc:
+        raise DirectoryLookupError(f"account-service was unreachable: {exc}") from exc
+    if response.status_code == 404:
+        return None
+    if response.status_code != 200:
+        raise DirectoryLookupError(
+            f"account-service refused the members lookup: {response.status_code}"
+        )
+    payload: dict[str, Any] = response.json()
     return payload

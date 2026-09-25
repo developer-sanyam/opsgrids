@@ -5,6 +5,12 @@
   "description": "Workspace root: tools that look across every package at once. `pnpm -r` does not run these.",
   "type": "module",
   "engines": { "node": ">=22" },
+  "scripts": {
+    "visual:check": "pnpm --filter @opsgrids/visual run visual:check",
+    "visual:update": "pnpm --filter @opsgrids/visual run visual:update",
+    "visual:report": "pnpm --filter @opsgrids/visual run visual:report",
+    "tokens:baseline": "pnpm --filter @opsgrids/config run tokens:baseline"
+  },
   "devDependencies": {
     "dependency-cruiser": "18.4.0",
     "typescript": "^5.7.0"

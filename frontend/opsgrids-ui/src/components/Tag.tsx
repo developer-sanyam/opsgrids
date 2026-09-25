@@ -5,7 +5,7 @@ import { cn } from "../lib/cn";
 export type TagTone = "neutral" | "warning" | "positive" | "negative" | "info";
 
 const TONES: Record<TagTone, string> = {
-  neutral: "bg-ground text-muted",
+  neutral: "bg-neutral-soft text-neutral",
   warning: "bg-late-soft text-late",
   positive: "bg-present-soft text-present",
   negative: "bg-negative-soft text-negative",
@@ -14,7 +14,8 @@ const TONES: Record<TagTone, string> = {
 
 /**
  * A quiet tag for metadata — an employment type, a warehouse, a plan interval, why a request is in
- * your inbox. Not a status: anything with a lifecycle meaning belongs in that product's status pill.
+ * your inbox. Not a status: anything with a lifecycle meaning is a `StatusBadge`, so the same word
+ * looks the same in every product.
  *
  * `tone` exists for the handful of tags that qualify rather than describe ("Unassigned — no
  * approver found"). It never carries the meaning on its own: the words do, and the tone agrees
@@ -32,7 +33,7 @@ export function Tag({
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium",
+        "inline-flex items-center rounded-chip px-2 py-0.5 text-caption font-medium",
         TONES[tone],
         className,
       )}

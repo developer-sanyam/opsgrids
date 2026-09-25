@@ -1,8 +1,8 @@
 """The internal API — service-to-service, never reachable from outside the cluster.
 
-Three endpoints, all operator delegates: a suspension, and the subscribe and change-plan that
-are the only way a bundle is sold (the customer routes refuse bundles). The operator console (a
-later phase) delegates here rather than reaching into this service's schema. Overrides are
+Operator delegates: a suspension and its inverse, a reactivation, and the subscribe and
+change-plan that are the only way a bundle is sold (the customer routes refuse bundles). The
+operator console delegates here rather than reaching into this service's schema. Overrides are
 enacted in the service that owns the state —
 `subscription` owns the lifecycle, so a staff suspension is a `commerce.subscription.suspended`
 event emitted from here, which the product-service projection turns into a de-entitled
@@ -34,6 +34,7 @@ from app.registry import ProductRegistry
 from app.schemas import (
     OperatorChangePlanIn,
     OperatorSubscribeIn,
+    ReactivateIn,
     SubscriptionOperatorOut,
     SubscriptionOut,
     SuspendIn,
@@ -107,6 +108,49 @@ async def suspend_subscription(
         result = SubscriptionOut.model_validate(subscription)
     log.info(
         "subscription.suspended",
+        subscription_id=str(subscription_id),
+        organization_id=str(payload.organization_id),
+    )
+    return result
+
+
+@router.post(
+    "/subscriptions/{subscription_id}/reactivate",
+    response_model=SubscriptionOut,
+    summary="Reactivate a suspended subscription — the console's operator delegate",
+)
+async def reactivate_subscription(
+    subscription_id: uuid.UUID,
+    payload: ReactivateIn,
+    _caller: ConsoleCallerDep,
+    session: SessionDep,
+    request: Request,
+) -> SubscriptionOut:
+    """Lift an operator's (or dunning's) suspension on the subscription's owning organization.
+
+    `suspend_subscription`'s inverse, bound and isolated the same way: the transaction is opened
+    here and bound to the named organization as its first statement, and RLS confirms the
+    subscription really belongs to it (another tenant's id is invisible, a 404). Console-only —
+    the narrower `ConsoleCallerDep`, which `suspend_subscription` predates — because lifting a
+    hold is a cross-tenant staff write and no other service has any business reaching it. A
+    subscription that is not `suspended` is a 409.
+    """
+    settings: ServiceSettings = request.app.state.settings
+    async with session.begin():
+        await set_tenant(session, payload.organization_id)
+        if not settings.is_production:
+            await assert_tenant(session, payload.organization_id)
+        subscription = await services.require_subscription(session, subscription_id)
+        subscription = await services.reactivate(
+            session,
+            subscription,
+            operator_id=payload.operator_id or "console",
+            reason=payload.reason,
+            request=request,
+        )
+        result = SubscriptionOut.model_validate(subscription)
+    log.info(
+        "subscription.reactivated",
         subscription_id=str(subscription_id),
         organization_id=str(payload.organization_id),
     )

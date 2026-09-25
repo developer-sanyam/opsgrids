@@ -313,7 +313,7 @@ function AttendanceTable() {
                 Check in
               </Button>
             )}
-            <label className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold cursor-pointer">
+            <label className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold cursor-pointer focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2">
               <CalendarCheckIcon className="size-4 text-muted" />
               <span className="sr-only">Select date</span>
               <input

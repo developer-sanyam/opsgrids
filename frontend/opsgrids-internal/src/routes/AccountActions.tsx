@@ -39,7 +39,7 @@ function DelegationNote({ children }: { children: ReactNode }) {
 
 function ErrorNote({ message }: { message: string }) {
   return (
-    <p role="alert" className="rounded-tile bg-suspended-soft px-3 py-2.5 text-sm font-medium text-suspended">
+    <p role="alert" className="rounded-tile bg-danger-soft px-3 py-2.5 text-sm font-medium text-danger">
       {message}
     </p>
   );
@@ -52,7 +52,7 @@ function ErrorNote({ message }: { message: string }) {
 function ResultPanel({ result, onClose }: { result: OverrideResult; onClose: () => void }) {
   return (
     <div className="flex flex-col items-center gap-4 py-4 text-center" role="status" aria-live="polite">
-      <span className="grid size-14 place-items-center rounded-full bg-active-soft text-active">
+      <span className="grid size-14 place-items-center rounded-full bg-present-soft text-present">
         <CheckCircleIcon className="size-7" />
       </span>
       <div className="flex flex-col gap-1">

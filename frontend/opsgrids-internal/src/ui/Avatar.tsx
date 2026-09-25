@@ -13,10 +13,10 @@ const SIZES: Record<Size, string> = {
 const TINTS = [
   "bg-accent-soft text-accent-ink",
   "bg-ink text-white",
-  "bg-trial-soft text-trial",
-  "bg-active-soft text-active",
-  "bg-comp-soft text-comp",
-  "bg-pastdue-soft text-pastdue",
+  "bg-info-soft text-info",
+  "bg-present-soft text-present",
+  "bg-cyan-soft text-cyan",
+  "bg-late-soft text-late",
 ];
 
 function tintFor(name: string): string {

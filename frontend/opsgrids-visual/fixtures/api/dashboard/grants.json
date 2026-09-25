@@ -1,0 +1,13 @@
+{
+  "membership_id": "c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f",
+  "pv": 7,
+  "grants": [
+    "core.identity.membership.read:ORG",
+    "core.identity.membership.write:ORG",
+    "core.identity.role.read:ORG",
+    "core.org.organization.read:ORG",
+    "core.org.unit.read:ORG",
+    "core.org.location.read:ORG",
+    "core.identity.domain.read:ORG"
+  ]
+}

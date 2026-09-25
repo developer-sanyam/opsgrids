@@ -115,6 +115,8 @@ async def _backfill_one_organization(
         name=str(org["name"]),
         slug=str(org["slug"]),
         source_updated_at=org_updated_at,
+        country=org.get("country"),
+        org_created_at=_parse_dt(str(org["created_at"])) if org.get("created_at") else None,
     )
 
     for sub in subscriptions:

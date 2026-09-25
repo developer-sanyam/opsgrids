@@ -403,16 +403,11 @@
       "profile": null,
       "note": "backlog: a platform config surface (feature flags / org-level settings) named core rather than product-profiled, since every product would read it. No service directory yet — priced against core so a future slice adding it to `containers` with `profile: null` matches this placeholder."
     },
-    "analytics-api": {
-      "container": "analytics",
-      "kind": "api",
-      "profile": "analytics",
-      "note": "backlog: cross-product analytics/reporting. New profile; no service directory yet."
-    },
-    "analytics-worker": {
-      "kind": "background",
-      "profile": "analytics",
-      "note": "backlog: analytics' rollup/aggregation sweep, assumed to run on a schedule against event data the way finance's e-Invoice retry does."
+    "insights-api": {
+      "container": "insights",
+      "kind": "api_with_worker",
+      "profile": null,
+      "note": "ADR-0020 (2026-09-25): the cross-product insights projection behind the role dashboards. It replaces this file's earlier `analytics-api` + `analytics-worker` placeholders (api 98 + background 90 = 188 MB projected) with one container: the event consumer, the hourly snapshot sweep and the backfill runner all fold into the API process (RUN_CONSUMERS_IN_API), priced at the measured api_with_worker kind. Core (`profile: null`) because the tenant home serves every organization whatever it has activated. No service directory yet. Delete this placeholder in the slice that adds `insights` (and its `insights-worker` rollback behind split-workers) to `containers`."
     },
     "marketplace-api": {
       "container": "marketplace",

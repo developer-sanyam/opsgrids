@@ -10,6 +10,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { CheckboxGroup } from "./CheckboxGroup";
+import { FormSection } from "./FormSection";
 import { InlineAlert } from "./InlineAlert";
 import { RadioGroup } from "./RadioGroup";
 import { Select } from "./Select";
@@ -42,6 +43,37 @@ describe("TextField", () => {
     expect(describedText(input)).toContain("Six digits, as printed on the badge.");
     expect(describedText(input)).toContain("That number doesn't exist.");
     expect(input.getAttribute("aria-invalid")).toBe("true");
+  });
+
+  it("marks a required field with an asterisk that stays out of the label's words", () => {
+    render(
+      <FormSection title="Basic information">
+        <TextField label="Product name" required />
+      </FormSection>,
+    );
+    // The label is exactly the words — an exact-string lookup still finds it — and the input
+    // itself carries `required`, which is what a screen reader announces. The mark only appears
+    // inside a `FormSection`, so labels in forms that have not moved over are unchanged.
+    const input = screen.getByLabelText("Product name");
+    expect(input.hasAttribute("required")).toBe(true);
+    const star = screen.getByText("*");
+    expect(star.getAttribute("aria-hidden")).toBe("true");
+    expect(star.closest("label")).toBeNull();
+  });
+
+  it("draws no asterisk on a field that is not required, or whose label is hidden", () => {
+    const { rerender } = render(
+      <FormSection title="Details">
+        <TextField label="Nickname" />
+      </FormSection>,
+    );
+    expect(screen.queryByText("*")).toBeNull();
+    rerender(
+      <FormSection title="Details">
+        <TextField label="Quantity" required hideLabel />
+      </FormSection>,
+    );
+    expect(screen.queryByText("*")).toBeNull();
   });
 });
 

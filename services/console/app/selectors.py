@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, literal, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import domain
 from app.models import AuditLog, OrgCommercialState, RevenueEvent, UsageSummary
+from app.schemas import OrgStateOut
 
 TRIAL_STARTED = "commerce.subscription.trial_started"
 ACTIVATED = "commerce.subscription.activated"
@@ -65,7 +68,7 @@ async def get_org_state(session: AsyncSession, organization_id: Any) -> OrgComme
 LIFECYCLE_BUCKETS = ("suspended", "active", "trial", "churned", "none")
 
 
-def _lifecycle_of(state: OrgCommercialState) -> str:
+def lifecycle_of(state: OrgCommercialState) -> str:
     if state.locked:
         return "suspended"
     statuses = {entry.get("state") for entry in state.subscription_states.values()}
@@ -82,32 +85,90 @@ async def lifecycle_counts(session: AsyncSession) -> dict[str, int]:
     """Organization counts by lifecycle bucket, for the platform metrics overview."""
     counts = dict.fromkeys(LIFECYCLE_BUCKETS, 0)
     for state in await all_org_states(session):
-        counts[_lifecycle_of(state)] += 1
+        counts[lifecycle_of(state)] += 1
     return counts
 
 
-async def all_usage(session: AsyncSession) -> Sequence[UsageSummary]:
-    """Every organization's usage rollups."""
-    return (
-        (
-            await session.execute(
-                select(UsageSummary).order_by(
-                    UsageSummary.organization_id, UsageSummary.meter_key, UsageSummary.period
-                )
-            )
+def to_org_state_out(state: OrgCommercialState, *, user_count: int | None = None) -> OrgStateOut:
+    """Shape one commercial snapshot the way the operator list and detail composite render it —
+    `lifecycle` computed server-side (the same bucket `lifecycle_counts` uses, so the client never
+    reimplements the rule), plus the mirrored identity fields. Not a plain
+    `OrgStateOut.model_validate(state)`: the model's own `org_created_at` column is named to
+    avoid colliding with `TenantBase`'s bookkeeping `created_at`, so it is remapped explicitly
+    here rather than by an attribute-name coincidence.
+
+    `user_count` is the one field this doesn't have from `state` at all — merged in live from
+    account-service by the caller (`GET /admin/organizations`), `None` everywhere else (the
+    detail composite has no reason to make that extra call twice in one request).
+    """
+    return OrgStateOut(
+        organization_id=state.organization_id,
+        name=state.name,
+        slug=state.slug,
+        country=state.country,
+        lifecycle=lifecycle_of(state),
+        created_at=state.org_created_at,
+        mrr_minor=state.mrr_minor,
+        currency=state.currency,
+        active_products=state.active_products,
+        subscription_states=state.subscription_states,
+        trial_ends_at=state.trial_ends_at,
+        locked=state.locked,
+        updated_at=state.updated_at,
+        user_count=user_count,
+    )
+
+
+async def all_usage(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID | None = None,
+    limit: int | None = None,
+    after: tuple[uuid.UUID, str, str] | None = None,
+) -> Sequence[UsageSummary]:
+    """Every organization's usage rollups, oldest-organization-first — optionally narrowed to
+    one organization and paged with a keyset cursor on the same `(organization_id, meter_key,
+    period)` ordering the unfiltered read already used, so an org-scoped page and the platform
+    page agree on what "next" means. `limit=None` is the pre-pagination behaviour (every row,
+    still used by the RLS-bypass companion test) — every real caller passes one.
+    """
+    stmt = select(UsageSummary).order_by(
+        UsageSummary.organization_id, UsageSummary.meter_key, UsageSummary.period
+    )
+    if organization_id is not None:
+        stmt = stmt.where(UsageSummary.organization_id == organization_id)
+    if after is not None:
+        after_org, after_meter, after_period = after
+        stmt = stmt.where(
+            tuple_(UsageSummary.organization_id, UsageSummary.meter_key, UsageSummary.period)
+            > tuple_(literal(after_org), literal(after_meter), literal(after_period))
         )
-        .scalars()
-        .all()
-    )
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return (await session.execute(stmt)).scalars().all()
 
 
-async def recent_audit(session: AsyncSession, *, limit: int = 200) -> Sequence[AuditLog]:
-    """The most recent operator-override audit rows across every organization."""
-    return (
-        (await session.execute(select(AuditLog).order_by(AuditLog.at.desc()).limit(limit)))
-        .scalars()
-        .all()
-    )
+async def recent_audit(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID | None = None,
+    limit: int = 200,
+    after: tuple[datetime, uuid.UUID] | None = None,
+) -> Sequence[AuditLog]:
+    """The most recent operator-override audit rows, newest first — optionally narrowed to one
+    organization and paged with a keyset cursor. Ordered `at DESC, id DESC`: several audit rows
+    can share the same `at` (two overrides in the same request-second), so `id` is the
+    tiebreaker a plain-`at` cursor would otherwise silently skip or repeat rows around.
+    """
+    stmt = select(AuditLog).order_by(AuditLog.at.desc(), AuditLog.id.desc()).limit(limit)
+    if organization_id is not None:
+        stmt = stmt.where(AuditLog.organization_id == organization_id)
+    if after is not None:
+        after_at, after_id = after
+        stmt = stmt.where(
+            tuple_(AuditLog.at, AuditLog.id) < tuple_(literal(after_at), literal(after_id))
+        )
+    return (await session.execute(stmt)).scalars().all()
 
 
 async def platform_metrics(session: AsyncSession) -> dict[str, Any]:
@@ -175,6 +236,80 @@ async def platform_metrics(session: AsyncSession) -> dict[str, Any]:
         "churn_rate": (
             round(churned / (churned + active_count), 4) if (churned + active_count) else 0.0
         ),
+    }
+
+
+async def metrics_series(session: AsyncSession, *, months: int) -> dict[str, Any]:
+    """`GET /admin/metrics/series`'s whole payload: MRR, new organizations, trials started,
+    conversions and churn, one point per month for the last `months` calendar months.
+
+    Two independent sources, each shaped into a plain value before handing off to the pure
+    replay in `domain.py` (this module does the I/O; `domain.commercial_series` decides the
+    numbers): every subscription-lifecycle `revenue_events` row, oldest first, for the four
+    commercial series, and every organization's own `org_created_at` for the new-organizations
+    one — deliberately *not* from `revenue_events`, which never carries an organization's birth,
+    only what it bought (see `domain.new_organizations_by_month`).
+    """
+    period_keys = domain.month_sequence(end=datetime.now(UTC), months=months)
+
+    rows = (
+        (
+            await session.execute(
+                select(RevenueEvent)
+                .where(RevenueEvent.kind.in_(domain.SUBSCRIPTION_EVENTS))
+                .order_by(RevenueEvent.occurred_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    events = [
+        domain.RevenueEventRecord(
+            organization_id=str(row.organization_id),
+            kind=row.kind,
+            amount_minor=row.amount_minor,
+            occurred_at=row.occurred_at.isoformat(),
+            from_state=row.meta.get("from_state"),
+            to_state=row.meta.get("to_state"),
+            product_key=row.meta.get("product_key"),
+            stale=bool(row.meta.get("stale", False)),
+        )
+        for row in rows
+    ]
+    series = domain.commercial_series(events, period_keys)
+
+    created_ats = (
+        (
+            await session.execute(
+                select(OrgCommercialState.org_created_at).where(
+                    OrgCommercialState.org_created_at.is_not(None)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    new_organizations = domain.new_organizations_by_month(
+        [c.isoformat() for c in created_ats if c is not None], period_keys
+    )
+
+    _, currency = (
+        await session.execute(
+            select(
+                func.coalesce(func.sum(OrgCommercialState.mrr_minor), 0),
+                func.min(OrgCommercialState.currency),
+            )
+        )
+    ).one()
+
+    return {
+        "currency": currency,
+        "periods": period_keys,
+        "mrr_minor": series["mrr_minor"],
+        "trials_started": series["trials_started"],
+        "trial_conversions": series["trial_conversions"],
+        "churned": series["churned"],
+        "new_organizations": new_organizations,
     }
 
 

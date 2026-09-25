@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/hrms.time.leave.cancelled/v1",
+  "title": "hrms.time.leave.cancelled",
+  "description": "A leave request was cancelled. `was_status` is the status it left.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "leave_request_id", "employee_id", "was_status"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "leave_request_id": { "type": "string", "format": "uuid" },
+    "employee_id": { "type": "string", "format": "uuid" },
+    "was_status": { "enum": ["pending", "approved", "rejected", "cancelled", "failed"] }
+  }
+}

@@ -85,7 +85,7 @@ function GrantModal({
     >
       {result ? (
         <div className="flex flex-col items-center gap-4 py-4 text-center" role="status" aria-live="polite">
-          <span className="grid size-14 place-items-center rounded-full bg-active-soft text-active">
+          <span className="grid size-14 place-items-center rounded-full bg-present-soft text-present">
             <CheckCircleIcon className="size-7" />
           </span>
           <p className="text-base font-bold">Grant recorded</p>
@@ -97,7 +97,7 @@ function GrantModal({
       ) : (
         <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
           {error ? (
-            <p role="alert" className="rounded-tile bg-suspended-soft px-3 py-2.5 text-sm font-medium text-suspended">
+            <p role="alert" className="rounded-tile bg-danger-soft px-3 py-2.5 text-sm font-medium text-danger">
               {error}
             </p>
           ) : null}
@@ -236,10 +236,10 @@ export function GrantsPage() {
       </p>
 
       {banner ? (
-        <div role="status" className="flex items-center gap-3 rounded-card bg-active-soft px-4 py-3 text-sm text-active">
+        <div role="status" className="flex items-center gap-3 rounded-card bg-present-soft px-4 py-3 text-sm text-present">
           <CheckCircleIcon className="size-5 shrink-0" />
           <span className="font-semibold">Delegated to {banner.delegated_to}-service.</span>
-          <button type="button" onClick={() => setBanner(null)} className="ml-auto text-xs font-semibold text-active/70 hover:text-active">
+          <button type="button" onClick={() => setBanner(null)} className="ml-auto text-xs font-semibold text-present/70 hover:text-present">
             Dismiss
           </button>
         </div>

@@ -92,7 +92,7 @@ export function Timeline({
           type="button"
           onClick={expand}
           aria-expanded={expanded}
-          className="self-start rounded-full text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
+          className="self-start rounded-tile text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
         >
           {expandLabel(entries.length)}
         </button>

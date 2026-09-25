@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/crm.lead.created/v1",
+  "title": "crm.lead.created",
+  "description": "A lead entered intake. `owner_id` is null when assignment found nobody. It is the column lead's OWN scope compares with the caller's subject reference.",
+  "$comment": "Ahead of the producer (ADR-0020 slice I4): services/lead/app/services.py:create_lead does not emit status yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "lead_id", "source", "status", "owner_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "lead_id": { "type": "string", "format": "uuid" },
+    "source": { "enum": ["form", "import", "manual"] },
+    "status": { "enum": ["new", "working", "qualified", "disqualified", "converted"] },
+    "owner_id": { "type": ["string", "null"], "format": "uuid" }
+  }
+}

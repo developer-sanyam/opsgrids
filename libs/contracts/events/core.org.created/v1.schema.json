@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/core.org.created/v1",
+  "title": "core.org.created",
+  "description": "An organization was created (signup or operator). Carries the settings a projection needs to interpret dates and money for it: `timezone` (IANA; account defaults it to Asia/Kolkata), `currency`, and `fiscal_year_start_month` (1-12; account defaults it to 4, April).",
+  "$comment": "Ahead of the producer (ADR-0020 slice I1): services/account/app/services.py:create_organization does not emit fiscal_year_start_month yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "slug",
+    "name",
+    "timezone",
+    "currency",
+    "fiscal_year_start_month",
+    "country",
+    "status"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "slug": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "timezone": { "type": "string", "minLength": 1 },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "fiscal_year_start_month": { "type": "integer", "minimum": 1, "maximum": 12 },
+    "country": { "type": ["string", "null"] },
+    "status": { "type": "string", "minLength": 1 }
+  }
+}

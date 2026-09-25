@@ -101,8 +101,8 @@ function NavRow({
           {item.badge ? (
             <span
               className={cn(
-                "ml-auto grid h-5 min-w-5 place-items-center rounded-full px-1.5 text-[0.7rem] font-bold text-white tnum",
-                badgeTone === "danger" ? "bg-danger" : "bg-accent",
+                "ml-auto grid h-5 min-w-5 place-items-center rounded-full px-1.5 text-[0.7rem] font-bold tnum",
+                badgeTone === "danger" ? "bg-negative text-on-negative" : "bg-accent text-on-accent",
               )}
             >
               {item.badge}

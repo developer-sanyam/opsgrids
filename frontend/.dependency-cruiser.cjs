@@ -97,7 +97,7 @@ module.exports = {
   ],
   options: {
     doNotFollow: { path: "node_modules" },
-    exclude: { path: "(^|/)(dist|dist-buyer|node_modules)/" },
+    exclude: { path: "(^|/)(dist|dist-buyer|node_modules|storybook-static)/" },
     // Type-only imports count: a cycle through `import type` is still a cycle in the design.
     tsPreCompilationDeps: true,
     // `@/` → this package's `src/`. See that file for why it is not read from the tsconfigs.

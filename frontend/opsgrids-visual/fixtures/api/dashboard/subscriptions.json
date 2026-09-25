@@ -1,0 +1,36 @@
+[
+  {
+    "id": "90000000-0000-4000-8000-000000000001",
+    "product_key": "crm",
+    "plan_version_id": "b0000000-0000-4000-8000-000000000001",
+    "state": "trial",
+    "currency": "INR",
+    "trial_ends_at": "2026-09-24T05:00:00Z",
+    "current_period_start": null,
+    "current_period_end": null,
+    "cancel_at": null,
+    "pending_plan_version_id": null,
+    "entitled_products": [
+      "crm"
+    ],
+    "items": [],
+    "dunning": null
+  },
+  {
+    "id": "90000000-0000-4000-8000-000000000002",
+    "product_key": "hrms",
+    "plan_version_id": "b0000001-0000-4000-8000-000000000001",
+    "state": "active",
+    "currency": "INR",
+    "trial_ends_at": null,
+    "current_period_start": "2026-09-01T00:00:00Z",
+    "current_period_end": "2026-10-01T00:00:00Z",
+    "cancel_at": null,
+    "pending_plan_version_id": null,
+    "entitled_products": [
+      "hrms"
+    ],
+    "items": [],
+    "dunning": null
+  }
+]

@@ -1,0 +1,143 @@
+{
+  "page/crm/deals-list|dark|1280": {
+    "color-contrast": 1,
+    "empty-table-header": 1
+  },
+  "page/crm/deals-list|dark|375": {
+    "button-name": 2,
+    "empty-table-header": 1,
+    "region": 1
+  },
+  "page/crm/deals-list|dark|768": {
+    "color-contrast": 1,
+    "empty-table-header": 1,
+    "region": 1
+  },
+  "page/crm/deals-list|light|1280": {
+    "empty-table-header": 1
+  },
+  "page/crm/deals-list|light|375": {
+    "button-name": 2,
+    "empty-table-header": 1,
+    "region": 1
+  },
+  "page/crm/deals-list|light|768": {
+    "empty-table-header": 1,
+    "region": 1
+  },
+  "page/crm/new-deal-dialog|dark|1280": {
+    "color-contrast": 1
+  },
+  "page/crm/new-deal-dialog|dark|375": {
+    "button-name": 2,
+    "region": 1
+  },
+  "page/crm/new-deal-dialog|dark|768": {
+    "color-contrast": 1,
+    "region": 1
+  },
+  "page/crm/new-deal-dialog|light|375": {
+    "button-name": 2,
+    "region": 1
+  },
+  "page/crm/new-deal-dialog|light|768": {
+    "region": 1
+  },
+  "page/crm/overview|dark|375": {
+    "region": 1
+  },
+  "page/crm/overview|dark|768": {
+    "region": 1
+  },
+  "page/crm/overview|light|375": {
+    "region": 1
+  },
+  "page/crm/overview|light|768": {
+    "region": 1
+  },
+  "page/dashboard/marketplace|dark|1280": {
+    "color-contrast": 2
+  },
+  "page/dashboard/marketplace|dark|375": {
+    "color-contrast": 2,
+    "region": 1
+  },
+  "page/dashboard/marketplace|dark|768": {
+    "color-contrast": 2,
+    "region": 1
+  },
+  "page/dashboard/marketplace|light|375": {
+    "region": 1
+  },
+  "page/dashboard/marketplace|light|768": {
+    "region": 1
+  },
+  "page/internal/accounts|dark|1280": {
+    "color-contrast": 2
+  },
+  "page/internal/accounts|dark|375": {
+    "color-contrast": 1,
+    "region": 2
+  },
+  "page/internal/accounts|dark|768": {
+    "color-contrast": 1,
+    "region": 2
+  },
+  "page/internal/accounts|light|375": {
+    "region": 2
+  },
+  "page/internal/accounts|light|768": {
+    "region": 2
+  },
+  "page/internal/overview|dark|1280": {
+    "color-contrast": 1
+  },
+  "page/internal/overview|dark|375": {
+    "region": 2
+  },
+  "page/internal/overview|dark|768": {
+    "region": 2
+  },
+  "page/internal/overview|light|375": {
+    "region": 2
+  },
+  "page/internal/overview|light|768": {
+    "region": 2
+  },
+  "story/layout-card--dark|dark|1280": {
+    "color-contrast": 1
+  },
+  "story/layout-card--dark|dark|375": {
+    "color-contrast": 1
+  },
+  "story/layout-card--dark|dark|768": {
+    "color-contrast": 1
+  },
+  "story/layout-card--dark|light|1280": {
+    "color-contrast": 1
+  },
+  "story/layout-card--dark|light|375": {
+    "color-contrast": 1
+  },
+  "story/layout-card--dark|light|768": {
+    "color-contrast": 1
+  },
+  "story/overlays-dialog--long-content|dark|1280": {
+    "scrollable-region-focusable": 1
+  },
+  "story/overlays-dialog--long-content|dark|375": {
+    "scrollable-region-focusable": 1
+  },
+  "story/overlays-dialog--long-content|dark|768": {
+    "scrollable-region-focusable": 1
+  },
+  "story/overlays-dialog--long-content|light|1280": {
+    "scrollable-region-focusable": 1
+  },
+  "story/overlays-dialog--long-content|light|375": {
+    "scrollable-region-focusable": 1
+  },
+  "story/overlays-dialog--long-content|light|768": {
+    "scrollable-region-focusable": 1
+  }
+}

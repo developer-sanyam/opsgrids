@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/crm.book.company.deleted/v1",
+  "title": "crm.book.company.deleted",
+  "description": "A company was soft-deleted from the account book.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "company_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "company_id": { "type": "string", "format": "uuid" }
+  }
+}

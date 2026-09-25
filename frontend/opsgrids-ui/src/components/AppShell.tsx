@@ -110,7 +110,7 @@ export function AppShell({ logo, productName, renderSidebar }: AppShellProps) {
           aria-label="Navigation"
         >
           <div
-            className="absolute inset-0 bg-ink/40"
+            className="absolute inset-0 bg-scrim"
             onClick={() => setDrawerOpen(false)}
             aria-hidden
           />

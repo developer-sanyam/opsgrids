@@ -23,7 +23,7 @@ export function DeltaPill({ value, goodWhen = "up", className }: DeltaPillProps)
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-0.5 rounded-full pl-1 pr-2 py-0.5 text-xs font-bold tnum",
+        "inline-flex items-center gap-0.5 rounded-chip py-0.5 pr-2 pl-1 text-caption font-bold tnum",
         good ? "bg-positive-soft text-positive" : "bg-negative-soft text-negative",
         className,
       )}

@@ -30,11 +30,13 @@
 
     { "prefix": "/api/v1/admin/organizations", "upstream": "http://console:8000", "staff_only": true },
     { "prefix": "/api/v1/admin/metrics/overview", "upstream": "http://console:8000", "staff_only": true },
+    { "prefix": "/api/v1/admin/metrics/series", "upstream": "http://console:8000", "staff_only": true },
     { "prefix": "/api/v1/admin/subscriptions", "upstream": "http://console:8000", "staff_only": true },
     { "prefix": "/api/v1/admin/overrides", "upstream": "http://console:8000", "staff_only": true },
     { "prefix": "/api/v1/admin/usage", "upstream": "http://console:8000", "staff_only": true },
     { "prefix": "/api/v1/admin/audit", "upstream": "http://console:8000", "staff_only": true },
 
-    { "prefix": "/api/v1/admin/credit-ledger", "upstream": "http://billing:8000", "staff_only": true }
+    { "prefix": "/api/v1/admin/credit-ledger", "upstream": "http://billing:8000", "staff_only": true },
+    { "prefix": "/api/v1/admin/invoices", "upstream": "http://billing:8000", "staff_only": true }
   ]
 }

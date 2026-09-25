@@ -33,6 +33,18 @@ class OrgStateOut(BaseModel):
     #: cross-tenant call per row.
     name: str | None = None
     slug: str | None = None
+    #: Same mirror, same nullability — the accounts list's Region filter and column.
+    country: str | None = None
+    #: The organization's creation time (account's `Organization.created_at`), mirrored the same
+    #: way — the accounts list's Created filter and column. Distinct from `updated_at` below,
+    #: which is this projection row's own last-write time.
+    created_at: datetime | None = None
+    #: The same bucket `GET /admin/metrics/overview`'s `organizations_by_lifecycle` counts,
+    #: computed server-side (`selectors.lifecycle_of`) so the accounts list's Status filter and
+    #: pill never reimplement the rule client-side: `suspended` (any subscription locked) beats
+    #: `active` (any subscription active) beats `trial` beats `churned` (history but nothing
+    #: live) beats `none` (the fold has never touched this organization).
+    lifecycle: Literal["suspended", "active", "trial", "churned", "none"]
     mrr_minor: int
     currency: str | None
     active_products: list[str]
@@ -40,6 +52,14 @@ class OrgStateOut(BaseModel):
     trial_ends_at: datetime | None
     locked: bool
     updated_at: datetime
+    #: The accounts list's Users column — merged in live from account-service's own bulk count
+    #: (`GET /internal/v1/organizations/member-counts`), never folded and stored: no `core.*`
+    #: event tells console when a membership is added or removed, so a stored count would only
+    #: ever be as fresh as the last one-off backfill run. `0` is real (account answered and lists
+    #: no members for this organization); `None` means *unknown* — account-service could not be
+    #: reached in time (best-effort: a list that already renders the rest of the row should not
+    #: go blank for one enrichment call failing), or nothing has merged a count into this row.
+    user_count: int | None = None
 
 
 class MetricsOut(BaseModel):
@@ -79,6 +99,30 @@ class MetricsOverviewOut(MetricsOut):
     organizations_by_lifecycle: LifecycleCountsOut
 
 
+class SeriesPointOut(BaseModel):
+    """One point on a monthly series. `value` is `None` for a month before this series has any
+    visibility at all — never `0`, which would claim a real, counted "nothing happened" that the
+    data cannot actually back (`app/domain.py::commercial_series`)."""
+
+    period: str
+    value: int | None
+
+
+class MetricsSeriesOut(BaseModel):
+    """`GET /admin/metrics/series` — monthly account growth and commercial history, replayed
+    from console's own append-only `revenue_events` (ADR-0004 §4) plus the identity fold's
+    `org_created_at`. Feeds the account-growth chart and every "vs last month" delta; each series
+    carries the same ordered list of periods, oldest first.
+    """
+
+    currency: str | None
+    mrr_minor: list[SeriesPointOut]
+    new_organizations: list[SeriesPointOut]
+    trials_started: list[SeriesPointOut]
+    trial_conversions: list[SeriesPointOut]
+    churned: list[SeriesPointOut]
+
+
 class OrgDetailOut(BaseModel):
     """One organization's detail: console's own commercial projection composed with the
     directory identity from account-service's staff-only route — never account's internal
@@ -98,6 +142,35 @@ class OrgDetailOut(BaseModel):
     commercial: OrgStateOut | None
 
 
+class OrgMemberOut(BaseModel):
+    """One member of an organization, as the staff Users tab renders it — mirrors
+    account-service's own `OrganizationMemberOut` field for field, but re-published under
+    console's own contract (`app/directory_client.py`'s composite) rather than proxying its
+    JSON verbatim, so account's internal shape can move without silently moving console's own
+    OpenAPI surface. The email is masked at account-service; nothing here ever sees the
+    plaintext, and there is no unmask path — out of scope by the brief that added this route.
+    """
+
+    id: uuid.UUID
+    name: str
+    email_masked: str
+    status: str
+    joined_at: datetime | None
+    last_active_at: datetime | None
+    roles: list[str]
+
+
+class OrgMembersOut(BaseModel):
+    """`GET /admin/organizations/{id}/users` — one page of an organization's members,
+    delegated to account-service's own staff-only directory read."""
+
+    members: list[OrgMemberOut]
+    total: int
+    page: int
+    size: int
+    pages: int
+
+
 class SubscriptionOut(BaseModel):
     """One organization's subscription to one product, flattened from its snapshot."""
 
@@ -107,8 +180,15 @@ class SubscriptionOut(BaseModel):
     name: str | None = None
     slug: str | None = None
     product_key: str
+    #: The product's display name, from catalog's public flat plan for it (`null` when catalog has
+    #: none or could not be reached — a list that already renders the rest of the row should not
+    #: go blank for one enrichment call failing, same as `OrgStateOut.user_count`).
+    product_name: str | None = None
     state: str
     plan_version_id: str | None
+    #: The pinned plan's display name ("Growth"), from catalog's batch names read. Same
+    #: best-effort nullability as `product_name`.
+    plan_name: str | None = None
     amount_minor: int
     currency: str | None
     trial_ends_at: datetime | None
@@ -129,6 +209,10 @@ class UsageOut(BaseModel):
 
 class UsageListOut(BaseModel):
     usage: list[UsageOut]
+    #: The `cursor` to request for the next page, or `None` on the last one (or when the
+    #: caller never asked for paging at all — every existing consumer of this envelope keeps
+    #: working unchanged, it simply now reads a `limit`-sized page instead of the whole table).
+    next_cursor: str | None = None
 
 
 class AuditOut(BaseModel):
@@ -147,19 +231,26 @@ class AuditOut(BaseModel):
 
 class AuditListOut(BaseModel):
     audit: list[AuditOut]
+    #: The `cursor` to request for the next page, or `None` once there isn't one — the default
+    #: page (200, unfiltered) is exactly what this route always returned, so an existing caller
+    #: that ignores this field sees no change.
+    next_cursor: str | None = None
 
 
 class OverrideIn(BaseModel):
     """An operator override. Delegated to the owning service — console writes no foreign schema."""
 
-    #: `suspend` → subscription-service; `comp_grant` → billing-service.
-    action: Literal["suspend", "comp_grant"]
+    #: `suspend` and `reactivate` → subscription-service; `comp_grant` → billing-service.
+    action: Literal["suspend", "reactivate", "comp_grant"]
     organization_id: uuid.UUID
-    #: Required for `suspend`: the subscription to suspend in subscription-service.
+    #: Required for `suspend` and `reactivate`: the subscription to act on in
+    #: subscription-service.
     subscription_id: uuid.UUID | None = None
     #: Required for `comp_grant`: the credit to grant in billing-service.
     amount_minor: int | None = Field(default=None, ge=0)
     currency: str | None = None
+    #: Required (non-blank) for `reactivate`: lifting a hold is exactly the act whose why an audit
+    #: trail must carry. Optional for the other actions, as it always was.
     reason: str | None = None
 
 
@@ -181,6 +272,10 @@ class ProductSubscriptionOut(BaseModel):
     id: uuid.UUID
     state: str
     plan_version_id: uuid.UUID
+    #: The pinned plan's display name, read off the same catalog plan-version document the
+    #: composite already fetches for `current_price` — no extra call. `null` when catalog no
+    #: longer knows the version.
+    plan_name: str | None = None
     trial_ends_at: datetime | None = None
     current_period_end: datetime | None = None
 
@@ -189,6 +284,9 @@ class ProductPriceOut(BaseModel):
     """One priced plan version, as either the org's current pin or the product's public plan."""
 
     plan_version_id: uuid.UUID
+    #: The plan's display name — for `current_price`, the pinned version's plan; for
+    #: `public_price`, the public flat plan's own name.
+    plan_name: str | None = None
     amount_minor: int
     currency: str
     billing_interval: str

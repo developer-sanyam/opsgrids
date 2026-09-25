@@ -50,15 +50,16 @@ export function Switch({
           disabled={disabled}
           onClick={() => onChange(!checked)}
           className={cn(
-            "relative h-6 w-11 shrink-0 rounded-full transition-colors duration-150",
-            checked ? "bg-accent" : "bg-line",
+            "relative h-6 w-11 shrink-0 rounded-full transition-colors duration-(--duration-quick)",
+            // The off track is a control edge, not a divider: `field-edge` clears 3:1, `line` did not.
+            checked ? "bg-accent" : "bg-field-edge",
             disabled && "cursor-not-allowed opacity-50",
           )}
         >
           <span
             aria-hidden
             className={cn(
-              "absolute top-0.5 left-0.5 size-5 rounded-full bg-surface shadow-card transition-transform duration-150",
+              "absolute top-0.5 left-0.5 size-5 rounded-full bg-surface shadow-card transition-transform duration-(--duration-move)",
               checked ? "translate-x-5" : "translate-x-0",
             )}
           />

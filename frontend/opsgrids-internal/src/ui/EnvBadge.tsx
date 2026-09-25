@@ -11,7 +11,7 @@ export function EnvBadge({ className }: { className?: string }) {
     <span
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold",
-        USE_FIXTURES ? "bg-pastdue-soft text-pastdue" : "bg-active-soft text-active",
+        USE_FIXTURES ? "bg-late-soft text-late" : "bg-present-soft text-present",
         className,
       )}
       title={

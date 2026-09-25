@@ -12,12 +12,12 @@ export type PillTone =
   | "accent";
 
 const TONE: Record<PillTone, string> = {
-  active: "bg-active-soft text-active",
-  trial: "bg-trial-soft text-trial",
-  pastdue: "bg-pastdue-soft text-pastdue",
-  suspended: "bg-suspended-soft text-suspended",
-  cancelled: "bg-cancelled-soft text-cancelled",
-  comp: "bg-comp-soft text-comp",
+  active: "bg-present-soft text-present",
+  trial: "bg-info-soft text-info",
+  pastdue: "bg-late-soft text-late",
+  suspended: "bg-danger-soft text-danger",
+  cancelled: "bg-neutral-soft text-neutral",
+  comp: "bg-cyan-soft text-cyan",
   accent: "bg-accent-soft text-accent-ink",
 };
 

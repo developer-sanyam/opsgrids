@@ -8,8 +8,8 @@ interface PillProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 /**
- * A pill toggle — the workhorse of this design language, used for filter chips.
- * Active = violet fill with white text; inactive = quiet ghost that fills on hover.
+ * A filter toggle chip. Active = accent fill; inactive = a quiet ghost that fills on hover.
+ * `aria-pressed` carries the state, so it never rests on the fill alone.
  */
 export function Pill({
   active = false,
@@ -24,11 +24,9 @@ export function Pill({
       type={type ?? "button"}
       aria-pressed={active}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full px-4 h-9 text-sm font-semibold whitespace-nowrap",
-        "transition-colors duration-150",
-        active
-          ? "bg-accent text-white"
-          : "text-muted hover:bg-ground hover:text-ink",
+        "inline-flex h-9 items-center gap-1.5 rounded-tile px-3 text-sm font-semibold whitespace-nowrap",
+        "transition-colors duration-(--duration-quick)",
+        active ? "bg-accent text-on-accent" : "text-muted hover:bg-sunken hover:text-ink",
         className,
       )}
       {...props}

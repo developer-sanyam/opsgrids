@@ -52,7 +52,7 @@ function SubscriptionCell({ subscription }: { subscription: PricingSubscriptionR
     return (
       <div className="flex flex-col items-start gap-1">
         <AccountStatusPill status="trial" />
-        <span className="text-xs font-medium text-pastdue">
+        <span className="text-xs font-medium text-late">
           {left !== null && left >= 0 ? `${left} ${left === 1 ? "day" : "days"} left` : "Trial ended"}
         </span>
       </div>
@@ -236,7 +236,7 @@ function SetPriceDialog({ org, product, onClose, onSuccess }: SetPriceDialogProp
     >
       {result ? (
         <div role="status" aria-live="polite" className="flex flex-col items-center gap-4 py-4 text-center">
-          <span className="grid size-14 place-items-center rounded-full bg-active-soft text-active">
+          <span className="grid size-14 place-items-center rounded-full bg-present-soft text-present">
             <CheckCircleIcon className="size-7" />
           </span>
           <div className="flex flex-col gap-1">
@@ -258,7 +258,7 @@ function SetPriceDialog({ org, product, onClose, onSuccess }: SetPriceDialogProp
         // across browsers and screen readers and would otherwise fire instead of `handleSubmit`.
         <form className="flex flex-col gap-4" onSubmit={handleSubmit} noValidate>
           {error ? (
-            <p role="alert" className="rounded-tile bg-suspended-soft px-3 py-2.5 text-sm font-medium text-suspended">
+            <p role="alert" className="rounded-tile bg-danger-soft px-3 py-2.5 text-sm font-medium text-danger">
               {error}
             </p>
           ) : null}
@@ -285,7 +285,7 @@ function SetPriceDialog({ org, product, onClose, onSuccess }: SetPriceDialogProp
                 />
                 <p className="text-xs text-faint">Up to two decimal places, e.g. 2499.50.</p>
                 {amountTouched && amountError ? (
-                  <p id={amountErrorId} role="alert" className="text-xs font-medium text-suspended">
+                  <p id={amountErrorId} role="alert" className="text-xs font-medium text-danger">
                     {amountError}
                   </p>
                 ) : null}
@@ -330,7 +330,7 @@ function SetPriceDialog({ org, product, onClose, onSuccess }: SetPriceDialogProp
                   className={INPUT}
                 />
                 {reasonTouched && reasonError ? (
-                  <p id={reasonErrorId} role="alert" className="text-xs font-medium text-suspended">
+                  <p id={reasonErrorId} role="alert" className="text-xs font-medium text-danger">
                     {reasonError}
                   </p>
                 ) : null}

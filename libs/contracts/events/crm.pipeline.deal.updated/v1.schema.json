@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/crm.pipeline.deal.updated/v1",
+  "title": "crm.pipeline.deal.updated",
+  "description": "A deal's plain fields were patched (never its stage; see stage_changed). `changed` names the patched fields. Every other field is the deal's full state *after* the patch, so a consumer converges without reading deal back.",
+  "$comment": "Ahead of the producer (ADR-0020 slice I3): services/deal/app/services.py:update_deal does not emit name, stage, value_minor, currency, owner_id, company_id, close_date, probability, closed_at yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "deal_id",
+    "changed",
+    "name",
+    "stage",
+    "value_minor",
+    "currency",
+    "owner_id",
+    "company_id",
+    "close_date",
+    "probability",
+    "closed_at"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "deal_id": { "type": "string", "format": "uuid" },
+    "changed": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "name": { "type": "string", "minLength": 1 },
+    "stage": {
+      "enum": ["lead", "qualified", "proposal", "negotiation", "closed_won", "closed_lost"]
+    },
+    "value_minor": { "type": "integer", "minimum": 0 },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "owner_id": { "type": "string", "format": "uuid" },
+    "company_id": { "type": "string", "format": "uuid" },
+    "close_date": { "type": "string", "format": "date" },
+    "probability": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "closed_at": { "type": ["string", "null"], "format": "date-time" }
+  }
+}

@@ -15,6 +15,7 @@ internal endpoints and need only the service token.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from typing import Any
 from urllib.parse import quote
 
@@ -60,12 +61,18 @@ def _detail(response: httpx.Response) -> str:
 
 
 async def get_public_flat_plans(
-    settings: Settings, *, client: httpx.AsyncClient
+    settings: Settings, *, client: httpx.AsyncClient, request_timeout: float | None = None
 ) -> list[dict[str, Any]]:
-    """Every product's public flat plan — the pricing screen's baseline column."""
+    """Every product's public flat plan — the pricing screen's baseline column.
+
+    `request_timeout` is only for a caller that is decorating something with this (the subscription
+    list's product names) and would rather render without than wait; the pricing screen, which
+    cannot render without it, leaves it unset and takes the client's own.
+    """
     url = f"{settings.catalog_internal_url}/internal/v1/public-flat-plans"
     try:
-        response = await client.get(url, headers=_headers(settings))
+        extra: dict[str, Any] = {} if request_timeout is None else {"timeout": request_timeout}
+        response = await client.get(url, headers=_headers(settings), **extra)
         response.raise_for_status()
     except httpx.HTTPError as exc:
         raise CatalogError(f"catalog is unavailable: {exc}") from exc
@@ -97,6 +104,46 @@ async def get_plan_version(
         raise CatalogError(f"catalog refused the read: {response.status_code}") from exc
     result: dict[str, Any] = response.json()
     return result
+
+
+#: Matches catalog's own `MAX_VERSION_NAMES_PER_CALL` — a list bigger than one call's cap is
+#: chunked here rather than refused there.
+VERSION_NAMES_CHUNK = 200
+
+#: How long a best-effort enrichment call may take before the list it decorates gives up on it
+#: and renders without — see `account_client.ENRICHMENT_TIMEOUT_SECONDS`.
+ENRICHMENT_TIMEOUT_SECONDS = 3.0
+
+
+async def get_plan_version_names(
+    settings: Settings, plan_version_ids: Sequence[uuid.UUID], *, client: httpx.AsyncClient
+) -> dict[uuid.UUID, dict[str, Any]]:
+    """Plan and product names for many plan versions in a handful of calls, keyed by version id.
+
+    The batch behind `/admin/subscriptions`' `plan_name` — one call per `VERSION_NAMES_CHUNK`
+    distinct ids rather than one per row, so the list never becomes an N+1 against catalog.
+    Typed `uuid.UUID` in and out for the same reason `get_plan_version` is (MAJOR-1): nothing
+    from a downstream body is ever interpolated into a URL. A version catalog does not know is
+    simply absent from the result.
+    """
+    distinct = list(dict.fromkeys(plan_version_ids))
+    names: dict[uuid.UUID, dict[str, Any]] = {}
+    url = f"{settings.catalog_internal_url}/internal/v1/plan-versions"
+    for start in range(0, len(distinct), VERSION_NAMES_CHUNK):
+        chunk = distinct[start : start + VERSION_NAMES_CHUNK]
+        try:
+            response = await client.get(
+                url,
+                params=[("ids", str(v)) for v in chunk],
+                headers=_headers(settings),
+                timeout=ENRICHMENT_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise CatalogError(f"catalog is unavailable: {exc}") from exc
+        for row in response.json()["versions"]:
+            names[uuid.UUID(str(row["plan_version_id"]))] = row
+    return names
 
 
 async def ensure_bespoke_price(

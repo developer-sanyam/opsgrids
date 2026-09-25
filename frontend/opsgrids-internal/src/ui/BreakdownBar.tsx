@@ -1,12 +1,12 @@
 import type { BreakdownSegment } from "@/api/types";
 
 const SEGMENT_COLOR: Record<BreakdownSegment["tone"], string> = {
-  active: "var(--color-active)",
-  trial: "var(--color-trial)",
-  pastdue: "var(--color-pastdue)",
-  suspended: "var(--color-suspended)",
-  cancelled: "var(--color-cancelled)",
-  comp: "var(--color-comp)",
+  active: "var(--color-present)",
+  trial: "var(--color-info)",
+  pastdue: "var(--color-late)",
+  suspended: "var(--color-danger)",
+  cancelled: "var(--color-neutral)",
+  comp: "var(--color-cyan)",
   accent: "var(--color-accent)",
 };
 

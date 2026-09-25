@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/finance.billing.payment.received/v1",
+  "title": "finance.billing.payment.received",
+  "description": "A payment was recorded and allocated to one or more invoices. Append-only. `received_date` is the business date the money arrived. `currency` is the allocated invoices' common currency: a payments row has no currency column of its own, so the producer derives it, and must refuse an allocation that mixes currencies.",
+  "$comment": "Ahead of the producer (ADR-0020 slice I2): services/finance/app/services.py:record_payment does not emit received_date, method, currency yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "payment_id",
+    "reference",
+    "customer_id",
+    "received_date",
+    "method",
+    "currency",
+    "amount_minor",
+    "allocations"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "payment_id": { "type": "string", "format": "uuid" },
+    "reference": { "type": "string", "minLength": 1 },
+    "customer_id": { "type": "string", "format": "uuid" },
+    "received_date": { "type": "string", "format": "date" },
+    "method": { "enum": ["bank_transfer", "upi", "card", "cheque", "cash"] },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "amount_minor": { "type": "integer", "minimum": 1 },
+    "allocations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["invoice_id", "amount_minor"],
+        "properties": {
+          "invoice_id": { "type": "string", "format": "uuid" },
+          "amount_minor": { "type": "integer", "minimum": 1 }
+        }
+      }
+    }
+  }
+}

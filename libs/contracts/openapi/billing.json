@@ -134,6 +134,83 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "InvoiceAdminOut": {
+        "description": "One OpsGrids invoice as staff sees it on an account's Billing tab \u2014 read-only, and\nnarrower than `InvoiceOut` on purpose: no lines, no subscription id, no void reason. A\ncross-tenant read has no use for what an invoice *contains*, and the smaller the surface the\nsmaller the blast radius of a bug in it.\n\n`status` is billing's own `state`, verbatim: `finalized` (issued, and the only live one) or\n`void`. There is **no paid date and no paid status here, deliberately**: billing records what\nwas billed and never whether it was collected \u2014 collection lives in payment-service and in\nsubscription's dunning \u2014 so a `paid_at` on this shape would be a field with nothing real to\nfill it. `issued_at` is `finalized_at`, the moment the document became immutable.",
+        "properties": {
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "issued_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issued At"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "organization_id": {
+            "format": "uuid",
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "period_end": {
+            "format": "date-time",
+            "title": "Period End",
+            "type": "string"
+          },
+          "period_start": {
+            "format": "date-time",
+            "title": "Period Start",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "total_minor": {
+            "title": "Total Minor",
+            "type": "integer"
+          },
+          "voided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voided At"
+          }
+        },
+        "required": [
+          "id",
+          "organization_id",
+          "number",
+          "status",
+          "period_start",
+          "period_end",
+          "total_minor",
+          "currency"
+        ],
+        "title": "InvoiceAdminOut",
+        "type": "object"
+      },
       "InvoiceLineOut": {
         "properties": {
           "amount_minor": {
@@ -312,6 +389,42 @@
         "title": "Page[CreditLedgerEntryAdminOut]",
         "type": "object"
       },
+      "Page_InvoiceAdminOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InvoiceAdminOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[InvoiceAdminOut]",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -481,6 +594,73 @@
           }
         },
         "summary": "The credit ledger across every organization, filtered and paginated",
+        "tags": [
+          "billing-admin"
+        ]
+      }
+    },
+    "/api/v1/admin/invoices": {
+      "get": {
+        "description": "Same gate, session and pagination as `/credit-ledger`; the difference is that the\norganization is **required** \u2014 there is no useful platform-wide invoice overview here, and a\nper-org read is what the account detail screen needs. Every call is audited (see\n`services.record_operator_invoices_read`). Read-only: nothing on this router writes an\ninvoice, and the directory role could not if it tried (SELECT only).",
+        "operationId": "admin_list_invoices_api_v1_admin_invoices_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_InvoiceAdminOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One organization's OpsGrids invoices \u2014 read-only, for the staff Billing tab",
         "tags": [
           "billing-admin"
         ]

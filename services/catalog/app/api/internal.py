@@ -1,9 +1,11 @@
 """The internal API — service-to-service, never reachable from outside the cluster.
 
-One endpoint: the pin lookup a subscription makes when it pins — or re-pins — to a plan version
-(ADR-0004 §2, ADR-0000 §9). Catalog is the authority for whether a version exists and what it
-costs, so subscription asks here rather than reaching across the schema boundary — the rule that
-keeps a later database-per-service split a configuration change.
+The pin lookup a subscription makes when it pins — or re-pins — to a plan version (ADR-0004 §2,
+ADR-0000 §9), plus two reads console composes into the operator screens: the public flat plans
+and, in batch, the display names of many plan versions. Catalog is the authority for whether a
+version exists, what it costs and what it is called, so siblings ask here rather than reaching
+across the schema boundary — the rule that keeps a later database-per-service split a
+configuration change.
 
 The definitional tables are global and un-policied, so this reads on the ordinary app session
 with no tenant binding: there is no tenant to bind for a global catalogue, and the app role reads
@@ -21,12 +23,14 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors
 from app.schemas import (
     FeatureOut,
+    InternalPlanVersionNameOut,
+    InternalPlanVersionNamesOut,
     InternalPlanVersionOut,
     InternalPriceOut,
     PublicFlatPlanOut,
@@ -48,6 +52,39 @@ router = APIRouter(
 )
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+
+
+#: How many ids one batch call may name. A subscription list is bounded by the number of
+#: organizations times products, and console chunks beyond this — the cap only keeps a single
+#: request from being an unbounded `IN (...)`.
+MAX_VERSION_NAMES_PER_CALL = 200
+
+
+@router.get(
+    "/plan-versions",
+    response_model=InternalPlanVersionNamesOut,
+    summary="Plan and product names for many plan versions at once — console's subscription list",
+)
+async def list_plan_version_names(
+    session: SessionDep,
+    ids: Annotated[list[uuid.UUID], Query(max_length=MAX_VERSION_NAMES_PER_CALL)],
+) -> InternalPlanVersionNamesOut:
+    """The batch counterpart of the single-version read below, returning **only** display names —
+    so a list of N subscriptions costs one call, not N. Registered before `/{version_id}` and on a
+    different path shape (no trailing id), so it can never be mistaken for it. Unfiltered like its
+    sibling: a name is not a commercial decision, and the service-token gate is the same one."""
+    rows = await selectors.get_version_names(session, ids)
+    return InternalPlanVersionNamesOut(
+        versions=[
+            InternalPlanVersionNameOut(
+                plan_version_id=version.id,
+                plan_id=plan.id,
+                plan_name=plan.name,
+                product_key=plan.product_key,
+            )
+            for version, plan in rows
+        ]
+    )
 
 
 @router.get(
@@ -77,6 +114,7 @@ async def get_plan_version(version_id: uuid.UUID, session: SessionDep) -> Intern
         id=version.id,
         plan_id=version.plan_id,
         product_key=plan.product_key if plan else None,
+        plan_name=plan.name if plan else None,
         version_no=version.version_no,
         state=version.state,
         billing_interval=version.billing_interval,

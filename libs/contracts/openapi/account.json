@@ -1171,6 +1171,70 @@
         "title": "OrganizationDirectoryOut",
         "type": "object"
       },
+      "OrganizationMemberOut": {
+        "description": "One member of an organization, as a staff operator may see it \u2014 never `MemberOut`,\nthe colleague-facing shape, and never a plaintext email: PII is masked by default, and\nunmasking needs its own permission plus an audit row every time (CLAUDE.md), neither of\nwhich this read is. `id` is the membership id, the same identifier the tenant-facing\nmember endpoints use, so a support ticket can cross-reference one.",
+        "properties": {
+          "email_masked": {
+            "title": "Email Masked",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "joined_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Joined At"
+          },
+          "last_active_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Active At"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Roles",
+            "type": "array"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "email_masked",
+          "status",
+          "joined_at",
+          "last_active_at",
+          "roles"
+        ],
+        "title": "OrganizationMemberOut",
+        "type": "object"
+      },
       "OrganizationOut": {
         "properties": {
           "country": {
@@ -1523,6 +1587,42 @@
           "pages"
         ],
         "title": "Page[MemberOut]",
+        "type": "object"
+      },
+      "Page_OrganizationMemberOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OrganizationMemberOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[OrganizationMemberOut]",
         "type": "object"
       },
       "PermissionOut": {
@@ -1956,6 +2056,73 @@
           }
         },
         "summary": "One organization's directory record \u2014 console's service token and the operator's own",
+        "tags": [
+          "account-admin"
+        ]
+      }
+    },
+    "/api/v1/admin/directory/organizations/{organization_id}/members": {
+      "get": {
+        "description": "The Users tab and the Users column's per-org detail (ui/backend-data-2): id, name, a\nmasked email, status, joined/last-active and roles by name. Unmasking is out of scope \u2014\nthere is no path here that ever returns the plaintext.\n\nSame two-credential and bypass-then-narrow shape as `get_organization_for_operator` above:\nthe list itself runs on the BYPASSRLS directory session (there is no tenant to bind for a\ncross-tenant caller), and the read is audited in its own tenant-bound transaction afterward.\n404 first, same as the detail route, so a caller cannot page an organization that does not\nexist and learn something from the shape of the (empty) response instead.",
+        "operationId": "list_members_for_operator_api_v1_admin_directory_organizations__organization_id__members_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_OrganizationMemberOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One organization's members \u2014 staff-only, email masked",
         "tags": [
           "account-admin"
         ]

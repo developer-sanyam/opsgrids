@@ -10,6 +10,7 @@ table cannot carry, so it is defended by a negative-authz test.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import Select, func, or_, select
@@ -148,6 +149,25 @@ async def get_version(session: AsyncSession, version_id: uuid.UUID) -> PlanVersi
             _with_children(select(PlanVersion).where(PlanVersion.id == version_id))
         )
     ).scalar_one_or_none()
+
+
+async def get_version_names(
+    session: AsyncSession, version_ids: Sequence[uuid.UUID]
+) -> list[tuple[PlanVersion, Plan]]:
+    """Each requested version with its plan, in **one** join — the batch read behind console's
+    subscription list, which would otherwise call catalog once per row. Only the version and plan
+    columns: no prices, features or seat classes are loaded, since a name is all the caller wants.
+    Ids catalog does not know are simply absent from the result."""
+    if not version_ids:
+        return []
+    rows = (
+        await session.execute(
+            select(PlanVersion, Plan)
+            .join(Plan, Plan.id == PlanVersion.plan_id)
+            .where(PlanVersion.id.in_(version_ids))
+        )
+    ).all()
+    return [(version, plan) for version, plan in rows]
 
 
 async def latest_version_no(session: AsyncSession, plan_id: uuid.UUID) -> int:

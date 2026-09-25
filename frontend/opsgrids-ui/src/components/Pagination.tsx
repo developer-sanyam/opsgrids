@@ -104,7 +104,7 @@ export function Pagination({
       <div className="flex items-center gap-4">
         {onSizeChange ? (
           <div className="flex items-center gap-2">
-            <label htmlFor={sizeId} className="text-xs font-semibold uppercase tracking-wide text-faint">
+            <label htmlFor={sizeId} className="text-body-sm font-medium text-muted">
               Per page
             </label>
             <div className="relative">
@@ -113,9 +113,9 @@ export function Pagination({
                 value={size}
                 onChange={(event) => onSizeChange(Number(event.target.value))}
                 className={cn(
-                  "tnum h-9 cursor-pointer appearance-none rounded-tile border border-transparent bg-ground",
-                  "pl-3 pr-8 text-sm text-ink transition-colors hover:border-line",
-                  "focus:outline-none focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2",
+                  "tnum h-9 cursor-pointer appearance-none rounded-tile border border-field-edge bg-surface",
+                  "pl-3 pr-8 text-sm text-ink transition-colors hover:border-muted",
+                  "focus:outline-none focus-visible:outline-2 focus-visible:outline-focus focus-visible:outline-offset-2",
                 )}
               >
                 {sizeOptions.map((option) => (
@@ -125,7 +125,7 @@ export function Pagination({
                 ))}
               </select>
               <ChevronDown
-                className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-faint"
+                className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-faint"
                 aria-hidden
               />
             </div>
@@ -139,7 +139,7 @@ export function Pagination({
               onClick={() => onPageChange(page - 1)}
               disabled={page <= 1}
               aria-label="Previous page"
-              className="grid size-9 place-items-center rounded-full text-ink-soft transition-colors hover:bg-ground disabled:cursor-not-allowed disabled:text-faint disabled:hover:bg-transparent"
+              className="grid size-9 place-items-center rounded-tile text-ink-soft transition-colors hover:bg-sunken disabled:cursor-not-allowed disabled:text-disabled disabled:hover:bg-transparent"
             >
               <ChevronRight className="size-4 rotate-180" />
             </button>
@@ -157,10 +157,10 @@ export function Pagination({
                   aria-label={`Page ${value}`}
                   aria-current={value === page ? "page" : undefined}
                   className={cn(
-                    "tnum grid h-9 min-w-9 place-items-center rounded-full px-2 text-sm transition-colors",
+                    "tnum grid h-9 min-w-9 place-items-center rounded-tile px-2 text-sm transition-colors",
                     value === page
-                      ? "bg-ink font-bold text-surface"
-                      : "font-medium text-ink-soft hover:bg-ground",
+                      ? "bg-accent font-bold text-on-accent"
+                      : "font-medium text-ink-soft hover:bg-sunken",
                   )}
                 >
                   {value}
@@ -173,7 +173,7 @@ export function Pagination({
               onClick={() => onPageChange(page + 1)}
               disabled={page >= pages}
               aria-label="Next page"
-              className="grid size-9 place-items-center rounded-full text-ink-soft transition-colors hover:bg-ground disabled:cursor-not-allowed disabled:text-faint disabled:hover:bg-transparent"
+              className="grid size-9 place-items-center rounded-tile text-ink-soft transition-colors hover:bg-sunken disabled:cursor-not-allowed disabled:text-disabled disabled:hover:bg-transparent"
             >
               <ChevronRight className="size-4" />
             </button>

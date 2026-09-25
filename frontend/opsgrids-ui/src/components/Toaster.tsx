@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { cn } from "../lib/cn";
 import { ToastContext } from "../lib/toast";
 import type { ToastControls, ToastOptions, ToastTone } from "../lib/toast";
-import { AlertTriangleIcon, CheckCircleIcon, CircleDotIcon, CloseIcon } from "../icons";
+import { AlertTriangleIcon, CheckCircleIcon, CircleDotIcon, CloseIcon, ServerIcon } from "../icons";
 
 interface Toast {
   id: string;
@@ -17,28 +17,37 @@ interface Toast {
 
 const DEFAULT_DURATION: Record<ToastTone, number> = {
   success: 5000,
+  warning: 7000,
   error: 8000,
   info: 6000,
+  system: 8000,
 };
 
 /** The word a screen reader hears in front of the title. Colour is never the only carrier. */
 const TONE_WORD: Record<ToastTone, string> = {
   success: "Success:",
+  warning: "Warning:",
   error: "Error:",
   info: "Note:",
+  system: "System:",
 };
 
+/** Tone reaches the edge and the icon only; the words stay on ink, legible in both themes. */
 const TONE_STYLE: Record<ToastTone, { edge: string; ink: string }> = {
   success: { edge: "border-l-positive", ink: "text-positive" },
+  warning: { edge: "border-l-late", ink: "text-late" },
   error: { edge: "border-l-negative", ink: "text-negative" },
   info: { edge: "border-l-info", ink: "text-info" },
+  system: { edge: "border-l-ink-soft", ink: "text-ink-soft" },
 };
 
-function iconFor(tone: ToastTone) {
-  if (tone === "success") return CheckCircleIcon;
-  if (tone === "error") return AlertTriangleIcon;
-  return CircleDotIcon;
-}
+const TONE_ICON: Record<ToastTone, typeof CheckCircleIcon> = {
+  success: CheckCircleIcon,
+  warning: AlertTriangleIcon,
+  error: AlertTriangleIcon,
+  info: CircleDotIcon,
+  system: ServerIcon,
+};
 
 /**
  * One toast, owning its own clock.
@@ -51,7 +60,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string)
   const [paused, setPaused] = useState(false);
   const remaining = useRef(toast.duration);
   const startedAt = useRef(Date.now());
-  const Icon = iconFor(toast.tone);
+  const Icon = TONE_ICON[toast.tone];
   const style = TONE_STYLE[toast.tone];
 
   useEffect(() => {
@@ -79,7 +88,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string)
       onFocusCapture={() => setPaused(true)}
       onBlurCapture={() => setPaused(false)}
     >
-      <Icon className={cn("mt-0.5 size-[18px] shrink-0", style.ink)} aria-hidden />
+      <Icon className={cn("mt-0.5 size-4.5 shrink-0", style.ink)} aria-hidden />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <p className="text-sm font-bold text-ink">{toast.title}</p>
         {toast.description ? (
@@ -93,7 +102,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string)
         type="button"
         onClick={() => onDismiss(toast.id)}
         aria-label={`Dismiss: ${toast.title}`}
-        className="grid size-7 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-ground hover:text-ink"
+        className="grid size-7 shrink-0 place-items-center rounded-tile text-muted transition-colors hover:bg-sunken hover:text-ink"
       >
         <CloseIcon className="size-4" />
       </button>
@@ -173,8 +182,10 @@ export function Toaster({ children }: { children: ReactNode }) {
     }
     return {
       success: (title, options) => push("success", title, options),
+      warning: (title, options) => push("warning", title, options),
       error: (title, options) => push("error", title, options),
       info: (title, options) => push("info", title, options),
+      system: (title, options) => push("system", title, options),
       dismiss,
     };
   }, [dismiss]);

@@ -295,6 +295,31 @@ class CreditEntryOut(BaseModel):
 # --------------------------------------------------------------------- operator (staff) output
 
 
+class InvoiceAdminOut(BaseModel):
+    """One OpsGrids invoice as staff sees it on an account's Billing tab — read-only, and
+    narrower than `InvoiceOut` on purpose: no lines, no subscription id, no void reason. A
+    cross-tenant read has no use for what an invoice *contains*, and the smaller the surface the
+    smaller the blast radius of a bug in it.
+
+    `status` is billing's own `state`, verbatim: `finalized` (issued, and the only live one) or
+    `void`. There is **no paid date and no paid status here, deliberately**: billing records what
+    was billed and never whether it was collected — collection lives in payment-service and in
+    subscription's dunning — so a `paid_at` on this shape would be a field with nothing real to
+    fill it. `issued_at` is `finalized_at`, the moment the document became immutable.
+    """
+
+    id: uuid.UUID
+    organization_id: uuid.UUID
+    number: str
+    status: str
+    period_start: datetime
+    period_end: datetime
+    total_minor: int
+    currency: str
+    issued_at: datetime | None = None
+    voided_at: datetime | None = None
+
+
 class CreditLedgerEntryAdminOut(BaseModel):
     """One ledger row as OpsGrids staff sees it — the tenant fields `CreditEntryOut` omits
     because a customer already knows which organization it is asking about; an operator

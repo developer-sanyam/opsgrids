@@ -82,12 +82,12 @@ export function PasswordStep({ notice, onStep }: PasswordStepProps) {
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-4" noValidate>
         {notice ? (
-          <p role="alert" className="rounded-tile bg-suspended-soft px-4 py-3 text-sm font-medium text-suspended">
+          <p role="alert" className="rounded-tile bg-danger-soft px-4 py-3 text-sm font-medium text-danger">
             {notice}
           </p>
         ) : null}
         {error ? (
-          <p role="alert" className="rounded-tile bg-suspended-soft px-4 py-3 text-sm font-medium text-suspended">
+          <p role="alert" className="rounded-tile bg-danger-soft px-4 py-3 text-sm font-medium text-danger">
             {error}
           </p>
         ) : null}

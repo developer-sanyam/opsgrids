@@ -15,10 +15,44 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 
+import tokens from "./rules/tokens.js";
+
+/**
+ * `opsgrids/tokens` (rules/tokens.js). Paths are relative to `frontend/`. An exemption is for code
+ * that is not console UI at all, never for console UI that is hard to fix — that goes in the
+ * baseline, which only shrinks. Each entry says why.
+ */
+export const TOKENS_OPTIONS = {
+  exempt: [
+    // The visual harness: Playwright specs and API fixtures, no UI of its own.
+    "opsgrids-visual/**",
+    // The merchant storefront's themes and the buyer-facing renderer: a separate design domain
+    // whose colours are the merchant's data, not the console's tokens.
+    "product-storefront/src/theme/**",
+    // Product marks, drawn in their fixed brand colours in every theme.
+    "*/src/ui/LogoMark.tsx",
+    // A QR code is dark on light in every theme, or a phone cannot scan it.
+    "opsgrids-ui/src/components/QrCode.tsx",
+  ],
+  // The design system may nudge by 2px or 6px inside a control; feature code may not.
+  optical: ["opsgrids-ui/**"],
+};
+
 export default tseslint.config(
   // `dist-buyer` is the storefront's second Vite output (ADR-0012 §2) and is built output like
-  // `dist`; ignoring a directory a package does not have costs nothing.
-  { ignores: ["dist", "dist-buyer", "node_modules"] },
+  // `dist`; ignoring a directory a package does not have costs nothing. `storybook-static` is the
+  // design system's workshop build; `test-results` and `playwright-report` are what the visual
+  // harness (opsgrids-visual) leaves behind.
+  {
+    ignores: [
+      "dist",
+      "dist-buyer",
+      "node_modules",
+      "storybook-static",
+      "test-results",
+      "playwright-report",
+    ],
+  },
   {
     extends: [
       js.configs.recommended,
@@ -48,6 +82,17 @@ export default tseslint.config(
     },
   },
   {
+    // Colour, spacing, radius and shadow come from @opsgrids/ui's tokens, mechanically: a style
+    // guide nobody can run is a suggestion. Ratcheted by opsgrids-config/token-baseline.json.
+    // Tests are not feature code — they assert on class names — and are not held to it.
+    files: ["**/*.{ts,tsx}"],
+    ignores: ["**/*.{test,spec}.{ts,tsx}", "**/test-setup.{ts,tsx}"],
+    plugins: { opsgrids: { rules: { tokens } } },
+    rules: {
+      "opsgrids/tokens": ["error", TOKENS_OPTIONS],
+    },
+  },
+  {
     // A focused test narrows the suite to itself and a skipped or todo test is a test that does
     // not run — none of which fails vitest, so all three fail lint instead. The frontend half
     // of what tools/hygiene.py does for pytest.
@@ -60,7 +105,15 @@ export default tseslint.config(
     },
   },
   {
-    files: ["*.config.{ts,js}", "eslint.config.js"],
+    // A story file's exports are story objects by design (Component Story Format); Fast Refresh
+    // has nothing to preserve in them, so the only-components rule does not apply.
+    files: ["**/*.stories.{ts,tsx}"],
+    rules: {
+      "react-refresh/only-export-components": "off",
+    },
+  },
+  {
+    files: ["*.config.{ts,js}", "eslint.config.js", ".storybook/main.ts"],
     languageOptions: { globals: globals.node },
   },
 );

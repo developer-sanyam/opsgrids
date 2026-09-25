@@ -53,7 +53,7 @@ export function DateRangeField({
 
   return (
     <fieldset className={cn("m-0 flex flex-col gap-3 border-0 p-0", className)}>
-      <legend className="mb-1 text-xs font-semibold uppercase tracking-wide text-faint">
+      <legend className="mb-1 text-body-sm font-semibold text-ink-soft">
         {legend}
       </legend>
       <div className="grid gap-3 sm:grid-cols-2">

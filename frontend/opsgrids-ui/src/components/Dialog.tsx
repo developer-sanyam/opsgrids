@@ -113,7 +113,7 @@ export function Dialog({
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-6">
       <div
-        className="absolute inset-0 bg-ink/50"
+        className="absolute inset-0 bg-scrim"
         onClick={dismissOnBackdrop ? onBackdropClick : undefined}
         aria-hidden
       />
@@ -124,7 +124,7 @@ export function Dialog({
         aria-labelledby={headingId}
         aria-describedby={descriptionId}
         className={cn(
-          "relative flex max-h-dvh w-full flex-col bg-surface shadow-float",
+          "relative flex max-h-dvh w-full flex-col bg-surface shadow-overlay",
           "h-dvh rounded-none sm:h-auto sm:max-h-[85dvh] sm:rounded-card",
           SIZES[size],
           className,
@@ -136,7 +136,7 @@ export function Dialog({
               id={headingId}
               ref={headingRef}
               tabIndex={-1}
-              className="display text-xl font-extrabold focus:outline-none"
+              className="text-section text-balance focus:outline-none"
             >
               {title}
             </h2>
@@ -150,7 +150,7 @@ export function Dialog({
             type="button"
             onClick={onClose}
             aria-label="Close dialog"
-            className="grid size-9 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-ground hover:text-ink"
+            className="grid size-9 shrink-0 place-items-center rounded-tile text-muted transition-colors hover:bg-sunken hover:text-ink"
           >
             <CloseIcon className="size-5" />
           </button>
