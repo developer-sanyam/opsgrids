@@ -10,7 +10,6 @@ import {
   MetricCard,
   PauseCircleIcon,
   ShieldIcon,
-  TABLET_QUERY,
   useMediaQuery,
   UsersIcon,
   WalletIcon,
@@ -22,6 +21,15 @@ import type { AsyncState } from "@/lib/useAsync";
 import { growthDelta, seriesDelta } from "@/lib/deltas";
 import { formatInt } from "@/lib/format";
 import { formatMoney } from "@/lib/money";
+
+/**
+ * Tailwind's `lg` — where the row's own default-sized cards get real width to work with (a full
+ * sidebar rather than the 72px rail, per the grid comment below `GRID`). `@opsgrids/ui`'s own
+ * `TABLET_QUERY` (768px) is one screen too early for *this* row: a `default`-sized card in the
+ * still four-across grid between 768 and 1024px clips its own figure, which is why every tile
+ * here — including the two that only ever render wide — uses this instead.
+ */
+const DESKTOP_QUERY = "(min-width: 1024px)";
 
 interface KpiRowProps {
   orgs: AsyncState<OrgStateOut[]>;
@@ -46,19 +54,19 @@ interface Kpi {
   icon: ReactNode;
   tone: "accent" | "positive" | "info" | "cyan" | "warning" | "danger";
   trend?: MetricTrend;
-  /** Only the first four show below 768px (brief §2, mock-1's four-across phone row) — Users and
-   *  Revenue need more width than that row has to spare. */
+  /** Only the first four show below 1024px (brief §2, mock-1's four-across phone *and* tablet
+   *  row) — Users and Revenue need more width than a `default`-sized card gets there. */
   wideOnly?: boolean;
 }
 
 /**
- * One KPI, at the size the brief asks for — `default` (icon beside the figures) from 768px,
+ * One KPI, at the size the brief asks for — `default` (icon beside the figures) from 1024px,
  * `tile` (icon above them, four across) below it. Picked once from `useMediaQuery`, never both
  * rendered and one hidden with CSS: that would put every KPI's label in the document twice — for
  * a test, or a screen reader in a browser slow to apply the stylesheet, to trip over.
  */
 function KpiTile({ kpi }: { kpi: Kpi }) {
-  const wide = useMediaQuery(TABLET_QUERY, true);
+  const wide = useMediaQuery(DESKTOP_QUERY, true);
   if (kpi.wideOnly && !wide) return null;
   return (
     <MetricCard
@@ -110,7 +118,7 @@ function RestrictedRevenueCard() {
   );
 }
 
-/** Monthly Revenue: the sixth tile, hidden below 768px like Total Users — plus its own
+/** Monthly Revenue: the sixth tile, hidden below 1024px like Total Users — plus its own
  *  loading/error/restricted branches, which is why it isn't just another `Kpi` config entry. */
 function RevenueTile({
   overview,
@@ -121,7 +129,7 @@ function RevenueTile({
   revenueDelta: number | null;
   canSeeRevenue: boolean;
 }) {
-  const wide = useMediaQuery(TABLET_QUERY, true);
+  const wide = useMediaQuery(DESKTOP_QUERY, true);
   if (!wide) return null;
   if (!canSeeRevenue) return <RestrictedRevenueCard />;
   if (overview.status === "loading") return <CardSkeleton lines={1} label="Loading monthly revenue" />;
@@ -162,7 +170,7 @@ export function KpiRow({ orgs, overview, series, canSeeRevenue }: KpiRowProps) {
           <CardSkeleton key={i} lines={1} label="Loading key metrics" />
         ))}
         {Array.from({ length: 2 }, (_, i) => (
-          <div key={`wide-${i}`} className="hidden md:block">
+          <div key={`wide-${i}`} className="hidden lg:block">
             <CardSkeleton lines={1} label="Loading key metrics" />
           </div>
         ))}

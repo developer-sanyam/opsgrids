@@ -69,7 +69,7 @@ import type {
   Page,
   ProjectTask,
 } from "@/api/types";
-import { formatDate, formatMoneyKpi, formatMoneyWhole } from "@/lib/money";
+import { formatDate, formatMoneyCompact, formatMoneyKpi, formatMoneyWhole } from "@/lib/money";
 import { resolveAccess } from "@/ui/home/access";
 import type { AccessState } from "@/ui/home/access";
 import { ModulesGrid } from "@/ui/home/ModulesGrid";
@@ -551,7 +551,11 @@ export function HomePage() {
           </div>
         </section>
       ) : (
-        <section aria-label="Key metrics" className="grid grid-cols-4 gap-4">
+        // Two columns from 768px: the tablet rail leaves each default-sized card only ~150px at
+        // four across, not enough room for "₹12.5L" or "Suspended Accounts" without clipping —
+        // the visual harness's containment check caught it. Four across returns at 1024px, where
+        // the full sidebar's extra width is there to give each card back its room.
+        <section aria-label="Key metrics" className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           <KpiSlot
             access={revenueAccess}
             state={overview.status === "success" ? "ready" : overview.status}
@@ -565,7 +569,10 @@ export function HomePage() {
             {overview.status === "success" ? (
               <MetricCard
                 label="Total Revenue"
-                value={history ? formatMoneyKpi(history.revenue_current_minor, history.currency) : "0"}
+                // Compact ("₹13.2L"), not the grouped figure the phone hero shows: a default-sized
+                // card in this four-across row doesn't have the hero's full width to spare, and the
+                // visual harness's own containment check caught the grouped form clipping here.
+                value={history ? formatMoneyCompact(history.revenue_current_minor, history.currency) : "0"}
                 trend={history?.revenue_delta_pct != null ? { value: history.revenue_delta_pct, period: "vs last month" } : undefined}
                 caption={history?.revenue_delta_pct != null ? undefined : "This month"}
                 icon={<TrendingUpIcon className="size-5" />}

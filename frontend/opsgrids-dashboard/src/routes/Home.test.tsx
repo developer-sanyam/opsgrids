@@ -140,9 +140,11 @@ describe("HomePage — populated", () => {
     expect(await screen.findByRole("heading", { name: /Sanyam/ })).toBeTruthy();
     expect(screen.getByText("Here's what's happening with your business today.")).toBeTruthy();
 
-    // Total Revenue — real current-month figure, and a real delta because it is non-null.
+    // Total Revenue — real current-month figure, compact rather than grouped (this card has only
+    // a default-sized MetricCard's width, not the phone hero's full row), and a real delta because
+    // it is non-null.
     expect(await screen.findByText("Total Revenue")).toBeTruthy();
-    expect(screen.getByText("₹12,48,320")).toBeTruthy();
+    expect(screen.getByText("₹12.5L")).toBeTruthy();
     expect(screen.getByText("vs last month")).toBeTruthy();
 
     // Total Invoices — summed from the five real status totals (12+30+120+6+0), never a scan.
