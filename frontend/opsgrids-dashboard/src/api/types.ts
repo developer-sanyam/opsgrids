@@ -502,3 +502,25 @@ export interface DealActivity {
   subject: string;
   occurred_at: string;
 }
+
+// ------------------------------------------------------------------ the employee workspace
+
+/** `AttendanceOut` (`services/attendance/app/schemas.py`), trimmed to what "Attendance Today"
+ * reads. A row exists only once the day has been punched — there is nothing to trim it to a
+ * `null` for. */
+export interface AttendanceRecord {
+  id: string;
+  work_date: string;
+  check_in_at: string;
+  check_out_at: string | null;
+  status: string;
+}
+
+/** `LeaveBalanceOut` (`services/leave/app/schemas.py`) — one leave type's running balance, in
+ * half-days. */
+export interface LeaveBalance {
+  employee_id: string;
+  leave_type_id: string;
+  leave_type_code: string;
+  balance_half_days: number;
+}

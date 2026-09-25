@@ -7,6 +7,7 @@ import { apiRequest } from "@opsgrids/client";
 
 import type {
   Activation,
+  AttendanceRecord,
   Company,
   CreditBalance,
   DealActivity,
@@ -19,6 +20,7 @@ import type {
   InvitationCreate,
   InvitationCreated,
   Invoice,
+  LeaveBalance,
   Location,
   LocationCreate,
   LocationPatch,
@@ -361,4 +363,25 @@ export function listDealActivities(size: number): Promise<Page<DealActivity>> {
  * `projects.board.task.read`. */
 export function listMyTasks(size: number): Promise<Page<ProjectTask>> {
   return apiRequest<Page<ProjectTask>>(`/projects-workspace/tasks${query({ assignee: "me", size })}`);
+}
+
+// ------------------------------------------------------------------ the employee workspace
+//
+// `src/ui/home/EmployeeWorkspace.tsx`'s own self-service reads — HRMS routes `/attendance` and
+// `/leave` straight to the tenant's HRMS services (`services/app-gateway/routes.json`), scoped
+// server-side to the caller's own record by `employee_id`, never by anything this app decides.
+
+/** `GET /attendance?employee_id=…&date_from=…&date_to=…` — one caller's own record for one work
+ * day, `date` as `yyyy-mm-dd`. Empty when they have not checked in yet: a punch is what creates
+ * the row. Needs `hrms.time.attendance.read`. */
+export function getMyAttendance(employeeId: string, date: string): Promise<Page<AttendanceRecord>> {
+  return apiRequest<Page<AttendanceRecord>>(
+    `/attendance${query({ employee_id: employeeId, date_from: date, date_to: date, size: 1 })}`,
+  );
+}
+
+/** `GET /leave/balances?employee_id=…` — every leave type this employee has a balance for, in
+ * half-days. Needs `hrms.time.leave_balance.read`. */
+export function listMyLeaveBalances(employeeId: string): Promise<LeaveBalance[]> {
+  return apiRequest<LeaveBalance[]>(`/leave/balances${query({ employee_id: employeeId })}`);
 }
