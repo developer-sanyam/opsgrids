@@ -19,7 +19,15 @@ rests on:
   sees;
 * the fleet command is one transaction per organization: a failure partway (Redis
   unreachable, simulated here) leaves every organization already processed committed and
-  never touches the one it failed on or anything after it.
+  never touches the one it failed on or anything after it;
+* the production bug of 2026-09-25: a role template that reaches a live tenant through this
+  reconciler used to land with no holder, because only `install_product_registration` (the
+  activation path) ever granted a product's admin role to an organization's owners. An
+  organization that activated the product *before* the new admin template existed now gets
+  its owner granted on reconcile, through the same function that path already calls
+  (`grant_admin_roles_to_owners`); a second run is a true no-op; an organization that never
+  activated the product gets nothing; a non-owner member gets nothing; and `--dry-run`
+  reports the pending grant and writes nothing.
 """
 
 from __future__ import annotations
@@ -38,6 +46,8 @@ from starlette import status
 from app import selectors, services
 from app.catalogue import (
     CORE,
+    PermissionCatalogue,
+    PermissionSpec,
     ProductManifest,
     ProductRegistration,
     RoleTemplate,
@@ -97,6 +107,103 @@ async def _grants_changed_event_count(session: AsyncSession, org_id: uuid.UUID) 
         )
     )
     return int(result.scalar_one())
+
+
+async def _grants_changed_event_count_for_membership(
+    session: AsyncSession, membership_id: uuid.UUID
+) -> int:
+    """The per-membership `core.grants.changed` fan-out `grant_admin_roles_to_owners`'
+    callers emit — bounded by the organization's owner count, not by every membership in the
+    tenant, so ADR-0007 §5's fan-out concern does not apply to it (unlike the widening event
+    `_grants_changed_event_count` above counts)."""
+    result = await session.execute(
+        select(func.count())
+        .select_from(OutboxEvent)
+        .where(
+            OutboxEvent.event_type == services.EVT_GRANTS_CHANGED,
+            OutboxEvent.aggregate_type == "membership",
+            OutboxEvent.aggregate_id == membership_id,
+        )
+    )
+    return int(result.scalar_one())
+
+
+def _crm_registration_with_new_admin_role() -> ProductRegistration:
+    """A stand-in for CRM's manifest, shaped like the production incident of 2026-09-25:
+    one admin-most role template (`CRM_LEADS_ADMIN`) naming a permission no earlier version
+    of the catalogue had — a role template that is *new* to an organization which activated
+    CRM before this template existed, exactly the case `install_registration` has always
+    installed correctly and only the owner grant used to miss."""
+    catalogue = PermissionCatalogue(
+        "crm",
+        [
+            PermissionSpec(
+                module="lead",
+                resource="lead",
+                action="convert",
+                description="Convert a lead into a deal",
+                default_scope="OWN",
+                max_scope="ORG",
+            )
+        ],
+    )
+    return ProductRegistration(
+        product="crm",
+        catalogue=catalogue,
+        role_templates=[
+            RoleTemplate(
+                code="CRM_LEADS_ADMIN",
+                name="Leads Admin",
+                product="crm",
+                grants=catalogue.pick(("lead.lead.convert", "ORG")),
+            )
+        ],
+    )
+
+
+async def _add_owner(
+    session: AsyncSession, org_id: uuid.UUID, *, email: str = "owner@example.com"
+) -> Membership:
+    """A second, active owner membership on `org` — `create_organization` installs `core`'s
+    role templates but adds no member at all, so ADR-0007's reconcile (which grants to
+    *active owner memberships*) has nothing to grant until one exists (the `signup` flow is
+    the production path; this is its "add the owner" half, reused because `signup` also
+    creates a brand-new organization and these tests need one already in hand)."""
+    owner = await services.add_member(
+        session,
+        org_id=org_id,
+        email=email,
+        full_name="Olive Owner",
+        actor_user_id=None,
+        role_codes=["ORG_OWNER"],
+    )
+    owner.is_owner = True
+    await session.flush()
+    return owner
+
+
+async def _membership_role_codes(session: AsyncSession, membership_id: uuid.UUID) -> set[str]:
+    rows = await session.execute(
+        text(
+            "SELECT r.code FROM account.membership_roles mr "
+            "JOIN account.roles r ON r.id = mr.role_id "
+            "WHERE mr.membership_id = :membership_id"
+        ),
+        {"membership_id": membership_id},
+    )
+    return {row[0] for row in rows}
+
+
+class _StubActivationChecker:
+    """Deterministic `reconcile_permissions.ActivationChecker` for tests — no product-service,
+    no HTTP. Defaults to active for every organization not named in `inactive_for`, which is
+    the answer a genuinely activated product's entitlements read would give."""
+
+    def __init__(self, *, inactive_for: frozenset[uuid.UUID] = frozenset()) -> None:
+        self._inactive_for = inactive_for
+
+    async def is_active(self, organization_id: uuid.UUID, product_key: str) -> bool:
+        return organization_id not in self._inactive_for
 
 
 class TestWideningAnExistingSystemRole:
@@ -300,6 +407,190 @@ class TestDryRunWritesNothing:
         assert key not in redis.store
 
 
+class TestReconcileGrantsAdminRoleToOwners:
+    """The production bug of 2026-09-25: `CRM_LEADS_ADMIN` reached an organization that had
+    activated CRM before that template existed, installed with no holder — only
+    `install_product_registration` (the activation path) ever granted a product's admin role
+    to an organization's owners. `reconcile_registration` now closes it through the same
+    `grant_admin_roles_to_owners` that path calls.
+    """
+
+    async def test_an_owner_is_granted_the_new_admin_role_when_the_product_is_active(
+        self, session: AsyncSession, org: Organization, redis: FakeRedis
+    ) -> None:
+        registration = _crm_registration_with_new_admin_role()
+        async with session.begin():
+            owner = await _add_owner(session, org.id)
+
+        async with session.begin():
+            summary = await services.reconcile_registration(
+                session,
+                org.id,
+                registration,
+                acting_as="test",
+                admin_role_codes=("CRM_LEADS_ADMIN",),
+                product_active=True,
+            )
+
+        assert summary.changed is True
+        assert summary.admin_grant.role_codes == ["CRM_LEADS_ADMIN"]
+        assert summary.admin_grant.granted == [(owner.id, "CRM_LEADS_ADMIN")]
+        assert redis.store[permission_version_key(str(org.id))] == "1"
+
+        async with session.begin():
+            codes = await _membership_role_codes(session, owner.id)
+        assert "CRM_LEADS_ADMIN" in codes
+
+        async with session.begin():
+            events = await _grants_changed_event_count_for_membership(session, owner.id)
+        assert events == 1
+
+    async def test_a_second_run_is_a_true_no_op(
+        self, session: AsyncSession, org: Organization, redis: FakeRedis
+    ) -> None:
+        registration = _crm_registration_with_new_admin_role()
+        key = permission_version_key(str(org.id))
+        async with session.begin():
+            owner = await _add_owner(session, org.id)
+
+        async with session.begin():
+            first = await services.reconcile_registration(
+                session,
+                org.id,
+                registration,
+                acting_as="test",
+                admin_role_codes=("CRM_LEADS_ADMIN",),
+                product_active=True,
+            )
+        assert first.changed is True
+        assert redis.store[key] == "1"
+
+        async with session.begin():
+            events_after_first = await _grants_changed_event_count_for_membership(session, owner.id)
+        assert events_after_first == 1
+
+        async with session.begin():
+            second = await services.reconcile_registration(
+                session,
+                org.id,
+                registration,
+                acting_as="test",
+                admin_role_codes=("CRM_LEADS_ADMIN",),
+                product_active=True,
+            )
+
+        assert second.changed is False
+        assert second.admin_grant.granted == []
+        # No further bump, and no second event: the owner already held the role.
+        assert redis.store[key] == "1"
+
+        async with session.begin():
+            events_after_second = await _grants_changed_event_count_for_membership(
+                session, owner.id
+            )
+        assert events_after_second == 1
+
+    async def test_a_non_owner_member_gets_nothing(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> None:
+        registration = _crm_registration_with_new_admin_role()
+        async with session.begin():
+            await _add_owner(session, org.id)
+
+        async with session.begin():
+            await services.reconcile_registration(
+                session,
+                org.id,
+                registration,
+                acting_as="test",
+                admin_role_codes=("CRM_LEADS_ADMIN",),
+                product_active=True,
+            )
+
+        async with session.begin():
+            member_codes = await _membership_role_codes(session, people["report"].id)
+            manager_codes = await _membership_role_codes(session, people["manager"].id)
+        assert "CRM_LEADS_ADMIN" not in member_codes
+        assert "CRM_LEADS_ADMIN" not in manager_codes
+
+
+class TestReconcileSkipsAnOrganizationThatNeverActivatedTheProduct:
+    async def test_the_owner_is_granted_nothing(
+        self, session: AsyncSession, org: Organization, redis: FakeRedis
+    ) -> None:
+        registration = _crm_registration_with_new_admin_role()
+        async with session.begin():
+            owner = await _add_owner(session, org.id)
+
+        async with session.begin():
+            summary = await services.reconcile_registration(
+                session,
+                org.id,
+                registration,
+                acting_as="test",
+                admin_role_codes=("CRM_LEADS_ADMIN",),
+                product_active=False,
+            )
+
+        assert summary.changed is False
+        assert summary.admin_grant.granted == []
+        assert summary.admin_grant.role_codes == []
+        assert permission_version_key(str(org.id)) not in redis.store
+
+        async with session.begin():
+            codes = await _membership_role_codes(session, owner.id)
+        assert "CRM_LEADS_ADMIN" not in codes
+
+        # Union-only role widening is unconditional (ADR-0007 §1) and this fix does not
+        # touch it: the template still installs, with nobody holding it, which is exactly
+        # the state that is safe for a product this organization never activated.
+        async with session.begin():
+            role = await selectors.get_role_by_code(session, org.id, "CRM_LEADS_ADMIN")
+        assert role is not None
+
+
+class TestDryRunGrantsNothing:
+    """The CLI's `--dry-run`: reports the owner grant it would make, and writes nothing —
+    the same guarantee `TestDryRunWritesNothing` proves for role widening, exercised here
+    through the full `reconcile_permissions.reconcile_organization` path so the rollback
+    around the owner grant is proved too, not only the diff computation.
+    """
+
+    async def test_dry_run_reports_the_pending_grant_and_writes_nothing(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        admin_session: AsyncSession,
+        redis: FakeRedis,
+    ) -> None:
+        registration = _crm_registration_with_new_admin_role()
+        manifest = ProductManifest(
+            product="crm", registration=registration, admin_role_codes=("CRM_LEADS_ADMIN",)
+        )
+        async with session.begin():
+            owner = await _add_owner(session, org.id)
+
+        line = await reconcile_permissions.reconcile_organization(
+            org.id, manifest, _StubActivationChecker(), dry_run=True
+        )
+
+        assert line["dry_run"] is True
+        assert line["product_active"] is True
+        assert line["changed"] is True
+        assert line["owners_granted"] == [
+            {"membership_id": str(owner.id), "roles": ["CRM_LEADS_ADMIN"]}
+        ]
+
+        async with admin_session.begin():
+            codes = await _membership_role_codes(admin_session, owner.id)
+        assert "CRM_LEADS_ADMIN" not in codes
+        assert permission_version_key(str(org.id)) not in redis.store
+
+        async with admin_session.begin():
+            events = await _grants_changed_event_count_for_membership(admin_session, owner.id)
+        assert events == 0
+
+
 @pytest_asyncio.fixture
 async def other_org(admin_session: AsyncSession) -> Organization:
     """A second, independent tenant — created where organizations legitimately are."""
@@ -420,7 +711,11 @@ class TestFleetReconcileIsOneTransactionPerOrganization:
 
         with pytest.raises(ConnectionError):
             await reconcile_permissions.reconcile_fleet(
-                "core", [org.id, other_org.id], dry_run=False, pace_ms=0
+                "core",
+                [org.id, other_org.id],
+                checker=_StubActivationChecker(),
+                dry_run=False,
+                pace_ms=0,
             )
 
         async with admin_session.begin():

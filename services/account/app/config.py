@@ -25,6 +25,15 @@ class Settings(ServiceSettings):
     #: says none ever should.
     employee_service_url: str = "http://localhost:8120"
 
+    #: Where product-service answers `GET /internal/v1/organizations/{id}/entitlements`, the
+    #: same read auth-service trusts to mint the `ent` claim (`services/auth/app/entitlements.py`).
+    #: account has no local record of product activation — `activations` lives in
+    #: product-service's own schema — so `tools/reconcile_permissions.py` asks this endpoint
+    #: before granting a product's admin role to an organization's owners, the one thing a
+    #: fleet reconcile must not do for a product an organization never activated. Used by
+    #: that command only; no request path in this service calls product-service.
+    product_service_url: str = "http://localhost:8112"
+
     #: `POST /domains/{id}/verify` runs a real DNS lookup, so it is bounded per organization
     #: the same way `storefront`'s own domain check is — one caller retrying in a loop must
     #: not become this process's DNS traffic pattern.
