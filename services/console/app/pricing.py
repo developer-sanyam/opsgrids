@@ -120,6 +120,7 @@ def _price_out(doc: dict[str, Any], *, is_bespoke: bool) -> ProductPriceOut | No
         return None
     return ProductPriceOut(
         plan_version_id=uuid.UUID(str(doc["id"])),
+        plan_name=doc.get("plan_name"),
         amount_minor=int(flat.get("amount_minor") or 0),
         currency=str(flat.get("currency") or doc.get("currency")),
         billing_interval=str(doc["billing_interval"]),
@@ -164,6 +165,7 @@ async def build_pricing_view(
         sub = subs_by_key.get(key)
 
         current_price: ProductPriceOut | None = None
+        current_plan_name: str | None = None
         if sub is not None:
             try:
                 # MAJOR-1 (fix round 1): parsed, not passed through as a raw string from
@@ -175,6 +177,7 @@ async def build_pricing_view(
             except CatalogError as exc:
                 raise UpstreamUnavailableProblem(str(exc)) from exc
             if version_doc is not None:
+                current_plan_name = version_doc.get("plan_name")
                 current_price = _price_out(
                     version_doc,
                     is_bespoke=version_doc.get("restricted_to_org_id") is not None,
@@ -191,6 +194,7 @@ async def build_pricing_view(
                         id=uuid.UUID(str(sub["id"])),
                         state=str(sub["state"]),
                         plan_version_id=uuid.UUID(str(sub["plan_version_id"])),
+                        plan_name=current_plan_name,
                         trial_ends_at=sub.get("trial_ends_at"),
                         current_period_end=sub.get("current_period_end"),
                     )
@@ -201,6 +205,7 @@ async def build_pricing_view(
                 public_price=(
                     ProductPriceOut(
                         plan_version_id=uuid.UUID(str(public["plan_version_id"])),
+                        plan_name=public.get("product_name"),
                         amount_minor=int(public["amount_minor"]),
                         currency=str(public["currency"]),
                         billing_interval=str(public["billing_interval"]),

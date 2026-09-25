@@ -99,6 +99,110 @@ class TestInternalPinLookup:
         )
         assert resp.status_code == 404
 
+    async def test_the_read_carries_the_plans_display_name(
+        self, client, platform_session: AsyncSession
+    ) -> None:
+        """`plan_name` is additive: the pricing composite reads the pinned plan's name off the
+        same document it already fetches for the price, with no second call."""
+        async with platform_session.begin():
+            version = await _published_version(platform_session)
+        resp = await client.get(
+            f"/internal/v1/plan-versions/{version.id}", headers={"X-Internal-Token": _token()}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["plan_name"] == "Standard"
+
+
+class TestPlanVersionNames:
+    """`GET /internal/v1/plan-versions?ids=...` — the batch behind console's subscription list,
+    so N rows cost one call instead of N."""
+
+    URL = "/internal/v1/plan-versions"
+
+    async def test_it_names_many_versions_in_one_call(
+        self, client, platform_session: AsyncSession
+    ) -> None:
+        op = operator_principal()
+        async with platform_session.begin():
+            starter = await services.create_plan(
+                platform_session,
+                op,
+                PlanCreateIn(product_key="hrms", code="starter", name="Starter"),
+                request=None,
+            )
+            growth = await services.create_plan(
+                platform_session,
+                op,
+                PlanCreateIn(product_key="crm", code="growth", name="Growth"),
+                request=None,
+            )
+            versions = []
+            for plan in (starter, growth):
+                version = await services.create_version(
+                    platform_session,
+                    op,
+                    plan,
+                    VersionCreateIn(
+                        currency="USD",
+                        prices=[PriceIn(kind="flat", amount_minor=1000, currency="USD")],
+                    ),
+                    request=None,
+                )
+                versions.append(
+                    await services.publish_version(platform_session, op, version, request=None)
+                )
+
+        resp = await client.get(
+            self.URL,
+            params=[("ids", str(v.id)) for v in versions],
+            headers={"X-Internal-Token": _token()},
+        )
+        assert resp.status_code == 200, resp.text
+        by_id = {row["plan_version_id"]: row for row in resp.json()["versions"]}
+        assert by_id[str(versions[0].id)]["plan_name"] == "Starter"
+        assert by_id[str(versions[0].id)]["product_key"] == "hrms"
+        assert by_id[str(versions[1].id)]["plan_name"] == "Growth"
+        assert by_id[str(versions[1].id)]["product_key"] == "crm"
+
+    async def test_an_unknown_id_is_simply_absent_not_a_404_for_the_batch(
+        self, client, platform_session: AsyncSession
+    ) -> None:
+        async with platform_session.begin():
+            version = await _published_version(platform_session)
+        ghost = uuid.uuid4()
+        resp = await client.get(
+            self.URL,
+            params=[("ids", str(version.id)), ("ids", str(ghost))],
+            headers={"X-Internal-Token": _token()},
+        )
+        assert resp.status_code == 200
+        ids = {row["plan_version_id"] for row in resp.json()["versions"]}
+        assert ids == {str(version.id)}
+
+    async def test_the_names_are_unfiltered_like_the_single_read(
+        self, client, platform_session: AsyncSession
+    ) -> None:
+        """A bespoke version is named too — a name is not a commercial decision, and the caller
+        (console's staff list) needs it for exactly the organizations that hold one."""
+        async with platform_session.begin():
+            version = await _published_version(platform_session, org=uuid.uuid4())
+        resp = await client.get(
+            self.URL, params=[("ids", str(version.id))], headers={"X-Internal-Token": _token()}
+        )
+        assert [row["plan_name"] for row in resp.json()["versions"]] == ["Standard"]
+
+    async def test_ids_are_required_bounded_and_uuids(self, client) -> None:
+        headers = {"X-Internal-Token": _token()}
+        assert (await client.get(self.URL, headers=headers)).status_code == 422
+        too_many = [("ids", str(uuid.uuid4())) for _ in range(201)]
+        assert (await client.get(self.URL, params=too_many, headers=headers)).status_code == 422
+        bad = await client.get(self.URL, params=[("ids", "not-a-uuid")], headers=headers)
+        assert bad.status_code == 422
+
+    async def test_without_a_service_token_it_is_refused(self, client) -> None:
+        resp = await client.get(self.URL, params=[("ids", str(uuid.uuid4()))])
+        assert resp.status_code == 401
+
 
 class TestPublicFlatPlans:
     """The console pricing screen's baseline read: one row per product's public flat plan."""

@@ -126,6 +126,10 @@ class InternalPlanVersionOut(BaseModel):
     id: uuid.UUID
     plan_id: uuid.UUID
     product_key: str | None = None
+    #: The plan's display name (`Plan.name`, "Growth") — what a staff screen shows beside a
+    #: subscription instead of a bare version uuid. Additive: a caller written before it existed
+    #: simply never reads it.
+    plan_name: str | None = None
     version_no: int
     state: str
     billing_interval: str
@@ -139,6 +143,22 @@ class InternalPlanVersionOut(BaseModel):
     #: The seat classes this version sells. A subscription that wants per-class seat counts
     #: needs them at pin time, and a pin is the only moment they are guaranteed to be read.
     seat_classes: list[SeatClassOut] = Field(default_factory=list)
+
+
+class InternalPlanVersionNameOut(BaseModel):
+    """One plan version's display names — `GET /internal/v1/plan-versions` (batch)."""
+
+    plan_version_id: uuid.UUID
+    plan_id: uuid.UUID
+    plan_name: str
+    product_key: str
+
+
+class InternalPlanVersionNamesOut(BaseModel):
+    """The names for whichever of the requested ids exist. An id catalog does not know is simply
+    absent — the batch's answer to "no such version", not a 404 for the whole call."""
+
+    versions: list[InternalPlanVersionNameOut]
 
 
 # --------------------------------------------------------------------- operator input

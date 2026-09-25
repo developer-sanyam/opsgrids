@@ -27,7 +27,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 import httpx
 from fastapi import APIRouter, Depends, Header, Query, status
@@ -36,6 +36,7 @@ from starlette.requests import Request
 
 from app import (
     account_client,
+    catalog_client,
     delegation,
     directory_client,
     pagination,
@@ -328,20 +329,57 @@ async def metrics_series(
     summary="Every organization's subscriptions, flattened from their snapshots",
 )
 async def list_subscriptions(
-    session: DirectorySessionDep, operator: OperatorBilling
+    session: DirectorySessionDep, operator: OperatorBilling, client: DelegationClientDep
 ) -> SubscriptionsOut:
     states = await selectors.all_org_states(session)
+
+    # Display names come from catalog in a couple of calls total, never one per row: the batch
+    # plan-version names read, and the public flat plans (whose plan name is the product's display
+    # name). Best-effort, like `list_organizations`' member counts — a name outage must not blank a
+    # list that otherwise renders fine off console's own schema.
+    version_ids: list[uuid.UUID] = []
+    for state in states:
+        for entry in state.subscription_states.values():
+            try:
+                version_ids.append(uuid.UUID(str(entry["plan_version_id"])))
+            except (KeyError, ValueError):
+                continue  # a tombstone or an entry with no pin has no plan to name
+    plan_names: dict[uuid.UUID, dict[str, Any]] = {}
+    product_names: dict[str, str] = {}
+    if version_ids:
+        try:
+            plan_names = await catalog_client.get_plan_version_names(
+                settings(), version_ids, client=client
+            )
+            product_names = {
+                str(p["product_key"]): str(p["product_name"])
+                for p in await catalog_client.get_public_flat_plans(
+                    settings(),
+                    client=client,
+                    request_timeout=catalog_client.ENRICHMENT_TIMEOUT_SECONDS,
+                )
+            }
+        except catalog_client.CatalogError as exc:
+            log.warning("console.subscriptions.names_unavailable", error=str(exc)[:300])
+
     rows: list[SubscriptionOut] = []
     for state in states:
         for product_key, entry in sorted(state.subscription_states.items()):
+            raw_version = entry.get("plan_version_id")
+            try:
+                named = plan_names.get(uuid.UUID(str(raw_version)))
+            except ValueError:
+                named = None
             rows.append(
                 SubscriptionOut(
                     organization_id=state.organization_id,
                     name=state.name,
                     slug=state.slug,
                     product_key=product_key,
+                    product_name=product_names.get(product_key),
                     state=str(entry.get("state")),
-                    plan_version_id=entry.get("plan_version_id"),
+                    plan_version_id=raw_version,
+                    plan_name=named["plan_name"] if named else None,
                     amount_minor=int(entry.get("amount_minor", 0)),
                     currency=entry.get("currency"),
                     trial_ends_at=entry.get("trial_ends_at"),

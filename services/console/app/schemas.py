@@ -180,8 +180,15 @@ class SubscriptionOut(BaseModel):
     name: str | None = None
     slug: str | None = None
     product_key: str
+    #: The product's display name, from catalog's public flat plan for it (`null` when catalog has
+    #: none or could not be reached — a list that already renders the rest of the row should not
+    #: go blank for one enrichment call failing, same as `OrgStateOut.user_count`).
+    product_name: str | None = None
     state: str
     plan_version_id: str | None
+    #: The pinned plan's display name ("Growth"), from catalog's batch names read. Same
+    #: best-effort nullability as `product_name`.
+    plan_name: str | None = None
     amount_minor: int
     currency: str | None
     trial_ends_at: datetime | None
@@ -265,6 +272,10 @@ class ProductSubscriptionOut(BaseModel):
     id: uuid.UUID
     state: str
     plan_version_id: uuid.UUID
+    #: The pinned plan's display name, read off the same catalog plan-version document the
+    #: composite already fetches for `current_price` — no extra call. `null` when catalog no
+    #: longer knows the version.
+    plan_name: str | None = None
     trial_ends_at: datetime | None = None
     current_period_end: datetime | None = None
 
@@ -273,6 +284,9 @@ class ProductPriceOut(BaseModel):
     """One priced plan version, as either the org's current pin or the product's public plan."""
 
     plan_version_id: uuid.UUID
+    #: The plan's display name — for `current_price`, the pinned version's plan; for
+    #: `public_price`, the public flat plan's own name.
+    plan_name: str | None = None
     amount_minor: int
     currency: str
     billing_interval: str
