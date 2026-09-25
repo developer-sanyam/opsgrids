@@ -35,10 +35,13 @@ from platform_core.db import apply_schema_grants
 _REVOKE_UPDATE_DELETE = ("credit_ledger", "invoice_lines")
 _REVOKE_DELETE_ONLY = ("invoices",)
 
-#: The staff credit-ledger reader. SELECT only — no write ever reaches this role, so a bug in
-#: the read path cannot write across tenants (mirrors console's `DIRECTORY_READER`).
+#: The staff reader for the credit ledger and one organization's invoices. SELECT only — no write
+#: ever reaches this role, so a bug in the read path cannot write across tenants (mirrors
+#: console's `DIRECTORY_READER`). `invoices` was added for `GET /admin/invoices`; it is a grant,
+#: not a schema change, so it needs no revision: this function re-applies it after every
+#: `alembic upgrade`, including one with nothing new to run.
 DIRECTORY_READER = "opsgrids_billing_directory"
-DIRECTORY_TABLES = ("credit_ledger",)
+DIRECTORY_TABLES = ("credit_ledger", "invoices")
 
 config = context.config
 if config.config_file_name is not None:
