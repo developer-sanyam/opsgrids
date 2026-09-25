@@ -1,7 +1,4 @@
 {
-  "opsgrids-dashboard/src/App.tsx": {
-    "arbitrary": 2
-  },
   "opsgrids-dashboard/src/routes/AcceptInvitation.tsx": {
     "spacing": 1
   },
@@ -47,11 +44,6 @@
   "opsgrids-dashboard/src/ui/forms.tsx": {
     "arbitrary": 2,
     "spacing": 5
-  },
-  "opsgrids-internal/src/App.tsx": {
-    "arbitrary": 8,
-    "spacing": 2,
-    "radius": 1
   },
   "opsgrids-internal/src/routes/AccountActions.tsx": {
     "arbitrary": 1,
@@ -154,12 +146,6 @@
   "opsgrids-internal/src/ui/SearchInput.tsx": {
     "arbitrary": 1
   },
-  "opsgrids-internal/src/ui/Sidebar.tsx": {
-    "colour": 1,
-    "arbitrary": 6,
-    "spacing": 13,
-    "radius": 2
-  },
   "opsgrids-internal/src/ui/States.tsx": {
     "colour": 1,
     "spacing": 1
@@ -177,7 +163,7 @@
     "spacing": 1
   },
   "opsgrids-ui/src/components/AppShell.tsx": {
-    "arbitrary": 8
+    "arbitrary": 1
   },
   "opsgrids-ui/src/components/Card.stories.tsx": {
     "spacing": 1
@@ -207,9 +193,7 @@
     "spacing": 1
   },
   "opsgrids-ui/src/components/Sidebar.tsx": {
-    "arbitrary": 5,
-    "spacing": 5,
-    "radius": 1
+    "spacing": 3
   },
   "opsgrids-ui/src/components/States.stories.tsx": {
     "spacing": 2
@@ -252,7 +236,7 @@
     "spacing": 9
   },
   "product-crm/src/routes/Overview.tsx": {
-    "arbitrary": 2,
+    "arbitrary": 1,
     "spacing": 7
   },
   "product-crm/src/routes/Team.tsx": {
@@ -430,7 +414,7 @@
     "spacing": 5
   },
   "product-hrms/src/routes/Dashboard.tsx": {
-    "arbitrary": 2,
+    "arbitrary": 1,
     "spacing": 7
   },
   "product-hrms/src/routes/Delegations.tsx": {
@@ -513,7 +497,7 @@
     "spacing": 9
   },
   "product-itsm/src/routes/Overview.tsx": {
-    "arbitrary": 2,
+    "arbitrary": 1,
     "spacing": 8
   },
   "product-itsm/src/routes/RequestDetail.tsx": {
@@ -647,9 +631,6 @@
   "product-operations/src/ui/TopSuppliers.tsx": {
     "spacing": 1
   },
-  "product-projects/src/App.tsx": {
-    "arbitrary": 1
-  },
   "product-projects/src/api/fixtures.ts": {
     "spacing": 10
   },
@@ -673,7 +654,7 @@
     "spacing": 3
   },
   "product-projects/src/routes/Overview.tsx": {
-    "arbitrary": 2,
+    "arbitrary": 1,
     "spacing": 9
   },
   "product-projects/src/routes/Portfolio.tsx": {
@@ -717,9 +698,6 @@
     "arbitrary": 1,
     "spacing": 1
   },
-  "product-pulseboard/src/App.tsx": {
-    "arbitrary": 1
-  },
   "product-pulseboard/src/routes/Board.tsx": {
     "arbitrary": 1,
     "spacing": 1
@@ -734,7 +712,7 @@
     "spacing": 9
   },
   "product-pulseboard/src/routes/Overview.tsx": {
-    "arbitrary": 3,
+    "arbitrary": 2,
     "spacing": 16
   },
   "product-pulseboard/src/routes/People.tsx": {
@@ -859,9 +837,6 @@
     "arbitrary": 1,
     "spacing": 1
   },
-  "product-support/src/App.tsx": {
-    "arbitrary": 1
-  },
   "product-support/src/routes/Agents.tsx": {
     "arbitrary": 1,
     "spacing": 10
@@ -876,7 +851,7 @@
     "spacing": 3
   },
   "product-support/src/routes/Overview.tsx": {
-    "arbitrary": 2,
+    "arbitrary": 1,
     "spacing": 9
   },
   "product-support/src/routes/Queue.tsx": {

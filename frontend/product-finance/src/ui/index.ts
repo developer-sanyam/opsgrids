@@ -41,7 +41,7 @@ export type {
   TimelineTone,
 } from "@opsgrids/ui";
 
-export { Sidebar } from "./Sidebar";
+export { useNavGroups } from "./useNavGroups";
 export { CashflowChart } from "./CashflowChart";
 export { AgingBreakdown } from "./AgingBreakdown";
 export { InvoiceStatusPill, PaymentMethodBadge } from "./StatusPill";

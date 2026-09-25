@@ -10,11 +10,20 @@
  */
 export { Announcer } from "./components/Announcer";
 export { AppShell } from "./components/AppShell";
+export type {
+  AppShellProduct,
+  AppShellProps,
+  AppShellUser,
+  CommandMenuConfig,
+  QuickAction,
+} from "./components/AppShell";
 export { Avatar } from "./components/Avatar";
 export type { AvatarSize } from "./components/Avatar";
 export { BarChart } from "./components/BarChart";
 export { BarList } from "./components/BarList";
 export type { BarListItem } from "./components/BarList";
+export { BottomNavigation } from "./components/BottomNavigation";
+export type { BottomNavItem } from "./components/BottomNavigation";
 export { BulkActionBar } from "./components/BulkActionBar";
 export { Button } from "./components/Button";
 export type { ButtonSize, ButtonVariant } from "./components/Button";
@@ -25,6 +34,8 @@ export { CheckboxGroup } from "./components/CheckboxGroup";
 export type { CheckboxOption } from "./components/CheckboxGroup";
 export { Combobox } from "./components/Combobox";
 export type { ComboboxCopy, ComboboxOption } from "./components/Combobox";
+export { CommandMenu } from "./components/CommandMenu";
+export type { CommandMenuItem } from "./components/CommandMenu";
 export { ConfirmDialog } from "./components/ConfirmDialog";
 export { DataTable } from "./components/DataTable";
 export type { Column, TableSelection } from "./components/DataTable";
@@ -55,6 +66,7 @@ export type { MenuItem } from "./components/Menu";
 export { MetricCard } from "./components/MetricCard";
 export type { MetricTrend } from "./components/MetricCard";
 export { MobileDataCard } from "./components/MobileDataCard";
+export { MobileHeader } from "./components/MobileHeader";
 export type { MobileCardSelection, MobileCardWiring, MobileDataField } from "./components/MobileDataCard";
 export { PageHeader } from "./components/PageHeader";
 export { Pagination } from "./components/Pagination";
@@ -69,7 +81,7 @@ export { SearchInput } from "./components/SearchInput";
 export { Select } from "./components/Select";
 export type { SelectOption } from "./components/Select";
 export { Sidebar } from "./components/Sidebar";
-export type { NavEntry, NavGroup, SidebarAccount } from "./components/Sidebar";
+export type { ModuleLink, NavEntry, NavGroup, SidebarUser } from "./components/Sidebar";
 export {
   CardSkeleton,
   ChartSkeleton,
@@ -120,6 +132,7 @@ export type {
   ZoneResolution,
 } from "./lib/datetime";
 export { formatDelta, initials } from "./lib/format";
+export { moduleIcon } from "./lib/moduleIcons";
 export { encodeQr, qrPathData } from "./lib/qr";
 export type { EncodeOptions, QrLevel, QrMatrix } from "./lib/qr";
 export { useTheme } from "./lib/theme";

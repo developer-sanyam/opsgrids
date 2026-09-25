@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import type { CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
@@ -38,7 +38,6 @@ import {
   FlagIcon,
   GaugeIcon,
   PlusIcon,
-  SearchIcon,
   TargetIcon,
 } from "@opsgrids/ui";
 import { SAMPLE_DATA } from "@/ui/sampleCopy";
@@ -57,11 +56,11 @@ const EMPTY_MILESTONES: MilestoneOut[] = [];
 const SAMPLE_UTILIZATION_PCT = 87;
 const SAMPLE_UTILIZATION_SERIES = [79, 82, 80, 84, 86, 85, 87];
 
-/** The Overview's top bar: breadcrumb + title, then the search / add controls. Search is visible
- *  at every width — a control hidden below `md` is a control most visits never see. */
+/** The Overview's top bar: breadcrumb + title, then the add control. The shell's own header
+ *  already has a search that reaches the portfolio (`AppShell`'s `search.fallback`), so this
+ *  doesn't repeat it. */
 function OverviewHeader({ orgName }: { orgName: string }) {
   const navigate = useNavigate();
-  const [query, setQuery] = useState("");
 
   return (
     <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -76,28 +75,6 @@ function OverviewHeader({ orgName }: { orgName: string }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const q = query.trim();
-            navigate(q ? `/portfolio?q=${encodeURIComponent(q)}` : "/portfolio");
-          }}
-          className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-full bg-surface px-4 shadow-card focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2 sm:w-60 sm:flex-none"
-        >
-          <SearchIcon className="size-[18px] shrink-0 text-faint" />
-          <label htmlFor="overview-search" className="sr-only">
-            Search projects
-          </label>
-          <input
-            id="overview-search"
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search projects…"
-            className="min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-faint focus:outline-none"
-          />
-        </form>
-
         <Button
           size="md"
           leadingIcon={<PlusIcon className="size-4" />}

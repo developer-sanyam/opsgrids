@@ -43,7 +43,7 @@ export type {
   SelectOption,
 } from "@opsgrids/ui";
 
-export { Sidebar } from "./Sidebar";
+export { useNavGroups } from "./useNavGroups";
 export { SpendTrend } from "./SpendTrend";
 export { CategoryBreakdown } from "./CategoryBreakdown";
 export { StatusMix } from "./StatusMix";

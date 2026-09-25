@@ -24,7 +24,7 @@ export {
 } from "@opsgrids/ui";
 export type { Column, KpiTone } from "@opsgrids/ui";
 
-export { Sidebar } from "./Sidebar";
+export { useNavGroups } from "./useNavGroups";
 export { IncidentVolumeChart } from "./IncidentVolumeChart";
 export { PriorityBreakdown } from "./PriorityBreakdown";
 export { CategoryDonut } from "./CategoryDonut";

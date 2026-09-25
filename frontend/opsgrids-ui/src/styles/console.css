@@ -340,6 +340,77 @@ body {
   z-index: 60;
 }
 
+/* ------------------------------ AppShell v2 layout ------------------------------ *
+ * Named sizes for the shell's chrome, so the three breakpoints agree on one number each
+ * rather than every app guessing a pixel value. Plain custom properties and classes, not
+ * Tailwind's generated scale — `opsgrids/tokens` only polices colour, spacing, radius and
+ * shadow, and a width or height was never in that closed set, but a shell measurement is
+ * still a token: defined once, here, not typed again at each call site.
+ * ---------------------------------------------------------------------------------- */
+:root {
+  --shell-sidebar-w: 256px;
+  --shell-rail-w: 72px;
+  --shell-header-h: 64px;
+  --shell-mobile-header-h: 56px;
+  --shell-bottom-nav-h: 64px;
+  --shell-content-max: 1440px;
+  /* How far a `position: fixed` element on a phone needs to clear the bottom nav. Zero above
+     the breakpoint the nav disappears at, so `Toaster`'s desktop anchor is untouched. */
+  --shell-bottom-inset: 0px;
+}
+
+@media (max-width: 767px) {
+  :root {
+    --shell-bottom-inset: calc(var(--shell-bottom-nav-h) + env(safe-area-inset-bottom));
+  }
+}
+
+.shell-sidebar-w {
+  width: var(--shell-sidebar-w);
+}
+
+.shell-rail-w {
+  width: var(--shell-rail-w);
+}
+
+.shell-header-h {
+  height: var(--shell-header-h);
+}
+
+.shell-mobile-header-h {
+  height: var(--shell-mobile-header-h);
+}
+
+.shell-content-max {
+  max-width: var(--shell-content-max);
+}
+
+/* The sidebar and rail columns: pinned flush to the viewport's full height, so each scrolls its
+   own nav independently of the page. */
+.shell-side-h {
+  height: 100dvh;
+}
+
+/* The mobile/tablet nav panel's width — the same "as wide as a phone comfortably allows, capped
+   so it never spans a tablet" the original single-product shell used. */
+.shell-drawer-w {
+  width: 280px;
+  max-width: 85vw;
+}
+
+/* The fixed bottom bar itself: its own height plus the safe area, so the safe area pads the
+   bar rather than shrinking its touch targets. */
+.shell-bottom-nav {
+  height: calc(var(--shell-bottom-nav-h) + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Reserves the space the fixed bottom nav would otherwise cover, at the foot of the routed
+   page — "no layout shift, nothing hidden behind the bar" as one rule instead of one per app. */
+.shell-content-bottom-pad {
+  padding-bottom: var(--shell-bottom-inset);
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root {
     --duration-instant: 0ms;

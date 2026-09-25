@@ -158,7 +158,7 @@ describe("MarketplacePage", () => {
       </MemoryRouter>,
     );
     const link = await screen.findByRole("link", { name: "Open Inventory" });
-    expect(link.getAttribute("href")).toBe("https://ops.opsgrids.com/");
+    expect(link.getAttribute("href")).toBe("https://ops.opsgrids.com");
     expect(screen.queryByRole("button", { name: "Start 14-day trial" })).toBeNull();
     expect(screen.getByText(/On trial/).textContent).toContain("days left");
   });
@@ -236,7 +236,7 @@ describe("MarketplacePage — bundles", () => {
       </MemoryRouter>,
     );
     expect((await screen.findAllByText("Included in Suite Trio")).length).toBe(2);
-    expect(screen.getByRole("link", { name: "Open Inventory" }).getAttribute("href")).toBe("https://ops.opsgrids.com/");
+    expect(screen.getByRole("link", { name: "Open Inventory" }).getAttribute("href")).toBe("https://ops.opsgrids.com");
     expect(screen.queryByRole("button", { name: "Start 14-day trial" })).toBeNull();
     expect(screen.getByText("Each product it includes opens from its own card.")).toBeTruthy();
   });

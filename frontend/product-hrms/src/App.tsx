@@ -1,7 +1,9 @@
-import { AppShell as Shell, Button, InlineAlert } from "@opsgrids/ui";
-import { usePermissions } from "@opsgrids/client";
-import { Sidebar } from "./ui";
+import { AppShell as Shell, Button, InlineAlert, moduleIcon } from "@opsgrids/ui";
+import { getAuthOrigin, useAdminLinks, useAuth, useCurrentUser, usePermissions, usePlatformModules } from "@opsgrids/client";
+import { useNavGroups } from "./ui";
 import { LogoMark } from "./ui/LogoMark";
+
+const DASHBOARD_ORIGIN_FALLBACK = "https://app.opsgrids.com";
 
 /**
  * Once, at the shell — never per screen. If the grants fetch itself failed, `<Can>` and `useCan`
@@ -13,39 +15,47 @@ function GrantsStatusBanner() {
   const { status, reloadGrants } = usePermissions();
   if (status !== "error") return null;
   return (
-    <div className="sticky top-0 z-40 px-3 pt-3 sm:px-4 sm:pt-4">
-      <InlineAlert
-        tone="warning"
-        title="Permissions couldn't be checked — some actions may be hidden"
-        action={
-          <Button size="sm" variant="outline" onClick={reloadGrants}>
-            Try again
-          </Button>
-        }
-      >
-        Create, edit and status controls are hidden until this succeeds. Reloading the page also
-        retries it.
-      </InlineAlert>
-    </div>
+    <InlineAlert
+      tone="warning"
+      title="Permissions couldn't be checked — some actions may be hidden"
+      action={
+        <Button size="sm" variant="outline" onClick={reloadGrants}>
+          Try again
+        </Button>
+      }
+    >
+      Create, edit and status controls are hidden until this succeeds. Reloading the page also
+      retries it.
+    </InlineAlert>
   );
 }
 
 /**
- * The app shell — the sidebar rail, the mobile drawer and the routed main column — is
- * `@opsgrids/ui`'s `AppShell`. This file supplies the two things that are this product's: its mark
- * and its name in the compact top bar.
+ * The app shell — the sidebar, the rail, the mobile header/bottom nav and the routed main column —
+ * is `@opsgrids/ui`'s `AppShell`. This file supplies everything that is this product's: its mark,
+ * its own nav, and the cross-product modules and admin links from `@opsgrids/client`'s hooks.
  */
 export function AppShell() {
+  const { logout } = useAuth();
+  const currentUser = useCurrentUser();
+  const { groups, pinned } = useNavGroups();
+  const modules = usePlatformModules();
+  const adminLinks = useAdminLinks();
+  const adminOrigin = getAuthOrigin() ?? DASHBOARD_ORIGIN_FALLBACK;
+
+  if (!currentUser) return null;
+
   return (
-    <>
-      <GrantsStatusBanner />
-      <Shell
-        logo={<LogoMark className="size-7" />}
-        productName="OpsGrids HR"
-        renderSidebar={({ onNavigate }) => (
-          <Sidebar {...(onNavigate ? { onNavigate } : {})} />
-        )}
-      />
-    </>
+    <Shell
+      product={{ name: "OpsGrids HR", mark: <LogoMark className="size-7" /> }}
+      nav={groups}
+      pinned={pinned}
+      modules={modules.map((m) => ({ key: m.key, label: m.label, href: m.href, icon: moduleIcon(m.iconKey) }))}
+      adminLinks={adminLinks.map((l) => ({ key: l.key, label: l.label, href: `${adminOrigin}${l.href}` }))}
+      user={{ name: currentUser.name, email: currentUser.email, roleLabel: currentUser.roleDisplay }}
+      onSignOut={() => void logout()}
+      search={{ placeholder: "Search", fallback: { label: "Search employees for", to: "/employees" } }}
+      banner={<GrantsStatusBanner />}
+    />
   );
 }

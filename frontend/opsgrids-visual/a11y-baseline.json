@@ -5,104 +5,87 @@
   },
   "page/crm/deals-list|dark|375": {
     "button-name": 2,
-    "empty-table-header": 1,
-    "region": 1
+    "empty-table-header": 1
   },
   "page/crm/deals-list|dark|768": {
     "color-contrast": 1,
-    "empty-table-header": 1,
-    "region": 1
+    "empty-table-header": 1
   },
   "page/crm/deals-list|light|1280": {
     "empty-table-header": 1
   },
   "page/crm/deals-list|light|375": {
     "button-name": 2,
-    "empty-table-header": 1,
-    "region": 1
+    "empty-table-header": 1
   },
   "page/crm/deals-list|light|768": {
-    "empty-table-header": 1,
-    "region": 1
+    "empty-table-header": 1
   },
   "page/crm/new-deal-dialog|dark|1280": {
     "color-contrast": 1
   },
   "page/crm/new-deal-dialog|dark|375": {
-    "button-name": 2,
-    "region": 1
+    "button-name": 2
   },
   "page/crm/new-deal-dialog|dark|768": {
-    "color-contrast": 1,
-    "region": 1
+    "color-contrast": 1
   },
   "page/crm/new-deal-dialog|light|375": {
-    "button-name": 2,
-    "region": 1
-  },
-  "page/crm/new-deal-dialog|light|768": {
-    "region": 1
-  },
-  "page/crm/overview|dark|375": {
-    "region": 1
-  },
-  "page/crm/overview|dark|768": {
-    "region": 1
-  },
-  "page/crm/overview|light|375": {
-    "region": 1
-  },
-  "page/crm/overview|light|768": {
-    "region": 1
+    "button-name": 2
   },
   "page/dashboard/marketplace|dark|1280": {
     "color-contrast": 2
   },
   "page/dashboard/marketplace|dark|375": {
-    "color-contrast": 2,
-    "region": 1
-  },
-  "page/dashboard/marketplace|dark|768": {
-    "color-contrast": 2,
-    "region": 1
-  },
-  "page/dashboard/marketplace|light|375": {
-    "region": 1
-  },
-  "page/dashboard/marketplace|light|768": {
-    "region": 1
-  },
-  "page/internal/accounts|dark|1280": {
     "color-contrast": 2
   },
-  "page/internal/accounts|dark|375": {
-    "color-contrast": 1,
-    "region": 2
+  "page/dashboard/marketplace|dark|768": {
+    "color-contrast": 2
   },
-  "page/internal/accounts|dark|768": {
-    "color-contrast": 1,
-    "region": 2
-  },
-  "page/internal/accounts|light|375": {
-    "region": 2
-  },
-  "page/internal/accounts|light|768": {
-    "region": 2
-  },
-  "page/internal/overview|dark|1280": {
+  "page/internal/accounts|dark|1280": {
     "color-contrast": 1
   },
-  "page/internal/overview|dark|375": {
-    "region": 2
+  "page/internal/accounts|dark|375": {
+    "color-contrast": 1
   },
-  "page/internal/overview|dark|768": {
-    "region": 2
+  "page/internal/accounts|dark|768": {
+    "color-contrast": 1
   },
-  "page/internal/overview|light|375": {
-    "region": 2
+  "story/layout-appshell--command-menu-open|dark|1280": {
+    "aria-required-children": 1,
+    "aria-required-parent": 6,
+    "list": 3,
+    "listitem": 3
   },
-  "page/internal/overview|light|768": {
-    "region": 2
+  "story/layout-appshell--command-menu-open|dark|375": {
+    "aria-required-children": 1,
+    "aria-required-parent": 6,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/layout-appshell--command-menu-open|dark|768": {
+    "aria-required-children": 1,
+    "aria-required-parent": 6,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/layout-appshell--command-menu-open|light|1280": {
+    "aria-required-children": 1,
+    "aria-required-parent": 6,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/layout-appshell--command-menu-open|light|375": {
+    "aria-required-children": 1,
+    "aria-required-parent": 6,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/layout-appshell--command-menu-open|light|768": {
+    "aria-required-children": 1,
+    "aria-required-parent": 6,
+    "list": 3,
+    "listitem": 3
   },
   "story/layout-card--dark|dark|1280": {
     "color-contrast": 1
@@ -121,6 +104,186 @@
   },
   "story/layout-card--dark|light|768": {
     "color-contrast": 1
+  },
+  "story/overlays-commandmenu--filtered-by-typing|dark|1280": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--filtered-by-typing|dark|375": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--filtered-by-typing|dark|768": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--filtered-by-typing|light|1280": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--filtered-by-typing|light|375": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--filtered-by-typing|light|768": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--keyboard-navigation|dark|1280": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--keyboard-navigation|dark|375": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--keyboard-navigation|dark|768": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--keyboard-navigation|light|1280": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--keyboard-navigation|light|375": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--keyboard-navigation|light|768": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--no-matches|dark|1280": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--no-matches|dark|375": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--no-matches|dark|768": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--no-matches|light|1280": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--no-matches|light|375": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--no-matches|light|768": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--open|dark|1280": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--open|dark|375": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--open|dark|768": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--open|light|1280": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--open|light|375": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--open|light|768": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--with-fallback|dark|1280": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--with-fallback|dark|375": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--with-fallback|dark|768": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--with-fallback|light|1280": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--with-fallback|light|375": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
+  },
+  "story/overlays-commandmenu--with-fallback|light|768": {
+    "aria-required-children": 1,
+    "aria-required-parent": 5,
+    "list": 3,
+    "listitem": 3
   },
   "story/overlays-dialog--long-content|dark|1280": {
     "scrollable-region-focusable": 1

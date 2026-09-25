@@ -31,7 +31,6 @@ import {
   ClockIcon,
   InboxIcon,
   PlusIcon,
-  SearchIcon,
 } from "@opsgrids/ui";
 import { SAMPLE_TREND } from "@/ui/sampleCopy";
 import { NewTicketDialog } from "@/ui/NewTicketDialog";
@@ -55,7 +54,9 @@ const STATUS_COLORS: Record<string, string> = {
   solved: "var(--color-present)",
 };
 
-/** The Overview's top bar: breadcrumb + title, then search / date / new-ticket. */
+/** The Overview's top bar: breadcrumb + title, then date / new-ticket. The shell's own header
+ *  already has a search that reaches the queue (`AppShell`'s `search.fallback`), so this doesn't
+ *  repeat it. */
 function OverviewHeader({
   orgName,
   onNewTicket,
@@ -63,9 +64,6 @@ function OverviewHeader({
   orgName: string;
   onNewTicket: () => void;
 }) {
-  const navigate = useNavigate();
-  const [query, setQuery] = useState("");
-
   return (
     <header className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
       <div className="flex flex-col gap-1">
@@ -79,28 +77,6 @@ function OverviewHeader({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const q = query.trim();
-            navigate(q ? `/queue?q=${encodeURIComponent(q)}` : "/queue");
-          }}
-          className="hidden h-11 min-w-0 items-center gap-2 rounded-full bg-surface px-4 shadow-card focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2 md:flex md:w-60"
-        >
-          <SearchIcon className="size-[18px] shrink-0 text-faint" />
-          <label htmlFor="overview-search" className="sr-only">
-            Search tickets
-          </label>
-          <input
-            id="overview-search"
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search tickets…"
-            className="min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-faint focus:outline-none"
-          />
-        </form>
-
         <span className="hidden h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold text-ink-soft shadow-card sm:inline-flex">
           <CalendarIcon className="size-4 text-muted" />
           <span className="tnum">Last 7 days · to {formatDate(clockNow().toISOString())}</span>

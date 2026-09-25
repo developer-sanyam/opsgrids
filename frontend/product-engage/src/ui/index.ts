@@ -28,7 +28,7 @@ export {
 } from "@opsgrids/ui";
 export type { ComboboxOption, RadioOption, SelectOption, TagTone } from "@opsgrids/ui";
 
-export { Sidebar } from "./Sidebar";
+export { useNavGroups } from "./useNavGroups";
 export { LogoMark } from "./LogoMark";
 export {
   CampaignStatusTag,

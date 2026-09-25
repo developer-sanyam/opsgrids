@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 
 import { getAllDeals, getSummary, listActivities } from "@/api/client";
 import type { Deal } from "@/api/types";
@@ -35,7 +35,6 @@ import {
   CalendarIcon,
   HandshakeIcon,
   PlusIcon,
-  SearchIcon,
   TargetIcon,
   useToast,
 } from "@opsgrids/ui";
@@ -45,7 +44,9 @@ const CURRENCY = "INR";
 
 const EMPTY_DEALS: Deal[] = [];
 
-/** The Overview top bar: breadcrumb + title, then search / today / New deal. */
+/** The Overview top bar: breadcrumb + title, then today / New deal. The shell's own header
+ *  already has a search that reaches Deals (`AppShell`'s `search.fallback`), so this doesn't
+ *  repeat it. */
 function OverviewHeader({
   orgName,
   onCreate,
@@ -55,9 +56,6 @@ function OverviewHeader({
   onCreate: () => void;
   canCreate: boolean;
 }) {
-  const navigate = useNavigate();
-  const [query, setQuery] = useState("");
-
   return (
     <header className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
       <div className="flex flex-col gap-1">
@@ -69,28 +67,6 @@ function OverviewHeader({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const q = query.trim();
-            navigate(q ? `/deals?q=${encodeURIComponent(q)}` : "/deals");
-          }}
-          className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-full bg-surface px-4 shadow-card focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2 sm:w-60 sm:flex-none"
-        >
-          <SearchIcon className="size-[18px] shrink-0 text-faint" />
-          <label htmlFor="overview-search" className="sr-only">
-            Search deals
-          </label>
-          <input
-            id="overview-search"
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search deals…"
-            className="min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-faint focus:outline-none"
-          />
-        </form>
-
         <span className="hidden h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold text-ink-soft shadow-card sm:inline-flex">
           <CalendarIcon className="size-4 text-muted" />
           <span className="tnum">{formatDate(nowIso())}</span>
