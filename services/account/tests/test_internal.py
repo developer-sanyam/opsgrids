@@ -165,6 +165,22 @@ class TestDirectoryContract:
         assert "ORG_ADMIN" in membership["roles"]
         assert membership["permission_version"] == 0
 
+    async def test_role_names_are_index_aligned_with_role_codes(
+        self, client: AsyncClient, people: dict[str, Membership], org: Organization
+    ) -> None:
+        """The one source for a friendly role label is the `roles` table's own `name`
+        column — the same one `to_operator_member_out` reads for the members list. This is
+        additive: `roles` (codes) is untouched, `role_names` rides alongside it."""
+        response = await client.get(
+            "/internal/v1/users/by-email",
+            params={"email": "manager@example.com"},
+            headers=internal(),
+        )
+        assert response.status_code == 200
+        membership = response.json()["memberships"][0]
+        assert membership["roles"] == ["ORG_ADMIN"]
+        assert membership["role_names"] == ["Administrator"]
+
     async def test_locations_come_back_as_a_list(
         self, client: AsyncClient, people: dict[str, Membership]
     ) -> None:

@@ -138,6 +138,7 @@ def _choices(memberships: Any) -> list[OrganizationChoice]:
             slug=m.organization_slug,
             name=m.organization_name,
             roles=m.roles,
+            role_names=m.role_names,
         )
         for m in (memberships or [])
     ]
@@ -312,6 +313,14 @@ async def me(
     if user is None:
         raise UnauthorizedProblem("That session is no longer valid.")
     credential = await services.get_or_create_credential(session, principal.sub)
+    active_membership = (
+        user.membership_for(principal.organization_id) if principal.organization_id else None
+    )
+    role_names = (
+        active_membership.display_names_for(principal.roles)
+        if active_membership
+        else list(principal.roles)
+    )
     return MeOut(
         user_id=user.user_id,
         email=user.email,
@@ -319,6 +328,7 @@ async def me(
         organization_id=principal.organization_id,
         membership_id=principal.membership_id,
         roles=principal.roles,
+        role_names=role_names,
         amr=principal.amr,
         must_change_password=credential.must_change_password,
         mfa_enabled=credential.mfa_enforced,

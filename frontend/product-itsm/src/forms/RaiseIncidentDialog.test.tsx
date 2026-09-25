@@ -16,10 +16,19 @@ const USER: MeOut = {
   organization_id: "org-1",
   membership_id: "mem-1",
   roles: ["itsm_agent"],
+  role_names: ["ITSM Agent"],
   amr: ["pwd"],
   must_change_password: false,
   mfa_enabled: false,
-  organizations: [{ organization_id: "org-1", slug: "opsgrids", name: "OpsGrids", roles: ["itsm_agent"] }],
+  organizations: [
+    {
+      organization_id: "org-1",
+      slug: "opsgrids",
+      name: "OpsGrids",
+      roles: ["itsm_agent"],
+      role_names: ["ITSM Agent"],
+    },
+  ],
 };
 
 const AUTH_VALUE: AuthContextValue = {

@@ -29,6 +29,7 @@ function meWith(overrides: Partial<MeOut> & { organizations?: OrganizationChoice
     organization_id: "org-a",
     membership_id: "m-1",
     roles: [],
+    role_names: [],
     amr: [],
     must_change_password: false,
     mfa_enabled: false,
@@ -146,11 +147,19 @@ function UserProbe() {
 }
 
 describe("useCurrentUser", () => {
-  it("reads name, email, initials and the active org's role", () => {
+  it("reads name, email, initials and the active org's role, by display name", () => {
     render(
       <Wrapper
         user={meWith({
-          organizations: [{ organization_id: "org-a", slug: "org-a", name: "Org A", roles: ["ops_manager"] }],
+          organizations: [
+            {
+              organization_id: "org-a",
+              slug: "org-a",
+              name: "Org A",
+              roles: ["ops_manager"],
+              role_names: ["Operations Manager"],
+            },
+          ],
         })}
         grants={[]}
         entitlements={[]}
@@ -158,7 +167,34 @@ describe("useCurrentUser", () => {
         <UserProbe />
       </Wrapper>,
     );
-    expect(screen.getByText("Casey Rivera · casey@example.com · CR · ops_manager")).toBeTruthy();
+    expect(
+      screen.getByText("Casey Rivera · casey@example.com · CR · Operations Manager"),
+    ).toBeTruthy();
+  });
+
+  it("falls back to the role code when the server has no name for it", () => {
+    render(
+      <Wrapper
+        user={meWith({
+          organizations: [
+            {
+              organization_id: "org-a",
+              slug: "org-a",
+              name: "Org A",
+              roles: ["ops_manager", "auditor"],
+              role_names: ["Operations Manager"],
+            },
+          ],
+        })}
+        grants={[]}
+        entitlements={[]}
+      >
+        <UserProbe />
+      </Wrapper>,
+    );
+    expect(
+      screen.getByText("Casey Rivera · casey@example.com · CR · Operations Manager, auditor"),
+    ).toBeTruthy();
   });
 
   it("reports no role when the active org carries none", () => {
