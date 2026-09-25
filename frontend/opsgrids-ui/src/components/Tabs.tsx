@@ -109,26 +109,67 @@ export function Tabs({
   function focusTab(id: string) {
     const node = tabNode(id);
     node?.focus();
-    if (node) reveal(node);
+    if (node) reveal(node, "nearest");
   }
 
   /**
-   * Scroll the row — only the row, never the page — so a tab is wholly in view. The selected tab
-   * is revealed on arrival too: a deep link to the ninth section of an account opens with that
-   * tab showing, not scrolled off a phone's edge.
+   * Scroll the row — only the row, never the page — so a tab is wholly in view.
+   *
+   * `nearest` (the arrow keys) moves the row as little as possible from where it is. `settle`
+   * (arrival, and any resize) ignores where it is and puts the tab at the first position that
+   * shows all of it — the same answer however the row got here, which is what makes a deep link
+   * to the ninth section open the same way every time.
    */
-  function reveal(node: HTMLElement) {
+  function reveal(node: HTMLElement, mode: "nearest" | "settle") {
     const list = listRef.current;
     if (!list) return;
     const start = node.offsetLeft;
     const end = start + node.offsetWidth;
+    if (mode === "settle") {
+      list.scrollLeft = Math.max(0, Math.min(start, end - list.clientWidth));
+      return;
+    }
     if (start < list.scrollLeft) list.scrollLeft = start;
     else if (end > list.scrollLeft + list.clientWidth) list.scrollLeft = end - list.clientWidth;
   }
 
+  // The selection, readable from the long-lived observer below without re-creating it.
+  const valueRef = useRef(value);
   useEffect(() => {
+    valueRef.current = value;
+  });
+
+  // Arrival, and every change in the tabs' widths: settle on the selected tab. The first
+  // measurement uses whatever font had loaded; when the web font arrives — or the text is
+  // zoomed — the tabs change width and that position is stale. One observer for the row's
+  // lifetime, so a new selection never gets a spurious "resize" of its own.
+  const tabIds = items.map((item) => item.id).join("|");
+  useEffect(() => {
+    let live = true;
+    const settle = () => {
+      const node = live ? tabNode(valueRef.current) : undefined;
+      if (node) reveal(node, "settle");
+    };
+    settle();
+    void document.fonts?.ready.then(settle);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(settle);
+    for (const tab of Array.from(listRef.current?.querySelectorAll("[role='tab']") ?? [])) observer?.observe(tab);
+    return () => {
+      live = false;
+      observer?.disconnect();
+    };
+  }, [tabIds]);
+
+  // A new selection after arrival — the user moving through the row — moves it as little as
+  // possible rather than jumping it on every arrow press.
+  const arrived = useRef(false);
+  useEffect(() => {
+    if (!arrived.current) {
+      arrived.current = true;
+      return;
+    }
     const node = tabNode(value);
-    if (node) reveal(node);
+    if (node) reveal(node, "nearest");
   }, [value]);
 
   function onKeyDown(event: KeyboardEvent<HTMLButtonElement>, current: string) {
