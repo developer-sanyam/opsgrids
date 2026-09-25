@@ -2,14 +2,15 @@ import { useCallback, useMemo } from "react";
 import type { CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { getAllEmployees, listAttendanceRoster } from "@/api/client";
+import { getAllEmployees, getAttendanceDaySummary } from "@/api/client";
 import { getOrgUnitNameById } from "@/api/orgUnits";
-import type { EmployeeOut } from "@/api/types";
+import type { EmployeeOut, TrendPoint, TrendRange } from "@/api/types";
 import { Can, useAsync, useAuth } from "@opsgrids/client";
 import {
   activeCount,
   distinctDepartmentCount,
   headcountByDepartment,
+  headcountTrend,
   workforceMix,
 } from "@/data/derive";
 import {
@@ -131,7 +132,7 @@ export function DashboardPage() {
   const { user } = useAuth();
   const employees = useAsync(getAllEmployees, []);
   const today = useMemo(() => todayISO(), []);
-  const attendance = useAsync(useCallback(() => listAttendanceRoster(today, { size: 200 }), [today]), [today]);
+  const attendance = useAsync(useCallback(() => getAttendanceDaySummary(today), [today]), [today]);
   // Department names come from the org-unit tree. It is permission-gated and often empty, and its
   // loader already degrades any failure to an empty map — so a 403 here is never a dashboard error,
   // just names that fall back to each employee's job_title.
@@ -146,10 +147,8 @@ export function DashboardPage() {
 
   const attendanceSummary = useMemo(() => {
     if (attendance.status !== "success") return null;
-    const records = attendance.data.items;
-    const present = records.filter((r) => r.status === "present" || r.status === "half_day").length;
-    const absent = records.filter((r) => r.status === "absent").length;
-    const rate = records.length === 0 ? 0 : (present / records.length) * 100;
+    const { total, presentOrHalfDay, absent } = attendance.data;
+    const rate = total === 0 ? 0 : (presentOrHalfDay / total) * 100;
     return { rate: `${rate.toFixed(1)}%`, absent };
   }, [attendance]);
 
@@ -169,6 +168,14 @@ export function DashboardPage() {
     [items, orgUnitMap],
   );
   const mix = useMemo(() => workforceMix(items), [items]);
+  const headcountSeries = useMemo<Record<TrendRange, TrendPoint[]>>(
+    () => ({
+      monthly: headcountTrend(items, "monthly"),
+      quarterly: headcountTrend(items, "quarterly"),
+      yearly: headcountTrend(items, "yearly"),
+    }),
+    [items],
+  );
 
   const miniStats: MiniStat[] = useMemo(() => {
     const locations = new Set(items.map((e) => e.location_code).filter(Boolean)).size;
@@ -230,7 +237,7 @@ export function DashboardPage() {
         <Card className="flex flex-col gap-4 p-6 xl:col-span-2">
           <SectionHeader title="Headcount Trend" subtitle="Team size over time" />
           {employees.status === "success" ? (
-            <HeadcountTrend current={total} sample />
+            <HeadcountTrend current={total} series={headcountSeries} />
           ) : (
             <Skeleton className="h-56 w-full rounded-tile" />
           )}

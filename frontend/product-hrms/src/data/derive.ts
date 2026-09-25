@@ -7,6 +7,8 @@ import type {
   DeptHeadcount,
   EmployeeOut,
   EmploymentType,
+  TrendPoint,
+  TrendRange,
   WorkforceSlice,
 } from "@/api/types";
 import { resolveDepartment } from "./departments";
@@ -85,4 +87,70 @@ export function workforceMix(employees: readonly EmployeeOut[]): WorkforceSlice[
       pct: pct(count, total),
     };
   }).filter((slice) => slice.count > 0);
+}
+
+/** The last day of each of the `count` periods ending with `now`, most recent last. The most
+ *  recent bucket ends at `now` itself so its count matches today's live headcount; every earlier
+ *  bucket ends on the last calendar day of its period. */
+function periodEnds(range: TrendRange, now: Date): { label: string; end: Date }[] {
+  if (range === "monthly") {
+    return Array.from({ length: 12 }, (_, i) => {
+      const back = 11 - i;
+      const isCurrent = back === 0;
+      const end = isCurrent ? now : new Date(now.getFullYear(), now.getMonth() - back + 1, 0);
+      return { label: end.toLocaleDateString("en-US", { month: "short" }), end };
+    });
+  }
+  if (range === "quarterly") {
+    const currentQuarter = Math.floor(now.getMonth() / 3);
+    return Array.from({ length: 4 }, (_, i) => {
+      const back = 3 - i;
+      const q = currentQuarter - back;
+      const year = now.getFullYear() + Math.floor(q / 4);
+      const qIndex = ((q % 4) + 4) % 4;
+      const isCurrent = back === 0;
+      const end = isCurrent ? now : new Date(year, qIndex * 3 + 3, 0);
+      return { label: `Q${qIndex + 1} ${year}`, end };
+    });
+  }
+  return Array.from({ length: 5 }, (_, i) => {
+    const back = 4 - i;
+    const year = now.getFullYear() - back;
+    const isCurrent = back === 0;
+    const end = isCurrent ? now : new Date(year, 11, 31);
+    return { label: String(year), end };
+  });
+}
+
+/**
+ * Headcount at the end of each period, counted from each employee's own `date_of_joining` and
+ * `date_of_exit` — no fabricated series. An employee with no `date_of_joining` on record can't be
+ * placed on the timeline and is excluded from every point (they still count in the live "Total
+ * Employees" KPI, which reads status alone).
+ */
+export function headcountTrend(
+  employees: readonly EmployeeOut[],
+  range: TrendRange,
+  now: Date = new Date(),
+): TrendPoint[] {
+  const periods = periodEnds(range, now);
+  return periods.map(({ label, end }) => {
+    const value = employees.filter((e) => {
+      if (!e.date_of_joining) return false;
+      if (new Date(e.date_of_joining) > end) return false;
+      if (e.date_of_exit && new Date(e.date_of_exit) <= end) return false;
+      return true;
+    }).length;
+    return { label, value };
+  });
+}
+
+/** Percent change between the last two points of a real series, or `null` when there's nothing
+ *  sound to compare (fewer than two points, or a zero base). A delta is never invented. */
+export function trendDeltaPct(series: readonly TrendPoint[]): number | null {
+  if (series.length < 2) return null;
+  const prev = series[series.length - 2];
+  const curr = series[series.length - 1];
+  if (!prev || !curr || prev.value === 0) return null;
+  return ((curr.value - prev.value) / prev.value) * 100;
 }

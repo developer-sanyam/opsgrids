@@ -309,6 +309,41 @@ export async function listAttendanceRoster(
   };
 }
 
+export interface AttendanceDaySummary {
+  /** Every punch on record for the day, any status. */
+  total: number;
+  /** `present` + `half_day`. */
+  presentOrHalfDay: number;
+  absent: number;
+}
+
+/** Today's attendance rate and absence count, from the server's own status-filtered totals
+ *  (`?status=…&size=1` → `Page.total`) rather than one capped page of raw punches. Correct no
+ *  matter how many employees punch in — the Dashboard KPI used to read a single `size:200` page,
+ *  which silently undercounted once an org passed 200 punches in a day. */
+export async function getAttendanceDaySummary(date: string): Promise<AttendanceDaySummary> {
+  if (USE_FIXTURES) {
+    const items = ATTENDANCE_TODAY;
+    return {
+      total: items.length,
+      presentOrHalfDay: items.filter((r) => r.status === "present" || r.status === "half_day")
+        .length,
+      absent: items.filter((r) => r.status === "absent").length,
+    };
+  }
+  const [total, present, halfDay, absent] = await Promise.all([
+    listAttendance({ dateFrom: date, dateTo: date, size: 1 }),
+    listAttendance({ dateFrom: date, dateTo: date, status: "present", size: 1 }),
+    listAttendance({ dateFrom: date, dateTo: date, status: "half_day", size: 1 }),
+    listAttendance({ dateFrom: date, dateTo: date, status: "absent", size: 1 }),
+  ]);
+  return {
+    total: total.total,
+    presentOrHalfDay: present.total + halfDay.total,
+    absent: absent.total,
+  };
+}
+
 /** `POST /attendance/check-in` — self-service; there is no `employee_id` in the body, the caller
  *  punches their own record. */
 export async function checkIn(body: CheckInIn): Promise<AttendanceOut> {

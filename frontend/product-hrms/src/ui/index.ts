@@ -14,7 +14,6 @@ export {
   KpiCard,
   PageHeader,
   Pill,
-  SampleChip,
   SearchInput,
   SectionHeader,
   Skeleton,

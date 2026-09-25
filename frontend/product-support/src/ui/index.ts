@@ -13,7 +13,6 @@ export {
   ErrorState,
   KpiCard,
   PageHeader,
-  SampleChip,
   SearchInput,
   SectionHeader,
   Skeleton,
