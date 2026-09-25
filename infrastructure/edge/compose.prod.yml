@@ -494,6 +494,21 @@ services:
       # the bucket, which is the whole of ADR-0009 §3's tenancy argument.
       DOCUMENT_S3_ORPHAN_ACCESS_KEY: ${DOCUMENT_S3_ORPHAN_ACCESS_KEY}
       DOCUMENT_S3_ORPHAN_SECRET_KEY: ${DOCUMENT_S3_ORPHAN_SECRET_KEY}
+      # ADR-0009 §2/Q1's private bucket — a payslip, a signed contract, an ID scan. **No
+      # anonymous policy at all**, the opposite of `S3_PUBLIC_BUCKET` above: every object here
+      # is reached only through a presigned URL `document` issues after an authorized call.
+      S3_PRIVATE_BUCKET: ${S3_PRIVATE_BUCKET:-opsgrids-private}
+      # A third scoped credential, distinct from the two above: `s3:PutObject`, `s3:GetObject`
+      # and `s3:DeleteObject` on this bucket's objects — never `s3:ListBucket`, for the same
+      # reason the public-bucket write credential does not get it (ADR-0009 §3's tenancy
+      # argument holds here too, even though nothing about this bucket is public: a compromised
+      # `document` process still must not be able to enumerate every organization's private
+      # documents by listing the bucket). Held by the same always-on `document` API container
+      # that holds `DOCUMENT_S3_ACCESS_KEY` — presigning a private GET is a request-path
+      # operation, not a background-sweep one, so it does not get the orphan credential's
+      # "handed to no always-on container" treatment.
+      DOCUMENT_S3_PRIVATE_ACCESS_KEY: ${DOCUMENT_S3_PRIVATE_ACCESS_KEY}
+      DOCUMENT_S3_PRIVATE_SECRET_KEY: ${DOCUMENT_S3_PRIVATE_SECRET_KEY}
     entrypoint: ['/bin/sh', '-c']
     command:
       - |
@@ -596,6 +611,49 @@ services:
           *"already in effect"*) echo "document-orphan-sweep already attached to the scoped user" ;;
           *)
             echo "$${orphan_attach_out//$$DOCUMENT_S3_ORPHAN_ACCESS_KEY/<redacted>}" >&2
+            exit 1
+            ;;
+          esac
+        }
+
+        # ADR-0009 §2/Q1 — the private bucket. No anonymous policy at all: `mc mb` alone leaves
+        # it exactly that way (MinIO buckets start private; the public bucket above is the one
+        # that had to opt *in* to anonymous read), so there is no `mc anonymous` call to make
+        # here and its absence is the point, not an oversight.
+        mc mb --ignore-existing "og/$$S3_PRIVATE_BUCKET"
+        echo "$$S3_PRIVATE_BUCKET ready: no anonymous policy, reached only through a presigned URL"
+
+        # One scoped user for the whole private-object lifecycle: `s3:PutObject` (the presigned
+        # POST an uploader submits to), `s3:GetObject` (both `complete`'s own read-back-and-verify
+        # and the presigned download GET this same credential signs), `s3:DeleteObject` — and
+        # deliberately **not** `s3:ListBucket`, for the identical reason the public bucket's
+        # write user does not get it (ADR-0009 §3): a compromised `document` process must not be
+        # able to enumerate every organization's private documents by walking the bucket, even
+        # though nothing in this bucket is anonymous-readable in the first place.
+        private_add_out=$$(mc admin user add og "$$DOCUMENT_S3_PRIVATE_ACCESS_KEY" "$$DOCUMENT_S3_PRIVATE_SECRET_KEY" 2>&1) || {
+          private_add_out=$${private_add_out//$$DOCUMENT_S3_PRIVATE_ACCESS_KEY/<redacted>}
+          echo "$${private_add_out//$$DOCUMENT_S3_PRIVATE_SECRET_KEY/<redacted>}" >&2
+          exit 1
+        }
+        echo "scoped private-bucket user ready"
+        cat > /tmp/document-private.json <<JSON
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+              "Resource": ["arn:aws:s3:::$$S3_PRIVATE_BUCKET/*"]
+            }
+          ]
+        }
+        JSON
+        mc admin policy create og document-private /tmp/document-private.json
+        private_attach_out=$$(mc admin policy attach og document-private --user "$$DOCUMENT_S3_PRIVATE_ACCESS_KEY" 2>&1) && echo "document-private attached to the scoped user" || {
+          case "$$private_attach_out" in
+          *"already in effect"*) echo "document-private already attached to the scoped user" ;;
+          *)
+            echo "$${private_attach_out//$$DOCUMENT_S3_PRIVATE_ACCESS_KEY/<redacted>}" >&2
             exit 1
             ;;
           esac
@@ -1215,6 +1273,12 @@ services:
       # a config flag.
       S3_ACCESS_KEY: ${DOCUMENT_S3_ACCESS_KEY}
       S3_SECRET_KEY: ${DOCUMENT_S3_SECRET_KEY}
+      # ADR-0009 §2/Q1's private bucket and its own scoped credential (`minio-init`, above):
+      # put, get and delete, never list. Held by this always-on API container because
+      # presigning both the upload POST and the download GET is a request-path operation.
+      S3_PRIVATE_BUCKET: ${S3_PRIVATE_BUCKET:-opsgrids-private}
+      S3_PRIVATE_ACCESS_KEY: ${DOCUMENT_S3_PRIVATE_ACCESS_KEY}
+      S3_PRIVATE_SECRET_KEY: ${DOCUMENT_S3_PRIVATE_SECRET_KEY}
       ASSET_PURGE_RETENTION_DAYS: ${ASSET_PURGE_RETENTION_DAYS:-30}
       # The absolute address returned as `AssetOut.public_url` for the editor's own immediate
       # preview only (never persisted — ADR-0009 §6). Must be a host Caddy actually proxies

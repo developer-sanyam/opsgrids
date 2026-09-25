@@ -3,20 +3,22 @@
 Everything here lives in the `document` schema and nothing outside it may hold a foreign
 key into it (ADR-0000 §10).
 
-**What this service is, stated where it is easiest to get wrong.** ADR-0009 §2 narrows
-`document` to the platform's **public asset store**, not a document vault. Every object it
-writes goes into a bucket that is world-readable in its entirety, and there is no way
-through this API to store a private object. The private half — `S3_PRIVATE_BUCKET`, a
-short-lived presigned GET behind an authorized route — is named in that ADR and deliberately
-unbuilt, so the failure mode here is "the feature is missing", never "the payslip went
-somewhere surprising". The service's *name* invites the opposite assumption; this paragraph
-is one of the three places that is contradicted in words.
+**What this service is.** ADR-0009 §2 makes `document` the platform's **public asset
+store** for images, and its 2026-09-24 addendum (Q1) adds a **private** half alongside it:
+`private_objects`, backed by a bucket with no anonymous policy at all. The two never share a
+table or a bucket — a private object is never in `assets` and never in the public bucket, and
+an asset is never presigned. `assets` carries no reference count and never will: the document
+that would reference an image lives in a service that does not exist, and when it does it
+will own a different schema that ADR-0000 §10 forbids reading across. A reference check here
+is impossible by construction rather than merely expensive, which is what drives the deletion
+design in `app/services.py` (ADR-0009 §8).
 
-`assets` is the one domain table. `Asset` carries no reference count and never will: the
-store document that references an image lives in a storefront service that does not exist,
-and when it does it will own a different schema that ADR-0000 §10 forbids reading across. A
-reference check here is impossible by construction rather than merely expensive, which is
-what drives the deletion design in `app/services.py` (ADR-0009 §8).
+`private_objects` is deliberately simpler: no soft-delete grace window (ADR-0009 §8 exists
+because a *public* URL might already be embedded in a merchant's live store; a private object
+that has not yet been attached to anything has no such audience), and no re-encoding (a
+payslip PDF is not decoded and re-written the way an image is). What it keeps from the public
+design: the object is written before the row (`app/services.py`), the row is the only thing
+any route ever reaches by id, and the key is never accepted from a caller.
 """
 
 from __future__ import annotations
@@ -122,6 +124,101 @@ class Asset(Base, TenantBase):
             "ix_assets_purge_sweep_discovery",
             "deleted_at",
             postgresql_where="deleted_at IS NOT NULL AND purged_at IS NULL",
+        ),
+    )
+
+
+class PrivateObject(Base, TenantBase):
+    """One private document — a payslip, a signed contract, an ID scan.
+
+    `TenantBase` supplies `id`, `organization_id`, `created_at`, `updated_at`, `deleted_at`. The
+    object key (`{organization_id}/{owner_service}/{id}`) uses this row's own primary key, the
+    same "no key collision, ever" property `Asset` has (ADR-0009 §12).
+
+    **Two-phase, and `status` says which phase a row is in.** `initiate` inserts a `pending` row
+    and hands the caller a presigned upload — nothing has necessarily reached the bucket yet.
+    `complete` re-reads the object directly from storage (never trusting what the client
+    claims), and only then does the row become `stored` with its real `content_type`,
+    `size_bytes` and `checksum_sha256` filled in. A `pending` row that is never completed is an
+    upload that never happened as far as every other route is concerned — `get`, `download` and
+    `delete` all refuse a `pending` row that has not been completed by its own uploader within
+    the upload TTL. Nothing in this slice sweeps abandoned `pending` rows or the orphan objects
+    a completed-then-abandoned presign could leave in the bucket; see the module's own note in
+    `app/cron.py` for why that is named as follow-up rather than built here.
+
+    **`owner_service`, not a foreign key.** ADR-0000 §10 forbids a cross-schema key, and the
+    product that will eventually attach this object — payroll, a compliance filing — is not
+    knowable from this schema. It is the first dotted segment of the caller-supplied `purpose`
+    (`app/domain.py:parse_purpose`), so the key groups objects by the product that asked for
+    them without this service holding an opinion about what products exist.
+
+    **`owner_aggregate_id` and `attached_at` are write-once, from nowhere in this slice.** No
+    route here sets them — attaching a completed upload to the record it belongs to is the
+    owning product's own write, against its own schema, and is out of scope for this slice
+    (see the service README). They exist now so that a future attach step is a column update,
+    not a migration, and so `DELETE` has something concrete to refuse against once one exists:
+    an attached object is never deleted through this API.
+    """
+
+    __tablename__ = "private_objects"
+
+    #: `{organization_id}/{owner_service}/{id}`. Never accepted from a caller — read off the
+    #: row after it is fetched under RLS, the same rule `assets.storage_key` follows.
+    storage_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: The caller-supplied purpose string verbatim (`app/domain.py:PURPOSE_PATTERN`), e.g.
+    #: `"payroll.payslip"`. Its first segment is `owner_service`, stored separately below
+    #: because the key and the audit trail need it as its own value, not re-parsed each time.
+    purpose: Mapped[str] = mapped_column(String(128), nullable=False)
+    owner_service: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: Set only by a future attach step. `None` for the whole of this slice.
+    owner_aggregate_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: `pending` after `initiate`, `stored` after `complete` verifies the real bytes. No other
+    #: values exist; a purge/expiry state is future work (see the class docstring).
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="pending")
+    #: The client's declared type at `initiate`. Kept for comparison against what `complete`
+    #: actually finds — a mismatch is refused (415), never silently corrected.
+    declared_content_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    declared_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: Filled by `complete`, from the bytes themselves, never from what the client claims.
+    content_type: Mapped[str | None] = mapped_column(String(255))
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    checksum_sha256: Mapped[str | None] = mapped_column(String(64))
+    #: Display only. Never used to build a key or a path.
+    original_filename: Mapped[str | None] = mapped_column(String(255))
+    #: Who, in human/audit terms — the platform user id (`ScopeContext.principal.sub`). Shown in
+    #: a picker and written to the audit row. **Not** the OWN-scope filter column; see
+    #: `owner_subject_ref` below for why the two must not be conflated.
+    uploaded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: `ScopeContext.principal.subject_ref` at the moment of `initiate` — the ADR-0008 employee
+    #: link, the same column every other OWN-scoped product in this platform compares against
+    #: (`itsm.Incident.requester_id`, `crm.Company.owner_id`, `leave.LeaveRequest.employee_id`).
+    #: `app/selectors.py` passes this, not `uploaded_by_user_id`, as `ctx.apply`'s `owner_col`.
+    #:
+    #: **Inherits ADR-0008's own documented gap**: an organization with no HRMS activated links
+    #: no membership to an employee, `subject_ref` is `None` on every token minted there, and
+    #: every OWN grant on `core.content.private_document.*` is therefore permanently empty for
+    #: that tenant — exactly the trade-off ADR-0008 names for `itsm`/`crm`/`timesheet`, not a
+    #: defect specific to this table. `None` here reads as "not `subject_ref`-owned by anyone",
+    #: never as "owned by everyone" — `ScopeContext.apply` already refuses to compare a column
+    #: to a `None` subject rather than rendering `IS NULL`, so a caller with no employee link
+    #: cannot see *any* private object at OWN, including their own.
+    owner_subject_ref: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: The presigned upload's own deadline. `complete` refuses a `pending` row past this even
+    #: if the object somehow made it to the bucket late — the TTL is the contract, not a hint.
+    upload_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attached_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("status IN ('pending', 'stored')", name="status"),
+        CheckConstraint("declared_size_bytes > 0", name="declared_size_bytes_positive"),
+        # The uploader's own library, if this ever grows one — not shipped this slice, named so
+        # the index arrives with the query that needs it rather than speculatively.
+        Index(
+            "ix_private_objects_org_owner_service_created_at",
+            "organization_id",
+            "owner_service",
+            desc("created_at"),
         ),
     )
 

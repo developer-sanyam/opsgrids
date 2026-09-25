@@ -21,7 +21,7 @@ from datetime import datetime
 from sqlalchemy import Select, func, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Asset
+from app.models import Asset, PrivateObject
 from platform_core.auth import ScopeContext
 from platform_core.pagination import PageParams, paginate
 
@@ -181,6 +181,34 @@ async def get_asset_for_purge_sweep(
         .with_for_update(skip_locked=True)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+# --------------------------------------------------------------------- private objects (Q1)
+
+
+def _private_for(ctx: ScopeContext) -> Select[tuple[PrivateObject]]:
+    """Every private-object read starts here: this organization, scope applied.
+
+    Unlike `assets`, the default scope is OWN (`app/catalogue.py`): an uploader can act on
+    their own objects without an ORG grant. The owner column is `owner_subject_ref`
+    (`ScopeContext.principal.subject_ref`, the ADR-0008 employee link), **not**
+    `uploaded_by_user_id` — the same column every other OWN-scoped product in this platform
+    compares against, and the same documented gap: a tenant with no HRMS activated has this
+    rung permanently empty (`PrivateObject.owner_subject_ref`'s own docstring).
+    """
+    stmt = select(PrivateObject).where(PrivateObject.organization_id == ctx.organization_id)
+    return ctx.apply(stmt, owner_col=PrivateObject.owner_subject_ref)
+
+
+async def get_private_object(
+    session: AsyncSession, ctx: ScopeContext, object_id: uuid.UUID
+) -> PrivateObject | None:
+    """One private object this caller's scope reaches, or `None` — including a cross-tenant id
+    and an id that exists but belongs to a different uploader under an OWN grant. Both read as
+    "not found": confirming existence to a caller who cannot read the row is its own disclosure,
+    the same rule `get_asset` follows."""
+    stmt = _private_for(ctx).where(PrivateObject.id == object_id)
+    return (await session.execute(stmt)).scalars().one_or_none()
 
 
 async def existing_asset_keys(

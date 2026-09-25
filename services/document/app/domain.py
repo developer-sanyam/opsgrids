@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 import threading
 import uuid
 from dataclasses import dataclass
@@ -277,3 +278,76 @@ def parse_storage_key(key: str) -> tuple[uuid.UUID, uuid.UUID] | None:
         return uuid.UUID(parts[0]), uuid.UUID(parts[1])
     except ValueError:
         return None
+
+
+# ============================================================================================
+# Private objects (ADR-0009 §2, Q1). No re-encoding — a payslip PDF is not decoded and
+# rewritten the way an image is — but the same governing rule holds: **the bytes decide.** A
+# presigned PUT/POST hands the client a URL that writes straight to the bucket, so nothing here
+# ever inspects the bytes before they land there; `complete` is what reads them back and is the
+# only place `content_type` becomes a fact rather than a claim.
+# ============================================================================================
+
+#: `{product}.{name}`, both lowercase snake segments — e.g. `payroll.payslip`,
+#: `hrms.id_scan`. The first segment becomes `owner_service` (`PrivateObject.owner_service`):
+#: a caller names *what kind of thing* this is, and the product it groups under falls out of
+#: that name rather than being a second field a caller could get out of sync with the first.
+PURPOSE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
+
+#: Verified by magic bytes, never by the declared `Content-Type` or a filename extension — the
+#: same rule §5 applies to images, applied to a wider, still-closed set. A private object is
+#: served with `Content-Disposition: attachment` (ADR-0009 Q1's Caddy route) rather than
+#: rendered, so the polyglot risk §5 re-encodes away for public images is smaller here, but
+#: "smaller" is not "absent": PDF readers execute embedded JavaScript, so this is a closed
+#: allow-list, not "anything that is not an image".
+PRIVATE_ACCEPTED_CONTENT_TYPES = ("application/pdf", "image/jpeg", "image/png", "image/webp")
+
+
+class PurposeRejected(Exception):
+    """`purpose` is not `{product}.{name}`. A value, not a surprise — same shape as
+    `ImageRejected`."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+def parse_purpose(purpose: str) -> tuple[str, str]:
+    """`"payroll.payslip"` -> `("payroll", "payslip")`. Raises `PurposeRejected` otherwise."""
+    if not PURPOSE_PATTERN.match(purpose):
+        raise PurposeRejected(
+            'purpose must look like "product.name" (lowercase letters, digits and '
+            'underscores only), e.g. "payroll.payslip".'
+        )
+    owner_service, _, _name = purpose.partition(".")
+    return owner_service, purpose
+
+
+def private_storage_key(organization_id: object, owner_service: str, object_id: object) -> str:
+    """`{organization_id}/{owner_service}/{object_id}`. Never accepted from a caller — every
+    route addresses a private object by row id; the row is fetched under RLS and the key is
+    read off it, exactly as `storage_key` documents for the public bucket."""
+    return f"{organization_id}/{owner_service}/{object_id}"
+
+
+def sniff_private_content_type(raw: bytes) -> str | None:
+    """The real type of `raw`, decided from its first bytes, or `None` if it matches nothing
+    this service accepts for a private object. Never trusts a declared `Content-Type` or a
+    filename — the entire reason `complete` re-reads the object instead of taking the
+    presigned upload's own headers at face value.
+
+    A deliberately small, closed set: the three image formats §5 already validates, plus PDF
+    (payslips, contracts) and a handful of common office/archive containers whose signature is
+    unambiguous. Nothing here is decoded past its header — this is a type check, not a
+    validity check; a truncated or corrupt PDF still sniffs as `application/pdf` and is the
+    uploader's problem, not this function's.
+    """
+    if raw.startswith(b"%PDF-"):
+        return "application/pdf"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return None

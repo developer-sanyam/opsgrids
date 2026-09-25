@@ -112,6 +112,33 @@ class Settings(ServiceSettings):
     #: runs the sweep standalone for local debugging either way.
     run_sweeps_in_api: bool = False
 
+    # --- private object storage (ADR-0009 §2, Q1) ---------------------------------
+    #: **No anonymous policy at all** — the opposite of `s3_public_bucket`. A caller reaches an
+    #: object only through a presigned URL this service issues after checking permission, never
+    #: through a stable, listable address.
+    s3_private_bucket: str = "opsgrids-private"
+    #: A second, narrower write credential than `s3_access_key`/`s3_secret_key`: put, get and
+    #: delete on the private bucket's objects only, never on the public one. Optional for the
+    #: same reason every other credential here is (`s3_access_key`'s own docstring) — absent,
+    #: boto3 falls back to its default chain.
+    s3_private_access_key: SecretStr | None = None
+    s3_private_secret_key: SecretStr | None = None
+    #: How long a presigned upload (PUT/POST) stays valid. Short on purpose: it is handed
+    #: straight to the browser and used once, within the same page load that requested it.
+    private_object_upload_ttl_seconds: int = 300
+    #: How long a presigned download GET stays valid, once a caller has been authorized to read
+    #: one object. ADR-0009 Q1 names 60 seconds for the payslip case; kept as the default here
+    #: for every private object, not only payroll's.
+    private_object_download_ttl_seconds: int = 60
+    #: Enforced both as a `content-length-range` condition on the presigned POST (so a lying
+    #: client cannot even complete the upload) and again when `complete` reads the object back.
+    #: Larger than the public asset limit: a payslip PDF or a multi-page contract routinely
+    #: exceeds 5 MiB, and nothing here is re-encoded down the way an image is.
+    private_object_max_upload_bytes: int = 20 * 1024 * 1024
+    #: Uploads per organization per minute — the same shape as `asset_upload_rate_limit_per_minute`,
+    #: guarding the one route here that issues a credential-bearing URL.
+    private_object_upload_rate_limit_per_minute: int = 30
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

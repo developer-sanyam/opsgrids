@@ -166,6 +166,190 @@ def get_object_store() -> ObjectStore:
     return ObjectStore(settings())
 
 
+class PrivateObjectStore:
+    """Presigned PUT/POST and GET against the **private** bucket (ADR-0009 §2, Q1).
+
+    Deliberately not a subclass of `ObjectStore`: the two buckets, credentials and access
+    patterns are different enough that sharing the parent would mean overriding almost every
+    method, and a private-bucket call landing on the public client by a missed override is
+    exactly the kind of mistake this split exists to make impossible rather than merely
+    reviewable. It builds its own boto3 client the same way `ObjectStore._build_client` does.
+
+    **No client ever holds S3 credentials here either.** A presigned URL is a bearer credential
+    with an expiry and a fixed method baked into its signature — the browser never sees the
+    access key that produced it, and cannot mint a second URL for a different key or method.
+    """
+
+    def __init__(self, cfg: Settings) -> None:
+        self._cfg = cfg
+        self._client: Any | None = None
+
+    def _build_client(self) -> Any:
+        credentials: dict[str, str] = {}
+        if self._cfg.s3_private_access_key and self._cfg.s3_private_secret_key:
+            credentials = {
+                "aws_access_key_id": self._cfg.s3_private_access_key.get_secret_value(),
+                "aws_secret_access_key": self._cfg.s3_private_secret_key.get_secret_value(),
+            }
+        return boto3.client(
+            "s3",
+            endpoint_url=self._cfg.s3_endpoint_url,
+            region_name=self._cfg.s3_region,
+            config=Config(
+                connect_timeout=self._cfg.s3_connect_timeout_seconds,
+                read_timeout=self._cfg.s3_read_timeout_seconds,
+                retries={"max_attempts": self._cfg.s3_max_attempts, "mode": "standard"},
+                s3={"addressing_style": "path" if self._cfg.s3_force_path_style else "auto"},
+                signature_version="s3v4",
+            ),
+            **credentials,
+        )
+
+    @property
+    def client(self) -> Any:
+        if self._client is None:
+            self._client = self._build_client()
+        return self._client
+
+    # ----------------------------------------------------------------- the upload half
+
+    def create_upload_post(
+        self,
+        key: str,
+        *,
+        content_type: str,
+        max_bytes: int,
+        expires_in: int,
+    ) -> dict[str, Any]:
+        """A presigned POST: a URL plus form fields the browser submits verbatim, unmodified.
+
+        A POST policy (not a bare presigned PUT) is what lets S3/MinIO itself enforce
+        `content-length-range` and an exact `Content-Type` **before accepting a single byte** —
+        a client that lies about either gets refused by the bucket, not merely by this service
+        after the fact. `complete` still re-reads the object and never trusts either value; this
+        is the first, cheaper line, not the only one.
+        """
+        try:
+            return dict(
+                self.client.generate_presigned_post(
+                    Bucket=self._cfg.s3_private_bucket,
+                    Key=key,
+                    Fields={"Content-Type": content_type},
+                    Conditions=[
+                        {"Content-Type": content_type},
+                        ["content-length-range", 1, max_bytes],
+                    ],
+                    ExpiresIn=expires_in,
+                )
+            )
+        except (ClientError, BotoCoreError) as exc:
+            log.error("storage.private.presign_upload.failed", key=key, error=str(exc)[:200])
+            raise UpstreamUnavailableProblem(
+                "Could not prepare an upload right now. Please try again."
+            ) from exc
+
+    # ----------------------------------------------------------------- the completion half
+
+    async def head(self, key: str) -> tuple[int, str] | None:
+        """`(size, etag)` if the object exists, `None` if it does not (yet, or ever) —
+        `complete` treats "not there" as "the client has not finished uploading" rather than an
+        error, since the presign and the POST race the request that asks about them."""
+
+        def _head() -> tuple[int, str] | None:
+            try:
+                resp = self.client.head_object(Bucket=self._cfg.s3_private_bucket, Key=key)
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code", "")
+                if code in ("404", "NoSuchKey", "NotFound"):
+                    return None
+                raise
+            return int(resp["ContentLength"]), str(resp.get("ETag", ""))
+
+        try:
+            return await anyio.to_thread.run_sync(_head)
+        except (ClientError, BotoCoreError) as exc:
+            log.error("storage.private.head.failed", key=key, error=str(exc)[:200])
+            raise UpstreamUnavailableProblem(
+                "Could not verify the upload right now. Please try again."
+            ) from exc
+
+    async def get(self, key: str, *, max_bytes: int) -> bytes:
+        """The object's bytes, for `complete`'s own checksum and content-sniff.
+
+        Reads at most `max_bytes + 1` so an object larger than the declared ceiling is detected
+        by a short, cheap read rather than pulling an arbitrarily large body into memory first —
+        the same "bound before you trust it" shape as the public upload's own counted stream.
+        """
+
+        def _get() -> bytes:
+            resp = self.client.get_object(
+                Bucket=self._cfg.s3_private_bucket,
+                Key=key,
+                Range=f"bytes=0-{max_bytes}",
+            )
+            return bytes(resp["Body"].read())
+
+        try:
+            return await anyio.to_thread.run_sync(_get)
+        except (ClientError, BotoCoreError) as exc:
+            log.error("storage.private.get.failed", key=key, error=str(exc)[:200])
+            raise UpstreamUnavailableProblem(
+                "Could not read the upload right now. Please try again."
+            ) from exc
+
+    async def delete(self, key: str) -> None:
+        """Idempotent in the same direction as the public store's own `delete`."""
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: self.client.delete_object(Bucket=self._cfg.s3_private_bucket, Key=key)
+            )
+        except (ClientError, BotoCoreError) as exc:
+            log.error("storage.private.delete.failed", key=key, error=str(exc)[:200])
+            raise UpstreamUnavailableProblem(
+                "Could not remove the file right now. Please try again."
+            ) from exc
+
+    # ----------------------------------------------------------------- the download half
+
+    def presign_download(
+        self,
+        key: str,
+        *,
+        filename: str | None,
+        expires_in: int,
+    ) -> str:
+        """A short-lived GET. `response-content-disposition=attachment` so a browser download,
+        never a same-tab render — ADR-0009 Q1's whole point for a private object, doubled by the
+        dedicated Caddy route's own CSP `sandbox` for the case a future viewer ignores it."""
+        disposition = "attachment"
+        if filename:
+            safe = filename.replace('"', "").replace("\r", "").replace("\n", "")
+            disposition = f'attachment; filename="{safe}"'
+        try:
+            return str(
+                self.client.generate_presigned_url(
+                    "get_object",
+                    Params={
+                        "Bucket": self._cfg.s3_private_bucket,
+                        "Key": key,
+                        "ResponseContentDisposition": disposition,
+                    },
+                    ExpiresIn=expires_in,
+                )
+            )
+        except (ClientError, BotoCoreError) as exc:
+            log.error("storage.private.presign_download.failed", key=key, error=str(exc)[:200])
+            raise UpstreamUnavailableProblem(
+                "Could not prepare a download right now. Please try again."
+            ) from exc
+
+
+@lru_cache(maxsize=1)
+def get_private_object_store() -> PrivateObjectStore:
+    """FastAPI dependency. One store per process; overridden wholesale in tests."""
+    return PrivateObjectStore(settings())
+
+
 class OrphanScanner(ObjectStore):
     """`ListObjectsV2` plus `DeleteObject`, on a **second, narrower** credential than
     `ObjectStore` holds (ADR-0009 §9 addendum).

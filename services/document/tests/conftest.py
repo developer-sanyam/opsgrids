@@ -36,14 +36,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.config import settings
 from app.main import app
 from app.models import SCHEMA
-from app.storage import OrphanScanner, get_object_store
+from app.storage import OrphanScanner, get_object_store, get_private_object_store
 from platform_core.auth import Principal, get_principal
 from platform_core.cache import close_redis, init_redis
 from platform_core.db import TENANT_GUC, get_session
-from tests.helpers import FakeObjectStore
+from tests.helpers import FakeObjectStore, FakePrivateObjectStore
 
 TENANT_TABLES = (
     "assets",
+    "private_objects",
     "audit_logs",
     "outbox",
     "processed_events",
@@ -109,6 +110,14 @@ def store() -> FakeObjectStore:
     return FakeObjectStore(settings())
 
 
+@pytest.fixture
+def private_store() -> FakePrivateObjectStore:
+    """The private-bucket analogue of `store`: an in-memory object dict rather than a real
+    presigned round trip, so `complete_private_object`'s verification logic can be driven
+    without `make infra`."""
+    return FakePrivateObjectStore(settings())
+
+
 @pytest_asyncio.fixture
 async def sweep_engines(session: AsyncSession) -> AsyncIterator[tuple[Any, Any]]:
     """The two engines the purge sweep runs on, wired exactly as `app/cron.py`'s `main()`
@@ -162,7 +171,9 @@ async def sweep(sweep_engines: tuple[Any, Any], store: FakeObjectStore) -> Async
 
 
 @pytest_asyncio.fixture
-async def client(session: AsyncSession, store: FakeObjectStore) -> AsyncIterator[AsyncClient]:
+async def client(
+    session: AsyncSession, store: FakeObjectStore, private_store: FakePrivateObjectStore
+) -> AsyncIterator[AsyncClient]:
     """HTTP client sharing the test's org-bound session, so writes are visible to asserts.
 
     `get_tenant_session` wraps `get_session`, so overriding that one dependency routes every
@@ -182,6 +193,7 @@ async def client(session: AsyncSession, store: FakeObjectStore) -> AsyncIterator
 
     app.dependency_overrides[get_session] = _session_override
     app.dependency_overrides[get_object_store] = lambda: store
+    app.dependency_overrides[get_private_object_store] = lambda: private_store
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
     app.dependency_overrides.clear()
