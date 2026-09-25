@@ -454,9 +454,6 @@
   "product-hrms/src/ui/PolicyCard.tsx": {
     "spacing": 1
   },
-  "product-hrms/src/ui/StatusPill.tsx": {
-    "spacing": 2
-  },
   "product-hrms/src/ui/WorkforceMix.tsx": {
     "arbitrary": 1,
     "spacing": 4
@@ -509,10 +506,6 @@
     "spacing": 1
   },
   "product-itsm/src/ui/PriorityBreakdown.tsx": {
-    "arbitrary": 1,
-    "spacing": 2
-  },
-  "product-itsm/src/ui/StatusPill.tsx": {
     "arbitrary": 1,
     "spacing": 2
   },
@@ -714,10 +707,6 @@
     "arbitrary": 2,
     "spacing": 9
   },
-  "product-pulseboard/src/ui/StatusPill.tsx": {
-    "arbitrary": 1,
-    "spacing": 3
-  },
   "product-pulseboard/src/ui/TimeGrid.tsx": {
     "arbitrary": 7,
     "spacing": 4
@@ -833,12 +822,6 @@
     "spacing": 16
   },
   "product-support/src/ui/CategoryBreakdown.tsx": {
-    "spacing": 2
-  },
-  "product-support/src/ui/SlaPill.tsx": {
-    "spacing": 3
-  },
-  "product-support/src/ui/StatusPill.tsx": {
     "spacing": 2
   },
   "product-support/src/ui/TicketVolumeChart.tsx": {

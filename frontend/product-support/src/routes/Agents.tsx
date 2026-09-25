@@ -17,9 +17,11 @@ import {
   useCan,
   useMutation,
 } from "@opsgrids/client";
-import { GaugeIcon, cn } from "@opsgrids/ui";
+import { DownloadIcon, GaugeIcon, cn } from "@opsgrids/ui";
+import type { TableSelection } from "@opsgrids/ui";
 import { formatMinutes, priorityLabel } from "@/lib/format";
 import { errorProp } from "@/lib/optionalProp";
+import { downloadCsv, toCsv } from "@/lib/exportCsv";
 import {
   Avatar,
   Button,
@@ -392,6 +394,7 @@ export function AgentsPage() {
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [deletingAgent, setDeletingAgent] = useState<Agent | null>(null);
   const [editingPolicy, setEditingPolicy] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
 
   const remove = useMutation((target: Agent) => deleteAgent(target.id), {
     onSuccess: () => {
@@ -422,6 +425,7 @@ export function AgentsPage() {
       {
         key: "agent",
         header: "Agent",
+        mobile: "title",
         render: (a) => (
           <div className="flex items-center gap-3">
             <Avatar name={a.name} size="md" />
@@ -437,6 +441,7 @@ export function AgentsPage() {
       {
         key: "presence",
         header: "Status",
+        mobile: "status",
         headerClassName: "hidden sm:table-cell",
         cellClassName: "hidden sm:table-cell",
         render: (a) => <PresencePill online={a.online} />,
@@ -475,6 +480,7 @@ export function AgentsPage() {
         key: "actions",
         header: "",
         align: "right",
+        mobile: "actions",
         render: (a) => (
           <RowActions
             label={a.name}
@@ -493,6 +499,36 @@ export function AgentsPage() {
     ],
     [canManageAgents],
   );
+
+  const selection: TableSelection<Agent> = {
+    selected: selectedIds,
+    onToggle: (key, next) =>
+      setSelectedIds((prev) => {
+        const nextSet = new Set(prev);
+        if (next) nextSet.add(key);
+        else nextSet.delete(key);
+        return nextSet;
+      }),
+    onToggleAll: (next) => setSelectedIds(next ? new Set(agents.map((a) => a.id)) : new Set()),
+    label: (a) => a.name,
+  };
+
+  function exportSelected() {
+    const rows = agents.filter((a) => selectedIds.has(a.id));
+    const csv = toCsv(
+      ["Name", "Email", "Role", "Team", "Online", "Open load", "CSAT %"],
+      rows.map((a) => [
+        a.name,
+        a.email,
+        ROLE_LABEL[a.role],
+        a.team,
+        a.online ? "Yes" : "No",
+        String(a.open_load),
+        String(a.csat_pct),
+      ]),
+    );
+    downloadCsv(`agents-selected-${rows.length}.csv`, csv);
+  }
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -549,6 +585,18 @@ export function AgentsPage() {
                 rows={agents}
                 rowKey={(a) => a.id}
                 caption="Support agents and their current load and quality"
+                mobileCard="auto"
+                selection={selection}
+                bulkActions={
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    leadingIcon={<DownloadIcon className="size-4" />}
+                    onClick={exportSelected}
+                  >
+                    Export selected
+                  </Button>
+                }
                 emptyState={
                   <EmptyState
                     icon={<GaugeIcon className="size-6" />}

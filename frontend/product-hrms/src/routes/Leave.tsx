@@ -97,6 +97,7 @@ function MyLeaveScreen() {
     {
       key: "dates",
       header: "Dates",
+      mobile: "title",
       render: (r) => (
         <div className="flex flex-col leading-tight">
           <span className="font-semibold text-ink tnum">
@@ -116,6 +117,7 @@ function MyLeaveScreen() {
     {
       key: "status",
       header: "Status",
+      mobile: "status",
       render: (r) => {
         const copy = leaveStatusCopy(r.status);
         return (
@@ -128,6 +130,7 @@ function MyLeaveScreen() {
     {
       key: "actions",
       header: "",
+      mobile: "actions",
       render: (r) => (
         <RowActions
           label={`leave request for ${formatLeaveRange(r.start_date, r.end_date)}`}
@@ -199,6 +202,7 @@ function MyLeaveScreen() {
               columns={columns}
               rows={requests}
               rowKey={(r) => r.id}
+              mobileCard="auto"
               emptyState={
                 <EmptyState
                   icon={<ClipboardListIcon className="size-6" />}

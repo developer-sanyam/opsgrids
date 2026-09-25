@@ -1,52 +1,23 @@
 import type { AttendanceStatus, EmployeeStatus } from "@/api/types";
-import { attendanceStatusLabel } from "@/lib/format";
-import { cn } from "@opsgrids/ui";
+import { StatusBadge } from "@opsgrids/ui";
 
-const PILL_BASE =
-  "inline-flex items-center gap-1.5 rounded-full pl-2 pr-2.5 py-1 text-xs font-semibold";
-
-/** The service's four statuses (screens spec gap **G13**) — `present | half_day | absent |
- *  regularized`, replacing the SPA's earlier, wrong `present | late | absent` vocabulary. */
-const ATTENDANCE_TONE: Record<AttendanceStatus, string> = {
-  present: "bg-present-soft text-present",
-  half_day: "bg-late-soft text-late",
-  absent: "bg-danger-soft text-danger",
-  regularized: "bg-info-soft text-info",
-};
-
-/** Attendance status. A coloured dot backs up the colour so it never carries meaning alone. */
+/**
+ * Attendance status (screens spec gap **G13**): a thin wrapper over the shared `StatusBadge`, so
+ * the word looks the same in every app that shows it. `half_day` and `regularized` aren't in the
+ * shared registry (`@opsgrids/ui` lib/status.ts) — they're HRMS-specific words — so they take an
+ * explicit tone here rather than a sixth colour.
+ */
 export function AttendancePill({ status }: { status: AttendanceStatus }) {
-  return (
-    <span className={cn(PILL_BASE, ATTENDANCE_TONE[status])}>
-      <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      {attendanceStatusLabel(status)}
-    </span>
-  );
+  if (status === "half_day") return <StatusBadge tone="warning" label="Half day" />;
+  if (status === "regularized") return <StatusBadge tone="info" label="Regularized" />;
+  return <StatusBadge status={status} />;
 }
 
 /**
- * Employee lifecycle status, mapped to the semantic pill families:
- * Active = green, Probation = blue, On Notice = amber, Exited = grey.
+ * Employee lifecycle status. `probation` isn't a registered word, so it takes an explicit tone;
+ * `active`, `on_notice` and `exited` are, and get the registry's tone for free.
  */
-const EMPLOYEE_TONE: Record<EmployeeStatus, string> = {
-  active: "bg-present-soft text-present",
-  probation: "bg-info-soft text-info",
-  on_notice: "bg-late-soft text-late",
-  exited: "bg-ground text-muted",
-};
-
-const EMPLOYEE_LABEL: Record<EmployeeStatus, string> = {
-  active: "Active",
-  probation: "Probation",
-  on_notice: "On Notice",
-  exited: "Exited",
-};
-
 export function EmployeeStatusPill({ status }: { status: EmployeeStatus }) {
-  return (
-    <span className={cn(PILL_BASE, EMPLOYEE_TONE[status])}>
-      <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      {EMPLOYEE_LABEL[status]}
-    </span>
-  );
+  if (status === "probation") return <StatusBadge tone="info" label="Probation" />;
+  return <StatusBadge status={status} label={status === "on_notice" ? "On Notice" : undefined} />;
 }

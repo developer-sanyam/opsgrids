@@ -5,7 +5,6 @@ import { listIncidents } from "@/api/client";
 import type { IncidentSort } from "@/api/client";
 import type { Incident, IncidentStatus, Priority } from "@/api/types";
 import { formatSlaClock, incidentCategoryLabel, relativeTime } from "@/lib/format";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { Can, problemMessage, useAsync, useCan } from "@opsgrids/client";
 import {
   Avatar,
@@ -24,8 +23,10 @@ import {
   SlaPill,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { AlertTriangleIcon, PlusIcon, SortIcon, useToast } from "@opsgrids/ui";
+import { AlertTriangleIcon, DownloadIcon, PlusIcon, SortIcon, useToast } from "@opsgrids/ui";
+import type { TableSelection } from "@opsgrids/ui";
 import { RaiseIncidentDialog } from "@/forms/RaiseIncidentDialog";
+import { downloadCsv, toCsv } from "@/lib/exportCsv";
 
 const CAN_WRITE = "itsm.service.incident.write";
 
@@ -68,7 +69,6 @@ export function IncidentsPage() {
   const canWrite = useCan(CAN_WRITE, "OWN");
 
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
-  const debouncedSearch = useDebouncedValue(search);
   const [priority, setPriority] = useState<PriorityFilter>(() => {
     const p = searchParams.get("priority");
     return isPriority(p) ? p : "all";
@@ -78,6 +78,7 @@ export function IncidentsPage() {
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(25);
   const [creating, setCreating] = useState(() => searchParams.get("new") === "1");
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
 
   // Seed search / priority from the URL when arriving from the sidebar or an Overview link, and
   // clear the `new=1` deep link once the dialog has taken over so a reload doesn't reopen it.
@@ -96,10 +97,10 @@ export function IncidentsPage() {
   }, []);
 
   const loader = useCallback(
-    () => listIncidents({ search: debouncedSearch, priority, status, sort, page, size }),
-    [debouncedSearch, priority, status, sort, page, size],
+    () => listIncidents({ search, priority, status, sort, page, size }),
+    [search, priority, status, sort, page, size],
   );
-  const state = useAsync(loader, [debouncedSearch, priority, status, sort, page, size]);
+  const state = useAsync(loader, [search, priority, status, sort, page, size]);
 
   const items = useMemo(
     () => (state.status === "success" ? state.data.items : NO_INCIDENTS),
@@ -111,11 +112,13 @@ export function IncidentsPage() {
       {
         key: "id",
         header: "ID",
+        mobile: "field",
         render: (i) => <span className="tnum font-semibold text-ink-soft">{i.id}</span>,
       },
       {
         key: "summary",
         header: "Summary",
+        mobile: "title",
         render: (i) => (
           <div className="flex min-w-0 max-w-[22rem] flex-col">
             <span className="truncate font-semibold text-ink">{i.summary}</span>
@@ -134,11 +137,13 @@ export function IncidentsPage() {
       {
         key: "priority",
         header: "Priority",
+        mobile: "status",
         render: (i) => <PriorityPill priority={i.priority} />,
       },
       {
         key: "status",
         header: "Status",
+        mobile: "status",
         render: (i) => <IncidentStatusPill status={i.status} />,
       },
       {
@@ -185,6 +190,36 @@ export function IncidentsPage() {
     [],
   );
 
+  const selection: TableSelection<Incident> = {
+    selected: selectedIds,
+    onToggle: (key, next) =>
+      setSelectedIds((prev) => {
+        const nextSet = new Set(prev);
+        if (next) nextSet.add(key);
+        else nextSet.delete(key);
+        return nextSet;
+      }),
+    onToggleAll: (next) => setSelectedIds(next ? new Set(items.map((i) => i.id)) : new Set()),
+    label: (i) => i.id,
+  };
+
+  function exportSelected() {
+    const rows = items.filter((i) => selectedIds.has(i.id));
+    const csv = toCsv(
+      ["ID", "Summary", "Priority", "Status", "Assignee", "SLA state", "Updated"],
+      rows.map((i) => [
+        i.id,
+        i.summary,
+        i.priority,
+        i.status,
+        i.assignee || "Unassigned",
+        i.sla_state,
+        i.updated_at,
+      ]),
+    );
+    downloadCsv(`incidents-selected-${rows.length}.csv`, csv);
+  }
+
   return (
     <div className="rise flex flex-col gap-6">
       <PageHeader
@@ -213,8 +248,8 @@ export function IncidentsPage() {
             label="Search incidents"
             placeholder="Search by ID, summary, assignee or requester…"
             value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
+            onDebouncedChange={(next) => {
+              setSearch(next);
               setPage(1);
             }}
             containerClassName="lg:max-w-sm"
@@ -296,6 +331,18 @@ export function IncidentsPage() {
               rowKey={(i) => i.id}
               caption="Incidents"
               onRowClick={(i) => navigate(`/incidents/${i.id}`)}
+              mobileCard="auto"
+              selection={selection}
+              bulkActions={
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  leadingIcon={<DownloadIcon className="size-4" />}
+                  onClick={exportSelected}
+                >
+                  Export selected
+                </Button>
+              }
               emptyState={
                 <EmptyState
                   icon={<AlertTriangleIcon className="size-6" />}

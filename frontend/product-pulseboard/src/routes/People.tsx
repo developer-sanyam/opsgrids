@@ -9,6 +9,7 @@ import {
   Card,
   ConfirmDialog,
   DataTable,
+  DownloadIcon,
   EmptyState,
   ErrorState,
   PageHeader,
@@ -18,7 +19,8 @@ import {
   UsersIcon,
   useToast,
 } from "@opsgrids/ui";
-import type { Column } from "@opsgrids/ui";
+import type { Column, TableSelection } from "@opsgrids/ui";
+import { downloadCsv, toCsv } from "@/lib/exportCsv";
 import { PersonFormDialog } from "./PersonFormDialog";
 
 export function PeoplePage() {
@@ -28,6 +30,7 @@ export function PeoplePage() {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Person | null>(null);
   const [deleting, setDeleting] = useState<Person | null>(null);
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
 
   const people = useAsync(useCallback(() => listPeople({ page, size }), [page, size]), [page, size]);
 
@@ -73,6 +76,7 @@ export function PeoplePage() {
     {
       key: "name",
       header: "Name",
+      mobile: "title",
       render: (p) => (
         <span className="inline-flex items-center gap-2.5">
           <Avatar name={p.name} size="sm" />
@@ -105,6 +109,7 @@ export function PeoplePage() {
       key: "actions",
       header: "",
       align: "right",
+      mobile: "actions",
       render: (p) => (
         <Can permission="pulseboard.team.person.write">
           <RowActions
@@ -118,6 +123,28 @@ export function PeoplePage() {
       ),
     },
   ];
+
+  const selection: TableSelection<Person> = {
+    selected: selectedIds,
+    onToggle: (key, next) =>
+      setSelectedIds((prev) => {
+        const nextSet = new Set(prev);
+        if (next) nextSet.add(key);
+        else nextSet.delete(key);
+        return nextSet;
+      }),
+    onToggleAll: (next) => setSelectedIds(next ? new Set(items.map((p) => p.id)) : new Set()),
+    label: (p) => p.name,
+  };
+
+  function exportSelected() {
+    const rows = items.filter((p) => selectedIds.has(p.id));
+    const csv = toCsv(
+      ["Name", "Role", "Location", "Capacity (hrs/wk)"],
+      rows.map((p) => [p.name, p.role || "", p.location || "", String(p.capacity_hours)]),
+    );
+    downloadCsv(`people-selected-${rows.length}.csv`, csv);
+  }
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -138,6 +165,18 @@ export function PeoplePage() {
           columns={columns}
           rows={items}
           rowKey={(p) => p.id}
+          mobileCard="auto"
+          selection={selection}
+          bulkActions={
+            <Button
+              variant="secondary"
+              size="sm"
+              leadingIcon={<DownloadIcon className="size-4" />}
+              onClick={exportSelected}
+            >
+              Export selected
+            </Button>
+          }
           emptyState={
             <EmptyState
               icon={<UsersIcon className="size-6" />}

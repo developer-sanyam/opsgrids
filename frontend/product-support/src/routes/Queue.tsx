@@ -7,7 +7,6 @@ import type { TicketSort } from "@/api/client";
 import type { Agent, Priority, Ticket, TicketStatus } from "@/api/types";
 import { agentById } from "@/data/derive";
 import { now as clockNow } from "@/lib/clock";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { relativeTime } from "@/lib/format";
 import { Can, useAsync, useCan } from "@opsgrids/client";
 import {
@@ -24,8 +23,10 @@ import {
   TicketStatusPill,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { Button, InboxIcon, Pagination, PlusIcon } from "@opsgrids/ui";
+import { Button, DownloadIcon, InboxIcon, Pagination, PlusIcon } from "@opsgrids/ui";
+import type { TableSelection } from "@opsgrids/ui";
 import { NewTicketDialog } from "@/ui/NewTicketDialog";
+import { downloadCsv, toCsv } from "@/lib/exportCsv";
 
 type StatusFilter = TicketStatus | "all";
 type PriorityFilter = Priority | "all";
@@ -112,8 +113,7 @@ export function QueuePage() {
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(25);
   const [creating, setCreating] = useState(false);
-
-  const debouncedSearch = useDebouncedValue(search, 300);
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
 
   // Seed the search from the ?q= param when arriving from the sidebar / overview search.
   useEffect(() => {
@@ -124,7 +124,7 @@ export function QueuePage() {
   // A new filter, search or sort is a different query — it starts back at page 1.
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, status, priority, assignee, sort]);
+  }, [search, status, priority, assignee, sort]);
 
   const agentsState = useAsync(listAgents, []);
   const agents = useMemo(
@@ -133,18 +133,19 @@ export function QueuePage() {
   );
 
   const ticketsState = useAsync(
-    () => listTickets({ search: debouncedSearch, status, priority, assigneeId: assignee, sort, page, size }),
-    [debouncedSearch, status, priority, assignee, sort, page, size],
+    () => listTickets({ search, status, priority, assigneeId: assignee, sort, page, size }),
+    [search, status, priority, assignee, sort, page, size],
   );
 
   const hasFilter =
-    debouncedSearch.trim() !== "" || status !== "all" || priority !== "all" || assignee !== "all";
+    search.trim() !== "" || status !== "all" || priority !== "all" || assignee !== "all";
 
   const columns: Column<Ticket>[] = useMemo(
     () => [
       {
         key: "ticket",
         header: "Ticket",
+        mobile: "title",
         render: (t) => (
           <div className="flex min-w-0 max-w-xs flex-col leading-tight">
             <span className="truncate font-semibold text-ink">{t.subject}</span>
@@ -170,11 +171,13 @@ export function QueuePage() {
       {
         key: "priority",
         header: "Priority",
+        mobile: "status",
         render: (t) => <PriorityPill priority={t.priority} />,
       },
       {
         key: "status",
         header: "Status",
+        mobile: "status",
         headerClassName: "hidden sm:table-cell",
         cellClassName: "hidden sm:table-cell",
         render: (t) => <TicketStatusPill status={t.status} />,
@@ -202,6 +205,30 @@ export function QueuePage() {
     ],
     [agents],
   );
+
+  const items = ticketsState.status === "success" ? ticketsState.data.items : [];
+
+  const selection: TableSelection<Ticket> = {
+    selected: selectedIds,
+    onToggle: (key, next) =>
+      setSelectedIds((prev) => {
+        const nextSet = new Set(prev);
+        if (next) nextSet.add(key);
+        else nextSet.delete(key);
+        return nextSet;
+      }),
+    onToggleAll: (next) => setSelectedIds(next ? new Set(items.map((t) => t.id)) : new Set()),
+    label: (t) => t.subject,
+  };
+
+  function exportSelected() {
+    const rows = items.filter((t) => selectedIds.has(t.id));
+    const csv = toCsv(
+      ["ID", "Subject", "Requester", "Priority", "Status", "Updated"],
+      rows.map((t) => [t.id, t.subject, t.requester.name, t.priority, t.status, t.updated_at]),
+    );
+    downloadCsv(`tickets-selected-${rows.length}.csv`, csv);
+  }
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -232,7 +259,7 @@ export function QueuePage() {
           label="Search tickets"
           placeholder="Search subject, ID, requester or company…"
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onDebouncedChange={setSearch}
           containerClassName="lg:max-w-sm"
         />
         <div className="flex flex-wrap items-center gap-2 lg:ml-auto">
@@ -288,10 +315,22 @@ export function QueuePage() {
           <>
             <DataTable
               columns={columns}
-              rows={ticketsState.data.items}
+              rows={items}
               rowKey={(t) => t.id}
               caption="Support ticket queue"
               onRowClick={(t) => navigate(`/queue/${t.id}`)}
+              mobileCard="auto"
+              selection={selection}
+              bulkActions={
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  leadingIcon={<DownloadIcon className="size-4" />}
+                  onClick={exportSelected}
+                >
+                  Export selected
+                </Button>
+              }
               emptyState={
                 <EmptyState
                   icon={<InboxIcon className="size-6" />}

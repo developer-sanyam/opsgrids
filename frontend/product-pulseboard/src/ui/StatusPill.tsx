@@ -1,33 +1,21 @@
 import type { Priority, ProjectStatus } from "@/api/types";
-import { cn } from "@opsgrids/ui";
-import { PROJECT_STATUS_META } from "./statusMeta";
+import { StatusBadge } from "@opsgrids/ui";
 
-const PILL_BASE =
-  "inline-flex items-center gap-1.5 rounded-full pl-2 pr-2.5 py-1 text-xs font-semibold";
-
-/** Project health status. A coloured dot backs up the colour so it never carries meaning alone. */
+/**
+ * Project health status. Every word (`on_track`, `at_risk`, `blocked`, `done`) is registered, so
+ * the registry's tone applies as-is — `done` (a delivered project) moves onto the registry's
+ * success tone rather than PulseBoard's old info blue. `done` keeps PulseBoard's own wording
+ * ("Delivered"); the rest use the registry's default label, which already matches.
+ */
 export function ProjectStatusPill({ status }: { status: ProjectStatus }) {
-  const meta = PROJECT_STATUS_META[status];
-  return (
-    <span className={cn(PILL_BASE, meta.tone)}>
-      <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      {meta.label}
-    </span>
-  );
+  return <StatusBadge status={status} label={status === "done" ? "Delivered" : undefined} />;
 }
 
-const PRIORITY_META: Record<Priority, { label: string; tone: string }> = {
-  high: { label: "High", tone: "bg-danger-soft text-danger" },
-  medium: { label: "Medium", tone: "bg-info-soft text-info" },
-  low: { label: "Low", tone: "bg-ground text-muted" },
-};
-
-/** Task priority as a compact chip; the label carries meaning so colour is never the only cue. */
+/**
+ * Task priority. `high`, `medium` and `low` are all registered words — `medium` and `low` move
+ * off PulseBoard's old info/grey onto the registry's amber/blue, matching Support and the other
+ * apps that show the same words.
+ */
 export function PriorityPill({ priority }: { priority: Priority }) {
-  const meta = PRIORITY_META[priority];
-  return (
-    <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[0.7rem] font-bold", meta.tone)}>
-      {meta.label}
-    </span>
-  );
+  return <StatusBadge status={priority} />;
 }
