@@ -11,8 +11,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import type { ComboboxOption } from "@opsgrids/ui";
-import { FormDialog, Select, TextField } from "@opsgrids/ui";
+import type { ComboboxOption, StepItem } from "@opsgrids/ui";
+import { FormDialog, FormSection, Select, Stepper, TextField } from "@opsgrids/ui";
 
 import { createEmployee, getEmployee, updateEmployee } from "@/api/client";
 import { getOrgUnitNameById } from "@/api/orgUnits";
@@ -40,6 +40,26 @@ const WORK_MODE_OPTIONS = [
   { value: "remote", label: "Remote" },
   { value: "hybrid", label: "Hybrid" },
 ];
+
+const STEPS: StepItem[] = [
+  { id: "basic", title: "Basic details", description: "Identity, role and dates" },
+  { id: "reporting", title: "Reporting & sensitive details", description: "Manager and optional PII" },
+];
+
+/** The wire names of everything the basic-details step owns — used to send a validation problem
+ *  there back to the step that can fix it. */
+const BASIC_FIELDS = new Set([
+  "employee_no",
+  "full_name",
+  "designation",
+  "job_title",
+  "department_id",
+  "location_code",
+  "employment_type",
+  "work_mode",
+  "date_of_joining",
+  "date_of_exit",
+]);
 
 interface PiiDraft {
   date_of_birth: string;
@@ -91,6 +111,7 @@ export function EmployeeForm({ employee, onClose, onSaved }: EmployeeFormProps) 
   const editing = employee !== null;
   const zoneLookup = useZoneLookup();
   const [departments, setDepartments] = useState<ReadonlyMap<string, string>>(new Map());
+  const [step, setStep] = useState(0);
 
   const [employeeNo, setEmployeeNo] = useState(employee?.employee_no ?? "");
   const [fullName, setFullName] = useState(employee?.full_name ?? "");
@@ -147,18 +168,38 @@ export function EmployeeForm({ employee, onClose, onSaved }: EmployeeFormProps) 
     { onSuccess: (saved) => { onClose(); onSaved(saved); } },
   );
 
-  function submit() {
+  // A field error the service names on the basic-details step (say, a duplicate `employee_no`)
+  // belongs to a control the reporting step doesn't render — jump back to where it can be seen.
+  useEffect(() => {
+    if (Object.keys(save.fieldErrors).some((field) => BASIC_FIELDS.has(field))) setStep(0);
+  }, [save.fieldErrors]);
+
+  /** Employee number and full name — everything the basic-details step must have before moving
+   *  on, or before the record is actually saved. */
+  function validateBasics(): boolean {
     setEmployeeNoError(undefined);
     setFullNameError(undefined);
 
     if (!editing && !/^[A-Za-z0-9_-]{1,40}$/.test(employeeNo.trim())) {
       setEmployeeNoError("1–40 characters: letters, numbers, hyphens and underscores only.");
       employeeNoRef.current?.focus();
-      return;
+      return false;
     }
     if (fullName.trim().length < 1) {
       setFullNameError("Full name is required.");
       fullNameRef.current?.focus();
+      return false;
+    }
+    return true;
+  }
+
+  function continueToReporting() {
+    if (validateBasics()) setStep(1);
+  }
+
+  function submit() {
+    if (!validateBasics()) {
+      setStep(0);
       return;
     }
 
@@ -228,20 +269,55 @@ export function EmployeeForm({ employee, onClose, onSaved }: EmployeeFormProps) 
         }
       : {};
 
+  const basicInvalid = Boolean(
+    employeeNoError ??
+      fullNameError ??
+      Object.keys(save.fieldErrors).find((field) => BASIC_FIELDS.has(field)),
+  );
+  const reportingInvalid = Object.keys(save.fieldErrors).some((field) => !BASIC_FIELDS.has(field));
+  const stepItems: StepItem[] = STEPS.map((item, index) => ({
+    ...item,
+    invalid: index === 0 ? basicInvalid : reportingInvalid,
+  }));
+
+  const dirty =
+    employeeNo !== (employee?.employee_no ?? "") ||
+    fullName !== (employee?.full_name ?? "") ||
+    designation !== (employee?.designation ?? "") ||
+    jobTitle !== (employee?.job_title ?? "") ||
+    departmentId !== (employee?.department_id ?? "") ||
+    locationCode !== (employee?.location_code ?? "") ||
+    employmentType !== (employee?.employment_type ?? "full_time") ||
+    workMode !== (employee?.work_mode ?? "office") ||
+    dateOfJoining !== (employee?.date_of_joining ?? "") ||
+    dateOfExit !== (employee?.date_of_exit ?? "") ||
+    (manager?.id ?? null) !== (employee?.reporting_manager_id ?? null) ||
+    (dottedManager?.id ?? null) !== (employee?.dotted_line_manager_id ?? null) ||
+    (sensitiveOpen && toPiiIn(pii) !== undefined);
+
+  function handleSubmit() {
+    if (step === 0) continueToReporting();
+    else submit();
+  }
+
   return (
     <FormDialog
       open
       onClose={onClose}
-      onSubmit={submit}
+      onSubmit={handleSubmit}
       title={editing ? `Edit ${employee.full_name}` : "New employee"}
-      submitLabel={editing ? "Save changes" : "Create employee"}
+      submitLabel={step === 0 ? "Continue" : editing ? "Save changes" : "Create employee"}
       pendingLabel={editing ? "Saving…" : "Creating…"}
       pending={save.pending}
       initialFocusRef={editing ? fullNameRef : employeeNoRef}
       size="lg"
+      dirty={dirty}
       {...topLevelError}
     >
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <Stepper steps={stepItems} current={step} onStepChange={setStep} label="Employee form progress" />
+
+      {step === 0 ? (
+      <FormSection title="Basic details" headingLevel={3}>
         <TextField
           ref={employeeNoRef}
           label="Employee number"
@@ -249,6 +325,7 @@ export function EmployeeForm({ employee, onClose, onSaved }: EmployeeFormProps) 
           onChange={(e) => setEmployeeNo(e.target.value)}
           disabled={editing}
           helper={editing ? "Immutable once created." : "Letters, numbers, hyphens and underscores."}
+          required={!editing}
           error={employeeNoError ?? save.fieldErrors.employee_no}
         />
         <TextField
@@ -256,6 +333,7 @@ export function EmployeeForm({ employee, onClose, onSaved }: EmployeeFormProps) 
           label="Full name"
           value={fullName}
           onChange={(e) => setFullName(e.target.value)}
+          required
           error={fullNameError ?? save.fieldErrors.full_name}
         />
         <TextField
@@ -319,8 +397,9 @@ export function EmployeeForm({ employee, onClose, onSaved }: EmployeeFormProps) 
             error={save.fieldErrors.date_of_exit}
           />
         ) : null}
-      </div>
-
+      </FormSection>
+      ) : (
+      <FormSection title="Reporting & sensitive details" headingLevel={3}>
       <EmployeePicker
         label="Reporting manager"
         value={manager}
@@ -335,7 +414,7 @@ export function EmployeeForm({ employee, onClose, onSaved }: EmployeeFormProps) 
         error={save.fieldErrors.dotted_line_manager_id}
       />
 
-      <div className="rounded-tile border border-line">
+      <div className="col-span-full rounded-tile border border-line">
         <button
           type="button"
           onClick={() => setSensitiveOpen((v) => !v)}
@@ -430,6 +509,8 @@ export function EmployeeForm({ employee, onClose, onSaved }: EmployeeFormProps) 
           </div>
         ) : null}
       </div>
+      </FormSection>
+      )}
     </FormDialog>
   );
 }
