@@ -66,12 +66,22 @@ describe("text", () => {
     expect(value(text, "  Steel   bracket  ")).toBe("Steel   bracket");
   });
 
-  it("rejects control characters, including a line break and a tab", () => {
+  it("rejects control characters other than a tab or line break", () => {
     expect(error(text, "a\u0000b")).toMatch(/Name contains .*control character/);
-    expect(error(text, "line one\nline two")).toMatch(/control character/);
-    expect(error(text, "a\tb")).toMatch(/control character/);
+    expect(error(text, "a\u001bb")).toMatch(/control character/);
     expect(error(text, "a\u007fb")).toMatch(/control character/);
     expect(error(text, "a\u0085b")).toMatch(/control character/);
+  });
+
+  it("keeps a line break or tab inside text, so a multi-line note can be imported", () => {
+    expect(value(text, "line one\nline two")).toBe("line one\nline two");
+    expect(value(text, "a\tb")).toBe("a\tb");
+    expect(value(text, "  first\r\nsecond  ")).toBe("first\r\nsecond");
+  });
+
+  it("still refuses a line break in an email", () => {
+    const email = column("email", { header: "Email" });
+    expect(error(email, "a@b.co\nx")).toBeDefined();
   });
 
   it("enforces maxLength in characters, not UTF-16 units", () => {

@@ -54,9 +54,12 @@ function normalise(text: string): string {
   return text.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-function hasControlCharacter(text: string): boolean {
+/** A control character other than, when `allowLineBreaks`, a tab or a line break: those are how a
+ *  multi-line note or summary is typed in a cell, so free text keeps them. */
+function hasControlCharacter(text: string, allowLineBreaks = false): boolean {
   for (let i = 0; i < text.length; i += 1) {
     const code = text.charCodeAt(i);
+    if (allowLineBreaks && (code === 0x09 || code === 0x0a || code === 0x0d)) continue;
     if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return true;
   }
   return false;
@@ -93,8 +96,8 @@ function coerceText(column: ImportColumn, cell: CellInput, env: CoerceEnv): Coer
   const { header } = column;
   const text = textOf(cell);
   if (text === null) return fail(`${header} must be text`);
-  if (hasControlCharacter(text)) {
-    return fail(`${header} contains a line break, tab or another control character`);
+  if (hasControlCharacter(text, true)) {
+    return fail(`${header} contains a control character`);
   }
   if (column.maxLength !== undefined) {
     const length = Array.from(text).length;
