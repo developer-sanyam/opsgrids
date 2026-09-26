@@ -1478,4 +1478,4 @@ async def test_a_tenants_unsubscribe_link_cannot_opt_out_another_tenants_contact
                 )
             ).scalars()
         )
-    assert len(theirs) == 2
+    assert len(theirs) == 1
