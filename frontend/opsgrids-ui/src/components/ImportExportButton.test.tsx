@@ -322,6 +322,108 @@ describe("ImportExportButton: choosing and dropping a file", () => {
   });
 });
 
+describe("ImportExportButton: a file dropped outside the drop zone", () => {
+  /** What a drag from the desktop carries. `dropEffect` is what the page has answered so far. */
+  function fileDrag(dropEffect = "copy") {
+    return { types: ["Files"], files: [xlsx()], dropEffect };
+  }
+
+  function backdropOf(name: string) {
+    const backdrop = dialog(name).previousElementSibling;
+    if (backdrop === null) throw new Error("no backdrop");
+    return backdrop;
+  }
+
+  it("does nothing when the file is dropped on the backdrop, the header or the footer, and the browser does not open it", async () => {
+    const { actions } = await openWith();
+    const outside = [
+      backdropOf("Import / Export companies"),
+      screen.getByRole("heading", { name: "Import / Export companies" }),
+      screen.getByRole("button", { name: "Close" }),
+      screen.getByRole("button", { name: "Close dialog" }),
+    ];
+    for (const target of outside) {
+      const dropped = fireEvent.drop(target, { dataTransfer: fileDrag() });
+      // Cancelled: the default, opening the file in this tab, did not happen.
+      expect(dropped).toBe(false);
+    }
+    expect(actions.openFile).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when the file is dropped on the page itself", async () => {
+    const { actions } = await openWith();
+    expect(fireEvent.drop(document.body, { dataTransfer: fileDrag() })).toBe(false);
+    expect(actions.openFile).not.toHaveBeenCalled();
+  });
+
+  it("says nothing will happen while the file is dragged over anywhere but the zone", async () => {
+    await openWith();
+    for (const target of [backdropOf("Import / Export companies"), screen.getByRole("button", { name: "Close" })]) {
+      const transfer = fileDrag();
+      // Cancelled, so the page is a valid target and the browser has no default to fall back to.
+      expect(fireEvent.dragOver(target, { dataTransfer: transfer })).toBe(false);
+      expect(transfer.dropEffect).toBe("none");
+    }
+  });
+
+  it("still takes the file on the zone, and leaves the drop effect the zone chose", async () => {
+    const { actions } = await openWith();
+    const target = screen.getByRole("button", { name: "Import from Excel" });
+
+    const transfer = fileDrag("none");
+    fireEvent.dragOver(target, { dataTransfer: transfer });
+    expect(transfer.dropEffect).toBe("copy");
+
+    const file = xlsx("corrected.xlsx");
+    expect(fireEvent.drop(target, { dataTransfer: { types: ["Files"], files: [file] } })).toBe(false);
+    expect(actions.openFile).toHaveBeenCalledTimes(1);
+    expect(actions.openFile).toHaveBeenCalledWith(file);
+  });
+
+  it("does the same in every phase: a drop on the header during an import is cancelled and read by no one", async () => {
+    const { actions } = await openWith({ state: stateFor({ phase: "importing", progress: PROGRESS_RUNNING }) });
+    const header = screen.getByRole("heading", { name: "Importing companies" });
+    expect(fireEvent.dragOver(header, { dataTransfer: fileDrag() })).toBe(false);
+    expect(fireEvent.drop(header, { dataTransfer: fileDrag() })).toBe(false);
+    expect(fireEvent.drop(backdropOf("Importing companies"), { dataTransfer: fileDrag() })).toBe(false);
+    expect(actions.openFile).not.toHaveBeenCalled();
+  });
+
+  it("leaves a drag that carries no file alone", async () => {
+    await openWith();
+    const text = { types: ["text/plain"], files: [], dropEffect: "copy" };
+    expect(fireEvent.dragOver(backdropOf("Import / Export companies"), { dataTransfer: text })).toBe(true);
+    expect(fireEvent.drop(backdropOf("Import / Export companies"), { dataTransfer: text })).toBe(true);
+    expect(text.dropEffect).toBe("copy");
+  });
+
+  it("only listens while the dialog is open, and lets go of both listeners when it closes", async () => {
+    const remove = vi.spyOn(window, "removeEventListener");
+    const add = vi.spyOn(window, "addEventListener");
+    const user = userEvent.setup();
+    render(<Harness actions={makeActions()} />);
+    // Closed: the page is the browser's again.
+    expect(fireEvent.drop(document.body, { dataTransfer: fileDrag() })).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "Import / Export" }));
+    expect(add.mock.calls.filter(([type]) => type === "dragover" || type === "drop")).toHaveLength(2);
+    expect(fireEvent.drop(document.body, { dataTransfer: fileDrag() })).toBe(false);
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(remove.mock.calls.filter(([type]) => type === "dragover" || type === "drop")).toHaveLength(2);
+    expect(fireEvent.dragOver(document.body, { dataTransfer: fileDrag() })).toBe(true);
+    expect(fireEvent.drop(document.body, { dataTransfer: fileDrag() })).toBe(true);
+  });
+
+  it("lets go of them when the dialog is unmounted with the page", async () => {
+    const view = render(<Harness actions={makeActions()} />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Import / Export" }));
+    view.unmount();
+    expect(fireEvent.drop(document.body, { dataTransfer: fileDrag() })).toBe(true);
+  });
+});
+
 describe("ImportExportButton: reading", () => {
   it("says the file is being read, without a control that could interrupt it", async () => {
     await openWith({ state: stateFor({ phase: "reading" }) });

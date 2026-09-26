@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ChangeEvent, DragEvent, ReactNode } from "react";
+import type { ChangeEvent, DragEvent, ReactNode, RefObject } from "react";
 
 import { RefreshIcon } from "../icons";
 import { liveMessage, phaseTitle } from "../lib/importExportCopy";
@@ -31,8 +31,44 @@ function headingOf(inside: HTMLElement | null): HTMLElement | null {
   return id ? document.getElementById(id) : null;
 }
 
-function isFileDrag(event: DragEvent): boolean {
-  return Array.from(event.dataTransfer.types).includes("Files");
+function carriesFiles(transfer: DataTransfer | null): boolean {
+  return transfer !== null && Array.from(transfer.types).includes("Files");
+}
+
+/**
+ * While the dialog is open, a file dropped anywhere the dialog does not take it does nothing.
+ *
+ * The drop zone is the dialog's body. A file dropped on the header, the footer or the backdrop
+ * reaches no handler of ours, and the browser's default for a dropped file is to open it in this
+ * tab, which ends the session (and, mid-import, all that the tab was still going to send). So a
+ * window-level `dragover` and `drop` cancel every file drag that is not the zone's. Cancelling
+ * `dragover` is what makes the page a valid target at all, so outside the zone it also sets the
+ * drop effect to `none`, and the cursor says that nothing will happen.
+ *
+ * Inside the zone this only adds a second `preventDefault` after the zone's own handlers have run,
+ * and it leaves the drop effect they chose alone. A drag that carries no file (selected text) is
+ * not touched. The listeners exist only while the dialog is mounted.
+ */
+function useRefuseStrayFileDrops(zoneRef: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    function inZone(event: Event): boolean {
+      return event.target instanceof Node && zoneRef.current?.contains(event.target) === true;
+    }
+    function onDragOver(event: globalThis.DragEvent) {
+      if (!carriesFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      if (event.dataTransfer !== null && !inZone(event)) event.dataTransfer.dropEffect = "none";
+    }
+    function onDrop(event: globalThis.DragEvent) {
+      if (carriesFiles(event.dataTransfer)) event.preventDefault();
+    }
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, [zoneRef]);
 }
 
 function Reading() {
@@ -78,8 +114,9 @@ interface ImportExportDialogProps {
  *
  * **Files.** One hidden input serves "Import from Excel" and "Choose another file", and dropping a
  * file works in the menu and the preview. The engine decides whether the file is acceptable, so
- * this passes on whatever it is given. Elsewhere in the dialog a dragged file is refused, because
- * the browser's default for a dropped file is to navigate to it, and that would end an import.
+ * this passes on whatever it is given. Anywhere else, on the page or on the dialog's own header,
+ * footer and backdrop, a dropped file does nothing (`useRefuseStrayFileDrops`): the browser's
+ * default is to navigate to it, and that would end an import.
  */
 export function ImportExportDialog({ onClose, meta, state, actions, canImport, canExport }: ImportExportDialogProps) {
   const [dragging, setDragging] = useState(false);
@@ -93,6 +130,7 @@ export function ImportExportDialog({ onClose, meta, state, actions, canImport, c
   const takesFiles = (phase === "menu" && canImport) || phase === "preview";
 
   useUnsavedChangesWarning(importing);
+  useRefuseStrayFileDrops(bodyRef);
 
   const shownPhase = useRef(phase);
   useEffect(() => {
@@ -126,14 +164,14 @@ export function ImportExportDialog({ onClose, meta, state, actions, canImport, c
   // Every child the drag passes over fires its own enter and leave. Counting them, rather than
   // asking where the pointer went (Safari does not say), is what keeps the drop cue from flickering.
   function onDragEnter(event: DragEvent) {
-    if (!takesFiles || !isFileDrag(event)) return;
+    if (!takesFiles || !carriesFiles(event.dataTransfer)) return;
     event.preventDefault();
     dragDepth.current += 1;
     setDragging(true);
   }
 
   function onDragOver(event: DragEvent) {
-    if (!isFileDrag(event)) return;
+    if (!carriesFiles(event.dataTransfer)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = takesFiles ? "copy" : "none";
   }
@@ -144,7 +182,7 @@ export function ImportExportDialog({ onClose, meta, state, actions, canImport, c
   }
 
   function onDrop(event: DragEvent) {
-    if (!isFileDrag(event)) return;
+    if (!carriesFiles(event.dataTransfer)) return;
     event.preventDefault();
     dragDepth.current = 0;
     setDragging(false);
