@@ -22,6 +22,7 @@ import { InboxPage } from "./routes/Inbox";
 import { LoginPage } from "./routes/Login";
 import { NotFoundPage } from "./routes/NotFound";
 import { OverviewPage } from "./routes/Overview";
+import { areaRoutes, toRouteObjects } from "./routes/appRoutes";
 import { SendersPage } from "./routes/Senders";
 import { SuppressionsPage } from "./routes/Suppressions";
 import { WhatsAppConnectionPage } from "./routes/WhatsAppConnection";
@@ -96,7 +97,10 @@ const router = createBrowserRouter([
           </RequireAuth>
         ),
         children: [
-          { index: true, element: <OverviewPage /> },
+          // The feature areas (dashboards, WhatsApp, templates, automations) contribute their own
+          // routes; `/` is the Communication hub and the get-started checklist lives at `/setup`.
+          ...toRouteObjects(areaRoutes),
+          { path: "setup", element: <OverviewPage /> },
           { path: "inbox", element: <InboxPage /> },
           { path: "connection", element: <ConnectionPage /> },
           { path: "domains", element: <DomainsPage /> },
