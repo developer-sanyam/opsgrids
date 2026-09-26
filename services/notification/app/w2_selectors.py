@@ -4,9 +4,10 @@ the caller's scope through `ctx.apply()` like every list in `selectors.py`."""
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
@@ -130,3 +131,16 @@ async def organizations_for_waba(directory: AsyncSession, waba_id: str) -> list[
         .distinct()
     )
     return list((await directory.execute(stmt)).scalars().all())
+
+
+async def template_summary(session: AsyncSession, org_id: uuid.UUID) -> tuple[int, datetime | None]:
+    """`(how many WhatsApp templates the organization holds, when one was last confirmed against
+    Meta)` — for a connection-health screen. Counts only live rows; the timestamp is the newest
+    `status_checked_at`, which a sync and a status webhook both advance."""
+    stmt = select(func.count(), func.max(ProviderTemplate.status_checked_at)).where(
+        ProviderTemplate.organization_id == org_id,
+        ProviderTemplate.channel == CHANNEL,
+        ProviderTemplate.deleted_at.is_(None),
+    )
+    count, last = (await session.execute(stmt)).one()
+    return int(count), last

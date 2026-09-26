@@ -64,6 +64,36 @@ async def test_it_syncs_on_a_callers_own_session(session: AsyncSession, org_id: 
     assert codes == {"a", "b"}
 
 
+async def test_the_summary_counts_live_templates_and_reports_the_last_check(
+    session: AsyncSession, org_id: uuid.UUID
+) -> None:
+    from app.w2_selectors import template_summary
+
+    async with session.begin():
+        assert await template_summary(session, org_id) == (0, None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [_template("1", "a"), _template("2", "b")]})
+
+    async with session.begin():
+        session.add(
+            ProviderAccount(
+                organization_id=org_id,
+                channel="whatsapp",
+                waba_id="waba-a",
+                phone_number_id="1001",
+                display_number="+1",
+                access_token_enc=_sealed(TOKEN_A),
+                status="connected",
+            )
+        )
+    async with session.begin():
+        await sync_templates(session, org_id, transport=httpx.MockTransport(handler))
+    async with session.begin():
+        count, last = await template_summary(session, org_id)
+    assert count == 2 and last is not None
+
+
 async def test_it_cannot_be_pointed_at_another_organization(
     session: AsyncSession, admin_session: AsyncSession, org_id: uuid.UUID
 ) -> None:
