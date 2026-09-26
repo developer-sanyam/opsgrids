@@ -701,7 +701,21 @@ async def _drive(
             label = await _execute(
                 session, run, node, step, context, resolve_target=resolve_target, now=now
             )
-        except StepFailure as failure:
+        except (StepFailure, Exception) as raised:
+            # Anything a node did not anticipate is a retryable failure of that node, never an
+            # exception out of the consumer: one bad run must not dead-letter the event that
+            # other automations and rules on it handled correctly. Only the exception type is
+            # logged, since a message can carry an address.
+            if isinstance(raised, StepFailure):
+                failure = raised
+            else:
+                log.error(
+                    "automation.step.unexpected",
+                    run_id=str(run.id),
+                    node_id=node["id"],
+                    error_type=type(raised).__name__,
+                )
+                failure = StepFailure("unexpected_error", "the step raised", retryable=True)
             if failure.retryable and a1_pure.should_retry(step.attempt):
                 delay = a1_pure.retry_delay_seconds(step.attempt)
                 step.state = "waiting"

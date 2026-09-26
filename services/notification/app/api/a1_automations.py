@@ -11,7 +11,7 @@ campaign, so viewing takes `engage.campaign.campaign.read`, authoring, pausing a
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request, status
@@ -143,11 +143,12 @@ async def automation_stats(
 ) -> StatsOut:
     if from_ is not None and to is not None and from_ > to:
         raise ValidationProblem("from must not be after to")
-    if from_ is None and to is None:
-        start, end = a1_selectors.default_window()
-    else:
-        today = datetime.now(UTC).date()
-        start, end = a1_selectors.day_bounds(from_ or (to or today).replace(day=1), to or today)
+    if from_ is not None and to is not None and (to - from_).days > 366:
+        raise ValidationProblem("the range is at most a year")
+    today = datetime.now(UTC).date()
+    last_day = to or today
+    first_day = from_ or (last_day - timedelta(days=a1_selectors.WINDOW_DAYS - 1))
+    start, end = a1_selectors.day_bounds(first_day, last_day)
     raw = await a1_selectors.stats(session, ctx.organization_id, start=start, end=end)
     total, completed, failed, avg = raw["totals"]
     names = await a1_selectors.names_for(session, ctx.organization_id, [r[0] for r in raw["per"]])

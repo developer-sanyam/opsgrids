@@ -784,6 +784,38 @@ async def test_update_marks_last_run(session: Any, org_id: uuid.UUID, worker_eng
         )
 
 
+async def test_stats_range_and_failure_reasons(
+    client: Any, session: Any, org_id: uuid.UUID, worker_engine: None
+) -> None:
+    await _template(session, org_id)
+    await _go_live(session, org_id, _linear(_send_node()))
+    await consumers.fold(_event(org_id, "T-1"))
+    await consumers.fold(envelope_for(org_id, EVENT, {"number": "T-2"}))  # no recipient: fails
+    today = datetime.now(UTC).date().isoformat()
+    with as_principal(caller(org_id, [f"{READ}:ORG"])):
+        both = await client.get(
+            "/api/v1/engage/automations/stats", params={"from": today, "to": today}
+        )
+        assert both.status_code == 200, both.text
+        body = both.json()
+        assert (body["executions"], body["successful"], body["failed"]) == (2, 1, 1)
+        assert body["series"] == [{"date": today, "successful": 1, "failed": 1}]
+        assert body["failures_by_reason"] == [
+            {"code": "recipient_missing", "label": "No recipient on the event", "count": 1}
+        ]
+        assert body["per_automation"][0]["success_rate"] == 0.5
+        assert body["avg_duration_ms"] is not None
+        past = await client.get(
+            "/api/v1/engage/automations/stats",
+            params={"from": "2020-01-01", "to": "2020-01-31"},
+        )
+        assert past.json()["executions"] == 0 and past.json()["series"] == []
+        inverted = await client.get(
+            "/api/v1/engage/automations/stats", params={"from": today, "to": "2020-01-01"}
+        )
+        assert inverted.status_code == 422
+
+
 async def test_the_cron_tick_wakes_an_overdue_wait_as_the_outbox_role_would(
     session: Any, org_id: uuid.UUID, worker_engine: None
 ) -> None:
