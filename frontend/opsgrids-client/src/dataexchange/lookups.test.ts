@@ -25,6 +25,18 @@ describe("makeLookup", () => {
     expect(lookup.isAmbiguous("dup")).toBe(true);
   });
 
+  it("does not call a label ambiguous when every entry with it gives the same value", () => {
+    const same = makeLookup([
+      { label: "pcs", value: "u1" },
+      { label: "PCS", value: "u1" },
+      { label: "Box", value: "u2" },
+      { label: "box", value: "u3" },
+    ]);
+    expect(same.resolve("pcs")).toBe("u1");
+    expect(same.isAmbiguous("pcs")).toBe(false);
+    expect(same.isAmbiguous("box")).toBe(true);
+  });
+
   it("finds the label for a value, the reverse of resolve", () => {
     expect(lookup.labelOf("w2")).toBe("Spare parts");
     expect(lookup.labelOf("nope")).toBeUndefined();

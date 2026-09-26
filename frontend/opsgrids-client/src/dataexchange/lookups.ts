@@ -6,15 +6,16 @@ function normalise(label: string): string {
 
 /**
  * A `Lookup` over `(label, value)` pairs. Matching ignores case and runs of spaces. A label that
- * more than one entry carries is ambiguous: `resolve` returns undefined rather than pick one, so
- * the row is refused instead of landing on the wrong record.
+ * more than one entry carries *for different values* is ambiguous: `resolve` returns undefined
+ * rather than pick one, so the row is refused instead of landing on the wrong record. The same
+ * label repeated for the same value (a unit listed by code and by name) is not ambiguous.
  */
 export function makeLookup(entries: readonly { label: string; value: string }[]): Lookup {
   const byLabel = new Map<string, string | null>();
   const byValue = new Map<string, string>();
   for (const { label, value } of entries) {
     const key = normalise(label);
-    byLabel.set(key, byLabel.has(key) ? null : value);
+    byLabel.set(key, byLabel.has(key) && byLabel.get(key) !== value ? null : value);
     if (!byValue.has(value)) byValue.set(value, label);
   }
   return {
