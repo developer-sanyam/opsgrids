@@ -22,6 +22,15 @@ class Settings(ServiceSettings):
     #: `split-workers` to `EDGE_PROFILES` is the rollback (RUNBOOK.md).
     run_consumers_in_api: bool = False
 
+    #: The customer 360 (`GET /customers/{id}/360`) asks these services for its sections. Neither
+    #: is required at boot: an unreachable upstream makes that section `null` and lists it in
+    #: `unavailable`, it never fails the request.
+    notification_internal_url: str = "http://localhost:8151"
+    deal_internal_url: str = "http://localhost:8131"
+    #: Per upstream call, and also the ceiling on the whole fan-out since the calls run
+    #: concurrently. Short on purpose: a card with a hole beats a card that hangs.
+    customer360_upstream_timeout_seconds: float = 2.0
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

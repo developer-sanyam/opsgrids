@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app import consumers, dispatcher
+from app.api.c1_internal import router as c1_internal_router
 from app.api.engage import public_router as engage_public_router
 from app.api.engage import router as engage_router
 from app.api.inbox import router as inbox_router
@@ -146,3 +147,6 @@ app = create_app(
 # endpoint, not public API, and it authenticates by signature rather than by token.
 app.include_router(webhooks_router, prefix="/api/v1")
 app.include_router(webhooks_router)
+
+# Customer 360's messaging summary (slice C1): service-to-service, mounted at the root.
+app.include_router(c1_internal_router)
