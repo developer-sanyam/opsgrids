@@ -21,7 +21,6 @@ const LINK_BASE =
 const LINK_VARIANT = {
   primary: "bg-accent text-on-accent hover:bg-accent-strong active:bg-accent-strong",
   secondary: "border border-field-edge bg-surface text-ink hover:bg-sunken active:bg-sunken",
-  ghost: "text-ink-soft hover:bg-sunken hover:text-ink active:bg-sunken",
 } as const;
 
 export function LinkButton({

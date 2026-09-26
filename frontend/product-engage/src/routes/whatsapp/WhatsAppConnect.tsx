@@ -161,6 +161,7 @@ function WhatsAppConnect() {
 
       {step === "setup" && setupId !== null ? (
         <SetupStep
+          key={setupId}
           setupId={setupId}
           onBack={() => go("select")}
           onRestart={() => go("start", { setup: null })}

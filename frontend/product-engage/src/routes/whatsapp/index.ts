@@ -1,8 +1,7 @@
-import { createElement } from "react";
-import type { ReactNode } from "react";
+import { createElement, lazy, Suspense } from "react";
+import type { ComponentType, ReactNode } from "react";
 
-import { WhatsAppConnectPage } from "./WhatsAppConnect";
-import { WhatsAppSettingsPage } from "./WhatsAppSettings";
+import { Skeleton } from "@opsgrids/ui";
 
 /** One screen the orchestrator wires into the router and the navigation. */
 export interface AppRoute {
@@ -10,6 +9,26 @@ export interface AppRoute {
   element: ReactNode;
   title: string;
   nav?: { label: string; group: string };
+}
+
+/**
+ * Each screen is its own chunk: the wizard and the settings page are visited a handful of times
+ * per organization, and neither belongs in the bundle every other Engage screen downloads. The
+ * fallback is a block of the page's own size, so nothing shifts when the chunk arrives.
+ */
+const ConnectPage = lazy(() =>
+  import("./WhatsAppConnect").then((module) => ({ default: module.WhatsAppConnectPage })),
+);
+const SettingsPage = lazy(() =>
+  import("./WhatsAppSettings").then((module) => ({ default: module.WhatsAppSettingsPage })),
+);
+
+function page(Screen: ComponentType): ReactNode {
+  return createElement(
+    Suspense,
+    { fallback: createElement(Skeleton, { className: "h-96 w-full rounded-card" }) },
+    createElement(Screen),
+  );
 }
 
 /**
@@ -23,12 +42,12 @@ export interface AppRoute {
 export const routes: AppRoute[] = [
   {
     path: "whatsapp/connect",
-    element: createElement(WhatsAppConnectPage),
+    element: page(ConnectPage),
     title: "Connect WhatsApp",
   },
   {
     path: "whatsapp/settings",
-    element: createElement(WhatsAppSettingsPage),
+    element: page(SettingsPage),
     title: "WhatsApp Settings",
     nav: { label: "Settings", group: "WhatsApp" },
   },

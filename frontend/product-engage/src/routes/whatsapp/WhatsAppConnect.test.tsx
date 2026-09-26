@@ -344,6 +344,46 @@ describe("choose a number", () => {
     expect(screen.getByRole("button", { name: "Use this number" }).hasAttribute("disabled")).toBe(true);
   });
 
+  it("shows the numbers as soon as the setup job has stored them, without a reload", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const list = vi
+      .spyOn(api, "listWhatsAppNumbers")
+      .mockResolvedValueOnce({ items: [] })
+      .mockResolvedValue({ items: [MAIN_NUMBER] });
+    renderWizard(SELECT_URL);
+
+    expect(await screen.findByText("Waiting for Meta to share your numbers…")).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100);
+    });
+    expect(await screen.findByRole("group", { name: "Phone number" })).toBeTruthy();
+    expect(screen.queryByText("Waiting for Meta to share your numbers…")).toBeNull();
+
+    const calls = list.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(list.mock.calls.length).toBe(calls);
+  });
+
+  it("stops waiting after two minutes and points at the setup status", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(api, "listWhatsAppNumbers").mockResolvedValue({ items: [] });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderWizard(SELECT_URL);
+
+    await screen.findByText("Waiting for Meta to share your numbers…");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(125_000);
+    });
+    expect(await screen.findByText("Meta hasn't shared a number yet")).toBeTruthy();
+
+    vi.spyOn(api, "getSignupStatus").mockResolvedValue(SETUP_RUNNING);
+    await user.click(screen.getByRole("button", { name: "Check setup status" }));
+    expect(await screen.findByRole("heading", { name: "Setting things up" })).toBeTruthy();
+    expect(search()).toContain("step=setup");
+  });
+
   it("lists every number with its badge, disables the ones that cannot be used, and saves the choice", async () => {
     vi.spyOn(api, "listWhatsAppNumbers").mockResolvedValue({
       items: [MAIN_NUMBER, SUPPORT_NUMBER, PENDING_NUMBER],
