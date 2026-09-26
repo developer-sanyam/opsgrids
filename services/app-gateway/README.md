@@ -33,6 +33,29 @@ Rate limiting comes *after* authentication so it counts against a person rather 
 address, which is what makes a shared office NAT usable. Public paths are limited by IP
 instead.
 
+## Unauthenticated traffic
+
+Two kinds, each with its own buckets (Redis, one-minute windows, failing closed); everything else
+needs a bearer token.
+
+- **Public paths** (sign-in, password reset, sign-up, the storefront buyer calls, the Engage
+  unsubscribe link) — per address, `ANONYMOUS_RATE_LIMIT_PER_MINUTE` (60).
+- **Provider webhooks** (`WEBHOOK_PUBLIC_PATHS` in `app/main.py`: Meta's WhatsApp callback,
+  `/api/v1/webhooks/whatsapp`, `GET` and `POST`) — no token, **exact path and method** (a `PUT` or
+  `DELETE` falls through to the bearer check, a sub-path or `..` walk is a different path), and
+  their own buckets: per address, `WEBHOOK_RATE_LIMIT_PER_MINUTE` (600), and per path across all
+  addresses, `WEBHOOK_GLOBAL_RATE_LIMIT_PER_MINUTE` (3000; `0` disables), so a sign-in flood and a
+  webhook flood cannot starve each other. The per-address check runs first, so one address spends
+  at most its own allowance of the shared one. Cookies, `Authorization`, `Origin` and identity
+  headers are dropped on the way in, `Set-Cookie` and `Access-Control-*` on the way out, and no
+  `x-org-slug` is derived from the `Host`. Authenticity is notification's HMAC over the raw body,
+  which is forwarded untouched under the route's own `max_body_bytes` (3 MiB, in both route
+  tables). Razorpay's `/api/v1/webhooks/razorpay` is routed in production but is **not** public
+  here; that is a separate decision.
+
+`tests/infra/test_route_table_parity.py` holds the policy, both route tables, the body cap and
+notification's mount together: add a webhook route without deciding, and the build fails.
+
 ## Headers
 
 Inbound `X-*` identity headers are **stripped** before the gateway writes its own. Without

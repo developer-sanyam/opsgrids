@@ -138,6 +138,11 @@ app = create_app(
     on_shutdown=_stop_background_worker,
 )
 
-# Meta's webhooks, mounted at the root rather than under `/api/v1`: this is the provider's
+# Meta's webhooks, mounted twice on purpose. Under `/api/v1` because that is the path app-gateway
+# forwards *unchanged* (`/api/v1/webhooks/whatsapp`, the URL Meta is configured with, through
+# Caddy and the gateway): mounted only at the root, a request the gateway let through landed on a
+# path this service does not have and every delivery and handshake 404'd. At the root as well, for
+# a developer pointing a tunnel straight at this service. Either way it is the provider's
 # endpoint, not public API, and it authenticates by signature rather than by token.
+app.include_router(webhooks_router, prefix="/api/v1")
 app.include_router(webhooks_router)

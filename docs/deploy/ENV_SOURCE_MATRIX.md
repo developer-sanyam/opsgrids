@@ -751,6 +751,12 @@ public paths are an exact-match frozenset" (INT:rt:15). The gateway forwards
 A third spelling, `/api/v1/notifications/webhooks/whatsapp`, is in `docs/whatsapp/audit.md`
 (INT:docs/whatsapp/audit.md:133).
 
+**Fixed for WhatsApp since this finding was written** (the paragraph above describes the state before): app-gateway declares
+`/api/v1/webhooks/whatsapp` (exactly, `GET` and `POST` only) in `WEBHOOK_PUBLIC_PATHS`, notification mounts the router under `/api/v1`
+as well as at the root, and the route carries a 3 MiB `max_body_bytes`; see `docs/whatsapp/webhooks.md`. Once that build is deployed
+the probe below answers **`403`** for WhatsApp (the request reached notification and `hub.verify_token=x` did not match; `401` or `404`
+would mean it did not deploy). Razorpay is **unchanged** and still `401` at the gateway.
+
 *Razorpay.* payment mounts its webhook under `/api/v1` (`/api/v1/webhooks/razorpay`, INT:services/payment/app/api/webhooks.py:9), and the route table forwards it
 (INT:rt:63). But it is made public **only by admin-gateway**
 (INT:services/admin-gateway/app/main.py:67), which is **not deployed** here. app-gateway's public set is
@@ -764,7 +770,7 @@ they hit only our own endpoint with an empty body and no credential. A bad signa
 
 ```bash
 # from any machine. Razorpay: 401 = stopped at the gateway (route not public); 400 = reached payment (bad signature, nothing recorded); 404 = no such route.
-# WhatsApp: 401 = stopped at the gateway; 404 = no such path on notification (it mounts /webhooks/whatsapp at the ROOT). 403 cannot occur on this URL.
+# WhatsApp (after the webhook fix is deployed): 403 = reached notification, verify token did not match (the expected answer); 401 = stopped at the gateway; 404 = no such path on notification.
 curl -s -o /dev/null -w '%{http_code}\n' -X POST https://app.opsgrids.com/api/v1/webhooks/razorpay -H 'Content-Type: application/json' -d '{}'
 curl -s -o /dev/null -w '%{http_code}\n' 'https://app.opsgrids.com/api/v1/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=x&hub.challenge=1'
 ```

@@ -33,7 +33,16 @@
     "longer than the `/api/v1/auth` entry below, so it wins the match for every operator",
     "sign-in path here too and is refused with 404 before any token is decoded. Operator",
     "traffic reaches auth only through admin-gateway; tests/infra checks every blocked entry",
-    "in the dev table has an identical one here."
+    "in the dev table has an identical one here.",
+    "",
+    "`/api/v1/webhooks/whatsapp` is Meta's callback. It carries no bearer token, so it is ALSO",
+    "declared in the gateway's `WEBHOOK_PUBLIC_PATHS` (services/app-gateway/app/main.py), by",
+    "exact path and method (GET handshake, POST delivery) — a route here that the gateway does",
+    "not declare answers every delivery with 401. Its `max_body_bytes` is 3 MiB, Meta's",
+    "documented payload ceiling, rather than the 2 MiB default. tests/infra/",
+    "test_route_table_parity.py fails when this entry, the dev table, the policy or that cap",
+    "drift apart. `/api/v1/webhooks/razorpay` is routed but deliberately NOT public in the",
+    "gateway yet; that is a separate decision."
   ],
   "routes": [
     { "prefix": "/api/v1/auth/operator", "upstream": "http://auth:8000", "blocked": true },
@@ -65,7 +74,7 @@
 
     { "prefix": "/api/v1/notifications", "upstream": "http://notification:8000", "product": "notification" },
     { "prefix": "/api/v1/engage", "upstream": "http://notification:8000", "product": "engage" },
-    { "prefix": "/api/v1/webhooks/whatsapp", "upstream": "http://notification:8000" },
+    { "prefix": "/api/v1/webhooks/whatsapp", "upstream": "http://notification:8000", "max_body_bytes": 3145728 },
 
     { "prefix": "/api/v1/approvals", "upstream": "http://approval:8000" },
     { "prefix": "/api/v1/employees", "upstream": "http://employee:8000", "product": "hrms" },

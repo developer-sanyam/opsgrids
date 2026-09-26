@@ -43,12 +43,15 @@ Five rules, each with a failure it prevents:
    redeliver into: whatever already folded dedupes on the way back, and only the one that actually
    failed does any work the second time.
 
-Mounted outside `/api/v1` and excluded from the OpenAPI document: this is Meta's endpoint, not
-public API, and it must not appear as though anyone else should call it.
+Mounted at `/api/v1/webhooks/whatsapp` (the path app-gateway forwards, unchanged) and at the root
+`/webhooks/whatsapp` (for a tunnel pointed straight at this service), and excluded from the
+OpenAPI document: this is Meta's endpoint, not public API, and it must not appear as though anyone
+else should call it.
 """
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime
 from typing import Annotated, Any
@@ -61,7 +64,7 @@ from app import selectors, services, webhooks
 from app.config import settings
 from app.models import ProcessedEvent
 from platform_core.db import get_directory_session, session_scope
-from platform_core.errors import UnauthorizedProblem
+from platform_core.errors import PayloadTooLargeProblem, UnauthorizedProblem
 from platform_core.logging import get_logger
 
 log = get_logger("notification.webhooks")
@@ -69,6 +72,37 @@ log = get_logger("notification.webhooks")
 router = APIRouter(prefix="/webhooks", tags=["webhooks"], include_in_schema=False)
 
 DirectorySessionDep = Annotated[AsyncSession, Depends(get_directory_session)]
+
+#: The most one webhook body may carry: Meta documents payloads up to 3 MB, and this is the same
+#: figure as `max_body_bytes` on the `/api/v1/webhooks/whatsapp` entry in both gateway route
+#: tables (`tests/infra/test_route_table_parity.py` holds the three together). The gateway is the
+#: first line; this is the second, for what reaches the service without it (a tunnel in
+#: development, a sibling container). It matters *here* because the body is read before the
+#: signature can be checked — an unauthenticated caller must not be able to make this process
+#: buffer an unbounded one just to be told 401.
+MAX_WEBHOOK_BODY_BYTES = 3 * 1024 * 1024
+
+
+async def _read_capped_body(request: Request, limit: int) -> bytes:
+    """The request's raw bytes, refusing (413) anything past `limit` before it is all in memory.
+
+    Checked twice, because `Content-Length` is a claim and not a fact: against the declared
+    length, which refuses an oversized body without reading a byte of it, and against the bytes
+    actually read, which catches a header that lies and a chunked request that sends none. The
+    counter is the enforcement; the header is only an early exit.
+    """
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > limit:
+        raise PayloadTooLargeProblem(f"Request body exceeds the {limit} byte limit")
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            # Stop reading here: draining the rest would buffer exactly what was refused.
+            raise PayloadTooLargeProblem(f"Request body exceeds the {limit} byte limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @router.get("/whatsapp", response_class=Response)
@@ -97,16 +131,18 @@ async def verify(
 async def receive(request: Request, directory: DirectorySessionDep) -> Response:
     """Accept one webhook body: verify it, attribute it, fold what it carries.
 
-    Returns 200 for anything genuine. The only non-200 is 401 for a body that is not signed by
-    the App Secret, because that is the one case where acknowledging would be wrong.
+    Returns 200 for anything genuine. The only non-200s are 401 for a body that is not signed by
+    the App Secret, because that is the one case where acknowledging would be wrong, and 413 for a
+    body past `MAX_WEBHOOK_BODY_BYTES` — refused while it is being read, so it is never buffered
+    whole, and before the signature check, which needs the whole of it.
 
-    **Unbounded batch size, deliberately not capped here.** Meta's own limits on how much one
-    `POST` can carry are the real bound; this route folds every item it is handed, one at a time,
-    each in its own short transaction, so an unusually large body costs time (and, per item, a
-    directory lookup the first time a new number is seen) rather than memory held open across the
-    whole request. If Meta's batching ever produces a body large enough for that to matter in
-    practice, the fix is a per-request item cap answered with a fast 200 and a warning log — not
-    yet added, because nothing has been observed to need it.
+    **Item count is deliberately not capped here.** Within that byte ceiling, Meta's own limits
+    are the real bound; this route folds every item it is handed, one at a time, each in its own
+    short transaction, so an unusually large body costs time (and, per item, a directory lookup
+    the first time a new number is seen) rather than memory held open across the whole request. If
+    Meta's batching ever produces a body large enough for that to matter in practice, the fix is a
+    per-request item cap answered with a fast 200 and a warning log — not yet added, because
+    nothing has been observed to need it.
     """
     cfg = settings()
     if not cfg.whatsapp_app_secret:
@@ -115,8 +151,17 @@ async def receive(request: Request, directory: DirectorySessionDep) -> Response:
         log.error("webhook.no_app_secret_configured")
         raise UnauthorizedProblem("Webhook signature verification is not configured")
 
-    # Rule 1: the exact bytes, before anything parses them.
-    raw = await request.body()
+    # Rule 1: the exact bytes, before anything parses them — capped, since nothing about the caller
+    # has been established yet.
+    try:
+        raw = await _read_capped_body(request, MAX_WEBHOOK_BODY_BYTES)
+    except PayloadTooLargeProblem:
+        log.warning(
+            "webhook.body_too_large",
+            limit=MAX_WEBHOOK_BODY_BYTES,
+            declared=request.headers.get("content-length"),
+        )
+        raise
     if not webhooks.verify_signature(
         raw,
         request.headers.get(webhooks.SIGNATURE_HEADER),
@@ -127,7 +172,9 @@ async def receive(request: Request, directory: DirectorySessionDep) -> Response:
         raise UnauthorizedProblem("Invalid signature")
 
     try:
-        payload: dict[str, Any] = await request.json()
+        # From the bytes already read (and verified): the stream is consumed, so `request.json()`
+        # would have nothing left to read.
+        payload: dict[str, Any] = json.loads(raw)
     except Exception:
         log.warning("webhook.undecodable")
         return Response(status_code=status.HTTP_200_OK)
