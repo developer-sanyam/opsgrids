@@ -173,4 +173,3 @@ def downgrade() -> None:
         schema=SCHEMA,
     )
     op.drop_table("consent_events", schema=SCHEMA)
-
