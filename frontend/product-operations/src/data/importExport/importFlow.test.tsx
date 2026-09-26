@@ -17,7 +17,7 @@ import type { ImportSummary, SheetValue } from "@opsgrids/client";
 import type { InventoryItemOut } from "@/api/types";
 import { Harness } from "./DialogHarness";
 import {
-  XLSX_MIME,
+  fileWithoutColumn,
   formulaCells,
   headerRow,
   installBrowserGaps,
@@ -60,8 +60,13 @@ const CATEGORY_PAGES = [
   [itemCategoryOut("STEEL", "cat-steel", "cat-metals")],
 ];
 
-function conflict(detail: string) {
-  return { status: 409, body: { type: "conflict", title: "Conflict", status: 409, detail } };
+/** A 409 as the server sends it: the sentence, and where it says so, the field that repeats. */
+function conflict(detail: string, duplicateField?: string) {
+  const errors = duplicateField === undefined ? [] : [{ field: duplicateField, code: "duplicate", message: detail }];
+  return {
+    status: 409,
+    body: { type: "conflict", title: "Conflict", status: 409, detail, ...(errors.length > 0 ? { errors } : {}) },
+  };
 }
 
 function pagesAsked(recorded: readonly RecordedRequest[], path: string): (string | null)[] {
@@ -209,7 +214,25 @@ async function inventoryFile(): Promise<File> {
       warehouse: "Main Warehouse",
       uom: "furlongs",
     }),
-    // Row 9: the first example from the sample sheet, unchanged.
+    // Row 9: a sheet from Tally, which counts in "Nos" (the server folds it onto pcs).
+    inventoryRow({
+      sku: "TAL-0001",
+      name: "Hex bolt, M8",
+      category: "Components",
+      warehouse: "Cold Store",
+      uom: "Nos",
+      reorder_point: 500,
+    }),
+    // Row 10: a reorder point the API's 32-bit column cannot take once multiplied by 1000.
+    inventoryRow({
+      sku: "BIG-0001",
+      name: "Reorder point out of range",
+      category: "Components",
+      warehouse: "Main Warehouse",
+      uom: "pcs",
+      reorder_point: 3_000_000,
+    }),
+    // Row 11: the first example from the sample sheet, unchanged.
     untouchedSample(firstSample()),
   ]);
 }
@@ -229,9 +252,9 @@ describe("importing inventory items through the real dialog", () => {
       // The preview: counts, then the reason each refused row will not be sent.
       const review = await screen.findByRole("dialog", { name: "Review your file" }, SLOW);
       expect(within(review).getByText("stock-take.xlsx")).toBeTruthy();
-      expect(stat(review, "Rows in file")).toBe("8");
-      expect(stat(review, "Ready to import")).toBe("5");
-      expect(stat(review, "Need fixing")).toBe("2");
+      expect(stat(review, "Rows in file")).toBe("10");
+      expect(stat(review, "Ready to import")).toBe("6");
+      expect(stat(review, "Need fixing")).toBe("3");
       expect(stat(review, "Sample rows skipped")).toBe("1");
       expect(within(review).queryByText(/These columns are ignored/)).toBeNull();
 
@@ -242,8 +265,12 @@ describe("importing inventory items through the real dialog", () => {
       const unknownUnit = rowContaining(preview, "UOM-0001").textContent ?? "";
       expect(unknownUnit).toContain("Needs fixing");
       expect(unknownUnit).toMatch(/'furlongs' is not in the list of Unit of measures? \(see the Lists sheet\)/);
+      const tooMany = rowContaining(preview, "BIG-0001").textContent ?? "";
+      expect(tooMany).toContain("Needs fixing");
+      expect(tooMany).toContain("Reorder point must be between 0 and 2147483");
       expect(rowContaining(preview, "RM-STL-4501").textContent).toContain("Sample row");
       expect(rowContaining(preview, "RM-STL-9001").textContent).toContain("Ready");
+      expect(rowContaining(preview, "TAL-0001").textContent).toContain("Ready");
 
       // Every page of every lookup was read: the second warehouse and category live on page 2.
       expect(pagesAsked(recorded, `${API}/warehouses`)).toEqual(["1", "2"]);
@@ -251,7 +278,7 @@ describe("importing inventory items through the real dialog", () => {
       expect(pagesAsked(recorded, `${API}/inventory/categories`)).toEqual(["1", "2"]);
       expect(requestsTo(recorded, "POST", `${API}/inventory`)).toHaveLength(0);
 
-      await user.click(within(review).getByRole("button", { name: "Import 5 rows" }));
+      await user.click(within(review).getByRole("button", { name: "Import 6 rows" }));
 
       const finished = await screen.findByRole("dialog", { name: "Import finished" }, SLOW);
 
@@ -310,20 +337,30 @@ describe("importing inventory items through the real dialog", () => {
           uom: "pcs",
           currency: "INR",
         },
+        // "Nos" went over as the unit the server folds it onto, not as a spelling it might not fold.
+        {
+          sku: "TAL-0001",
+          name: "Hex bolt, M8",
+          category: "components",
+          warehouse: "Cold Store",
+          uom: "pcs",
+          reorder_point: 500,
+          currency: "INR",
+        },
       ]);
       expect(posts.every((request) => request.init.method === "POST")).toBe(true);
       // The HSN went over as the text it is, not as a number that lost its zero.
       expect(String(posts[0]?.init.body)).toContain('"hsn_code":"0721"');
 
       // (b) The counts and the server's own sentences.
-      expect(stat(finished, "Created")).toBe("3");
+      expect(stat(finished, "Created")).toBe("4");
       expect(stat(finished, "Skipped, already exist")).toBe("1");
       expect(stat(finished, "Failed")).toBe("1");
-      expect(stat(finished, "Invalid")).toBe("2");
-      expect(within(finished).getByText("3 rows were not imported. 3 inventory items were created.")).toBeTruthy();
+      expect(stat(finished, "Invalid")).toBe("3");
+      expect(within(finished).getByText("4 rows were not imported. 4 inventory items were created.")).toBeTruthy();
 
       const problems = within(finished).getByRole("table", { name: "Rows that were not created" });
-      expect(within(problems).getAllByRole("row")).toHaveLength(5);
+      expect(within(problems).getAllByRole("row")).toHaveLength(1 + 5);
       const skipped = rowContaining(problems, "DUP-0001").textContent ?? "";
       expect(skipped).toMatch(/skipped/i);
       expect(skipped).toContain("An inventory item with SKU 'DUP-0001' already exists");
@@ -332,18 +369,20 @@ describe("importing inventory items through the real dialog", () => {
       expect(failed).toContain("Request payload failed validation (name: String should have at least 3 characters)");
       expect(rowContaining(problems, "NOW-0001").textContent).toContain("Atlantis Depot");
       expect(rowContaining(problems, "UOM-0001").textContent).toContain("furlongs");
+      expect(rowContaining(problems, "BIG-0001").textContent).toContain("Reorder point must be between 0 and 2147483");
       expect(within(problems).queryByText("RM-STL-9001")).toBeNull();
+      expect(within(problems).queryByText("TAL-0001")).toBeNull();
 
       // (c) The screen is told once, with the run's summary, so it reloads its list.
       await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
       expect(onImported).toHaveBeenCalledWith(
-        expect.objectContaining({ created: 3, skipped: 1, failed: 1, invalid: 2, cancelled: false }),
+        expect.objectContaining({ created: 4, skipped: 1, failed: 1, invalid: 3, cancelled: false }),
       );
 
       await user.click(within(finished).getByRole("button", { name: "Done" }));
       expect(screen.queryByRole("dialog")).toBeNull();
       expect(onImported).toHaveBeenCalledTimes(1);
-      expect(requestsTo(recorded, "POST", `${API}/inventory`)).toHaveLength(5);
+      expect(requestsTo(recorded, "POST", `${API}/inventory`)).toHaveLength(6);
     },
     TEST_TIMEOUT,
   );
@@ -395,7 +434,8 @@ const EXPORT_PAGES = [
       reserved_qty: "0",
       available_qty: "1234567.125",
       reorder_point: 0,
-      uom: "l",
+      // Stored as it was typed on the sheet it came from; the server folded it onto litres.
+      uom: "Ltr",
       unit_value_minor: 1250,
       currency: "KWD",
       item_category_id: null,
@@ -499,6 +539,8 @@ describe("exporting inventory items through the real dialog", () => {
       });
       expect(exportedRow(sheet, 3)).toMatchObject({
         SKU: "IMP-KWD-01",
+        // The canonical label of the unit, not the spelling the item was stored with.
+        "Unit of measure": "l",
         "Unit value": 1.25,
         Currency: "KWD",
         "Item category code": null,
@@ -537,7 +579,7 @@ describe("exporting inventory items through the real dialog", () => {
   );
 
   it(
-    "gives back a file that imports again as the same items: read-only columns ignored, nothing needs fixing",
+    "gives back rows that import again as the same items once their ID is left behind",
     async () => {
       const user = userEvent.setup();
       const recorded = inventoryGateway({ listPages: EXPORT_PAGES });
@@ -549,13 +591,14 @@ describe("exporting inventory items through the real dialog", () => {
       const [download] = downloads;
       if (download === undefined) throw new Error("nothing was downloaded");
 
-      await uploadFile(user, new File([download.blob], download.fileName, { type: XLSX_MIME }));
+      // The ID marks a row as one that came out of the system; without it these are new rows.
+      await uploadFile(user, await fileWithoutColumn(download, "Export", "ID"));
       const review = await screen.findByRole("dialog", { name: "Review your file" }, SLOW);
       expect(stat(review, "Rows in file")).toBe("2");
       expect(stat(review, "Ready to import")).toBe("2");
       expect(stat(review, "Need fixing")).toBe("0");
       expect(stat(review, "Sample rows skipped")).toBe("0");
-      // On hand, Reserved, Available, Last updated and ID are read-only: recognised, not "unknown".
+      // On hand, Reserved, Available and Last updated are read-only: recognised, not "unknown".
       expect(within(review).queryByText(/These columns are ignored/)).toBeNull();
 
       await user.click(within(review).getByRole("button", { name: "Import 2 rows" }));
@@ -614,7 +657,7 @@ function categoryGateway(): RecordedRequest[] {
         return { body: pageAt(CATEGORY_PAGES, page) };
       case `POST ${API}/inventory/categories`: {
         const { code } = jsonBody(init);
-        if (code === "STEEL") return conflict("An item category with code 'STEEL' already exists");
+        if (code === "STEEL") return conflict("A category coded 'STEEL' already exists", "code");
         return { status: 201, body: { id: `cat-${String(code)}` } };
       }
       default:
@@ -627,7 +670,7 @@ const CATEGORY_HEADERS = ["Category code *", "Category name *", "Parent category
 
 describe("importing item categories through the real dialog", () => {
   it(
-    "resolves a parent by its code, skips a duplicate, refuses an unknown parent, and ignores the ID column",
+    "resolves a parent by its code, skips a duplicate, and refuses an unknown parent and a code that only differs in capitals",
     async () => {
       const user = userEvent.setup();
       const onImported = vi.fn<(summary: ImportSummary) => void>();
@@ -638,24 +681,29 @@ describe("importing item categories through the real dialog", () => {
       await uploadFile(
         user,
         await workbookFile("categories.xlsx", CATEGORY_HEADERS, [
+          // The layout of an export, with the ID column left empty for rows that are new.
           ["ALLOYS", "Alloys", null, null],
-          // The ID came from an earlier export: read-only, so it is ignored, not an unknown column.
-          ["STAINLESS", "Stainless steel", "steel", "cat-from-an-export"],
+          ["STAINLESS", "Stainless steel", "steel", null],
           ["STEEL", "Steel", null, null],
           ["PVC", "Polyvinyl chloride", "PLASTICS", null],
+          ["metals", "Metals, again", null, null],
           ["POLYMERS", "Polymers", null, null],
         ]),
       );
 
       const review = await screen.findByRole("dialog", { name: "Review your file" }, SLOW);
-      expect(stat(review, "Rows in file")).toBe("5");
+      expect(stat(review, "Rows in file")).toBe("6");
       expect(stat(review, "Ready to import")).toBe("3");
-      expect(stat(review, "Need fixing")).toBe("1");
+      expect(stat(review, "Need fixing")).toBe("2");
       expect(stat(review, "Sample rows skipped")).toBe("1");
       expect(within(review).queryByText(/These columns are ignored/)).toBeNull();
       const preview = within(review).getByRole("table", { name: "Rows found in categories.xlsx" });
       expect(rowContaining(preview, "PVC").textContent).toMatch(
         /'PLASTICS' is not in the list of Parent category codes? \(see the Lists sheet\)/,
+      );
+      // METALS exists; the server would take "metals" beside it and no sheet could name either again.
+      expect(rowContaining(preview, "Metals, again").textContent).toContain(
+        "An item category with the code 'METALS' already exists; codes that differ only in capitals are not accepted.",
       );
       expect(pagesAsked(recorded, `${API}/inventory/categories`)).toEqual(["1", "2"]);
 
@@ -673,16 +721,14 @@ describe("importing item categories through the real dialog", () => {
       expect(stat(finished, "Created")).toBe("2");
       expect(stat(finished, "Skipped, already exist")).toBe("1");
       expect(stat(finished, "Failed")).toBe("0");
-      expect(stat(finished, "Invalid")).toBe("1");
-      expect(within(finished).getByText("1 row was not imported. 2 item categories were created.")).toBeTruthy();
+      expect(stat(finished, "Invalid")).toBe("2");
+      expect(within(finished).getByText("2 rows were not imported. 2 item categories were created.")).toBeTruthy();
       const problems = within(finished).getByRole("table", { name: "Rows that were not created" });
-      expect(rowContaining(problems, "STEEL").textContent).toContain(
-        "An item category with code 'STEEL' already exists",
-      );
+      expect(rowContaining(problems, "STEEL").textContent).toContain("A category coded 'STEEL' already exists");
 
       await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
       expect(onImported).toHaveBeenCalledWith(
-        expect.objectContaining({ created: 2, skipped: 1, failed: 0, invalid: 1, cancelled: false }),
+        expect.objectContaining({ created: 2, skipped: 1, failed: 0, invalid: 2, cancelled: false }),
       );
     },
     TEST_TIMEOUT,

@@ -3,20 +3,28 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RowProblem, makeLookup } from "@opsgrids/client";
 import type { ImportContext, LookupSet, ParsedRow } from "@opsgrids/client";
 
-import type { InventoryItemOut, UomOut, WarehouseOut } from "@/api/types";
-import { pageOf, stubGateway } from "./entityTestKit";
+import type { InventoryItemOut, UomOut } from "@/api/types";
+import { itemCategoryOut, pageAt, pageOf, stubGateway, uomOut, warehouseOut } from "./entityTestKit";
 import { inventoryImport } from "./inventory";
+import { makeUnitLookup } from "./units";
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+const UNITS: UomOut[] = [
+  uomOut("pcs", "Piece", true),
+  uomOut("kg", "Kilogram", true),
+  uomOut("l", "Litre", true),
+  uomOut("mt", "MT", false),
+];
 
 const LOOKUPS: LookupSet = {
   warehouses: makeLookup([
     { label: "Main Warehouse", value: "Main Warehouse" },
     { label: "Cold Store", value: "Cold Store" },
   ]),
-  units: makeLookup(["pcs", "kg", "l", "MT"].map((label) => ({ label, value: label }))),
+  units: makeUnitLookup(UNITS),
   itemCategories: makeLookup([
     { label: "METALS", value: "cat-metals" },
     { label: "STEEL", value: "cat-steel" },
@@ -82,6 +90,33 @@ describe("inventory columns", () => {
   it("marks stock quantities, the timestamp and the id read-only", () => {
     const readOnly = inventoryImport.columns.filter((c) => c.readOnly === true).map((c) => c.key);
     expect(readOnly).toEqual(["on_hand", "reserved", "available", "updated_at", "id"]);
+  });
+
+  it("holds the reorder point to what the API's 32-bit column can take once the low-stock filter multiplies it by 1000", () => {
+    const reorderPoint = inventoryImport.columns.find((c) => c.key === "reorder_point");
+    expect(reorderPoint).toMatchObject({ kind: "integer", min: 0, max: 2_147_483 });
+    // 2_147_483 * 1000 still fits an int4 (2_147_483_647); one more does not.
+    expect(2_147_483 * 1000).toBeLessThanOrEqual(2_147_483_647);
+    expect((2_147_483 + 1) * 1000).toBeGreaterThan(2_147_483_647);
+    expect(reorderPoint?.help).toContain("2,147,483");
+  });
+
+  it("carries a lookupHint on every lookup column, saying how to fix a name that is not in the list", () => {
+    const hints = Object.fromEntries(
+      inventoryImport.columns.filter((c) => c.lookup !== undefined).map((c) => [c.lookup, c.lookupHint]),
+    );
+    expect(hints).toEqual({
+      warehouses: "Warehouses must exist already and are matched by name, ignoring capitals.",
+      units:
+        "Only units that already exist can be used, so a misspelling cannot create a new one. See the Lists sheet.",
+      itemCategories: "Item categories must exist already and are matched by code, ignoring capitals.",
+    });
+  });
+
+  it("names its id column as the record id, so a row that came out of an export is not added again", () => {
+    expect(inventoryImport.recordIdKey).toBe("id");
+    const id = inventoryImport.columns.find((c) => c.key === inventoryImport.recordIdKey);
+    expect(id?.readOnly).toBe(true);
   });
 
   it("marks opening stock import-only, because the list never returns it and an export would carry an empty column", () => {
@@ -191,13 +226,15 @@ describe("inventory toPayload", () => {
     expect(payload.warehouse).toBe("Cold Store");
   });
 
-  it("refuses a warehouse that does not exist, naming it", () => {
+  // The engine refuses these names, with the column's `lookupHint`, before `toPayload` runs. What
+  // `toPayload` does with one anyway is fail the row instead of sending a guess.
+  it("fails the row for a warehouse that does not exist, naming it", () => {
     const attempt = () => inventoryImport.toPayload({ ...MINIMAL_ROW, warehouse: "Nowhere" }, context());
     expect(attempt).toThrow(RowProblem);
-    expect(attempt).toThrow(/no warehouse named "Nowhere"/);
+    expect(attempt).toThrow('Warehouse "Nowhere" does not match exactly one entry on the Lists sheet.');
   });
 
-  it("refuses a warehouse name two warehouses share rather than picking one", () => {
+  it("fails the row for a warehouse name two warehouses share rather than picking one", () => {
     const lookups: LookupSet = {
       ...LOOKUPS,
       warehouses: makeLookup([
@@ -208,20 +245,27 @@ describe("inventory toPayload", () => {
     const attempt = () =>
       inventoryImport.toPayload({ ...MINIMAL_ROW, warehouse: "pune plant" }, context(lookups));
     expect(attempt).toThrow(RowProblem);
-    expect(attempt).toThrow(/More than one warehouse matches "pune plant"/);
   });
 
-  it("refuses a unit of measure the organisation does not have instead of creating one", () => {
-    const attempt = () => inventoryImport.toPayload({ ...MINIMAL_ROW, uom: "kgs" }, context());
+  it("fails the row for a unit of measure the organisation does not have instead of creating one", () => {
+    const attempt = () => inventoryImport.toPayload({ ...MINIMAL_ROW, uom: "furlongs" }, context());
     expect(attempt).toThrow(RowProblem);
-    expect(attempt).toThrow(/"kgs" is not one of your units of measure/);
+    expect(attempt).toThrow('Unit of measure "furlongs" does not match exactly one entry');
   });
 
-  it("refuses an item category code that does not exist yet", () => {
+  it("fails the row for an item category code that does not exist yet", () => {
     const attempt = () =>
       inventoryImport.toPayload({ ...MINIMAL_ROW, item_category: "FASTENERS" }, context());
     expect(attempt).toThrow(RowProblem);
-    expect(attempt).toThrow(/no item category with the code "FASTENERS"/);
+    expect(attempt).toThrow('Item category code "FASTENERS" does not match exactly one entry');
+  });
+
+  it("sends the unit a Tally spelling folds onto, as the registry code the server would store", () => {
+    const send = (uom: string) => inventoryImport.toPayload({ ...MINIMAL_ROW, uom }, context()).uom;
+    expect(send("Nos")).toBe("pcs");
+    expect(send("KGS")).toBe("kg");
+    expect(send("Ltr")).toBe("l");
+    expect(send("mt")).toBe("MT");
   });
 
   it("refuses a missing required cell", () => {
@@ -230,44 +274,19 @@ describe("inventory toPayload", () => {
   });
 });
 
-function warehouse(name: string): WarehouseOut {
-  return { id: `wh-${name}`, code: name.toUpperCase().replace(/\W/g, ""), name, location: "" };
-}
-
-function unit(code: string, name: string, isSystem: boolean): UomOut {
-  return {
-    id: `uom-${code}`,
-    code,
-    name,
-    dimension: "count",
-    is_discrete: false,
-    is_system: isSystem,
-  };
-}
-
 describe("inventory loadLookups", () => {
   it("reads every page of every list, so a large organisation's names are not silently missing", async () => {
-    const category = (code: string, id: string) => ({ id, code, name: code, parent_id: null });
+    const warehousePages = [[warehouseOut("Main Warehouse", "WH-MAIN")], [warehouseOut("Cold Store", "WH-COLD")]];
+    const categoryPages = [[itemCategoryOut("METALS", "cat-metals")], [itemCategoryOut("STEEL", "cat-steel")]];
     const recorded = stubGateway(({ url }) => {
       const page = Number(url.searchParams.get("page"));
       switch (url.pathname) {
         case "/api/v1/operations/warehouses":
-          return { body: pageOf([warehouse(page === 1 ? "Main Warehouse" : "Cold Store")], page, 2) };
+          return { body: pageAt(warehousePages, page) };
         case "/api/v1/operations/inventory/uoms":
-          return {
-            body: pageOf([unit("pcs", "Piece", true), unit("mt", "MT", false)], 1, 1),
-          };
+          return { body: pageAt([[uomOut("pcs", "Piece", true), uomOut("mt", "MT", false)]], page) };
         case "/api/v1/operations/inventory/categories":
-          // Ordering by a non-unique name can serve one record on two pages; it must stay one record.
-          return {
-            body: pageOf(
-              page === 1
-                ? [category("METALS", "cat-metals"), category("STEEL", "cat-steel")]
-                : [category("STEEL", "cat-steel")],
-              page,
-              2,
-            ),
-          };
+          return { body: pageAt(categoryPages, page) };
         default:
           throw new Error(`unexpected request to ${url.pathname}`);
       }
@@ -279,8 +298,38 @@ describe("inventory loadLookups", () => {
     expect(lookups.warehouses?.resolve("cold store")).toBe("Cold Store");
     expect(lookups.itemCategories?.labels).toEqual(["METALS", "STEEL"]);
     expect(lookups.itemCategories?.resolve("steel")).toBe("cat-steel");
-    expect(lookups.itemCategories?.isAmbiguous("STEEL")).toBe(false);
+    expect(recorded.map((request) => `${request.url.pathname}?page=${request.url.searchParams.get("page")}`).sort()).toEqual(
+      [
+        "/api/v1/operations/inventory/categories?page=1",
+        "/api/v1/operations/inventory/categories?page=2",
+        "/api/v1/operations/inventory/uoms?page=1",
+        "/api/v1/operations/warehouses?page=1",
+        "/api/v1/operations/warehouses?page=2",
+      ],
+    );
     for (const request of recorded) expect(request.url.searchParams.get("size")).toBe("200");
+  });
+
+  it("keeps a category the server served on two pages as one record, so its code is not ambiguous", async () => {
+    const [metals, steel, aluminium] = [
+      itemCategoryOut("METALS", "cat-metals"),
+      itemCategoryOut("STEEL", "cat-steel"),
+      itemCategoryOut("ALUMINIUM", "cat-alu"),
+    ];
+    // Ordered by a name that is not unique, STEEL sits on both sides of the page boundary.
+    const served = [[metals, steel], [steel, aluminium]];
+    stubGateway(({ url }) => {
+      const page = Number(url.searchParams.get("page"));
+      if (url.pathname === "/api/v1/operations/inventory/categories") {
+        return { body: { items: served[page - 1] ?? [], total: 3, page, size: 200, pages: 2 } };
+      }
+      return { body: pageOf([]) };
+    });
+
+    const lookups = await loadLookups(new AbortController().signal);
+
+    expect(lookups.itemCategories?.labels).toEqual(["METALS", "STEEL", "ALUMINIUM"]);
+    expect(lookups.itemCategories?.isAmbiguous("STEEL")).toBe(false);
   });
 
   it("lists a registry unit by its code and a custom unit by the spelling it was created with", async () => {
@@ -288,9 +337,9 @@ describe("inventory loadLookups", () => {
       if (url.pathname === "/api/v1/operations/inventory/uoms") {
         return {
           body: pageOf([
-            unit("pcs", "Piece", true),
-            unit("kg", "Kilogram", true),
-            unit("mt", "MT", false),
+            uomOut("pcs", "Piece", true),
+            uomOut("kg", "Kilogram", true),
+            uomOut("mt", "MT", false),
           ]),
         };
       }
@@ -302,6 +351,25 @@ describe("inventory loadLookups", () => {
     expect(lookups.units?.labels).toEqual(["pcs", "kg", "MT"]);
     expect(lookups.units?.resolve("Kilogram")).toBeUndefined();
     expect(lookups.units?.resolve("mt")).toBe("MT");
+  });
+
+  it("takes the spellings the server folds onto a unit, without listing them", async () => {
+    stubGateway(({ url }) => {
+      if (url.pathname === "/api/v1/operations/inventory/uoms") {
+        return { body: pageOf([uomOut("pcs", "Piece", true), uomOut("kg", "Kilogram", true), uomOut("l", "Litre", true)]) };
+      }
+      return { body: pageOf([]) };
+    });
+
+    const lookups = await loadLookups(new AbortController().signal);
+
+    expect(lookups.units?.labels).toEqual(["pcs", "kg", "l"]);
+    expect(["Nos", "Kgs", "Ltr", "Pcs"].map((spelling) => lookups.units?.resolve(spelling))).toEqual([
+      "pcs",
+      "kg",
+      "l",
+      "pcs",
+    ]);
   });
 
   it("provides every lookup the columns name", async () => {
@@ -326,6 +394,17 @@ describe("inventory loadLookups", () => {
     const recorded = stubGateway(() => ({ body: pageOf([]) }));
     await expect(loadLookups(controller.signal)).rejects.toThrow();
     expect(recorded).toHaveLength(0);
+  });
+
+  it("refuses a list that stays short of the server's total, rather than lookups missing a real warehouse", async () => {
+    stubGateway(({ url }) => {
+      const page = Number(url.searchParams.get("page"));
+      if (url.pathname === "/api/v1/operations/warehouses") {
+        return { body: { items: [warehouseOut("Main Warehouse", "WH-MAIN")], total: 2, page, size: 200, pages: 1 } };
+      }
+      return { body: pageOf([]) };
+    });
+    await expect(loadLookups(new AbortController().signal)).rejects.toThrow("The list changed while it was being read");
   });
 });
 
@@ -465,6 +544,16 @@ describe("inventory export", () => {
     expect(row.currency).toBe("KWD");
     expect(row.item_category).toBeNull();
     expect(row.hsn_code).toBeNull();
+  });
+
+  it("writes the unit's canonical label, whatever spelling the item was stored with, so the export imports again", () => {
+    const written = (uom: string) => exportSource().toRow({ ...ITEM, uom }, LOOKUPS).uom;
+    expect(written("Nos")).toBe("pcs");
+    expect(written("KGS")).toBe("kg");
+    expect(written("kg")).toBe("kg");
+    expect(written("mt")).toBe("MT");
+    // A unit no label reaches is written as stored, not blanked.
+    expect(written("furlongs")).toBe("furlongs");
   });
 
   it("leaves the category blank rather than writing an id nobody can read", () => {

@@ -6,27 +6,22 @@
  *  - `warehouse` must equal an existing warehouse's NAME (not its code), so the sheet names the
  *    warehouse and the lookup hands back the name exactly as the API stores it.
  *  - `uom` is free text on the API and an unknown value silently creates a custom unit, so a typo
- *    would mint one. The unit is checked against the organisation's own units instead.
+ *    would mint one. The unit is checked against the organisation's own units instead, and against
+ *    the spellings the server folds onto them ("Nos" is `pcs`), which is what a Tally sheet says.
  *  - `item_category_id` wants the id, while a person knows the code: the sheet carries the code and
  *    the lookup turns it into the id.
  */
-import { defineImportEntity, makeLookup, minorToMajor } from "@opsgrids/client";
+import { defineImportEntity, minorToMajor } from "@opsgrids/client";
 import type { LookupSet } from "@opsgrids/client";
 
-import {
-  createInventoryItem,
-  listInventory,
-  listItemCategories,
-  listUoms,
-  listWarehouses,
-} from "@/api/client";
+import { createInventoryItem, listInventory } from "@/api/client";
 import type { ListInventoryParams } from "@/api/client";
-import type { InventoryItemIn, InventoryItemOut, UomOut } from "@/api/types";
+import type { InventoryItemIn, InventoryItemOut } from "@/api/types";
+import { loadItemCategoryCodes, loadUnits, loadWarehouseNames } from "./referenceData";
 import {
   CATEGORY_OPTIONS,
   CURRENCY_HINT,
   CURRENCY_PATTERN,
-  collectAll,
   optionLabel,
   optionalBoolean,
   optionalNumber,
@@ -35,29 +30,25 @@ import {
   requiredText,
   resolveReference,
 } from "./shared";
+import { canonicalUnitLabel } from "./units";
 
 /** What Stock on Hand filters by: the export is the whole filtered list, not the visible page. */
 export type InventoryFilters = Omit<ListInventoryParams, "page" | "size" | "signal">;
 
 const HSN_PATTERN = /^(\d{4}(\d{2}(\d{2})?)?)?$/;
 
-/** A unit's label in the sheet. A registry unit is its code (`pcs`, `kg`, `l`); a custom unit keeps
- *  the spelling it was first created with (`MT`), which the API folds back onto the same unit. */
-function unitLabel(unit: UomOut): string {
-  return unit.is_system ? unit.code : unit.name;
-}
+/** The largest reorder point the API can hold. The column is a 32-bit integer and the low-stock
+ *  filter multiplies it by 1000 (milli-units), so one above this makes `GET /inventory?low_stock=true`
+ *  fail for the whole organisation, not just for the item. */
+const MAX_REORDER_POINT = 2_147_483;
 
 async function loadLookups(signal: AbortSignal): Promise<LookupSet> {
   const [warehouses, units, itemCategories] = await Promise.all([
-    collectAll((page, size) => listWarehouses({ page, size, signal }), signal),
-    collectAll((page, size) => listUoms({ page, size, signal }), signal),
-    collectAll((page, size) => listItemCategories({ page, size, signal }), signal),
+    loadWarehouseNames(signal),
+    loadUnits(signal),
+    loadItemCategoryCodes(signal),
   ]);
-  return {
-    warehouses: makeLookup(warehouses.map((w) => ({ label: w.name, value: w.name }))),
-    units: makeLookup(units.map((u) => ({ label: unitLabel(u), value: unitLabel(u) }))),
-    itemCategories: makeLookup(itemCategories.map((c) => ({ label: c.code, value: c.id }))),
-  };
+  return { warehouses, units, itemCategories };
 }
 
 export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItemOut, InventoryFilters>({
@@ -65,6 +56,7 @@ export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItem
   noun: "inventory items",
   nounSingular: "inventory item",
   fileStem: "inventory-items",
+  recordIdKey: "id",
 
   columns: [
     {
@@ -101,22 +93,26 @@ export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItem
       help: "Where the item is stocked. The name of an existing warehouse, as on the Lists sheet.",
       maxLength: 120,
       lookup: "warehouses",
+      lookupHint: "Warehouses must exist already and are matched by name, ignoring capitals.",
     },
     {
       key: "uom",
       header: "Unit of measure",
       kind: "text",
       required: true,
-      help: "How the item is counted, such as pcs, kg or l. Must be a unit on the Lists sheet.",
+      help: "How the item is counted, such as pcs, kg or l. Must be a unit on the Lists sheet, or a common spelling of one such as Nos, Kgs or Ltr.",
       maxLength: 20,
       lookup: "units",
+      lookupHint:
+        "Only units that already exist can be used, so a misspelling cannot create a new one. See the Lists sheet.",
     },
     {
       key: "reorder_point",
       header: "Reorder point",
       kind: "integer",
-      help: "Stock at or below this many whole units counts as low stock. Blank means 0.",
+      help: "Stock at or below this many whole units counts as low stock, from 0 to 2,147,483. Blank means 0.",
       min: 0,
+      max: MAX_REORDER_POINT,
     },
     {
       key: "unit_value",
@@ -150,6 +146,7 @@ export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItem
       kind: "text",
       help: "The code of the item's category in your catalogue tree. That category must already exist.",
       lookup: "itemCategories",
+      lookupHint: "Item categories must exist already and are matched by code, ignoring capitals.",
     },
     {
       key: "hsn_code",
@@ -268,46 +265,28 @@ export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItem
 
   notes: [
     "The warehouse must already exist. It is matched by name, so copy it from the Lists sheet; a warehouse that is not there is refused.",
-    "The unit of measure must already exist. A unit that is not on the Lists sheet is refused instead of creating a new unit, so a typo cannot slip in.",
+    "The unit of measure must already exist. A unit that is not on the Lists sheet is refused instead of creating a new unit, so a typo cannot slip in. Common spellings such as Nos, Kgs, Ltr and Mtr are accepted and stored as pcs, kg, l and m.",
     "Opening stock is set only when the item is created. To change the stock of an item later, use Adjust stock in the app.",
     "An item category must exist before items can use it. Import item categories first, then give each item the category's code.",
     "Category is the fixed procurement category. Item category code places the item in your own catalogue tree.",
     "A SKU that already exists is skipped, not changed. The same SKU cannot be used twice, even as a variant SKU.",
-    "The On hand, Reserved, Available, Last updated and ID columns are worked out by the app and ignored on import.",
+    "The On hand, Reserved, Available and Last updated columns are worked out by the app and ignored on import. A row that has an ID came out of OpsGrids in an export, so it is not added again.",
   ],
 
   loadLookups,
 
   toPayload(row, ctx) {
     const category = requiredOption(row, "category", "Category", CATEGORY_OPTIONS);
-    const warehouse = resolveReference(
-      ctx.lookups,
-      "warehouses",
-      requiredText(row, "warehouse", "Warehouse"),
-      {
-        unknown: (label) =>
-          `There is no warehouse named "${label}". Use a name from the Lists sheet, or add the warehouse first.`,
-        ambiguous: (label) =>
-          `More than one warehouse matches "${label}" (names that differ only by capitals or spaces), so it cannot be chosen. Rename one of them in the app, then import again.`,
-      },
-    );
-    const uom = resolveReference(ctx.lookups, "units", requiredText(row, "uom", "Unit of measure"), {
-      unknown: (label) =>
-        `"${label}" is not one of your units of measure. Use one from the Lists sheet, such as pcs, kg or l; a misspelling would otherwise create a new unit.`,
-      ambiguous: (label) =>
-        `More than one unit of measure matches "${label}", so it cannot be chosen. Use another unit from the Lists sheet.`,
-    });
+    const warehouseName = requiredText(row, "warehouse", "Warehouse");
+    const warehouse = resolveReference(ctx.lookups, "warehouses", warehouseName, "Warehouse");
+    const unitName = requiredText(row, "uom", "Unit of measure");
+    const uom = resolveReference(ctx.lookups, "units", unitName, "Unit of measure");
 
     const itemCategoryCode = optionalText(row, "item_category");
     const itemCategoryId =
       itemCategoryCode === null
         ? null
-        : resolveReference(ctx.lookups, "itemCategories", itemCategoryCode, {
-            unknown: (label) =>
-              `There is no item category with the code "${label}". Import the category first, then run this file again.`,
-            ambiguous: (label) =>
-              `More than one item category has a code matching "${label}" (codes that differ only by capitals), so it cannot be chosen. Rename one of them in the app, then import again.`,
-          });
+        : resolveReference(ctx.lookups, "itemCategories", itemCategoryCode, "Item category code");
 
     const reorderPoint = optionalNumber(row, "reorder_point");
     const unitValueMinor = optionalNumber(row, "unit_value");
@@ -353,7 +332,7 @@ export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItem
       name: item.name,
       category: optionLabel(CATEGORY_OPTIONS, item.category),
       warehouse: item.warehouse,
-      uom: item.uom,
+      uom: canonicalUnitLabel(lookups.units, item.uom),
       reorder_point: item.reorder_point,
       unit_value: minorToMajor(item.unit_value_minor, item.currency),
       currency: item.currency,

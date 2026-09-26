@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 import { RowProblem, makeLookup } from "@opsgrids/client";
-import type { ExportPage, LookupSet } from "@opsgrids/client";
+import type { LookupSet } from "@opsgrids/client";
 
 import {
   CATEGORY_OPTIONS,
-  collectAll,
   optionLabel,
   optionalBoolean,
   optionalNumber,
   optionalOption,
   optionalText,
   requiredOption,
+  refuseNearDuplicate,
   requiredText,
   resolveReference,
 } from "./shared";
@@ -64,49 +64,70 @@ describe("resolveReference", () => {
       { label: "Pune plant", value: "Pune plant" },
     ]),
   };
-  const problems = {
-    unknown: (label: string) => `unknown ${label}`,
-    ambiguous: (label: string) => `ambiguous ${label}`,
-  };
 
-  it("returns the value the API wants", () => {
-    expect(resolveReference(lookups, "warehouses", "MAIN warehouse", problems)).toBe("Main Warehouse");
+  it("returns the value the API wants, whatever the capitals typed", () => {
+    expect(resolveReference(lookups, "warehouses", "MAIN warehouse", "Warehouse")).toBe("Main Warehouse");
   });
 
-  it("fails the row for an unknown name", () => {
-    expect(() => resolveReference(lookups, "warehouses", "Nowhere", problems)).toThrow("unknown Nowhere");
+  it("fails the row for a name the lookup does not have, naming the column and the name", () => {
+    const attempt = () => resolveReference(lookups, "warehouses", "Nowhere", "Warehouse");
+    expect(attempt).toThrow(RowProblem);
+    expect(attempt).toThrow('Warehouse "Nowhere" does not match exactly one entry on the Lists sheet.');
   });
 
-  it("fails the row for a name more than one record carries", () => {
-    expect(() => resolveReference(lookups, "warehouses", "pune plant", problems)).toThrow("ambiguous pune plant");
+  it("fails the row for a name more than one record carries rather than picking one", () => {
+    expect(() => resolveReference(lookups, "warehouses", "pune plant", "Warehouse")).toThrow(RowProblem);
   });
 
   it("fails the row when the lookup was never loaded", () => {
-    expect(() => resolveReference({}, "warehouses", "Main Warehouse", problems)).toThrow(RowProblem);
+    expect(() => resolveReference({}, "warehouses", "Main Warehouse", "Warehouse")).toThrow(RowProblem);
   });
 });
 
-describe("collectAll", () => {
-  function pages(byPage: Record<number, { id: string }[]>, pageCount: number) {
-    return (page: number): Promise<ExportPage<{ id: string }>> =>
-      Promise.resolve({ items: byPage[page] ?? [], total: 0, pages: pageCount });
-  }
+describe("refuseNearDuplicate", () => {
+  const names = makeLookup([
+    { label: "Main Warehouse", value: "Main Warehouse" },
+    { label: "Cold Store", value: "Cold Store" },
+  ]);
+  const codes = makeLookup([
+    { label: "METALS", value: "cat-metals" },
+    { label: "STEEL", value: "cat-steel" },
+  ]);
+  const sentence = (existing: string | null) => `existing: ${existing ?? "several"}`;
 
-  it("walks every page in order", async () => {
-    const fetchPage = pages({ 1: [{ id: "a" }, { id: "b" }], 2: [{ id: "c" }] }, 2);
-    const rows = await collectAll(fetchPage, new AbortController().signal);
-    expect(rows.map((r) => r.id)).toEqual(["a", "b", "c"]);
+  it("lets a name through that nothing existing resembles", () => {
+    expect(() => refuseNearDuplicate(names, "East Hub", sentence)).not.toThrow();
   });
 
-  it("keeps a record once when two pages served it", async () => {
-    const fetchPage = pages({ 1: [{ id: "a" }, { id: "b" }], 2: [{ id: "b" }, { id: "c" }] }, 2);
-    const rows = await collectAll(fetchPage, new AbortController().signal);
-    expect(rows.map((r) => r.id)).toEqual(["a", "b", "c"]);
+  it("lets a name spelled exactly like an existing one through, so the server can answer it", () => {
+    expect(() => refuseNearDuplicate(names, "Main Warehouse", sentence)).not.toThrow();
   });
 
-  it("stops when the caller has gone", async () => {
-    const controller = new AbortController();
-    controller.abort();
-    await expect(collectAll(pages({ 1: [{ id: "a" }] }, 1), controller.signal)).rejects.toThrow();
+  it.each(["main warehouse", "MAIN WAREHOUSE", "Main  Warehouse", " main warehouse"])(
+    "refuses %j, which differs from an existing name only in capitals or spacing, naming the existing one",
+    (typed) => {
+      const attempt = () => refuseNearDuplicate(names, typed, sentence);
+      expect(attempt).toThrow(RowProblem);
+      expect(attempt).toThrow("existing: Main Warehouse");
+    },
+  );
+
+  it("names the existing code, not its id, for a lookup whose values are ids", () => {
+    expect(() => refuseNearDuplicate(codes, "metals", sentence)).toThrow("existing: METALS");
+    expect(() => refuseNearDuplicate(codes, "METALS", sentence)).not.toThrow();
+  });
+
+  it("still lets the exact spelling through when case variants already exist, and refuses a third", () => {
+    const already = makeLookup([
+      { label: "Pune Plant", value: "Pune Plant" },
+      { label: "Pune plant", value: "Pune plant" },
+    ]);
+    expect(() => refuseNearDuplicate(already, "Pune Plant", sentence)).not.toThrow();
+    expect(() => refuseNearDuplicate(already, "Pune plant", sentence)).not.toThrow();
+    expect(() => refuseNearDuplicate(already, "PUNE PLANT", sentence)).toThrow("existing: several");
+  });
+
+  it("does nothing without a lookup, as when a definition is exercised on its own", () => {
+    expect(() => refuseNearDuplicate(undefined, "main warehouse", sentence)).not.toThrow();
   });
 });
