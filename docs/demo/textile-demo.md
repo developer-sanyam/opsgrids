@@ -14,7 +14,9 @@ below mark every place where the honest answer is "not yet".
 | Meta ads (Marketing) | http://localhost:4370 |
 | WhatsApp and email (Engage) | http://localhost:4420 |
 
-Login on every app: `hitesh.demo@example.com` / `Hitesh-Demo-2026!x`. Open all four in separate
+Login on every app: `hitesh.demo@example.com` / `Hitesh-Demo-2026!x`. Type it in; do not use the
+"Demo access / Tap to fill" button, which fills a different account (`*@opsgrids-demo.example.com`)
+that does not exist in the Hitesh demo database. Open all four in separate
 tabs and log in once each before the call. Loading the data on another machine is described in
 `tools/demo/demo-stack.sh` and `tools/demo/seed_textile.py` (the seeder is idempotent).
 
