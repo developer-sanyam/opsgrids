@@ -209,6 +209,42 @@ describe("the Meta window", () => {
     expect(complete).toHaveBeenCalledTimes(1);
   });
 
+  it("uses the ids too when Meta's message arrives after the code", async () => {
+    const complete = vi.spyOn(api, "completeSignup").mockResolvedValue({ setup_id: SETUP_ID, status: "running" });
+    vi.spyOn(api, "listWhatsAppNumbers").mockResolvedValue({ items: [MAIN_NUMBER] });
+    const user = userEvent.setup();
+    renderWizard();
+    await startMeta(user);
+
+    playLogin({ authResponse: { code: "AQB-code-first" } });
+    postFromMeta(FINISH);
+
+    await waitFor(() =>
+      expect(complete).toHaveBeenCalledWith({
+        code: "AQB-code-first",
+        waba_id: CONNECTION.waba_id,
+        phone_number_id: MAIN_NUMBER.phone_number_id,
+      }),
+    );
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers a fresh window, not a stuck spinner, when the customer goes back to this step after signup started", async () => {
+    vi.spyOn(api, "completeSignup").mockResolvedValue({ setup_id: SETUP_ID, status: "running" });
+    vi.spyOn(api, "listWhatsAppNumbers").mockResolvedValue({ items: [MAIN_NUMBER] });
+    const user = userEvent.setup();
+    renderWizard();
+    await startMeta(user);
+    postFromMeta(FINISH);
+    playLogin({ authResponse: { code: "AQB-once" } });
+    await screen.findByRole("heading", { name: "Choose the number to use" });
+
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByRole("heading", { name: "Finish in the Meta window" })).toBeTruthy();
+    expect(screen.getByText("The Meta window isn't open")).toBeTruthy();
+    expect((screen.getByRole("button", { name: /Reopen Meta window/ }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("goes on with the code alone when Meta's message never arrives", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const complete = vi.spyOn(api, "completeSignup").mockResolvedValue({ setup_id: SETUP_ID, status: "running" });

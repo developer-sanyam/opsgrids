@@ -134,6 +134,9 @@ export function useMetaSignup(
     };
     try {
       const out = await completeSignup(body);
+      // The popup's job is done. Back to idle, so coming back to the Meta step later offers a
+      // fresh window instead of sitting on "starting setup" for a setup that has already started.
+      if (mounted.current) setPhase("idle");
       onSubmittedRef.current(out);
     } catch (caught) {
       settle("error", failureMessage(caught));
