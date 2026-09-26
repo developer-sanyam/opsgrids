@@ -314,7 +314,7 @@ const FILE_ROWS: Record<string, ExcelJS.CellValue>[] = [
     date_of_joining: new Date(Date.UTC(2026, 4, 11)),
     reporting_manager: "EMP-0031",
     status: "Exited",
-    pan: "ABCDE1234F",
+    pan: "ABCDE1234F", // pragma: allowlist secret (a made-up PAN: the test proves this column is never sent)
   },
   // 3: names by case-insensitive text, a department and a location by their codes, an ISO date
   // typed as text, both managers.
