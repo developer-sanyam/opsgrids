@@ -363,6 +363,9 @@ importers:
       eslint:
         specifier: ^9.17.0
         version: 9.39.5(jiti@2.7.0)(supports-color@7.2.0)
+      exceljs:
+        specifier: 4.4.0
+        version: 4.4.0
       jsdom:
         specifier: 25.0.1
         version: 25.0.1(supports-color@7.2.0)
@@ -555,6 +558,9 @@ importers:
       eslint:
         specifier: ^9.17.0
         version: 9.39.5(jiti@2.7.0)(supports-color@7.2.0)
+      exceljs:
+        specifier: 4.4.0
+        version: 4.4.0
       jsdom:
         specifier: 25.0.1
         version: 25.0.1(supports-color@7.2.0)
@@ -619,6 +625,9 @@ importers:
       eslint:
         specifier: ^9.17.0
         version: 9.39.5(jiti@2.7.0)(supports-color@7.2.0)
+      exceljs:
+        specifier: 4.4.0
+        version: 4.4.0
       jsdom:
         specifier: 25.0.1
         version: 25.0.1(supports-color@7.2.0)
@@ -747,6 +756,9 @@ importers:
       eslint:
         specifier: ^9.17.0
         version: 9.39.5(jiti@2.7.0)(supports-color@7.2.0)
+      exceljs:
+        specifier: 4.4.0
+        version: 4.4.0
       jsdom:
         specifier: 25.0.1
         version: 25.0.1(supports-color@7.2.0)
@@ -811,6 +823,9 @@ importers:
       eslint:
         specifier: ^9.17.0
         version: 9.39.5(jiti@2.7.0)(supports-color@7.2.0)
+      exceljs:
+        specifier: 4.4.0
+        version: 4.4.0
       jsdom:
         specifier: 25.0.1
         version: 25.0.1(supports-color@7.2.0)
