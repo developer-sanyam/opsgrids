@@ -155,7 +155,8 @@ export function ActivityCard({
   loading = false,
 }: {
   items: RecentActivity[];
-  viewAll: { to: string; label: string };
+  /** Where the full feed lives. Leave it out for a channel that has no such screen. */
+  viewAll?: { to: string; label: string };
   emptyDescription: string;
   loading?: boolean;
 }) {
@@ -164,7 +165,7 @@ export function ActivityCard({
       title="Recent activity"
       loading={loading}
       skeleton="bar"
-      action={<TextLink to={viewAll.to}>{viewAll.label}</TextLink>}
+      action={viewAll !== undefined ? <TextLink to={viewAll.to}>{viewAll.label}</TextLink> : undefined}
       empty={
         items.length === 0 ? (
           <EmptyState

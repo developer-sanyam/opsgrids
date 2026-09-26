@@ -31,6 +31,36 @@ const AUTOMATIC = [
 ];
 
 /**
+ * Where Meta's SDK is: a polite "loading" line while the script is in flight, and the failure with
+ * its retry when it could not be fetched. Both steps that open the Meta window show it, because
+ * neither can open a window until the SDK is ready.
+ */
+function SdkStatus({ signup }: { signup: MetaSignup }) {
+  return (
+    <>
+      <div role="status" aria-live="polite" className="empty:hidden">
+        {signup.sdk === "loading" ? (
+          <p className="text-body-sm text-muted">Loading Meta&apos;s sign-in…</p>
+        ) : null}
+      </div>
+      {signup.sdk === "failed" ? (
+        <InlineAlert
+          tone="danger"
+          title="Meta's sign-in couldn't be loaded"
+          action={
+            <Button variant="outline" size="sm" onClick={signup.retryLoad}>
+              Try again
+            </Button>
+          }
+        >
+          Check that an ad blocker or firewall isn&apos;t blocking connect.facebook.net, then try again.
+        </InlineAlert>
+      ) : null}
+    </>
+  );
+}
+
+/**
  * Step 1: what the customer needs, and the one button that opens Meta.
  *
  * When the server has no Meta app configured (`signup/config.enabled` is false) this is a
@@ -116,24 +146,7 @@ export function ConnectStep({
         >
           Continue with Meta
         </Button>
-        <div role="status" aria-live="polite" className="empty:hidden">
-          {signup.sdk === "loading" ? (
-            <p className="text-body-sm text-muted">Loading Meta&apos;s sign-in…</p>
-          ) : null}
-        </div>
-        {signup.sdk === "failed" ? (
-          <InlineAlert
-            tone="danger"
-            title="Meta's sign-in couldn't be loaded"
-            action={
-              <Button variant="outline" size="sm" onClick={signup.retryLoad}>
-                Try again
-              </Button>
-            }
-          >
-            Check that an ad blocker or firewall isn&apos;t blocking connect.facebook.net, then try again.
-          </InlineAlert>
-        ) : null}
+        <SdkStatus signup={signup} />
       </div>
 
       <div className="flex flex-col items-center gap-2 text-center">
@@ -238,6 +251,8 @@ export function MetaStep({
         ) : null}
       </div>
 
+      <SdkStatus signup={signup} />
+
       <p className="flex w-full items-start gap-3 rounded-tile bg-late-soft px-4 py-3 text-left text-body-sm text-ink">
         <AlertTriangleIcon aria-hidden className="mt-1 size-4 shrink-0 text-late" />
         <span>Window did not open? Allow pop-ups for this site, then choose Reopen Meta window.</span>
@@ -251,7 +266,7 @@ export function MetaStep({
           <Button
             variant="outline"
             onClick={onReopen}
-            disabled={working}
+            disabled={working || signup.sdk !== "ready"}
             leadingIcon={<ArrowUpRight aria-hidden className="size-4" />}
           >
             Reopen Meta window

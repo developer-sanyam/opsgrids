@@ -179,7 +179,7 @@ export function WhatsAppOverviewPage() {
             <ActivityCard
               items={data?.recent_activity ?? []}
               loading={data === null}
-              viewAll={{ to: "/whatsapp/inbox", label: "View all" }}
+              viewAll={{ to: "/inbox", label: "View all" }}
               emptyDescription="Deliveries, replies, automation runs and template reviews appear here as they happen."
             />
           </div>

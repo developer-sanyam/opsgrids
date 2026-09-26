@@ -232,6 +232,76 @@ describe("errors", () => {
   });
 });
 
+describe("announcements", () => {
+  it("does not wrap the profile in a live region, so a screen reader is not read the whole panel", async () => {
+    vi.spyOn(api, "getCustomer360").mockResolvedValue(CUSTOMER_360);
+    const { container } = renderPanel();
+
+    const name = await screen.findByText("Priya Raghavan");
+    expect(container.querySelector("[aria-live]")).toBeNull();
+    // The only live region is the one-line status, and the profile is not inside it.
+    expect(name.closest('[role="status"], [role="alert"], [aria-live]')).toBeNull();
+    const status = screen.getByRole("status");
+    expect(status.textContent).toBe("Customer details loaded");
+    expect(status.contains(name)).toBe(false);
+  });
+
+  it("says nothing while loading, then a short line when the details arrive", async () => {
+    let arrive: (value: Customer360) => void = () => {};
+    vi.spyOn(api, "getCustomer360").mockReturnValue(
+      new Promise<Customer360>((resolve) => {
+        arrive = resolve;
+      }),
+    );
+    renderPanel();
+
+    expect(screen.getByRole("status").textContent).toBe("");
+    arrive(CUSTOMER_360);
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Customer details loaded"));
+  });
+
+  it("goes quiet and announces again when another conversation's customer is selected", async () => {
+    let arrive: (value: Customer360) => void = () => {};
+    const load = vi
+      .spyOn(api, "getCustomer360")
+      .mockResolvedValueOnce(CUSTOMER_360)
+      .mockReturnValueOnce(
+        new Promise<Customer360>((resolve) => {
+          arrive = resolve;
+        }),
+      );
+    const { rerender } = renderPanel();
+    await screen.findByText("Priya Raghavan");
+
+    rerender(<Customer360Panel customerId="another-customer" />);
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("status").textContent).toBe("");
+    expect(screen.queryByText("Priya Raghavan")).toBeNull();
+
+    arrive({ ...CUSTOMER_360, customer: { ...CUSTOMER_360.customer, name: "Arun Kumar" } });
+    expect(await screen.findByText("Arun Kumar")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe("Customer details loaded");
+  });
+
+  it("announces a failure once, in a short line, and keeps the alert itself silent", async () => {
+    vi.spyOn(api, "getCustomer360").mockRejectedValue(new ApiError(503, "The customer service is unavailable.", null));
+    const { container } = renderPanel();
+
+    expect(await screen.findByText("The customer service is unavailable.")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe("Customer details didn't load.");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(container.querySelectorAll('[role="status"], [role="alert"]').length).toBe(1);
+  });
+
+  it("announces a refusal in a short line too", async () => {
+    vi.spyOn(api, "getCustomer360").mockRejectedValue(new ApiError(403, "You do not have crm.contacts.read", null));
+    renderPanel();
+
+    expect(await screen.findByText("You do not have crm.contacts.read")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe("Access to customer details was refused.");
+  });
+});
+
 describe("collapsing", () => {
   it("hides the body and stops reading, and reads again when shown", async () => {
     const load = vi.spyOn(api, "getCustomer360").mockResolvedValue(CUSTOMER_360);

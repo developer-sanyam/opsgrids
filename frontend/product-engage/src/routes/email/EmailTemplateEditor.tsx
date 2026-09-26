@@ -39,7 +39,13 @@ type Field = "code" | "subject" | "body" | "description";
 type Errors = Partial<Record<Field, string>>;
 type Target = "subject" | "body";
 
-function validate(values: Record<Field, string>, editing: boolean): Errors {
+/**
+ * `taken` is the name of every template that already exists. Saving is an upsert keyed on the name,
+ * so a new template that reuses one would silently replace a live template that automations and
+ * campaigns send; the names are compared without regard to case so a legacy `Welcome_Email` is not
+ * shadowed by `welcome_email`.
+ */
+function validate(values: Record<Field, string>, editing: boolean, taken: string[]): Errors {
   const errors: Errors = {};
   const code = values.code.trim();
   if (!editing) {
@@ -48,6 +54,8 @@ function validate(values: Record<Field, string>, editing: boolean): Errors {
       errors.code = "Use lowercase letters, digits and underscores only.";
     } else if (code.length > TEMPLATE_CODE_MAX) {
       errors.code = `Keep the name to ${TEMPLATE_CODE_MAX} characters or fewer.`;
+    } else if (taken.some((existing) => existing.toLowerCase() === code.toLowerCase())) {
+      errors.code = `A template named ${code} already exists. Choose a different name, or open it from the list to edit it.`;
     }
   }
   if (values.subject.trim() === "") errors.subject = "Every email needs a subject.";
@@ -70,13 +78,21 @@ function serverErrors(error: unknown): { fields: Errors; rest: string | null } {
   return { fields, rest: Object.keys(fields).length > 0 ? null : failureMessage(error) };
 }
 
+const UNCHECKED = "Couldn't check which template names are already in use. Try saving again in a moment.";
+
 function TemplateForm({
   initial,
   known,
+  taken,
+  onRecheck,
 }: {
   initial: EmailTemplateOut | null;
   /** Placeholders the organization's other email templates use. */
   known: string[];
+  /** Names of the templates that exist, or null while that list is not available. */
+  taken: string[] | null;
+  /** Ask for the list of existing names again. */
+  onRecheck: () => void;
 }) {
   const navigate = useNavigate();
   const announce = useAnnounce();
@@ -93,6 +109,7 @@ function TemplateForm({
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
+  const codeRef = useRef<HTMLInputElement>(null);
   const subjectRef = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const target = useRef<Target>("body");
@@ -146,10 +163,25 @@ function TemplateForm({
 
   async function save() {
     if (saving || !canWrite) return;
-    const found = validate({ code, subject, body, description }, editing);
+    const found = validate({ code, subject, body, description }, editing, taken ?? []);
     setErrors(found);
     setFailure(null);
-    if (Object.keys(found).length > 0) return;
+    const invalid = (["code", "subject", "body"] as const).find((field) => found[field] !== undefined);
+    if (invalid !== undefined) {
+      // A field error is only described, so it is read when focus reaches the field: say that the
+      // save did not happen, and take focus to the first field that needs attention.
+      announce(`Template not saved. ${found[invalid]}`);
+      const refs = { code: codeRef, subject: subjectRef, body: bodyRef };
+      refs[invalid].current?.focus();
+      return;
+    }
+    if (!editing && taken === null) {
+      // Without the list of names there is no telling a new template from one that would replace a
+      // live one, so the save waits until the names can be checked.
+      setFailure(UNCHECKED);
+      onRecheck();
+      return;
+    }
 
     setSaving(true);
     try {
@@ -194,6 +226,7 @@ function TemplateForm({
           <TextField
             label="Template Name"
             required
+            ref={codeRef}
             value={code}
             readOnly={editing || !canWrite}
             onChange={(event) => edit("code", setCode, event.target.value)}
@@ -306,6 +339,7 @@ function Editor() {
     () => (templates === null || id === undefined ? null : (templates.find((t) => t.id === id) ?? null)),
     [templates, id],
   );
+  const taken = useMemo(() => (templates === null ? null : templates.map((t) => t.id)), [templates]);
   const known = useMemo(
     () => [...new Set((templates ?? []).filter((t) => t.id !== id).flatMap((t) => t.placeholders))],
     [templates, id],
@@ -363,7 +397,7 @@ function Editor() {
   return (
     <div className="rise flex flex-col gap-6">
       {heading}
-      <TemplateForm key={id ?? "new"} initial={current} known={known} />
+      <TemplateForm key={id ?? "new"} initial={current} known={known} taken={taken} onRecheck={state.reload} />
     </div>
   );
 }

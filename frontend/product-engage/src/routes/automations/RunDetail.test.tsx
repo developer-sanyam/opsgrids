@@ -125,6 +125,17 @@ describe("run list", () => {
     expect(within(row).getByRole("link").getAttribute("href")).toBe(`/automations/${AUTOMATION_ACTIVE.id}/runs/${RUN_FAILED.id}`);
   });
 
+  it("encodes both ids in the link to a run", async () => {
+    vi.spyOn(api, "listRuns").mockResolvedValue(page([{ ...RUN_FAILED, id: "run/1?x" }]));
+    render(
+      <MemoryRouter>
+        <RunList automationId="auto 1/2#y" published />
+      </MemoryRouter>,
+    );
+    const row = (await screen.findByText("R*** S***")).closest("tr") as HTMLElement;
+    expect(within(row).getByRole("link").getAttribute("href")).toBe("/automations/auto%201%2F2%23y/runs/run%2F1%3Fx");
+  });
+
   it("asks the service for one state", async () => {
     const list = vi.spyOn(api, "listRuns").mockResolvedValue(page([RUN_FAILED]));
     renderList();
@@ -172,6 +183,15 @@ describe("analytics", () => {
     const row = screen.getByRole("link", { name: "Invoice Payment Reminder" }).closest("tr") as HTMLElement;
     expect(within(row).getByText("84.3%")).toBeTruthy();
     expect(within(row).getByText("5.2s")).toBeTruthy();
+  });
+
+  it("encodes the id in the link to an automation", async () => {
+    const [first] = STATS.per_automation;
+    if (first === undefined) throw new Error("the fixture has no per-automation rows");
+    vi.spyOn(api, "getStats").mockResolvedValue({ ...STATS, per_automation: [{ ...first, automation_id: "auto/1?x#y" }] });
+    renderAnalytics();
+    const link = await screen.findByRole("link", { name: first.name });
+    expect(link.getAttribute("href")).toBe("/automations/auto%2F1%3Fx%23y");
   });
 
   it("has its own empty state, and a way back to the default range", async () => {

@@ -153,7 +153,7 @@ function Populated({ stats }: { stats: StatsOut }) {
                   <tr key={row.automation_id} className="border-t border-line">
                     <th scope="row" className="py-3 pr-4 text-left">
                       <Link
-                        to={`/automations/${row.automation_id}`}
+                        to={`/automations/${encodeURIComponent(row.automation_id)}`}
                         className="text-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                       >
                         {row.name}
