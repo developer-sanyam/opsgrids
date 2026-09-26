@@ -20,8 +20,8 @@ export type SourceState =
   | { status: "error"; message: string };
 
 const LOADERS: Record<MessageChannel, () => Promise<TemplateOption[]>> = {
-  whatsapp: listWhatsAppTemplateOptions,
-  email: listEmailTemplateOptions,
+  whatsapp: () => listWhatsAppTemplateOptions(),
+  email: () => listEmailTemplateOptions(),
 };
 
 export interface TemplateSources {

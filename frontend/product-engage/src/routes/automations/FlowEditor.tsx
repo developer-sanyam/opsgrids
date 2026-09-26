@@ -238,8 +238,9 @@ export function FlowEditor(props: FlowEditorProps) {
 
   useEffect(() => {
     if (focusRequest === null) return;
-    containerRef.current
-      ?.querySelector<HTMLButtonElement>(`[data-step-button="${CSS.escape(focusRequest.id)}"]`)
+    const buttons = containerRef.current?.querySelectorAll<HTMLButtonElement>("[data-step-button]") ?? [];
+    Array.from(buttons)
+      .find((button) => button.dataset["stepButton"] === focusRequest.id)
       ?.focus();
   }, [focusRequest]);
 
