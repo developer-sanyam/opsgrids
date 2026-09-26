@@ -166,6 +166,8 @@ const sampleRows: readonly Record<string, SheetValue>[] = [
 
 const notes = [
   "Asset tags must be unique. A row whose tag already exists is skipped, never updated.",
+  "A tag that once belonged to an asset that was later deleted still cannot be used again. The server reports it as a conflict without saying why, so a row that is refused as already existing may be a deleted asset's tag: choose another tag.",
+  "Every imported asset is recorded as belonging to the person who runs the import, whatever the Owner column says: Owner is only the name shown. A person who can see only their own assets sees exactly the ones they imported.",
   `Cost is written in whole currency units, for example 84500 or 84500.50, with the currency in the next column. A blank currency means ${DEFAULT_CURRENCY}.`,
   "Owner is free text, such as a person's name or a team. It is not matched against your users.",
   "Dates can be Excel dates or written as YYYY-MM-DD, for example 2026-04-01.",

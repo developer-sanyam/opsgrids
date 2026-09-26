@@ -91,6 +91,18 @@ describe("columns", () => {
     expect(byKey.serial?.kind).toBe("text");
     expect(byKey.open_incidents?.readOnly).toBe(true);
   });
+
+  it("has no id column: the tag is the key, so no row is ever marked as already in the system", () => {
+    expect(assetsEntity.recordIdKey).toBeUndefined();
+    expect(assetsEntity.columns.some((c) => c.key === "id")).toBe(false);
+  });
+
+  it("tells the user two things about tags and ownership that the server does not say", () => {
+    const notes = (assetsEntity.notes ?? []).join("\n");
+    expect(notes).toMatch(/once belonged to an asset that was later deleted still cannot be used again/);
+    expect(notes).toMatch(/reports it as a conflict without saying why/);
+    expect(notes).toMatch(/recorded as belonging to the person who runs the import, whatever the Owner column says/);
+  });
 });
 
 describe("sample rows", () => {
