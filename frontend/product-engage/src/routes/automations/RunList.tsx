@@ -100,7 +100,7 @@ export function RunList({ automationId, published }: { automationId: string; pub
                   <tr key={run.id} className="border-t border-line align-top">
                     <th scope="row" className="py-3 pr-4 text-left">
                       <Link
-                        to={`/automations/${automationId}/runs/${run.id}`}
+                        to={`/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(run.id)}`}
                         className="text-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                       >
                         {formatInstant(run.started_at)}

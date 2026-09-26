@@ -50,6 +50,9 @@ function mockList(items: EmailTemplateOut[] = [SHIPPED]) {
   return vi.spyOn(email, "listEmailTemplates").mockResolvedValue(page(items));
 }
 
+/** Only the message under a field: the same sentence is also spoken by the screen's live region. */
+const FIELD_ERROR = { selector: "p[id$='-error']" };
+
 function body(): HTMLTextAreaElement {
   return screen.getByRole("textbox", { name: /Body/ }) as HTMLTextAreaElement;
 }
@@ -153,6 +156,77 @@ describe("creating a template", () => {
     await user.click(screen.getByRole("button", { name: "Save Template" }));
 
     expect(screen.getByText("Use lowercase letters, digits and underscores only.")).toBeTruthy();
+  });
+
+  it("refuses a name that is already taken, so a live template is never silently replaced", async () => {
+    mockList([SHIPPED]);
+    const save = vi.spyOn(email, "saveEmailTemplate");
+    const user = userEvent.setup();
+    renderEditor("/email/templates/new");
+
+    const name = await screen.findByRole("textbox", { name: /Template Name/ });
+    await waitFor(() => expect(email.listEmailTemplates).toHaveBeenCalled());
+    await user.type(name, "order_shipped");
+    await user.type(subject(), "Shipped");
+    await user.type(body(), "On its way");
+    await user.click(screen.getByRole("button", { name: "Save Template" }));
+
+    const message = /A template named order_shipped already exists/;
+    expect(screen.getByText(message, FIELD_ERROR)).toBeTruthy();
+    expect(save).not.toHaveBeenCalled();
+    // The error is tied to the field, the save is announced as not having happened, and focus
+    // lands on the field to fix.
+    expect(name.getAttribute("aria-invalid")).toBe("true");
+    const described = (name.getAttribute("aria-describedby") ?? "").split(" ");
+    expect(described.some((id) => message.test(document.getElementById(id)?.textContent ?? ""))).toBe(true);
+    expect(screen.getByText(/^Template not saved\. A template named order_shipped already exists/)).toBeTruthy();
+    expect(document.activeElement).toBe(name);
+    // What was typed stays.
+    expect(subject().value).toBe("Shipped");
+    expect(body().value).toBe("On its way");
+  });
+
+  it("compares names without regard to case", async () => {
+    mockList([{ ...SHIPPED, id: "Welcome_Email" }]);
+    const save = vi.spyOn(email, "saveEmailTemplate");
+    const user = userEvent.setup();
+    renderEditor("/email/templates/new");
+
+    const name = await screen.findByRole("textbox", { name: /Template Name/ });
+    await waitFor(() => expect(email.listEmailTemplates).toHaveBeenCalled());
+    await user.type(name, "welcome_email");
+    await user.type(subject(), "Welcome");
+    await user.type(body(), "Hello");
+    await user.click(screen.getByRole("button", { name: "Save Template" }));
+
+    expect(screen.getByText(/A template named welcome_email already exists/, FIELD_ERROR)).toBeTruthy();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("does not save, and asks for the list again, while the existing names are unknown", async () => {
+    const list = vi
+      .spyOn(email, "listEmailTemplates")
+      .mockRejectedValueOnce(new ApiError(503, "Warming up", null))
+      .mockResolvedValue(page([SHIPPED]));
+    const save = vi.spyOn(email, "saveEmailTemplate");
+    const user = userEvent.setup();
+    renderEditor("/email/templates/new");
+
+    const name = await screen.findByRole("textbox", { name: /Template Name/ });
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
+    await user.type(name, "order_shipped");
+    await user.type(subject(), "Shipped");
+    await user.type(body(), "On its way");
+    await user.click(screen.getByRole("button", { name: "Save Template" }));
+
+    expect(await screen.findByText(/Couldn't check which template names are already in use/)).toBeTruthy();
+    expect(save).not.toHaveBeenCalled();
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+
+    // Once the names are known the same submit is judged on them.
+    await user.click(screen.getByRole("button", { name: "Save Template" }));
+    expect(await screen.findByText(/A template named order_shipped already exists/, FIELD_ERROR)).toBeTruthy();
+    expect(save).not.toHaveBeenCalled();
   });
 
   it("saves, then opens the saved template", async () => {

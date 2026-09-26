@@ -29,7 +29,7 @@ const SECTIONS: Record<Section, { name: string; links: SectionLink[] }> = {
     name: "WhatsApp",
     links: [
       { label: "Overview", to: "/whatsapp", end: true },
-      { label: "Conversations", to: "/whatsapp/inbox" },
+      { label: "Conversations", to: "/inbox" },
       { label: "Templates", to: "/whatsapp/templates" },
       { label: "Automations", to: "/automations" },
       { label: "Analytics", to: "/whatsapp/analytics" },
@@ -40,7 +40,6 @@ const SECTIONS: Record<Section, { name: string; links: SectionLink[] }> = {
     name: "Email",
     links: [
       { label: "Overview", to: "/email", end: true },
-      { label: "Inbox", to: "/email/inbox" },
       { label: "Campaigns", to: "/email/campaigns" },
       { label: "Templates", to: "/email/templates" },
       { label: "Settings", to: "/email/settings" },

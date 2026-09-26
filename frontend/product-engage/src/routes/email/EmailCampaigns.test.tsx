@@ -84,6 +84,15 @@ describe("populated", () => {
     expect(screen.getByRole("columnheader", { name: "Recipients" })).toBeTruthy();
   });
 
+  it("encodes the campaign id in the link to it", async () => {
+    serve([{ ...CAMPAIGN_SENT, id: "camp/1?x#y" }]);
+    vi.spyOn(email, "countCampaignsByStatus").mockResolvedValue(COUNTS);
+    renderPage();
+
+    const link = await screen.findByRole("link", { name: CAMPAIGN_SENT.name });
+    expect(link.getAttribute("href")).toBe("/campaigns/camp%2F1%3Fx%23y");
+  });
+
   it("does not draw Opened or Clicked columns the campaign payload has no data for", async () => {
     serve();
     vi.spyOn(email, "countCampaignsByStatus").mockResolvedValue(COUNTS);

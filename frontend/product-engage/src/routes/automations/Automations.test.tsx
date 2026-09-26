@@ -95,6 +95,26 @@ describe("states", () => {
   });
 });
 
+describe("links", () => {
+  const AWKWARD = { ...AUTOMATION_ACTIVE, id: "auto/1?x#y z" };
+  const ENCODED = "/automations/auto%2F1%3Fx%23y%20z";
+
+  it("encodes the id in the row link", async () => {
+    vi.spyOn(api, "listAutomations").mockResolvedValue(page([AWKWARD]));
+    renderList();
+    const link = await screen.findByRole("link", { name: "Invoice Payment Reminder" });
+    expect(link.getAttribute("href")).toBe(ENCODED);
+  });
+
+  it("encodes the id when Open is chosen from the row menu", async () => {
+    vi.spyOn(api, "listAutomations").mockResolvedValue(page([AWKWARD]));
+    renderList();
+    await openMenu("Invoice Payment Reminder");
+    await userEvent.click(screen.getByRole("menuitem", { name: "Open" }));
+    expect(await screen.findByText("Open automation")).toBeTruthy();
+  });
+});
+
 describe("filters", () => {
   it("asks the service for one status, not the page it already has", async () => {
     const list = vi.spyOn(api, "listAutomations").mockResolvedValue(page([AUTOMATION_ACTIVE]));

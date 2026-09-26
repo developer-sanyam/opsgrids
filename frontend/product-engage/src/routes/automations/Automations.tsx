@@ -143,7 +143,7 @@ function menuItems(
   return [
     {
       label: automation.status === "draft" ? "Open builder" : "Open",
-      onSelect: () => navigate(`/automations/${automation.id}`),
+      onSelect: () => navigate(`/automations/${encodeURIComponent(automation.id)}`),
     },
     {
       label: "Pause",
@@ -178,7 +178,7 @@ function AutomationRow({
     <tr className="border-t border-line align-top">
       <th scope="row" className="py-3 pr-4 text-left">
         <Link
-          to={`/automations/${automation.id}`}
+          to={`/automations/${encodeURIComponent(automation.id)}`}
           className="text-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           {automation.name}

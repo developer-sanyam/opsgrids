@@ -413,24 +413,35 @@ function LoadingBody() {
  * no retry to offer (a 4xx does not fix itself). Anything else, including no response at all, is
  * worth trying again.
  */
+/**
+ * The short sentence the panel's live region says for a failed read. It is deliberately not the
+ * alert's own title: the alert is for the eye and stays silent (`live="off"`), so a failure is
+ * heard once, in a few words, and the detail is there to be read.
+ */
+function errorStatus(error: Error): string {
+  if (error instanceof ApiError && error.status === 403) return "Access to customer details was refused.";
+  if (error instanceof ApiError && error.status === 402) return "Customer details aren't part of your plan.";
+  return "Customer details didn't load.";
+}
+
 function LoadError({ error, onRetry }: { error: Error; onRetry: () => void }) {
   if (error instanceof ApiError && error.status === 403) {
     return (
-      <InlineAlert tone="warning" title="You don't have access to this customer's details">
+      <InlineAlert tone="warning" live="off" title="You don't have access to this customer's details">
         {error.message}
       </InlineAlert>
     );
   }
   if (error instanceof ApiError && error.status === 402) {
     return (
-      <InlineAlert tone="warning" title="Customer 360 isn't included in your plan">
+      <InlineAlert tone="warning" live="off" title="Customer 360 isn't included in your plan">
         {error.message}
       </InlineAlert>
     );
   }
   return (
     <div className="flex flex-col gap-3">
-      <InlineAlert tone="danger" title="Couldn't load customer details">
+      <InlineAlert tone="danger" live="off" title="Couldn't load customer details">
         {error.message}
       </InlineAlert>
       <div>
@@ -442,12 +453,31 @@ function LoadError({ error, onRetry }: { error: Error; onRetry: () => void }) {
   );
 }
 
+/**
+ * The panel's one live region. It says only that the details arrived, or what went wrong — never
+ * the profile itself, which a screen reader would otherwise read out in full every time the
+ * selected conversation changes. It stays mounted while the body loads, empty, so the change to
+ * "loaded" is announced.
+ */
 function Customer360Body({ customerId }: { customerId: string }) {
   const state = useAsync(() => getCustomer360(customerId), [customerId]);
+  const status =
+    state.status === "success" ? "Customer details loaded" : state.status === "error" ? errorStatus(state.error) : "";
 
-  if (state.status === "loading") return <LoadingBody />;
-  if (state.status === "error") return <LoadError error={state.error} onRetry={state.reload} />;
-  return <Loaded data={state.data} />;
+  return (
+    <>
+      {state.status === "loading" ? (
+        <LoadingBody />
+      ) : state.status === "error" ? (
+        <LoadError error={state.error} onRetry={state.reload} />
+      ) : (
+        <Loaded data={state.data} />
+      )}
+      <p role="status" className="sr-only">
+        {status}
+      </p>
+    </>
+  );
 }
 
 /**
@@ -479,7 +509,7 @@ export function Customer360Panel({ customerId }: { customerId: string | null }) 
           </Button>
         </div>
 
-        <div id={bodyId} hidden={!open} aria-live="polite">
+        <div id={bodyId} hidden={!open}>
           {open ? (
             customerId === null ? (
               <EmptyState

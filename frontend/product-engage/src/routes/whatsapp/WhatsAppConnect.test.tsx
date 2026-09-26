@@ -8,6 +8,7 @@ import { ApiError, PermissionProvider } from "@opsgrids/client";
 import * as client from "@/api/client";
 import type { Page, WhatsAppConnectionOut } from "@/api/types";
 import * as api from "@/api/whatsappSignup";
+import * as metaSdk from "@/lib/metaSdk";
 import type { FbLoginResponse, FbSdk } from "@/lib/metaSdk";
 import {
   APPROVED_TEMPLATE,
@@ -337,6 +338,50 @@ describe("the Meta window", () => {
     renderWizard("/whatsapp/connect?step=meta");
     expect(await screen.findByText("The Meta window isn't open")).toBeTruthy();
     expect(sdk.login).not.toHaveBeenCalled();
+  });
+
+  it("keeps Reopen disabled until the SDK is ready, so a click is never silently dropped after a reload", async () => {
+    let ready: (loaded: FbSdk) => void = () => {};
+    vi.spyOn(metaSdk, "loadMetaSdk").mockReturnValue(
+      new Promise<FbSdk>((resolve) => {
+        ready = resolve;
+      }),
+    );
+    const user = userEvent.setup();
+    renderWizard("/whatsapp/connect?step=meta");
+
+    const reopen = (await screen.findByRole("button", { name: /Reopen Meta window/ })) as HTMLButtonElement;
+    expect(reopen.disabled).toBe(true);
+    expect(screen.getByText("Loading Meta's sign-in…")).toBeTruthy();
+    await user.click(reopen);
+    expect(sdk.login).not.toHaveBeenCalled();
+
+    act(() => ready(sdk as unknown as FbSdk));
+    await waitFor(() => expect(reopen.disabled).toBe(false));
+    expect(screen.queryByText("Loading Meta's sign-in…")).toBeNull();
+    await user.click(reopen);
+    expect(sdk.login).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the failed-to-load alert with Try again on the Meta step, and Reopen stays disabled", async () => {
+    const load = vi
+      .spyOn(metaSdk, "loadMetaSdk")
+      .mockRejectedValueOnce(new metaSdk.MetaSdkLoadError())
+      .mockResolvedValue(sdk as unknown as FbSdk);
+    const user = userEvent.setup();
+    renderWizard("/whatsapp/connect?step=meta");
+
+    expect(await screen.findByText("Meta's sign-in couldn't be loaded")).toBeTruthy();
+    expect(screen.getByText(/isn't blocking connect\.facebook\.net/)).toBeTruthy();
+    const reopen = screen.getByRole("button", { name: /Reopen Meta window/ }) as HTMLButtonElement;
+    expect(reopen.disabled).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(reopen.disabled).toBe(false));
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Meta's sign-in couldn't be loaded")).toBeNull();
+    await user.click(reopen);
+    expect(sdk.login).toHaveBeenCalledTimes(1);
   });
 
   it("does not claim Meta has confirmed anything when 'I have finished' is pressed too early", async () => {

@@ -174,7 +174,6 @@ export function EmailOverviewPage() {
             <ActivityCard
               items={data?.recent_activity ?? []}
               loading={data === null}
-              viewAll={{ to: "/email/inbox", label: "View all" }}
               emptyDescription="Campaign sends, high open rates, new subscribers and automation runs appear here."
             />
           </div>
