@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/notification.automation.run_wake/v1",
+  "title": "notification.automation.run_wake",
+  "description": "Internal to notification. An automation run parked on a wait (or a retry backoff) is due. Staged as the target of a `platform.schedule.requested` (ADR-0015) and consumed by `notification.consumers.wake_automation_run`, which resumes the run only if `wake_token` still matches the token the run was parked with, so a wake-up delivered twice resumes it once.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "run_id", "wake_token"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "run_id": { "type": "string", "format": "uuid" },
+    "wake_token": { "type": "string", "minLength": 1, "maxLength": 64 }
+  }
+}
