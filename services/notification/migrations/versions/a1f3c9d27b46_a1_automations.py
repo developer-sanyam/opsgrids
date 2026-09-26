@@ -33,6 +33,7 @@ depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "notification"
 APP_ROLE = "opsgrids_notification"
+OUTBOX_ROLE = "opsgrids_outbox"
 TABLES = ("a1_automations", "a1_versions", "a1_runs", "a1_run_steps")
 
 
@@ -230,6 +231,23 @@ def upgrade() -> None:
             BEFORE UPDATE OR DELETE ON {SCHEMA}.a1_versions
             FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.a1_versions_immutable()
         """
+    )
+
+    # The overdue-wait sweep's cross-tenant discovery (`app/cron.py`) runs as the outbox role.
+    # Three columns, named exactly, so a bug in that query cannot read a run's context. The
+    # grant survives `apply_schema_grants`, which only ever gives that role `outbox`.
+    op.execute(
+        f"""
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{OUTBOX_ROLE}') THEN
+                GRANT USAGE ON SCHEMA {SCHEMA} TO "{OUTBOX_ROLE}";
+                GRANT SELECT (organization_id, state, next_wake_at)
+                    ON {SCHEMA}.a1_runs TO "{OUTBOX_ROLE}";
+            END IF;
+        END
+        $$
+        """  # noqa: S608 - names are module constants, not input
     )
 
 

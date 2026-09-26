@@ -10,6 +10,8 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -36,6 +38,7 @@ WRITE = "engage.campaign.campaign.write"
 SEND = "engage.campaign.campaign.send"
 READ = "engage.campaign.campaign.read"
 EVENT = "support.desk.ticket.created"
+CONTRACTS_ROOT = Path(__file__).resolve().parents[3] / "libs" / "contracts"
 A1_TABLES = ("a1_run_steps", "a1_runs", "a1_versions", "a1_automations")
 
 
@@ -60,9 +63,8 @@ async def worker_engine(session: Any) -> AsyncIterator[None]:
 
 
 def _ctx(org_id: uuid.UUID, *perms: str) -> Any:
-    from tests.helpers import principal_for
-
     from platform_core.auth import ScopeContext
+    from tests.helpers import principal_for
 
     principal = principal_for(org_id, [f"{p}:ORG" for p in perms], entitlements=["engage"])
     return ScopeContext(principal=principal, scope=Scope.ORG, permission=perms[0])
@@ -85,7 +87,7 @@ def _linear(*middle: dict[str, Any], trigger: str = EVENT) -> dict[str, Any]:
         *middle,
         {"id": "end", "type": "end", "config": {}},
     ]
-    edges = [{"from": a["id"], "to": b["id"]} for a, b in zip(nodes, nodes[1:], strict=False)]
+    edges = [{"from": a["id"], "to": b["id"]} for a, b in pairwise(nodes)]
     return {"nodes": nodes, "edges": edges}
 
 
@@ -110,7 +112,9 @@ async def _drop_template(session: Any, org_id: uuid.UUID, code: str = "ack") -> 
         )
 
 
-async def _go_live(session: Any, org_id: uuid.UUID, graph: dict[str, Any], name: str = "Ack") -> Any:
+async def _go_live(
+    session: Any, org_id: uuid.UUID, graph: dict[str, Any], name: str = "Ack"
+) -> Any:
     ctx = _ctx(org_id, WRITE, SEND)
     async with session.begin():
         row = await a1_services.create_automation(
@@ -163,10 +167,12 @@ async def _messages(session: Any, org_id: uuid.UUID) -> list[Message]:
         return list(
             (
                 await session.execute(
-                    select(Message).where(
+                    select(Message)
+                    .where(
                         Message.organization_id == org_id,
                         Message.rule_code.like("automation:%"),
-                    ).execution_options(populate_existing=True)
+                    )
+                    .execution_options(populate_existing=True)
                 )
             )
             .scalars()
@@ -197,11 +203,11 @@ async def test_publish_creates_an_immutable_version(session: Any, org_id: uuid.U
     with pytest.raises(DBAPIError, match="immutable"):
         async with session.begin():
             await session.execute(
-                text(f'UPDATE "{SCHEMA}".a1_versions SET trigger_event = \'x\'')
+                text(f"UPDATE \"{SCHEMA}\".a1_versions SET trigger_event = 'x'")  # noqa: S608
             )
     with pytest.raises(DBAPIError, match="immutable"):
         async with session.begin():
-            await session.execute(text(f'DELETE FROM "{SCHEMA}".a1_versions'))
+            await session.execute(text(f'DELETE FROM "{SCHEMA}".a1_versions'))  # noqa: S608
 
 
 async def test_publish_refuses_a_broken_graph_with_problems(
@@ -359,7 +365,9 @@ async def test_a_condition_routes_yes_and_no(
     assert [r.state for r in runs] == ["completed", "completed"]
     branches = []
     for run in runs:
-        branches.append(next(s.detail for s in await _steps(session, org_id, run.id) if s.type == "condition"))
+        branches.append(
+            next(s.detail for s in await _steps(session, org_id, run.id) if s.type == "condition")
+        )
     assert sorted(branches) == ["no", "yes"]
 
 
@@ -381,7 +389,9 @@ async def test_a_wait_parks_the_run_and_resumes_exactly_once(
         a1_services.EVT_RUN_WAKE,
         1,
         target["payload"],
-        contracts_root=__import__("pathlib").Path(__file__).resolve().parents[3] / "libs" / "contracts",
+        contracts_root=__import__("pathlib").Path(__file__).resolve().parents[3]
+        / "libs"
+        / "contracts",
     )
 
     wake = envelope_for(org_id, a1_services.EVT_RUN_WAKE, target["payload"])
@@ -546,8 +556,6 @@ async def test_a_transient_failure_retries_with_backoff_then_gives_up(
 async def test_create_task_stages_the_contracted_event(
     session: Any, org_id: uuid.UUID, worker_engine: None
 ) -> None:
-    from pathlib import Path
-
     task = {
         "id": "task",
         "type": "create_task",
@@ -560,7 +568,7 @@ async def test_create_task_stages_the_contracted_event(
         a1_services.EVT_TASK_REQUESTED,
         1,
         dict(event.payload),
-        contracts_root=Path(__file__).resolve().parents[3] / "libs" / "contracts",
+        contracts_root=CONTRACTS_ROOT,
     )
     (run,) = await _runs(session, org_id)
     assert run.state == "completed"
@@ -588,16 +596,16 @@ async def test_the_authoring_and_run_api_round_trip(
         # Only a warning: the org has no email connection yet.
         assert [p["code"] for p in body["validation"]["problems"]] == ["channel_not_connected"]
 
-        bad = await client.post(
-            f"/api/v1/engage/automations/{automation_id}/publish"
-        )
+        bad = await client.post(f"/api/v1/engage/automations/{automation_id}/publish")
         assert bad.status_code == 200, bad.text
         assert bad.json()["status"] == "active" and bad.json()["version"] == 1
 
         listing = await client.get("/api/v1/engage/automations", params={"status": "active"})
         assert listing.status_code == 200
         assert [i["id"] for i in listing.json()["items"]] == [automation_id]
-        assert (await client.get("/api/v1/engage/automations", params={"q": "zzz"})).json()["total"] == 0
+        assert (await client.get("/api/v1/engage/automations", params={"q": "zzz"})).json()[
+            "total"
+        ] == 0
 
     await consumers.fold(_event(org_id))
     with as_principal(caller(org_id, perms)):
@@ -625,7 +633,9 @@ async def test_the_authoring_and_run_api_round_trip(
             "/api/v1/engage/automations",
             json={"name": "Broken", "graph": _linear(_send_node(template={"ref": "nope"}))},
         )
-        problem = await client.post(f"/api/v1/engage/automations/{publish_bad.json()['id']}/publish")
+        problem = await client.post(
+            f"/api/v1/engage/automations/{publish_bad.json()['id']}/publish"
+        )
         assert problem.status_code == 422
         assert any(p["code"] == "template_missing" for p in problem.json()["problems"])
 
@@ -686,11 +696,19 @@ async def test_another_tenants_ids_are_404(
     perms = [f"{p}:ORG" for p in (READ, WRITE, SEND)]
     with as_principal(caller(org_id, perms)):
         assert (await client.get(f"/api/v1/engage/automations/{automation_id}")).status_code == 404
-        assert (await client.get(f"/api/v1/engage/automations/{automation_id}/runs")).status_code == 404
+        assert (
+            await client.get(f"/api/v1/engage/automations/{automation_id}/runs")
+        ).status_code == 404
         assert (await client.get(f"/api/v1/engage/automations/runs/{run_id}")).status_code == 404
-        assert (await client.post(f"/api/v1/engage/automations/runs/{run_id}/retry")).status_code == 404
-        assert (await client.post(f"/api/v1/engage/automations/{automation_id}/publish")).status_code == 404
-        assert (await client.delete(f"/api/v1/engage/automations/{automation_id}")).status_code == 404
+        assert (
+            await client.post(f"/api/v1/engage/automations/runs/{run_id}/retry")
+        ).status_code == 404
+        assert (
+            await client.post(f"/api/v1/engage/automations/{automation_id}/publish")
+        ).status_code == 404
+        assert (
+            await client.delete(f"/api/v1/engage/automations/{automation_id}")
+        ).status_code == 404
         assert (await client.get("/api/v1/engage/automations")).json()["total"] == 0
 
 
@@ -700,7 +718,12 @@ _ROUTES: list[tuple[str, str, str, dict[str, Any] | None]] = [
     ("GET", "/api/v1/engage/automations/triggers", READ, None),
     ("GET", "/api/v1/engage/automations/stats", READ, None),
     ("GET", "/api/v1/engage/automations", READ, None),
-    ("POST", "/api/v1/engage/automations", WRITE, {"name": "x", "graph": {"nodes": [], "edges": []}}),
+    (
+        "POST",
+        "/api/v1/engage/automations",
+        WRITE,
+        {"name": "x", "graph": {"nodes": [], "edges": []}},
+    ),
     ("GET", f"/api/v1/engage/automations/{uuid.uuid4()}", READ, None),
     ("PATCH", f"/api/v1/engage/automations/{uuid.uuid4()}", WRITE, {"name": "y"}),
     ("DELETE", f"/api/v1/engage/automations/{uuid.uuid4()}", WRITE, None),
@@ -756,4 +779,57 @@ async def test_update_marks_last_run(session: Any, org_id: uuid.UUID, worker_eng
     async with session.begin():
         row = await session.get(Automation, automation_id)
         assert row.last_run_at is not None
-        await session.execute(update(Automation).where(Automation.id == automation_id).values(name="n"))
+        await session.execute(
+            update(Automation).where(Automation.id == automation_id).values(name="n")
+        )
+
+
+async def test_the_cron_tick_wakes_an_overdue_wait_as_the_outbox_role_would(
+    session: Any, org_id: uuid.UUID, worker_engine: None
+) -> None:
+    """The driver's own tick (cross-tenant discovery on the BYPASSRLS outbox role, writes on the
+    app role under the tenant binding) resumes a wait whose scheduler wake-up never came."""
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.cron import CampaignDriver
+    from platform_core.db import TENANT_GUC
+
+    await _template(session, org_id)
+    wait = {"id": "w", "type": "wait", "config": {"seconds": 60}}
+    await _go_live(session, org_id, _linear(wait, _send_node()))
+    await consumers.fold(_event(org_id))
+
+    cfg = settings()
+    args = {"server_settings": {"search_path": f"{SCHEMA},public"}}
+    discovery_engine = create_async_engine(cfg.outbox_dsn, connect_args=args)
+    work_engine = create_async_engine(cfg.app_dsn, connect_args=args)
+    work_maker = async_sessionmaker(work_engine, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def work_scope(organization_id: uuid.UUID) -> AsyncIterator[Any]:
+        async with work_maker() as s, s.begin():
+            await s.execute(
+                text(f"SELECT set_config('{TENANT_GUC}', :org, true)"),
+                {"org": str(organization_id)},
+            )
+            yield s
+
+    driver = CampaignDriver(
+        discovery_factory=async_sessionmaker(discovery_engine, expire_on_commit=False),
+        work_scope=work_scope,
+    )
+    try:
+        # Not overdue yet: nothing to do.
+        await driver.tick(datetime.now(UTC))
+        assert (await _runs(session, org_id))[0].state == "waiting"
+        # An hour on, the scheduler's wake-up is long overdue; the tick resumes it.
+        await driver.tick(datetime.now(UTC) + timedelta(hours=1))
+        (run,) = await _runs(session, org_id)
+        assert run.state == "completed"
+        await driver.tick(datetime.now(UTC) + timedelta(hours=2))
+    finally:
+        await discovery_engine.dispose()
+        await work_engine.dispose()
+    assert len(await _messages(session, org_id)) == 1

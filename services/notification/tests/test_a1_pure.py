@@ -147,7 +147,10 @@ def test_condition_rules_are_checked() -> None:
     assert {"condition_match", "condition_rules"} <= codes(g)
     g["nodes"][1]["config"] = {
         "match": "any",
-        "rules": [{"path": "bad", "op": "regex", "value": 1}, {"path": "payload.a", "op": "in", "value": 3}],
+        "rules": [
+            {"path": "bad", "op": "regex", "value": 1},
+            {"path": "payload.a", "op": "in", "value": 3},
+        ],
     }
     assert {"condition_path", "condition_op", "condition_value"} <= codes(g)
 

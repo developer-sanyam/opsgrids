@@ -1136,6 +1136,41 @@ async def sweep_due(
     return woken
 
 
+async def sweep_overdue(
+    *,
+    discovery_factory: Any,
+    work_scope: Any,
+    now: datetime | None = None,
+    limit: int = 50,
+) -> int:
+    """Wake overdue runs across organizations. Discovery (which organizations?) runs on the
+    BYPASSRLS outbox role with column-level `SELECT` on three `a1_runs` columns; every write runs
+    under the organization's own tenant binding via `work_scope`, one transaction per run so one
+    bad run cannot roll back another's wake."""
+    at = now or datetime.now(UTC)
+    async with discovery_factory() as session, session.begin():
+        organizations = await orphaned_wakes(session, now=at)
+    woken = 0
+    for organization_id in organizations[:limit]:
+        async with work_scope(organization_id) as session:
+            due = await due_waits(session, organization_id, now=at, limit=limit)
+        for run_id, token in due:
+            try:
+                async with work_scope(organization_id) as session:
+                    outcome = await wake_run(
+                        session,
+                        organization_id=organization_id,
+                        run_id=run_id,
+                        wake_token=token,
+                        now=at,
+                    )
+            except Exception:
+                log.exception("automation.sweep.wake_failed", run_id=str(run_id))
+                continue
+            woken += outcome == "resumed"
+    return woken
+
+
 async def orphaned_wakes(session: AsyncSession, *, now: datetime) -> list[uuid.UUID]:
     """Organizations with an overdue wait, for the sweep's cross-tenant discovery. Run on the
     BYPASSRLS outbox role: it answers *which organizations* have work and nothing else."""
