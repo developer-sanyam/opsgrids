@@ -263,6 +263,13 @@ e2e-db: ## Create/grant the opsgrids_wt database the e2e suite targets (idempote
 	$(COMPOSE) exec -T postgres psql -v ON_ERROR_STOP=1 -U opsgrids -d opsgrids -f - \
 	  < tools/dev-bootstrap/e2e-db.sql
 
+# The sales-demo database, `opsgrids_demo` — see docs/demo/textile-demo.md. Same shape as
+# e2e-db and just as idempotent; never the shared `opsgrids`.
+.PHONY: demo-db
+demo-db: ## Create/grant the opsgrids_demo database the sales demo targets (idempotent, needs make infra)
+	$(COMPOSE) exec -T postgres psql -v ON_ERROR_STOP=1 -U opsgrids -d opsgrids -f - \
+	  < tools/dev-bootstrap/demo-db.sql
+
 # The same shape as e2e-db, for ops-monitor's own integration suite
 # (libs/platform-core/tests/test_ops_monitor_integration.py) — never the shared `opsgrids`
 # database. See tools/dev-bootstrap/ops-monitor-db.sql for why a second database.
