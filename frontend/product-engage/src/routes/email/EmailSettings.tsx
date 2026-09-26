@@ -113,18 +113,12 @@ function AccountList({ account }: { account: EmailAccount }) {
     <Card className="flex flex-col gap-4 p-4 sm:p-6">
       <h2 className="text-base font-bold text-ink">All Accounts (1)</h2>
       <ul>
-        <li>
-          <a
-            href="#account-details"
-            aria-current="true"
-            className="flex items-center gap-3 rounded-tile bg-ground p-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-          >
-            <span className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate text-sm font-bold text-ink">{account.username}</span>
-              <span className="text-xs text-muted">{connectionKindLabel(account.kind)}</span>
-            </span>
-            <ConnectionStatusTag status={account.status} />
-          </a>
+        <li className="flex items-center gap-3 rounded-tile bg-ground p-3">
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="truncate text-sm font-bold text-ink">{account.username}</span>
+            <span className="text-xs text-muted">{connectionKindLabel(account.kind)}</span>
+          </span>
+          <ConnectionStatusTag status={account.status} />
         </li>
       </ul>
       <p className="text-xs text-muted">
@@ -180,7 +174,7 @@ export function EmailSettingsPage() {
       ) : null}
 
       {state.status === "success" && account !== null ? (
-        <div id="account-details" className="grid gap-6 lg:grid-cols-3">
+        <div className="grid gap-6 lg:grid-cols-3">
           <section aria-label="Accounts" className="lg:col-span-1">
             <AccountList account={account} />
           </section>
