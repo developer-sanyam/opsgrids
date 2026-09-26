@@ -96,8 +96,12 @@ function coerceText(column: ImportColumn, cell: CellInput, env: CoerceEnv): Coer
   const { header } = column;
   const text = textOf(cell);
   if (text === null) return fail(`${header} must be text`);
-  if (hasControlCharacter(text, true)) {
-    return fail(`${header} contains a control character`);
+  if (hasControlCharacter(text, column.multiline === true)) {
+    return fail(
+      column.multiline === true
+        ? `${header} contains a control character`
+        : `${header} contains a line break, tab or another control character`,
+    );
   }
   if (column.maxLength !== undefined) {
     const length = Array.from(text).length;

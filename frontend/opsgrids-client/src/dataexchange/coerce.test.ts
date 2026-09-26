@@ -66,17 +66,21 @@ describe("text", () => {
     expect(value(text, "  Steel   bracket  ")).toBe("Steel   bracket");
   });
 
-  it("rejects control characters other than a tab or line break", () => {
+  it("rejects control characters, including a line break and a tab, in an ordinary column", () => {
     expect(error(text, "a\u0000b")).toMatch(/Name contains .*control character/);
+    expect(error(text, "line one\nline two")).toMatch(/line break/);
+    expect(error(text, "a\tb")).toMatch(/control character/);
     expect(error(text, "a\u001bb")).toMatch(/control character/);
     expect(error(text, "a\u007fb")).toMatch(/control character/);
     expect(error(text, "a\u0085b")).toMatch(/control character/);
   });
 
-  it("keeps a line break or tab inside text, so a multi-line note can be imported", () => {
-    expect(value(text, "line one\nline two")).toBe("line one\nline two");
-    expect(value(text, "a\tb")).toBe("a\tb");
-    expect(value(text, "  first\r\nsecond  ")).toBe("first\r\nsecond");
+  it("keeps a line break or tab in a column marked multiline, so a note can be imported", () => {
+    const note = column("text", { header: "Notes", multiline: true });
+    expect(value(note, "line one\nline two")).toBe("line one\nline two");
+    expect(value(note, "a\tb")).toBe("a\tb");
+    expect(value(note, "  first\r\nsecond  ")).toBe("first\r\nsecond");
+    expect(error(note, "a\u0000b")).toMatch(/Notes contains a control character/);
   });
 
   it("still refuses a line break in an email", () => {

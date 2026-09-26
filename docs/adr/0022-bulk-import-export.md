@@ -68,8 +68,9 @@ other tools, that reads an Excel sheet, and a **downloadable sample sheet**.
 - **Dates** are ISO `YYYY-MM-DD` after reading; an Excel date serial is converted, never trusted as
   text.
 - **Limits are enforced before anything is sent:** file up to 5 MB, `.xlsx` only, up to 1000 data
-  rows, up to 60 columns. Cell text is trimmed; control characters are rejected, except that free
-  text may contain a tab or a line break (a multi-line note is normal in a spreadsheet).
+  rows, up to 60 columns. Cell text is trimmed; control characters are rejected, except that a
+  column marked `multiline` (a note, a summary) may hold a tab or a line break. A name or code with
+  a hidden line break would become a different record from the one it looks like.
 - **Authorization stays on the server.** The button hides Import for a user without the create
   permission and Export for a user without read, but that is a courtesy: a row the server refuses
   (403, for example an owner the caller may not assign) is reported as failed with the server's

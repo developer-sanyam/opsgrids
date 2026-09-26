@@ -73,6 +73,12 @@ export interface ImportColumn {
   /** The opposite of `readOnly`: read on import and shown in the sample sheet, but not written by
    *  an export because the list never returns it (opening stock, a value only create accepts). */
   importOnly?: boolean | undefined;
+  /** Free text that may hold tabs and line breaks (a note, a summary). Every other text column
+   *  refuses them: a name or code with a hidden line break becomes a different record. */
+  multiline?: boolean | undefined;
+  /** `lookup` columns: a sentence added to the "is not in the list" error saying how to fix it
+   *  ("Import the manager first, then run this file again: rows already imported are skipped."). */
+  lookupHint?: string | undefined;
 }
 
 /** A named set of reference data, loaded once per dialog open from the full list (all pages). */
@@ -147,6 +153,13 @@ export interface ImportEntity<Payload, Item = unknown, Filters = void> {
   maxRows?: number | undefined;
   /** Extra rules for the Instructions sheet ("Deal names must be unique across the organisation."). */
   notes?: readonly string[] | undefined;
+  /**
+   * The `key` of a `readOnly` column that holds the record's own id (an export writes it). A row
+   * with a value there came out of the system: it is refused with an explanation instead of being
+   * added a second time. Essential where the list has no natural key to dedupe on (leads, whose
+   * email is masked on export), harmless elsewhere.
+   */
+  recordIdKey?: string | undefined;
   /** Reference data (owners, warehouses, categories) from the full lists. Called once per open. */
   loadLookups?: ((signal: AbortSignal) => Promise<LookupSet>) | undefined;
   /** Cross-column rules the per-column checks cannot express. Return a sentence, or null when fine. */
