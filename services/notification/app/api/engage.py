@@ -26,8 +26,9 @@ from fastapi import APIRouter, Body, Depends, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import consent, dns_check, selectors, services, webhooks
+from app import consent, dns_check, selectors, services, w2_selectors, webhooks
 from app import domain as _rules
+from app.api.w2_templates import template_out as _whatsapp_template_out
 from app.domain import UnsubscribeTarget
 from app.models import (
     Campaign,
@@ -93,12 +94,15 @@ from app.schemas import (
     SuppressionIn,
     SuppressionOut,
     SuppressionReason,
+    TemplateCategory,
+    TemplateStatus,
     TestSendIn,
     UnmaskedMessageOut,
     UnsubscribeOut,
     WhatsAppConnectionIn,
     WhatsAppConnectionOut,
 )
+from app.w2_schemas import WhatsAppTemplateOut
 from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.config import ServiceSettings
 from platform_core.db import (
@@ -546,7 +550,7 @@ def _provider_template_out(row: ProviderTemplate) -> ProviderTemplateOut:
 
 @router.get(
     "/engage/whatsapp/templates",
-    response_model=Page[ProviderTemplateOut],
+    response_model=Page[WhatsAppTemplateOut],
     summary="WhatsApp templates and their real approval status",
     dependencies=[Entitled],
 )
@@ -554,8 +558,11 @@ async def list_whatsapp_templates(
     session: SessionDep,
     ctx: WhatsAppTemplateRead,
     params: PageQuery,
-    channel: Annotated[str | None, Query(description="email or whatsapp")] = None,
-) -> Page[ProviderTemplateOut]:
+    channel: Annotated[str | None, Query(description="email or whatsapp")] = "whatsapp",
+    category: Annotated[TemplateCategory | None, Query()] = None,
+    template_status: Annotated[TemplateStatus | None, Query(alias="status")] = None,
+    q: Annotated[str | None, Query(max_length=100, description="Name or wording contains")] = None,
+) -> Page[WhatsAppTemplateOut]:
     """What can be sent outside a conversation window, and what is still in review.
 
     The same rows `notification`'s own `GET /notifications/provider-templates` reads
@@ -563,10 +570,14 @@ async def list_whatsapp_templates(
     organization that has bought Engage but not the transactional `notification` product can
     still see the real approval status of the templates it sends through its own WhatsApp
     account, rather than a 403 for a permission it was never sold.
+
+    Filterable by category, status and a search over name and wording (`w2_selectors`).
     """
-    stmt = selectors.provider_templates_stmt(ctx, channel=channel)
+    stmt = w2_selectors.templates_stmt(
+        ctx, channel=channel, category=category, status=template_status, q=q
+    )
     rows, total = await paginate(session, stmt, params)
-    return Page.build([_provider_template_out(r) for r in rows], total=total, params=params)
+    return Page.build([_whatsapp_template_out(r) for r in rows], total=total, params=params)
 
 
 @router.put(
