@@ -1,4 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { useState } from "react";
+import type { ReactNode } from "react";
+import { Link, RouterProvider, createMemoryRouter } from "react-router-dom";
 import { expect, fn, screen, waitFor } from "storybook/test";
 
 import type { ImportExportViewActions } from "../lib/importExportView";
@@ -29,6 +32,17 @@ const ACTIONS: ImportExportViewActions = {
   cancelExport: fn(),
   downloadReport: fn(async () => undefined),
 };
+
+/** A data router, as every app builds one: the leave question needs it, and a story without one has none. */
+function InDataRouter({ children }: { children: ReactNode }) {
+  const [router] = useState(() =>
+    createMemoryRouter([
+      { path: "/", element: children },
+      { path: "/deals", element: <h1>Deals</h1> },
+    ]),
+  );
+  return <RouterProvider router={router} />;
+}
 
 /**
  * Every story renders the button in a page header and clicks it, so the dialog is open in the
@@ -104,6 +118,24 @@ export const PreviewMissingColumns: Story = {
 /** Rows are going out: numbers, the counts so far, and the instruction to keep the tab open. */
 export const Importing: Story = {
   args: { state: stateFor({ phase: "importing", progress: PROGRESS_RUNNING }) },
+};
+
+/** A link or Back during an import is held: the question stacks over the dialog, with Stay focused. */
+export const ImportingLeaveQuestion: Story = {
+  args: { state: stateFor({ phase: "importing", progress: PROGRESS_RUNNING }) },
+  render: (args) => (
+    <InDataRouter>
+      <PageHeader eyebrow="Records" title="Companies" actions={<ImportExportButton {...args} />} />
+      <Link to="/deals">All deals</Link>
+    </InDataRouter>
+  ),
+  play: async (context) => {
+    await meta.play(context);
+    // The link sits behind the dialog's scrim, so a pointer could not reach it; the story clicks it
+    // to stand in for Back or a redirect, the ways a page is really left while the dialog is up.
+    await context.userEvent.click(context.canvas.getByRole("link", { name: "All deals" }));
+    await screen.findByRole("dialog", { name: "Stop the import and leave?" });
+  },
 };
 
 /** The server asked for a pause: the wait is in words, and the import carries on by itself. */

@@ -11,6 +11,7 @@ import type {
 import { useUnsavedChangesWarning } from "../lib/useUnsavedChangesWarning";
 import { Button } from "./Button";
 import { Dialog } from "./Dialog";
+import { ImportExportLeaveGuard } from "./ImportExportLeaveGuard";
 import { ImportExportMenu } from "./ImportExportMenu";
 import { ImportExportResult, ImportExportResultActions } from "./ImportExportResult";
 import { ImportExportReview, ImportExportReviewActions } from "./ImportExportReview";
@@ -110,7 +111,7 @@ interface ImportExportDialogProps {
  * **Closing.** Escape, the close control and Done all end the session with `reset()`. While rows
  * are going out none of them does anything but say so: a dialog that vanishes mid-import leaves
  * the user unsure whether it is still writing. The browser's own leave-the-page prompt covers the
- * tab being closed.
+ * tab being closed, and `ImportExportLeaveGuard` asks before Back or a link takes the page away.
  *
  * **Files.** One hidden input serves "Import from Excel" and "Choose another file", and dropping a
  * file works in the menu and the preview. The engine decides whether the file is acceptable, so
@@ -254,36 +255,41 @@ export function ImportExportDialog({ onClose, meta, state, actions, canImport, c
   }
 
   return (
-    <Dialog
-      open
-      onClose={requestClose}
-      title={phaseTitle(state, meta)}
-      size="lg"
-      {...(phase === "menu" ? { initialFocusRef: firstActionRef } : {})}
-      footer={footer}
-    >
-      <div
-        ref={bodyRef}
-        className="flex flex-col gap-4"
-        onDragEnter={onDragEnter}
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
-        onDrop={onDrop}
+    <>
+      <Dialog
+        open
+        onClose={requestClose}
+        title={phaseTitle(state, meta)}
+        size="lg"
+        {...(phase === "menu" ? { initialFocusRef: firstActionRef } : {})}
+        footer={footer}
       >
-        {content}
-        <p aria-live="polite" aria-atomic="true" className="sr-only">
-          {liveMessage(state)}
-        </p>
-        <input
-          ref={inputRef}
-          type="file"
-          hidden
-          tabIndex={-1}
-          aria-hidden
-          accept={ACCEPT}
-          onChange={onPicked}
-        />
-      </div>
-    </Dialog>
+        <div
+          ref={bodyRef}
+          className="flex flex-col gap-4"
+          onDragEnter={onDragEnter}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+        >
+          {content}
+          <p aria-live="polite" aria-atomic="true" className="sr-only">
+            {liveMessage(state)}
+          </p>
+          <input
+            ref={inputRef}
+            type="file"
+            hidden
+            tabIndex={-1}
+            aria-hidden
+            accept={ACCEPT}
+            onChange={onPicked}
+          />
+        </div>
+      </Dialog>
+      {/* Beside the dialog and not inside its body: React bubbles a portal's events through the
+          tree, and the question is not part of the drop zone. */}
+      <ImportExportLeaveGuard importing={importing} onStop={() => actions.cancelImport()} />
+    </>
   );
 }
