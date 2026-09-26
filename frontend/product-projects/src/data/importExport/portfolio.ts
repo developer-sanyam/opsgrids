@@ -1,5 +1,5 @@
 import { collectPages, defineImportEntity, makeLookup, minorToMajor } from "@opsgrids/client";
-import type { ImportColumn, LookupSet, SheetValue } from "@opsgrids/client";
+import type { ImportColumn, SheetValue } from "@opsgrids/client";
 
 import { createProject, listMembers, listProjects } from "@/api/client";
 import type { ListProjectsParams } from "@/api/client";
@@ -41,6 +41,9 @@ const DEFAULT_CURRENCY = "INR";
 
 const OWNERS = "owners";
 
+/** The largest value of a 32-bit integer column (`team_size`, `open_tasks`). */
+const MAX_INT32 = 2_147_483_647;
+
 const columns: readonly ImportColumn[] = [
   {
     key: "code",
@@ -72,6 +75,8 @@ const columns: readonly ImportColumn[] = [
     header: "Owner",
     kind: "text",
     lookup: OWNERS,
+    lookupHint:
+      "Use the team member's name exactly as on the Team screen. If two members share a name, rename one first.",
     help: "The delivery lead, by name as listed on the Team screen. Leave blank for an unassigned project.",
   },
   {
@@ -143,21 +148,24 @@ const columns: readonly ImportColumn[] = [
     header: "Team size",
     kind: "integer",
     min: 0,
+    // The column is a 32-bit integer: a larger number is not a validation error but a server error.
+    max: MAX_INT32,
     help: "How many people are on the project.",
   },
   {
     key: "summary",
     header: "Summary",
     kind: "text",
+    multiline: true,
     maxLength: 2000,
-    help: "A sentence or two about what the project delivers.",
+    help: "A sentence or two about what the project delivers. It may run over more than one line.",
   },
   {
     key: "open_tasks",
     header: "Open tasks",
     kind: "integer",
     readOnly: true,
-    help: "How many tasks are still open. Counted by the system.",
+    help: "The project's stored open-work figure, not counted from its tasks. Imported projects start at 0.",
   },
   {
     key: "milestone_count",
@@ -231,15 +239,9 @@ const notes = [
   "Start date and target date are both required, and the target date cannot be before the start date.",
   `Budget and spent are written in whole currency units, for example 2500000 or 2500000.50, with the currency in the Currency column. A blank currency means ${DEFAULT_CURRENCY}.`,
   "Phase and health can be left blank: a new project starts in Discovery and On track.",
-  "Open tasks and milestones are counted by the system and cannot be imported.",
+  "Milestones are counted from the project's milestones. Open tasks is a stored figure, not counted from tasks. Neither can be imported, and an imported project starts with 0 open tasks.",
+  "A row with a Record ID came out of the system and is already there, so it is refused. To use an exported file as a starting point, delete its Record ID column first.",
 ];
-
-function ownerRef(lookups: LookupSet, name: string): string {
-  return resolveReference(lookups[OWNERS], name, {
-    missing: `There is no team member called "${name}". Add them on the Team screen first, or leave Owner blank.`,
-    ambiguous: `More than one team member is called "${name}", so the owner cannot be chosen. Rename one of them on the Team screen, then import again.`,
-  });
-}
 
 export const portfolioEntity = defineImportEntity<ProjectIn, ProjectOut, PortfolioFilters>({
   id: "projects.portfolio",
@@ -249,8 +251,12 @@ export const portfolioEntity = defineImportEntity<ProjectIn, ProjectOut, Portfol
   columns,
   sampleRows,
   notes,
+  recordIdKey: "id",
   async loadLookups(signal) {
-    const members = await collectPages((page, size) => listMembers({ page, size }), { signal });
+    const members = await collectPages((page, size) => listMembers({ page, size }), {
+      signal,
+      key: (member) => member.id,
+    });
     return {
       [OWNERS]: makeLookup(members.map((member) => ({ label: member.name, value: member.id }))),
     };
@@ -272,7 +278,7 @@ export const portfolioEntity = defineImportEntity<ProjectIn, ProjectOut, Portfol
     const client = textOf(row, "client");
     if (client !== null) body.client = client;
     const owner = textOf(row, "owner");
-    if (owner !== null) body.owner_ref = ownerRef(lookups, owner);
+    if (owner !== null) body.owner_ref = resolveReference(lookups[OWNERS], owner);
     const phase = optionOf(row, "phase", PHASE_OPTIONS);
     if (phase !== null) body.phase = phase;
     const health = optionOf(row, "health", HEALTH_OPTIONS);

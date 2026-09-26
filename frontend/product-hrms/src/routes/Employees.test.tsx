@@ -57,6 +57,7 @@ function stubGateway(initial: number) {
       const url = new URL(input, "http://gateway.test");
       const method = init?.method ?? "GET";
       if (method === "GET" && url.pathname === "/api/v1/org-units") return json(200, []);
+      if (method === "GET" && url.pathname === "/api/v1/locations") return json(200, []);
       if (method === "GET" && url.pathname === "/api/v1/employees") {
         const page = Number(url.searchParams.get("page") ?? "1");
         const size = Number(url.searchParams.get("size") ?? "25");

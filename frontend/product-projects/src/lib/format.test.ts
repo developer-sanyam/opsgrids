@@ -45,4 +45,21 @@ describe("formatMoney", () => {
   it("falls back to a plain code+amount for a currency Intl can't format", () => {
     expect(formatMoney(1050, "12")).toBe("12 10.50");
   });
+
+  it("shows rupees as it always has: a hundredth per minor unit", () => {
+    expect(formatMoney(250_000_000, "INR")).toBe("₹25,00,000");
+    expect(formatMoney(2950, "INR")).toBe("₹29.50");
+  });
+
+  it("shows a yen amount as the amount: 1500000 minor units of JPY is ¥15,00,000, not ¥15,000", () => {
+    expect(formatMoney(1_500_000, "JPY")).toBe("JP¥15,00,000");
+    expect(formatMoney(1_500_000, "JPY")).not.toContain("15,000");
+  });
+
+  it("shows a dinar to the fil: 12345 minor units of KWD is 12.345, not 123.45", () => {
+    // Intl puts a no-break space between a currency code and the amount.
+    expect(formatMoney(12_345, "KWD")).toBe("KWD 12.345");
+    expect(formatMoney(5, "KWD")).toBe("KWD 0.005");
+    expect(formatMoney(2000, "KWD")).toBe("KWD 2");
+  });
 });

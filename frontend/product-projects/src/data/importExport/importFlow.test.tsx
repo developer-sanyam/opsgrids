@@ -184,7 +184,7 @@ function stubGateway(team: readonly MemberOut[] = TEAM) {
       if (method === "POST" && url.pathname === "/api/v1/projects-workspace/projects" && isRecord(body)) {
         const code = String(body.code);
         if (PORTFOLIO.some((existing) => existing.code === code)) {
-          return problem(409, "Conflict", `A project with code '${code}' already exists`);
+          return problem(409, "Conflict", `A project coded '${code}' already exists`);
         }
         if (code === "PRJ-205") {
           return problem(403, "Forbidden", "You can only make yourself the owner of a project.");
@@ -278,7 +278,7 @@ const SAMPLE_ROW = portfolioEntity.sampleRows[0] ?? {};
 const FILE_ROWS: Record<string, ExcelJS.CellValue>[] = [
   // 2: a full row. The owner is on the team's second page, both dates are there (one a real Excel
   // date, one text), the budget has cents, the summary runs over two lines, and the file carries
-  // columns an import must ignore (Open tasks, Record ID) or does not know (Cost centre).
+  // a column an import must ignore (Open tasks) and one it does not know (Cost centre).
   {
     code: "PRJ-201",
     name: "Ledger migration",
@@ -295,7 +295,6 @@ const FILE_ROWS: Record<string, ExcelJS.CellValue>[] = [
     team_size: 6,
     summary: "Rebuild the ledger.\nCut over in Q3.",
     open_tasks: 99,
-    id: "not-an-id-to-send",
     cost_centre: "CC-9",
   },
   // 3: a currency with three decimals, and an owner in the wrong case.
@@ -331,8 +330,9 @@ const FILE_ROWS: Record<string, ExcelJS.CellValue>[] = [
 ];
 
 const MISSING_START = "Start date is required";
-const UNKNOWN_OWNER = "'Nobody Here' is not in the list of Owners (see the Lists sheet)";
-const AMBIGUOUS_OWNER = "'Sam Patel' matches more than one of the Owners (see the Lists sheet), so it cannot be chosen";
+// The engine's own sentences for a reference the list does not hold; each may go on to say how to fix it.
+const UNKNOWN_OWNER = /^'Nobody Here' is not in the list of Owners/;
+const AMBIGUOUS_OWNER = /^'Sam Patel' matches more than one of the Owners/;
 const BACKWARDS = "The target date cannot be before the start date.";
 
 describe("importing projects from Excel", () => {
@@ -352,7 +352,7 @@ describe("importing projects from Excel", () => {
       expect(figure("Need fixing")).toBe("4");
       expect(figure("Sample rows skipped")).toBe("1");
       for (const reason of [MISSING_START, UNKNOWN_OWNER, AMBIGUOUS_OWNER, BACKWARDS]) {
-        expect(screen.getByText(reason), reason).toBeTruthy();
+        expect(screen.getByText(reason), String(reason)).toBeTruthy();
       }
       expect(screen.getByText("An unchanged example from the sample sheet. It is skipped.")).toBeTruthy();
       expect(screen.getByText("These columns are ignored: Cost centre.")).toBeTruthy();
@@ -410,13 +410,13 @@ describe("importing projects from Excel", () => {
       expect(figure("Invalid")).toBe("4");
       expect(screen.getByText("5 rows were not imported. 2 projects were created.")).toBeTruthy();
       const table = within(screen.getByRole("region", { name: "Rows that were not created" }));
-      const duplicate = "A project with code 'PRJ-105' already exists";
+      const duplicate = "A project coded 'PRJ-105' already exists";
       const refused = "You can only make yourself the owner of a project.";
       for (const text of [duplicate, refused, MISSING_START, UNKNOWN_OWNER, AMBIGUOUS_OWNER, BACKWARDS]) {
-        expect(table.getByText(text), text).toBeTruthy();
+        expect(table.getByText(text), String(text)).toBeTruthy();
       }
       // Each is against its own row in the sheet: the sheet's row numbers, header excluded.
-      const numberOf = (text: string) => {
+      const numberOf = (text: string | RegExp) => {
         const row = table.getByText(text).closest("tr");
         return row === null ? null : within(row).getByRole("rowheader").textContent;
       };
@@ -457,17 +457,18 @@ describe("importing projects from Excel", () => {
       const sheet = sheetNamed(await readDownload(downloads[0]), "Result");
       const lines: string[] = [];
       sheet.eachRow((row) => lines.push([1, 2, 3, 4].map((column) => row.getCell(column).text).join(" | ")));
-      expect(lines).toEqual([
+      expect(lines.slice(0, 6)).toEqual([
         "Row | Project code | Status | Message",
         "2 | PRJ-201 | Created | ",
         "3 | PRJ-202 | Created | ",
-        "4 | PRJ-105 | Skipped | A project with code 'PRJ-105' already exists",
+        "4 | PRJ-105 | Skipped | A project coded 'PRJ-105' already exists",
         "5 | PRJ-205 | Failed | You can only make yourself the owner of a project.",
         `6 | PRJ-206 | Invalid | ${MISSING_START}`,
-        `7 | PRJ-207 | Invalid | ${UNKNOWN_OWNER}`,
-        `8 | PRJ-208 | Invalid | ${AMBIGUOUS_OWNER}`,
-        `9 | PRJ-209 | Invalid | ${BACKWARDS}`,
       ]);
+      expect(lines).toHaveLength(9);
+      expect(lines[6]).toMatch(/^7 \| PRJ-207 \| Invalid \| 'Nobody Here' is not in the list of Owners/);
+      expect(lines[7]).toMatch(/^8 \| PRJ-208 \| Invalid \| 'Sam Patel' matches more than one of the Owners/);
+      expect(lines[8]).toBe(`9 | PRJ-209 | Invalid | ${BACKWARDS}`);
     },
     TEST_TIMEOUT,
   );
@@ -525,6 +526,62 @@ describe("importing projects from Excel", () => {
       expect(screen.getByText(/The remaining rows were not sent\.$/)).toBeTruthy();
       expect(onImported).toHaveBeenCalledTimes(1);
       expect(onImported).toHaveBeenCalledWith(expect.objectContaining({ created: sent, cancelled: true }));
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "keeps a line break in the summary and refuses one in a name, where it would make a different record",
+    async () => {
+      const gateway = stubGateway();
+      const user = await openDialog();
+      const dates = { start_date: "2026-01-05", target_date: "2026-02-05" };
+      const rows = [
+        { code: "PRJ-301", name: "Two\nLines", ...dates },
+        { code: "PRJ-302", name: "One line", summary: "First line.\nSecond line.", ...dates },
+      ];
+
+      await user.upload(fileInput(), await importFile(rows));
+      await screen.findByRole("dialog", { name: "Review your file" });
+      expect(figure("Ready to import")).toBe("1");
+      expect(figure("Need fixing")).toBe("1");
+      expect(screen.getByText("Name contains a line break, tab or another control character")).toBeTruthy();
+
+      await user.click(screen.getByRole("button", { name: "Import 1 row" }));
+      await screen.findByRole("dialog", { name: "Import finished" }, { timeout: 10_000 });
+
+      expect(gateway.posts().map((request) => request.body)).toEqual([
+        { code: "PRJ-302", name: "One line", summary: "First line.\nSecond line.", ...dates },
+      ]);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "refuses a team size or progress the server's columns cannot hold, before anything is sent",
+    async () => {
+      const gateway = stubGateway();
+      const user = await openDialog();
+      const dates = { start_date: "2026-01-05", target_date: "2026-02-05" };
+      const rows = [
+        { code: "PRJ-311", name: "Largest team", team_size: 2_147_483_647, ...dates },
+        { code: "PRJ-312", name: "Team too large", team_size: 2_147_483_648, ...dates },
+        { code: "PRJ-313", name: "Progress too far", progress_pct: 101, ...dates },
+      ];
+
+      await user.upload(fileInput(), await importFile(rows));
+      await screen.findByRole("dialog", { name: "Review your file" });
+      expect(figure("Ready to import")).toBe("1");
+      expect(figure("Need fixing")).toBe("2");
+      expect(screen.getByText("Team size must be between 0 and 2147483647")).toBeTruthy();
+      expect(screen.getByText("Progress (%) must be between 0 and 100")).toBeTruthy();
+
+      await user.click(screen.getByRole("button", { name: "Import 1 row" }));
+      await screen.findByRole("dialog", { name: "Import finished" }, { timeout: 10_000 });
+
+      expect(gateway.posts().map((request) => request.body)).toEqual([
+        { code: "PRJ-311", name: "Largest team", team_size: 2_147_483_647, ...dates },
+      ]);
     },
     TEST_TIMEOUT,
   );
@@ -621,7 +678,7 @@ describe("exporting projects to Excel", () => {
   );
 
   it(
-    "writes a file that imports again as the same records, owner, dates and money included",
+    "writes a file that imports again as the same records once the Record ID column is taken out, owner, dates and money included",
     async () => {
       const gateway = stubGateway();
       const user = await openDialog();
@@ -630,7 +687,19 @@ describe("exporting projects to Excel", () => {
       const blob = downloads[0]?.blob;
       if (blob === undefined) throw new Error("Nothing was downloaded");
 
-      await user.upload(fileInput(), new File([blob], "projects-export.xlsx", { type: XLSX_TYPE }));
+      // A row with a Record ID came out of the system and is refused, so the column goes first.
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(await blob.arrayBuffer());
+      const exported = sheetNamed(workbook, "Export");
+      let idColumn = 0;
+      exported.getRow(1).eachCell((cell, column) => {
+        if (cell.text === "Record ID") idColumn = column;
+      });
+      expect(idColumn).toBeGreaterThan(0);
+      exported.spliceColumns(idColumn, 1);
+      const edited = new File([await workbook.xlsx.writeBuffer()], "projects-export.xlsx", { type: XLSX_TYPE });
+
+      await user.upload(fileInput(), edited);
       await screen.findByRole("dialog", { name: "Review your file" });
       expect(figure("Rows in file")).toBe("3");
       expect(figure("Ready to import")).toBe("3");

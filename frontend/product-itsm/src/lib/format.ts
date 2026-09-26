@@ -9,6 +9,7 @@ import type {
   SlaState,
 } from "@/api/types";
 import { now } from "./clock";
+import { currencyDecimals } from "./money";
 
 /** "2026-08-24T09:24:00Z" -> "24 Aug, 9:24 AM". Rendered in UTC so a stored time shows as-is. */
 export function formatDateTime(iso: string | null): string {
@@ -68,14 +69,19 @@ export function formatSlaClock(minutes: number | null): string {
   return over ? `${span} over` : `${span} left`;
 }
 
-/** 12500000 minor units of "INR" -> "₹1,25,000". No decimals when the amount is whole. */
+/**
+ * 12500000 minor units of "INR" -> "₹1,25,000". No decimals when the amount is whole. A minor
+ * unit is a hundredth only for most currencies: 150000 of "JPY" is "¥1,50,000" and 1250 of "KWD"
+ * is "KWD 1.250", by the currency's own decimals.
+ */
 export function formatMoney(minor: number, currency: string): string {
-  const major = minor / 100;
+  const decimals = currencyDecimals(currency);
+  const major = minor / 10 ** decimals;
   try {
     return new Intl.NumberFormat("en-IN", {
       style: "currency",
       currency,
-      maximumFractionDigits: major % 1 === 0 ? 0 : 2,
+      maximumFractionDigits: major % 1 === 0 ? 0 : decimals,
     }).format(major);
   } catch {
     // An unknown ISO code shouldn't crash a cell.

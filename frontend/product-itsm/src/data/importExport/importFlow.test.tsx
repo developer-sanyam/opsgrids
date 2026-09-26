@@ -149,7 +149,7 @@ function stubGateway() {
       if (method === "POST" && url.pathname === "/api/v1/itsm/assets" && isRecord(body)) {
         const tag = String(body.tag);
         if (REGISTER.some((existing) => existing.tag === tag)) {
-          return problem(409, "Conflict", "That tag is already in use.");
+          return problem(409, "Conflict", `An asset tagged '${tag}' already exists`);
         }
         if (tag === "NW-0009") {
           return problem(422, "Unprocessable Entity", "Request validation failed", [
@@ -357,7 +357,7 @@ describe("importing assets from Excel", () => {
       expect(figure("Invalid")).toBe("3");
       expect(screen.getByText("4 rows were not imported. 2 assets were created.")).toBeTruthy();
       const table = within(screen.getByRole("region", { name: "Rows that were not created" }));
-      expect(table.getByText("That tag is already in use.")).toBeTruthy();
+      expect(table.getByText("An asset tagged 'MN-0002' already exists")).toBeTruthy();
       expect(table.getByText(REFUSED)).toBeTruthy();
       expect(table.getByText(MISSING_NAME)).toBeTruthy();
       expect(table.getByText(UNKNOWN_TYPE)).toBeTruthy();
@@ -367,7 +367,7 @@ describe("importing assets from Excel", () => {
         const row = table.getByText(text).closest("tr");
         return row === null ? null : within(row).getByRole("rowheader").textContent;
       };
-      expect(numberOf("That tag is already in use.")).toBe("4");
+      expect(numberOf("An asset tagged 'MN-0002' already exists")).toBe("4");
       expect(numberOf(REFUSED)).toBe("5");
       expect(numberOf(MISSING_NAME)).toBe("6");
       expect(numberOf(UNKNOWN_TYPE)).toBe("7");
@@ -407,7 +407,7 @@ describe("importing assets from Excel", () => {
         "Row | Asset tag | Status | Message",
         "2 | SRV-0042 | Created | ",
         "3 | SW-0310 | Created | ",
-        "4 | MN-0002 | Skipped | That tag is already in use.",
+        "4 | MN-0002 | Skipped | An asset tagged 'MN-0002' already exists",
         `5 | NW-0009 | Failed | ${REFUSED}`,
         `6 | MN-0100 | Invalid | ${MISSING_NAME}`,
         `7 | TO-0001 | Invalid | ${UNKNOWN_TYPE}`,
