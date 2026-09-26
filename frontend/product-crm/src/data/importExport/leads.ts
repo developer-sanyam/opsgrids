@@ -17,10 +17,10 @@ import type { LeadIn } from "@/api/wire";
 
 import {
   LOOKUP_OWNERS,
+  labelFor,
   loadOwnerLookup,
   namedOwnerId,
   optionLabel,
-  ownerEmail,
   phoneOf,
   requiredTextOf,
   textOf,
@@ -188,7 +188,7 @@ export const leadImport = defineImportEntity<LeadIn, Lead, LeadFilters>({
       company: lead.company,
       email: null,
       phone: null,
-      owner: ownerEmail(lookups[LOOKUP_OWNERS], lead.owner_id),
+      owner: labelFor(lookups[LOOKUP_OWNERS], lead.owner_id),
       notes: lead.notes,
       status: optionLabel(STATUS_OPTIONS, lead.status),
       source: optionLabel(SOURCE_OPTIONS, lead.source),

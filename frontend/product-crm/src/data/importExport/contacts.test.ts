@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RowProblem, makeLookup } from "@opsgrids/client";
-import type { LookupSet } from "@opsgrids/client";
+import type { LookupSet, ParsedValue } from "@opsgrids/client";
 
 import type { Contact } from "@/api/types";
 import { getMySubjectRef } from "@/lib/subject";
@@ -12,7 +12,7 @@ import {
   contactWire,
   contextWith,
   pageOf,
-  parseRow,
+  parsedRow,
   present,
   stubGateway,
 } from "./entityTestKit";
@@ -42,10 +42,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const MINIMAL = { fullName: "Asha Rao", email: "Asha.Rao@Northwind.co", company: "northwind  logistics" };
+const MINIMAL = { fullName: "Asha Rao", email: "asha.rao@northwind.co", company: "northwind  logistics" };
 
-function payloadFor(cells: Record<string, string | number>) {
-  return contactImport.toPayload(parseRow(contactImport.columns, cells), ctx);
+function payloadFor(cells: Record<string, ParsedValue>) {
+  return contactImport.toPayload(parsedRow(contactImport.columns, cells), ctx);
 }
 
 describe("contacts: toPayload", () => {
@@ -55,8 +55,8 @@ describe("contacts: toPayload", () => {
         ...MINIMAL,
         owner: "grace@example.com",
         title: "VP Operations",
-        status: "Customer",
-        phone: "+91 98765 43210",
+        status: "customer",
+        phone: "+919876543210",
       }),
     ).toEqual({
       full_name: "Asha Rao",
@@ -97,13 +97,13 @@ describe("contacts: toPayload", () => {
         { label: "northwind logistics", value: "comp-7" },
       ]),
     });
-    const row = parseRow(contactImport.columns, MINIMAL);
+    const row = parsedRow(contactImport.columns, MINIMAL);
     expect(() => contactImport.toPayload(row, twins)).toThrow(/More than one company is named/);
   });
 
   it("refuses a phone number without a country code, and never guesses one", () => {
-    expect(() => payloadFor({ ...MINIMAL, phone: "98765 43210" })).toThrow(RowProblem);
-    expect(() => payloadFor({ ...MINIMAL, phone: "98765 43210" })).toThrow(/country code/);
+    expect(() => payloadFor({ ...MINIMAL, phone: "9876543210" })).toThrow(RowProblem);
+    expect(() => payloadFor({ ...MINIMAL, phone: "9876543210" })).toThrow(/country code/);
   });
 
   it("gives a blank owner to the signed-in rep, and refuses when there is none", () => {
@@ -145,7 +145,7 @@ describe("contacts: loadLookups", () => {
 describe("contacts: create", () => {
   it("POSTs the payload to /contacts, with raw_phone and no phone field, and returns the new id", async () => {
     const calls = stubGateway(() => contactWire("cont-9", "asha.rao@northwind.co", "comp-1"), 201);
-    const payload = payloadFor({ ...MINIMAL, phone: "+91 98765 43210" });
+    const payload = payloadFor({ ...MINIMAL, phone: "+919876543210" });
     const created = await contactImport.create(payload, ctx);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url.pathname).toBe("/api/v1/contacts");

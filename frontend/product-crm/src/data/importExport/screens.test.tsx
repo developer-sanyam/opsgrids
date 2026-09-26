@@ -1,17 +1,18 @@
 /**
  * How the four list screens hand themselves to the Import/Export button: which entity, which
- * filters (the ones the list is loaded with, held steady between renders), and whether the caller
- * is offered Import. The hook and the button are replaced with recorders: the engine and the dialog
- * are not under test here, only what the screens give them.
+ * filters (the ones the list is loaded with, held steady between renders), whether the caller is
+ * offered Import, and what the screen does when an import has created rows (reload its list). The
+ * hook and the button are replaced with recorders: the engine and the dialog are not under test
+ * here, only what the screens give them. `importFlow.test.tsx` runs the real ones.
  */
 import type { ReactElement } from "react";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PermissionProvider } from "@opsgrids/client";
-import type { UseImportExportResult } from "@opsgrids/client";
+import type { ImportSummary, UseImportExportResult } from "@opsgrids/client";
 import type { ImportExportButtonProps } from "@opsgrids/ui";
 
 import { DirectoryContext, EMPTY_DIRECTORY } from "@/data/directoryContext";
@@ -20,9 +21,10 @@ import { ContactsPage } from "@/routes/Contacts";
 import { DealsPage } from "@/routes/Deals";
 import { LeadsPage } from "@/routes/Leads";
 import { pageOf, stubGateway } from "./entityTestKit";
+import type { Recorded } from "./entityTestKit";
 
 const recorded = vi.hoisted(() => ({
-  hook: [] as { entityId: string; filters: unknown }[],
+  hook: [] as { entityId: string; filters: unknown; onImported: ((summary: ImportSummary) => void) | undefined }[],
   buttons: [] as unknown[],
 }));
 
@@ -61,8 +63,11 @@ vi.mock("@opsgrids/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@opsgrids/client")>();
   return {
     ...actual,
-    useImportExport: (entity: { id: string }, options?: { filters?: unknown }) => {
-      recorded.hook.push({ entityId: entity.id, filters: options?.filters });
+    useImportExport: (
+      entity: { id: string },
+      options?: { filters?: unknown; onImported?: (summary: ImportSummary) => void },
+    ) => {
+      recorded.hook.push({ entityId: entity.id, filters: options?.filters, onImported: options?.onImported });
       return RESULT;
     },
   };
@@ -79,10 +84,14 @@ vi.mock("@opsgrids/ui", async (importOriginal) => {
   };
 });
 
+let requests: Recorded[];
+const reloadDirectory = vi.fn();
+
 beforeEach(() => {
   recorded.hook.length = 0;
   recorded.buttons.length = 0;
-  stubGateway(() => pageOf([]));
+  reloadDirectory.mockReset();
+  requests = stubGateway(() => pageOf([]));
 });
 
 afterEach(() => {
@@ -95,6 +104,12 @@ function lastHook() {
   return last;
 }
 
+function lastOnImported(): (summary: ImportSummary) => void {
+  const { onImported } = lastHook();
+  if (onImported === undefined) throw new Error("the screen passed no onImported");
+  return onImported;
+}
+
 function lastButton(): ImportExportButtonProps {
   const last = recorded.buttons.at(-1);
   if (last === undefined) throw new Error("ImportExportButton was never rendered");
@@ -105,7 +120,7 @@ function renderScreen(screenElement: ReactElement, grants: string[]) {
   return render(
     <MemoryRouter>
       <PermissionProvider grants={grants}>
-        <DirectoryContext.Provider value={{ ...EMPTY_DIRECTORY, status: "success" }}>
+        <DirectoryContext.Provider value={{ ...EMPTY_DIRECTORY, status: "success", reload: reloadDirectory }}>
           {screenElement}
         </DirectoryContext.Provider>
       </PermissionProvider>
@@ -113,10 +128,23 @@ function renderScreen(screenElement: ReactElement, grants: string[]) {
   );
 }
 
+/** How many times the list endpoint has been asked for a page. */
+function listRequests(path: string): number {
+  return requests.filter((request) => request.method === "GET" && request.url.pathname === path).length;
+}
+
+function importedSummary(): ImportSummary {
+  return { created: 2, skipped: 0, failed: 0, invalid: 0, cancelled: false, outcomes: [] };
+}
+
 interface Case {
   screen: string;
   element: ReactElement;
   entityId: string;
+  /** The endpoint the screen's list is loaded from. */
+  listPath: string;
+  /** Whether the shared directory of names (companies, contacts) also changes with an import. */
+  reloadsDirectory: boolean;
   emptyTitle: string;
   write: string;
   read: string;
@@ -133,6 +161,8 @@ const CASES: Case[] = [
     screen: "Companies",
     element: <CompaniesPage />,
     entityId: "crm.companies",
+    listPath: "/api/v1/customers",
+    reloadsDirectory: true,
     emptyTitle: "No companies yet",
     write: "crm.book.company.write:OWN",
     read: "crm.book.company.read:ORG",
@@ -145,6 +175,8 @@ const CASES: Case[] = [
     screen: "Contacts",
     element: <ContactsPage />,
     entityId: "crm.contacts",
+    listPath: "/api/v1/contacts",
+    reloadsDirectory: true,
     emptyTitle: "No contacts yet",
     write: "crm.book.contact.write:OWN",
     read: "crm.book.contact.read:ORG",
@@ -157,6 +189,8 @@ const CASES: Case[] = [
     screen: "Leads",
     element: <LeadsPage />,
     entityId: "crm.leads",
+    listPath: "/api/v1/leads",
+    reloadsDirectory: false,
     emptyTitle: "No leads yet",
     write: "crm.lead.lead.write:OWN",
     read: "crm.lead.lead.read:ORG",
@@ -173,6 +207,8 @@ const CASES: Case[] = [
     screen: "Deals",
     element: <DealsPage />,
     entityId: "crm.deals",
+    listPath: "/api/v1/deals",
+    reloadsDirectory: false,
     emptyTitle: "No matching deals",
     write: "crm.pipeline.deal.write:OWN",
     read: "crm.pipeline.deal.read:ORG",
@@ -231,4 +267,45 @@ describe.each(CASES)("$screen screen", (c) => {
     expect(recorded.hook.length).toBeGreaterThan(1);
     expect(lastHook().filters).toBe(before);
   });
+
+  it("hands the hook one onImported for as long as the screen stays as it is", async () => {
+    const user = userEvent.setup();
+    renderScreen(c.element, [c.write]);
+    await screen.findByText(c.emptyTitle);
+    const before = lastOnImported();
+
+    await c.unrelated(user);
+    await screen.findByText(c.emptyTitle);
+
+    expect(recorded.hook.length).toBeGreaterThan(1);
+    expect(lastOnImported()).toBe(before);
+  });
+
+  it("reloads its list when an import has created rows, so they show without a refresh", async () => {
+    renderScreen(c.element, [c.write]);
+    await screen.findByText(c.emptyTitle);
+    const before = listRequests(c.listPath);
+    expect(before).toBeGreaterThan(0);
+
+    act(() => lastOnImported()(importedSummary()));
+
+    await waitFor(() => expect(listRequests(c.listPath)).toBe(before + 1));
+    await screen.findByText(c.emptyTitle);
+  });
+
+  it(
+    c.reloadsDirectory
+      ? "also reloads the directory that names these records on the other screens"
+      : "leaves the directory alone, because these records are not in it",
+    async () => {
+      renderScreen(c.element, [c.write]);
+      await screen.findByText(c.emptyTitle);
+      expect(reloadDirectory).not.toHaveBeenCalled();
+
+      act(() => lastOnImported()(importedSummary()));
+
+      await screen.findByText(c.emptyTitle);
+      expect(reloadDirectory).toHaveBeenCalledTimes(c.reloadsDirectory ? 1 : 0);
+    },
+  );
 });

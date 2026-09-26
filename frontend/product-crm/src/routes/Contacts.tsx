@@ -121,7 +121,15 @@ export function ContactsPage() {
     () => ({ search: debouncedSearch, status }),
     [debouncedSearch, status],
   );
-  const dx = useImportExport(contactImport, { filters: importFilters });
+  // New rows show without a refresh: the list reloads, and so does the directory that names
+  // contacts on the other screens, as after a single "New contact".
+  const { reload: reloadContacts } = contacts;
+  const { reload: reloadDirectory } = directory;
+  const onImported = useCallback(() => {
+    reloadContacts();
+    reloadDirectory();
+  }, [reloadContacts, reloadDirectory]);
+  const dx = useImportExport(contactImport, { filters: importFilters, onImported });
 
   const remove = useMutation((contact: Contact) => deleteContact(contact.id), {
     onSuccess: (_result, contact) => {

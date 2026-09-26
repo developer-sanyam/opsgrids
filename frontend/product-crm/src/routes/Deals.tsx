@@ -156,7 +156,9 @@ export function DealsPage() {
     () => ({ search: debouncedSearch, stage, ownerId }),
     [debouncedSearch, stage, ownerId],
   );
-  const dx = useImportExport(dealImport, { filters: importFilters });
+  // New rows show without a refresh: the board or the list reloads.
+  const { reload: reloadDeals } = deals;
+  const dx = useImportExport(dealImport, { filters: importFilters, onImported: reloadDeals });
 
   const remove = useMutation((deal: Deal) => deleteDeal(deal.id), {
     onSuccess: (_result, deal) => {

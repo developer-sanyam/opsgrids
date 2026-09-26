@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RowProblem, makeLookup } from "@opsgrids/client";
-import type { LookupSet } from "@opsgrids/client";
+import type { LookupSet, ParsedValue } from "@opsgrids/client";
 
 import type { Lead } from "@/api/types";
 import { leadImport } from "./leads";
-import { OWNERS_WIRE, contextWith, pageOf, parseRow, present, stubGateway } from "./entityTestKit";
+import { OWNERS_WIRE, contextWith, leadWire, pageOf, parsedRow, present, stubGateway } from "./entityTestKit";
 
 const LOOKUPS: LookupSet = {
   owners: makeLookup([
@@ -22,26 +22,15 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function payloadFor(cells: Record<string, string | number>) {
-  return leadImport.toPayload(parseRow(leadImport.columns, cells), ctx);
+function payloadFor(cells: Record<string, ParsedValue>) {
+  return leadImport.toPayload(parsedRow(leadImport.columns, cells), ctx);
 }
 
-const LEAD_WIRE = {
-  id: "lead-1",
-  full_name: "Meera Iyer",
+const LEAD_WIRE = leadWire("lead-1", "Meera Iyer", {
   company: "Halcyon Textiles",
-  email: "m•••@h•••.in",
-  phone: "+•• ••••• ••345",
-  source: "import",
-  status: "new",
   owner_id: "own-2",
   notes: "Asked for a demo.",
-  converted_company_id: null,
-  converted_contact_id: null,
-  converted_deal_id: null,
-  converted_at: null,
-  created_at: "2026-09-20T09:00:00Z",
-};
+});
 
 describe("leads: toPayload", () => {
   it("builds the create body from a full row, always from the source Import", () => {
@@ -49,8 +38,8 @@ describe("leads: toPayload", () => {
       payloadFor({
         fullName: "Meera Iyer",
         company: "Halcyon Textiles",
-        email: "Meera.Iyer@Halcyontextiles.in",
-        phone: "+91 90000 12345",
+        email: "meera.iyer@halcyontextiles.in",
+        phone: "+919000012345",
         owner: "grace@example.com",
         notes: "Asked for a demo.",
       }),
@@ -86,7 +75,7 @@ describe("leads: toPayload", () => {
   });
 
   it("refuses a phone number without a country code", () => {
-    expect(() => payloadFor({ fullName: "Meera Iyer", phone: "090000 12345" })).toThrow(/country code/);
+    expect(() => payloadFor({ fullName: "Meera Iyer", phone: "09000012345" })).toThrow(/country code/);
   });
 });
 
