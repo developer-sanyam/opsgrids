@@ -255,6 +255,7 @@ export function FlowEditor(props: FlowEditorProps) {
   const triggerNumber = props.numbers.get(flow.root.node.id) ?? 1;
   return (
     <section ref={containerRef} aria-label="Automation flow" className="flex flex-col gap-3">
+      <h2 className="sr-only">Steps in this automation</h2>
       <StepCard node={flow.root.node} props={props} />
       <Connector />
       {flow.path !== null && flow.path.steps.length > 0 ? (
