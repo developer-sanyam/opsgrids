@@ -59,8 +59,10 @@ subject)` wins, ordered by `(occurred_at, created_at, id)`:
   `bounced` or `complained` suppression exists — facts about the mailbox, not choices).
 - **marketing**: allowed **only** if the latest event is `opted_in`. `opted_out` denies, and so
   does **no event at all**: silence is not consent.
-- A STOP keyword or an unsubscribe link opts the subject out of **both** purposes on that channel
-  (two rows, one per purpose, so "latest per purpose" stays a single ordering).
+- A STOP keyword opts the subject out of **both** purposes on that channel (two rows, one per
+  purpose, so "latest per purpose" stays a single ordering). An email **unsubscribe link** opts the
+  address out of **marketing only**: it is the link in a marketing mail, and invoices and receipts
+  are not marketing (this is also what a legacy unsubscribed suppression always did).
 - A rule is `marketing` if its `category` is `marketing` **or** the provider template it sends is
   registered `marketing`. Meta's classification carries the obligation; a rule's free-text bucket
   can neither add to it nor waive it. `in_app` has no consent regime.
@@ -154,9 +156,9 @@ forged, for the reason `SuppressionIn` has no `reason` field.
 
 - **Rules with `category = 'marketing'` on email start requiring an opt-in**, where before they
   sent unless a preference said no. Check before deploying (see deploy notes).
-- An **email unsubscribe now also opts the address out of transactional email** through the
-  ledger (the specified "both purposes"), where a legacy unsubscribed suppression never touched
-  rule-driven mail. Backfilled legacy unsubscribes keep the old behaviour; new ones do not.
+- An email unsubscribe is **marketing-only**, in the ledger as it was in the legacy suppression,
+  so transactional mail (invoices, receipts) to an unsubscribed address keeps flowing. A WhatsApp
+  STOP still opts out of everything on that channel.
 - Contacts written by a path that records no consent are not selected for campaigns.
 - The ledger is retained, not erased: it is the evidence. Erasing a subject is crypto-shredding
   `subject_enc`, which this ADR does not build.
@@ -169,8 +171,7 @@ forged, for the reason `SuppressionIn` has no `reason` field.
    It keeps campaigns working and is attributed and labelled unverified, but it records an opt-in
    nobody captured evidence for. The alternative — no event, contact unmailable until consent is
    recorded — needs a UI to capture it first.
-2. **Should an email unsubscribe opt out of transactional email too?** Specified, implemented, and
-   flagged: invoices and receipts to that address stop.
+2. *(Decided.)* An email unsubscribe is marketing-only; a WhatsApp STOP is all purposes.
 3. **Should an explicit, evidenced re-opt-in supersede an `unsubscribed` suppression?** Today it
    cannot: nothing that was blocked before may become allowed, and only `manual` suppressions are
    liftable. A re-subscribe form for email needs a decision and a lift path.

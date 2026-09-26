@@ -864,7 +864,7 @@ async def test_a_manual_suppression_is_mirrored_and_its_lift_restores_the_attest
 UNSUBSCRIBE = "/api/v1/engage/unsubscribe"
 
 
-async def test_the_one_click_post_writes_an_opted_out_event_for_both_purposes(
+async def test_the_one_click_post_writes_an_opted_out_event_for_marketing_only(
     client, session, org_id
 ) -> None:
     await _add_contact(session, org_id)
@@ -872,19 +872,17 @@ async def test_the_one_click_post_writes_an_opted_out_event_for_both_purposes(
     assert (await client.post(f"{UNSUBSCRIBE}/{token}")).status_code == 200
 
     unsub = [e for e in await _events(session, org_id) if e.source == "unsubscribe_link"]
-    assert {(e.purpose, e.status) for e in unsub} == {
-        ("marketing", "opted_out"),
-        ("transactional", "opted_out"),
-    }
+    assert {(e.purpose, e.status) for e in unsub} == {("marketing", "opted_out")}
     assert (await _decide(session, org_id, "email", "marketing", EMAIL)).allowed is False
-    assert (await _decide(session, org_id, "email", "transactional", EMAIL)).allowed is False
+    # An invoice or a receipt is not a marketing mail: the link in one does not stop the other.
+    assert (await _decide(session, org_id, "email", "transactional", EMAIL)).allowed is True
 
 
 async def test_the_confirmation_form_post_writes_it_too(client, session, org_id) -> None:
     token = services.unsubscribe_token(org_id, EMAIL)
     response = await client.post(f"{UNSUBSCRIBE}/{token}", headers={"Accept": "text/html"})
     assert response.status_code == 200
-    assert len([e for e in await _events(session, org_id) if e.source == "unsubscribe_link"]) == 2
+    assert len([e for e in await _events(session, org_id) if e.source == "unsubscribe_link"]) == 1
 
 
 async def test_the_confirmation_page_get_writes_nothing(client, session, org_id) -> None:
@@ -900,7 +898,7 @@ async def test_repeat_clicks_add_nothing_but_a_click_after_an_opt_in_still_count
     token = services.unsubscribe_token(org_id, EMAIL)
     await client.post(f"{UNSUBSCRIBE}/{token}")
     await client.post(f"{UNSUBSCRIBE}/{token}")
-    assert len(await _events(session, org_id)) == 2
+    assert len(await _events(session, org_id)) == 1
 
     # The person re-subscribes through a form the organization recorded — and later clicks the
     # very same old link again. The click is a fresh refusal, not a duplicate to swallow.
@@ -931,7 +929,7 @@ async def test_a_v2_link_opts_out_the_recipient_it_names_without_opening_the_add
     assert (await client.post(f"{UNSUBSCRIBE}/{token}")).status_code == 200
 
     unsub = [e for e in await _events(session, org_id) if e.source == "unsubscribe_link"]
-    assert len(unsub) == 2
+    assert len(unsub) == 1
     assert {e.contact_id for e in unsub} == {contact.id}
     assert (await _decide(session, org_id, "email", "marketing", EMAIL)).allowed is False
 

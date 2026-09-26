@@ -127,7 +127,7 @@ every time.
 | `transactional` | no event, or the latest is `opted_in` | the latest is `opted_out`; for email, also a `bounced` or `complained` suppression |
 | `marketing` | the latest is `opted_in` | the latest is `opted_out` **or there is no event at all** — silence is not consent |
 
-A STOP keyword or an unsubscribe link opts the subject out of **both** purposes on that channel.
+A STOP keyword opts the subject out of **both** purposes on that channel; an email unsubscribe link opts the address out of **marketing only** (invoices and receipts keep flowing).
 A rule is `marketing` when its `category` is `marketing` **or** the provider template it sends is
 registered as `marketing` (Meta's own classification, which is what carries the obligation);
 everything else is `transactional`. `in_app` has no consent regime.
