@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { refreshAccessToken } from "../auth/refresh";
 import { ApiError } from "../http";
+import { setAccessToken, setUnauthorizedHandler } from "../session";
 import { ASSET_ACCEPTED_TYPES, ASSET_MAX_UPLOAD_BYTES, uploadAsset } from "./assets";
 import type { AssetOut } from "./assets";
+
+vi.mock("../auth/refresh", () => ({ refreshAccessToken: vi.fn() }));
 
 /**
  * A hand-rolled `XMLHttpRequest` — no mocking library carries multipart upload progress and abort
@@ -55,6 +59,10 @@ class FakeXHR {
   networkError() {
     this.onerror?.();
   }
+
+  timeOut() {
+    this.ontimeout?.();
+  }
 }
 
 function currentXhr(): FakeXHR {
@@ -93,6 +101,9 @@ afterEach(() => {
   FakeXHR.instances = [];
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  vi.mocked(refreshAccessToken).mockReset();
+  setUnauthorizedHandler(null);
+  setAccessToken(null);
 });
 
 describe("uploadAsset", () => {
@@ -190,6 +201,98 @@ describe("uploadAsset", () => {
     currentXhr().networkError();
 
     await expect(promise).rejects.toThrow(/Couldn't reach the server/);
+  });
+
+  it("never retries a timeout — the server may already have stored the image", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("XMLHttpRequest", FakeXHR);
+    const { controls: c } = controls();
+
+    const promise = uploadAsset(file(), c);
+    const settled = promise.catch((e: unknown) => e);
+    currentXhr().timeOut();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const failure = await settled;
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).message).toMatch(/timed out/);
+    expect((failure as ApiError).message).toMatch(/may still have gone through/);
+    expect(FakeXHR.instances).toHaveLength(1);
+  });
+
+  it("rejects a 2xx with an empty body instead of resolving nothing", async () => {
+    vi.stubGlobal("XMLHttpRequest", FakeXHR);
+    const { controls: c } = controls();
+
+    const promise = uploadAsset(file(), c);
+    currentXhr().respond(201, "  ");
+
+    const failure = await promise.catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure).toMatchObject({ status: 201 });
+    expect((failure as ApiError).message).toMatch(/sent nothing back/);
+    expect(FakeXHR.instances).toHaveLength(1);
+  });
+
+  it("refreshes the session once on a 401 and retries once with the new token", async () => {
+    vi.stubGlobal("XMLHttpRequest", FakeXHR);
+    setAccessToken("stale");
+    vi.mocked(refreshAccessToken).mockImplementation(() => {
+      setAccessToken("fresh");
+      return Promise.resolve({ outcome: "ok", expiresIn: 900 });
+    });
+    const { controls: c } = controls();
+
+    const promise = uploadAsset(file(), c);
+    const first = currentXhr();
+    expect(first.requestHeaders["Authorization"]).toBe("Bearer stale");
+    first.respond(401, "");
+
+    await vi.waitFor(() => expect(FakeXHR.instances).toHaveLength(2));
+    const second = currentXhr();
+    expect(second.requestHeaders["Authorization"]).toBe("Bearer fresh");
+    second.respond(201, JSON.stringify(ASSET));
+
+    await expect(promise).resolves.toEqual(ASSET);
+    expect(refreshAccessToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not refresh twice: a second 401 signs the caller out and rejects", async () => {
+    vi.stubGlobal("XMLHttpRequest", FakeXHR);
+    const signedOut = vi.fn();
+    setUnauthorizedHandler(signedOut);
+    vi.mocked(refreshAccessToken).mockResolvedValue({ outcome: "ok", expiresIn: 900 });
+    const { controls: c } = controls();
+
+    const promise = uploadAsset(file(), c);
+    const settled = promise.catch((e: unknown) => e);
+    currentXhr().respond(401, "");
+    await vi.waitFor(() => expect(FakeXHR.instances).toHaveLength(2));
+    currentXhr().respond(401, "");
+
+    const failure = await settled;
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure).toMatchObject({ status: 401 });
+    expect(refreshAccessToken).toHaveBeenCalledTimes(1);
+    expect(FakeXHR.instances).toHaveLength(2);
+    expect(signedOut).toHaveBeenCalledTimes(1);
+  });
+
+  it("signs the caller out and does not retry when the refresh cannot produce a token", async () => {
+    vi.stubGlobal("XMLHttpRequest", FakeXHR);
+    const signedOut = vi.fn();
+    setUnauthorizedHandler(signedOut);
+    vi.mocked(refreshAccessToken).mockResolvedValue({ outcome: "unauthorized" });
+    const { controls: c } = controls();
+
+    const promise = uploadAsset(file(), c);
+    const settled = promise.catch((e: unknown) => e);
+    currentXhr().respond(401, "");
+
+    const failure = await settled;
+    expect(failure).toMatchObject({ status: 401 });
+    expect(FakeXHR.instances).toHaveLength(1);
+    expect(signedOut).toHaveBeenCalledTimes(1);
   });
 
   it("never retries a 4xx — the server's answer is final", async () => {

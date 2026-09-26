@@ -11,14 +11,19 @@
  * request-body streaming has no equivalent. Shaped to drop straight into `FileUpload`'s
  * `onUpload={(file, controls) => …}`.
  *
- * **Retried once, and only on a network failure that never reached the server** — a dropped
- * connection, a DNS hiccup. A 4xx or 5xx is the server's answer and is never retried (the
- * platform rule: an authorization failure does not fix itself, and a write is not known
- * idempotent from here). An abort (the caller removed the file mid-upload) is never retried
- * either — it is not a failure, it is what was asked for.
+ * **Retried once on a dropped connection or a DNS hiccup** — a failure with no response at all.
+ * **A timeout is never retried**: the request may have reached the server and stored the image
+ * before the client gave up, and a second attempt would then create a duplicate asset. A 4xx or
+ * 5xx is the server's answer and is never retried either (the platform rule: an authorization
+ * failure does not fix itself, and a write is not known idempotent from here), with one
+ * exception: a 401 gets one silent session refresh through the client's own single-flight
+ * refresh path, and one retry with the new token — the same treatment `apiRequest` gives every
+ * other call, and safe because a 401 is refused before anything is stored. An abort (the caller
+ * removed the file mid-upload) is never retried — it is not a failure, it is what was asked for.
  */
 
-import { getAccessToken } from "../session";
+import { refreshAccessToken } from "../auth/refresh";
+import { getAccessToken, notifyUnauthorized } from "../session";
 import { ApiError, API_BASE } from "../http";
 import type { ProblemJson } from "../http";
 
@@ -65,9 +70,9 @@ export const ASSET_ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp"] as
 export const ASSET_PUBLIC_HELPER =
   "JPEG, PNG or WebP, up to 5 MB. Uploaded images are public — anyone with the address can view them.";
 
-/** How long one attempt waits before it gives up and is treated as a network failure — eligible
- *  for the one retry below. Set beyond the server's own budget for 5 MiB (ADR-0009 §10's 20s),
- *  so a slow-but-working upload is never cut off by the client first. */
+/** How long one attempt waits before it gives up. Set beyond the server's own budget for 5 MiB
+ *  (ADR-0009 §10's 20s), so a slow-but-working upload is never cut off by the client first. Giving
+ *  up is final: the upload is reported as timed out, never retried (see the module comment). */
 const UPLOAD_TIMEOUT_MS = 30_000;
 
 function messageFor(problem: ProblemJson | null, status: number): string {
@@ -90,9 +95,10 @@ function parseProblem(text: string): ProblemJson | null {
   }
 }
 
-/** Thrown only for a failure that never reached the server — never for the server's own answer,
- *  which is always an `ApiError` instead. Internal: `uploadAsset` retries this once and, failing
- *  that, surfaces it as an ordinary `ApiError` a form already knows how to show. */
+/** Thrown only for a connection that failed outright, with no response — never for the server's own
+ *  answer, which is always an `ApiError`, and never for a timeout, which is not known to have
+ *  failed. Internal: `uploadAsset` retries this once and, failing that, surfaces it as an
+ *  ordinary `ApiError` a form already knows how to show. */
 class NetworkFailure extends Error {}
 
 function abortError(): DOMException {
@@ -151,8 +157,21 @@ function attempt(file: File, signal: AbortSignal, onProgress: (fraction: number)
       cleanup();
       const status = xhr.status;
       if (status >= 200 && status < 300) {
+        // A 2xx with nothing in it is not a stored asset: resolving it would hand the form an
+        // `undefined` to read `public_path` from. The upload may well have landed, so say that
+        // rather than pretend it failed cleanly.
+        if (xhr.responseText.trim() === "") {
+          reject(
+            new ApiError(
+              status,
+              "The server accepted the upload but sent nothing back to confirm it. Check the image library before uploading again.",
+              null,
+            ),
+          );
+          return;
+        }
         try {
-          resolve(xhr.responseText.trim() === "" ? (undefined as never) : (JSON.parse(xhr.responseText) as AssetOut));
+          resolve(JSON.parse(xhr.responseText) as AssetOut);
         } catch {
           reject(new ApiError(status, "The server's response couldn't be read.", null));
         }
@@ -167,7 +186,15 @@ function attempt(file: File, signal: AbortSignal, onProgress: (fraction: number)
     };
     xhr.ontimeout = () => {
       cleanup();
-      reject(new NetworkFailure("The upload timed out."));
+      // Not a `NetworkFailure`: a timeout says nothing about whether the server stored the image,
+      // and retrying it is how a duplicate asset gets made.
+      reject(
+        new ApiError(
+          0,
+          "The upload timed out, and it may still have gone through. Check the image library before uploading again.",
+          null,
+        ),
+      );
     };
     xhr.onabort = () => {
       cleanup();
@@ -176,6 +203,39 @@ function attempt(file: File, signal: AbortSignal, onProgress: (fraction: number)
 
     xhr.send(form);
   });
+}
+
+/**
+ * One attempt, plus the session's one chance: a 401 gets a single silent refresh (the same
+ * single-flight `refreshAccessToken` `apiRequest` uses) and one retry with whatever token that
+ * produced. A refresh that cannot produce one, or a 401 on the retry itself, falls through to the
+ * global signed-out handler exactly as `apiRequest` does — never a second refresh, never a loop.
+ */
+async function attemptWithSession(
+  file: File,
+  signal: AbortSignal,
+  onProgress: (fraction: number) => void,
+): Promise<AssetOut> {
+  try {
+    return await attempt(file, signal, onProgress);
+  } catch (failure) {
+    if (!(failure instanceof ApiError) || failure.status !== 401) throw failure;
+
+    const refreshed = await refreshAccessToken();
+    if (signal.aborted) throw abortError();
+    if (refreshed.outcome !== "ok") {
+      notifyUnauthorized();
+      throw failure;
+    }
+
+    onProgress(0);
+    try {
+      return await attempt(file, signal, onProgress);
+    } catch (retryFailure) {
+      if (retryFailure instanceof ApiError && retryFailure.status === 401) notifyUnauthorized();
+      throw retryFailure;
+    }
+  }
 }
 
 /** How long to wait before the one retry. Short: a dropped packet recovers fast, and a merchant
@@ -195,7 +255,7 @@ const RETRY_DELAY_MS = 800;
 export async function uploadAsset(file: File, controls: UploadAssetControls): Promise<AssetOut> {
   const { signal, onProgress } = controls;
   try {
-    return await attempt(file, signal, onProgress);
+    return await attemptWithSession(file, signal, onProgress);
   } catch (failure) {
     if (!(failure instanceof NetworkFailure) || signal.aborted) throw failure;
 
@@ -204,7 +264,7 @@ export async function uploadAsset(file: File, controls: UploadAssetControls): Pr
 
     onProgress(0);
     try {
-      return await attempt(file, signal, onProgress);
+      return await attemptWithSession(file, signal, onProgress);
     } catch (retryFailure) {
       if (retryFailure instanceof NetworkFailure) {
         throw new ApiError(0, "Couldn't reach the server. Check your connection and try again.", null);
