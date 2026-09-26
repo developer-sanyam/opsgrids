@@ -12,7 +12,6 @@ import {
   DonutChart,
   EmptyState,
   EyeIcon,
-  LineChart,
   MinusCircleIcon,
   PageHeader,
   TargetIcon,
@@ -31,6 +30,7 @@ import type { Kpi } from "./DashboardParts";
 import { DashboardFailure } from "./DashboardFailure";
 import { formatDay } from "./dates";
 import { deviceLabel, linkLabel, percentOf, shareCaption } from "./format";
+import { TrendChart } from "./TrendChart";
 
 /**
  * One campaign's analytics (`GET /engage/campaigns/{id}/analytics`).
@@ -183,12 +183,10 @@ function EngagementOverTime({ data }: { data: CampaignAnalytics }) {
     );
   }
   return (
-    <LineChart
+    <TrendChart
       label={`Engagement per day: ${series.map((one) => one.label.toLowerCase()).join(" and ")}`}
       categories={data.series.map((point) => formatDay(point.date))}
       series={series}
-      formatValue={formatNumber}
-      integer
       height="md"
     />
   );

@@ -67,6 +67,17 @@ describe("the WhatsApp overview", () => {
     expect(table.textContent).toContain("Delivered");
   });
 
+  it("still draws a one-day range, with its table, rather than a line through a single point", async () => {
+    vi.spyOn(analytics, "getWhatsAppOverview").mockResolvedValue({
+      ...WHATSAPP,
+      series: WHATSAPP.series.slice(0, 1),
+    });
+    mount("/whatsapp?range=custom&from=2026-09-01&to=2026-09-01");
+
+    const table = await screen.findByRole("table", { name: /WhatsApp messages per day/ });
+    expect(table.textContent).toContain("620");
+  });
+
   it("labels the cost as an estimate, in the card's own name, with the money in rupees", async () => {
     vi.spyOn(analytics, "getWhatsAppOverview").mockResolvedValue(WHATSAPP);
     mount();
