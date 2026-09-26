@@ -16,7 +16,7 @@ import ExcelJS from "exceljs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { OrgUnitNode } from "@/api/orgUnits";
-import type { EmployeeOut } from "@/api/types";
+import type { EmployeeOut, LocationOut } from "@/api/types";
 
 import { employeesEntity } from "./employees";
 import type { EmployeeFilters } from "./employees";
@@ -96,6 +96,13 @@ const TREE: OrgUnitNode[] = [
   unit("d-hr", "Human Resources"),
 ];
 
+function site(code: string, name: string): LocationOut {
+  return { id: `loc-${code}`, name, code, timezone: "Asia/Kolkata", country: "IN", is_active: true };
+}
+
+/** Two sites; the sample sheet's second location, MUM-01, is not one of them. */
+const SITES: LocationOut[] = [site("BLR-HQ", "Bengaluru HQ"), site("PUN-03", "Pune")];
+
 function employee(over: Partial<EmployeeOut>): EmployeeOut {
   return {
     id: "e-0",
@@ -135,6 +142,7 @@ const EMPLOYEES: EmployeeOut[] = [
     employee_no: "EMP-0012",
     full_name: "Sameer Joshi",
     department_id: "d-eng-plat",
+    location_code: "BLR-HQ",
     employment_type: "part_time",
     work_mode: "remote",
     reporting_manager_id: "e-7",
@@ -173,10 +181,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * A gateway with the department tree, the employee list and `POST /employees`. An employee number
  * already on the list answers 409; EMP-3004 answers 403; anything else is created. A caller who may
- * not read departments gets a 403 for the tree.
+ * not read departments or locations gets a 403 for that list.
  */
-function stubGateway(options: { mayReadDepartments?: boolean } = {}) {
-  const { mayReadDepartments = true } = options;
+function stubGateway(options: { mayReadDepartments?: boolean; mayReadLocations?: boolean } = {}) {
+  const { mayReadDepartments = true, mayReadLocations = true } = options;
   const requests: Recorded[] = [];
   vi.stubGlobal(
     "fetch",
@@ -188,6 +196,9 @@ function stubGateway(options: { mayReadDepartments?: boolean } = {}) {
 
       if (method === "GET" && url.pathname === "/api/v1/org-units") {
         return mayReadDepartments ? ok(200, TREE) : problem(403, "Forbidden", "You cannot read the departments.");
+      }
+      if (method === "GET" && url.pathname === "/api/v1/locations") {
+        return mayReadLocations ? ok(200, SITES) : problem(403, "Forbidden", "You cannot read the locations.");
       }
       if (method === "GET" && url.pathname === "/api/v1/employees") {
         const page = Number(url.searchParams.get("page") ?? "1");
@@ -288,29 +299,30 @@ function rowByHeader(sheet: ExcelJS.Worksheet, rowNumber: number): Record<string
 const SAMPLE_ROW = employeesEntity.sampleRows[0] ?? {};
 
 const FILE_ROWS: Record<string, ExcelJS.CellValue>[] = [
-  // 2: a full row. The department is written Parent / Child, the manager is on the second page of
-  // the employee list, the joining date is a real Excel date, and the file carries columns an
-  // import must ignore (Status, Record ID) or never accept (PAN).
+  // 2: a full row. The department is written Parent / Child, the location by its name, the manager
+  // is on the second page of the employee list, the joining date is a real Excel date, and the
+  // file carries a column an import must ignore (Status) and one it never accepts (PAN).
   {
     employee_no: "EMP-3001",
     full_name: "Ravi Iyer",
     designation: "Analyst",
     job_title: "Finance",
     department: "Engineering / Platform",
-    location_code: "BLR-HQ",
+    location_code: "Bengaluru HQ",
     employment_type: "Contract",
     work_mode: "hybrid",
     date_of_joining: new Date(Date.UTC(2026, 4, 11)),
     reporting_manager: "EMP-0031",
     status: "Exited",
-    id: "not-an-id-to-send",
     pan: "ABCDE1234F",
   },
-  // 3: names by case-insensitive text, an ISO date typed as text, both managers.
+  // 3: names by case-insensitive text, a department and a location by their codes, an ISO date
+  // typed as text, both managers.
   {
     employee_no: "EMP-3002",
     full_name: "Meera Shah",
-    department: "human resources",
+    department: "d-hr",
+    location_code: "pun-03",
     date_of_joining: "2026-06-01",
     reporting_manager: "emp-0007",
     dotted_line_manager: "EMP-0012",
@@ -323,12 +335,16 @@ const FILE_ROWS: Record<string, ExcelJS.CellValue>[] = [
   { full_name: "No Number" },
   // 7: a department the organisation does not have.
   { employee_no: "EMP-3006", full_name: "Lost Department", department: "Skunkworks" },
-  // 8: the sample sheet's first example, untouched.
+  // 8: a location that is neither a code nor a name of one of the organisation's sites.
+  { employee_no: "EMP-3007", full_name: "Lost Site", location_code: "Bangalore" },
+  // 9: the sample sheet's first example, untouched.
   { ...SAMPLE_ROW },
 ];
 
 const MISSING_NUMBER = "Employee number is required";
-const UNKNOWN_DEPARTMENT = "'Skunkworks' is not in the list of Departments (see the Lists sheet)";
+// The engine's own sentence for a reference the list does not hold; it may go on to say how to fix it.
+const UNKNOWN_DEPARTMENT = /^'Skunkworks' is not in the list of Departments \(see the Lists sheet\)/;
+const UNKNOWN_LOCATION = /^'Bangalore' is not in the list of Location codes \(see the Lists sheet\)/;
 
 describe("importing employees from Excel", () => {
   it(
@@ -342,12 +358,13 @@ describe("importing employees from Excel", () => {
       await screen.findByRole("dialog", { name: "Review your file" });
 
       // The preview: counts first, then the reason against each row that cannot go.
-      expect(figure("Rows in file")).toBe("7");
+      expect(figure("Rows in file")).toBe("8");
       expect(figure("Ready to import")).toBe("4");
-      expect(figure("Need fixing")).toBe("2");
+      expect(figure("Need fixing")).toBe("3");
       expect(figure("Sample rows skipped")).toBe("1");
       expect(screen.getByText(MISSING_NUMBER)).toBeTruthy();
       expect(screen.getByText(UNKNOWN_DEPARTMENT)).toBeTruthy();
+      expect(screen.getByText(UNKNOWN_LOCATION)).toBeTruthy();
       expect(screen.getByText("An unchanged example from the sample sheet. It is skipped.")).toBeTruthy();
       expect(screen.getByText("These columns are ignored: PAN.")).toBeTruthy();
       expect(gateway.posts()).toHaveLength(0);
@@ -374,6 +391,7 @@ describe("importing employees from Excel", () => {
           employee_no: "EMP-3002",
           full_name: "Meera Shah",
           department_id: "d-hr",
+          location_code: "PUN-03",
           date_of_joining: "2026-06-01",
           reporting_manager_id: "e-7",
           dotted_line_manager_id: "e-12",
@@ -383,35 +401,36 @@ describe("importing employees from Excel", () => {
       ]);
       for (const body of bodies) {
         for (const key of ["status", "pii", "pan", "id", "membership_id"]) expect(body).not.toHaveProperty(key);
-        expect(JSON.stringify(body)).not.toMatch(/status|pii|ABCDE1234F|not-an-id-to-send/);
+        expect(JSON.stringify(body)).not.toMatch(/status|pii|ABCDE1234F/);
       }
 
       // (b) The outcome: four counts, one sentence, and the server's own words against its rows.
       expect(figure("Created")).toBe("2");
       expect(figure("Skipped, already exist")).toBe("1");
       expect(figure("Failed")).toBe("1");
-      expect(figure("Invalid")).toBe("2");
-      expect(screen.getByText("3 rows were not imported. 2 employees were created.")).toBeTruthy();
+      expect(figure("Invalid")).toBe("3");
+      expect(screen.getByText("4 rows were not imported. 2 employees were created.")).toBeTruthy();
       const table = within(screen.getByRole("region", { name: "Rows that were not created" }));
       expect(table.getByText("An employee numbered 'EMP-0012' already exists")).toBeTruthy();
       expect(table.getByText("Your role cannot add employees to that department.")).toBeTruthy();
       expect(table.getByText(MISSING_NUMBER)).toBeTruthy();
       expect(table.getByText(UNKNOWN_DEPARTMENT)).toBeTruthy();
+      expect(table.getByText(UNKNOWN_LOCATION)).toBeTruthy();
       // Each is against its own row in the sheet: the sheet's row numbers, header excluded.
-      const rowOf = (text: string) => table.getByText(text).closest("tr");
-      const numberOf = (text: string) => {
-        const row = rowOf(text);
+      const numberOf = (text: string | RegExp) => {
+        const row = table.getByText(text).closest("tr");
         return row === null ? null : within(row).getByRole("rowheader").textContent;
       };
       expect(numberOf("An employee numbered 'EMP-0012' already exists")).toBe("4");
       expect(numberOf("Your role cannot add employees to that department.")).toBe("5");
       expect(numberOf(MISSING_NUMBER)).toBe("6");
       expect(numberOf(UNKNOWN_DEPARTMENT)).toBe("7");
+      expect(numberOf(UNKNOWN_LOCATION)).toBe("8");
 
       // (c) The screen is told once, so it can reload its list.
       expect(onImported).toHaveBeenCalledTimes(1);
       expect(onImported).toHaveBeenCalledWith(
-        expect.objectContaining({ created: 2, skipped: 1, failed: 1, invalid: 2, cancelled: false }),
+        expect.objectContaining({ created: 2, skipped: 1, failed: 1, invalid: 3, cancelled: false }),
       );
 
       await user.click(screen.getByRole("button", { name: "Done" }));
@@ -438,15 +457,17 @@ describe("importing employees from Excel", () => {
       const sheet = sheetNamed(await readDownload(downloads[0]), "Result");
       const lines: string[] = [];
       sheet.eachRow((row) => lines.push([1, 2, 3, 4].map((column) => row.getCell(column).text).join(" | ")));
-      expect(lines).toEqual([
+      expect(lines.slice(0, 6)).toEqual([
         "Row | Employee number | Status | Message",
         "2 | EMP-3001 | Created | ",
         "3 | EMP-3002 | Created | ",
         "4 | EMP-0012 | Skipped | An employee numbered 'EMP-0012' already exists",
         "5 | EMP-3004 | Failed | Your role cannot add employees to that department.",
         `6 |  | Invalid | ${MISSING_NUMBER}`,
-        `7 | EMP-3006 | Invalid | ${UNKNOWN_DEPARTMENT}`,
       ]);
+      expect(lines).toHaveLength(8);
+      expect(lines[6]).toMatch(/^7 \| EMP-3006 \| Invalid \| 'Skunkworks' is not in the list of Departments/);
+      expect(lines[7]).toMatch(/^8 \| EMP-3007 \| Invalid \| 'Bangalore' is not in the list of Location codes/);
     },
     TEST_TIMEOUT,
   );
@@ -555,6 +576,60 @@ describe("importing employees from Excel", () => {
     },
     TEST_TIMEOUT,
   );
+
+  it(
+    "still imports the rows that name no location when the caller may not read locations, and refuses the rest rather than save a code nobody can check",
+    async () => {
+      const gateway = stubGateway({ mayReadLocations: false });
+      const user = await openDialog();
+      const rows = [
+        { employee_no: "EMP-3020", full_name: "No Location", department: "Human Resources" },
+        { employee_no: "EMP-3021", full_name: "Names One", location_code: "BLR-HQ" },
+      ];
+
+      await user.upload(fileInput(), await importFile(rows));
+      await screen.findByRole("dialog", { name: "Review your file" });
+      expect(figure("Ready to import")).toBe("1");
+      expect(figure("Need fixing")).toBe("1");
+      expect(screen.getByText(/^'BLR-HQ' is not in the list of Location codes/)).toBeTruthy();
+
+      await user.click(screen.getByRole("button", { name: "Import 1 row" }));
+      await screen.findByRole("dialog", { name: "Import finished" }, { timeout: 10_000 });
+
+      expect(gateway.posts().map((request) => request.body)).toEqual([
+        { employee_no: "EMP-3020", full_name: "No Location", department_id: "d-hr" },
+      ]);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "never saves the name a location was written by: 'Bangalore' and 'blr-hq' would leave the employee invisible to location-based roles",
+    async () => {
+      const gateway = stubGateway();
+      const user = await openDialog();
+      const rows = [
+        { employee_no: "EMP-3030", full_name: "By Code", location_code: "blr-hq" },
+        { employee_no: "EMP-3031", full_name: "By Name", location_code: "PUNE" },
+        { employee_no: "EMP-3032", full_name: "By City", location_code: "Bangalore" },
+      ];
+
+      await user.upload(fileInput(), await importFile(rows));
+      await screen.findByRole("dialog", { name: "Review your file" });
+      expect(figure("Ready to import")).toBe("2");
+      expect(figure("Need fixing")).toBe("1");
+      expect(screen.getByText(/^'Bangalore' is not in the list of Location codes/)).toBeTruthy();
+
+      await user.click(screen.getByRole("button", { name: "Import 2 rows" }));
+      await screen.findByRole("dialog", { name: "Import finished" }, { timeout: 10_000 });
+
+      expect(gateway.posts().map((request) => request.body)).toEqual([
+        { employee_no: "EMP-3030", full_name: "By Code", location_code: "BLR-HQ" },
+        { employee_no: "EMP-3031", full_name: "By Name", location_code: "PUN-03" },
+      ]);
+    },
+    TEST_TIMEOUT,
+  );
 });
 
 // ------------------------------------------------------------------------------------ exporting
@@ -589,6 +664,7 @@ describe("exporting employees to Excel", () => {
         "Employee number": "EMP-0012",
         "Full name": "Sameer Joshi",
         Department: "Engineering / Platform",
+        "Location code": "BLR-HQ",
         "Employment type": "Part-time",
         "Work mode": "Remote",
         "Manager employee number": "EMP-0007",
@@ -621,7 +697,7 @@ describe("exporting employees to Excel", () => {
   );
 
   it(
-    "writes a file that imports again as the same records, ignoring the columns the system sets",
+    "writes a file that imports again as the same records once the Record ID column is taken out",
     async () => {
       const gateway = stubGateway();
       const user = await openDialog();
@@ -630,7 +706,19 @@ describe("exporting employees to Excel", () => {
       const blob = downloads[0]?.blob;
       if (blob === undefined) throw new Error("Nothing was downloaded");
 
-      await user.upload(fileInput(), new File([blob], "employees-export.xlsx", { type: XLSX_TYPE }));
+      // A row with a Record ID came out of the system and is refused, so the column goes first.
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(await blob.arrayBuffer());
+      const exported = sheetNamed(workbook, "Export");
+      let idColumn = 0;
+      exported.getRow(1).eachCell((cell, column) => {
+        if (cell.text === "Record ID") idColumn = column;
+      });
+      expect(idColumn).toBeGreaterThan(0);
+      exported.spliceColumns(idColumn, 1);
+      const edited = new File([await workbook.xlsx.writeBuffer()], "employees-export.xlsx", { type: XLSX_TYPE });
+
+      await user.upload(fileInput(), edited);
       await screen.findByRole("dialog", { name: "Review your file" });
       expect(figure("Rows in file")).toBe("3");
       expect(figure("Ready to import")).toBe("3");
@@ -655,6 +743,7 @@ describe("exporting employees to Excel", () => {
           employee_no: "EMP-0012",
           full_name: "Sameer Joshi",
           department_id: "d-eng-plat",
+          location_code: "BLR-HQ",
           employment_type: "part_time",
           work_mode: "remote",
           reporting_manager_id: "e-7",
@@ -709,7 +798,7 @@ describe("the employees sample sheet", () => {
   );
 
   it(
-    "carries the example rows, swapping a department the organisation lacks for one it has",
+    "carries the example rows, swapping a department or location the organisation lacks for one it has",
     async () => {
       const sheet = sheetNamed(await downloadSample(), "Import");
       expect(sheet.actualRowCount).toBe(1 + employeesEntity.sampleRows.length);
@@ -719,6 +808,7 @@ describe("the employees sample sheet", () => {
         "Employee number": "EMP-1001",
         "Full name": "Aarav Mehta",
         Department: "Engineering",
+        "Location code": "BLR-HQ",
         "Employment type": "Full-time",
         "Work mode": "Hybrid",
       });
@@ -732,6 +822,9 @@ describe("the employees sample sheet", () => {
       expect(employeesEntity.sampleRows[2]?.department).toBe("Sales");
       expect(rowByHeader(sheet, 4).Department).toBe("Engineering");
       expect(rowByHeader(sheet, 4)["Manager employee number"]).toBe("EMP-0007");
+      // ... and MUM-01, which is not one of this organisation's locations, becomes one that is.
+      expect(employeesEntity.sampleRows[2]?.location_code).toBe("MUM-01");
+      expect(rowByHeader(sheet, 4)["Location code"]).toBe("BLR-HQ");
     },
     TEST_TIMEOUT,
   );
@@ -757,6 +850,7 @@ describe("the employees sample sheet", () => {
       }
       expect(rows.get("Employment type")?.[3]).toBe("Full-time, Part-time, Contract, Intern");
       expect(rows.get("Department")?.[3]).toBe('The "Department" list on the Lists sheet');
+      expect(rows.get("Location code")?.[3]).toBe('The "Location code" list on the Lists sheet');
       for (const readOnly of ["Status", "Date of exit", "Created", "Record ID"]) {
         expect(firstColumn).not.toContain(readOnly);
       }
@@ -766,7 +860,7 @@ describe("the employees sample sheet", () => {
   );
 
   it(
-    "lists this organisation's departments and employee numbers, and offers dropdowns over them and over the enums",
+    "lists this organisation's departments, locations and employee numbers, and offers dropdowns over them and over the enums",
     async () => {
       const workbook = await downloadSample();
       const lists = sheetNamed(workbook, "Lists");
@@ -781,6 +875,7 @@ describe("the employees sample sheet", () => {
         });
         return found.filter((label) => label !== "");
       };
+      // Each department by name, then by code; each location by code and by name.
       const departments = [
         "Engineering",
         "Engineering / Platform",
@@ -788,9 +883,17 @@ describe("the employees sample sheet", () => {
         "Operations",
         "Operations / Platform",
         "Human Resources",
+        "D-ENG",
+        "D-ENG-PLAT",
+        "D-ENG-WEB",
+        "D-OPS",
+        "D-OPS-PLAT",
+        "D-HR",
       ];
+      const locations = ["BLR-HQ", "Bengaluru HQ", "PUN-03", "Pune"];
       const managers = ["EMP-0007", "EMP-0012", "EMP-0031"];
       expect(columnOf("Department")).toEqual(departments);
+      expect(columnOf("Location code")).toEqual(locations);
       expect(columnOf("Manager employee number")).toEqual(managers);
 
       const imports = sheetNamed(workbook, "Import");
@@ -806,6 +909,7 @@ describe("the employees sample sheet", () => {
       });
       // Short lists sit inside the dropdown itself; the Lists sheet holds the same values to read.
       expect(validationOf("department")).toMatchObject({ type: "list", formulae: [`"${departments.join(",")}"`] });
+      expect(validationOf("location_code")).toMatchObject({ type: "list", formulae: [`"${locations.join(",")}"`] });
       expect(validationOf("reporting_manager")).toMatchObject({ type: "list", formulae: [`"${managers.join(",")}"`] });
       expect(validationOf("dotted_line_manager")).toMatchObject({ type: "list", formulae: [`"${managers.join(",")}"`] });
       // Free text and dates get no dropdown.

@@ -36,15 +36,13 @@ export function labelOfOption(
 }
 
 /**
- * The id a name in a cell stands for. `missing` and `ambiguous` are the sentences shown against
- * the row, so each reference column can say what to do about it.
+ * The value a name in a cell stands for. The engine has already checked every lookup cell against
+ * the list, and says how to fix a miss through the column's `lookupHint`, so a name that does not
+ * resolve here means the row did not come through the engine's checks; it is still one row's
+ * problem and not a crash.
  */
-export function resolveReference(
-  lookup: Lookup | undefined,
-  label: string,
-  problems: { missing: string; ambiguous: string },
-): string {
+export function resolveReference(lookup: Lookup | undefined, label: string): string {
   const value = lookup?.resolve(label);
-  if (value !== undefined) return value;
-  throw new RowProblem(lookup?.isAmbiguous(label) ? problems.ambiguous : problems.missing);
+  if (value === undefined) throw new RowProblem(`"${label}" is not in the list.`);
+  return value;
 }

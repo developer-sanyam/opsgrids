@@ -6,6 +6,7 @@ import type { EmployeeIn, EmployeeOut, EmployeeStatus, EmploymentType, WorkMode 
 import { employeeStatusLabel } from "@/lib/format";
 
 import { departmentEntries, loadOrgUnitTree } from "./departments";
+import { loadLocations, locationEntries } from "./locations";
 import { labelOfOption, optionOf, requiredTextOf, resolveReference, textOf } from "./rowValues";
 
 /** What the Employees screen tracks, and so what an export of it must respect. */
@@ -36,7 +37,15 @@ const STATUS_OPTIONS = EMPLOYEE_STATUSES.map((value) => ({
 }));
 
 const DEPARTMENTS = "departments";
+const LOCATIONS = "locations";
 const MANAGERS = "managers";
+
+/** Said under a lookup column's "is not in the list" error, so the fix is in the row itself. */
+const DEPARTMENT_HINT = "Use a department name or code from the Lists sheet.";
+const LOCATION_HINT =
+  "Use a location code or name from the Lists sheet. If that sheet lists no locations, your account cannot read them: leave this cell blank.";
+const MANAGER_HINT =
+  "The manager must already be an employee. Import managers first, then run this file again: rows already imported are skipped.";
 
 const columns: readonly ImportColumn[] = [
   {
@@ -76,14 +85,16 @@ const columns: readonly ImportColumn[] = [
     header: "Department",
     kind: "text",
     lookup: DEPARTMENTS,
-    help: "The department's name as your organisation lists it. Where two departments share a name, write it as Parent / Child.",
+    lookupHint: DEPARTMENT_HINT,
+    help: "The department's name as your organisation lists it, or its code. Where two departments share a name, write it as Parent / Child, or use the code.",
   },
   {
     key: "location_code",
     header: "Location code",
     kind: "text",
-    maxLength: 40,
-    help: "The code of the office or site they work from, for example BLR-HQ.",
+    lookup: LOCATIONS,
+    lookupHint: LOCATION_HINT,
+    help: "The office or site they work from: its code, for example BLR-HQ, or its name. It must be one of your organisation's locations, or location-based roles will not see this employee.",
   },
   {
     key: "employment_type",
@@ -110,6 +121,7 @@ const columns: readonly ImportColumn[] = [
     header: "Manager employee number",
     kind: "text",
     lookup: MANAGERS,
+    lookupHint: MANAGER_HINT,
     help: "The employee number of their reporting manager, who must already be an employee.",
   },
   {
@@ -117,6 +129,7 @@ const columns: readonly ImportColumn[] = [
     header: "Dotted-line manager employee number",
     kind: "text",
     lookup: MANAGERS,
+    lookupHint: MANAGER_HINT,
     help: "The employee number of an informational second manager, who must already be an employee.",
   },
   {
@@ -192,28 +205,12 @@ const sampleRows: readonly Record<string, SheetValue>[] = [
 const notes = [
   "Employee numbers must be unique. A row whose number already exists is skipped, never updated.",
   "A manager is found by employee number and must already be an employee. A manager created in this same file is not found and the row is refused: import the managers first, then run this file again.",
-  "A department is found by its name. Where two departments share a name, write it as Parent / Child, as the Lists sheet shows.",
+  "A department is found by its name or by its code. Where two departments share a name, write it as Parent / Child, or use the code; the Lists sheet shows both.",
+  "A location is found by its code or its name, and is saved as its code. An employee whose location is not one of your organisation's locations is not seen by location-based roles, so a location that is not on the Lists sheet is refused.",
   "Everyone imported starts on Probation. Status cannot be set from a sheet.",
+  "A row with a Record ID came out of the system and is already there, so it is refused. To use an exported file as a starting point, delete its Record ID column first.",
   "Personal and sensitive details (date of birth, personal email and phone, PAN, Aadhaar, UAN, ESI, bank account) cannot be imported. They are added one employee at a time and stay masked.",
 ];
-
-function departmentId(lookups: LookupSet, name: string): string {
-  const lookup = lookups[DEPARTMENTS];
-  return resolveReference(lookup, name, {
-    missing:
-      lookup === undefined || lookup.labels.length === 0
-        ? `Your account cannot read the department list, so "${name}" cannot be matched. Leave the Department cell blank.`
-        : `There is no department called "${name}". Where two departments share a name, write it as Parent / Child.`,
-    ambiguous: `More than one department is called "${name}". Write it as Parent / Child.`,
-  });
-}
-
-function managerId(lookups: LookupSet, employeeNo: string): string {
-  return resolveReference(lookups[MANAGERS], employeeNo, {
-    missing: `No employee has the number "${employeeNo}". A manager must already be an employee: one created in this same file is not found, so import the manager first and run this file again.`,
-    ambiguous: `More than one employee has the number "${employeeNo}", so the manager cannot be chosen.`,
-  });
-}
 
 /** The sheet text for a department or manager id: blank when there is none or the caller cannot name it. */
 function referenceLabel(lookup: Lookup | undefined, id: string | null): string {
@@ -221,12 +218,17 @@ function referenceLabel(lookup: Lookup | undefined, id: string | null): string {
 }
 
 async function loadLookups(signal: AbortSignal): Promise<LookupSet> {
-  const [tree, employees] = await Promise.all([
+  const [tree, locations, employees] = await Promise.all([
     loadOrgUnitTree(),
-    collectPages((page, size) => listEmployees({ page, size }), { signal }),
+    loadLocations(),
+    collectPages((page, size) => listEmployees({ page, size }), {
+      signal,
+      key: (employee) => employee.id,
+    }),
   ]);
   return {
     [DEPARTMENTS]: makeLookup(departmentEntries(tree)),
+    [LOCATIONS]: makeLookup(locationEntries(locations)),
     [MANAGERS]: makeLookup(
       employees.map((employee) => ({ label: employee.employee_no, value: employee.id })),
     ),
@@ -241,6 +243,7 @@ export const employeesEntity = defineImportEntity<EmployeeIn, EmployeeOut, Emplo
   columns,
   sampleRows,
   notes,
+  recordIdKey: "id",
   loadLookups,
   toPayload(row, { lookups }) {
     const body: EmployeeIn = {
@@ -252,9 +255,9 @@ export const employeesEntity = defineImportEntity<EmployeeIn, EmployeeOut, Emplo
     const jobTitle = textOf(row, "job_title");
     if (jobTitle !== null) body.job_title = jobTitle;
     const department = textOf(row, "department");
-    if (department !== null) body.department_id = departmentId(lookups, department);
+    if (department !== null) body.department_id = resolveReference(lookups[DEPARTMENTS], department);
     const location = textOf(row, "location_code");
-    if (location !== null) body.location_code = location;
+    if (location !== null) body.location_code = resolveReference(lookups[LOCATIONS], location);
     const employmentType = optionOf(row, "employment_type", EMPLOYMENT_OPTIONS);
     if (employmentType !== null) body.employment_type = employmentType;
     const workMode = optionOf(row, "work_mode", WORK_MODE_OPTIONS);
@@ -262,9 +265,9 @@ export const employeesEntity = defineImportEntity<EmployeeIn, EmployeeOut, Emplo
     const joined = textOf(row, "date_of_joining");
     if (joined !== null) body.date_of_joining = joined;
     const manager = textOf(row, "reporting_manager");
-    if (manager !== null) body.reporting_manager_id = managerId(lookups, manager);
+    if (manager !== null) body.reporting_manager_id = resolveReference(lookups[MANAGERS], manager);
     const dotted = textOf(row, "dotted_line_manager");
-    if (dotted !== null) body.dotted_line_manager_id = managerId(lookups, dotted);
+    if (dotted !== null) body.dotted_line_manager_id = resolveReference(lookups[MANAGERS], dotted);
     return body;
   },
   async create(payload) {
@@ -286,6 +289,7 @@ export const employeesEntity = defineImportEntity<EmployeeIn, EmployeeOut, Emplo
       designation: employee.designation,
       job_title: employee.job_title,
       department: referenceLabel(lookups[DEPARTMENTS], employee.department_id),
+      // The code as stored, whether or not the caller may read the list of locations.
       location_code: employee.location_code,
       employment_type: labelOfOption(EMPLOYMENT_OPTIONS, employee.employment_type),
       work_mode: labelOfOption(WORK_MODE_OPTIONS, employee.work_mode),
