@@ -170,7 +170,7 @@ def graph_version(cfg: Settings) -> str:
 
 
 def meta_app_secret(cfg: Settings) -> str | None:
-    """The Meta app secret: `META_APP_SECRET`, else the existing `WHATSAPP_APP_SECRET`."""
+    """The Meta app secret, or the older WhatsApp one."""  # pragma: allowlist secret
     secret = cfg.meta_app_secret or cfg.whatsapp_app_secret
     return secret.get_secret_value() if secret is not None else None
 
