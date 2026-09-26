@@ -113,7 +113,9 @@ async def _whatsapp(
         # No number connected and nothing about this contact: the channel does not apply.
         return None
 
-    indexes = list(dict.fromkeys([c.wa_address_index for c in conversations] + list(ledger_indexes)))
+    indexes = list(
+        dict.fromkeys([c.wa_address_index for c in conversations] + list(ledger_indexes))
+    )
     decisions = await consent.decide_indexes(
         session, organization_id, "whatsapp", consent.MARKETING, indexes
     )

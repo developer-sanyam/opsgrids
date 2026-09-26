@@ -309,9 +309,7 @@ class TestEntitlements:
         assert body["crm"] is not None
         assert upstream.to(8151) == []
 
-    async def test_no_crm_entitlement_is_payment_required(
-        self, client, org_id, data, fake
-    ) -> None:
+    async def test_no_crm_entitlement_is_payment_required(self, client, org_id, data, fake) -> None:
         upstream = fake()
         with as_principal(_reader(org_id, entitlements=["engage"])):
             response = await _get(client, data["contact_a_id"])
@@ -337,7 +335,9 @@ class TestAuthorization:
     ) -> None:
         upstream = fake()
         principal = principal_for(
-            org_id, ["crm.book.contact.read:OWN"], entitlements=["crm", "engage"],
+            org_id,
+            ["crm.book.contact.read:OWN"],
+            entitlements=["crm", "engage"],
             subject_ref=data["subject_a"],
         )
         with as_principal(principal):

@@ -209,14 +209,14 @@ async def fetch_channels(
 async def _guarded[T](
     section: str,
     caller: CallerContext,
-    timeout: float,
+    budget_seconds: float,
     call: Awaitable[T],
 ) -> T | None:
     """Run one section, turning every failure into `None`. The reason is logged with the section
     and organization only — never a URL, header or body, which can carry the caller's token or a
     customer's address."""
     try:
-        async with asyncio.timeout(timeout):
+        async with asyncio.timeout(budget_seconds):
             return await call
     except Exception as exc:
         log.warning(
@@ -313,7 +313,7 @@ async def assemble(
             name=contact.full_name,
             company=company.name if company else None,
             since=contact.created_at,
-            status=_status(contact),  # type: ignore[arg-type]
+            status=_status(contact),
             tags=[],
             owner=OwnerRef(id=str(owner.id), name=owner.full_name) if owner else None,
             phone=contact.phone,
