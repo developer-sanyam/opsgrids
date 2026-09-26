@@ -40,7 +40,7 @@ describe("warehouse columns", () => {
       "Warehouse code",
       "Warehouse name",
       "Location",
-      "ID",
+      "Record ID",
     ]);
   });
 

@@ -39,7 +39,7 @@ describe("supplier columns", () => {
       "Lifetime spend",
       "Open purchase orders",
       "On-time delivery (%)",
-      "ID",
+      "Record ID",
     ]);
   });
 

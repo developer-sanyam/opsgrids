@@ -104,11 +104,14 @@ describe("the Warehouses screen with the real import dialog", () => {
     const user = userEvent.setup();
     const recorded = stubGateway(({ url, init }) => {
       if ((init.method ?? "GET") === "POST") {
-        const detail = "A warehouse coded 'WH-MAIN' already exists";
+        const detail = `A warehouse coded '${String(jsonBody(init).code)}' already exists`;
         const errors = [{ field: "code", code: "duplicate", message: detail }];
         return { status: 409, body: { title: "Conflict", status: 409, detail, errors } };
       }
-      const rows: WarehouseOut[] = [{ id: "wh-1", code: "WH-MAIN", name: "Main Warehouse", location: "" }];
+      const rows: WarehouseOut[] = [
+        { id: "wh-1", code: "WH-MAIN", name: "Main Warehouse", location: "" },
+        { id: "wh-2", code: "WH-OLD", name: "Old Depot", location: "" },
+      ];
       return { body: pageAt([rows], Number(url.searchParams.get("page") ?? "1")) };
     });
     renderScreen(
@@ -120,9 +123,11 @@ describe("the Warehouses screen with the real import dialog", () => {
     await screen.findAllByText("Main Warehouse");
 
     await openDialog(user, "warehouses");
+    // Not one of the entity's own examples (WH-MAIN, WH-COLD): a file whose only columns match an
+    // example row is an unchanged sample and is skipped without a request.
     await uploadFile(
       user,
-      await workbookFile("warehouses.xlsx", ["Warehouse code *", "Warehouse name *"], [["WH-MAIN", "Main Warehouse"]]),
+      await workbookFile("warehouses.xlsx", ["Warehouse code *", "Warehouse name *"], [["WH-OLD", "Old Depot"]]),
     );
     const review = await screen.findByRole("dialog", { name: "Review your file" }, SLOW);
     const loadsBeforeRun = requestsTo(recorded, "GET", LIST).length;
@@ -131,8 +136,8 @@ describe("the Warehouses screen with the real import dialog", () => {
 
     expect(stat(finished, "Skipped, already exist")).toBe("1");
     const skipped = within(within(finished).getByRole("table", { name: "Rows that were not created" }));
-    expect(skipped.getByRole("row", { name: /WH-MAIN/ }).textContent).toContain(
-      "A warehouse coded 'WH-MAIN' already exists",
+    expect(skipped.getByRole("row", { name: /WH-OLD/ }).textContent).toContain(
+      "A warehouse coded 'WH-OLD' already exists",
     );
     expect(requestsTo(recorded, "GET", LIST)).toHaveLength(loadsBeforeRun);
   }, 10_000);

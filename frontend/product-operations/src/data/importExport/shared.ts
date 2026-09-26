@@ -93,16 +93,20 @@ export function resolveReference(lookups: LookupSet, lookupName: string, label: 
  * the lookups behind the inventory import would call both unresolvable. A name spelled exactly as
  * an existing one is left alone, so the server answers it with its own "already exists" and the
  * row is reported as skipped. `describe` gets the existing spelling, or null when several exist.
+ *
+ * `spellings` maps each existing name to itself (label and value both the exact spelling), so
+ * `labelOf(typed)` says whether that exact spelling exists. `labels` cannot say: a lookup leaves
+ * out a label that more than one record carries, and two existing case variants are exactly that.
  */
 export function refuseNearDuplicate(
-  lookup: Lookup | undefined,
+  spellings: Lookup | undefined,
   typed: string,
   describe: (existing: string | null) => string,
 ): void {
-  if (lookup === undefined || lookup.labels.includes(typed)) return;
-  const value = lookup.resolve(typed);
-  if (value === undefined && !lookup.isAmbiguous(typed)) return;
-  throw new RowProblem(describe(value === undefined ? null : (lookup.labelOf(value) ?? null)));
+  if (spellings === undefined || spellings.labelOf(typed) !== undefined) return;
+  const existing = spellings.resolve(typed);
+  if (existing === undefined && !spellings.isAmbiguous(typed)) return;
+  throw new RowProblem(describe(existing ?? null));
 }
 
 /** The label of an enum option for a value the API returned; an unlisted value is written as is. */

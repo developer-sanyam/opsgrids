@@ -15,11 +15,11 @@ import type { LookupSet } from "@opsgrids/client";
 
 import { createItemCategory, listItemCategories } from "@/api/client";
 import type { ItemCategoryIn, ItemCategoryOut } from "@/api/types";
-import { loadItemCategoryCodes } from "./referenceData";
+import { loadItemCategoryLookups } from "./referenceData";
 import { optionalText, refuseNearDuplicate, requiredText, resolveReference } from "./shared";
 
-async function loadLookups(signal: AbortSignal): Promise<LookupSet> {
-  return { parents: await loadItemCategoryCodes(signal) };
+function loadLookups(signal: AbortSignal): Promise<LookupSet> {
+  return loadItemCategoryLookups(signal);
 }
 
 export const itemCategoryImport = defineImportEntity<ItemCategoryIn, ItemCategoryOut>({
@@ -58,7 +58,7 @@ export const itemCategoryImport = defineImportEntity<ItemCategoryIn, ItemCategor
     },
     {
       key: "id",
-      header: "ID",
+      header: "Record ID",
       kind: "text",
       help: "The category's identifier in OpsGrids.",
       readOnly: true,
@@ -75,14 +75,13 @@ export const itemCategoryImport = defineImportEntity<ItemCategoryIn, ItemCategor
     "A parent category must already exist. To import a tree, import the top-level categories first, then run the file again with their children.",
     "A category code that already exists is skipped, not changed.",
     "These categories are your own catalogue tree. The fixed Category on an inventory item is a separate list.",
-    "The ID column is worked out by the app. A row that has an ID came out of OpsGrids in an export, so it is not added again.",
   ],
 
   loadLookups,
 
   toPayload(row, ctx) {
     const code = requiredText(row, "code", "Category code");
-    refuseNearDuplicate(ctx.lookups.parents, code, (existing) =>
+    refuseNearDuplicate(ctx.lookups.codes, code, (existing) =>
       existing === null
         ? `More than one item category already has a code that differs from '${code}' only in capitals, so it is not accepted.`
         : `An item category with the code '${existing}' already exists; codes that differ only in capitals are not accepted.`,

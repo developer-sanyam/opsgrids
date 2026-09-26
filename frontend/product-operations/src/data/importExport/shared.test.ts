@@ -89,10 +89,6 @@ describe("refuseNearDuplicate", () => {
     { label: "Main Warehouse", value: "Main Warehouse" },
     { label: "Cold Store", value: "Cold Store" },
   ]);
-  const codes = makeLookup([
-    { label: "METALS", value: "cat-metals" },
-    { label: "STEEL", value: "cat-steel" },
-  ]);
   const sentence = (existing: string | null) => `existing: ${existing ?? "several"}`;
 
   it("lets a name through that nothing existing resembles", () => {
@@ -112,16 +108,14 @@ describe("refuseNearDuplicate", () => {
     },
   );
 
-  it("names the existing code, not its id, for a lookup whose values are ids", () => {
-    expect(() => refuseNearDuplicate(codes, "metals", sentence)).toThrow("existing: METALS");
-    expect(() => refuseNearDuplicate(codes, "METALS", sentence)).not.toThrow();
-  });
-
   it("still lets the exact spelling through when case variants already exist, and refuses a third", () => {
+    // Two existing spellings that only differ in case make each other ambiguous, so a lookup no
+    // longer lists either; the exact spelling is still recognised.
     const already = makeLookup([
       { label: "Pune Plant", value: "Pune Plant" },
       { label: "Pune plant", value: "Pune plant" },
     ]);
+    expect(already.labels).toEqual([]);
     expect(() => refuseNearDuplicate(already, "Pune Plant", sentence)).not.toThrow();
     expect(() => refuseNearDuplicate(already, "Pune plant", sentence)).not.toThrow();
     expect(() => refuseNearDuplicate(already, "PUNE PLANT", sentence)).toThrow("existing: several");

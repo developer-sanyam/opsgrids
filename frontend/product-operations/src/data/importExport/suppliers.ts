@@ -140,7 +140,7 @@ export const supplierImport = defineImportEntity<SupplierIn, SupplierOut, Suppli
     },
     {
       key: "id",
-      header: "ID",
+      header: "Record ID",
       kind: "text",
       help: "The supplier's identifier in OpsGrids.",
       readOnly: true,
@@ -190,7 +190,7 @@ export const supplierImport = defineImportEntity<SupplierIn, SupplierOut, Suppli
     "A supplier code that already exists is skipped, not changed.",
     "Only the code is checked for duplicates. Two rows with the same name and different codes create two suppliers.",
     "Status defaults to Active, lead time to 0 days and Supplier since to today when left blank.",
-    "The Lifetime spend, Open purchase orders and On-time delivery columns are worked out by the app and ignored on import. A row that has an ID came out of OpsGrids in an export, so it is not added again.",
+    "The Lifetime spend, Open purchase orders and On-time delivery columns are worked out by the app and ignored on import.",
   ],
 
   toPayload(row) {

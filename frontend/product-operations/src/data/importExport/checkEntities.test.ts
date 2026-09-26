@@ -43,6 +43,10 @@ const CATEGORY_LOOKUPS: LookupSet = {
     { label: "METALS", value: "cat-metals" },
     { label: "STEEL", value: "cat-steel" },
   ]),
+  codes: makeLookup([
+    { label: "METALS", value: "METALS" },
+    { label: "STEEL", value: "STEEL" },
+  ]),
 };
 
 describe("checkImportEntity over the Operations definitions", () => {
@@ -75,7 +79,7 @@ describe("checkImportEntity over the Operations definitions", () => {
   it("still passes for an organisation with no item categories yet, whose examples name none", () => {
     const lookups: LookupSet = { ...INVENTORY_LOOKUPS, itemCategories: makeLookup([]) };
     expect(checkImportEntity(inventoryImport, lookups)).toEqual([]);
-    expect(checkImportEntity(itemCategoryImport, { parents: makeLookup([]) })).toEqual([]);
+    expect(checkImportEntity(itemCategoryImport, { parents: makeLookup([]), codes: makeLookup([]) })).toEqual([]);
   });
 
   it.each([

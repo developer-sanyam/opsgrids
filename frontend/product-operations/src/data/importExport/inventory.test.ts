@@ -78,7 +78,7 @@ describe("inventory columns", () => {
       "Reserved",
       "Available",
       "Last updated",
-      "ID",
+      "Record ID",
     ]);
   });
 
