@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { RouteObject } from "react-router-dom";
 
 import { routes as dashboardRoutes } from "./dashboards";
+import { routes as whatsappRoutes } from "./whatsapp/index";
 import { routes as whatsappTemplateRoutes } from "./whatsappTemplates/index";
 
 /**
@@ -17,7 +18,7 @@ export interface AppRoute {
 }
 
 /** Every area's contribution, in the order their entries appear in the navigation. */
-export const areaRoutes: AppRoute[] = [...dashboardRoutes, ...whatsappTemplateRoutes];
+export const areaRoutes: AppRoute[] = [...dashboardRoutes, ...whatsappRoutes, ...whatsappTemplateRoutes];
 
 /**
  * The router's child routes for the areas above. `/` becomes the index route; every other path
