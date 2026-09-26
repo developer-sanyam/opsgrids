@@ -1,6 +1,35 @@
 {
   "components": {
     "schemas": {
+      "ActivityItem": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "text",
+          "at"
+        ],
+        "title": "ActivityItem",
+        "type": "object"
+      },
       "CampaignIn": {
         "additionalProperties": false,
         "properties": {
@@ -457,6 +486,89 @@
           "to"
         ],
         "title": "CampaignTestSendOut",
+        "type": "object"
+      },
+      "CategoryCount": {
+        "properties": {
+          "category": {
+            "enum": [
+              "marketing",
+              "utility",
+              "authentication",
+              "service"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "messages": {
+            "title": "Messages",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "category",
+          "messages"
+        ],
+        "title": "CategoryCount",
+        "type": "object"
+      },
+      "ChannelCost": {
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "channel": {
+            "enum": [
+              "whatsapp",
+              "email",
+              "sms",
+              "push"
+            ],
+            "title": "Channel",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "amount"
+        ],
+        "title": "ChannelCost",
+        "type": "object"
+      },
+      "ChannelStatus": {
+        "properties": {
+          "connected": {
+            "title": "Connected",
+            "type": "boolean"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "key": {
+            "enum": [
+              "whatsapp",
+              "email",
+              "sms",
+              "push"
+            ],
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "connected",
+          "detail"
+        ],
+        "title": "ChannelStatus",
         "type": "object"
       },
       "ConnectionIn": {
@@ -1385,6 +1497,64 @@
         "title": "ConversationReplyOut",
         "type": "object"
       },
+      "Cost": {
+        "properties": {
+          "by_category": {
+            "items": {
+              "$ref": "#/components/schemas/CostCategory"
+            },
+            "title": "By Category",
+            "type": "array"
+          },
+          "estimated": {
+            "const": true,
+            "default": true,
+            "title": "Estimated",
+            "type": "boolean"
+          },
+          "rate_card": {
+            "$ref": "#/components/schemas/RateCardRef"
+          },
+          "total": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [
+          "total",
+          "by_category",
+          "rate_card"
+        ],
+        "title": "Cost",
+        "type": "object"
+      },
+      "CostCategory": {
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "category": {
+            "enum": [
+              "marketing",
+              "utility",
+              "authentication",
+              "service"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "messages": {
+            "title": "Messages",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "category",
+          "messages",
+          "amount"
+        ],
+        "title": "CostCategory",
+        "type": "object"
+      },
       "DeliveryOut": {
         "properties": {
           "at": {
@@ -1642,6 +1812,29 @@
         "title": "DomainPatch",
         "type": "object"
       },
+      "FailureReason": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "label",
+          "count"
+        ],
+        "title": "FailureReason",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1653,6 +1846,73 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HubCosts": {
+        "properties": {
+          "by_channel": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelCost"
+            },
+            "title": "By Channel",
+            "type": "array"
+          },
+          "estimated": {
+            "const": true,
+            "default": true,
+            "title": "Estimated",
+            "type": "boolean"
+          },
+          "rate_card": {
+            "$ref": "#/components/schemas/RateCardRef"
+          },
+          "total": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [
+          "total",
+          "by_channel",
+          "rate_card"
+        ],
+        "title": "HubCosts",
+        "type": "object"
+      },
+      "HubOverview": {
+        "properties": {
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelStatus"
+            },
+            "title": "Channels",
+            "type": "array"
+          },
+          "costs": {
+            "$ref": "#/components/schemas/HubCosts"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "whatsapp": {
+            "$ref": "#/components/schemas/WhatsAppOverview"
+          }
+        },
+        "required": [
+          "channels",
+          "whatsapp",
+          "email",
+          "costs"
+        ],
+        "title": "HubOverview",
         "type": "object"
       },
       "ListMembersIn": {
@@ -1847,6 +2107,24 @@
           "deliveries"
         ],
         "title": "MessageOut",
+        "type": "object"
+      },
+      "Money": {
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount_minor",
+          "currency"
+        ],
+        "title": "Money",
         "type": "object"
       },
       "NotificationOut": {
@@ -2903,6 +3181,194 @@
         "title": "ProviderTemplateOut",
         "type": "object"
       },
+      "RateCardIn": {
+        "additionalProperties": false,
+        "description": "Override the rate card: exactly one rate per category, one currency across them.\n\nAll four categories together, because a partial override would price some categories in the\norganization's currency and the rest in the placeholder's, and one total cannot span two.",
+        "properties": {
+          "effective_from": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective From"
+          },
+          "rates": {
+            "items": {
+              "$ref": "#/components/schemas/RateIn"
+            },
+            "maxItems": 4,
+            "minItems": 4,
+            "title": "Rates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rates"
+        ],
+        "title": "RateCardIn",
+        "type": "object"
+      },
+      "RateCardOut": {
+        "properties": {
+          "channel": {
+            "const": "whatsapp",
+            "title": "Channel",
+            "type": "string"
+          },
+          "estimated": {
+            "const": true,
+            "default": true,
+            "title": "Estimated",
+            "type": "boolean"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "placeholder": {
+            "title": "Placeholder",
+            "type": "boolean"
+          },
+          "rates": {
+            "items": {
+              "$ref": "#/components/schemas/RateOut"
+            },
+            "title": "Rates",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "placeholder",
+          "version",
+          "note",
+          "rates"
+        ],
+        "title": "RateCardOut",
+        "type": "object"
+      },
+      "RateCardRef": {
+        "description": "Which rates produced the cost, so a reader can tell a placeholder from a real figure.",
+        "properties": {
+          "placeholder": {
+            "title": "Placeholder",
+            "type": "boolean"
+          },
+          "source": {
+            "enum": [
+              "platform_default",
+              "organization",
+              "mixed"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "placeholder",
+          "version"
+        ],
+        "title": "RateCardRef",
+        "type": "object"
+      },
+      "RateIn": {
+        "additionalProperties": false,
+        "properties": {
+          "amount_minor_per_1000_messages": {
+            "maximum": 10000000000.0,
+            "minimum": 0.0,
+            "title": "Amount Minor Per 1000 Messages",
+            "type": "integer"
+          },
+          "category": {
+            "enum": [
+              "marketing",
+              "utility",
+              "authentication",
+              "service"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "currency": {
+            "maxLength": 3,
+            "minLength": 3,
+            "pattern": "^[A-Z]{3}$",
+            "title": "Currency",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "amount_minor_per_1000_messages",
+          "currency"
+        ],
+        "title": "RateIn",
+        "type": "object"
+      },
+      "RateOut": {
+        "properties": {
+          "amount_minor_per_1000_messages": {
+            "title": "Amount Minor Per 1000 Messages",
+            "type": "integer"
+          },
+          "category": {
+            "enum": [
+              "marketing",
+              "utility",
+              "authentication",
+              "service"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "effective_from": {
+            "format": "date",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "placeholder": {
+            "title": "Placeholder",
+            "type": "boolean"
+          },
+          "source": {
+            "enum": [
+              "platform_default",
+              "organization"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "amount_minor_per_1000_messages",
+          "currency",
+          "effective_from",
+          "source",
+          "placeholder"
+        ],
+        "title": "RateOut",
+        "type": "object"
+      },
       "ReadAllOut": {
         "properties": {
           "updated": {
@@ -3315,6 +3781,39 @@
         "title": "SenderOut",
         "type": "object"
       },
+      "SeriesPoint": {
+        "properties": {
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "delivered": {
+            "title": "Delivered",
+            "type": "integer"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "read": {
+            "title": "Read",
+            "type": "integer"
+          },
+          "sent": {
+            "title": "Sent",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "date",
+          "sent",
+          "delivered",
+          "read",
+          "failed"
+        ],
+        "title": "SeriesPoint",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -3388,6 +3887,30 @@
           "link"
         ],
         "title": "SetupStepOut",
+        "type": "object"
+      },
+      "StatusCount": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "read",
+              "delivered",
+              "sent",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "count"
+        ],
+        "title": "StatusCount",
         "type": "object"
       },
       "SuppressionIn": {
@@ -3833,6 +4356,135 @@
         ],
         "title": "WhatsAppConnectionOut",
         "type": "object"
+      },
+      "WhatsAppOverview": {
+        "properties": {
+          "by_category": {
+            "items": {
+              "$ref": "#/components/schemas/CategoryCount"
+            },
+            "title": "By Category",
+            "type": "array"
+          },
+          "cost": {
+            "$ref": "#/components/schemas/Cost"
+          },
+          "delivered": {
+            "title": "Delivered",
+            "type": "integer"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "failures_by_reason": {
+            "items": {
+              "$ref": "#/components/schemas/FailureReason"
+            },
+            "title": "Failures By Reason",
+            "type": "array"
+          },
+          "inbound_messages": {
+            "title": "Inbound Messages",
+            "type": "integer"
+          },
+          "queued": {
+            "title": "Queued",
+            "type": "integer"
+          },
+          "read": {
+            "title": "Read",
+            "type": "integer"
+          },
+          "recent_activity": {
+            "items": {
+              "$ref": "#/components/schemas/ActivityItem"
+            },
+            "title": "Recent Activity",
+            "type": "array"
+          },
+          "replies": {
+            "title": "Replies",
+            "type": "integer"
+          },
+          "sent": {
+            "title": "Sent",
+            "type": "integer"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/SeriesPoint"
+            },
+            "title": "Series",
+            "type": "array"
+          },
+          "status_breakdown": {
+            "items": {
+              "$ref": "#/components/schemas/StatusCount"
+            },
+            "title": "Status Breakdown",
+            "type": "array"
+          },
+          "suppressed": {
+            "title": "Suppressed",
+            "type": "integer"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/WhatsAppTotals"
+          }
+        },
+        "required": [
+          "sent",
+          "delivered",
+          "read",
+          "failed",
+          "replies",
+          "inbound_messages",
+          "queued",
+          "suppressed",
+          "series",
+          "by_category",
+          "status_breakdown",
+          "failures_by_reason",
+          "recent_activity",
+          "totals",
+          "cost"
+        ],
+        "title": "WhatsAppOverview",
+        "type": "object"
+      },
+      "WhatsAppTotals": {
+        "properties": {
+          "active_automations": {
+            "title": "Active Automations",
+            "type": "integer"
+          },
+          "active_conversations": {
+            "title": "Active Conversations",
+            "type": "integer"
+          },
+          "approved_templates": {
+            "title": "Approved Templates",
+            "type": "integer"
+          },
+          "pending_templates": {
+            "title": "Pending Templates",
+            "type": "integer"
+          },
+          "unassigned_conversations": {
+            "title": "Unassigned Conversations",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "active_automations",
+          "approved_templates",
+          "pending_templates",
+          "active_conversations",
+          "unassigned_conversations"
+        ],
+        "title": "WhatsAppTotals",
+        "type": "object"
       }
     }
   },
@@ -3843,6 +4495,208 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/engage/analytics/overview": {
+      "get": {
+        "operationId": "hub_overview_api_v1_engage_analytics_overview_get",
+        "parameters": [
+          {
+            "description": "First UTC day, inclusive (YYYY-MM-DD).",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "First UTC day, inclusive (YYYY-MM-DD).",
+              "title": "From"
+            }
+          },
+          {
+            "description": "Last UTC day, inclusive (YYYY-MM-DD).",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Last UTC day, inclusive (YYYY-MM-DD).",
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HubOverview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The communication hub: both channels' numbers and one estimated cost",
+        "tags": [
+          "engage-analytics"
+        ]
+      }
+    },
+    "/api/v1/engage/analytics/rate-card": {
+      "get": {
+        "operationId": "read_rate_card_api_v1_engage_analytics_rate_card_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateCardOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The per-1000-message rates behind the cost estimate",
+        "tags": [
+          "engage-analytics"
+        ]
+      },
+      "put": {
+        "operationId": "override_rate_card_api_v1_engage_analytics_rate_card_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RateCardIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateCardOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Override the rate card with the organization's real rates",
+        "tags": [
+          "engage-analytics"
+        ]
+      }
+    },
+    "/api/v1/engage/analytics/whatsapp/overview": {
+      "get": {
+        "operationId": "whatsapp_overview_api_v1_engage_analytics_whatsapp_overview_get",
+        "parameters": [
+          {
+            "description": "First UTC day, inclusive (YYYY-MM-DD).",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "First UTC day, inclusive (YYYY-MM-DD).",
+              "title": "From"
+            }
+          },
+          {
+            "description": "Last UTC day, inclusive (YYYY-MM-DD).",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Last UTC day, inclusive (YYYY-MM-DD).",
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhatsAppOverview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "WhatsApp delivery, replies, categories, failures and an estimated cost",
+        "tags": [
+          "engage-analytics"
+        ]
+      }
+    },
     "/api/v1/engage/campaigns": {
       "get": {
         "operationId": "list_campaigns_api_v1_engage_campaigns_get",
