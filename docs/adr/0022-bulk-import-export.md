@@ -25,10 +25,14 @@ other tools, that reads an Excel sheet, and a **downloadable sample sheet**.
    its existing validation, authorization, tenant scoping, audit rows and outbox events, because an
    import is *the existing create endpoint called once per row*. There is no new backend surface and
    no upload endpoint to attack.
-3. **Import creates, it never overwrites.** A row whose key already exists (HTTP 409) is reported as
-   "skipped: already exists". There is no upsert: none of the create endpoints has one, and an
+3. **Import creates, it never overwrites.** A row the server refuses with a 409 that says the record
+   already exists (or carries a `duplicate` field code) is reported as "skipped: already exists".
+   Any other 409 (a warehouse with no default bin, an unknown pipeline stage) is a failure with the
+   server's sentence, not a skip. There is no upsert: none of the create endpoints has one, and an
    accidental overwrite of a customer's data is worse than a skipped row. Re-uploading the same file
-   is therefore safe and finishes the rows that failed.
+   is therefore safe and finishes the rows that failed, **except where the list has no natural key**
+   (a lead without an email, a purchase order): there a re-upload adds the row again, which the
+   entity's notes say.
 4. **Each row is its own request, throttled.** The gateway allows 300 requests per user per minute,
    shared with everything else the user does. The runner sends one row at a time with a minimum
    interval of 350 ms (about 170 per minute), waits out a 429 (the window is 60 s) and retries that
@@ -49,7 +53,10 @@ other tools, that reads an Excel sheet, and a **downloadable sample sheet**.
 7. **Export is the whole filtered list, not the visible page.** It pages the list endpoint (size 200,
    up to 10 000 rows) with the screen's current filters, so it returns only what the caller's scope
    already lets them read. The columns are the import columns plus read-only ones (ids, timestamps),
-   so the file can be edited and re-imported (read-only columns are ignored on import).
+   so the file can be edited and re-imported (read-only columns are ignored on import). **A row that
+   still carries its Record ID is refused on import**, with an explanation ("clear the Record ID to
+   add it as a new record"): an export edited and uploaded again must never add every record a
+   second time, above all for lists whose natural key is masked on export (leads).
 
 ## Rules that are not style preferences
 
@@ -68,7 +75,10 @@ other tools, that reads an Excel sheet, and a **downloadable sample sheet**.
 - **Dates** are ISO `YYYY-MM-DD` after reading; an Excel date serial is converted, never trusted as
   text.
 - **Limits are enforced before anything is sent:** file up to 5 MB, `.xlsx` only, up to 1000 data
-  rows, up to 60 columns. Cell text is trimmed; control characters are rejected, except that a
+  rows, up to 60 columns. The workbook's ZIP directory is read *before* the spreadsheet library is
+  even loaded and the file is refused if it would unpack to more than 40 MB, holds an entry over
+  25 MB or one expanding more than 100:1, has more than 2000 entries, or uses ZIP64: a small file
+  must not be able to exhaust the browser's memory. Cell text is trimmed; control characters are rejected, except that a
   column marked `multiline` (a note, a summary) may hold a tab or a line break. A name or code with
   a hidden line break would become a different record from the one it looks like.
 - **Authorization stays on the server.** The button hides Import for a user without the create
@@ -97,3 +107,33 @@ other tools, that reads an Excel sheet, and a **downloadable sample sheet**.
   hook from `@opsgrids/client` to the component.
 - The hand-rolled CSV "Export selected" buttons stay for now (selection-scoped); they are a separate
   cleanup.
+
+## Known limits and server follow-ups (found by the pre-release audits)
+
+None blocks this release; each is a pre-existing server behaviour the import can hit sooner than a
+person typing one record at a time.
+
+- **List ordering is not unique** on several endpoints (companies/contacts/deals/suppliers/item
+  categories/employees order by a name, not name plus id), so offset paging can repeat one row and
+  skip another. The client copes (it de-duplicates by id, reads again, and refuses a list that is
+  still short of the server's total, so a lookup is never silently partial) but the cure is an `id`
+  tie-break in those selectors.
+- **Case-insensitive uniqueness is missing** for contact and lead emails (leads match on a blind
+  index of the exact string), deal names and warehouse names/category codes. The import keeps an
+  email's local part as typed to match the server, and refuses a name or email that differs from an
+  existing one only in capitals where it can see the existing records (contacts, warehouses,
+  categories). Leads cannot be checked (their emails are masked on read).
+- **Int and bigint columns without bounds:** `reorder_point` (int4, multiplied by 1000 in the
+  low-stock query) and `team_size` are capped in the sheet; `opening_on_hand` times an unbounded unit
+  value can overflow the default stock-value sort. These should be validated in the schemas.
+- **The duplicate 409 is an existence oracle** across the organisation for a user limited to their
+  own records (pre-existing; an import makes it faster to use) and the deal service does not verify
+  `company_id` or `primary_contact_id` (the sheet does, the API does not).
+- **Same-file references** (an employee's manager listed above their reports, a child category below
+  its parent) are not resolved within one run: the manager or parent must already exist, so a first
+  roster import needs one run per management level; re-running is safe because existing rows are
+  skipped.
+- **Very large workbooks** are parsed on the main thread. The ZIP guard bounds the work; parsing in
+  a Web Worker with a timeout is the follow-up.
+- **Money above 2^53 minor units** and non-2-decimal currencies in the ITSM and Projects apps' own
+  forms were displayed with two decimals; those two apps now use the platform's exponent table.
