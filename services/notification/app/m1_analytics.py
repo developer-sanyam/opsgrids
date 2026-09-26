@@ -482,7 +482,7 @@ def pick_rates(
     picked: dict[str, MessagingRateCard] = {}
     for category in CATEGORIES:
         mine = [r for r in rows if r.category == category and r.organization_id == org]
-        base = [r for r in rows if r.category == category and r.organization_id != org]
+        base = [r for r in rows if r.category == category and r.organization_id == PLATFORM_ORG]
         chosen: MessagingRateCard | None = None
         for pool in (mine, base):
             in_force = [r for r in pool if r.effective_from <= as_of]
@@ -616,7 +616,7 @@ def build_cost(
 
     Summing rounded per-category amounts (rather than rounding a grand total) is the rule the
     contract states, and it means the rows shown always add up to the total shown. A category
-    with no rate row is priced at zero in the currency of the others.
+    with no rate row (or one in a different currency) is priced at zero.
     """
     currency = next(iter(picked.values())).currency if picked else "INR"
     lines: list[CostCategory] = []
@@ -624,6 +624,12 @@ def build_cost(
     for category in CATEGORIES:
         messages = by_category.get(category, 0)
         rate = picked.get(category)
+        if rate is not None and rate.currency != currency:
+            # The API only ever writes one currency across all four categories, so this is a row
+            # edited by hand. One total cannot span two currencies; the odd one is left unpriced
+            # (and said so in the log) rather than added to the wrong unit.
+            log.warning("notification.analytics.rate_card_mixed_currency", category=category)
+            rate = None
         amount = (
             m1_cost.estimate_minor(messages, rate.amount_minor_per_1000_messages) if rate else 0
         )
