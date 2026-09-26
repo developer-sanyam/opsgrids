@@ -11,14 +11,17 @@ function normalise(label: string): string {
  */
 export function makeLookup(entries: readonly { label: string; value: string }[]): Lookup {
   const byLabel = new Map<string, string | null>();
+  const byValue = new Map<string, string>();
   for (const { label, value } of entries) {
     const key = normalise(label);
     byLabel.set(key, byLabel.has(key) ? null : value);
+    if (!byValue.has(value)) byValue.set(value, label);
   }
   return {
     labels: entries.map((e) => e.label),
     resolve: (label) => byLabel.get(normalise(label)) ?? undefined,
     isAmbiguous: (label) => byLabel.get(normalise(label)) === null,
+    labelOf: (value) => byValue.get(value),
   };
 }
 

@@ -25,6 +25,11 @@ describe("makeLookup", () => {
     expect(lookup.isAmbiguous("dup")).toBe(true);
   });
 
+  it("finds the label for a value, the reverse of resolve", () => {
+    expect(lookup.labelOf("w2")).toBe("Spare parts");
+    expect(lookup.labelOf("nope")).toBeUndefined();
+  });
+
   it("keeps the labels in the order given", () => {
     expect(lookup.labels).toEqual(["Main Warehouse", "Spare parts", "Dup", "dup"]);
   });

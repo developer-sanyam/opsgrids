@@ -81,6 +81,9 @@ export interface Lookup {
   resolve(label: string): string | undefined;
   /** More than one entry carries this label, so `resolve` refuses to guess. */
   isAmbiguous(label: string): boolean;
+  /** The reverse of `resolve`: the label whose value is `value` (an id or code), for writing a
+   *  reference back into an export as the text an import would accept. Undefined when unknown. */
+  labelOf(value: string): string | undefined;
 }
 
 export type LookupSet = Readonly<Record<string, Lookup>>;
