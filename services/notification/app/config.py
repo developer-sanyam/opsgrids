@@ -99,6 +99,12 @@ class Settings(ServiceSettings):
     #: open without signing in, so it is configuration rather than derived from a request.
     engage_public_api_base: str = "http://localhost:8080/api/v1"
 
+    #: Optional key for the signed open/click tracking tokens (`app/e1_tracking.py`). Empty means
+    #: "derive it from `engage_unsubscribe_secret`", so tracking needs no new key at boot and is
+    #: off wherever the unsubscribe key is refused. Rotating it stops recording opens and clicks
+    #: on mail already sent.
+    engage_tracking_secret: SecretStr = SecretStr("")
+
     # ----------------------------------------------------------------- engage campaigns
     #: Recipients expanded per transaction when a send is requested, and claimed per batch by
     #: the send driver (`app/cron.py`) afterwards.

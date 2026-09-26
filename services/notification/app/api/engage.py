@@ -1349,6 +1349,8 @@ def _campaign_out(row: Campaign, counts: dict[str, int]) -> CampaignOut:
             failed=counts.get("failed", 0),
             suppressed=counts.get("suppressed", 0),
         ),
+        track_opens=row.track_opens,
+        track_clicks=row.track_clicks,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )

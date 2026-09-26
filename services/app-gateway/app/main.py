@@ -93,7 +93,7 @@ ACCOUNT_PUBLIC_PATHS = frozenset({"/api/v1/account/signup"})
 #: "reachable, but authorized by its own signed credential rather than a bearer token" shape
 #: the storefront's public paths above already establish, just for a route the exact-match list
 #: cannot name. Anonymous, IP-rate-limited, no identity header, same as every other entry here.
-ENGAGE_PUBLIC_PATH_PREFIXES = frozenset({"/api/v1/engage/unsubscribe/"})
+ENGAGE_PUBLIC_PATH_PREFIXES = frozenset({"/api/v1/engage/unsubscribe/", "/api/v1/engage/t/"})
 
 #: The provider webhooks that reach this gateway, and the HTTP methods each accepts without a
 #: bearer token: **exact path -> methods**, never a prefix. One entry: Meta's WhatsApp callback.

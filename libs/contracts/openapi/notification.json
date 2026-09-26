@@ -312,6 +312,87 @@
         "title": "AutomationPatch",
         "type": "object"
       },
+      "CampaignAnalyticsOut": {
+        "properties": {
+          "bounced": {
+            "title": "Bounced",
+            "type": "integer"
+          },
+          "by_device": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceOpens"
+            },
+            "title": "By Device",
+            "type": "array"
+          },
+          "by_link": {
+            "items": {
+              "$ref": "#/components/schemas/LinkClicks"
+            },
+            "title": "By Link",
+            "type": "array"
+          },
+          "click_rate": {
+            "title": "Click Rate",
+            "type": "number"
+          },
+          "clicked": {
+            "title": "Clicked",
+            "type": "integer"
+          },
+          "complaints": {
+            "title": "Complaints",
+            "type": "integer"
+          },
+          "delivered": {
+            "title": "Delivered",
+            "type": "integer"
+          },
+          "open_rate": {
+            "title": "Open Rate",
+            "type": "number"
+          },
+          "opened": {
+            "title": "Opened",
+            "type": "integer"
+          },
+          "recipients": {
+            "title": "Recipients",
+            "type": "integer"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignSeriesPoint"
+            },
+            "title": "Series",
+            "type": "array"
+          },
+          "tracking": {
+            "$ref": "#/components/schemas/TrackingFlags"
+          },
+          "unsubscribed": {
+            "title": "Unsubscribed",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "recipients",
+          "delivered",
+          "opened",
+          "clicked",
+          "unsubscribed",
+          "bounced",
+          "complaints",
+          "open_rate",
+          "click_rate",
+          "by_device",
+          "by_link",
+          "series",
+          "tracking"
+        ],
+        "title": "CampaignAnalyticsOut",
+        "type": "object"
+      },
       "CampaignIn": {
         "additionalProperties": false,
         "properties": {
@@ -376,6 +457,16 @@
             "maxLength": 500000,
             "title": "Text Body",
             "type": "string"
+          },
+          "track_clicks": {
+            "default": false,
+            "title": "Track Clicks",
+            "type": "boolean"
+          },
+          "track_opens": {
+            "default": false,
+            "title": "Track Opens",
+            "type": "boolean"
           }
         },
         "required": [
@@ -501,6 +592,16 @@
           "text_body": {
             "title": "Text Body",
             "type": "string"
+          },
+          "track_clicks": {
+            "default": false,
+            "title": "Track Clicks",
+            "type": "boolean"
+          },
+          "track_opens": {
+            "default": false,
+            "title": "Track Opens",
+            "type": "boolean"
           },
           "updated_at": {
             "format": "date-time",
@@ -633,6 +734,28 @@
               }
             ],
             "title": "Text Body"
+          },
+          "track_clicks": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Clicks"
+          },
+          "track_opens": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Opens"
           }
         },
         "title": "CampaignPatch",
@@ -716,6 +839,29 @@
           "scheduled_at"
         ],
         "title": "CampaignScheduleIn",
+        "type": "object"
+      },
+      "CampaignSeriesPoint": {
+        "properties": {
+          "clicks": {
+            "title": "Clicks",
+            "type": "integer"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "opens": {
+            "title": "Opens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "date",
+          "opens",
+          "clicks"
+        ],
+        "title": "CampaignSeriesPoint",
         "type": "object"
       },
       "CampaignStats": {
@@ -1882,6 +2028,24 @@
         "title": "DeliveryOut",
         "type": "object"
       },
+      "DeviceOpens": {
+        "properties": {
+          "device": {
+            "title": "Device",
+            "type": "string"
+          },
+          "opens": {
+            "title": "Opens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "device",
+          "opens"
+        ],
+        "title": "DeviceOpens",
+        "type": "object"
+      },
       "DnsRecordOut": {
         "description": "One record the customer publishes at their registrar, and whether DNS has it yet.\n\n`fqdn` is the full host DNS is actually asked about; `registrar_name` is the same record\nnamed the way a registrar's panel wants it \u2014 `@` for the apex, `google._domainkey` for a\nsubdomain \u2014 because pasting `google._domainkey.company.com.company.com` into a panel that\nalready appends the zone is the single most common way a customer publishes a record that\ncan never verify. Neither the exact DKIM value nor a Microsoft CNAME's target is ever known\nhere \u2014 the provider mints the key, not this platform \u2014 so `value` for those is instructional\ntext, and there is nothing for `suggested_value` to say beyond SPF's own arithmetic.",
         "properties": {
@@ -2132,6 +2296,162 @@
         "title": "EdgeIn",
         "type": "object"
       },
+      "EmailActivity": {
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "campaign_sent",
+              "high_open_rate",
+              "new_subscriber",
+              "automation_executed"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "text",
+          "at"
+        ],
+        "title": "EmailActivity",
+        "type": "object"
+      },
+      "EmailOverviewOut": {
+        "properties": {
+          "clicked": {
+            "title": "Clicked",
+            "type": "integer"
+          },
+          "delivered": {
+            "title": "Delivered",
+            "type": "integer"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "opened": {
+            "title": "Opened",
+            "type": "integer"
+          },
+          "recent_activity": {
+            "items": {
+              "$ref": "#/components/schemas/EmailActivity"
+            },
+            "title": "Recent Activity",
+            "type": "array"
+          },
+          "sent": {
+            "title": "Sent",
+            "type": "integer"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/EmailSeriesPoint"
+            },
+            "title": "Series",
+            "type": "array"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/EmailTotals"
+          }
+        },
+        "required": [
+          "sent",
+          "delivered",
+          "opened",
+          "clicked",
+          "failed",
+          "totals"
+        ],
+        "title": "EmailOverviewOut",
+        "type": "object"
+      },
+      "EmailSeriesPoint": {
+        "properties": {
+          "clicked": {
+            "title": "Clicked",
+            "type": "integer"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "delivered": {
+            "title": "Delivered",
+            "type": "integer"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "opened": {
+            "title": "Opened",
+            "type": "integer"
+          },
+          "sent": {
+            "title": "Sent",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "date",
+          "sent",
+          "delivered",
+          "opened",
+          "clicked",
+          "failed"
+        ],
+        "title": "EmailSeriesPoint",
+        "type": "object"
+      },
+      "EmailTotals": {
+        "properties": {
+          "active_automations": {
+            "title": "Active Automations",
+            "type": "integer"
+          },
+          "connected_accounts": {
+            "title": "Connected Accounts",
+            "type": "integer"
+          },
+          "contacts": {
+            "title": "Contacts",
+            "type": "integer"
+          },
+          "subscribed_contacts": {
+            "title": "Subscribed Contacts",
+            "type": "integer"
+          },
+          "templates": {
+            "title": "Templates",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "connected_accounts",
+          "active_automations",
+          "templates",
+          "contacts",
+          "subscribed_contacts"
+        ],
+        "title": "EmailTotals",
+        "type": "object"
+      },
       "FailureReason": {
         "properties": {
           "code": {
@@ -2260,6 +2580,24 @@
           "costs"
         ],
         "title": "HubOverview",
+        "type": "object"
+      },
+      "LinkClicks": {
+        "properties": {
+          "clicks": {
+            "title": "Clicks",
+            "type": "integer"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "clicks"
+        ],
+        "title": "LinkClicks",
         "type": "object"
       },
       "ListMembersIn": {
@@ -5650,6 +5988,24 @@
         "title": "TestSendIn",
         "type": "object"
       },
+      "TrackingFlags": {
+        "properties": {
+          "clicks": {
+            "title": "Clicks",
+            "type": "boolean"
+          },
+          "opens": {
+            "title": "Opens",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "opens",
+          "clicks"
+        ],
+        "title": "TrackingFlags",
+        "type": "object"
+      },
       "TriggerOut": {
         "properties": {
           "event_type": {
@@ -6502,6 +6858,73 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/engage/analytics/email/overview": {
+      "get": {
+        "operationId": "email_overview_api_v1_engage_analytics_email_overview_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailOverviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Email sends and engagement over a date range (inclusive UTC dates)",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
     "/api/v1/engage/analytics/overview": {
       "get": {
         "description": "WhatsApp numbers computed here; email numbers come from the email analytics overview and are `null` when that module is not deployed. Same UTC-day range semantics and the same cost caveats as the WhatsApp overview: the cost is an estimate from PLACEHOLDER rates until the organization overrides the rate card.",
@@ -7620,6 +8043,49 @@
           }
         },
         "summary": "Edit a draft campaign",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/campaigns/{campaign_id}/analytics": {
+      "get": {
+        "operationId": "campaign_analytics_api_v1_engage_campaigns__campaign_id__analytics_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignAnalyticsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One campaign's delivery and engagement (human opens and clicks only)",
         "tags": [
           "engage"
         ]
@@ -10067,6 +10533,81 @@
         "summary": "Lift a manual suppression",
         "tags": [
           "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/t/c/{token}": {
+      "get": {
+        "description": "Redirects only to a destination registered from the sent message's own body. The\nrequester supplies a signed token, never a URL, so this cannot be an open redirect.",
+        "operationId": "track_click_api_v1_engage_t_c__token__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Click tracking: records the click and redirects to a link that was in the message",
+        "tags": [
+          "engage-public"
+        ]
+      }
+    },
+    "/api/v1/engage/t/o/{token}": {
+      "get": {
+        "description": "Always the same GIF, so a bad token is indistinguishable from a good one.",
+        "operationId": "track_open_api_v1_engage_t_o__token__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/gif": {}
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open-tracking pixel: a 1x1 GIF, and an open recorded when the token is genuine",
+        "tags": [
+          "engage-public"
         ]
       }
     },

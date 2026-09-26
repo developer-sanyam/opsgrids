@@ -24,8 +24,9 @@ make relay SERVICE=notification            # outbox relay
 
 **Customers send through their own email provider — Google Workspace, Microsoft 365, or their
 own SMTP relay. OpsGrids publishes no mail infrastructure of its own.** There is no platform MTA,
-no bounce envelope, and no link-rewriting proxy anywhere in the send path. **Bounce processing
-and open/click tracking are not built.** Stating this plainly here because a prior version of
+no bounce envelope, and no link-rewriting proxy anywhere in the send path **by default**.
+**Bounce processing is not built.** Open/click tracking exists only as a per-campaign opt-in (see
+"Email tracking" below); a campaign that does not turn it on is sent exactly as written. Stating this plainly here because a prior version of
 this module generated DNS instructions that pointed at OpsGrids-hosted records that never
 existed — see `docs/superpowers/specs/2026-09-21-engage-email-platform-design.md` §7 for the
 incident and the fix.
@@ -55,6 +56,34 @@ What that means concretely:
   the content and the connection, not the DNS.
 - `GET /engage/setup` folds connection, domain, sender, contacts and campaign into one
   get-started checklist for a fresh organisation's first screen.
+
+## Email tracking (opt-in per campaign)
+
+`track_opens` and `track_clicks` on a campaign (both default **false**, settable while it is a
+draft) rewrite that one campaign's links and add a 1x1 pixel at send time, through signed URLs on
+the platform's own public API base (`ENGAGE_PUBLIC_API_BASE`): `GET /engage/t/o/{token}` (GIF) and
+`GET /engage/t/c/{token}` (302). No customer DNS is involved. `app/e1_tracking.py` holds all of it.
+
+- Tokens are `base64url(payload).base64url(mac)`: HMAC-SHA256 over the kind and the payload (org id,
+  recipient id, link id, no address, name or URL), compared in constant time. The key derives from
+  `ENGAGE_UNSUBSCRIBE_SECRET` unless `ENGAGE_TRACKING_SECRET` is set; it is unavailable, and tracking
+  is skipped, wherever the unsubscribe key is refused. Rotating it stops recording on mail already
+  sent.
+- **No open redirect.** A click token names a row of `email_links`, registered from the anchors of
+  the campaign body when it is sent. The redirect goes only to that row's `http(s)` URL; nothing the
+  requester supplies becomes a `Location`. Unsubscribe links, `mailto:`, `tel:`, fragments and
+  relative URLs are never rewritten, and the plain-text part is untouched.
+- `email_events` is append-only (`UPDATE`/`DELETE` revoked from the app role) and stores the event,
+  recipient, link, a device class and `occurred_at`. **No IP address and no raw user agent.** Scanner
+  and prefetch traffic (known scanner agents, Apple Mail Privacy Protection, a fetch within seconds
+  of the provider accepting the mail) is kept with `is_machine = true` and excluded from every
+  human figure. The same event within five seconds is written once.
+- `GET /engage/campaigns/{id}/analytics` and `GET /engage/analytics/email/overview` read it
+  (`app/e1_analytics.py`; `email_overview(session, organization_id, date_from, date_to)` is also
+  what the hub embeds). Rates are fractions between 0 and 1. `delivered` means accepted by the
+  provider. `complaints` is 0 because no complaint feedback loop is processed; `bounced` counts
+  provider refusals at send time only.
+- The test send (`POST /engage/campaigns/{id}/test`) is never tracked.
 
 ## Whose connection a message goes out on
 
