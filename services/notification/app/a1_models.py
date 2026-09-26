@@ -114,7 +114,7 @@ class AutomationRun(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     #: `wake_token` exactly once: the token rotates every time a wait is entered.
     wake_token: Mapped[str | None] = mapped_column(String(64))
     #: How many node visits this run has recorded; the next step's `seq`.
-    step_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    step_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     __table_args__ = (
         CheckConstraint(
@@ -134,7 +134,7 @@ class AutomationRunStep(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     run_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     #: Visit order within the run. `started_at` alone cannot order steps written in one
     #: transaction, which all share a timestamp.
-    seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     node_id: Mapped[str] = mapped_column(String(64), nullable=False)
     type: Mapped[str] = mapped_column(String(20), nullable=False)
     state: Mapped[str] = mapped_column(String(20), nullable=False)
