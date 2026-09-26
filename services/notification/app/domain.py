@@ -18,7 +18,18 @@ from typing import Any, Final
 
 #: The channels this service can actually reach. A rule naming anything else is refused at
 #: write time rather than discovered when a message fails to send.
-CHANNELS: Final[tuple[str, ...]] = ("email", "whatsapp")
+#:
+#: `in_app` is the platform's own feed (`app/inbox.py`, `GET /notifications/me`) rather than a
+#: provider: `to_address` holds the recipient's **membership id**, not an email or phone number,
+#: and `transports.InAppTransport` sends nothing over a network — the row landing in `messages`
+#: *is* the delivery. Everything else about it (staging, suppression, dedupe, the dispatcher's
+#: claim/send/record cycle) is the same generic pipeline `email` and `whatsapp` already use; no
+#: new event infrastructure was needed to add it.
+CHANNELS: Final[tuple[str, ...]] = ("email", "whatsapp", "in_app")
+
+#: `Message.channel` value for the in-app feed. Named once here so `app/inbox.py` and
+#: `transports.py` never repeat the literal.
+IN_APP_CHANNEL: Final = "in_app"
 
 #: Message lifecycle. `pending` is written by the consumer and the API; every transition out
 #: of it belongs to the dispatcher, so exactly one process talks to a provider.
@@ -35,6 +46,12 @@ STATE_DELIVERED: Final = "delivered"
 STATE_READ: Final = "read"
 STATE_FAILED: Final = "failed"
 STATE_SUPPRESSED: Final = "suppressed"
+
+#: States under which an in-app message has actually reached the feed. `pending` (not yet
+#: dispatched) and `sending` (claimed, not yet recorded) are transient; `failed` and `suppressed`
+#: mean the recipient was deliberately or accidentally never shown it. Only these three are
+#: something to list.
+IN_APP_VISIBLE_STATES: Final[tuple[str, ...]] = (STATE_SENT, STATE_DELIVERED, STATE_READ)
 
 #: How far a message has got, low to high. Receipts arrive out of order — Meta batches them and
 #: the network reorders them — so a `delivered` arriving after a `read` must not walk the state
@@ -266,7 +283,10 @@ def normalize_recipient(channel: str, raw: str) -> str:
     Email is lower-cased and trimmed. WhatsApp is normalised towards E.164: separators a human
     typed are stripped, and a bare number is refused rather than guessed at — a missing country
     code is not something to assume, because assuming wrongly sends a stranger somebody else's
-    invoice.
+    invoice. `in_app`'s "address" is a membership id, not a postal address of any kind — the
+    recipient is a row in `account.memberships`, named by a plain UUID the same way
+    `Conversation.assignee_membership_id` already is, so it is validated as one rather than
+    guessed at with an address-shaped regex.
     """
     value = raw.strip()
     if not value:
@@ -277,6 +297,12 @@ def normalize_recipient(channel: str, raw: str) -> str:
         if not _EMAIL.match(value):
             raise RuleError(f"{raw!r} is not an email address")
         return value
+
+    if channel == IN_APP_CHANNEL:
+        try:
+            return str(uuid.UUID(value))
+        except ValueError as exc:
+            raise RuleError(f"{raw!r} is not a membership id") from exc
 
     if channel == "whatsapp":
         compact = re.sub(r"[\s\-().]", "", value)

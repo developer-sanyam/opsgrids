@@ -970,7 +970,8 @@
           "channel": {
             "enum": [
               "email",
-              "whatsapp"
+              "whatsapp",
+              "in_app"
             ],
             "title": "Channel",
             "type": "string"
@@ -1426,7 +1427,8 @@
           "channel": {
             "enum": [
               "email",
-              "whatsapp"
+              "whatsapp",
+              "in_app"
             ],
             "title": "Channel",
             "type": "string"
@@ -1547,6 +1549,118 @@
           "deliveries"
         ],
         "title": "MessageOut",
+        "type": "object"
+      },
+      "NotificationOut": {
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "event_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Type"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "read_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read At"
+          },
+          "rule_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule Code"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          }
+        },
+        "required": [
+          "id",
+          "category",
+          "subject",
+          "body",
+          "event_type",
+          "rule_code",
+          "created_at",
+          "read_at"
+        ],
+        "title": "NotificationOut",
+        "type": "object"
+      },
+      "NotificationPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NotificationOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "unread_count": {
+            "title": "Unread Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "unread_count"
+        ],
+        "title": "NotificationPage",
         "type": "object"
       },
       "Page_CampaignOut_": {
@@ -2138,7 +2252,8 @@
           "channel": {
             "enum": [
               "email",
-              "whatsapp"
+              "whatsapp",
+              "in_app"
             ],
             "title": "Channel",
             "type": "string"
@@ -2183,7 +2298,8 @@
           "channel": {
             "enum": [
               "email",
-              "whatsapp"
+              "whatsapp",
+              "in_app"
             ],
             "title": "Channel",
             "type": "string"
@@ -2241,7 +2357,8 @@
           "channel": {
             "enum": [
               "email",
-              "whatsapp"
+              "whatsapp",
+              "in_app"
             ],
             "title": "Channel",
             "type": "string"
@@ -2334,7 +2451,8 @@
           "channel": {
             "enum": [
               "email",
-              "whatsapp"
+              "whatsapp",
+              "in_app"
             ],
             "title": "Channel",
             "type": "string"
@@ -2451,6 +2569,19 @@
         "title": "ProviderTemplateOut",
         "type": "object"
       },
+      "ReadAllOut": {
+        "properties": {
+          "updated": {
+            "title": "Updated",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "updated"
+        ],
+        "title": "ReadAllOut",
+        "type": "object"
+      },
       "RuleIn": {
         "additionalProperties": false,
         "description": "Author one automation.\n\n`recipient_path` or `recipient_literal` \u2014 exactly one. The coherence rules live in\n`domain.validate_rule` so the same check guards the API and the consumer.",
@@ -2469,7 +2600,8 @@
           "channel": {
             "enum": [
               "email",
-              "whatsapp"
+              "whatsapp",
+              "in_app"
             ],
             "title": "Channel",
             "type": "string"
@@ -2581,7 +2713,8 @@
           "channel": {
             "enum": [
               "email",
-              "whatsapp"
+              "whatsapp",
+              "in_app"
             ],
             "title": "Channel",
             "type": "string"
@@ -2702,7 +2835,8 @@
           "channel": {
             "enum": [
               "email",
-              "whatsapp"
+              "whatsapp",
+              "in_app"
             ],
             "title": "Channel",
             "type": "string"
@@ -2985,7 +3119,8 @@
           "channel": {
             "enum": [
               "email",
-              "whatsapp"
+              "whatsapp",
+              "in_app"
             ],
             "title": "Channel",
             "type": "string"
@@ -3032,7 +3167,8 @@
           "channel": {
             "enum": [
               "email",
-              "whatsapp"
+              "whatsapp",
+              "in_app"
             ],
             "title": "Channel",
             "type": "string"
@@ -6134,6 +6270,143 @@
         "summary": "What this service is",
         "tags": [
           "notification"
+        ]
+      }
+    },
+    "/api/v1/notifications/me": {
+      "get": {
+        "operationId": "list_my_notifications_api_v1_notifications_me_get",
+        "parameters": [
+          {
+            "description": "The `next_cursor` from a previous page. Omit for the first page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` from a previous page. Omit for the first page.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "unread_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Unread Only",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The caller's own in-app notification feed",
+        "tags": [
+          "notification-inbox"
+        ]
+      }
+    },
+    "/api/v1/notifications/me/{notification_id}:read": {
+      "post": {
+        "operationId": "mark_notification_read_api_v1_notifications_me__notification_id__read_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "notification_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Notification Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mark one notification read",
+        "tags": [
+          "notification-inbox"
+        ]
+      }
+    },
+    "/api/v1/notifications/me:read-all": {
+      "post": {
+        "operationId": "mark_all_notifications_read_api_v1_notifications_me_read_all_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadAllOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Mark every one of the caller's unread notifications read",
+        "tags": [
+          "notification-inbox"
         ]
       }
     },

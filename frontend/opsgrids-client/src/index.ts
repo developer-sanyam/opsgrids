@@ -95,6 +95,23 @@ export type {
   UseGlobalSearchOptions,
 } from "./platform/useGlobalSearch";
 
+export {
+  fetchMyNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+} from "./notifications/api";
+export type {
+  FetchNotificationsParams,
+  MarkAllReadResult,
+  NotificationItem,
+  NotificationPage,
+} from "./notifications/api";
+export { useNotifications } from "./notifications/useNotifications";
+export type {
+  UseNotificationsOptions,
+  UseNotificationsResult,
+} from "./notifications/useNotifications";
+
 export { settle } from "./fixtures";
 export { useAsync } from "./useAsync";
 export type { AsyncControls, AsyncState } from "./useAsync";
