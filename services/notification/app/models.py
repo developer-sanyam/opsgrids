@@ -1014,6 +1014,16 @@ class Campaign(Base, TenantBase):
     sent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     suppressed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: Open and click tracking (slice E1). Off unless the operator turns it on: the Engage design
+    #: sends through the customer's own provider and runs no tracking domain, so tracking is an
+    #: opt-in that rewrites this campaign's links through the platform's signed tracking URLs.
+    #: Only a draft is editable, so these are fixed for the life of a send.
+    track_opens: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    track_clicks: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -1097,3 +1107,4 @@ class ProcessedEvent(Base, ProcessedEventMixin):
 
 class AuditLog(Base, AuditLogMixin):
     """Who changed what, written inside the transaction that changed it."""
+from app import e1_models  # noqa: E402,F401

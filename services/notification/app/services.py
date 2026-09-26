@@ -29,7 +29,16 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import consent, dns_check, domain, memberships, selectors, webhooks, whatsapp_provider
+from app import (
+    consent,
+    dns_check,
+    domain,
+    e1_tracking,
+    memberships,
+    selectors,
+    webhooks,
+    whatsapp_provider,
+)
 from app.config import Settings, settings
 from app.models import (
     AuditLog,
@@ -4777,9 +4786,15 @@ def unsubscribe_url_for_recipient(organization_id: uuid.UUID, recipient_id: uuid
     return f"{base}/engage/unsubscribe/{token}"
 
 
-def campaign_message(campaign: Campaign, *, to_address: str, unsubscribe: str) -> Outgoing:
+def campaign_message(
+    campaign: Campaign, *, to_address: str, unsubscribe: str, html_body: str | None = None
+) -> Outgoing:
     """One recipient's copy: the campaign body plus the unsubscribe footer, and the RFC 8058
-    one-click headers. Built per recipient because the link is per address."""
+    one-click headers. Built per recipient because the link is per address.
+
+    `html_body` replaces the campaign's HTML body when given: the tracked copy (slice E1), with
+    links rewritten and a pixel added. The unsubscribe footer is always appended after it, so it
+    is never rewritten."""
     text = campaign.text_body.rstrip()
     footer = f"Unsubscribe: {unsubscribe}\n"
     text = f"{text}\n\n--\n{footer}" if text else footer
@@ -4787,7 +4802,8 @@ def campaign_message(campaign: Campaign, *, to_address: str, unsubscribe: str) -
     if campaign.html_body.strip():
         link = html_escape(unsubscribe, quote=True)
         html = (
-            f'{campaign.html_body}\n<p style="font-size:12px;color:#666">'
+            f'{campaign.html_body if html_body is None else html_body}\n'
+            '<p style="font-size:12px;color:#666">'
             f'<a href="{link}">Unsubscribe</a></p>'
         )
     return Outgoing(
@@ -5250,6 +5266,9 @@ async def claim_campaign_batch(
     )
 
     cfg = settings()
+    # Open/click tracking (slice E1): None unless the campaign opted in. Registers the campaign's
+    # link destinations once for the batch; the per-recipient work below is string rewriting only.
+    tracking = await e1_tracking.prepare_plan(session, campaign)
     messages: list[ClaimedMessage] = []
     resolved: list[tuple[uuid.UUID, Literal["suppressed", "failed"], str]] = []
     for recipient in claimed:
@@ -5274,6 +5293,15 @@ async def claim_campaign_batch(
                 campaign,
                 to_address=address,
                 unsubscribe=unsubscribe_url_for_recipient(organization_id, recipient.id),
+                html_body=(
+                    tracking.render(
+                        campaign.html_body,
+                        organization_id=organization_id,
+                        recipient_id=recipient.id,
+                    )
+                    if tracking is not None and campaign.html_body.strip()
+                    else None
+                ),
             )
         except Exception:
             # One row's own problem (a sealed address that will not open, a body that will not

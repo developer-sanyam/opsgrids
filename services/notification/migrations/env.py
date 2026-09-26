@@ -82,13 +82,14 @@ def reapply_append_only(connection: Connection) -> None:
     """
     if not cfg.db_app_role:
         return
-    if connection.execute(
-        text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.{APPEND_ONLY_TABLE}"}
-    ).scalar():
-        connection.execute(
-            text(f'REVOKE UPDATE, DELETE ON {SCHEMA}.{APPEND_ONLY_TABLE} FROM "{cfg.db_app_role}"')
-        )
-        connection.commit()
+    for table in (APPEND_ONLY_TABLE, "email_events"):
+        if connection.execute(
+            text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.{table}"}
+        ).scalar():
+            connection.execute(
+                text(f'REVOKE UPDATE, DELETE ON {SCHEMA}.{table} FROM "{cfg.db_app_role}"')
+            )
+            connection.commit()
 
 
 def include_object(obj, name, type_, reflected, compare_to) -> bool:  # type: ignore[no-untyped-def]
