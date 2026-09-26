@@ -34,6 +34,7 @@
 
     { "prefix": "/api/v1/organization", "upstream": "http://localhost:8111" },
     { "prefix": "/api/v1/org-units", "upstream": "http://localhost:8111" },
+    { "prefix": "/api/v1/domains", "upstream": "http://localhost:8111" },
     { "prefix": "/api/v1/locations", "upstream": "http://localhost:8111" },
     { "prefix": "/api/v1/members", "upstream": "http://localhost:8111" },
     { "prefix": "/api/v1/roles", "upstream": "http://localhost:8111" },
