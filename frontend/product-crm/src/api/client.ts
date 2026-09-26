@@ -115,6 +115,8 @@ export interface ListDealsParams {
   companyId?: string;
   page?: number;
   size?: number;
+  /** Aborts the request — the import/export dialog cancels an export or a lookup load. */
+  signal?: AbortSignal | undefined;
 }
 
 export async function listDeals(params: ListDealsParams = {}): Promise<Page<Deal>> {
@@ -137,7 +139,9 @@ export async function listDeals(params: ListDealsParams = {}): Promise<Page<Deal
   if (params.stage && params.stage !== "all") query.set("stage", params.stage);
   if (params.ownerId && params.ownerId !== "all") query.set("owner_id", params.ownerId);
   if (params.companyId) query.set("company_id", params.companyId);
-  const result = await apiRequest<WirePage<DealOut>>(`/deals?${query.toString()}`);
+  const result = await apiRequest<WirePage<DealOut>>(`/deals?${query.toString()}`, {
+    signal: params.signal,
+  });
   return mapPage(result, dealFromWire);
 }
 
@@ -329,6 +333,7 @@ export interface ListCompaniesParams {
   status?: CompanyStatus | "all";
   page?: number;
   size?: number;
+  signal?: AbortSignal | undefined;
 }
 
 export async function listCompanies(params: ListCompaniesParams = {}): Promise<Page<Company>> {
@@ -350,7 +355,9 @@ export async function listCompanies(params: ListCompaniesParams = {}): Promise<P
   const query = new URLSearchParams({ page: String(page), size: String(size) });
   if (params.search?.trim()) query.set("q", params.search.trim());
   if (params.status && params.status !== "all") query.set("status", params.status);
-  const result = await apiRequest<WirePage<CompanyOut>>(`/customers?${query.toString()}`);
+  const result = await apiRequest<WirePage<CompanyOut>>(`/customers?${query.toString()}`, {
+    signal: params.signal,
+  });
   return mapPage(result, companyFromWire);
 }
 
@@ -452,6 +459,7 @@ export interface ListContactsParams {
   companyId?: string;
   page?: number;
   size?: number;
+  signal?: AbortSignal | undefined;
 }
 
 export async function listContacts(params: ListContactsParams = {}): Promise<Page<Contact>> {
@@ -475,7 +483,9 @@ export async function listContacts(params: ListContactsParams = {}): Promise<Pag
   if (params.search?.trim()) query.set("q", params.search.trim());
   if (params.status && params.status !== "all") query.set("status", params.status);
   if (params.companyId) query.set("company_id", params.companyId);
-  const result = await apiRequest<WirePage<ContactOut>>(`/contacts?${query.toString()}`);
+  const result = await apiRequest<WirePage<ContactOut>>(`/contacts?${query.toString()}`, {
+    signal: params.signal,
+  });
   return mapPage(result, contactFromWire);
 }
 
@@ -680,9 +690,9 @@ export async function logActivity(input: ActivityIn): Promise<Activity> {
 // The rep directory is `GET /customers/owners` — reference data owned by the customer service,
 // resolved by every `owner_id` in the product including deal-service's.
 
-export async function getOwners(): Promise<Owner[]> {
+export async function getOwners(signal?: AbortSignal): Promise<Owner[]> {
   if (USE_FIXTURES) return settle(OWNERS);
-  const rows = await apiRequest<OwnerOut[]>(`/customers/owners`);
+  const rows = await apiRequest<OwnerOut[]>(`/customers/owners`, { signal });
   return rows.map(ownerFromWire);
 }
 
@@ -750,6 +760,7 @@ export interface ListLeadsParams {
   ownerId?: string | "all";
   page?: number;
   size?: number;
+  signal?: AbortSignal | undefined;
 }
 
 export async function listLeads(params: ListLeadsParams = {}): Promise<Page<Lead>> {
@@ -767,7 +778,9 @@ export async function listLeads(params: ListLeadsParams = {}): Promise<Page<Lead
   const query = new URLSearchParams({ page: String(page), size: String(size) });
   if (params.status && params.status !== "all") query.set("status", params.status);
   if (params.ownerId && params.ownerId !== "all") query.set("owner_id", params.ownerId);
-  const result = await apiRequest<WirePage<LeadOut>>(`/leads?${query.toString()}`);
+  const result = await apiRequest<WirePage<LeadOut>>(`/leads?${query.toString()}`, {
+    signal: params.signal,
+  });
   return mapPage(result, leadFromWire);
 }
 
