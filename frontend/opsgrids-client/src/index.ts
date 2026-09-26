@@ -128,7 +128,13 @@ export {
 export type { AssetOut, UploadAssetControls } from "./documents/assets";
 
 // Excel import/export (ADR-0022): the engine behind `@opsgrids/ui`'s ImportExportButton.
-export { RowProblem, defineImportEntity, useImportExport } from "./dataexchange";
+export {
+  RowProblem,
+  collectPages,
+  defineImportEntity,
+  makeLookup,
+  useImportExport,
+} from "./dataexchange";
 export type {
   ColumnKind,
   ColumnOption,

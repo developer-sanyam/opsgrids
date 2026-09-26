@@ -1,3 +1,4 @@
+export { collectPages, makeLookup } from "./lookups";
 export { RowProblem, defineImportEntity } from "./types";
 export type {
   ColumnKind,

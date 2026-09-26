@@ -76,8 +76,11 @@ export interface ImportColumn {
 export interface Lookup {
   /** Every valid label, in display order: the Lists sheet and the dropdown. */
   labels: readonly string[];
-  /** Case-insensitive, trimmed label to the value the API wants (an id or a code). */
+  /** Case-insensitive, trimmed label to the value the API wants (an id or a code). Undefined when
+   *  the label is unknown or `isAmbiguous`. */
   resolve(label: string): string | undefined;
+  /** More than one entry carries this label, so `resolve` refuses to guess. */
+  isAmbiguous(label: string): boolean;
 }
 
 export type LookupSet = Readonly<Record<string, Lookup>>;
