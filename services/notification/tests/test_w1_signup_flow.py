@@ -458,3 +458,31 @@ async def test_a_connected_setup_is_sendable_and_a_disconnect_stops_sending(
     gone = await tenant_transport.resolve(org_id, "whatsapp", scope=scope, cfg=settings())
     assert isinstance(gone, tenant_transport.ChannelUnavailable)
     assert gone.reason == "channel_not_connected"
+
+
+async def test_a_step_that_fails_after_touching_the_run_is_still_recorded(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    signup_configured: None,
+    worker_engine: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The step's savepoint is rolled back, which expires what it touched; the failure must still
+    land on the run (and an unexpected exception must not leak its text)."""
+
+    async def breaks(session: AsyncSession, run: SetupRun, ctx: Any) -> str:
+        run.error_code = "half_written"
+        await session.flush()
+        raise RuntimeError(f"boom {TOKEN}")
+
+    monkeypatch.setitem(w1_setup._STEP_FUNCS, "webhook", breaks)
+    setup_id, envelope = await start(session, org_id)
+    assert await w1_setup.run_setup(envelope, transport=httpx.MockTransport(meta)) == "failed"
+
+    run = await run_of(session, setup_id)
+    assert (run.status, run.error_code) == ("failed", "internal_error")
+    assert states(run)["number"] == "done" and states(run)["webhook"] == "failed"
+    failed = next(s for s in run.steps if s["key"] == "webhook")
+    assert failed["detail"] == "Something went wrong on our side."
+    assert TOKEN not in json.dumps(run.steps)

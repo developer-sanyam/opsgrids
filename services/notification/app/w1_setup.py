@@ -195,6 +195,9 @@ async def _run_step(scope: WorkScope, ctx: Ctx, key: str) -> str:
         if failure is None:
             _set(run, key, "done", detail)
             return "ok"
+        # The savepoint's rollback expired whatever the step had touched, `run` included; reload
+        # it (awaited) before writing the failure, rather than lazy-loading inside a sync setter.
+        await session.refresh(run)
         now = datetime.now(UTC)
         _set(run, key, "failed", failure.detail)
         run.status = "failed"
