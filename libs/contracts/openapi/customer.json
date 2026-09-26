@@ -1,6 +1,32 @@
 {
   "components": {
     "schemas": {
+      "ChannelsSection": {
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmailChannel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "whatsapp": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WhatsAppChannel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "ChannelsSection",
+        "type": "object"
+      },
       "CompanyIn": {
         "additionalProperties": false,
         "description": "Create an account. `owner_id` must resolve to a rep in this organization's\ndirectory (`GET /customers/owners`). `annual_revenue_minor` is integer minor units of\n`currency`; no float is accepted on this path.",
@@ -559,6 +585,258 @@
         "title": "ContactPhoneRevealed",
         "type": "object"
       },
+      "CrmSection": {
+        "properties": {
+          "hot": {
+            "title": "Hot",
+            "type": "boolean"
+          },
+          "open_opportunities": {
+            "title": "Open Opportunities",
+            "type": "integer"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage"
+          }
+        },
+        "required": [
+          "stage",
+          "open_opportunities",
+          "hot"
+        ],
+        "title": "CrmSection",
+        "type": "object"
+      },
+      "Customer360": {
+        "properties": {
+          "channels": {
+            "$ref": "#/components/schemas/ChannelsSection"
+          },
+          "crm": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CrmSection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "customer": {
+            "$ref": "#/components/schemas/Customer360Customer"
+          },
+          "finance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FinanceSection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "orders": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OrdersSection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "support": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SupportSection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "timeline": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineEntry"
+            },
+            "title": "Timeline",
+            "type": "array"
+          },
+          "unavailable": {
+            "items": {
+              "enum": [
+                "crm",
+                "orders",
+                "finance",
+                "support",
+                "channels"
+              ],
+              "type": "string"
+            },
+            "title": "Unavailable",
+            "type": "array"
+          }
+        },
+        "required": [
+          "customer",
+          "crm",
+          "orders",
+          "finance",
+          "support",
+          "channels",
+          "timeline",
+          "unavailable"
+        ],
+        "title": "Customer360",
+        "type": "object"
+      },
+      "Customer360Customer": {
+        "properties": {
+          "city": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "City"
+          },
+          "company": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Company"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OwnerRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "phone": {
+            "title": "Phone",
+            "type": "string"
+          },
+          "since": {
+            "format": "date-time",
+            "title": "Since",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "inactive"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "company",
+          "since",
+          "status",
+          "owner",
+          "phone",
+          "email",
+          "city"
+        ],
+        "title": "Customer360Customer",
+        "type": "object"
+      },
+      "EmailChannel": {
+        "properties": {
+          "last_email_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Email At"
+          },
+          "subscribed": {
+            "title": "Subscribed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "subscribed",
+          "last_email_at"
+        ],
+        "title": "EmailChannel",
+        "type": "object"
+      },
+      "FinanceSection": {
+        "properties": {
+          "latest_invoice": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LatestInvoice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outstanding": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "overdue_count": {
+            "title": "Overdue Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "outstanding",
+          "overdue_count",
+          "latest_invoice"
+        ],
+        "title": "FinanceSection",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -570,6 +848,103 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "LatestInvoice": {
+        "properties": {
+          "due_on": {
+            "title": "Due On",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "number",
+          "status",
+          "due_on"
+        ],
+        "title": "LatestInvoice",
+        "type": "object"
+      },
+      "LatestOrder": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "total": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [
+          "number",
+          "status",
+          "total",
+          "at"
+        ],
+        "title": "LatestOrder",
+        "type": "object"
+      },
+      "Money": {
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount_minor",
+          "currency"
+        ],
+        "title": "Money",
+        "type": "object"
+      },
+      "OrdersSection": {
+        "properties": {
+          "count_90d": {
+            "title": "Count 90D",
+            "type": "integer"
+          },
+          "latest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LatestOrder"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total_90d": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [
+          "count_90d",
+          "total_90d",
+          "latest"
+        ],
+        "title": "OrdersSection",
         "type": "object"
       },
       "OwnerIn": {
@@ -693,6 +1068,24 @@
         "title": "OwnerPatch",
         "type": "object"
       },
+      "OwnerRef": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "OwnerRef",
+        "type": "object"
+      },
       "Page_CompanyOut_": {
         "properties": {
           "items": {
@@ -783,6 +1176,48 @@
         "title": "ServiceInfo",
         "type": "object"
       },
+      "SupportSection": {
+        "properties": {
+          "open_tickets": {
+            "title": "Open Tickets",
+            "type": "integer"
+          },
+          "total_tickets": {
+            "title": "Total Tickets",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "open_tickets",
+          "total_tickets"
+        ],
+        "title": "SupportSection",
+        "type": "object"
+      },
+      "TimelineEntry": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "at"
+        ],
+        "title": "TimelineEntry",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -821,6 +1256,50 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "WhatsAppChannel": {
+        "properties": {
+          "conversations": {
+            "title": "Conversations",
+            "type": "integer"
+          },
+          "last_message_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Message At"
+          },
+          "opted_in": {
+            "title": "Opted In",
+            "type": "boolean"
+          },
+          "window_open_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Open Until"
+          }
+        },
+        "required": [
+          "opted_in",
+          "window_open_until",
+          "last_message_at",
+          "conversations"
+        ],
+        "title": "WhatsAppChannel",
         "type": "object"
       }
     }
@@ -1599,6 +2078,50 @@
           }
         },
         "summary": "Update a company",
+        "tags": [
+          "customer"
+        ]
+      }
+    },
+    "/api/v1/customers/{contact_id}/360": {
+      "get": {
+        "description": "Sections that cannot be produced are `null` and named in `unavailable`; the response is\nstill 200. Only the contact itself decides 404.",
+        "operationId": "read_customer_360_api_v1_customers__contact_id__360_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Contact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Customer360"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One contact across the platform",
         "tags": [
           "customer"
         ]

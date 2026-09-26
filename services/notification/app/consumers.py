@@ -41,7 +41,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import domain, selectors, services
+from app import a1_services, domain, selectors, services, w1_services, w1_setup
 from app.config import settings
 from app.contacts import ContactResolver, make_contact_resolver
 from app.models import ProcessedEvent
@@ -113,8 +113,18 @@ async def fold(envelope: dict[str, Any], resolve_target: TargetResolver | None =
             envelope=envelope,
             resolve_target=resolve_target,
         )
+        # Automations (slice A1) start on the same event, in this same transaction: one run per
+        # (automation, event), so the ledger row below and the run rows commit together.
+        started = await a1_services.start_runs(
+            session,
+            organization_id=organization_id,
+            envelope=envelope,
+            resolve_target=resolve_target,
+        )
         mark_processed(session, ProcessedEvent, event_id, event_type)
 
+    if started:
+        log.info("automation.runs.started", event_type=event_type, count=len(started))
     if staged:
         log.info("notification.staged", event_type=event_type, count=len(staged))
 
@@ -259,6 +269,43 @@ async def fold_inbound_contact(
     log.info("inbound.contact.resolved", matched=resolution.contact_id is not None)
 
 
+async def wake_automation_run(
+    envelope: dict[str, Any], resolve_target: TargetResolver | None = None
+) -> str:
+    """Resume one automation run that was waiting, exactly once (slice A1).
+
+    The scheduler republishes `notification.automation.run_wake` at the wake time; the run's
+    rotating token, compared and cleared under a row lock, is what makes a second delivery (or
+    the overdue-wait sweep racing the scheduler) a no-op. The event id also goes through the
+    ledger, like every other handler here.
+    """
+    event_id = uuid.UUID(str(envelope["event_id"]))
+    organization_id = uuid.UUID(str(envelope["organization_id"]))
+    payload = envelope.get("payload") or {}
+    if str(payload.get("organization_id", organization_id)) != str(organization_id):
+        log.error("automation.wake.envelope_payload_org_mismatch")
+        return "mismatch"
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            return "redelivered"
+        outcome = await a1_services.wake_run(
+            session,
+            organization_id=organization_id,
+            run_id=uuid.UUID(str(payload["run_id"])),
+            wake_token=str(payload.get("wake_token") or ""),
+            resolve_target=resolve_target,
+        )
+        mark_processed(session, ProcessedEvent, event_id, str(envelope["event_type"]))
+    log.info("automation.wake", outcome=outcome)
+    return outcome
+
+
+async def run_whatsapp_setup(envelope: dict[str, Any]) -> str:
+    """Run one WhatsApp Embedded Signup (slice W1). The steps, their idempotency and their
+    failure handling live in `app/w1_setup.py`; this binds them to this process's tenant scope."""
+    return await w1_setup.run_setup(envelope, scope=_session_scope)
+
+
 def register(
     resolve_target: TargetResolver | None = None,
     resolve_contact: ContactResolver | None = None,
@@ -286,6 +333,16 @@ def register(
         await fold_inbound_contact(envelope, resolve_contact)
 
     consumer.on(services.EVT_INBOUND_RECEIVED)(on_inbound_received)
+
+    async def on_automation_wake(envelope: dict[str, Any]) -> None:
+        await wake_automation_run(envelope, resolve_target)
+
+    consumer.on(a1_services.EVT_RUN_WAKE)(on_automation_wake)
+
+    async def on_whatsapp_setup(envelope: dict[str, Any]) -> None:
+        await run_whatsapp_setup(envelope)
+
+    consumer.on(w1_services.EVT_SETUP_REQUESTED)(on_whatsapp_setup)
 
 
 async def main() -> None:

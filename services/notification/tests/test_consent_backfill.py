@@ -35,7 +35,7 @@ pytestmark = pytest.mark.integration
 
 SERVICE_DIR = Path(__file__).resolve().parent.parent
 BEFORE = "c9a2e6f1b4d7"  # the revision right before d5a7c3e91f48  # pragma: allowlist secret
-HEAD = "d5a7c3e91f48"  # pragma: allowlist secret
+HEAD = "a2c5e8f10b37"  # pragma: allowlist secret
 TABLES = (
     "consent_events",
     "campaign_recipients",
@@ -485,7 +485,12 @@ async def test_there_is_exactly_one_alembic_head(admin) -> None:
     assert heads.returncode == 0, heads.stderr[-2000:]
     lines = [line for line in heads.stdout.splitlines() if "(head)" in line]
     assert len(lines) == 1, heads.stdout
-    assert lines[0].startswith(HEAD)
+    # Not pinned to `HEAD`: every later migration becomes the tip, and this test is about the
+    # chain having exactly one tip, not about which revision that is. The consent ledger's own
+    # revision must still be in the chain.
+    history = alembic("history")
+    assert history.returncode == 0, history.stderr[-2000:]
+    assert HEAD in history.stdout
 
 
 async def test_the_append_only_revoke_survives_a_rerun_of_the_schema_grants(admin) -> None:

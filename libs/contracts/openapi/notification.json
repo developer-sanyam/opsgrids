@@ -1,6 +1,398 @@
 {
   "components": {
     "schemas": {
+      "ActivityItem": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "text",
+          "at"
+        ],
+        "title": "ActivityItem",
+        "type": "object"
+      },
+      "AutomationDetail": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "executions_30d": {
+            "title": "Executions 30D",
+            "type": "integer"
+          },
+          "graph": {
+            "additionalProperties": true,
+            "title": "Graph",
+            "type": "object"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_run_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run At"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "active",
+              "paused"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "success_rate_30d": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Success Rate 30D"
+          },
+          "trigger_event": {
+            "title": "Trigger Event",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "validation": {
+            "$ref": "#/components/schemas/ValidationOut"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "status",
+          "trigger_event",
+          "module",
+          "version",
+          "executions_30d",
+          "success_rate_30d",
+          "last_run_at",
+          "updated_at",
+          "graph",
+          "validation"
+        ],
+        "title": "AutomationDetail",
+        "type": "object"
+      },
+      "AutomationIn": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "graph": {
+            "$ref": "#/components/schemas/GraphIn"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "graph"
+        ],
+        "title": "AutomationIn",
+        "type": "object"
+      },
+      "AutomationOut": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "executions_30d": {
+            "title": "Executions 30D",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_run_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run At"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "active",
+              "paused"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "success_rate_30d": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Success Rate 30D"
+          },
+          "trigger_event": {
+            "title": "Trigger Event",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "status",
+          "trigger_event",
+          "module",
+          "version",
+          "executions_30d",
+          "success_rate_30d",
+          "last_run_at",
+          "updated_at"
+        ],
+        "title": "AutomationOut",
+        "type": "object"
+      },
+      "AutomationPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "graph": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GraphIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "AutomationPatch",
+        "type": "object"
+      },
+      "CampaignAnalyticsOut": {
+        "properties": {
+          "bounced": {
+            "title": "Bounced",
+            "type": "integer"
+          },
+          "by_device": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceOpens"
+            },
+            "title": "By Device",
+            "type": "array"
+          },
+          "by_link": {
+            "items": {
+              "$ref": "#/components/schemas/LinkClicks"
+            },
+            "title": "By Link",
+            "type": "array"
+          },
+          "click_rate": {
+            "title": "Click Rate",
+            "type": "number"
+          },
+          "clicked": {
+            "title": "Clicked",
+            "type": "integer"
+          },
+          "complaints": {
+            "title": "Complaints",
+            "type": "integer"
+          },
+          "delivered": {
+            "title": "Delivered",
+            "type": "integer"
+          },
+          "open_rate": {
+            "title": "Open Rate",
+            "type": "number"
+          },
+          "opened": {
+            "title": "Opened",
+            "type": "integer"
+          },
+          "recipients": {
+            "title": "Recipients",
+            "type": "integer"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignSeriesPoint"
+            },
+            "title": "Series",
+            "type": "array"
+          },
+          "tracking": {
+            "$ref": "#/components/schemas/TrackingFlags"
+          },
+          "unsubscribed": {
+            "title": "Unsubscribed",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "recipients",
+          "delivered",
+          "opened",
+          "clicked",
+          "unsubscribed",
+          "bounced",
+          "complaints",
+          "open_rate",
+          "click_rate",
+          "by_device",
+          "by_link",
+          "series",
+          "tracking"
+        ],
+        "title": "CampaignAnalyticsOut",
+        "type": "object"
+      },
       "CampaignIn": {
         "additionalProperties": false,
         "properties": {
@@ -65,6 +457,16 @@
             "maxLength": 500000,
             "title": "Text Body",
             "type": "string"
+          },
+          "track_clicks": {
+            "default": false,
+            "title": "Track Clicks",
+            "type": "boolean"
+          },
+          "track_opens": {
+            "default": false,
+            "title": "Track Opens",
+            "type": "boolean"
           }
         },
         "required": [
@@ -190,6 +592,16 @@
           "text_body": {
             "title": "Text Body",
             "type": "string"
+          },
+          "track_clicks": {
+            "default": false,
+            "title": "Track Clicks",
+            "type": "boolean"
+          },
+          "track_opens": {
+            "default": false,
+            "title": "Track Opens",
+            "type": "boolean"
           },
           "updated_at": {
             "format": "date-time",
@@ -322,6 +734,28 @@
               }
             ],
             "title": "Text Body"
+          },
+          "track_clicks": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Clicks"
+          },
+          "track_opens": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Opens"
           }
         },
         "title": "CampaignPatch",
@@ -407,6 +841,29 @@
         "title": "CampaignScheduleIn",
         "type": "object"
       },
+      "CampaignSeriesPoint": {
+        "properties": {
+          "clicks": {
+            "title": "Clicks",
+            "type": "integer"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "opens": {
+            "title": "Opens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "date",
+          "opens",
+          "clicks"
+        ],
+        "title": "CampaignSeriesPoint",
+        "type": "object"
+      },
       "CampaignStats": {
         "properties": {
           "failed": {
@@ -457,6 +914,89 @@
           "to"
         ],
         "title": "CampaignTestSendOut",
+        "type": "object"
+      },
+      "CategoryCount": {
+        "properties": {
+          "category": {
+            "enum": [
+              "marketing",
+              "utility",
+              "authentication",
+              "service"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "messages": {
+            "title": "Messages",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "category",
+          "messages"
+        ],
+        "title": "CategoryCount",
+        "type": "object"
+      },
+      "ChannelCost": {
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "channel": {
+            "enum": [
+              "whatsapp",
+              "email",
+              "sms",
+              "push"
+            ],
+            "title": "Channel",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "amount"
+        ],
+        "title": "ChannelCost",
+        "type": "object"
+      },
+      "ChannelStatus": {
+        "properties": {
+          "connected": {
+            "title": "Connected",
+            "type": "boolean"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "key": {
+            "enum": [
+              "whatsapp",
+              "email",
+              "sms",
+              "push"
+            ],
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "connected",
+          "detail"
+        ],
+        "title": "ChannelStatus",
         "type": "object"
       },
       "ConnectionIn": {
@@ -1385,6 +1925,64 @@
         "title": "ConversationReplyOut",
         "type": "object"
       },
+      "Cost": {
+        "properties": {
+          "by_category": {
+            "items": {
+              "$ref": "#/components/schemas/CostCategory"
+            },
+            "title": "By Category",
+            "type": "array"
+          },
+          "estimated": {
+            "const": true,
+            "default": true,
+            "title": "Estimated",
+            "type": "boolean"
+          },
+          "rate_card": {
+            "$ref": "#/components/schemas/RateCardRef"
+          },
+          "total": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [
+          "total",
+          "by_category",
+          "rate_card"
+        ],
+        "title": "Cost",
+        "type": "object"
+      },
+      "CostCategory": {
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "category": {
+            "enum": [
+              "marketing",
+              "utility",
+              "authentication",
+              "service"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "messages": {
+            "title": "Messages",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "category",
+          "messages",
+          "amount"
+        ],
+        "title": "CostCategory",
+        "type": "object"
+      },
       "DeliveryOut": {
         "properties": {
           "at": {
@@ -1428,6 +2026,48 @@
           "at"
         ],
         "title": "DeliveryOut",
+        "type": "object"
+      },
+      "DeviceOpens": {
+        "properties": {
+          "device": {
+            "title": "Device",
+            "type": "string"
+          },
+          "opens": {
+            "title": "Opens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "device",
+          "opens"
+        ],
+        "title": "DeviceOpens",
+        "type": "object"
+      },
+      "DisconnectOut": {
+        "description": "The connection is gone either way. `detail` is present only when Meta could not be asked\nto stop sending the old account's events here, so the person can remove the app from that\naccount themselves; it never carries a token.",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "title": "DisconnectOut",
         "type": "object"
       },
       "DnsRecordOut": {
@@ -1642,6 +2282,250 @@
         "title": "DomainPatch",
         "type": "object"
       },
+      "EdgeIn": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "From",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "enum": [
+                  "yes",
+                  "no"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "to": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "title": "EdgeIn",
+        "type": "object"
+      },
+      "EmailActivity": {
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "campaign_sent",
+              "high_open_rate",
+              "new_subscriber",
+              "automation_executed"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "text",
+          "at"
+        ],
+        "title": "EmailActivity",
+        "type": "object"
+      },
+      "EmailOverviewOut": {
+        "properties": {
+          "clicked": {
+            "title": "Clicked",
+            "type": "integer"
+          },
+          "delivered": {
+            "title": "Delivered",
+            "type": "integer"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "opened": {
+            "title": "Opened",
+            "type": "integer"
+          },
+          "recent_activity": {
+            "items": {
+              "$ref": "#/components/schemas/EmailActivity"
+            },
+            "title": "Recent Activity",
+            "type": "array"
+          },
+          "sent": {
+            "title": "Sent",
+            "type": "integer"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/EmailSeriesPoint"
+            },
+            "title": "Series",
+            "type": "array"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/EmailTotals"
+          }
+        },
+        "required": [
+          "sent",
+          "delivered",
+          "opened",
+          "clicked",
+          "failed",
+          "totals"
+        ],
+        "title": "EmailOverviewOut",
+        "type": "object"
+      },
+      "EmailSeriesPoint": {
+        "properties": {
+          "clicked": {
+            "title": "Clicked",
+            "type": "integer"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "delivered": {
+            "title": "Delivered",
+            "type": "integer"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "opened": {
+            "title": "Opened",
+            "type": "integer"
+          },
+          "sent": {
+            "title": "Sent",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "date",
+          "sent",
+          "delivered",
+          "opened",
+          "clicked",
+          "failed"
+        ],
+        "title": "EmailSeriesPoint",
+        "type": "object"
+      },
+      "EmailTotals": {
+        "properties": {
+          "active_automations": {
+            "title": "Active Automations",
+            "type": "integer"
+          },
+          "connected_accounts": {
+            "title": "Connected Accounts",
+            "type": "integer"
+          },
+          "contacts": {
+            "title": "Contacts",
+            "type": "integer"
+          },
+          "subscribed_contacts": {
+            "title": "Subscribed Contacts",
+            "type": "integer"
+          },
+          "templates": {
+            "title": "Templates",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "connected_accounts",
+          "active_automations",
+          "templates",
+          "contacts",
+          "subscribed_contacts"
+        ],
+        "title": "EmailTotals",
+        "type": "object"
+      },
+      "FailureReason": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "label",
+          "count"
+        ],
+        "title": "FailureReason",
+        "type": "object"
+      },
+      "GraphIn": {
+        "additionalProperties": false,
+        "properties": {
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/EdgeIn"
+            },
+            "maxItems": 200,
+            "title": "Edges",
+            "type": "array"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/NodeIn"
+            },
+            "maxItems": 60,
+            "title": "Nodes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "nodes",
+          "edges"
+        ],
+        "title": "GraphIn",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1653,6 +2537,127 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthOut": {
+        "properties": {
+          "connected": {
+            "title": "Connected",
+            "type": "boolean"
+          },
+          "number": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NumberHealthOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "templates": {
+            "$ref": "#/components/schemas/TemplatesHealthOut"
+          },
+          "token": {
+            "$ref": "#/components/schemas/TokenHealthOut"
+          },
+          "webhook": {
+            "$ref": "#/components/schemas/WebhookHealthOut"
+          }
+        },
+        "required": [
+          "connected",
+          "token",
+          "webhook",
+          "templates",
+          "number"
+        ],
+        "title": "HealthOut",
+        "type": "object"
+      },
+      "HubCosts": {
+        "properties": {
+          "by_channel": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelCost"
+            },
+            "title": "By Channel",
+            "type": "array"
+          },
+          "estimated": {
+            "const": true,
+            "default": true,
+            "title": "Estimated",
+            "type": "boolean"
+          },
+          "rate_card": {
+            "$ref": "#/components/schemas/RateCardRef"
+          },
+          "total": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [
+          "total",
+          "by_channel",
+          "rate_card"
+        ],
+        "title": "HubCosts",
+        "type": "object"
+      },
+      "HubOverview": {
+        "properties": {
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelStatus"
+            },
+            "title": "Channels",
+            "type": "array"
+          },
+          "costs": {
+            "$ref": "#/components/schemas/HubCosts"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "whatsapp": {
+            "$ref": "#/components/schemas/WhatsAppOverview"
+          }
+        },
+        "required": [
+          "channels",
+          "whatsapp",
+          "email",
+          "costs"
+        ],
+        "title": "HubOverview",
+        "type": "object"
+      },
+      "LinkClicks": {
+        "properties": {
+          "clicks": {
+            "title": "Clicks",
+            "type": "integer"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "clicks"
+        ],
+        "title": "LinkClicks",
         "type": "object"
       },
       "ListMembersIn": {
@@ -1849,6 +2854,68 @@
         "title": "MessageOut",
         "type": "object"
       },
+      "Money": {
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount_minor",
+          "currency"
+        ],
+        "title": "Money",
+        "type": "object"
+      },
+      "NodeIn": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "additionalProperties": true,
+            "title": "Config",
+            "type": "object"
+          },
+          "id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Position"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "enum": [
+              "trigger",
+              "condition",
+              "wait",
+              "send_message",
+              "create_task",
+              "end"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type"
+        ],
+        "title": "NodeIn",
+        "type": "object"
+      },
       "NotificationOut": {
         "properties": {
           "body": {
@@ -1959,6 +3026,173 @@
           "unread_count"
         ],
         "title": "NotificationPage",
+        "type": "object"
+      },
+      "NumberHealthOut": {
+        "properties": {
+          "messaging_limit": {
+            "title": "Messaging Limit",
+            "type": "string"
+          },
+          "quality_rating": {
+            "title": "Quality Rating",
+            "type": "string"
+          }
+        },
+        "required": [
+          "quality_rating",
+          "messaging_limit"
+        ],
+        "title": "NumberHealthOut",
+        "type": "object"
+      },
+      "NumberOut": {
+        "properties": {
+          "display_phone_number": {
+            "title": "Display Phone Number",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "messaging_limit": {
+            "enum": [
+              "TIER_250",
+              "TIER_1K",
+              "TIER_10K",
+              "TIER_100K",
+              "UNLIMITED",
+              "unknown"
+            ],
+            "title": "Messaging Limit",
+            "type": "string"
+          },
+          "name_status": {
+            "enum": [
+              "approved",
+              "pending_review",
+              "declined",
+              "none"
+            ],
+            "title": "Name Status",
+            "type": "string"
+          },
+          "phone_number_id": {
+            "title": "Phone Number Id",
+            "type": "string"
+          },
+          "quality_rating": {
+            "enum": [
+              "green",
+              "yellow",
+              "red",
+              "unknown"
+            ],
+            "title": "Quality Rating",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "connected",
+              "pending_verification",
+              "disconnected"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "verified_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified Name"
+          }
+        },
+        "required": [
+          "id",
+          "phone_number_id",
+          "display_phone_number",
+          "verified_name",
+          "name_status",
+          "quality_rating",
+          "messaging_limit",
+          "status",
+          "is_default"
+        ],
+        "title": "NumberOut",
+        "type": "object"
+      },
+      "NumbersOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NumberOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "NumbersOut",
+        "type": "object"
+      },
+      "OkOut": {
+        "properties": {
+          "ok": {
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "title": "OkOut",
+        "type": "object"
+      },
+      "Page_AutomationOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AutomationOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[AutomationOut]",
         "type": "object"
       },
       "Page_CampaignOut_": {
@@ -2429,6 +3663,42 @@
         "title": "Page[RuleOut]",
         "type": "object"
       },
+      "Page_RunOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[RunOut]",
+        "type": "object"
+      },
       "Page_SenderOut_": {
         "properties": {
           "items": {
@@ -2573,6 +3843,120 @@
         "title": "Page[WhatsAppConnectionOut]",
         "type": "object"
       },
+      "Page_WhatsAppTemplateOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WhatsAppTemplateOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[WhatsAppTemplateOut]",
+        "type": "object"
+      },
+      "PerAutomationOut": {
+        "properties": {
+          "automation_id": {
+            "format": "uuid",
+            "title": "Automation Id",
+            "type": "string"
+          },
+          "avg_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Duration Ms"
+          },
+          "executions": {
+            "title": "Executions",
+            "type": "integer"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "last_run_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run At"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "success_rate": {
+            "title": "Success Rate",
+            "type": "number"
+          }
+        },
+        "required": [
+          "automation_id",
+          "name",
+          "executions",
+          "success_rate",
+          "failed",
+          "avg_duration_ms",
+          "last_run_at"
+        ],
+        "title": "PerAutomationOut",
+        "type": "object"
+      },
+      "Position": {
+        "additionalProperties": false,
+        "properties": {
+          "x": {
+            "title": "X",
+            "type": "integer"
+          },
+          "y": {
+            "title": "Y",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "Position",
+        "type": "object"
+      },
       "PreferenceIn": {
         "additionalProperties": false,
         "description": "Record or lift a refusal. `category` of `*` covers the whole channel.",
@@ -2672,6 +4056,90 @@
           "updated_at"
         ],
         "title": "PreferenceOut",
+        "type": "object"
+      },
+      "PreviewButtonOut": {
+        "properties": {
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "quick_reply",
+              "url",
+              "phone"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "type",
+          "text"
+        ],
+        "title": "PreviewButtonOut",
+        "type": "object"
+      },
+      "ProblemOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "node_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Node Id"
+          },
+          "severity": {
+            "default": "error",
+            "enum": [
+              "error",
+              "warning"
+            ],
+            "title": "Severity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_id",
+          "code",
+          "message"
+        ],
+        "title": "ProblemOut",
         "type": "object"
       },
       "ProviderTemplateIn": {
@@ -2903,6 +4371,194 @@
         "title": "ProviderTemplateOut",
         "type": "object"
       },
+      "RateCardIn": {
+        "additionalProperties": false,
+        "description": "Override the rate card: exactly one rate per category, one currency across them.\n\nAll four categories together, because a partial override would price some categories in the\norganization's currency and the rest in the placeholder's, and one total cannot span two.",
+        "properties": {
+          "effective_from": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective From"
+          },
+          "rates": {
+            "items": {
+              "$ref": "#/components/schemas/RateIn"
+            },
+            "maxItems": 4,
+            "minItems": 4,
+            "title": "Rates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rates"
+        ],
+        "title": "RateCardIn",
+        "type": "object"
+      },
+      "RateCardOut": {
+        "properties": {
+          "channel": {
+            "const": "whatsapp",
+            "title": "Channel",
+            "type": "string"
+          },
+          "estimated": {
+            "const": true,
+            "default": true,
+            "title": "Estimated",
+            "type": "boolean"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "placeholder": {
+            "title": "Placeholder",
+            "type": "boolean"
+          },
+          "rates": {
+            "items": {
+              "$ref": "#/components/schemas/RateOut"
+            },
+            "title": "Rates",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "placeholder",
+          "version",
+          "note",
+          "rates"
+        ],
+        "title": "RateCardOut",
+        "type": "object"
+      },
+      "RateCardRef": {
+        "description": "Which rates produced the cost, so a reader can tell a placeholder from a real figure.",
+        "properties": {
+          "placeholder": {
+            "title": "Placeholder",
+            "type": "boolean"
+          },
+          "source": {
+            "enum": [
+              "platform_default",
+              "organization",
+              "mixed"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "placeholder",
+          "version"
+        ],
+        "title": "RateCardRef",
+        "type": "object"
+      },
+      "RateIn": {
+        "additionalProperties": false,
+        "properties": {
+          "amount_minor_per_1000_messages": {
+            "maximum": 10000000000.0,
+            "minimum": 0.0,
+            "title": "Amount Minor Per 1000 Messages",
+            "type": "integer"
+          },
+          "category": {
+            "enum": [
+              "marketing",
+              "utility",
+              "authentication",
+              "service"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "currency": {
+            "maxLength": 3,
+            "minLength": 3,
+            "pattern": "^[A-Z]{3}$",
+            "title": "Currency",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "amount_minor_per_1000_messages",
+          "currency"
+        ],
+        "title": "RateIn",
+        "type": "object"
+      },
+      "RateOut": {
+        "properties": {
+          "amount_minor_per_1000_messages": {
+            "title": "Amount Minor Per 1000 Messages",
+            "type": "integer"
+          },
+          "category": {
+            "enum": [
+              "marketing",
+              "utility",
+              "authentication",
+              "service"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "effective_from": {
+            "format": "date",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "placeholder": {
+            "title": "Placeholder",
+            "type": "boolean"
+          },
+          "source": {
+            "enum": [
+              "platform_default",
+              "organization"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "amount_minor_per_1000_messages",
+          "currency",
+          "effective_from",
+          "source",
+          "placeholder"
+        ],
+        "title": "RateOut",
+        "type": "object"
+      },
       "ReadAllOut": {
         "properties": {
           "updated": {
@@ -2914,6 +4570,29 @@
           "updated"
         ],
         "title": "ReadAllOut",
+        "type": "object"
+      },
+      "ReasonOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "label",
+          "count"
+        ],
+        "title": "ReasonOut",
         "type": "object"
       },
       "RuleIn": {
@@ -3156,6 +4835,203 @@
         "title": "RuleOut",
         "type": "object"
       },
+      "RunDetail": {
+        "properties": {
+          "automation_id": {
+            "format": "uuid",
+            "title": "Automation Id",
+            "type": "string"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "next_wake_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Wake At"
+          },
+          "source_event_id": {
+            "format": "uuid",
+            "title": "Source Event Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "running",
+              "waiting",
+              "completed",
+              "failed",
+              "skipped"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/StepOut"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "automation_id",
+          "version",
+          "state",
+          "started_at",
+          "finished_at",
+          "source_event_id",
+          "subject",
+          "failure_code",
+          "next_wake_at",
+          "steps",
+          "idempotency_key"
+        ],
+        "title": "RunDetail",
+        "type": "object"
+      },
+      "RunOut": {
+        "properties": {
+          "automation_id": {
+            "format": "uuid",
+            "title": "Automation Id",
+            "type": "string"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "next_wake_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Wake At"
+          },
+          "source_event_id": {
+            "format": "uuid",
+            "title": "Source Event Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "running",
+              "waiting",
+              "completed",
+              "failed",
+              "skipped"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "automation_id",
+          "version",
+          "state",
+          "started_at",
+          "finished_at",
+          "source_event_id",
+          "subject",
+          "failure_code",
+          "next_wake_at"
+        ],
+        "title": "RunOut",
+        "type": "object"
+      },
       "SendIn": {
         "additionalProperties": false,
         "description": "Send one message now, outside any rule.\n\nThe direct path exists because not everything worth sending is a reaction to an event \u2014 a\none-off notice to a customer is a legitimate thing for an operator to do. It renders through\nthe same template and obeys the same suppression, so the direct path cannot be used to\nreach someone who opted out.",
@@ -3199,6 +5075,47 @@
           "to_address"
         ],
         "title": "SendIn",
+        "type": "object"
+      },
+      "SendTestMessageIn": {
+        "additionalProperties": false,
+        "properties": {
+          "language": {
+            "pattern": "^[a-z]{2,3}(_[A-Za-z]{2,4})?$",
+            "title": "Language",
+            "type": "string"
+          },
+          "template_name": {
+            "pattern": "^[a-z0-9_]{1,512}$",
+            "title": "Template Name",
+            "type": "string"
+          },
+          "to": {
+            "pattern": "^\\+[1-9]\\d{6,14}$",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "template_name",
+          "language"
+        ],
+        "title": "SendTestMessageIn",
+        "type": "object"
+      },
+      "SendTestMessageOut": {
+        "properties": {
+          "message_id": {
+            "format": "uuid",
+            "title": "Message Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id"
+        ],
+        "title": "SendTestMessageOut",
         "type": "object"
       },
       "SenderIn": {
@@ -3390,6 +5307,330 @@
         "title": "SetupStepOut",
         "type": "object"
       },
+      "SignupCompleteIn": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "phone_number_id": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{1,30}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone Number Id"
+          },
+          "waba_id": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{1,30}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waba Id"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "SignupCompleteIn",
+        "type": "object"
+      },
+      "SignupCompleteOut": {
+        "properties": {
+          "setup_id": {
+            "format": "uuid",
+            "title": "Setup Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "running",
+            "default": "running",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "setup_id"
+        ],
+        "title": "SignupCompleteOut",
+        "type": "object"
+      },
+      "SignupConfigOut": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "SignupStatusOut": {
+        "properties": {
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "setup_id": {
+            "format": "uuid",
+            "title": "Setup Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "running",
+              "done",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/SignupStepOut"
+            },
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "setup_id",
+          "status",
+          "steps"
+        ],
+        "title": "SignupStatusOut",
+        "type": "object"
+      },
+      "SignupStepOut": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "key": {
+            "enum": [
+              "token",
+              "number",
+              "webhook",
+              "templates",
+              "verify"
+            ],
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "waiting",
+              "running",
+              "done",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "state"
+        ],
+        "title": "SignupStepOut",
+        "type": "object"
+      },
+      "StatsOut": {
+        "properties": {
+          "avg_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Duration Ms"
+          },
+          "executions": {
+            "title": "Executions",
+            "type": "integer"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "failures_by_reason": {
+            "items": {
+              "$ref": "#/components/schemas/ReasonOut"
+            },
+            "title": "Failures By Reason",
+            "type": "array"
+          },
+          "per_automation": {
+            "items": {
+              "$ref": "#/components/schemas/PerAutomationOut"
+            },
+            "title": "Per Automation",
+            "type": "array"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/app__a1_schemas__SeriesPoint"
+            },
+            "title": "Series",
+            "type": "array"
+          },
+          "successful": {
+            "title": "Successful",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "executions",
+          "successful",
+          "failed",
+          "avg_duration_ms",
+          "series",
+          "failures_by_reason",
+          "per_automation"
+        ],
+        "title": "StatsOut",
+        "type": "object"
+      },
+      "StatusCount": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "read",
+              "delivered",
+              "sent",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "count"
+        ],
+        "title": "StatusCount",
+        "type": "object"
+      },
+      "StepOut": {
+        "properties": {
+          "attempt": {
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Id"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "waiting",
+              "running",
+              "done",
+              "failed",
+              "skipped"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "trigger",
+              "condition",
+              "wait",
+              "send_message",
+              "create_task",
+              "end"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_id",
+          "type",
+          "state",
+          "started_at",
+          "finished_at",
+          "attempt",
+          "detail",
+          "message_id"
+        ],
+        "title": "StepOut",
+        "type": "object"
+      },
       "SuppressionIn": {
         "additionalProperties": false,
         "description": "A manual suppression. The reason is not a field: a person adding one through the API is\nby definition `manual`, and letting them claim `complained` would forge a provider fact.",
@@ -3440,6 +5681,289 @@
           "created_at"
         ],
         "title": "SuppressionOut",
+        "type": "object"
+      },
+      "SyncOut": {
+        "properties": {
+          "created": {
+            "title": "Created",
+            "type": "integer"
+          },
+          "removed": {
+            "title": "Removed",
+            "type": "integer"
+          },
+          "synced": {
+            "title": "Synced",
+            "type": "integer"
+          },
+          "updated": {
+            "title": "Updated",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "synced",
+          "created",
+          "updated",
+          "removed"
+        ],
+        "title": "SyncOut",
+        "type": "object"
+      },
+      "TemplateBodyIn": {
+        "additionalProperties": false,
+        "properties": {
+          "examples": {
+            "items": {
+              "maxLength": 5000,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Examples",
+            "type": "array"
+          },
+          "text": {
+            "maxLength": 5000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "TemplateBodyIn",
+        "type": "object"
+      },
+      "TemplateButtonIn": {
+        "additionalProperties": false,
+        "properties": {
+          "example": {
+            "anyOf": [
+              {
+                "maxLength": 5000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Example"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "text": {
+            "maxLength": 5000,
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "quick_reply",
+              "url",
+              "phone"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "maxLength": 5000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "type",
+          "text"
+        ],
+        "title": "TemplateButtonIn",
+        "type": "object"
+      },
+      "TemplateComponentsIn": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "$ref": "#/components/schemas/TemplateBodyIn"
+          },
+          "buttons": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/TemplateButtonIn"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buttons"
+          },
+          "footer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TemplateFooterIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "header": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TemplateHeaderIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "title": "TemplateComponentsIn",
+        "type": "object"
+      },
+      "TemplateCreateIn": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "enum": [
+              "utility",
+              "marketing",
+              "authentication"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "components": {
+            "$ref": "#/components/schemas/TemplateComponentsIn"
+          },
+          "language": {
+            "maxLength": 40,
+            "title": "Language",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 600,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "category",
+          "language",
+          "components"
+        ],
+        "title": "TemplateCreateIn",
+        "type": "object"
+      },
+      "TemplateFooterIn": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "maxLength": 5000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "TemplateFooterIn",
+        "type": "object"
+      },
+      "TemplateHeaderIn": {
+        "additionalProperties": false,
+        "properties": {
+          "example": {
+            "anyOf": [
+              {
+                "maxLength": 5000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Example"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 5000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "type": {
+            "enum": [
+              "text",
+              "image",
+              "video",
+              "document"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "title": "TemplateHeaderIn",
+        "type": "object"
+      },
+      "TemplateHistoryOut": {
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "meta_webhook",
+              "sync",
+              "submit"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "at",
+          "source"
+        ],
+        "title": "TemplateHistoryOut",
         "type": "object"
       },
       "TemplateIn": {
@@ -3557,6 +6081,73 @@
         "title": "TemplateOut",
         "type": "object"
       },
+      "TemplatePreviewIn": {
+        "additionalProperties": false,
+        "properties": {
+          "values": {
+            "additionalProperties": {
+              "maxLength": 1024,
+              "type": "string"
+            },
+            "maxProperties": 100,
+            "propertyNames": {
+              "maxLength": 120
+            },
+            "title": "Values",
+            "type": "object"
+          }
+        },
+        "title": "TemplatePreviewIn",
+        "type": "object"
+      },
+      "TemplatePreviewOut": {
+        "properties": {
+          "body": {
+            "default": "",
+            "title": "Body",
+            "type": "string"
+          },
+          "buttons": {
+            "items": {
+              "$ref": "#/components/schemas/PreviewButtonOut"
+            },
+            "title": "Buttons",
+            "type": "array"
+          },
+          "footer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Footer"
+          },
+          "header": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Header"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "buttons"
+        ],
+        "title": "TemplatePreviewOut",
+        "type": "object"
+      },
       "TemplateVariableIn": {
         "additionalProperties": false,
         "description": "One value a provider template expects.\n\n`key` is our vocabulary \u2014 the dotted path a rule's payload resolves, the same name the ERP\nwrites as `{{customer_name}}`. The provider's side is `position` for a positional template\nor `parameter_name` for a named one. Keeping both here is the mapping layer: the ERP speaks\none language and nothing outside this row has to know which form Meta wants.",
@@ -3666,6 +6257,120 @@
         "title": "TemplateVariableOut",
         "type": "object"
       },
+      "TemplateVariableSpecOut": {
+        "properties": {
+          "button_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Button Index"
+          },
+          "component": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Component"
+          },
+          "example": {
+            "title": "Example",
+            "type": "string"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
+          },
+          "kind": {
+            "enum": [
+              "text",
+              "url",
+              "date",
+              "number"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parameter_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parameter Name"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
+          }
+        },
+        "required": [
+          "index",
+          "name",
+          "kind",
+          "example"
+        ],
+        "title": "TemplateVariableSpecOut",
+        "type": "object"
+      },
+      "TemplatesHealthOut": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "synced_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Synced At"
+          }
+        },
+        "required": [
+          "count",
+          "synced_at"
+        ],
+        "title": "TemplatesHealthOut",
+        "type": "object"
+      },
       "TestSendIn": {
         "additionalProperties": false,
         "description": "Where to send the message that opens the gate.\n\nThe subject and body are fixed by the service. Their only job is to prove the path works,\nand a customisable test message is a send nobody reviewed going to an address of the\ncaller's choosing.",
@@ -3681,6 +6386,125 @@
           "to_address"
         ],
         "title": "TestSendIn",
+        "type": "object"
+      },
+      "TokenHealthOut": {
+        "properties": {
+          "checked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked At"
+          },
+          "state": {
+            "enum": [
+              "valid",
+              "expiring",
+              "invalid",
+              "unknown"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "checked_at"
+        ],
+        "title": "TokenHealthOut",
+        "type": "object"
+      },
+      "TrackingFlags": {
+        "properties": {
+          "clicks": {
+            "title": "Clicks",
+            "type": "boolean"
+          },
+          "opens": {
+            "title": "Opens",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "opens",
+          "clicks"
+        ],
+        "title": "TrackingFlags",
+        "type": "object"
+      },
+      "TriggerOut": {
+        "properties": {
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          },
+          "variables": {
+            "items": {
+              "$ref": "#/components/schemas/TriggerVariableOut"
+            },
+            "title": "Variables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "event_type",
+          "label",
+          "module",
+          "variables"
+        ],
+        "title": "TriggerOut",
+        "type": "object"
+      },
+      "TriggerVariableOut": {
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "label",
+          "kind"
+        ],
+        "title": "TriggerVariableOut",
+        "type": "object"
+      },
+      "TriggersOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TriggerOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "TriggersOut",
         "type": "object"
       },
       "UnmaskedMessageOut": {
@@ -3762,6 +6586,57 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "ValidationOut": {
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "problems": {
+            "items": {
+              "$ref": "#/components/schemas/ProblemOut"
+            },
+            "title": "Problems",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "problems"
+        ],
+        "title": "ValidationOut",
+        "type": "object"
+      },
+      "WebhookHealthOut": {
+        "properties": {
+          "last_event_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Event At"
+          },
+          "state": {
+            "enum": [
+              "receiving",
+              "silent",
+              "unverified"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "last_event_at"
+        ],
+        "title": "WebhookHealthOut",
+        "type": "object"
+      },
       "WhatsAppConnectionIn": {
         "additionalProperties": false,
         "description": "Connect the organization's WhatsApp Cloud API account.\n\n`access_token` is write-only, sealed on the way in the same way an email connection's\nsecret is \u2014 it has no counterpart on the way out, not masked, not truncated.",
@@ -3833,6 +6708,619 @@
         ],
         "title": "WhatsAppConnectionOut",
         "type": "object"
+      },
+      "WhatsAppOkOut": {
+        "properties": {
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "title": "WhatsAppOkOut",
+        "type": "object"
+      },
+      "WhatsAppOverview": {
+        "properties": {
+          "by_category": {
+            "items": {
+              "$ref": "#/components/schemas/CategoryCount"
+            },
+            "title": "By Category",
+            "type": "array"
+          },
+          "cost": {
+            "$ref": "#/components/schemas/Cost"
+          },
+          "delivered": {
+            "title": "Delivered",
+            "type": "integer"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "failures_by_reason": {
+            "items": {
+              "$ref": "#/components/schemas/FailureReason"
+            },
+            "title": "Failures By Reason",
+            "type": "array"
+          },
+          "inbound_messages": {
+            "title": "Inbound Messages",
+            "type": "integer"
+          },
+          "queued": {
+            "title": "Queued",
+            "type": "integer"
+          },
+          "read": {
+            "title": "Read",
+            "type": "integer"
+          },
+          "recent_activity": {
+            "items": {
+              "$ref": "#/components/schemas/ActivityItem"
+            },
+            "title": "Recent Activity",
+            "type": "array"
+          },
+          "replies": {
+            "title": "Replies",
+            "type": "integer"
+          },
+          "sent": {
+            "title": "Sent",
+            "type": "integer"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/app__m1_schemas__SeriesPoint"
+            },
+            "title": "Series",
+            "type": "array"
+          },
+          "status_breakdown": {
+            "items": {
+              "$ref": "#/components/schemas/StatusCount"
+            },
+            "title": "Status Breakdown",
+            "type": "array"
+          },
+          "suppressed": {
+            "title": "Suppressed",
+            "type": "integer"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/WhatsAppTotals"
+          }
+        },
+        "required": [
+          "sent",
+          "delivered",
+          "read",
+          "failed",
+          "replies",
+          "inbound_messages",
+          "queued",
+          "suppressed",
+          "series",
+          "by_category",
+          "status_breakdown",
+          "failures_by_reason",
+          "recent_activity",
+          "totals",
+          "cost"
+        ],
+        "title": "WhatsAppOverview",
+        "type": "object"
+      },
+      "WhatsAppTemplateDetailOut": {
+        "properties": {
+          "body_preview": {
+            "title": "Body Preview",
+            "type": "string"
+          },
+          "category": {
+            "enum": [
+              "utility",
+              "marketing",
+              "authentication"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "channel": {
+            "enum": [
+              "whatsapp",
+              "email"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "components": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Components",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateHistoryOut"
+            },
+            "title": "History",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "meta_template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meta Template Id"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parameter_format": {
+            "enum": [
+              "positional",
+              "named"
+            ],
+            "title": "Parameter Format",
+            "type": "string"
+          },
+          "preview_text": {
+            "title": "Preview Text",
+            "type": "string"
+          },
+          "provider_name": {
+            "title": "Provider Name",
+            "type": "string"
+          },
+          "provider_template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Template Id"
+          },
+          "quality": {
+            "enum": [
+              "high",
+              "medium",
+              "low",
+              "unknown"
+            ],
+            "title": "Quality",
+            "type": "string"
+          },
+          "rejection_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejection Reason"
+          },
+          "row_id": {
+            "format": "uuid",
+            "title": "Row Id",
+            "type": "string"
+          },
+          "sendable": {
+            "title": "Sendable",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "pending",
+              "approved",
+              "rejected",
+              "paused",
+              "disabled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "status_checked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Checked At"
+          },
+          "status_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Reason"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted At"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "variables": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateVariableSpecOut"
+            },
+            "title": "Variables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "row_id",
+          "channel",
+          "name",
+          "provider_name",
+          "meta_template_id",
+          "provider_template_id",
+          "language",
+          "category",
+          "parameter_format",
+          "status",
+          "quality",
+          "rejection_reason",
+          "status_reason",
+          "status_checked_at",
+          "components",
+          "body_preview",
+          "preview_text",
+          "variables",
+          "sendable",
+          "submitted_at",
+          "created_at",
+          "updated_at",
+          "history"
+        ],
+        "title": "WhatsAppTemplateDetailOut",
+        "type": "object"
+      },
+      "WhatsAppTemplateOut": {
+        "properties": {
+          "body_preview": {
+            "title": "Body Preview",
+            "type": "string"
+          },
+          "category": {
+            "enum": [
+              "utility",
+              "marketing",
+              "authentication"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "channel": {
+            "enum": [
+              "whatsapp",
+              "email"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "components": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Components",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "meta_template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meta Template Id"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parameter_format": {
+            "enum": [
+              "positional",
+              "named"
+            ],
+            "title": "Parameter Format",
+            "type": "string"
+          },
+          "preview_text": {
+            "title": "Preview Text",
+            "type": "string"
+          },
+          "provider_name": {
+            "title": "Provider Name",
+            "type": "string"
+          },
+          "provider_template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Template Id"
+          },
+          "quality": {
+            "enum": [
+              "high",
+              "medium",
+              "low",
+              "unknown"
+            ],
+            "title": "Quality",
+            "type": "string"
+          },
+          "rejection_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejection Reason"
+          },
+          "row_id": {
+            "format": "uuid",
+            "title": "Row Id",
+            "type": "string"
+          },
+          "sendable": {
+            "title": "Sendable",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "pending",
+              "approved",
+              "rejected",
+              "paused",
+              "disabled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "status_checked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Checked At"
+          },
+          "status_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Reason"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted At"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "variables": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateVariableSpecOut"
+            },
+            "title": "Variables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "row_id",
+          "channel",
+          "name",
+          "provider_name",
+          "meta_template_id",
+          "provider_template_id",
+          "language",
+          "category",
+          "parameter_format",
+          "status",
+          "quality",
+          "rejection_reason",
+          "status_reason",
+          "status_checked_at",
+          "components",
+          "body_preview",
+          "preview_text",
+          "variables",
+          "sendable",
+          "submitted_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "WhatsAppTemplateOut",
+        "type": "object"
+      },
+      "WhatsAppTotals": {
+        "properties": {
+          "active_automations": {
+            "title": "Active Automations",
+            "type": "integer"
+          },
+          "active_conversations": {
+            "title": "Active Conversations",
+            "type": "integer"
+          },
+          "approved_templates": {
+            "title": "Approved Templates",
+            "type": "integer"
+          },
+          "pending_templates": {
+            "title": "Pending Templates",
+            "type": "integer"
+          },
+          "unassigned_conversations": {
+            "title": "Unassigned Conversations",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "active_automations",
+          "approved_templates",
+          "pending_templates",
+          "active_conversations",
+          "unassigned_conversations"
+        ],
+        "title": "WhatsAppTotals",
+        "type": "object"
+      },
+      "app__a1_schemas__SeriesPoint": {
+        "properties": {
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "successful": {
+            "title": "Successful",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "date",
+          "successful",
+          "failed"
+        ],
+        "title": "SeriesPoint",
+        "type": "object"
+      },
+      "app__m1_schemas__SeriesPoint": {
+        "properties": {
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "delivered": {
+            "title": "Delivered",
+            "type": "integer"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "read": {
+            "title": "Read",
+            "type": "integer"
+          },
+          "sent": {
+            "title": "Sent",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "date",
+          "sent",
+          "delivered",
+          "read",
+          "failed"
+        ],
+        "title": "SeriesPoint",
+        "type": "object"
       }
     }
   },
@@ -3843,6 +7331,949 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/engage/analytics/email/overview": {
+      "get": {
+        "operationId": "email_overview_api_v1_engage_analytics_email_overview_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailOverviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Email sends and engagement over a date range (inclusive UTC dates)",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/analytics/overview": {
+      "get": {
+        "description": "WhatsApp numbers computed here; email numbers come from the email analytics overview and are `null` when that module is not deployed. Same UTC-day range semantics and the same cost caveats as the WhatsApp overview: the cost is an estimate from PLACEHOLDER rates until the organization overrides the rate card.",
+        "operationId": "hub_overview_api_v1_engage_analytics_overview_get",
+        "parameters": [
+          {
+            "description": "First UTC day, inclusive (YYYY-MM-DD).",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "First UTC day, inclusive (YYYY-MM-DD).",
+              "title": "From"
+            }
+          },
+          {
+            "description": "Last UTC day, inclusive (YYYY-MM-DD).",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Last UTC day, inclusive (YYYY-MM-DD).",
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HubOverview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The communication hub: both channels' numbers and one estimated cost",
+        "tags": [
+          "engage-analytics"
+        ]
+      }
+    },
+    "/api/v1/engage/analytics/rate-card": {
+      "get": {
+        "description": "The rate in force today for each message category. The shipped defaults are PLACEHOLDERS (`placeholder-2026-09`, INR paise per 1000 messages: marketing 78460, utility 11500, authentication 11500, service 0), not Meta's published rates. Real rates for the organization's country must be entered with PUT. `placeholder` is true while any rate in force is a shipped default.",
+        "operationId": "read_rate_card_api_v1_engage_analytics_rate_card_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateCardOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The per-1000-message rates behind the cost estimate",
+        "tags": [
+          "engage-analytics"
+        ]
+      },
+      "put": {
+        "description": "Exactly one rate per category (marketing, utility, authentication, service), all in one ISO currency, integer minor units per 1000 messages. Takes effect from `effective_from` (a UTC date, default today); saving the same date again replaces it, a later date adds a price point and keeps the earlier ones. The organization's own rate always beats the platform default once in force. Audited.",
+        "operationId": "override_rate_card_api_v1_engage_analytics_rate_card_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RateCardIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateCardOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Override the rate card with the organization's real rates",
+        "tags": [
+          "engage-analytics"
+        ]
+      }
+    },
+    "/api/v1/engage/analytics/whatsapp/overview": {
+      "get": {
+        "description": "Computed on demand from the message ledger. Buckets are **UTC calendar days**; `from` and `to` are inclusive UTC dates (default: the last 30 days). `cost` is an ESTIMATE (`estimated: true`): messages x rate / 1000 in integer minor units, rounded half-up per category, using the organization's rate card. Until the organization enters its own rates, the rate card is the platform's PLACEHOLDER defaults (`placeholder-2026-09`), which are not Meta's real rates for any country.",
+        "operationId": "whatsapp_overview_api_v1_engage_analytics_whatsapp_overview_get",
+        "parameters": [
+          {
+            "description": "First UTC day, inclusive (YYYY-MM-DD).",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "First UTC day, inclusive (YYYY-MM-DD).",
+              "title": "From"
+            }
+          },
+          {
+            "description": "Last UTC day, inclusive (YYYY-MM-DD).",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Last UTC day, inclusive (YYYY-MM-DD).",
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhatsAppOverview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "WhatsApp delivery, replies, categories, failures and an estimated cost",
+        "tags": [
+          "engage-analytics"
+        ]
+      }
+    },
+    "/api/v1/engage/automations": {
+      "get": {
+        "operationId": "list_automations_api_v1_engage_automations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "draft",
+                    "active",
+                    "paused"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "module",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 40,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Module"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_AutomationOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Automations, newest edit first",
+        "tags": [
+          "engage-automations"
+        ]
+      },
+      "post": {
+        "operationId": "create_automation_api_v1_engage_automations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomationIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create an automation as a draft",
+        "tags": [
+          "engage-automations"
+        ]
+      }
+    },
+    "/api/v1/engage/automations/runs/{run_id}": {
+      "get": {
+        "operationId": "read_run_api_v1_engage_automations_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One run with its step trail",
+        "tags": [
+          "engage-automations"
+        ]
+      }
+    },
+    "/api/v1/engage/automations/runs/{run_id}/retry": {
+      "post": {
+        "operationId": "retry_run_api_v1_engage_automations_runs__run_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry a failed run from the step that failed",
+        "tags": [
+          "engage-automations"
+        ]
+      }
+    },
+    "/api/v1/engage/automations/stats": {
+      "get": {
+        "operationId": "automation_stats_api_v1_engage_automations_stats_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Execution totals, daily series, failure reasons and per-automation results",
+        "tags": [
+          "engage-automations"
+        ]
+      }
+    },
+    "/api/v1/engage/automations/triggers": {
+      "get": {
+        "operationId": "list_triggers_api_v1_engage_automations_triggers_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TriggersOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The events an automation can start on, with the variables each carries",
+        "tags": [
+          "engage-automations"
+        ]
+      }
+    },
+    "/api/v1/engage/automations/{automation_id}": {
+      "delete": {
+        "operationId": "remove_automation_api_v1_engage_automations__automation_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "automation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Automation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a draft or paused automation",
+        "tags": [
+          "engage-automations"
+        ]
+      },
+      "get": {
+        "operationId": "read_automation_api_v1_engage_automations__automation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "automation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Automation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One automation with its graph and validation",
+        "tags": [
+          "engage-automations"
+        ]
+      },
+      "patch": {
+        "operationId": "edit_automation_api_v1_engage_automations__automation_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "automation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Automation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomationPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a draft or paused automation",
+        "tags": [
+          "engage-automations"
+        ]
+      }
+    },
+    "/api/v1/engage/automations/{automation_id}/pause": {
+      "post": {
+        "operationId": "pause_automation_api_v1_engage_automations__automation_id__pause_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "automation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Automation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stop starting new runs (runs in flight finish)",
+        "tags": [
+          "engage-automations"
+        ]
+      }
+    },
+    "/api/v1/engage/automations/{automation_id}/publish": {
+      "post": {
+        "operationId": "publish_automation_api_v1_engage_automations__automation_id__publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "automation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Automation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate the draft and publish it as the next immutable version",
+        "tags": [
+          "engage-automations"
+        ]
+      }
+    },
+    "/api/v1/engage/automations/{automation_id}/resume": {
+      "post": {
+        "operationId": "resume_automation_api_v1_engage_automations__automation_id__resume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "automation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Automation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resume a paused automation on its last published version",
+        "tags": [
+          "engage-automations"
+        ]
+      }
+    },
+    "/api/v1/engage/automations/{automation_id}/runs": {
+      "get": {
+        "operationId": "list_runs_api_v1_engage_automations__automation_id__runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "automation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Automation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "running",
+                    "waiting",
+                    "completed",
+                    "failed",
+                    "skipped"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_RunOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "An automation's runs, newest first",
+        "tags": [
+          "engage-automations"
+        ]
+      }
+    },
     "/api/v1/engage/campaigns": {
       "get": {
         "operationId": "list_campaigns_api_v1_engage_campaigns_get",
@@ -4085,6 +8516,49 @@
           }
         },
         "summary": "Edit a draft campaign",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/campaigns/{campaign_id}/analytics": {
+      "get": {
+        "operationId": "campaign_analytics_api_v1_engage_campaigns__campaign_id__analytics_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignAnalyticsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One campaign's delivery and engagement (human opens and clicks only)",
         "tags": [
           "engage"
         ]
@@ -6535,6 +11009,81 @@
         ]
       }
     },
+    "/api/v1/engage/t/c/{token}": {
+      "get": {
+        "description": "Redirects only to a destination registered from the sent message's own body. The\nrequester supplies a signed token, never a URL, so this cannot be an open redirect.",
+        "operationId": "track_click_api_v1_engage_t_c__token__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Click tracking: records the click and redirects to a link that was in the message",
+        "tags": [
+          "engage-public"
+        ]
+      }
+    },
+    "/api/v1/engage/t/o/{token}": {
+      "get": {
+        "description": "Always the same GIF, so a bad token is indistinguishable from a good one.",
+        "operationId": "track_open_api_v1_engage_t_o__token__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/gif": {}
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open-tracking pixel: a 1x1 GIF, and an open recorded when the token is genuine",
+        "tags": [
+          "engage-public"
+        ]
+      }
+    },
     "/api/v1/engage/unsubscribe/{token}": {
       "get": {
         "description": "Renders a page and nothing else. `GET` must be safe to prefetch \u2014 the only read this\ndoes is a single masked-column `SELECT` for a v2 link, never a write, so a scanner fetching\nevery link in a message body cannot unsubscribe anyone by doing so.",
@@ -6754,9 +11303,226 @@
         ]
       }
     },
+    "/api/v1/engage/whatsapp/disconnect": {
+      "post": {
+        "description": "Wipes the token and marks the connection and its numbers disconnected, then (after that\ncommits) asks Meta to stop sending the old account's events here. Meta being unreachable does\nnot fail the disconnect: the response says so in `detail`.",
+        "operationId": "disconnect_api_v1_engage_whatsapp_disconnect_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisconnectOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Disconnect WhatsApp and wipe the stored token",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/health": {
+      "get": {
+        "description": "From our own tables only; never calls Meta, so it is cheap to poll.",
+        "operationId": "health_api_v1_engage_whatsapp_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Is WhatsApp connected and healthy",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/numbers": {
+      "get": {
+        "description": "The cached list, refreshed from Meta first when it is older than ten minutes. A refresh\nthat fails does not fail the read: the cache is served, and a refused token is recorded so\nthe health card says so.",
+        "operationId": "list_numbers_api_v1_engage_whatsapp_numbers_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NumbersOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The phone numbers on this organization's WhatsApp Business Account",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/numbers/{number_id}/default": {
+      "post": {
+        "description": "Moves the number sends (and webhooks) are routed on, so Meta is asked first \u2014 with this\nconnection's own token, outside any transaction \u2014 whether the number is on the WABA and\nreadable. 409 `number_inactive` for a number not on the account's WABA, 409\n`ownership_check_failed` when Meta does not confirm, 409 `number_claimed` when another\norganization holds it.",
+        "operationId": "set_default_api_v1_engage_whatsapp_numbers__number_id__default_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Number Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhatsAppOkOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send from this number by default",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/signup/complete": {
+      "post": {
+        "description": "202: the setup is persisted and queued, not done. Poll `GET signup/{setup_id}`. A repeat of\nthe same `code` returns the setup it already started.",
+        "operationId": "signup_complete_api_v1_engage_whatsapp_signup_complete_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupCompleteIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupCompleteOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finish Embedded Signup: start the background setup",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/signup/config": {
+      "get": {
+        "description": "`enabled: false` (with `reason: not_configured`) when the platform has no Meta app set up,\nso the screen shows an honest state instead of a button that cannot work. The app secret is\nnever part of this.",
+        "operationId": "signup_config_api_v1_engage_whatsapp_signup_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupConfigOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "What the browser needs to open Meta's Embedded Signup",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/signup/{setup_id}": {
+      "get": {
+        "operationId": "signup_status_api_v1_engage_whatsapp_signup__setup_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "setup_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Setup Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "How far a WhatsApp setup has got",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
     "/api/v1/engage/whatsapp/templates": {
       "get": {
-        "description": "What can be sent outside a conversation window, and what is still in review.\n\nThe same rows `notification`'s own `GET /notifications/provider-templates` reads\n(`selectors.provider_templates_stmt`) \u2014 read here under Engage's own permission so an\norganization that has bought Engage but not the transactional `notification` product can\nstill see the real approval status of the templates it sends through its own WhatsApp\naccount, rather than a 403 for a permission it was never sold.",
+        "description": "What can be sent outside a conversation window, and what is still in review.\n\nThe same rows `notification`'s own `GET /notifications/provider-templates` reads\n(`selectors.provider_templates_stmt`) \u2014 read here under Engage's own permission so an\norganization that has bought Engage but not the transactional `notification` product can\nstill see the real approval status of the templates it sends through its own WhatsApp\naccount, rather than a 403 for a permission it was never sold.\n\nFilterable by category, status and a search over name and wording (`w2_selectors`).",
         "operationId": "list_whatsapp_templates_api_v1_engage_whatsapp_templates_get",
         "parameters": [
           {
@@ -6773,8 +11539,73 @@
                   "type": "null"
                 }
               ],
+              "default": "whatsapp",
               "description": "email or whatsapp",
               "title": "Channel"
+            }
+          },
+          {
+            "in": "query",
+            "name": "category",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "utility",
+                    "marketing",
+                    "authentication"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Category"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "draft",
+                    "pending",
+                    "approved",
+                    "rejected",
+                    "paused",
+                    "disabled"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "description": "Name or wording contains",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Name or wording contains",
+              "title": "Q"
             }
           },
           {
@@ -6806,7 +11637,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_ProviderTemplateOut_"
+                  "$ref": "#/components/schemas/Page_WhatsAppTemplateOut_"
                 }
               }
             },
@@ -6824,6 +11655,46 @@
           }
         },
         "summary": "WhatsApp templates and their real approval status",
+        "tags": [
+          "engage"
+        ]
+      },
+      "post": {
+        "description": "Validates locally (every problem at once, per field, as a 422), submits to Meta, and\nstores the answer as `pending`. Meta's review then moves the status by webhook.",
+        "operationId": "create_whatsapp_template_api_v1_engage_whatsapp_templates_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateCreateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhatsAppTemplateDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a template and submit it to Meta for review",
         "tags": [
           "engage"
         ]
@@ -6864,6 +11735,165 @@
           }
         },
         "summary": "Register or update a WhatsApp template",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/templates/sync": {
+      "post": {
+        "description": "Reads every template Meta holds for this organization's WABA and folds it into the rows:\nnew ones created, changed ones updated, ones Meta no longer has removed (soft-deleted).\n\nWrite permission although it reads Meta: it rewrites our rows, including their status.",
+        "operationId": "sync_whatsapp_templates_api_v1_engage_whatsapp_templates_sync_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Pull the WABA's templates from Meta",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/templates/{template_ref}": {
+      "get": {
+        "operationId": "get_whatsapp_template_api_v1_engage_whatsapp_templates__template_ref__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_ref",
+            "required": true,
+            "schema": {
+              "title": "Template Ref",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhatsAppTemplateDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One WhatsApp template, with its status history",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/templates/{template_ref}/preview": {
+      "post": {
+        "description": "Read permission: it renders text and changes nothing. Strict \u2014 a placeholder with no value\nis a 422 naming it, not a preview with a hole in it.",
+        "operationId": "preview_whatsapp_template_api_v1_engage_whatsapp_templates__template_ref__preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_ref",
+            "required": true,
+            "schema": {
+              "title": "Template Ref",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplatePreviewIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplatePreviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Render a template with sample values",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/test-message": {
+      "post": {
+        "description": "Goes through the consent decision and the organization's own connection like any send.\n409 `channel_not_connected` when there is no connection, 409 `consent_denied` when the\nrecipient may not be messaged.",
+        "operationId": "test_message_api_v1_engage_whatsapp_test_message_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendTestMessageIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendTestMessageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send a template message to one number to prove the connection",
         "tags": [
           "engage"
         ]

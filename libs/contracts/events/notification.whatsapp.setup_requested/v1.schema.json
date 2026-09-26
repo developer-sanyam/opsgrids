@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/notification.whatsapp.setup_requested/v1",
+  "title": "notification.whatsapp.setup_requested",
+  "description": "Internal to notification. An organization completed WhatsApp Embedded Signup and a setup run (token, number, webhook, templates, verify) is waiting to be executed. Staged in the same transaction as the run and consumed by `notification.consumers.run_whatsapp_setup`. Carries ids only: the authorization code and the token are sealed on the run row and never travel on an event.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "setup_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "setup_id": { "type": "string", "format": "uuid" }
+  }
+}

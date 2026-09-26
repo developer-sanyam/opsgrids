@@ -325,6 +325,14 @@ class GatewayPolicy:
     webhook_rate_limit: int = 600
     #: All addresses together, per webhook path, per minute; `0` means none.
     webhook_global_rate_limit: int = 0
+    #: Public prefix (a member of `public_path_prefixes`) -> per-address requests per minute in a
+    #: bucket of its own, instead of `anonymous_rate_limit` in the bucket every other public path
+    #: shares. For a public route that is fetched by machines and by many people behind one
+    #: address — Engage's open pixel and tracked links are opened by mailbox providers' image
+    #: proxies and from corporate NATs, where sixty a minute turns a click into a 429 instead of a
+    #: redirect. A prefix that is not listed here keeps the shared anonymous bucket, so an empty
+    #: mapping (the default) changes nothing. Last on purpose, like `webhook_paths`.
+    public_prefix_rate_limits: Mapping[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # A prefix without a trailing slash is a bug waiting to widen: refused at construction
@@ -333,6 +341,13 @@ class GatewayPolicy:
         for prefix in self.public_path_prefixes:
             if not prefix.endswith("/"):
                 raise ValueError(f"public path prefix {prefix!r} must end with '/'")
+        # An override for a prefix that is not public would be dead configuration that looks like
+        # a limit; a non-positive figure would refuse every request or (0) read as "no limit".
+        for prefix, per_minute in self.public_prefix_rate_limits.items():
+            if prefix not in self.public_path_prefixes:
+                raise ValueError(f"rate limit for {prefix!r}, which is not a public path prefix")
+            if isinstance(per_minute, bool) or not isinstance(per_minute, int) or per_minute < 1:
+                raise ValueError(f"rate limit for {prefix!r} must be a positive integer")
         # A webhook entry is matched against a normalised path, which never ends in `/` and never
         # carries a query, so an entry that does either could never match — and one with no
         # methods, or a lower-case one, would be public for nothing or fail to match GET.
@@ -566,7 +581,19 @@ def build_gateway(
             # on this branch — those all live below, past the token this branch never asks
             # for — so a public route is forwarded exactly as anonymous as the caller was.
             client_ip = request.client.host if request.client else "anonymous"
-            await enforce_rate_limit(f"anon:{client_ip}", limit=policy.anonymous_rate_limit)
+            bucket, limit = f"anon:{client_ip}", policy.anonymous_rate_limit
+            # A prefix that opted in (`GatewayPolicy.public_prefix_rate_limits`) is counted apart
+            # from the shared bucket, so it can neither be starved by a sign-in flood nor spend
+            # the sign-in allowance. The longest matching prefix wins.
+            opted_in = max(
+                (p for p in policy.public_prefix_rate_limits if full_path.startswith(p)),
+                key=len,
+                default=None,
+            )
+            if opted_in is not None:
+                bucket = f"anon:{opted_in}:{client_ip}"
+                limit = policy.public_prefix_rate_limits[opted_in]
+            await enforce_rate_limit(bucket, limit=limit)
             if (slug := _slug_from_host(request)) is not None:
                 headers["x-org-slug"] = slug
             return await _forward(request, route, headers, policy, full_path, settings)

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/notification.automation.task_requested/v1",
+  "title": "notification.automation.task_requested",
+  "description": "An Engage automation reached a create_task step. Nothing in this platform creates the task yet: a task-owning service (projects, pulseboard, support) subscribes to this key and decides what a task is. `run_id` plus `node_id` identify the request uniquely, so a consumer that receives it twice can drop the second.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "automation_id", "run_id", "node_id", "title", "source_event_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "automation_id": { "type": "string", "format": "uuid" },
+    "run_id": { "type": "string", "format": "uuid" },
+    "node_id": { "type": "string", "maxLength": 64 },
+    "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "description": { "type": ["string", "null"] },
+    "assignee_team": { "type": ["string", "null"] },
+    "source_event_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The event that started the run."
+    }
+  }
+}

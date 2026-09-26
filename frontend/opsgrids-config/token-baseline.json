@@ -298,10 +298,6 @@
   "product-engage/src/routes/WhatsAppConnection.tsx": {
     "spacing": 4
   },
-  "product-engage/src/routes/WhatsAppTemplates.tsx": {
-    "arbitrary": 1,
-    "spacing": 1
-  },
   "product-engage/src/ui/LoadFailure.tsx": {
     "colour": 1,
     "arbitrary": 1,

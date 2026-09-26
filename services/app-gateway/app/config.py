@@ -37,6 +37,12 @@ class Settings(ServiceSettings):
     #: ceiling per minute (`0` disables it).
     webhook_rate_limit_per_minute: int = 600
     webhook_global_rate_limit_per_minute: int = 3000
+    #: Engage's open pixel and tracked links (`/api/v1/engage/t/`), per address, in a bucket of
+    #: their own. Anonymous like sign-in, but not like it in who calls: mailbox providers' image
+    #: proxies and corporate NATs put many recipients behind one address, and at the shared
+    #: anonymous limit a click answers 429 instead of redirecting. Each request is cheap (an HMAC,
+    #: then one short transaction only for a genuine token), so this is generous by design.
+    engage_tracking_rate_limit_per_minute: int = 1200
     upstream_timeout_seconds: float = 30.0
 
     def model_post_init(self, _: object) -> None:

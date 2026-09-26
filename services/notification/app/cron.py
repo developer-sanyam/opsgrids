@@ -69,8 +69,9 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app import selectors, services
+from app import a1_services, selectors, services
 from app.config import settings
+from app.targets import TargetResolver
 from app.transports import Receipt, TransportError, send_batch
 from platform_core.db import (
     assert_app_role,
@@ -130,10 +131,14 @@ class CampaignDriver(GuardedSweep):
         poll_interval: float = 15.0,
         max_backoff_seconds: float = 300.0,
         discovery_limit: int = 100,
+        resolve_target: TargetResolver | None = None,
     ) -> None:
         super().__init__(poll_interval=poll_interval, max_backoff=max_backoff_seconds)
         self._discovery_factory = discovery_factory
         self._work_scope = work_scope
+        #: The contact lookup an automation send needs when the sweep resumes a run that names its
+        #: recipient by contact id, the same resolver the event consumer folds with.
+        self._resolve_target = resolve_target
         self._batch_size = batch_size
         self._lease_seconds = lease_seconds
         self._pause_retry_seconds = pause_retry_seconds
@@ -186,7 +191,26 @@ class CampaignDriver(GuardedSweep):
                 report.backed_off += 1
                 continue
             await self._drain(organization_id, campaign_id, report, at)
+        await self._wake_overdue_automations(at)
         return report
+
+    async def _wake_overdue_automations(self, at: datetime) -> None:
+        """The automation engine's lost-wake net (slice A1): resume any run parked on a wait or a
+        retry backoff whose scheduler wake-up is overdue. Riding this tick means no new loop,
+        and its own failure is logged rather than raised so it can never stall campaign sending.
+        """
+        try:
+            woken = await a1_services.sweep_overdue(
+                discovery_factory=self._discovery_factory,
+                work_scope=self._work_scope,
+                resolve_target=self._resolve_target,
+                now=at,
+            )
+        except Exception:
+            log.exception("notification.automation_sweep.failed")
+            return
+        if woken:
+            log.info("notification.automation_sweep.woken", count=woken)
 
     def _in_backoff(self, campaign_id: uuid.UUID, at: datetime) -> bool:
         until = self._backoff_until.get(campaign_id)

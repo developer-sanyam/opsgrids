@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app import consumers
+from app.api.c1_customer360 import router as c1_customer360_router
 from app.api.internal import router as internal_router
 from app.api.routes import router
 from app.config import settings
@@ -62,7 +63,7 @@ app = create_app(
     settings(),
     title="Customer service",
     description="Customer service — part of the OpsGrids platform.",
-    routers=[router],
+    routers=[router, c1_customer360_router],
     on_startup=_start_background_worker,
     on_shutdown=_stop_background_worker,
 )

@@ -71,7 +71,8 @@ async def main() -> None:
     # own silent stall, here (app/cron.py's own module docstring).
     await assert_outbox_role(get_outbox_engine(), environment=cfg.environment)
 
-    consumers.register(make_target_resolver(cfg))
+    resolve_target = make_target_resolver(cfg)
+    consumers.register(resolve_target)
     # Raises rather than downgrading to `log` when a real transport is named without
     # credentials, so a misconfigured deploy fails here instead of going quiet.
     dispatcher.register(build_transports(cfg), cfg)
@@ -83,6 +84,7 @@ async def main() -> None:
         lease_seconds=cfg.engage_campaign_claim_lease_seconds,
         pause_retry_seconds=cfg.engage_campaign_pause_retry_seconds,
         poll_interval=cfg.engage_campaign_poll_interval_seconds,
+        resolve_target=resolve_target,
     )
 
     log.info(

@@ -222,8 +222,29 @@ class ProviderTemplate(Base, TenantBase):
     #: message we did not write.
     preview_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
+    #: high | medium | low | unknown. Meta's own quality rating, in our vocabulary.
+    quality: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="unknown", server_default="unknown"
+    )
+    #: Meta's components JSON, whole, as last submitted or synced. Display and editing only.
+    components: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    #: `[{index, name, kind, example}]` — the authoring view of the placeholders. `variables`
+    #: above is the send path's mapping to payload keys and keeps its own shape.
+    variable_specs: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    #: When this template was last handed to Meta. Null for one that was only ever synced.
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: `[{status, at, source}]`, oldest first, capped by `w2_domain.HISTORY_LIMIT`.
+    history: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+
     __table_args__ = (
         Index("ix_provider_templates_org_code", "organization_id", "code"),
+        Index("ix_provider_templates_org_meta_id", "organization_id", "provider_template_id"),
         Index("ix_provider_templates_org_channel", "organization_id", "channel", "status"),
         UniqueConstraint(
             "organization_id", "code", "channel", name="uq_provider_templates_org_code_chan"
@@ -1014,6 +1035,16 @@ class Campaign(Base, TenantBase):
     sent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     suppressed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: Open and click tracking (slice E1). Off unless the operator turns it on: the Engage design
+    #: sends through the customer's own provider and runs no tracking domain, so tracking is an
+    #: opt-in that rewrites this campaign's links through the platform's signed tracking URLs.
+    #: Only a draft is editable, so these are fixed for the life of a send.
+    track_opens: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    track_clicks: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -1097,3 +1128,11 @@ class ProcessedEvent(Base, ProcessedEventMixin):
 
 class AuditLog(Base, AuditLogMixin):
     """Who changed what, written inside the transaction that changed it."""
+
+
+from app import (  # noqa: E402
+    a1_models,  # noqa: F401
+    e1_models,  # noqa: F401
+    m1_models,  # noqa: F401
+    w1_models,  # noqa: F401
+)

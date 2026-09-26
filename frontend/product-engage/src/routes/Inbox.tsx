@@ -19,6 +19,7 @@ import {
   WindowStatusTag,
 } from "@/ui";
 import { ConversationThread } from "./ConversationThread";
+import { Customer360Panel } from "./inbox/Customer360Panel";
 
 /** Every conversation this screen offers the switch for. `undefined` fetches both. */
 const STATUS_OPTIONS: { value: string; label: string }[] = [
@@ -180,19 +181,24 @@ function Inbox() {
           ) : null}
         </Card>
 
-        <div className={selectedId === null ? "hidden lg:block" : "block"}>
+        <div className={`min-w-0 ${selectedId === null ? "hidden lg:block" : "block"}`}>
           {selected !== null ? (
-            <>
-              <button
-                type="button"
-                onClick={() => select(null)}
-                className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-muted hover:text-ink lg:hidden"
-              >
-                <ArrowLeftIcon className="size-4" aria-hidden />
-                Back to conversations
-              </button>
-              <ConversationThread conversation={selected} onChanged={state.refresh} />
-            </>
+            // Thread and Customer 360 side by side on wide screens; the panel drops below the
+            // thread when there is not room for a third column.
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
+              <div className="min-w-0 flex-1">
+                <button
+                  type="button"
+                  onClick={() => select(null)}
+                  className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-muted hover:text-ink lg:hidden"
+                >
+                  <ArrowLeftIcon className="size-4" aria-hidden />
+                  Back to conversations
+                </button>
+                <ConversationThread conversation={selected} onChanged={state.refresh} />
+              </div>
+              <Customer360Panel customerId={selected.contact_id} />
+            </div>
           ) : (
             <Card className="hidden h-full items-center justify-center p-6 lg:flex">
               <EmptyState

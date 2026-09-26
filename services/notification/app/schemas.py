@@ -705,6 +705,10 @@ class CampaignIn(BaseModel):
     audience: CampaignAudience = "all_sendable"
     list_id: uuid.UUID | None = None
     scheduled_at: datetime | None = None
+    #: Off by default. On rewrites this campaign's links / adds a pixel through signed tracking
+    #: URLs on the platform's domain (slice E1).
+    track_opens: bool = False
+    track_clicks: bool = False
 
     @field_validator("subject")
     @classmethod
@@ -748,6 +752,8 @@ class CampaignPatch(BaseModel):
     audience: CampaignAudience | None = None
     list_id: uuid.UUID | None = None
     scheduled_at: datetime | None = None
+    track_opens: bool | None = None
+    track_clicks: bool | None = None
 
     @field_validator("subject")
     @classmethod
@@ -781,6 +787,9 @@ class CampaignOut(BaseModel):
     #: Empty unless `status == "paused"`.
     pause_reason: str
     stats: CampaignStats
+    #: Whether opens / clicks are tracked for this campaign (off by default).
+    track_opens: bool = False
+    track_clicks: bool = False
     created_at: datetime
     updated_at: datetime
 

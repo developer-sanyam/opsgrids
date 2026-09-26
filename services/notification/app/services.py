@@ -14,6 +14,7 @@ point: a direct send cannot reach someone a rule-driven send would have skipped.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import uuid
@@ -29,7 +30,16 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import consent, dns_check, domain, memberships, selectors, webhooks, whatsapp_provider
+from app import (
+    consent,
+    dns_check,
+    domain,
+    e1_tracking,
+    memberships,
+    selectors,
+    webhooks,
+    whatsapp_provider,
+)
 from app.config import Settings, settings
 from app.models import (
     AuditLog,
@@ -3836,6 +3846,23 @@ class RecordedConsent:
     replayed: bool
 
 
+_EMAIL_IN_TEXT = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
+#: A run of digits that could be a phone number: digits with the separators people put in one,
+#: ten or more of them. A reference like "order 1042" has far fewer; a long order number can trip
+#: this, which costs the operator one reworded line and never a leaked number.
+_PHONE_IN_TEXT = re.compile(r"\+?\d[\d\s().-]{8,}\d")
+
+
+def _evidence_names_a_person(evidence: str) -> bool:
+    """Does free-text `evidence` carry an email address or something shaped like a phone number?"""
+    if _EMAIL_IN_TEXT.search(evidence):
+        return True
+    return any(
+        sum(ch.isdigit() for ch in match.group()) >= 10
+        for match in _PHONE_IN_TEXT.finditer(evidence)
+    )
+
+
 async def record_consent_event(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -3892,10 +3919,15 @@ async def record_consent_event(
     elif address is None:
         raise ValidationProblem("Give an address or a contact_id")
 
-    if normalized_address is not None and normalized_address.lower() in evidence.lower():
+    if (
+        normalized_address is not None and normalized_address.lower() in evidence.lower()
+    ) or _evidence_names_a_person(evidence):
         # The column is not sealed. A reference ("order 1042", "form submission 88") is what
-        # belongs here, never the person.
-        raise ValidationProblem("evidence must not contain the address; use a reference")
+        # belongs here, never the person: not their address, not any email address, and not a
+        # phone number however it is written.
+        raise ValidationProblem(
+            "evidence must be a reference, not an email address or a phone number"
+        )
 
     now = datetime.now(UTC)
     when = occurred_at.astimezone(UTC) if occurred_at is not None else now
@@ -4777,9 +4809,15 @@ def unsubscribe_url_for_recipient(organization_id: uuid.UUID, recipient_id: uuid
     return f"{base}/engage/unsubscribe/{token}"
 
 
-def campaign_message(campaign: Campaign, *, to_address: str, unsubscribe: str) -> Outgoing:
+def campaign_message(
+    campaign: Campaign, *, to_address: str, unsubscribe: str, html_body: str | None = None
+) -> Outgoing:
     """One recipient's copy: the campaign body plus the unsubscribe footer, and the RFC 8058
-    one-click headers. Built per recipient because the link is per address."""
+    one-click headers. Built per recipient because the link is per address.
+
+    `html_body` replaces the campaign's HTML body when given: the tracked copy (slice E1), with
+    links rewritten and a pixel added. The unsubscribe footer is always appended after it, so it
+    is never rewritten."""
     text = campaign.text_body.rstrip()
     footer = f"Unsubscribe: {unsubscribe}\n"
     text = f"{text}\n\n--\n{footer}" if text else footer
@@ -4787,7 +4825,8 @@ def campaign_message(campaign: Campaign, *, to_address: str, unsubscribe: str) -
     if campaign.html_body.strip():
         link = html_escape(unsubscribe, quote=True)
         html = (
-            f'{campaign.html_body}\n<p style="font-size:12px;color:#666">'
+            f"{campaign.html_body if html_body is None else html_body}\n"
+            '<p style="font-size:12px;color:#666">'
             f'<a href="{link}">Unsubscribe</a></p>'
         )
     return Outgoing(
@@ -5250,6 +5289,9 @@ async def claim_campaign_batch(
     )
 
     cfg = settings()
+    # Open/click tracking (slice E1): None unless the campaign opted in. Registers the campaign's
+    # link destinations once for the batch; the per-recipient work below is string rewriting only.
+    tracking = await e1_tracking.prepare_plan(session, campaign)
     messages: list[ClaimedMessage] = []
     resolved: list[tuple[uuid.UUID, Literal["suppressed", "failed"], str]] = []
     for recipient in claimed:
@@ -5274,6 +5316,20 @@ async def claim_campaign_batch(
                 campaign,
                 to_address=address,
                 unsubscribe=unsubscribe_url_for_recipient(organization_id, recipient.id),
+                html_body=(
+                    # Off the event loop: a pass over a body of up to 500 KB, and in production
+                    # this driver shares a process (and a loop) with every tenant's API traffic.
+                    # Pure string work on immutable inputs, so a worker thread is safe; the
+                    # session is never touched from it.
+                    await asyncio.to_thread(
+                        tracking.render,
+                        campaign.html_body,
+                        organization_id=organization_id,
+                        recipient_id=recipient.id,
+                    )
+                    if tracking is not None and campaign.html_body.strip()
+                    else None
+                ),
             )
         except Exception:
             # One row's own problem (a sealed address that will not open, a body that will not
