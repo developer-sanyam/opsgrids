@@ -53,6 +53,7 @@ optional_empty="$optional_empty SMTP_HOST SMTP_USERNAME SMTP_PASSWORD RAZORPAY_K
 # told to use a provider that only offers SMTPS.
 optional_empty="$optional_empty OPS_MONITOR_API_CONTAINERS OPS_MONITOR_DLQ_QUEUES SMTP_USE_SSL"
 optional_empty="$optional_empty WHATSAPP_APP_SECRET WHATSAPP_VERIFY_TOKEN WHATSAPP_PHONE_NUMBER_ID WHATSAPP_ACCESS_TOKEN COMPOSE_PROFILES"
+optional_empty="$optional_empty META_APP_ID META_APP_SECRET META_EMBEDDED_SIGNUP_CONFIG_ID"
 # A box with no floating IP yet (or a provider that does not offer one) has nothing to put here;
 # storefront's own settings default it to empty and print "the platform address" instead of a
 # literal until it is filled in. Checked separately, below, for a documentation-range value.
