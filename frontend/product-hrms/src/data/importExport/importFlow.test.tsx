@@ -172,9 +172,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * A gateway with the department tree, the employee list and `POST /employees`. An employee number
- * already on the list answers 409; EMP-3004 answers 403; anything else is created.
+ * already on the list answers 409; EMP-3004 answers 403; anything else is created. A caller who may
+ * not read departments gets a 403 for the tree.
  */
-function stubGateway() {
+function stubGateway(options: { mayReadDepartments?: boolean } = {}) {
+  const { mayReadDepartments = true } = options;
   const requests: Recorded[] = [];
   vi.stubGlobal(
     "fetch",
@@ -184,7 +186,9 @@ function stubGateway() {
       const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
       requests.push({ method, path: url.pathname, params: url.searchParams, body });
 
-      if (method === "GET" && url.pathname === "/api/v1/org-units") return ok(200, TREE);
+      if (method === "GET" && url.pathname === "/api/v1/org-units") {
+        return mayReadDepartments ? ok(200, TREE) : problem(403, "Forbidden", "You cannot read the departments.");
+      }
       if (method === "GET" && url.pathname === "/api/v1/employees") {
         const page = Number(url.searchParams.get("page") ?? "1");
         const items = EMPLOYEES.slice((page - 1) * PER_PAGE, page * PER_PAGE);
@@ -469,6 +473,88 @@ describe("importing employees from Excel", () => {
     },
     TEST_TIMEOUT,
   );
+
+  it(
+    "creates nothing when every row already exists, and does not ask the screen to reload",
+    async () => {
+      const gateway = stubGateway();
+      const onImported = vi.fn();
+      const user = await openDialog(NO_FILTERS, onImported);
+      const again = [
+        { employee_no: "EMP-0007", full_name: "Rhea Kapoor" },
+        { employee_no: "EMP-0012", full_name: "Sameer Joshi" },
+      ];
+
+      await user.upload(fileInput(), await importFile(again));
+      await screen.findByRole("dialog", { name: "Review your file" });
+      await user.click(screen.getByRole("button", { name: "Import 2 rows" }));
+      await screen.findByRole("dialog", { name: "Import finished" }, { timeout: 10_000 });
+
+      expect(gateway.posts()).toHaveLength(2);
+      expect(screen.getByText("Nothing new to import. Every row already exists, so nothing was overwritten.")).toBeTruthy();
+      expect(figure("Created")).toBe("0");
+      expect(figure("Skipped, already exist")).toBe("2");
+      expect(onImported).not.toHaveBeenCalled();
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "stops after the row in flight when cancelled, keeps what was created, and tells the screen once",
+    async () => {
+      const gateway = stubGateway();
+      const onImported = vi.fn();
+      const user = await openDialog(NO_FILTERS, onImported);
+      const rows = [3021, 3022, 3023, 3024].map((number) => ({
+        employee_no: `EMP-${number}`,
+        full_name: `Person ${number}`,
+      }));
+
+      await user.upload(fileInput(), await importFile(rows));
+      await screen.findByRole("dialog", { name: "Review your file" });
+      await user.click(screen.getByRole("button", { name: "Import 4 rows" }));
+      await waitFor(() => expect(gateway.posts().length).toBeGreaterThan(0));
+      await user.click(screen.getByRole("button", { name: "Cancel import" }));
+      await screen.findByRole("dialog", { name: "Import cancelled" }, { timeout: 10_000 });
+
+      const sent = gateway.posts().length;
+      expect(sent).toBeGreaterThanOrEqual(1);
+      expect(sent).toBeLessThan(4);
+      expect(figure("Created")).toBe(String(sent));
+      expect(screen.getByText(/The remaining rows were not sent\.$/)).toBeTruthy();
+      expect(onImported).toHaveBeenCalledTimes(1);
+      expect(onImported).toHaveBeenCalledWith(expect.objectContaining({ created: sent, cancelled: true }));
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "still imports the rows that name no department when the caller may not read departments",
+    async () => {
+      const gateway = stubGateway({ mayReadDepartments: false });
+      const user = await openDialog();
+      const rows = [
+        { employee_no: "EMP-3010", full_name: "No Department", reporting_manager: "EMP-0007" },
+        { employee_no: "EMP-3011", full_name: "Names One", department: "Engineering" },
+      ];
+
+      await user.upload(fileInput(), await importFile(rows));
+      await screen.findByRole("dialog", { name: "Review your file" });
+      expect(figure("Ready to import")).toBe("1");
+      expect(figure("Need fixing")).toBe("1");
+      expect(screen.getByText(/^'Engineering'/)).toBeTruthy();
+
+      await user.click(screen.getByRole("button", { name: "Import 1 row" }));
+      await screen.findByRole("dialog", { name: "Import finished" }, { timeout: 10_000 });
+
+      expect(gateway.posts().map((request) => request.body)).toEqual([
+        { employee_no: "EMP-3010", full_name: "No Department", reporting_manager_id: "e-7" },
+      ]);
+      expect(figure("Created")).toBe("1");
+      expect(figure("Invalid")).toBe("1");
+    },
+    TEST_TIMEOUT,
+  );
 });
 
 // ------------------------------------------------------------------------------------ exporting
@@ -530,6 +616,58 @@ describe("exporting employees to Excel", () => {
       const everything: string[] = [];
       sheet.eachRow((row) => row.eachCell({ includeEmpty: false }, (cell) => everything.push(cell.text)));
       expect(everything.join("\n")).not.toMatch(/••|HDFC|1234F/);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "writes a file that imports again as the same records, ignoring the columns the system sets",
+    async () => {
+      const gateway = stubGateway();
+      const user = await openDialog();
+      await user.click(screen.getByRole("button", { name: "Export to Excel" }));
+      await waitFor(() => expect(downloads).toHaveLength(1));
+      const blob = downloads[0]?.blob;
+      if (blob === undefined) throw new Error("Nothing was downloaded");
+
+      await user.upload(fileInput(), new File([blob], "employees-export.xlsx", { type: XLSX_TYPE }));
+      await screen.findByRole("dialog", { name: "Review your file" });
+      expect(figure("Rows in file")).toBe("3");
+      expect(figure("Ready to import")).toBe("3");
+      expect(figure("Need fixing")).toBe("0");
+
+      await user.click(screen.getByRole("button", { name: "Import 3 rows" }));
+      await screen.findByRole("dialog", { name: "Import finished" }, { timeout: 10_000 });
+
+      // Every number is on the register already, so each row is skipped; what was sent is what the
+      // API had returned, department and manager included, and never the status or the id.
+      expect(gateway.posts().map((request) => request.body)).toEqual([
+        {
+          employee_no: "EMP-0007",
+          full_name: "Rhea Kapoor",
+          designation: "=1+1",
+          department_id: "d-hr",
+          employment_type: "full_time",
+          work_mode: "office",
+          date_of_joining: "2024-02-01",
+        },
+        {
+          employee_no: "EMP-0012",
+          full_name: "Sameer Joshi",
+          department_id: "d-eng-plat",
+          employment_type: "part_time",
+          work_mode: "remote",
+          reporting_manager_id: "e-7",
+        },
+        {
+          employee_no: "EMP-0031",
+          full_name: "Tara Menon",
+          employment_type: "full_time",
+          work_mode: "office",
+          dotted_line_manager_id: "e-12",
+        },
+      ]);
+      expect(figure("Skipped, already exist")).toBe("3");
     },
     TEST_TIMEOUT,
   );
