@@ -7,7 +7,9 @@ would call it. The authenticated reads override the principal the way the other 
 
 from __future__ import annotations
 
+import asyncio
 import re
+import threading
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -21,7 +23,7 @@ from app import consumers, e1_analytics, e1_models, e1_tracking, models, service
 from app.config import settings
 from app.transports import RecordingTransport
 from platform_core.auth import Scope
-from platform_core.db import dispose_engine, init_engine
+from platform_core.db import dispose_engine, init_engine, session_scope
 from tests.helpers import ctx_for, principal_for
 from tests.test_engage_campaigns import (
     CAMPAIGNS,
@@ -390,6 +392,171 @@ async def test_email_events_are_append_only_for_the_app_role(session, org_id, wo
     with pytest.raises(DBAPIError):
         async with session.begin():
             await session.execute(update(e1_models.EmailEvent).values(is_machine=True))
+
+
+# ------------------------------------------------------------------- bounded event volume
+
+
+def _event_kwargs(org_id, **overrides):
+    base = {
+        "organization_id": org_id,
+        "recipient_id": uuid.uuid4(),
+        "campaign_id": uuid.uuid4(),
+        "kind": "open",
+        "link_id": None,
+        "user_agent_class": "desktop",
+        "is_machine": False,
+    }
+    return {**base, **overrides}
+
+
+async def test_a_recipient_stops_accumulating_events_at_the_cap(
+    session, org_id, worker_engine, monkeypatch
+):
+    """The repeat window only flattens a burst. The cap is what bounds the append-only table:
+    events older than the window are all distinct as far as the repeat check can tell."""
+    monkeypatch.setattr(e1_tracking, "MAX_EVENTS_PER_RECIPIENT_KIND", 3)
+    kwargs = _event_kwargs(org_id)
+    old = datetime.now(UTC) - timedelta(hours=1)
+    async with session.begin():
+        for _ in range(3):
+            session.add(
+                e1_models.EmailEvent(
+                    organization_id=org_id,
+                    campaign_id=kwargs["campaign_id"],
+                    recipient_id=kwargs["recipient_id"],
+                    kind="open",
+                    user_agent_class="desktop",
+                    is_machine=False,
+                    occurred_at=old,
+                )
+            )
+
+    async with session.begin():
+        assert await e1_tracking.record_event(session, **kwargs) is False
+    assert len(await _events(session, org_id)) == 3
+
+    # The limit is per recipient, per kind and per machine flag: none of these is affected.
+    async with session.begin():
+        assert await e1_tracking.record_event(session, **{**kwargs, "is_machine": True}) is True
+    async with session.begin():
+        other_recipient = {**kwargs, "recipient_id": uuid.uuid4()}
+        assert await e1_tracking.record_event(session, **other_recipient) is True
+    async with session.begin():
+        link = e1_models.EmailLink(
+            organization_id=org_id,
+            campaign_id=kwargs["campaign_id"],
+            url="https://shop.example.com/",
+            url_hash=e1_tracking.url_hash("https://shop.example.com/"),
+        )
+        session.add(link)
+        await session.flush()
+        click = {**kwargs, "kind": "click", "link_id": link.id}
+        assert await e1_tracking.record_event(session, **click) is True
+    assert len(await _events(session, org_id)) == 6
+
+
+async def test_a_rotating_user_agent_cannot_write_past_the_cap_and_is_still_served(
+    client, session, org_id, worker_engine, monkeypatch
+):
+    """The repeat key includes the device class, so changing the User-Agent used to defeat it.
+    Over the cap the pixel and the redirect answer exactly as before and nothing is written."""
+    monkeypatch.setattr(e1_tracking, "MAX_EVENTS_PER_RECIPIENT_KIND", 3)
+    _, sent, _ = await _run(session, org_id)
+    await _age_sends(session, org_id)
+    html = sent[0].html or ""
+    pixel, click = _tokens(html, "o")[0], _tokens(html, "c")[0]
+    tablet = (
+        "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17 Safari/604"
+    )
+    agents = [DESKTOP, PHONE, tablet, "totally-unknown-agent/1.0", "another-unknown-agent/2.0"]
+
+    for agent in agents:
+        served = await client.get(f"{TRACK}/o/{pixel}", headers={"User-Agent": agent})
+        assert served.status_code == 200 and served.content == e1_tracking.PIXEL_GIF
+    human = [e for e in await _events(session, org_id) if not e.is_machine]
+    assert len(human) == 3  # desktop, mobile, tablet; the rest were refused
+
+    # A scanner is a separate bucket: it is still recorded, and cannot spend the person's share.
+    await client.get(f"{TRACK}/o/{pixel}", headers={"User-Agent": "Barracuda Sentinel"})
+    assert len([e for e in await _events(session, org_id) if e.is_machine]) == 1
+
+    # Clicks: the cap is the same, and the redirect never stops working.
+    monkeypatch.setattr(e1_tracking, "MAX_EVENTS_PER_RECIPIENT_KIND", 1)
+    for agent in (DESKTOP, PHONE, tablet):
+        hit = await client.get(f"{TRACK}/c/{click}", headers={"User-Agent": agent})
+        assert hit.status_code == 302 and hit.headers["location"] == SALE
+    clicks = [e for e in await _events(session, org_id) if e.kind == "click"]
+    assert len(clicks) == 1
+
+
+async def test_parallel_requests_for_one_event_queue_on_the_recipients_lock(
+    session, org_id, worker_engine
+):
+    """Check-then-insert with no lock lets two requests each read "nothing recent" and both
+    write. Here the first holds its transaction open; the second must wait for it rather than run
+    past an empty read, and then find the first's committed row."""
+    kwargs = _event_kwargs(org_id)
+
+    async def second() -> bool:
+        async with session_scope(org_id) as other:
+            return await e1_tracking.record_event(other, **kwargs)
+
+    racer: asyncio.Task[bool] | None = None
+    try:
+        async with session_scope(org_id) as first:
+            assert await e1_tracking.record_event(first, **kwargs) is True
+            racer = asyncio.create_task(second())
+            await asyncio.sleep(0.5)
+            assert not racer.done(), "the second request did not wait for the first"
+        assert await asyncio.wait_for(racer, timeout=15) is False
+    finally:
+        if racer is not None and not racer.done():
+            racer.cancel()
+    assert len(await _events(session, org_id)) == 1
+
+
+async def test_parallel_requests_for_different_recipients_do_not_wait_for_each_other(
+    session, org_id, worker_engine
+):
+    async with session_scope(org_id) as first:
+        assert await e1_tracking.record_event(first, **_event_kwargs(org_id)) is True
+        async with session_scope(org_id) as other:
+            done = await asyncio.wait_for(
+                e1_tracking.record_event(other, **_event_kwargs(org_id)), timeout=5
+            )
+            assert done is True
+
+
+# ------------------------------------------------------------- work off the event loop
+
+
+async def test_link_extraction_and_rendering_run_off_the_event_loop(
+    session, org_id, worker_engine, monkeypatch
+):
+    """Both are passes over a tenant-authored body of up to 500 KB, and in production this driver
+    shares its loop with every tenant's API traffic."""
+    extracted: list[int] = []
+    rendered: list[int] = []
+    real_extract = e1_tracking.extract_links
+    real_render = e1_tracking.TrackingPlan.render
+
+    def spy_extract(html):
+        extracted.append(threading.get_ident())
+        return real_extract(html)
+
+    def spy_render(self, html, **kwargs):
+        rendered.append(threading.get_ident())
+        return real_render(self, html, **kwargs)
+
+    monkeypatch.setattr(e1_tracking, "extract_links", spy_extract)
+    monkeypatch.setattr(e1_tracking.TrackingPlan, "render", spy_render)
+    _, sent, _ = await _run(session, org_id, to=("a@example.com", "b@example.com"))
+
+    assert len(sent) == 2 and all(_tokens(m.html or "", "c") for m in sent)  # still correct
+    me = threading.get_ident()
+    assert extracted and rendered
+    assert me not in extracted and me not in rendered
 
 
 # --------------------------------------------------------------------------------- analytics

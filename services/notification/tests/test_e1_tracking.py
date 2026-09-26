@@ -4,10 +4,13 @@ no database, no network."""
 from __future__ import annotations
 
 import re
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from pydantic import SecretStr
+from structlog.testing import capture_logs
 
 from app import e1_tracking as t
 
@@ -221,3 +224,158 @@ def test_urls_that_must_never_be_tracked_or_redirected_to(url: str) -> None:
 def test_a_plain_https_url_is_trackable() -> None:
     assert t.is_trackable_url("https://shop.example.com/a?b=c#d") is True
     assert t.is_trackable_url("http://shop.example.com/") is True
+
+
+# ------------------------------------------------------------------- hostile HTML stays linear
+
+#: Repeats per pattern. Small enough that the old quadratic pattern needs seconds to chew through
+#: even the mildest of these (`"<a " * 12000` took ~4 s, the unclosed-tag shapes 7 to 14 s) and
+#: the linear one needs a few milliseconds. The body limit is 500 KB, so the real exposure was
+#: minutes per pass, once in `extract_links` and once per recipient in `render`.
+_REPEATS = 12000
+_BUDGET_SECONDS = 1.0
+
+_PATHOLOGICAL = {
+    "unclosed tags": "<a " * _REPEATS,
+    "unclosed tags with an attribute": '<a x="' * _REPEATS,
+    "unclosed href, no quote": "<a href=" * _REPEATS,
+    "unclosed href, open quote": '<a href="' * _REPEATS,
+    "single-quoted attributes": "<a b=' " * _REPEATS,
+    "one tag, many hrefs": "<a " + "href=' " * _REPEATS,
+    "one tag, long whitespace run": "<a href" + " " * (3 * _REPEATS),
+    "one tag, long whitespace after the equals": "<a href=" + " " * (3 * _REPEATS),
+    "deeply nested quotes": '<a href="' + "'\"" * (5 * _REPEATS),
+    "tags closed late": "<a " * _REPEATS + ">",
+    # The values are unescaped before they are judged, so one enormous one is worth a check too.
+    "one huge href of entities": '<a href="' + "&amp;" * (10 * _REPEATS) + '">',
+    "one huge href of bare ampersands": '<a href="' + "&" * (30 * _REPEATS) + '">',
+    "many entity-shaped hrefs": ("<a href='&" + "b" * 31 + "'>") * _REPEATS,
+}
+
+
+@pytest.mark.parametrize("shape", list(_PATHOLOGICAL))
+def test_pathological_html_is_extracted_and_rendered_in_linear_time(shape: str) -> None:
+    """A tenant author controls the body, and the send path parses it for every recipient. The
+    link pattern used to rescan the rest of the document from every unclosed `<a`, which is
+    quadratic: one 120 KB body froze the process for ~20 s a pass."""
+    html = _PATHOLOGICAL[shape]
+    plan = t.TrackingPlan(
+        key=KEY, base="https://api.example.com/api/v1", link_ids={}, opens=True, clicks=True
+    )
+
+    started = time.perf_counter()
+    t.extract_links(html)
+    plan.render(html, organization_id=ORG, recipient_id=RECIPIENT)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < _BUDGET_SECONDS, f"{shape}: {elapsed:.2f}s"
+
+
+def test_a_body_at_the_size_limit_of_ordinary_anchors_is_still_fast() -> None:
+    """The bound is not bought by giving up on real mail: thousands of links in a 500 KB body."""
+    html = "".join(
+        f'<a href="https://shop.example.com/p/{n}" class="x">item {n}</a>\n' for n in range(5000)
+    )
+    assert len(html) < 500_000
+    links = {url: uuid.uuid4() for url in t.extract_links(html)}
+    plan = t.TrackingPlan(
+        key=KEY, base="https://api.example.com/api/v1", link_ids=links, opens=True, clicks=True
+    )
+
+    started = time.perf_counter()
+    out = plan.render(html, organization_id=ORG, recipient_id=RECIPIENT)
+    assert time.perf_counter() - started < _BUDGET_SECONDS
+    assert out.count("/engage/t/c/") == len(links) == t.MAX_LINKS_PER_CAMPAIGN
+
+
+def test_an_anchor_with_a_raw_angle_bracket_before_its_href_is_left_untracked() -> None:
+    """The price of the linear pattern, stated: such a tag is neither registered nor rewritten,
+    and the two passes agree, so a link is never rewritten without being registered."""
+    html = '<a title="1 < 2" href="https://shop.example.com/x">x</a> <a href="https://ok.example.com/">ok</a>'
+    assert t.extract_links(html) == ["https://ok.example.com/"]
+    plan = t.TrackingPlan(
+        key=KEY,
+        base="https://api.example.com/api/v1",
+        link_ids={"https://ok.example.com/": uuid.uuid4()},
+        opens=False,
+        clicks=True,
+    )
+    out = plan.render(html, organization_id=ORG, recipient_id=RECIPIENT)
+    assert 'href="https://shop.example.com/x"' in out
+    assert out.count("/engage/t/c/") == 1
+
+
+# ------------------------------------------------------------------------ the tracking key
+
+
+def _configured(monkeypatch: pytest.MonkeyPatch, **update: object) -> None:
+    cfg = t.settings().model_copy(update=update)
+    monkeypatch.setattr(t, "settings", lambda: cfg)
+
+
+def test_an_explicit_tracking_secret_is_the_key_when_it_is_long_enough(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "r" * 40
+    _configured(monkeypatch, environment="production", engage_tracking_secret=SecretStr(secret))
+    assert t.tracking_key() == secret.encode()
+
+
+@pytest.mark.parametrize("secret", ["short", "x" * (t.MIN_TRACKING_SECRET_LENGTH - 1)])
+def test_a_short_explicit_tracking_secret_turns_tracking_off_in_every_environment(
+    monkeypatch: pytest.MonkeyPatch, secret: str
+) -> None:
+    """Refused rather than used (a guessable MAC key forges every token) and rather than swapped
+    for the derived key (the operator asked for a different one)."""
+    for environment in ("local", "production"):
+        _configured(monkeypatch, environment=environment, engage_tracking_secret=SecretStr(secret))
+        assert t.tracking_key() is None
+
+
+def test_the_shortest_allowed_explicit_secret_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = "y" * t.MIN_TRACKING_SECRET_LENGTH
+    _configured(monkeypatch, environment="production", engage_tracking_secret=SecretStr(secret))
+    assert t.tracking_key() == secret.encode()
+
+
+@pytest.mark.parametrize("prefix", ["dev-only-", "ci-only-"])
+def test_a_placeholder_tracking_secret_is_refused_only_in_a_real_environment(
+    monkeypatch: pytest.MonkeyPatch, prefix: str
+) -> None:
+    secret = prefix + "z" * 40
+    _configured(monkeypatch, environment="production", engage_tracking_secret=SecretStr(secret))
+    assert t.tracking_key() is None
+    _configured(monkeypatch, environment="local", engage_tracking_secret=SecretStr(secret))
+    assert t.tracking_key() == secret.encode()
+
+
+def test_with_no_explicit_secret_the_key_is_derived_from_the_unsubscribe_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configured(monkeypatch, environment="local", engage_tracking_secret=SecretStr(""))
+    derived = t.tracking_key()
+    assert derived is not None and len(derived) == 32
+
+
+def test_a_refused_explicit_secret_is_named_in_the_log_once_per_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The routes ask for the key on every request, and they are public: logging each refusal
+    would hand anyone holding a tracking URL a way to fill the log."""
+    monkeypatch.setattr(t, "_REFUSALS_LOGGED", set())
+    with capture_logs() as logs:
+        _configured(monkeypatch, environment="local", engage_tracking_secret=SecretStr("hunter2"))
+        assert t.tracking_key() is None
+        assert t.tracking_key() is None
+        _configured(
+            monkeypatch,
+            environment="production",
+            engage_tracking_secret=SecretStr("ci-only-" + "z" * 40),
+        )
+        assert t.tracking_key() is None
+        assert t.tracking_key() is None
+    assert [entry["event"] for entry in logs] == [
+        "engage.tracking.secret_too_short",
+        "engage.tracking.secret_is_placeholder",
+    ]
+    assert "hunter2" not in repr(logs)  # the value itself is never logged

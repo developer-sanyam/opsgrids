@@ -66,9 +66,10 @@ the platform's own public API base (`ENGAGE_PUBLIC_API_BASE`): `GET /engage/t/o/
 
 - Tokens are `base64url(payload).base64url(mac)`: HMAC-SHA256 over the kind and the payload (org id,
   recipient id, link id, no address, name or URL), compared in constant time. The key derives from
-  `ENGAGE_UNSUBSCRIBE_SECRET` unless `ENGAGE_TRACKING_SECRET` is set; it is unavailable, and tracking
-  is skipped, wherever the unsubscribe key is refused. Rotating it stops recording on mail already
-  sent.
+  `ENGAGE_UNSUBSCRIBE_SECRET` unless `ENGAGE_TRACKING_SECRET` is set (at least 32 characters, and
+  not a `dev-only-`/`ci-only-` placeholder outside local/test/ci); it is unavailable, and tracking
+  is skipped with a log, wherever either key is refused. Rotating it stops recording on mail
+  already sent.
 - **No open redirect.** A click token names a row of `email_links`, registered from the anchors of
   the campaign body when it is sent. The redirect goes only to that row's `http(s)` URL; nothing the
   requester supplies becomes a `Location`. Unsubscribe links, `mailto:`, `tel:`, fragments and
@@ -77,7 +78,10 @@ the platform's own public API base (`ENGAGE_PUBLIC_API_BASE`): `GET /engage/t/o/
   recipient, link, a device class and `occurred_at`. **No IP address and no raw user agent.** Scanner
   and prefetch traffic (known scanner agents, Apple Mail Privacy Protection, a fetch within seconds
   of the provider accepting the mail) is kept with `is_machine = true` and excluded from every
-  human figure. The same event within five seconds is written once.
+  human figure. The same event within five seconds is written once, and a recipient stops
+  accumulating events of one kind after 200 (human and machine counted apart): past that the pixel
+  and the redirect still answer but nothing is recorded, so the table cannot be grown without
+  bound with one valid token.
 - `GET /engage/campaigns/{id}/analytics` and `GET /engage/analytics/email/overview` read it
   (`app/e1_analytics.py`; `email_overview(session, organization_id, date_from, date_to)` is also
   what the hub embeds). Rates are fractions between 0 and 1. `delivered` means accepted by the

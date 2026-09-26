@@ -10,7 +10,9 @@ identifiers and no address, name or URL. The MAC is HMAC-SHA256 over the token k
 and the payload, so an open token can never be replayed as a click token, and it is compared in
 constant time. The key is derived from the unsubscribe secret unless `ENGAGE_TRACKING_SECRET`
 is set, and is unavailable (tracking is skipped, never faked) wherever the unsubscribe key is
-refused, the same "a forgeable key is no key" rule.
+refused, the same "a forgeable key is no key" rule. An explicit `ENGAGE_TRACKING_SECRET` must be at
+least `MIN_TRACKING_SECRET_LENGTH` characters and not a `dev-only-`/`ci-only-` placeholder outside
+local/test/ci; one that is not is refused (tracking is skipped, with a log), never silently used.
 
 **No open redirect.** A click token names a link id, and the redirect target is read from
 `email_links`, populated only from the anchors of the campaign body when it was sent. Nothing a
@@ -21,10 +23,16 @@ the scheme is checked again before redirecting.
 URL whose path mentions `unsubscribe` (this platform's own link, and a customer's own preference
 page) are left exactly as written. The unsubscribe footer and the `List-Unsubscribe` headers are
 added or built outside this module.
+
+**Bounded work on hostile HTML.** The campaign body is written by a tenant author and is parsed
+here for every recipient inside the send path, so nothing in this module may be superlinear in its
+size. The one pattern (`_ANCHOR_HREF`) is written so a tag can never be scanned past the next `<` or
+`>`; `tests/test_e1_tracking.py` pins that with a wall-clock bound on pathological input.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -39,7 +47,7 @@ from html import unescape as html_unescape
 from typing import Final, Literal
 from urllib.parse import urlsplit
 
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,9 +66,18 @@ _PAYLOAD_LEN: Final = 1 + 16 + 16 + 16
 _MAC_LEN: Final = 16
 #: Distinct links registered per campaign. A body with more is tracked on the first ones only.
 MAX_LINKS_PER_CAMPAIGN: Final = 200
-#: A repeat of the same event by the same recipient inside this window is not written again, so a
-#: valid token replayed in a loop cannot grow the table without bound.
+#: A repeat of the same event by the same recipient inside this window is not written again. That
+#: only flattens a burst: it does not bound the table, which is what the cap below is for.
 DUPLICATE_WINDOW: Final = timedelta(seconds=5)
+#: The most events one recipient may leave of one kind (open or click) in one campaign, human and
+#: machine counted separately: a link-scanning security gateway can legitimately fetch every one of
+#: a campaign's `MAX_LINKS_PER_CAMPAIGN` links, and that must not crowd out the person's own click.
+#: Past it a request is still answered (the pixel, the redirect) but writes nothing, so a valid
+#: token replayed forever, or with a rotating User-Agent, adds at most `2 * cap` rows per kind.
+MAX_EVENTS_PER_RECIPIENT_KIND: Final = 200
+#: Shortest `ENGAGE_TRACKING_SECRET` accepted. The value is the whole of the MAC key, so a short
+#: one is a guessable one.
+MIN_TRACKING_SECRET_LENGTH: Final = 32
 #: Mail is not opened by a person this soon after the provider accepted it; a fetch this fast is a
 #: scanner or prefetcher.
 MACHINE_WINDOW: Final = timedelta(seconds=3)
@@ -72,6 +89,18 @@ PIXEL_GIF: Final = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAA
 # ------------------------------------------------------------------------------------ tokens
 
 
+#: Refusals already logged by this process. `tracking_key` runs on every request to the public
+#: tracking routes, so a refused key logged each time would let anyone with a tracking URL write
+#: the log at the gateway's rate limit; once per process names the misconfiguration just as well.
+_REFUSALS_LOGGED: set[str] = set()
+
+
+def _refuse(event: str, **fields: object) -> None:
+    if event not in _REFUSALS_LOGGED:
+        _REFUSALS_LOGGED.add(event)
+        log.error(event, **fields)
+
+
 def tracking_key() -> bytes | None:
     """The tracking MAC key, or None where tracking must not run (see the module docstring)."""
     from app import services  # local: services imports this module at send time
@@ -79,6 +108,18 @@ def tracking_key() -> bytes | None:
     cfg = settings()
     explicit = cfg.engage_tracking_secret.get_secret_value()
     if explicit:
+        # Refused, not repaired: falling back to the derived key here would quietly sign with a
+        # key the operator did not choose, and using a weak one would make every token forgeable.
+        # Same posture as `services.unsubscribe_key`: the service runs, this feature is off.
+        if len(explicit) < MIN_TRACKING_SECRET_LENGTH:
+            _refuse("engage.tracking.secret_too_short", minimum=MIN_TRACKING_SECRET_LENGTH)
+            return None
+        if (
+            explicit.startswith(("dev-only-", "ci-only-"))
+            and cfg.environment in services._REAL_ENVIRONMENTS
+        ):
+            _refuse("engage.tracking.secret_is_placeholder")
+            return None
         return explicit.encode()
     base = services.unsubscribe_key()
     if base is None:
@@ -225,8 +266,15 @@ def classify(
 
 # ------------------------------------------------------------------------------ rewriting
 
+#: Every anchor's `href` value, and the only regex in this module. The attribute run before `href`
+#: is `[^<>]*?`, **not** `[^>]*?`: with the latter an unclosed tag (`"<a " * 40000`, no `>` at all)
+#: made every `<a` rescan the rest of the document looking for `href`, which is quadratic (about
+#: 20 s for 120 KB, and the body limit is 500 KB). A tag can now be scanned no further than the
+#: next `<` or `>`, so each start position costs its own segment and the whole pass is linear. The
+#: cost is deliberate and fail-safe: an anchor with a raw `<` or `>` inside an earlier attribute
+#: value is left untracked, and `extract_links` and `render` share this pattern so they agree.
 _ANCHOR_HREF: Final = re.compile(
-    r"(<a\b[^>]*?\bhref\s*=\s*)(\"[^\"]*\"|'[^']*')", re.IGNORECASE | re.DOTALL
+    r"(<a\b[^<>]*?\bhref\s*=\s*)(\"[^\"]*\"|'[^']*')", re.IGNORECASE | re.DOTALL
 )
 
 
@@ -320,7 +368,9 @@ async def prepare_plan(  # type: ignore[no-untyped-def]
         return None
     link_ids: dict[str, uuid.UUID] = {}
     if campaign.track_clicks:
-        urls = extract_links(campaign.html_body)
+        # A pass over a body of up to 500 KB: off the event loop, which in production also
+        # serves every other tenant's API traffic.
+        urls = await asyncio.to_thread(extract_links, campaign.html_body)
         if urls:
             await session.execute(
                 pg_insert(EmailLink)
@@ -379,9 +429,30 @@ async def record_event(
     user_agent_class: DeviceClass,
     is_machine: bool,
 ) -> bool:
-    """Append one event, unless the same recipient produced the same event (same kind, link,
-    device class and machine flag) moments ago. Returns whether a row was written. Runs in the
-    caller's tenant-bound transaction."""
+    """Append one event, unless it is a repeat or the recipient is at their cap. Returns whether a
+    row was written. Runs in the caller's tenant-bound transaction, and holds an advisory lock for
+    the rest of it.
+
+    Two limits keep an append-only table from being written without bound by whoever holds one
+    valid token (a recipient of the mail, or anyone the mail was forwarded to):
+
+    - **Repeat.** The same recipient producing the same event (same kind, link, device class and
+      machine flag) inside `DUPLICATE_WINDOW` is not written again.
+    - **Cap.** A recipient's events of one kind and machine flag stop at
+      `MAX_EVENTS_PER_RECIPIENT_KIND`. This is what bounds the table: the repeat window alone
+      cannot, because a caller can wait it out, and a changed User-Agent changes the repeat key.
+
+    Both are check-then-insert, so they are serialized per recipient and kind by a
+    transaction-scoped advisory lock taken first: parallel requests queue on it, and each one's
+    reads see the previous one's committed row (READ COMMITTED takes a fresh snapshot per
+    statement). The lock is on the recipient and kind rather than also on the link, which is
+    coarser than the repeat key needs but is what makes the cap exact across links. Released at
+    commit or rollback, so it cannot leak across the pool.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"e1.event:{organization_id}:{recipient_id}:{kind}"},
+    )
     recent = select(EmailEvent.id).where(
         EmailEvent.organization_id == organization_id,
         EmailEvent.recipient_id == recipient_id,
@@ -396,6 +467,24 @@ async def record_event(
         EmailEvent.link_id.is_(None) if link_id is None else EmailEvent.link_id == link_id
     ).limit(1)
     if (await session.execute(recent)).first() is not None:
+        return False
+    # Counted through a LIMITed subquery, so the read is bounded by the cap however many rows an
+    # earlier bug or a race left behind.
+    held = (
+        select(EmailEvent.id)
+        .where(
+            EmailEvent.organization_id == organization_id,
+            EmailEvent.recipient_id == recipient_id,
+            EmailEvent.campaign_id == campaign_id,
+            EmailEvent.kind == kind,
+            EmailEvent.is_machine.is_(is_machine),
+        )
+        .limit(MAX_EVENTS_PER_RECIPIENT_KIND)
+        .subquery()
+    )
+    if (await session.execute(select(func.count()).select_from(held))).scalar_one() >= (
+        MAX_EVENTS_PER_RECIPIENT_KIND
+    ):
         return False
     session.add(
         EmailEvent(
