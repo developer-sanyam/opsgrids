@@ -164,7 +164,7 @@ describe.each(CASES)("the $name sample sheet", ({ entity, page, hasLists }) => {
     expect(lines).toContain("Up to 1000 rows per file.");
     // The engine explains the Record ID once, in the general rules; the entity's notes do not say it again.
     expect(lines.filter((line) => /Record ID/.test(line))).toEqual([
-      "Rows exported from the system carry a Record ID; those rows are skipped, delete the Record ID to add a row as a new record.",
+      "Rows exported from the system carry a Record ID; those rows are not imported, delete the Record ID to add a row as a new record.",
     ]);
   });
 });

@@ -115,6 +115,16 @@ export function resetPageBudgetForTests(): void {
 
 // ------------------------------------------------------------------------ reading a whole list
 
+/** A reference list that could not be read completely (too long, or the server's paging kept
+ *  coming back short). Its message is a sentence for the user: the dialog shows it instead of
+ *  blaming their file. */
+export class ReferenceListError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReferenceListError";
+  }
+}
+
 export interface CollectOptions<T> {
   size?: number;
   maxPages?: number;
@@ -179,12 +189,14 @@ export async function collectPages<T>(
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const { items, total, capped } = await walk(fetchPage, size, maxPages, signal);
     if (capped && total > maxPages * size) {
-      throw new Error(
-        `This list has more than ${(maxPages * size).toLocaleString("en-US")} records, which is more than an import can look up.`,
+      throw new ReferenceListError(
+        `A list this import checks against has more than ${(maxPages * size).toLocaleString("en-US")} records, which is more than an import can look up.`,
       );
     }
     last = unique(items);
     if (last.length >= total) return last;
   }
-  throw new Error("The list changed while it was being read. Try again in a moment.");
+  throw new ReferenceListError(
+    "A list this import checks against changed while it was being read. Try again in a moment.",
+  );
 }

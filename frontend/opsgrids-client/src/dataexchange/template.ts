@@ -200,7 +200,7 @@ function generalRules(entity: AnyEntity, columns: readonly ImportColumn[]): stri
   ];
   if (entity.recordIdKey !== undefined) {
     rules.push(
-      "Rows exported from the system carry a Record ID; those rows are skipped, delete the Record ID to add a row as a new record.",
+      "Rows exported from the system carry a Record ID; those rows are not imported, delete the Record ID to add a row as a new record.",
     );
   }
   if (has("date")) rules.push("Write dates as YYYY-MM-DD, e.g. 2026-03-04.");

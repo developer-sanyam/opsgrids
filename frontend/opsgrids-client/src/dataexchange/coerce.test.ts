@@ -418,7 +418,8 @@ describe("lookup", () => {
 
   it("says when a label matches more than one entry", () => {
     expect(error(category, "twin")).toContain("matches more than one");
-    expect(error(category, "twin")).toContain("(see the Lists sheet)");
+    // An ambiguous label is not on the Lists sheet, so the message must not send the user there.
+    expect(error(category, "twin")).not.toContain("Lists sheet");
   });
 
   it("needs no pluralising: the header is quoted as it is, whatever it ends in", () => {

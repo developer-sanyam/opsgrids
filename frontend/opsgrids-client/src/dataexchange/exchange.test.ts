@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createExchange } from "./exchange";
+import { ReferenceListError } from "./lookups";
 import { fileWithRows, makeProductEntity } from "./testkit";
 import type { ProductEntityOptions } from "./testkit";
 import type { DataExchangeState, ImportSummary } from "./types";
@@ -33,6 +34,27 @@ function loggedExchange(options: ProductEntityOptions = {}) {
   });
   return { exchange, log, states, summaries, latest: () => states.at(-1) };
 }
+
+describe("createExchange: a reference list that cannot be read", () => {
+  const tooLong = () =>
+    Promise.reject(new ReferenceListError("A list this import checks against has more than 10,000 records."));
+
+  it("tells the user the real reason instead of blaming their file", async () => {
+    const { exchange, latest } = loggedExchange({ loadLookups: tooLong });
+    await exchange.actions.openFile(await fileWithRows(HEADERS, [["A-1", "Bracket"]]));
+    expect(latest()?.phase).toBe("error");
+    expect(latest()?.error).toBe("A list this import checks against has more than 10,000 records.");
+    expect(latest()?.error).not.toMatch(/could not be read/);
+  });
+
+  it("says it in the notice when the sample sheet or the export needs that list", async () => {
+    const { exchange, latest } = loggedExchange({ loadLookups: tooLong });
+    await exchange.actions.downloadTemplate();
+    expect(latest()?.notice).toMatch(/more than 10,000 records/);
+    await exchange.actions.exportAll();
+    expect(latest()?.notice).toMatch(/more than 10,000 records/);
+  });
+});
 
 describe("createExchange", () => {
   it("tells the screen after the state says done, never before", async () => {

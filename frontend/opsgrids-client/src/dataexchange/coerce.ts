@@ -136,7 +136,7 @@ function coerceLookup(column: ImportColumn, name: string, text: string, env: Coe
   const hint = column.lookupHint === undefined ? "" : ` ${column.lookupHint}`;
   if (lookup.isAmbiguous(text)) {
     return fail(
-      `${quote(text)} matches more than one of the accepted values for ${column.header} (see the Lists sheet), so it cannot be chosen.${hint}`,
+      `${quote(text)} matches more than one of the accepted values for ${column.header}, so it cannot be chosen.${hint}`,
     );
   }
   return fail(`${quote(text)} is not one of the accepted values for ${column.header} (see the Lists sheet).${hint}`);

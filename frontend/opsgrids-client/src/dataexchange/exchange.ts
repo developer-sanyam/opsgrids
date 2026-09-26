@@ -12,7 +12,7 @@ import { problemMessage } from "../problem";
 import type { AnyEntity } from "./cells";
 import { downloadBlob } from "./download";
 import { exportFileName, buildExportWorkbook } from "./exporter";
-import { pagedRequest } from "./lookups";
+import { ReferenceListError, pagedRequest } from "./lookups";
 import { prepareImport } from "./preview";
 import type { PreparedImport } from "./preview";
 import { buildReportWorkbook, reportFileName } from "./report";
@@ -62,7 +62,7 @@ export interface Exchange {
 const READ_FAILED = "That file could not be read. Check that it is an Excel workbook (.xlsx) and try again.";
 
 function readFailure(error: unknown): string {
-  if (error instanceof WorkbookReadError) return error.message;
+  if (error instanceof WorkbookReadError || error instanceof ReferenceListError) return error.message;
   if (error instanceof ApiError) {
     return `The lists this file is checked against could not be loaded. ${problemMessage(error)}`;
   }
@@ -71,6 +71,7 @@ function readFailure(error: unknown): string {
 
 /** "The sample sheet could not be created. <the server's sentence, or Try again.>" */
 function failureNotice(what: string, error: unknown): string {
+  if (error instanceof ReferenceListError) return `${what} ${error.message}`;
   return `${what} ${error instanceof ApiError ? problemMessage(error) : "Try again."}`;
 }
 

@@ -167,7 +167,7 @@ describe("the sample sheet's rule about record ids", () => {
       return texts;
     };
     const rule =
-      "Rows exported from the system carry a Record ID; those rows are skipped, delete the Record ID to add a row as a new record.";
+      "Rows exported from the system carry a Record ID; those rows are not imported, delete the Record ID to add a row as a new record.";
     expect(await lines(withId)).toContain(rule);
     expect(await lines(makeProductEntity())).not.toContain(rule);
   });
