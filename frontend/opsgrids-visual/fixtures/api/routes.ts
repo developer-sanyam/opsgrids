@@ -10,9 +10,20 @@
 
 import type { MockRoute } from "../../lib/api";
 
-/** What every customer app asks first: who is signed in, and what they may do. */
+/**
+ * What every customer app asks first: who is signed in, and what they may do — and, once the
+ * shell mounts, what is in the header bell. The feed is empty on purpose: the bell renders
+ * nothing for an empty feed, so the baselines show the shell exactly as it was, and the bell's
+ * own states are pinned by its unit tests.
+ */
 function session(app: "crm" | "dashboard"): MockRoute[] {
   return [
+    {
+      method: "GET",
+      path: "/api/v1/notifications/me",
+      fixture: "common/notifications.json",
+      contract: { spec: "notification", path: "/api/v1/notifications/me" },
+    },
     {
       method: "GET",
       path: "/api/v1/auth/me",
