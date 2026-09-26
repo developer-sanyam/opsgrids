@@ -1,59 +1,88 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
+import type { AnyEntity } from "./cells";
+import { DEFAULT_EXPORT_MAX_ROWS, IDLE_STATE, createExchange } from "./exchange";
+import type { Exchange } from "./exchange";
 import type {
-  DataExchangeActions,
+  DataExchangeMeta,
   DataExchangeState,
   ImportEntity,
   UseImportExportOptions,
   UseImportExportResult,
 } from "./types";
-
-const IDLE: DataExchangeState = {
-  phase: "menu",
-  error: null,
-  preview: null,
-  progress: null,
-  summary: null,
-  downloadingTemplate: false,
-  exporting: null,
-  notice: null,
-};
+import { DEFAULT_MAX_ROWS } from "./workbook";
 
 /**
- * PLACEHOLDER (ADR-0022): idle state, every action a no-op. The engine slice replaces this file
- * with the real hook; the signature is the contract and does not change.
+ * The Import / Export dialog's brain (ADR-0022): read a workbook, preview it, send the valid rows
+ * one at a time, report the result, and download the sample sheet or the whole filtered list.
+ * `@opsgrids/ui`'s `ImportExportButton` renders what it returns.
+ *
+ * The entity and the filters are read through a ref, so `actions` keeps one identity for the
+ * life of the component and an entity that is redefined per render does not restart anything.
+ * Everything in flight is aborted on unmount. Failures arrive as `state.error` (a file that
+ * cannot be imported) or `state.notice` (a template or export that failed); nothing is thrown at
+ * the caller.
  */
 export function useImportExport<Payload, Item = unknown, Filters = void>(
   entity: ImportEntity<Payload, Item, Filters>,
-  // The real hook reads the screen's filters for the export; the placeholder ignores them.
   options?: UseImportExportOptions<Filters>,
 ): UseImportExportResult {
-  void options;
-  return useMemo(() => {
-    const noop = async (): Promise<void> => undefined;
-    const actions: DataExchangeActions = {
-      openFile: noop,
-      startImport: noop,
-      cancelImport: () => undefined,
-      reset: () => undefined,
-      downloadTemplate: noop,
-      exportAll: noop,
-      cancelExport: () => undefined,
-      downloadReport: noop,
+  const [state, setState] = useState<DataExchangeState>(IDLE_STATE);
+
+  const latest = useRef<{
+    entity: AnyEntity;
+    filters: unknown;
+    onImported: UseImportExportOptions<Filters>["onImported"];
+  }>({ entity, filters: options?.filters, onImported: options?.onImported });
+  useEffect(() => {
+    latest.current = { entity, filters: options?.filters, onImported: options?.onImported };
+  });
+
+  const exchangeRef = useRef<Exchange | null>(null);
+  if (exchangeRef.current === null) {
+    exchangeRef.current = createExchange({
+      entity: () => latest.current.entity,
+      filters: () => latest.current.filters,
+      publish: setState,
+      imported: (summary) => latest.current.onImported?.(summary),
+    });
+  }
+  const exchange = exchangeRef.current;
+
+  useEffect(() => {
+    exchange.attach();
+    return () => {
+      exchange.dispose();
     };
-    return {
-      state: IDLE,
-      actions,
-      meta: {
-        noun: entity.noun,
-        nounSingular: entity.nounSingular,
-        maxRows: entity.maxRows ?? 1000,
-        exportMaxRows: entity.export?.maxRows ?? 10_000,
-        requiredHeaders: entity.columns
-          .filter((c) => c.required === true && c.readOnly !== true)
-          .map((c) => c.header),
-        canExport: entity.export !== undefined,
-      },
+  }, [exchange]);
+
+  // Closing the tab mid-import would strand the rest of the rows; ask first, and only then.
+  const importing = state.phase === "importing";
+  useEffect(() => {
+    if (!importing) return undefined;
+    const warn = (event: BeforeUnloadEvent): void => {
+      event.preventDefault();
+      event.returnValue = "";
     };
-  }, [entity]);
+    window.addEventListener("beforeunload", warn);
+    return () => {
+      window.removeEventListener("beforeunload", warn);
+    };
+  }, [importing]);
+
+  const meta = useMemo<DataExchangeMeta>(
+    () => ({
+      noun: entity.noun,
+      nounSingular: entity.nounSingular,
+      maxRows: entity.maxRows ?? DEFAULT_MAX_ROWS,
+      exportMaxRows: entity.export?.maxRows ?? DEFAULT_EXPORT_MAX_ROWS,
+      requiredHeaders: entity.columns
+        .filter((column) => column.required === true && column.readOnly !== true)
+        .map((column) => column.header),
+      canExport: entity.export !== undefined,
+    }),
+    [entity],
+  );
+
+  return useMemo(() => ({ state, actions: exchange.actions, meta }), [state, exchange, meta]);
 }
