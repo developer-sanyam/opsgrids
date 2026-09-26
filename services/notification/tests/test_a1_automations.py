@@ -784,6 +784,101 @@ async def test_update_marks_last_run(session: Any, org_id: uuid.UUID, worker_eng
         )
 
 
+async def test_lifecycle_over_http_pause_edit_resume_delete(
+    client: Any, session: Any, org_id: uuid.UUID
+) -> None:
+    await _template(session, org_id)
+    base = "/api/v1/engage/automations"
+    perms = [f"{p}:ORG" for p in (READ, WRITE, SEND)]
+    with as_principal(caller(org_id, perms)):
+        created = await client.post(base, json={"name": "A", "graph": _linear(_send_node())})
+        automation_id = created.json()["id"]
+        # A draft can be renamed and re-drawn, but a half-built one is refused at publish only.
+        patched = await client.patch(
+            f"{base}/{automation_id}", json={"name": "B", "graph": {"nodes": [], "edges": []}}
+        )
+        assert patched.status_code == 200 and patched.json()["name"] == "B"
+        assert patched.json()["validation"]["ok"] is False
+        assert (await client.post(f"{base}/{automation_id}/publish")).status_code == 422
+        assert (await client.post(f"{base}/{automation_id}/resume")).status_code == 409
+        assert (await client.post(f"{base}/{automation_id}/pause")).status_code == 409
+        fixed = await client.patch(f"{base}/{automation_id}", json={"graph": _linear(_send_node())})
+        assert fixed.json()["validation"]["ok"] is True
+        live = await client.post(f"{base}/{automation_id}/publish")
+        assert live.json()["status"] == "active"
+        # Active automations are not editable or deletable; pause first.
+        assert (
+            await client.patch(f"{base}/{automation_id}", json={"name": "C"})
+        ).status_code == 409
+        assert (await client.delete(f"{base}/{automation_id}")).status_code == 409
+        paused = await client.post(f"{base}/{automation_id}/pause")
+        assert paused.json()["status"] == "paused"
+        resumed = await client.post(f"{base}/{automation_id}/resume")
+        assert resumed.json()["status"] == "active" and resumed.json()["version"] == 1
+        await client.post(f"{base}/{automation_id}/pause")
+        assert (await client.delete(f"{base}/{automation_id}")).status_code == 204
+        assert (await client.get(f"{base}/{automation_id}")).status_code == 404
+        assert (await client.get(base)).json()["total"] == 0
+
+
+async def test_a_template_ref_may_be_the_row_id_or_the_code(
+    session: Any, org_id: uuid.UUID, worker_engine: None
+) -> None:
+    from app.models import ProviderTemplate
+
+    await _template(session, org_id)
+    async with session.begin():
+        email_id = (
+            await session.execute(select(Template.id).where(Template.organization_id == org_id))
+        ).scalar_one()
+        provider = ProviderTemplate(
+            organization_id=org_id,
+            code="order_update",
+            channel="whatsapp",
+            provider_name="order_update_v2",
+            language="en",
+            category="utility",
+            status="approved",
+            variables=[
+                {"key": "order", "component": "body", "position": 0, "kind": "text"},
+            ],
+            preview_text="Order update",
+        )
+        session.add(provider)
+        await session.flush()
+        provider_id = provider.id
+    by_id = _send_node(template={"ref": str(email_id)})
+    whatsapp = _send_node(
+        channel="whatsapp",
+        template={"ref": "order_update_v2"},  # the provider's name, not our code
+        recipient_path="payload.requester.phone",
+        variable_map={"1": "payload.number"},  # positional spelling
+    )
+    whatsapp["id"] = "wa"
+    graph = {
+        "nodes": [
+            {"id": "t", "type": "trigger", "config": {"event_type": EVENT}},
+            by_id,
+            whatsapp,
+            {"id": "end", "type": "end", "config": {}},
+        ],
+        "edges": [
+            {"from": "t", "to": "send"},
+            {"from": "send", "to": "wa"},
+            {"from": "wa", "to": "end"},
+        ],
+    }
+    await _go_live(session, org_id, graph)
+    await consumers.fold(
+        _event(org_id, requester={"email": "a@example.com", "phone": "+919812345678"})
+    )
+    (run,) = await _runs(session, org_id)
+    assert run.state == "completed", run.failure_code
+    channels = sorted(m.channel for m in await _messages(session, org_id))
+    assert channels == ["email", "whatsapp"]
+    assert provider_id is not None
+
+
 async def test_stats_range_and_failure_reasons(
     client: Any, session: Any, org_id: uuid.UUID, worker_engine: None
 ) -> None:

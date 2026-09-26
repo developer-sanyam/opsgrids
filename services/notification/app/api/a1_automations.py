@@ -14,7 +14,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import a1_selectors, a1_services
@@ -325,13 +325,15 @@ async def edit_automation(
 @router.delete(
     "/engage/automations/{automation_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
     summary="Delete a draft or paused automation",
     dependencies=[Entitled],
 )
 async def remove_automation(
     automation_id: uuid.UUID, session: SessionDep, ctx: AutomationWrite, request: Request
-) -> None:
+) -> Response:
     await a1_services.delete_automation(session, ctx, automation_id=automation_id, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(

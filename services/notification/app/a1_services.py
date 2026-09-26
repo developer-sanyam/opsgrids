@@ -32,7 +32,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
@@ -133,34 +133,35 @@ async def collect_problems(
     if not sends:
         return problems
     refs = {str(n["config"]["template"]["ref"]) for n in sends}
-    provider = {
-        (t.code, t.channel): t
-        for t in (
-            await session.execute(
-                select(ProviderTemplate).where(
-                    ProviderTemplate.organization_id == organization_id,
+    ref_ids = [u for u in (_as_uuid(r) for r in refs) if u is not None]
+    provider: dict[tuple[str, str], ProviderTemplate] = {}
+    for pt in (
+        await session.execute(
+            select(ProviderTemplate).where(
+                ProviderTemplate.organization_id == organization_id,
+                ProviderTemplate.deleted_at.is_(None),
+                or_(
                     ProviderTemplate.code.in_(refs),
-                    ProviderTemplate.deleted_at.is_(None),
-                )
+                    ProviderTemplate.provider_name.in_(refs),
+                    ProviderTemplate.id.in_(ref_ids),
+                ),
             )
         )
-        .scalars()
-        .all()
-    }
-    own = {
-        (t.code, t.channel): t
-        for t in (
-            await session.execute(
-                select(Template).where(
-                    Template.organization_id == organization_id,
-                    Template.code.in_(refs),
-                    Template.deleted_at.is_(None),
-                )
+    ).scalars():
+        for key in (pt.code, pt.provider_name, str(pt.id)):
+            provider.setdefault((key, pt.channel), pt)
+    own: dict[tuple[str, str], Template] = {}
+    for et in (
+        await session.execute(
+            select(Template).where(
+                Template.organization_id == organization_id,
+                Template.deleted_at.is_(None),
+                or_(Template.code.in_(refs), Template.id.in_(ref_ids)),
             )
         )
-        .scalars()
-        .all()
-    }
+    ).scalars():
+        for key in (et.code, str(et.id)):
+            own.setdefault((key, et.channel), et)
     connected: dict[str, bool] = {}
     channels = {n["config"]["channel"] for n in sends}
     if "whatsapp" in channels:
@@ -232,6 +233,69 @@ async def collect_problems(
     return problems
 
 
+def _as_uuid(value: str) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        return None
+
+
+async def _find_provider_template(
+    session: AsyncSession, organization_id: uuid.UUID, ref: str, channel: str
+) -> ProviderTemplate | None:
+    """A provider template by id, our code or the provider's name, in that order of preference."""
+    conditions = [ProviderTemplate.code == ref, ProviderTemplate.provider_name == ref]
+    as_id = _as_uuid(ref)
+    if as_id is not None:
+        conditions.append(ProviderTemplate.id == as_id)
+    rows = (
+        (
+            await session.execute(
+                select(ProviderTemplate).where(
+                    ProviderTemplate.organization_id == organization_id,
+                    ProviderTemplate.channel == channel,
+                    ProviderTemplate.deleted_at.is_(None),
+                    or_(*conditions),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if as_id is not None:
+        for row in rows:
+            if row.id == as_id:
+                return row
+    for row in rows:
+        if row.code == ref:
+            return row
+    for row in rows:
+        if row.provider_name == ref:
+            return row
+    return None
+
+
+async def _find_email_template(
+    session: AsyncSession, organization_id: uuid.UUID, ref: str
+) -> Template | None:
+    """An email template by id (what `/notifications/templates` lists) or by code."""
+    as_id = _as_uuid(ref)
+    if as_id is not None:
+        found = (
+            await session.execute(
+                select(Template).where(
+                    Template.organization_id == organization_id,
+                    Template.id == as_id,
+                    Template.channel == "email",
+                    Template.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if found is not None:
+            return found
+    return await selectors.get_template(session, organization_id, ref, "email")
+
+
 def _provider_variable_slots(template: ProviderTemplate) -> list[tuple[str, str]]:
     """`(key, positional index)` for each variable, so a map may use either spelling."""
     return [(str(v.get("key")), str(i)) for i, v in enumerate(template.variables or [], start=1)]
@@ -248,9 +312,13 @@ def _check_shell(graph: dict[str, Any]) -> None:
     """A draft may be incomplete, but it must be a graph we can store and later reason about."""
     nodes, edges = graph.get("nodes"), graph.get("edges")
     if not isinstance(nodes, list) or not isinstance(edges, list):
-        raise ValidationProblem("graph needs nodes and edges lists")
+        raise PublishProblem(
+            "graph needs nodes and edges lists",
+            [a1_pure.Problem(None, "graph_shape", "graph needs nodes and edges lists").as_dict()],
+        )
     if len(nodes) > a1_pure.MAX_NODES:
-        raise ValidationProblem(f"a graph has at most {a1_pure.MAX_NODES} nodes")
+        message = f"a graph has at most {a1_pure.MAX_NODES} nodes"
+        raise PublishProblem(message, [a1_pure.Problem(None, "graph_size", message).as_dict()])
 
 
 def _denormalise(row: Automation, graph: dict[str, Any]) -> None:
@@ -653,8 +721,9 @@ def _finish_step(
 ) -> None:
     step.state = state
     step.finished_at = now
-    if detail is not None:
-        step.detail = detail[:500]
+    # Always assigned: a step that failed and then succeeded on retry must not keep the old
+    # failure's text.
+    step.detail = detail[:500] if detail is not None else None
 
 
 async def _drive(
@@ -900,7 +969,7 @@ async def _send(
     provider_payload: dict[str, Any] | None = None
 
     if channel == "whatsapp":
-        template = await selectors.get_provider_template(session, org, ref, "whatsapp")
+        template = await _find_provider_template(session, org, ref, "whatsapp")
         if template is None:
             raise StepFailure("template_missing", f"no WhatsApp template {ref!r}")
         if not domain.template_is_sendable(template.status):
@@ -924,7 +993,7 @@ async def _send(
             raise StepFailure("variables_missing", str(exc)) from exc
         subject, body, provider_code = None, template.preview_text, template.code
     else:
-        email_template = await selectors.get_template(session, org, ref, "email")
+        email_template = await _find_email_template(session, org, ref)
         if email_template is None:
             raise StepFailure("template_missing", f"no email template {ref!r}")
         ctx_values = {}
