@@ -96,6 +96,21 @@ export async function readDownload(download: Download): Promise<ExcelJS.Workbook
   return workbook;
 }
 
+/**
+ * The downloaded file as a person would take it to a new sheet: the same workbook without one
+ * column. Used to hand an export back with its Record ID left behind, which is what a row that is
+ * meant to be added again looks like.
+ */
+export async function fileWithoutColumn(download: Download, sheetName: string, header: string): Promise<File> {
+  const workbook = await readDownload(download);
+  const sheet = sheetOf(workbook, sheetName);
+  const index = headerRow(sheet).indexOf(header);
+  if (index === -1) throw new Error(`The sheet "${sheetName}" has no "${header}" column`);
+  sheet.spliceColumns(index + 1, 1);
+  const bytes = await workbook.xlsx.writeBuffer();
+  return new File([bytes], download.fileName, { type: XLSX_MIME });
+}
+
 export function sheetOf(workbook: ExcelJS.Workbook, name: string): ExcelJS.Worksheet {
   const sheet = workbook.getWorksheet(name);
   if (sheet === undefined) throw new Error(`The workbook has no sheet "${name}"`);

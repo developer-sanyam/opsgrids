@@ -1,10 +1,11 @@
 /**
  * What the four Operations import definitions have in common (ADR-0022): reading a parsed row,
- * resolving a name against a lookup, walking a whole paged list, and the currency cell. Nothing
- * here knows an entity; each entity file owns its own columns.
+ * resolving a name against a lookup, refusing a name that only differs in case from one that
+ * exists, and the currency cell. Nothing here knows an entity; each entity file owns its own
+ * columns. The lists themselves are read in `referenceData.ts`.
  */
-import { RowProblem, collectPages } from "@opsgrids/client";
-import type { ColumnOption, ExportPage, LookupSet, ParsedRow } from "@opsgrids/client";
+import { RowProblem } from "@opsgrids/client";
+import type { ColumnOption, Lookup, LookupSet, ParsedRow } from "@opsgrids/client";
 
 import type { Category } from "@/api/types";
 import { CATEGORY_LABEL } from "@/data/derive";
@@ -70,55 +71,43 @@ export function optionalOption<T extends string>(
 
 /* ------------------------------ resolving a name ------------------------------ */
 
-export interface ReferenceProblems {
-  /** The sentence when no entry carries the name. */
-  unknown(label: string): string;
-  /** The sentence when several entries carry it, so the importer will not guess. */
-  ambiguous(label: string): string;
+/**
+ * The value the API wants for a name in the sheet (a warehouse name, a unit code, a category id).
+ *
+ * The engine has already refused a name the lookup cannot resolve, with the column's own
+ * `lookupHint`, before `toPayload` runs; this only keeps `toPayload` total when it is called
+ * without that check (a lookup that was never loaded), failing the row rather than sending a guess.
+ */
+export function resolveReference(lookups: LookupSet, lookupName: string, label: string, header: string): string {
+  const value = lookups[lookupName]?.resolve(label);
+  if (value === undefined) {
+    throw new RowProblem(`${header} "${label}" does not match exactly one entry on the Lists sheet.`);
+  }
+  return value;
 }
 
 /**
- * The value the API wants for a name in the sheet (a warehouse name, a unit code, a category id).
- * A name that resolves to nothing, or to more than one record, fails that one row: the importer
- * would rather refuse than attach a stock item to the wrong warehouse.
+ * Refuses a name that matches one the organisation already has when capitals and spacing are
+ * ignored, but is not spelled the same. The server accepts such a name (it compares exactly), and
+ * two records that differ only in case make every later reference to either of them ambiguous:
+ * the lookups behind the inventory import would call both unresolvable. A name spelled exactly as
+ * an existing one is left alone, so the server answers it with its own "already exists" and the
+ * row is reported as skipped. `describe` gets the existing spelling, or null when several exist.
  */
-export function resolveReference(
-  lookups: LookupSet,
-  lookupName: string,
-  label: string,
-  problems: ReferenceProblems,
-): string {
-  const lookup = lookups[lookupName];
-  if (lookup?.isAmbiguous(label)) throw new RowProblem(problems.ambiguous(label));
-  const value = lookup?.resolve(label);
-  if (value === undefined) throw new RowProblem(problems.unknown(label));
-  return value;
+export function refuseNearDuplicate(
+  lookup: Lookup | undefined,
+  typed: string,
+  describe: (existing: string | null) => string,
+): void {
+  if (lookup === undefined || lookup.labels.includes(typed)) return;
+  const value = lookup.resolve(typed);
+  if (value === undefined && !lookup.isAmbiguous(typed)) return;
+  throw new RowProblem(describe(value === undefined ? null : (lookup.labelOf(value) ?? null)));
 }
 
 /** The label of an enum option for a value the API returned; an unlisted value is written as is. */
 export function optionLabel(options: readonly ColumnOption[], value: string): string {
   return options.find((option) => option.value === value)?.label ?? value;
-}
-
-/* ------------------------------ whole lists ------------------------------ */
-
-/**
- * Every record of a paged list, each once. The lists behind the lookups are ordered by name, which
- * is not unique (two item categories can share a name), and offset paging over ties can serve the
- * same row on two pages. A duplicated record would make its own code look ambiguous, so records are
- * de-duplicated by id here.
- */
-export async function collectAll<T extends { id: string }>(
-  fetchPage: (page: number, size: number) => Promise<ExportPage<T>>,
-  signal: AbortSignal,
-): Promise<T[]> {
-  const rows = await collectPages(fetchPage, { signal });
-  const seen = new Set<string>();
-  return rows.filter((row) => {
-    if (seen.has(row.id)) return false;
-    seen.add(row.id);
-    return true;
-  });
 }
 
 /* ------------------------------ currency ------------------------------ */

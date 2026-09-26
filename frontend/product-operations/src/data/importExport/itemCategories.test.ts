@@ -4,7 +4,7 @@ import { RowProblem, makeLookup } from "@opsgrids/client";
 import type { ImportContext, LookupSet, ParsedRow } from "@opsgrids/client";
 
 import type { ItemCategoryOut } from "@/api/types";
-import { pageOf, stubGateway } from "./entityTestKit";
+import { pageAt, pageOf, stubGateway } from "./entityTestKit";
 import { itemCategoryImport } from "./itemCategories";
 
 afterEach(() => {
@@ -56,6 +56,19 @@ describe("item category columns", () => {
     expect(notes).toMatch(/parent category must already exist/i);
     expect(notes).toMatch(/import the top-level categories first, then run the file again/i);
   });
+
+  it("carries the fix for an unknown parent on the parent column, where the engine adds it to the error", () => {
+    const parent = itemCategoryImport.columns.find((c) => c.key === "parent");
+    expect(parent?.lookup).toBe("parents");
+    expect(parent?.lookupHint).toBe(
+      "Import the parent first, then run this file again: rows already imported are skipped.",
+    );
+  });
+
+  it("names its id column as the record id, so a row that came out of an export is not added again", () => {
+    expect(itemCategoryImport.recordIdKey).toBe("id");
+    expect(itemCategoryImport.columns.find((c) => c.key === itemCategoryImport.recordIdKey)?.readOnly).toBe(true);
+  });
 });
 
 describe("item category sample rows", () => {
@@ -85,13 +98,16 @@ describe("item category toPayload", () => {
     });
   });
 
-  it("refuses a parent that is not there yet, and says what to do", () => {
+  // The engine refuses a parent the lookup cannot resolve, with the column's `lookupHint` (which
+  // says to import the parent first), before `toPayload` runs. `toPayload` still fails the row
+  // rather than send a guess.
+  it("fails the row for a parent that is not there yet", () => {
     const attempt = () => itemCategoryImport.toPayload({ ...ROW, parent: "ALLOYS" }, CONTEXT);
     expect(attempt).toThrow(RowProblem);
-    expect(attempt).toThrow(/parent category "ALLOYS" does not exist yet\. Import the parent first, then run this file again/);
+    expect(attempt).toThrow('Parent category code "ALLOYS" does not match exactly one entry on the Lists sheet.');
   });
 
-  it("refuses a parent code two categories share rather than picking one", () => {
+  it("fails the row for a parent code two categories share rather than picking one", () => {
     const lookups: LookupSet = {
       parents: makeLookup([
         { label: "Steel", value: "cat-a" },
@@ -101,7 +117,40 @@ describe("item category toPayload", () => {
     const attempt = () =>
       itemCategoryImport.toPayload({ ...ROW, parent: "steel" }, { ...CONTEXT, lookups });
     expect(attempt).toThrow(RowProblem);
-    expect(attempt).toThrow(/More than one category has a code matching "steel"/);
+  });
+
+  it("accepts a code no existing category resembles", () => {
+    expect(itemCategoryImport.toPayload({ ...ROW, code: "ALLOYS" }, CONTEXT)).toMatchObject({ code: "ALLOYS" });
+  });
+
+  it("sends a code spelled exactly like an existing one, so the server's 409 makes it a skipped row", () => {
+    expect(itemCategoryImport.toPayload({ ...ROW, code: "STEEL" }, CONTEXT)).toMatchObject({ code: "STEEL" });
+  });
+
+  it.each(["steel", "Steel", "sTeEl"])(
+    "refuses %j, which differs from an existing code only in capitals, and says which one",
+    (code) => {
+      const attempt = () => itemCategoryImport.toPayload({ ...ROW, code }, CONTEXT);
+      expect(attempt).toThrow(RowProblem);
+      expect(attempt).toThrow(
+        "An item category with the code 'STEEL' already exists; codes that differ only in capitals are not accepted.",
+      );
+    },
+  );
+
+  it("still lets the exact spelling of either of two existing case variants through", () => {
+    const lookups: LookupSet = {
+      parents: makeLookup([
+        { label: "Steel", value: "cat-a" },
+        { label: "STEEL", value: "cat-b" },
+      ]),
+    };
+    const context = { ...CONTEXT, lookups };
+    expect(() => itemCategoryImport.toPayload({ ...ROW, code: "Steel" }, context)).not.toThrow();
+    expect(() => itemCategoryImport.toPayload({ ...ROW, code: "STEEL" }, context)).not.toThrow();
+    expect(() => itemCategoryImport.toPayload({ ...ROW, code: "steel" }, context)).toThrow(
+      "More than one item category already has a code that differs from 'steel' only in capitals, so it is not accepted.",
+    );
   });
 
   it("refuses a missing required cell", () => {
@@ -114,16 +163,11 @@ describe("item category toPayload", () => {
 describe("item category loadLookups", () => {
   it("reads every page and offers each existing category's code as a parent", async () => {
     const recorded = stubGateway(({ url }) => {
-      const page = Number(url.searchParams.get("page"));
-      return {
-        body: pageOf(
-          page === 1
-            ? [category("METALS", "cat-metals"), category("STEEL", "cat-steel", "cat-metals")]
-            : [category("POLYMERS", "cat-polymers")],
-          page,
-          2,
-        ),
-      };
+      const pages = [
+        [category("METALS", "cat-metals"), category("STEEL", "cat-steel", "cat-metals")],
+        [category("POLYMERS", "cat-polymers")],
+      ];
+      return { body: pageAt(pages, Number(url.searchParams.get("page"))) };
     });
 
     const lookups = await loadLookups(new AbortController().signal);
@@ -134,16 +178,29 @@ describe("item category loadLookups", () => {
     for (const request of recorded) expect(request.url.searchParams.get("size")).toBe("200");
   });
 
-  it("keeps a category that two pages both served as one, not ambiguous", async () => {
+  it("keeps a category that two pages both served as one, not ambiguous, and loses none", async () => {
+    // Ordered by a name that is not unique, STEEL sits on both sides of the page boundary.
+    const served = [
+      [category("METALS", "cat-metals"), category("STEEL", "cat-steel")],
+      [category("STEEL", "cat-steel"), category("POLYMERS", "cat-polymers")],
+    ];
     stubGateway(({ url }) => {
       const page = Number(url.searchParams.get("page"));
-      return { body: pageOf([category("STEEL", "cat-steel")], page, 2) };
+      return { body: { items: served[page - 1] ?? [], total: 3, page, size: 200, pages: 2 } };
     });
 
     const lookups = await loadLookups(new AbortController().signal);
 
-    expect(lookups.parents?.labels).toEqual(["STEEL"]);
+    expect(lookups.parents?.labels).toEqual(["METALS", "STEEL", "POLYMERS"]);
     expect(lookups.parents?.isAmbiguous("STEEL")).toBe(false);
+  });
+
+  it("refuses a list that stays short of the server's total, rather than offering parents missing a real category", async () => {
+    stubGateway(({ url }) => {
+      const page = Number(url.searchParams.get("page"));
+      return { body: { items: [category("STEEL", "cat-steel")], total: 2, page, size: 200, pages: 1 } };
+    });
+    await expect(loadLookups(new AbortController().signal)).rejects.toThrow("The list changed while it was being read");
   });
 
   it("provides every lookup the columns name", async () => {

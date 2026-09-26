@@ -12,7 +12,7 @@
  * through — nothing here re-filters, re-sorts or caps a result set the server already decided.
  */
 
-import { apiRequest, settle } from "@opsgrids/client";
+import { ApiError, apiRequest, settle } from "@opsgrids/client";
 import { milliToQty } from "@/lib/quantity";
 import {
   attentionItems,
@@ -110,6 +110,23 @@ function fixtureId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`;
 }
 
+/**
+ * A refusal shaped like the gateway's `problem+json`, so a fixture create fails the way the server
+ * does: an `ApiError` carrying the status and the server's sentence. The Excel importer reads a
+ * 409 as "already exists" and a 422 as a row the server refused, and the forms read `errors` for
+ * the field. `duplicate` names the field the way the server's own duplicate errors do.
+ */
+function refusal(status: 409 | 422, detail: string, duplicate?: string): ApiError {
+  const problem = {
+    type: `https://errors.opsgrids.dev/${status === 409 ? "conflict" : "validation"}`,
+    title: status === 409 ? "Conflict" : "Validation failed",
+    status,
+    detail,
+    ...(duplicate === undefined ? {} : { errors: [{ field: duplicate, code: "duplicate", message: detail }] }),
+  };
+  return new ApiError(status, detail, problem);
+}
+
 /** Fixture stock is whole units; these fill in the exact fields the live API returns beside
  *  them, so fixture mode renders exactly what live mode does. */
 function stockFields(onHand: number) {
@@ -201,7 +218,7 @@ export async function getSupplier(id: string): Promise<SupplierOut> {
 export async function createSupplier(input: SupplierIn): Promise<SupplierOut> {
   if (USE_FIXTURES) {
     if (SUPPLIERS.some((s) => s.code.toLowerCase() === input.code.toLowerCase())) {
-      throw new Error("A supplier with that code already exists.");
+      throw refusal(409, `A supplier coded '${input.code}' already exists`, "code");
     }
     const supplier: SupplierOut = {
       id: fixtureId("sup"),
@@ -652,10 +669,10 @@ export async function getInventoryItem(id: string): Promise<InventoryItemOut> {
 export async function createInventoryItem(input: InventoryItemIn): Promise<InventoryItemOut> {
   if (USE_FIXTURES) {
     if (INVENTORY.some((i) => i.sku.toLowerCase() === input.sku.toLowerCase())) {
-      throw new Error("An item with that SKU already exists.");
+      throw refusal(409, `An inventory item with SKU '${input.sku}' already exists`);
     }
     if (!WAREHOUSES.some((w) => w.name === input.warehouse)) {
-      throw new Error(`${input.warehouse} does not match an existing warehouse.`);
+      throw refusal(422, `'${input.warehouse}' does not match an existing warehouse`);
     }
     const item: InventoryItemOut = {
       id: fixtureId("inv"),
@@ -857,7 +874,10 @@ export async function listItemCategories(
 export async function createItemCategory(input: ItemCategoryIn): Promise<ItemCategoryOut> {
   if (USE_FIXTURES) {
     if (ITEM_CATEGORIES.some((c) => c.code.toLowerCase() === input.code.toLowerCase())) {
-      throw new Error("A category with that code already exists.");
+      throw refusal(409, `A category coded '${input.code}' already exists`, "code");
+    }
+    if (input.parent_id != null && !ITEM_CATEGORIES.some((c) => c.id === input.parent_id)) {
+      throw refusal(422, "parent_id does not match an existing category");
     }
     const category: ItemCategoryOut = {
       id: fixtureId("cat"),
@@ -1077,10 +1097,10 @@ export async function listWarehouses(params: ListWarehousesParams = {}): Promise
 export async function createWarehouse(input: WarehouseIn): Promise<WarehouseOut> {
   if (USE_FIXTURES) {
     if (WAREHOUSES.some((w) => w.code.toLowerCase() === input.code.toLowerCase())) {
-      throw new Error("A warehouse with that code already exists.");
+      throw refusal(409, `A warehouse coded '${input.code}' already exists`, "code");
     }
     if (WAREHOUSES.some((w) => w.name.toLowerCase() === input.name.toLowerCase())) {
-      throw new Error("A warehouse with that name already exists.");
+      throw refusal(409, `A warehouse named '${input.name}' already exists`, "name");
     }
     const warehouse: WarehouseOut = {
       id: fixtureId("wh"),

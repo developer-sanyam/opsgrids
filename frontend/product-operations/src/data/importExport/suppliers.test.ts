@@ -62,6 +62,11 @@ describe("supplier columns", () => {
     ]);
   });
 
+  it("names its id column as the record id, so a row that came out of an export is not added again", () => {
+    expect(supplierImport.recordIdKey).toBe("id");
+    expect(supplierImport.columns.find((c) => c.key === supplierImport.recordIdKey)?.readOnly).toBe(true);
+  });
+
   it("holds the lead time to the API's 0 to 365 days", () => {
     const leadTime = supplierImport.columns.find((c) => c.key === "lead_time_days");
     expect(leadTime).toMatchObject({ kind: "integer", min: 0, max: 365 });

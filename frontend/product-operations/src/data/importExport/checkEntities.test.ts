@@ -10,17 +10,28 @@ import { describe, expect, it } from "vitest";
 import { checkImportEntity, makeLookup } from "@opsgrids/client";
 import type { LookupSet } from "@opsgrids/client";
 
+import { uomOut } from "./entityTestKit";
 import { inventoryImport } from "./inventory";
 import { itemCategoryImport } from "./itemCategories";
 import { supplierImport } from "./suppliers";
+import { makeUnitLookup } from "./units";
 import { warehouseImport } from "./warehouses";
 
-const INVENTORY_LOOKUPS: LookupSet = {
+const WAREHOUSE_LOOKUPS: LookupSet = {
   warehouses: makeLookup([
     { label: "Main Warehouse", value: "Main Warehouse" },
     { label: "Cold Store", value: "Cold Store" },
   ]),
-  units: makeLookup(["pcs", "kg", "l", "MT"].map((label) => ({ label, value: label }))),
+};
+
+const INVENTORY_LOOKUPS: LookupSet = {
+  ...WAREHOUSE_LOOKUPS,
+  units: makeUnitLookup([
+    uomOut("pcs", "Piece", true),
+    uomOut("kg", "Kilogram", true),
+    uomOut("l", "Litre", true),
+    uomOut("mt", "MT", false),
+  ]),
   itemCategories: makeLookup([
     { label: "METALS", value: "cat-metals" },
     { label: "STEEL", value: "cat-steel" },
@@ -43,8 +54,9 @@ describe("checkImportEntity over the Operations definitions", () => {
     expect(checkImportEntity(supplierImport, {})).toEqual([]);
   });
 
-  it("finds nothing wrong with warehouses, which load no reference data", () => {
-    expect(checkImportEntity(warehouseImport, {})).toEqual([]);
+  it("finds nothing wrong with warehouses, given the names that already exist", () => {
+    expect(checkImportEntity(warehouseImport, WAREHOUSE_LOOKUPS)).toEqual([]);
+    expect(checkImportEntity(warehouseImport, { warehouses: makeLookup([]) })).toEqual([]);
   });
 
   it("finds nothing wrong with item categories", () => {
@@ -64,6 +76,27 @@ describe("checkImportEntity over the Operations definitions", () => {
     const lookups: LookupSet = { ...INVENTORY_LOOKUPS, itemCategories: makeLookup([]) };
     expect(checkImportEntity(inventoryImport, lookups)).toEqual([]);
     expect(checkImportEntity(itemCategoryImport, { parents: makeLookup([]) })).toEqual([]);
+  });
+
+  it.each([
+    ["inventory items", inventoryImport],
+    ["suppliers", supplierImport],
+    ["warehouses", warehouseImport],
+    ["item categories", itemCategoryImport],
+  ])("names a read-only id column as the record id of %s", (_name, entity) => {
+    expect(entity.recordIdKey).toBe("id");
+    expect(entity.columns.find((column) => column.key === "id")).toMatchObject({ readOnly: true });
+  });
+
+  it.each([
+    ["inventory items", inventoryImport],
+    ["item categories", itemCategoryImport],
+  ])("gives every lookup column of %s a lookupHint, so an unknown name is told how to be fixed", (_name, entity) => {
+    const lookupColumns = entity.columns.filter((column) => column.lookup !== undefined);
+    expect(lookupColumns.length).toBeGreaterThan(0);
+    for (const column of lookupColumns) {
+      expect(column.lookupHint, `${column.header} has no lookupHint`).toBeTruthy();
+    }
   });
 
   it("has teeth: a lookup the definition names but nobody loaded is reported", () => {

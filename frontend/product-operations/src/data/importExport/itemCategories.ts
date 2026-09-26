@@ -3,19 +3,23 @@
  *
  * One row is one `POST /operations/inventory/categories`. A parent is named by its code and turned
  * into the id the API wants from the categories that exist when the dialog opens. A child whose
- * parent is created by the same file therefore cannot be resolved: the row is refused with a
- * sentence that says to import the parent first and run the file again.
+ * parent is created by the same file therefore cannot be resolved: the row is refused, and the
+ * column's `lookupHint` says to import the parent first and run the file again.
+ *
+ * The server compares codes exactly and would accept "metals" beside "METALS", after which no sheet
+ * could name either as a parent or as an item's category, so a code that differs from an existing
+ * one only in capitals or spacing is refused here.
  */
-import { defineImportEntity, makeLookup } from "@opsgrids/client";
+import { defineImportEntity } from "@opsgrids/client";
 import type { LookupSet } from "@opsgrids/client";
 
 import { createItemCategory, listItemCategories } from "@/api/client";
 import type { ItemCategoryIn, ItemCategoryOut } from "@/api/types";
-import { collectAll, optionalText, requiredText, resolveReference } from "./shared";
+import { loadItemCategoryCodes } from "./referenceData";
+import { optionalText, refuseNearDuplicate, requiredText, resolveReference } from "./shared";
 
 async function loadLookups(signal: AbortSignal): Promise<LookupSet> {
-  const categories = await collectAll((page, size) => listItemCategories({ page, size, signal }), signal);
-  return { parents: makeLookup(categories.map((c) => ({ label: c.code, value: c.id }))) };
+  return { parents: await loadItemCategoryCodes(signal) };
 }
 
 export const itemCategoryImport = defineImportEntity<ItemCategoryIn, ItemCategoryOut>({
@@ -23,6 +27,7 @@ export const itemCategoryImport = defineImportEntity<ItemCategoryIn, ItemCategor
   noun: "item categories",
   nounSingular: "item category",
   fileStem: "item-categories",
+  recordIdKey: "id",
 
   columns: [
     {
@@ -49,6 +54,7 @@ export const itemCategoryImport = defineImportEntity<ItemCategoryIn, ItemCategor
       kind: "text",
       help: "The code of the category this one sits under. Leave blank for a top-level category.",
       lookup: "parents",
+      lookupHint: "Import the parent first, then run this file again: rows already imported are skipped.",
     },
     {
       key: "id",
@@ -69,24 +75,23 @@ export const itemCategoryImport = defineImportEntity<ItemCategoryIn, ItemCategor
     "A parent category must already exist. To import a tree, import the top-level categories first, then run the file again with their children.",
     "A category code that already exists is skipped, not changed.",
     "These categories are your own catalogue tree. The fixed Category on an inventory item is a separate list.",
-    "The ID column is worked out by the app and ignored on import.",
+    "The ID column is worked out by the app. A row that has an ID came out of OpsGrids in an export, so it is not added again.",
   ],
 
   loadLookups,
 
   toPayload(row, ctx) {
+    const code = requiredText(row, "code", "Category code");
+    refuseNearDuplicate(ctx.lookups.parents, code, (existing) =>
+      existing === null
+        ? `More than one item category already has a code that differs from '${code}' only in capitals, so it is not accepted.`
+        : `An item category with the code '${existing}' already exists; codes that differ only in capitals are not accepted.`,
+    );
     const parentCode = optionalText(row, "parent");
     const parentId =
-      parentCode === null
-        ? null
-        : resolveReference(ctx.lookups, "parents", parentCode, {
-            unknown: (label) =>
-              `The parent category "${label}" does not exist yet. Import the parent first, then run this file again.`,
-            ambiguous: (label) =>
-              `More than one category has a code matching "${label}" (codes that differ only by capitals), so the parent cannot be chosen. Rename one of them in the app, then import again.`,
-          });
+      parentCode === null ? null : resolveReference(ctx.lookups, "parents", parentCode, "Parent category code");
     return {
-      code: requiredText(row, "code", "Category code"),
+      code,
       name: requiredText(row, "name", "Category name"),
       ...(parentId === null ? {} : { parent_id: parentId }),
     };

@@ -266,6 +266,11 @@ describe("the inventory sample sheet for an organisation of its own", () => {
     expect(warehouse?.[4]).toBe("Pune Plant, Unit 2");
     const category = rows.find((row) => row[0] === "Category");
     expect(category?.[3]).toBe("Raw materials, Packaging, Components, MRO, Logistics, Services");
+    const reorderPoint = rows.find((row) => row[0] === "Reorder point");
+    expect(reorderPoint?.[2]).toBe("Whole number, from 0 to 2147483");
+    const unit = rows.find((row) => row[0] === "Unit of measure");
+    expect(unit?.[3]).toContain("Lists sheet");
+    expect(unit?.[5]).toContain("Nos, Kgs or Ltr");
     const openingStock = rows.find((row) => row[0] === "Opening stock");
     expect(openingStock?.[1]).toBe("No");
     expect(openingStock?.[2]).toBe("Whole number, from 0 to 1000000000000");
