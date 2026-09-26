@@ -41,7 +41,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import a1_services, domain, selectors, services
+from app import a1_services, domain, selectors, services, w1_services, w1_setup
 from app.config import settings
 from app.contacts import ContactResolver, make_contact_resolver
 from app.models import ProcessedEvent
@@ -300,6 +300,12 @@ async def wake_automation_run(
     return outcome
 
 
+async def run_whatsapp_setup(envelope: dict[str, Any]) -> str:
+    """Run one WhatsApp Embedded Signup (slice W1). The steps, their idempotency and their
+    failure handling live in `app/w1_setup.py`; this binds them to this process's tenant scope."""
+    return await w1_setup.run_setup(envelope, scope=_session_scope)
+
+
 def register(
     resolve_target: TargetResolver | None = None,
     resolve_contact: ContactResolver | None = None,
@@ -332,6 +338,11 @@ def register(
         await wake_automation_run(envelope, resolve_target)
 
     consumer.on(a1_services.EVT_RUN_WAKE)(on_automation_wake)
+
+    async def on_whatsapp_setup(envelope: dict[str, Any]) -> None:
+        await run_whatsapp_setup(envelope)
+
+    consumer.on(w1_services.EVT_SETUP_REQUESTED)(on_whatsapp_setup)
 
 
 async def main() -> None:

@@ -8,7 +8,7 @@ its own assertion rather than quietly drop a customer's invoice reminder.
 
 from __future__ import annotations
 
-from pydantic import SecretStr
+from pydantic import SecretStr, model_validator
 
 from platform_core.config import ServiceSettings, settings_for
 
@@ -63,6 +63,19 @@ class Settings(ServiceSettings):
     whatsapp_phone_number_id: str | None = None
     whatsapp_access_token: SecretStr | None = None
     whatsapp_timeout_seconds: float = 10.0
+
+    # ----------------------------------------------------------------- WhatsApp Embedded Signup
+    #: The vendor's Meta app, for the Embedded Signup flow (slice W1). All optional at boot: with
+    #: `META_APP_ID`, `META_APP_SECRET` (or the older `WHATSAPP_APP_SECRET`) or the configuration
+    #: id unset, `GET /engage/whatsapp/signup/config` answers `enabled: false` and the manual
+    #: connection route keeps working. The secret exchanges the popup's one-time code for a token
+    #: and is never sent to a browser.
+    meta_app_id: str | None = None
+    meta_app_secret: SecretStr | None = None
+    meta_embedded_signup_config_id: str | None = None
+    #: Overrides the version segment of `whatsapp_api_base` (`v25.0`) for every Graph call. Unset
+    #: means "whatever the base already names".
+    whatsapp_graph_version: str | None = None
 
     # ----------------------------------------------------------------- customer targeting
     #: Where to ask for a contact's messaging address. Notification never decrypts a phone
@@ -136,6 +149,30 @@ class Settings(ServiceSettings):
     #: `.env`: `bin/worker` still runs `app.worker` standalone unchanged, and setting this to
     #: `false` while adding `split-workers` to `EDGE_PROFILES` is the rollback (RUNBOOK.md).
     run_consumers_in_api: bool = False
+
+    @model_validator(mode="after")
+    def _apply_graph_version(self) -> Settings:
+        """`WHATSAPP_GRAPH_VERSION` replaces the version segment of `whatsapp_api_base`, so every
+        Graph caller (sends, template sync, signup) moves with one config change."""
+        version = (self.whatsapp_graph_version or "").strip().strip("/")
+        if version:
+            base = self.whatsapp_api_base.rstrip("/")
+            head, _, _tail = base.rpartition("/")
+            self.whatsapp_api_base = (
+                f"{head}/{version}" if head.count("/") >= 2 else f"{base}/{version}"
+            )
+        return self
+
+
+def graph_version(cfg: Settings) -> str:
+    """The Graph API version segment every WhatsApp call uses (`v25.0`)."""
+    return cfg.whatsapp_api_base.rstrip("/").rsplit("/", 1)[-1]
+
+
+def meta_app_secret(cfg: Settings) -> str | None:
+    """The Meta app secret: `META_APP_SECRET`, else the existing `WHATSAPP_APP_SECRET`."""
+    secret = cfg.meta_app_secret or cfg.whatsapp_app_secret
+    return secret.get_secret_value() if secret is not None else None
 
 
 def settings() -> Settings:

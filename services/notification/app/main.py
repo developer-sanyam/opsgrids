@@ -14,6 +14,7 @@ from app.api.engage import router as engage_router
 from app.api.inbox import router as inbox_router
 from app.api.m1_analytics import router as m1_analytics_router
 from app.api.routes import router
+from app.api.w1_signup import router as w1_signup_router
 from app.api.w2_templates import router as w2_templates_router
 from app.api.webhooks import router as webhooks_router
 from app.config import settings
@@ -141,6 +142,7 @@ app = create_app(
         a1_automations_router,
         e1_router,
         e1_public_router,
+        w1_signup_router,
     ],
     # A stalled relay is silent, and here it stalls *sending*: messages stage as `pending` and
     # never queue. `/health/outbox` is what makes that visible, counted through the outbox
