@@ -172,7 +172,12 @@ async def _email(
                 Message.organization_id == organization_id,
                 Message.channel == "email",
                 Message.direction == "outbound",
-                func.lower(Message.to_address) == normalized,
+                # Compared as stored, so `ix_messages_org_channel_recipient` (org, channel,
+                # to_address) answers it. Every writer of an email message stores the address
+                # already normalized (`domain.normalize_recipient`: trimmed, lower-cased), the same
+                # form `consent.normalize` gives here; wrapping the column in `lower()` would make
+                # the index unusable on every Customer 360 view.
+                Message.to_address == normalized,
             )
         )
     ).scalar_one()

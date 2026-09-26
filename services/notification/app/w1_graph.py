@@ -194,6 +194,15 @@ class MetaGraph:
                 status=200, code=None, public_message=w2_graph._GENERIC, retryable=False
             )
 
+    async def unsubscribe_app(self, waba_id: str, token: str) -> None:
+        """Stop the WABA's webhooks reaching the app (`DELETE /{waba}/subscribed_apps`), so a
+        WABA an organization has left no longer delivers messages here."""
+        body = await self._call("DELETE", f"{waba_id}/subscribed_apps", token=token)
+        if body.get("success") is False:
+            raise GraphError(
+                status=200, code=None, public_message=w2_graph._GENERIC, retryable=False
+            )
+
     async def subscribed_app_ids(self, waba_id: str, token: str) -> list[str]:
         """The ids of the apps currently subscribed to the WABA."""
         body = await self._call("GET", f"{waba_id}/subscribed_apps", token=token)

@@ -20,7 +20,7 @@ import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import consumers, w1_services, w1_setup
+from app import consumers, w1_selectors, w1_services, w1_setup
 from app.config import settings
 from app.models import AuditLog, OutboxEvent, ProviderAccount, ProviderTemplate
 from app.w1_models import ConnectionHealth, SetupRun, WhatsAppNumber
@@ -336,6 +336,68 @@ async def test_a_signup_over_an_existing_connection_replaces_it_in_place(
         (account,) = (await session.execute(select(ProviderAccount))).scalars().all()
     assert account.phone_number_id == "1001"
     assert pii.open_sealed(account.access_token_enc or b"", settings=settings()) == TOKEN
+    assert meta.unsubscribes() == []  # the same WABA: nothing was left
+
+
+OLD_TOKEN = "ci-only-old-token"  # pragma: allowlist secret
+
+
+async def _replace_on_another_waba(
+    session: AsyncSession, org_id: uuid.UUID, meta: FakeMeta
+) -> SetupRun:
+    """An organization connected on WABA 8000 signs up again on WABA 9001."""
+    await connect(
+        session,
+        org_id,
+        waba_id="8000",
+        phone_number_id="5555",
+        token=OLD_TOKEN,
+        cached=[("5555", "+1 555 010 0000"), ("5556", "+1 555 010 0001")],
+    )
+    setup_id, envelope = await start(session, org_id, phone_number_id="1001")
+    assert await w1_setup.run_setup(envelope, transport=httpx.MockTransport(meta)) == "done"
+    return await run_of(session, setup_id)
+
+
+async def test_a_signup_on_another_waba_retires_the_old_wabas_numbers_and_subscription(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    signup_configured: None,
+    worker_engine: None,
+) -> None:
+    await _replace_on_another_waba(session, org_id, meta)
+    async with session.begin():
+        numbers = {
+            n.phone_number_id: n for n in (await session.execute(select(WhatsAppNumber))).scalars()
+        }
+    # Nothing cached from the WABA the organization left is live or a default any more.
+    assert (numbers["5555"].status, numbers["5555"].is_default) == ("disconnected", False)
+    assert (numbers["5556"].status, numbers["5556"].is_default) == ("disconnected", False)
+    assert (numbers["1001"].status, numbers["1001"].is_default) == ("connected", True)
+    # The app was unsubscribed from the old WABA with the old token, after the new one was stored.
+    (call,) = meta.unsubscribes()
+    assert call.url.path.endswith("/8000/subscribed_apps")
+    assert call.headers["authorization"] == f"Bearer {OLD_TOKEN}"
+    assert meta.calls.index(call) > 0
+
+
+async def test_a_failed_unsubscribe_from_the_old_waba_does_not_fail_the_signup(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    signup_configured: None,
+    worker_engine: None,
+) -> None:
+    meta.fail = {"unsubscribe": 500}
+    run = await _replace_on_another_waba(session, org_id, meta)
+    assert run.status == "done" and run.error_code is None
+    (number_step,) = [s for s in run.steps if s["key"] == "number"]
+    assert "could not be removed" in number_step["detail"]
+    assert OLD_TOKEN not in json.dumps(run.steps) and TOKEN not in json.dumps(run.steps)
+    async with session.begin():
+        (account,) = (await session.execute(select(ProviderAccount))).scalars().all()
+    assert (account.waba_id, account.phone_number_id) == (WABA, "1001")
 
 
 # --------------------------------------------------------------------- tenancy and idempotency
@@ -386,6 +448,52 @@ async def test_a_second_setup_while_one_is_running_is_refused(
     with pytest.raises(Exception) as caught:
         await start(session, org_id, code="second-code")
     assert getattr(caught.value, "errors", None) == [{"code": "setup_in_progress"}]
+
+
+async def test_a_stale_running_setup_is_abandoned_and_a_new_one_starts_under_the_unique_index(
+    session: AsyncSession, org_id: uuid.UUID, signup_configured: None
+) -> None:
+    """The stale run leaves `running` in the same flush that inserts its replacement, so the
+    one-running-setup index never sees two."""
+    async with session.begin():
+        session.add(
+            SetupRun(
+                organization_id=org_id,
+                status="running",
+                steps=[],
+                code_hash="stale-code-hash",
+                created_at=datetime.now(UTC) - timedelta(hours=1),
+            )
+        )
+    setup_id, _ = await start(session, org_id, code="fresh-code")
+    async with session.begin():
+        runs = {r.code_hash: r for r in (await session.execute(select(SetupRun))).scalars()}
+    stale = runs.pop("stale-code-hash")
+    (fresh,) = runs.values()
+    assert (stale.status, stale.error_code) == ("failed", "abandoned")
+    assert (fresh.id, fresh.status) == (setup_id, "running")
+
+
+async def test_a_second_setup_that_passes_the_read_is_refused_by_the_database(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    signup_configured: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The read is not the guard: with it blinded, the unique index on running setups still stops
+    the second insert, and it is reported as the same `setup_in_progress`."""
+    await start(session, org_id, code="first-code")
+
+    async def nothing_running(*_args: Any, **_kwargs: Any) -> list[SetupRun]:
+        return []
+
+    monkeypatch.setattr(w1_selectors, "running_runs", nothing_running)
+    with pytest.raises(Exception) as caught:
+        await start(session, org_id, code="second-code")
+    assert getattr(caught.value, "errors", None) == [{"code": "setup_in_progress"}]
+    async with session.begin():
+        runs = (await session.execute(select(SetupRun))).scalars().all()
+    assert len(runs) == 1
 
 
 async def test_a_number_quality_webhook_updates_only_this_organizations_cache(

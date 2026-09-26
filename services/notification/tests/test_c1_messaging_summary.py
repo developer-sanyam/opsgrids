@@ -11,9 +11,11 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import consent
+from app.c1_messaging_summary import messaging_summary
 from app.config import settings
 from app.models import Conversation, InboundMessage, Message, ProviderAccount
 from platform_core.internal_auth import mint_service_token
@@ -202,7 +204,8 @@ class TestEmail:
                 Message(
                     organization_id=org_id,
                     channel="email",
-                    to_address=EMAIL.upper(),  # case must not matter
+                    # As every writer stores it (`domain.normalize_recipient`: trimmed, lowered).
+                    to_address=EMAIL,
                     subject="Hi",
                     body="b",
                     state="sent",
@@ -212,11 +215,34 @@ class TestEmail:
             )
         response = await client.get(
             _url(uuid.uuid4()),
-            headers={"X-Internal-Token": _token(org_id), "X-Contact-Email": EMAIL},
+            # The caller's casing must not matter: the address is normalized before the lookup.
+            headers={"X-Internal-Token": _token(org_id), "X-Contact-Email": f"  {EMAIL.upper()} "},
         )
         email = response.json()["email"]
         assert email["subscribed"] is True
         assert datetime.fromisoformat(email["last_email_at"]) == sent
+
+    async def test_the_last_email_lookup_leaves_the_address_column_bare(
+        self, session, org_id
+    ) -> None:
+        """`func.lower(to_address)` cannot use `ix_messages_org_channel_recipient` (org, channel,
+        to_address), so every Customer 360 view scanned the org's email. The column is compared as
+        stored, which the writers guarantee is already normalized."""
+        statements: list[str] = []
+
+        def capture(_conn, _cursor, statement, _parameters, _context, _executemany) -> None:
+            statements.append(statement)
+
+        event.listen(session.bind.sync_engine, "before_cursor_execute", capture)
+        try:
+            async with session.begin():
+                await messaging_summary(session, org_id, uuid.uuid4(), email_address=EMAIL)
+        finally:
+            event.remove(session.bind.sync_engine, "before_cursor_execute", capture)
+
+        (lookup,) = [s for s in statements if "messages.sent_at" in s and "max(" in s]
+        assert "lower(" not in lookup.lower()
+        assert "messages.to_address = " in lookup
 
     async def test_an_address_never_seen_is_not_subscribed(self, client, org_id) -> None:
         response = await client.get(

@@ -229,10 +229,15 @@ as soon as they are spent, and never appear in a response, an event, an audit ro
 | `POST /engage/whatsapp/signup/complete` | `engage.setup.whatsapp.write` | 202; idempotent on the code; 409 `setup_in_progress`. |
 | `GET /engage/whatsapp/signup/{id}` | `engage.setup.whatsapp.read` | Steps and state; another organization's id is a 404. |
 | `GET /engage/whatsapp/numbers` | `engage.setup.whatsapp.read` | Cached; refreshed from Graph when older than ten minutes. |
-| `POST /engage/whatsapp/numbers/{id}/default` | `engage.setup.whatsapp.write` | Mirrors the number into `provider_accounts`; 409 `number_claimed`. |
+| `POST /engage/whatsapp/numbers/{id}/default` | `engage.setup.whatsapp.write` | Moves the webhook routing key, so the number must be on the account's own WABA and Meta must confirm (with the connection's token) that it controls it; mirrors it into `provider_accounts`. 409 `number_inactive` / `ownership_check_failed` / `number_claimed`. |
 | `GET /engage/whatsapp/health` | `engage.setup.whatsapp.read` | From our own tables; never calls Meta. |
-| `POST /engage/whatsapp/test-message` | `engage.setup.whatsapp.write` | Staged through the consent decision; 409 `channel_not_connected` / `consent_denied`. |
-| `POST /engage/whatsapp/disconnect` | `engage.setup.whatsapp.write` | Wipes the sealed token; history is kept. |
+| `POST /engage/whatsapp/test-message` | `engage.setup.whatsapp.write` | Staged through the consent decision, classified by the synced template's own category (a marketing template needs an opt-in). 404 `template_not_found`; 409 `channel_not_connected` / `consent_denied`. |
+| `POST /engage/whatsapp/disconnect` | `engage.setup.whatsapp.write` | Wipes the sealed token; history is kept. After the commit the app is unsubscribed from the WABA (`DELETE /{waba}/subscribed_apps`), unless another organization still uses that WABA; a failure there does not fail the disconnect and is reported in `detail`. |
+
+A signup on a different WABA than the connection it replaces marks every cached number of the old
+WABA `disconnected` and, best effort, unsubscribes the app from it. At most one setup runs per
+organization: a partial unique index on `w1_setup_runs` enforces what `signup/complete`'s read
+checks.
 
 `phone_number_quality_update` webhooks reach the numbers cache through
 `w2_webhooks.register_number_quality_handler` (registered in `app/api/w1_signup.py`).

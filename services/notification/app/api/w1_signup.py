@@ -26,6 +26,7 @@ from app import w1_selectors, w1_services, w2_webhooks
 from app.config import settings
 from app.w1_graph import GraphError, MetaGraph
 from app.w1_schemas import (
+    DisconnectOut,
     HealthOut,
     NumbersOut,
     SendTestMessageIn,
@@ -83,6 +84,15 @@ def graph_transport() -> httpx.AsyncBaseTransport | None:
 
 
 GraphTransportDep = Annotated[httpx.AsyncBaseTransport | None, Depends(graph_transport)]
+
+
+async def _bind_tenant(session: AsyncSession, request: Request, org: uuid.UUID) -> None:
+    """Bind the tenant on a raw session at the start of each of a route's own transactions (the
+    GUC is transaction-local, so every `begin()` needs it again)."""
+    cfg: ServiceSettings = request.app.state.settings
+    await set_tenant(session, org)
+    if not cfg.is_production:
+        await assert_tenant(session, org)
 
 
 # --------------------------------------------------------------------- signup
@@ -154,13 +164,10 @@ async def list_numbers(
     """The cached list, refreshed from Meta first when it is older than ten minutes. A refresh
     that fails does not fail the read: the cache is served, and a refused token is recorded so
     the health card says so."""
-    cfg: ServiceSettings = request.app.state.settings
     org = ctx.organization_id
 
     async def _bind() -> None:
-        await set_tenant(session, org)
-        if not cfg.is_production:
-            await assert_tenant(session, org)
+        await _bind_tenant(session, request, org)
 
     async with session.begin():
         await _bind()
@@ -214,14 +221,38 @@ async def list_numbers(
 )
 async def set_default(
     number_id: uuid.UUID,
-    session: SessionDep,
+    session: RawSessionDep,
     directory: DirectorySessionDep,
     ctx: WhatsAppWrite,
     request: Request,
+    transport: GraphTransportDep,
 ) -> WhatsAppOkOut:
-    await w1_services.set_default_number(
-        session, ctx, directory=directory, number_id=number_id, request=request
-    )
+    """Moves the number sends (and webhooks) are routed on, so Meta is asked first — with this
+    connection's own token, outside any transaction — whether the number is on the WABA and
+    readable. 409 `number_inactive` for a number not on the account's WABA, 409
+    `ownership_check_failed` when Meta does not confirm, 409 `number_claimed` when another
+    organization holds it."""
+    org = ctx.organization_id
+    await enforce_rate_limit(f"engage.wa_default:{org}", limit=10, window_seconds=60)
+
+    async with session.begin():
+        await _bind_tenant(session, request, org)
+        candidate = await w1_services.prepare_default_number(session, ctx, number_id=number_id)
+    if candidate is None:
+        return WhatsAppOkOut()
+
+    await w1_services.verify_default_candidate(candidate, transport=transport)
+
+    async with session.begin():
+        await _bind_tenant(session, request, org)
+        await w1_services.set_default_number(
+            session,
+            ctx,
+            directory=directory,
+            number_id=number_id,
+            verified=candidate,
+            request=request,
+        )
     return WhatsAppOkOut()
 
 
@@ -268,10 +299,25 @@ async def test_message(
 
 @router.post(
     "/engage/whatsapp/disconnect",
-    response_model=WhatsAppOkOut,
+    response_model=DisconnectOut,
+    response_model_exclude_none=True,
     summary="Disconnect WhatsApp and wipe the stored token",
     dependencies=[Entitled],
 )
-async def disconnect(session: SessionDep, ctx: WhatsAppWrite, request: Request) -> WhatsAppOkOut:
-    await w1_services.disconnect(session, ctx, request=request)
-    return WhatsAppOkOut()
+async def disconnect(
+    session: RawSessionDep,
+    directory: DirectorySessionDep,
+    ctx: WhatsAppWrite,
+    request: Request,
+    transport: GraphTransportDep,
+) -> DisconnectOut:
+    """Wipes the token and marks the connection and its numbers disconnected, then (after that
+    commits) asks Meta to stop sending the old account's events here. Meta being unreachable does
+    not fail the disconnect: the response says so in `detail`."""
+    org = ctx.organization_id
+    async with session.begin():
+        await _bind_tenant(session, request, org)
+        released = await w1_services.disconnect(session, ctx, request=request)
+    if await w1_services.release_subscription(directory, org, released, transport=transport):
+        return DisconnectOut()
+    return DisconnectOut(detail=w1_services.SUBSCRIPTION_NOT_RELEASED)
