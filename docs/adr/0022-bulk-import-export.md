@@ -52,11 +52,12 @@ other tools, that reads an Excel sheet, and a **downloadable sample sheet**.
    rows left in the file are recognised and skipped, not imported.
 7. **Export is the whole filtered list, not the visible page.** It pages the list endpoint (size 200,
    up to 10 000 rows) with the screen's current filters, so it returns only what the caller's scope
-   already lets them read. The columns are the import columns plus read-only ones (ids, timestamps),
-   so the file can be edited and re-imported (read-only columns are ignored on import). **A row that
-   still carries its Record ID is refused on import**, with an explanation ("clear the Record ID to
-   add it as a new record"): an export edited and uploaded again must never add every record a
-   second time, above all for lists whose natural key is masked on export (leads).
+   already lets them read. The columns are the import columns plus read-only ones (ids, timestamps,
+   masked values), which an import ignores. An export is a report and a starting layout, not an
+   update format: **a row that still carries its Record ID is refused on import**, with an
+   explanation ("clear the Record ID to add it as a new record"). An export edited and uploaded
+   again must never add every record a second time, above all for lists whose natural key is
+   masked on export (leads). Updating existing records from a sheet is out of scope.
 
 ## Rules that are not style preferences
 
@@ -133,6 +134,9 @@ person typing one record at a time.
   its parent) are not resolved within one run: the manager or parent must already exist, so a first
   roster import needs one run per management level; re-running is safe because existing rows are
   skipped.
+- **Reference lists are read whole, up to 10 000 records** (20 000 for the contact-email check). An
+  organisation with more cannot import into a list that needs one (contacts, deals) in this release;
+  the dialog says so instead of reading a partial list and refusing real records.
 - **Very large workbooks** are parsed on the main thread. The ZIP guard bounds the work; parsing in
   a Web Worker with a timeout is the follow-up.
 - **Money above 2^53 minor units** and non-2-decimal currencies in the ITSM and Projects apps' own
