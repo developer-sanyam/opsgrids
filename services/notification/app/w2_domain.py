@@ -51,7 +51,7 @@ QUALITY_FROM_META: Final[dict[str, str]] = {
 #: every day for a year should not grow its own row without bound.
 HISTORY_LIMIT: Final = 50
 
-#: A `code` is at most 80 characters (`ProviderTemplate.code`), and a name we create is its own code.
+#: A `code` is at most 80 characters (`ProviderTemplate.code`); a name we create is its own code.
 NAME_MAX: Final = 80
 BODY_MAX: Final = 1024
 HEADER_MAX: Final = 60
@@ -254,8 +254,8 @@ def extract(components: list[dict[str, Any]]) -> Extracted:
                 continue
             tokens = placeholders(str(button.get("url") or ""))
             if tokens:
-                example = button.get("example")
-                first = example[0] if isinstance(example, list) and example else ""
+                sample = button.get("example")
+                first = sample[0] if isinstance(sample, list) and sample else ""
                 add("button", i, tokens[0], f"button_{i}", "url", str(first))
 
     return Extracted(body_preview=body_text, slots=slots)
@@ -285,7 +285,7 @@ def _fill(text: str, values: dict[str, str]) -> str:
     return _PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), text)
 
 
-def render_preview(components: list[dict[str, Any]], values: dict[str, str]) -> dict[str, Any]:
+def render_preview(components: list[Any], values: dict[str, str]) -> dict[str, Any]:
     """The template as a customer would read it, given `values` keyed by slot index or name.
 
     Strict, like `domain.render`: a placeholder with no value raises `PreviewError` rather than
@@ -305,7 +305,8 @@ def render_preview(components: list[dict[str, Any]], values: dict[str, str]) -> 
     if missing:
         raise PreviewError(missing)
 
-    header = footer = None
+    header: str | None = None
+    footer: str | None = None
     body = ""
     buttons: list[dict[str, Any]] = []
     for component in components:

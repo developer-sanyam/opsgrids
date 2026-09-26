@@ -115,16 +115,16 @@ def template_out(row: ProviderTemplate) -> WhatsAppTemplateOut:
     return WhatsAppTemplateOut(
         id=row.code,
         row_id=row.id,
-        channel=row.channel,  # type: ignore[arg-type]
+        channel=row.channel,
         name=row.provider_name,
         provider_name=row.provider_name,
         meta_template_id=row.provider_template_id,
         provider_template_id=row.provider_template_id,
         language=row.language,
-        category=row.category,  # type: ignore[arg-type]
-        parameter_format=row.parameter_format,  # type: ignore[arg-type]
-        status=row.status,  # type: ignore[arg-type]
-        quality=row.quality,  # type: ignore[arg-type]
+        category=row.category,
+        parameter_format=row.parameter_format,
+        status=row.status,
+        quality=row.quality,
         rejection_reason=row.status_reason,
         status_reason=row.status_reason,
         status_checked_at=row.status_checked_at,
