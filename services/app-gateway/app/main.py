@@ -95,6 +95,14 @@ ACCOUNT_PUBLIC_PATHS = frozenset({"/api/v1/account/signup"})
 #: cannot name. Anonymous, IP-rate-limited, no identity header, same as every other entry here.
 ENGAGE_PUBLIC_PATH_PREFIXES = frozenset({"/api/v1/engage/unsubscribe/", "/api/v1/engage/t/"})
 
+#: The open pixel and click redirect (`GET /engage/t/o|c/{token}`), one of the two prefixes above.
+#: Mailbox providers' image proxies and corporate NATs put many recipients behind one address, so
+#: this prefix is counted in a bucket of its own with a much higher per-address limit
+#: (`GatewayPolicy.public_prefix_rate_limits`) rather than the shared anonymous one, where a click
+#: would answer 429 instead of redirecting. The unsubscribe prefix keeps the anonymous limit: a
+#: person opens it once. `GatewayPolicy` refuses a limit on a prefix that is not public.
+ENGAGE_TRACKING_PREFIX = "/api/v1/engage/t/"
+
 #: The provider webhooks that reach this gateway, and the HTTP methods each accepts without a
 #: bearer token: **exact path -> methods**, never a prefix. One entry: Meta's WhatsApp callback.
 #:
@@ -128,6 +136,7 @@ policy = GatewayPolicy(
     audience=cfg.audience,
     public_paths=DEFAULT_PUBLIC_PATHS | STOREFRONT_PUBLIC_PATHS | ACCOUNT_PUBLIC_PATHS,
     public_path_prefixes=ENGAGE_PUBLIC_PATH_PREFIXES,
+    public_prefix_rate_limits={ENGAGE_TRACKING_PREFIX: cfg.engage_tracking_rate_limit_per_minute},
     webhook_paths=WEBHOOK_PUBLIC_PATHS,
     rate_limit=cfg.rate_limit_per_minute,
     anonymous_rate_limit=cfg.anonymous_rate_limit_per_minute,

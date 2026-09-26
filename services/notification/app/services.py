@@ -14,6 +14,7 @@ point: a direct send cannot reach someone a rule-driven send would have skipped.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import uuid
@@ -5316,7 +5317,12 @@ async def claim_campaign_batch(
                 to_address=address,
                 unsubscribe=unsubscribe_url_for_recipient(organization_id, recipient.id),
                 html_body=(
-                    tracking.render(
+                    # Off the event loop: a pass over a body of up to 500 KB, and in production
+                    # this driver shares a process (and a loop) with every tenant's API traffic.
+                    # Pure string work on immutable inputs, so a worker thread is safe; the
+                    # session is never touched from it.
+                    await asyncio.to_thread(
+                        tracking.render,
                         campaign.html_body,
                         organization_id=organization_id,
                         recipient_id=recipient.id,
