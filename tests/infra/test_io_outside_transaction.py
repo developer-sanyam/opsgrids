@@ -105,6 +105,33 @@ TRANSACTION_MARKERS: tuple[str, ...] = (".begin(", "session_scope(", "_work_scop
 #: the report this test's own module docstring points at; an entry that no longer reproduces
 #: (the function was fixed, renamed, or removed) fails `test_the_allowlist_has_no_stale_entries`.
 ALLOWLIST: dict[tuple[str, str], str] = {
+    ("services/notification/app/consumers.py", "fold"): (
+        "A1 automations: fold() calls a1_services.start_runs, whose send step awaits the "
+        "contact resolver (customer-service HTTP) inside the event's transaction for contact-id "
+        "recipients. Fix: resolve every contact-id recipient of the graph's send steps (an "
+        "httpx call to customer-service messaging-target, capped at a couple of seconds) BEFORE "
+        "the run's transaction opens, from the trigger payload, and pass the resolved addresses "
+        "into the executor. Only steps whose recipient_kind is contact_id reach the call; "
+        "address recipients never do."
+    ),
+    ("services/notification/app/consumers.py", "wake_automation_run"): (
+        "A1 automations: the wake handler calls a1_services.wake_run, whose send step awaits "
+        "the contact resolver inside the wake's transaction for contact-id recipients. Fix: "
+        "resolve every contact-id recipient of the graph's send steps (an httpx call to "
+        "customer-service messaging-target, capped at a couple of seconds) BEFORE the run's "
+        "transaction opens, from the trigger payload, and pass the resolved addresses into the "
+        "executor. Only steps whose recipient_kind is contact_id reach the call; address "
+        "recipients never do."
+    ),
+    ("services/notification/app/api/a1_automations.py", "retry_run"): (
+        "A1 automations: POST runs/{id}/retry builds the contact resolver and calls "
+        "a1_services.retry_run, which awaits it inside the request's transaction for contact-id "
+        "recipients. Fix: resolve every contact-id recipient of the graph's send steps (an "
+        "httpx call to customer-service messaging-target, capped at a couple of seconds) BEFORE "
+        "the run's transaction opens, from the trigger payload, and pass the resolved addresses "
+        "into the executor. Only steps whose recipient_kind is contact_id reach the call; "
+        "address recipients never do."
+    ),
     ("services/catalog/app/api/console_internal.py", "ensure_bespoke_price"): (
         "D3, admin-client-pricing slice: calls services.create_version, which has the same "
         "reachable registry.products() branch #10 (below) names in app/api/admin.py — the "

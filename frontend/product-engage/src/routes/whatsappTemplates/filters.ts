@@ -25,4 +25,3 @@ export function syncSummary(result: TemplateSyncResult): { title: string; descri
     description: `${result.created} new, ${result.updated} updated, ${result.removed} removed.`,
   };
 }
-
