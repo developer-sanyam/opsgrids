@@ -168,7 +168,11 @@ def _from_meta(item: dict[str, Any]) -> dict[str, Any] | None:
         "language": language,
         "status": status,
         "category": w2_domain.category_from_meta(item.get("category")),
-        "quality": w2_domain.quality_from_meta(item.get("quality_score")),
+        # None when Meta's answer carries no rating at all, so a sync does not erase the one a
+        # quality webhook set.
+        "quality": w2_domain.quality_from_meta(item.get("quality_score"))
+        if "quality_score" in item
+        else None,
         "reason": reason if reason and reason.upper() != "NONE" else None,
         "parameter_format": "named"
         if str(item.get("parameter_format") or "").upper() == "NAMED"
@@ -238,7 +242,7 @@ async def apply_sync(
                 status_checked_at=now,
                 variables=extracted.mapping,
                 preview_text=extracted.body_preview,
-                quality=parsed["quality"],
+                quality=parsed["quality"] or "unknown",
                 components=parsed["components"],
                 variable_specs=extracted.specs,
                 history=[w2_domain.history_entry(status, "sync", at=now)],
@@ -264,7 +268,8 @@ async def apply_sync(
             row.status = parsed["status"]
         if parsed["category"]:
             row.category = parsed["category"]
-        row.quality = parsed["quality"]
+        if parsed["quality"] is not None:
+            row.quality = parsed["quality"]
         row.status_reason = parsed["reason"] if row.status == "rejected" else None
         row.parameter_format = parsed["parameter_format"]
         row.components = parsed["components"]
