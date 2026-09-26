@@ -117,7 +117,7 @@ describe("editing the flow", () => {
     openDraft(graph);
     await userEvent.click(await screen.findByRole("button", { name: "Delete step 2, Condition" }));
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText(/1 step\(s\) on its yes and no paths/)).toBeTruthy();
+    expect(within(dialog).getByText(/the 1 step on its yes and no paths/)).toBeTruthy();
     await userEvent.click(within(dialog).getByRole("button", { name: "Delete condition" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Delete step 2, Condition" })).toBeNull());
   });

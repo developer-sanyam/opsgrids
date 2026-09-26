@@ -313,121 +313,124 @@ function Automations() {
         }
       />
 
-      <Card className="flex flex-col gap-4 p-4 sm:p-6">
-        <Tabs
-          label="Automation status"
-          items={TABS}
-          value={tab}
-          onChange={(id) => {
-            setTab(id as TabId);
-            setPage(1);
-          }}
-        />
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-          <SearchInput
-            label="Search automations"
-            placeholder="Search automations..."
-            containerClassName="sm:max-w-xs sm:flex-1"
-            value={search}
-            onChange={(event) => {
-              setSearch(event.target.value);
-              setPage(1);
-            }}
-          />
-          <Select
-            label="Module"
-            containerClassName="sm:w-56"
-            value={module}
-            onChange={(event) => {
-              setModule(event.target.value);
-              setPage(1);
-            }}
-            options={moduleOptions}
-          />
-        </div>
-      </Card>
+      <Tabs
+        label="Automation status"
+        items={TABS}
+        value={tab}
+        onChange={(id) => {
+          setTab(id as TabId);
+          setPage(1);
+        }}
+      >
+        <div className="flex flex-col gap-6 pt-4">
+          <Card className="flex flex-col gap-4 p-4 sm:p-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <SearchInput
+                label="Search automations"
+                placeholder="Search automations..."
+                containerClassName="sm:max-w-xs sm:flex-1"
+                value={search}
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                  setPage(1);
+                }}
+              />
+              <Select
+                label="Module"
+                containerClassName="sm:w-56"
+                value={module}
+                onChange={(event) => {
+                  setModule(event.target.value);
+                  setPage(1);
+                }}
+                options={moduleOptions}
+              />
+            </div>
+          </Card>
 
-      {state.status === "loading" ? <TableSkeleton /> : null}
+        {state.status === "loading" ? <TableSkeleton /> : null}
 
-      {state.status === "error" ? (
-        <LoadError error={state.error} title="Couldn't load your automations" onRetry={state.reload} />
-      ) : null}
+        {state.status === "error" ? (
+          <LoadError error={state.error} title="Couldn't load your automations" onRetry={state.reload} />
+        ) : null}
 
-      {state.status === "success" && rows.length === 0 ? (
-        <>
+        {state.status === "success" && rows.length === 0 ? (
+          <>
+            <Card className="p-6">
+              <EmptyState
+                icon={<SparkIcon className="size-6" />}
+                title={filtered ? "No automations match" : "No automations yet"}
+                description={
+                  filtered
+                    ? "Nothing matches these filters. Clear them to see every automation."
+                    : "An automation sends a message or creates a task when something happens, like an order shipping or an invoice going overdue. Build one from scratch or start from a recipe below."
+                }
+                action={
+                  filtered ? (
+                    <Button variant="secondary" onClick={clearFilters}>
+                      Clear filters
+                    </Button>
+                  ) : (
+                    <Button onClick={() => navigate("/automations/new")}>Create automation</Button>
+                  )
+                }
+              />
+            </Card>
+            {filtered ? null : <RecipeList />}
+          </>
+        ) : null}
+
+        {state.status === "success" && rows.length > 0 ? (
           <Card className="p-6">
-            <EmptyState
-              icon={<SparkIcon className="size-6" />}
-              title={filtered ? "No automations match" : "No automations yet"}
-              description={
-                filtered
-                  ? "Nothing matches these filters. Clear them to see every automation."
-                  : "An automation sends a message or creates a task when something happens, like an order shipping or an invoice going overdue. Build one from scratch or start from a recipe below."
-              }
-              action={
-                filtered ? (
-                  <Button variant="secondary" onClick={clearFilters}>
-                    Clear filters
-                  </Button>
-                ) : (
-                  <Button onClick={() => navigate("/automations/new")}>Create automation</Button>
-                )
-              }
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-4xl border-collapse text-left">
+                <caption className="sr-only">
+                  Automations, their trigger, module, status, runs and success rate over the last 30
+                  days, and when each was last updated
+                </caption>
+                <thead>
+                  <tr className="text-xs font-bold uppercase tracking-wider text-faint">
+                    <th scope="col" className="pb-2 pr-4">Name</th>
+                    <th scope="col" className="pb-2 pr-4">Trigger</th>
+                    <th scope="col" className="pb-2 pr-4">Module</th>
+                    <th scope="col" className="pb-2 pr-4">Status</th>
+                    <th scope="col" className="pb-2 pr-4 text-right">Executions (30 days)</th>
+                    <th scope="col" className="pb-2 pr-4 text-right">Success rate</th>
+                    <th scope="col" className="pb-2 pr-4">Updated</th>
+                    <th scope="col" className="pb-2 text-right">
+                      <span className="sr-only">Actions</span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((automation) => (
+                    <AutomationRow
+                      key={automation.id}
+                      automation={automation}
+                      triggerLabel={triggerLabels[automation.trigger_event] ?? automation.trigger_event}
+                      onAction={setPending}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <Pagination
+              page={state.data.page}
+              pages={state.data.pages}
+              total={state.data.total}
+              size={state.data.size}
+              noun="automations"
+              onPageChange={setPage}
+              onSizeChange={(n) => {
+                setSize(n);
+                setPage(1);
+              }}
+              className="mt-4"
             />
           </Card>
-          {filtered ? null : <RecipeList />}
-        </>
-      ) : null}
-
-      {state.status === "success" && rows.length > 0 ? (
-        <Card className="p-6">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-4xl border-collapse text-left">
-              <caption className="sr-only">
-                Automations, their trigger, module, status, runs and success rate over the last 30
-                days, and when each was last updated
-              </caption>
-              <thead>
-                <tr className="text-xs font-bold uppercase tracking-wider text-faint">
-                  <th scope="col" className="pb-2 pr-4">Name</th>
-                  <th scope="col" className="pb-2 pr-4">Trigger</th>
-                  <th scope="col" className="pb-2 pr-4">Module</th>
-                  <th scope="col" className="pb-2 pr-4">Status</th>
-                  <th scope="col" className="pb-2 pr-4 text-right">Executions (30 days)</th>
-                  <th scope="col" className="pb-2 pr-4 text-right">Success rate</th>
-                  <th scope="col" className="pb-2 pr-4">Updated</th>
-                  <th scope="col" className="pb-2 text-right">
-                    <span className="sr-only">Actions</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((automation) => (
-                  <AutomationRow
-                    key={automation.id}
-                    automation={automation}
-                    triggerLabel={triggerLabels[automation.trigger_event] ?? automation.trigger_event}
-                    onAction={setPending}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <Pagination
-            page={state.data.page}
-            pages={state.data.pages}
-            total={state.data.total}
-            size={state.data.size}
-            noun="automations"
-            onPageChange={setPage}
-            onSizeChange={(n) => {
-              setSize(n);
-              setPage(1);
-            }}
-            className="mt-4"
-          />
-        </Card>
-      ) : null}
+        ) : null}
+        </div>
+      </Tabs>
 
       <ConfirmDialog
         open={pending !== null}

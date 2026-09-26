@@ -83,6 +83,11 @@ interface Snapshot {
   graph: Graph;
 }
 
+function removalBody(steps: number): string {
+  const count = steps === 1 ? "the 1 step" : `the ${steps} steps`;
+  return `This removes the condition and ${count} on its yes and no paths. This can't be undone once you save.`;
+}
+
 function BackLink() {
   return (
     <Link
@@ -506,7 +511,7 @@ function BuilderView({ automation, initial }: { automation: AutomationDetailOut 
           setRemoving(null);
         }}
         title="Delete this condition?"
-        body={`This removes the condition and the ${removing === null ? 0 : stepsRemovedWith(graph, removing)} step(s) on its yes and no paths.`}
+        body={removalBody(removing === null ? 0 : stepsRemovedWith(graph, removing))}
         confirmLabel="Delete condition"
       />
 
