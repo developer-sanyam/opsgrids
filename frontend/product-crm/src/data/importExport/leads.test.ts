@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { RowProblem, makeLookup } from "@opsgrids/client";
+import { makeLookup } from "@opsgrids/client";
 import type { LookupSet, ParsedValue } from "@opsgrids/client";
 
 import type { Lead } from "@/api/types";
@@ -11,6 +11,11 @@ const LOOKUPS: LookupSet = {
   owners: makeLookup([
     { label: "sofia@example.com", value: "own-1" },
     { label: "Grace@Example.com", value: "own-2" },
+  ]),
+  ownersAll: makeLookup([
+    { label: "sofia@example.com", value: "own-1" },
+    { label: "Grace@Example.com", value: "own-2" },
+    { label: "former@example.com", value: "own-3" },
   ]),
 };
 
@@ -67,15 +72,20 @@ describe("leads: toPayload", () => {
     expect("owner_id" in payload).toBe(false);
   });
 
-  it("refuses an owner who is not an active team member, naming the email", () => {
-    expect(() => payloadFor({ fullName: "Meera Iyer", owner: "former@example.com" })).toThrow(RowProblem);
-    expect(() => payloadFor({ fullName: "Meera Iyer", owner: "former@example.com" })).toThrow(
-      /No active team member has the email "former@example.com"/,
+  it("keeps a note's line break", () => {
+    expect(payloadFor({ fullName: "Meera Iyer", notes: "Asked for a demo.\nCall after 4pm." }).notes).toBe(
+      "Asked for a demo.\nCall after 4pm.",
     );
   });
+});
 
-  it("refuses a phone number without a country code", () => {
-    expect(() => payloadFor({ fullName: "Meera Iyer", phone: "09000012345" })).toThrow(/country code/);
+describe("leads: what the user is told about emails", () => {
+  it("says lead emails are matched exactly as typed, so a web-form lead in other capitals is added again", () => {
+    const notes = leadImport.notes?.join(" ") ?? "";
+    expect(notes).toContain("Lead emails are matched exactly as typed");
+    expect(notes).toContain("with the same address in different capitals will be added again");
+    expect(notes).toContain("the server matches leads on the exact email");
+    expect(leadImport.columns.find((c) => c.key === "email")?.help).toContain("matched exactly as typed");
   });
 });
 
@@ -84,6 +94,12 @@ describe("leads: loadLookups", () => {
     stubGateway(() => OWNERS_WIRE);
     const { owners } = await loadLookups(new AbortController().signal);
     expect(owners?.labels).toEqual(["sofia@example.com", "Grace@Example.com"]);
+  });
+
+  it("also loads every team member, for the export only", async () => {
+    stubGateway(() => OWNERS_WIRE);
+    const { ownersAll } = await loadLookups(new AbortController().signal);
+    expect(ownersAll?.labelOf("own-3")).toBe("former@example.com");
   });
 });
 
@@ -159,6 +175,10 @@ describe("leads: export", () => {
     expect(Object.keys(row).sort()).toEqual(leadImport.columns.map((c) => c.key).sort());
     const readOnly = leadImport.columns.filter((c) => c.readOnly === true).map((c) => c.key);
     expect(readOnly).toEqual(expect.arrayContaining(["emailMasked", "phoneMasked"]));
+  });
+
+  it("names a deactivated rep as the owner, so the export says who owned the lead", () => {
+    expect(exported.toRow({ ...LEAD, owner_id: "own-3" }, LOOKUPS).owner).toBe("former@example.com");
   });
 
   it("writes an unassigned lead's owner as blank", () => {

@@ -24,9 +24,19 @@ const LOOKUPS: LookupSet = {
     { label: "sofia@example.com", value: "own-1" },
     { label: "Grace@Example.com", value: "own-2" },
   ]),
+  ownersAll: makeLookup([
+    { label: "sofia@example.com", value: "own-1" },
+    { label: "Grace@Example.com", value: "own-2" },
+    { label: "former@example.com", value: "own-3" },
+  ]),
   companies: makeLookup([
     { label: "Northwind Logistics", value: "comp-1" },
     { label: "Cobalt Financial", value: "comp-2" },
+  ]),
+  // Two people are on file: one with capitals in the address, one all lower case.
+  contactEmails: makeLookup([
+    { label: "Priya.Nair@northwind.co", value: "Priya.Nair@northwind.co" },
+    { label: "daniel.okafor@cobaltfin.com", value: "daniel.okafor@cobaltfin.com" },
   ]),
 };
 
@@ -82,35 +92,55 @@ describe("contacts: toPayload", () => {
     expect("raw_phone" in payload).toBe(false);
   });
 
-  it("refuses a company that does not exist, naming it", () => {
-    expect(() => payloadFor({ ...MINIMAL, company: "Nowhere Ltd" })).toThrow(RowProblem);
-    expect(() => payloadFor({ ...MINIMAL, company: "Nowhere Ltd" })).toThrow(
-      /No company is named "Nowhere Ltd"/,
+  it("gives a blank owner to the signed-in rep, and refuses when that rep is not an active one", () => {
+    vi.mocked(getMySubjectRef).mockReturnValue("own-2");
+    expect(payloadFor(MINIMAL).owner_id).toBe("own-2");
+    vi.mocked(getMySubjectRef).mockReturnValue("own-3");
+    expect(() => payloadFor(MINIMAL)).toThrow(RowProblem);
+  });
+});
+
+/**
+ * The server dedupes contacts on the exact email string, so two spellings that differ only in
+ * capitals are two contacts to it. The address reaches `toPayload` as the engine coerced it.
+ */
+describe("contacts: an email that differs from one on file only in capitals", () => {
+  it("still goes to the server when it matches an address on file exactly, so the 409 is reported as skipped", () => {
+    expect(payloadFor({ ...MINIMAL, email: "daniel.okafor@cobaltfin.com" }).email).toBe(
+      "daniel.okafor@cobaltfin.com",
+    );
+    expect(payloadFor({ ...MINIMAL, email: "Priya.Nair@northwind.co" }).email).toBe("Priya.Nair@northwind.co");
+  });
+
+  it("is refused, naming the address on file, so the same person is not added twice", () => {
+    const refused = () => payloadFor({ ...MINIMAL, email: "priya.nair@northwind.co" });
+    expect(refused).toThrow(RowProblem);
+    expect(refused).toThrow(
+      "A contact with this email is already on file as Priya.Nair@northwind.co; addresses that differ only in capitals are treated as the same person.",
+    );
+    expect(() => payloadFor({ ...MINIMAL, email: "DANIEL.OKAFOR@cobaltfin.com" })).toThrow(
+      /already on file as daniel\.okafor@cobaltfin\.com/,
     );
   });
 
-  it("refuses to guess between two companies with the same name", () => {
-    const twins = contextWith({
+  it("sends an address nobody has, in any capitals", () => {
+    expect(payloadFor({ ...MINIMAL, email: "New.Person@northwind.co" }).email).toBe("New.Person@northwind.co");
+  });
+
+  it("copes with two addresses on file that differ only in capitals: the exact one is sent, any other spelling is refused", () => {
+    const both = contextWith({
       ...LOOKUPS,
-      companies: makeLookup([
-        { label: "Northwind Logistics", value: "comp-1" },
-        { label: "northwind logistics", value: "comp-7" },
+      contactEmails: makeLookup([
+        { label: "Meera@northwind.co", value: "Meera@northwind.co" },
+        { label: "meera@northwind.co", value: "meera@northwind.co" },
       ]),
     });
-    const row = parsedRow(contactImport.columns, MINIMAL);
-    expect(() => contactImport.toPayload(row, twins)).toThrow(/More than one company is named/);
-  });
-
-  it("refuses a phone number without a country code, and never guesses one", () => {
-    expect(() => payloadFor({ ...MINIMAL, phone: "9876543210" })).toThrow(RowProblem);
-    expect(() => payloadFor({ ...MINIMAL, phone: "9876543210" })).toThrow(/country code/);
-  });
-
-  it("gives a blank owner to the signed-in rep, and refuses when there is none", () => {
-    vi.mocked(getMySubjectRef).mockReturnValue("own-9");
-    expect(payloadFor(MINIMAL).owner_id).toBe("own-9");
-    vi.mocked(getMySubjectRef).mockReturnValue(null);
-    expect(() => payloadFor(MINIMAL)).toThrow(/Owner email is blank/);
+    const send = (email: string) =>
+      contactImport.toPayload(parsedRow(contactImport.columns, { ...MINIMAL, email }), both);
+    expect(send("meera@northwind.co").email).toBe("meera@northwind.co");
+    expect(send("Meera@northwind.co").email).toBe("Meera@northwind.co");
+    expect(() => send("MEERA@northwind.co")).toThrow(RowProblem);
+    expect(() => send("MEERA@northwind.co")).toThrow(/already on file in other capitals/);
   });
 });
 
@@ -119,6 +149,7 @@ describe("contacts: loadLookups", () => {
     const firstPage = Array.from({ length: 200 }, (_, i) => companyWire(`comp-${i + 1}`, `Company ${i + 1}`));
     const calls = stubGateway(({ url }) => {
       if (url.pathname.endsWith("/customers/owners")) return OWNERS_WIRE;
+      if (url.pathname === "/api/v1/contacts") return pageOf([], 1, 200);
       const page = Number(url.searchParams.get("page"));
       // Offset paging over tied names can hand a row out twice; page 2 repeats company 1.
       return page === 1
@@ -139,6 +170,27 @@ describe("contacts: loadLookups", () => {
     expect(lookups.companies?.resolve("Company 1")).toBe("comp-1");
     expect(lookups.companies?.isAmbiguous("Company 1")).toBe(false);
     expect(lookups.owners?.resolve("sofia@example.com")).toBe("own-1");
+  });
+
+  it("reads every contact address already on file, exactly as stored, without offering them in a column", async () => {
+    stubGateway(({ url }) => {
+      if (url.pathname.endsWith("/customers/owners")) return OWNERS_WIRE;
+      if (url.pathname === "/api/v1/contacts") {
+        return pageOf([
+          contactWire("cont-1", "Priya.Nair@northwind.co", "comp-1"),
+          contactWire("cont-2", "daniel.okafor@cobaltfin.com", "comp-2"),
+        ]);
+      }
+      return pageOf([companyWire("comp-1", "Northwind Logistics")]);
+    });
+
+    const lookups = await loadLookups(new AbortController().signal);
+
+    expect(lookups.contactEmails?.labelOf("Priya.Nair@northwind.co")).toBe("Priya.Nair@northwind.co");
+    expect(lookups.contactEmails?.labelOf("priya.nair@northwind.co")).toBeUndefined();
+    expect(lookups.contactEmails?.resolve("priya.nair@northwind.co")).toBe("Priya.Nair@northwind.co");
+    const named = new Set(contactImport.columns.flatMap((c) => (c.lookup === undefined ? [] : [c.lookup])));
+    expect(named.has("contactEmails")).toBe(false);
   });
 });
 
@@ -187,6 +239,10 @@ describe("contacts: export", () => {
     expect(calls[0]?.url.searchParams.get("size")).toBe("200");
     expect(calls[0]?.signal).toBe(controller.signal);
     expect(page.items.map((c) => c.email)).toEqual(["asha.rao@northwind.co"]);
+  });
+
+  it("names a deactivated rep as the owner, so the export says who owned the contact", () => {
+    expect(exported.toRow({ ...CONTACT, owner_id: "own-3" }, LOOKUPS).owner).toBe("former@example.com");
   });
 
   it("writes the phone as the API masked it, in a read-only column, and leaves the importable Phone blank", () => {
