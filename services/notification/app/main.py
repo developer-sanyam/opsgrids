@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app import consumers, dispatcher
+from app.api.a1_automations import router as a1_automations_router
 from app.api.engage import public_router as engage_public_router
 from app.api.engage import router as engage_router
 from app.api.inbox import router as inbox_router
@@ -134,6 +135,7 @@ app = create_app(
         inbox_router,
         w2_templates_router,
         m1_analytics_router,
+        a1_automations_router,
     ],
     # A stalled relay is silent, and here it stalls *sending*: messages stage as `pending` and
     # never queue. `/health/outbox` is what makes that visible, counted through the outbox

@@ -69,7 +69,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app import selectors, services
+from app import a1_services, selectors, services
 from app.config import settings
 from app.transports import Receipt, TransportError, send_batch
 from platform_core.db import (
@@ -186,7 +186,25 @@ class CampaignDriver(GuardedSweep):
                 report.backed_off += 1
                 continue
             await self._drain(organization_id, campaign_id, report, at)
+        await self._wake_overdue_automations(at)
         return report
+
+    async def _wake_overdue_automations(self, at: datetime) -> None:
+        """The automation engine's lost-wake net (slice A1): resume any run parked on a wait or a
+        retry backoff whose scheduler wake-up is overdue. Riding this tick means no new loop,
+        and its own failure is logged rather than raised so it can never stall campaign sending.
+        """
+        try:
+            woken = await a1_services.sweep_overdue(
+                discovery_factory=self._discovery_factory,
+                work_scope=self._work_scope,
+                now=at,
+            )
+        except Exception:
+            log.exception("notification.automation_sweep.failed")
+            return
+        if woken:
+            log.info("notification.automation_sweep.woken", count=woken)
 
     def _in_backoff(self, campaign_id: uuid.UUID, at: datetime) -> bool:
         until = self._backoff_until.get(campaign_id)

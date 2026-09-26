@@ -1121,3 +1121,4 @@ class AuditLog(Base, AuditLogMixin):
 
 
 from app import m1_models  # noqa: E402,F401
+from app import a1_models  # noqa: E402,F401
