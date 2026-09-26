@@ -1,14 +1,19 @@
 import { usePermissionStatus } from "@opsgrids/client";
 import {
+  BarChartIcon,
+  ClipboardCheckIcon,
   FileTextIcon,
   GlobeIcon,
   HomeIcon,
   InboxIcon,
   LayersIcon,
+  MailIcon,
   MegaphoneIcon,
   MessageSquareIcon,
   PlugIcon,
+  SettingsIcon,
   ShieldIcon,
+  SparkIcon,
   UserPlusIcon,
   UsersIcon,
 } from "@opsgrids/ui";
@@ -32,10 +37,14 @@ import type { NavEntry, NavGroup } from "@opsgrids/ui";
  */
 const GROUPS: NavGroup[] = [
   {
-    title: "Engage",
+    title: "Communication",
     items: [
       { to: "/", label: "Overview", icon: HomeIcon, end: true },
+      { to: "/whatsapp", label: "WhatsApp", icon: MessageSquareIcon, end: true },
+      { to: "/email", label: "Email", icon: MailIcon, end: true },
       { to: "/inbox", label: "Inbox", icon: InboxIcon },
+      { to: "/automations", label: "Automations", icon: SparkIcon },
+      { to: "/setup", label: "Get started", icon: ClipboardCheckIcon },
     ],
   },
   {
@@ -51,6 +60,8 @@ const GROUPS: NavGroup[] = [
     items: [
       { to: "/whatsapp/connection", label: "Connection", icon: MessageSquareIcon },
       { to: "/whatsapp/templates", label: "Templates", icon: FileTextIcon },
+      { to: "/whatsapp/analytics", label: "Analytics", icon: BarChartIcon },
+      { to: "/whatsapp/settings", label: "Settings", icon: SettingsIcon },
     ],
   },
   {

@@ -71,6 +71,20 @@ describe("useNavGroups", () => {
     expect(screen.queryByText("Campaigns", { selector: "p, span, h2, h3, div" })).toBeNull();
   });
 
+  it("offers the communication hub, the automations and the get-started checklist at their own paths", () => {
+    renderNav([]);
+    const hrefs: Record<string, string> = {
+      Overview: "/",
+      WhatsApp: "/whatsapp",
+      Email: "/email",
+      Automations: "/automations",
+      "Get started": "/setup",
+    };
+    for (const [name, href] of Object.entries(hrefs)) {
+      expect(screen.getByRole("link", { name }).getAttribute("href"), name).toBe(href);
+    }
+  });
+
   it("never hides the entries whose own screens explain a denial", () => {
     renderNav([]);
     for (const name of ["Overview", "Inbox", "Connections", "Domains", "Senders", "Contacts", "Suppressions"]) {
