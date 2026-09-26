@@ -17,19 +17,27 @@ The cost is a crash window — a process that dies between 2 and 3 leaves a `sen
 deliberately left visible rather than swept back into `pending`, because "did the customer
 actually receive this?" has no safe default answer, and inventing one either double-sends an
 invoice or silently drops it.
+
+**Whose transport.** The `transports` map is the *platform's* — one SMTP relay, one WhatsApp
+number, from the environment. It serves only platform-owned messages (login and password mail,
+staged under the platform tenant) and the `in_app` feed. A customer's `email` and `whatsapp`
+messages go out on that organization's own connection, resolved between the claim and the send by
+`app/tenant_transport.py`, and a customer with no usable connection gets a failed message with a
+machine-readable reason — never the platform's number. See that module for how the two kinds are
+told apart.
 """
 
 from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import services
+from app import services, tenant_transport
 from app.config import Settings, settings
 from app.models import ProcessedEvent
 from app.transports import Outgoing, Transport, TransportRefused
@@ -70,11 +78,18 @@ def use_session_scope(scope: WorkScope) -> None:
     _session_scope = scope
 
 
+#: Resolves the transport for one tenant-owned message: `(organization_id, channel)` in, a
+#: transport or the reason there is none out. Defaults to `tenant_transport.resolve` bound to this
+#: process's session scope; a test passes its own to inject the egress guard's resolver.
+TenantRoute = Callable[[uuid.UUID, str], Awaitable[Transport | tenant_transport.ChannelUnavailable]]
+
+
 async def dispatch(
     envelope: dict[str, Any],
     *,
     transports: dict[str, Transport],
     cfg: Settings,
+    tenant_route: TenantRoute | None = None,
 ) -> None:
     """Send one queued message, or record why it did not go.
 
@@ -112,9 +127,16 @@ async def dispatch(
         channel = message.channel
         attempt = message.attempts
 
-    transport = transports.get(channel)
-    if transport is None:  # pragma: no cover - `build` covers every channel in CHANNELS
-        log.error("dispatch.no_transport", channel=channel, message_id=str(message_id))
+    transport = await _transport_for(
+        organization_id,
+        message_id,
+        channel,
+        attempt=attempt,
+        platform=transports,
+        tenant_route=tenant_route,
+        cfg=cfg,
+    )
+    if transport is None:
         return
 
     # 2. Send. **No transaction is open here.**
@@ -159,6 +181,93 @@ async def dispatch(
             provider_message_id=receipt.provider_message_id,
         )
     log.info("dispatch.sent", channel=channel, message_id=str(message_id), attempt=attempt)
+
+
+async def _transport_for(
+    organization_id: uuid.UUID,
+    message_id: uuid.UUID,
+    channel: str,
+    *,
+    attempt: int,
+    platform: dict[str, Transport],
+    tenant_route: TenantRoute | None,
+    cfg: Settings,
+) -> Transport | None:
+    """The transport this message goes out on, or None after recording why it cannot.
+
+    A platform-owned message (and the `in_app` feed) takes the platform's transport from
+    `platform`. Everything else is a customer's, and takes that customer's own connection — the
+    platform's transport is not reachable from that branch, so no failure below can turn into
+    a send from the shared number.
+
+    A customer with no usable connection fails the message **permanently and on the spot**: the
+    fix is a connection, not time, so a retry would only delay the moment someone looks. The
+    reason is a code (`tenant_transport.NOT_CONNECTED` and its siblings) that reaches
+    `messages.last_error`, the attempt ledger and the failed event — never a sentence, never a
+    credential. Resolution itself failing unexpectedly (the database, say) is transient, like any
+    other send that raised something nobody classified.
+    """
+    if not tenant_transport.needs_own_connection(organization_id, channel):
+        platform_transport = platform.get(channel)
+        if platform_transport is None:  # pragma: no cover - `build` covers every channel
+            log.error("dispatch.no_transport", channel=channel, message_id=str(message_id))
+        return platform_transport
+
+    route = tenant_route or _default_tenant_route(cfg)
+    try:
+        routed = await route(organization_id, channel)
+    except Exception as exc:
+        log.exception(
+            "dispatch.tenant_route_failed",
+            organization_id=str(organization_id),
+            channel=channel,
+            message_id=str(message_id),
+            attempt=attempt,
+            error_type=type(exc).__name__,
+        )
+        await _record_failure(
+            organization_id,
+            message_id,
+            tenant_transport.NO_PROVIDER,
+            "channel_resolution_failed",
+            permanent=False,
+            cfg=cfg,
+        )
+        return None
+
+    if isinstance(routed, tenant_transport.ChannelUnavailable):
+        await _record_failure(
+            organization_id,
+            message_id,
+            tenant_transport.NO_PROVIDER,
+            routed.reason,
+            permanent=True,
+            cfg=cfg,
+        )
+        log.warning(
+            "dispatch.channel_unavailable",
+            organization_id=str(organization_id),
+            channel=channel,
+            message_id=str(message_id),
+            attempt=attempt,
+            reason=routed.reason,
+        )
+        return None
+    return routed
+
+
+def _default_tenant_route(cfg: Settings) -> TenantRoute:
+    """`tenant_transport.resolve`, reading through whichever scope this process runs on. The
+    scope is looked up per call, not captured, so `use_session_scope` still takes effect."""
+
+    async def route(
+        organization_id: uuid.UUID, channel: str
+    ) -> Transport | tenant_transport.ChannelUnavailable:
+        return await tenant_transport.resolve(
+            organization_id, channel, scope=_session_scope, cfg=cfg
+        )
+
+    return route
 
 
 async def _record_failure(

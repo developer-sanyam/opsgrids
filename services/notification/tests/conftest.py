@@ -53,6 +53,9 @@ TENANT_TABLES = (
     # Engage's audience.
     "contacts",
     "suppressions",
+    # The append-only consent ledger. Truncated as the admin role: the app role has no
+    # UPDATE or DELETE on it, which is the point, but TRUNCATE is the owner's.
+    "consent_events",
     # Engage's sending identity. Senders before domains: senders carry domain_id, and while
     # there is no foreign key to enforce it, truncating in dependency order keeps the intent
     # readable for anyone adding the next table.

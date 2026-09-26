@@ -490,8 +490,7 @@ set_kv() {   # usage: set_kv KEY VALUE   (non-secret values only)
   ```
 
   **Razorpay:** `401` = stopped at the gateway (not reachable); `400` = reached payment (a bad signature is a 400 and nothing is recorded); `404` = the route is missing.
-  **WhatsApp:** this URL can only answer `401` (stopped at the gateway) or `404`; **`403` cannot occur here**. Notification mounts its webhook at the **root** (`/webhooks/whatsapp`) while the gateway forwards the `/api/v1` prefix intact, so even a public path would 404
-  (INT:services/notification/app/main.py:32-34; INT:libs/platform-core/src/platform_core/gateway.py:715). Meta's callback would have to be `https://<host>/webhooks/whatsapp` at the root, and Caddy proxies only `/api/*` (INT:cf:84), so WhatsApp webhooks are **not reachable on this box as built**, whatever this probe prints.
+  **WhatsApp:** with the webhook fix deployed (app-gateway `WEBHOOK_PUBLIC_PATHS`, notification mounted under `/api/v1`; see `docs/whatsapp/webhooks.md`), **`403`** is the expected answer: the request reached notification and `hub.verify_token=x` did not match. `401` = stopped at the gateway and `404` = no such path on notification, both meaning the fix is not what is running. Meta's callback URL is `https://<host>/api/v1/webhooks/whatsapp`. Before that fix this URL could only answer `401` or `404`.
   Results: `_____ / _____`.
   Only if Razorpay answers `400` is it sensible to configure that callback URL at Razorpay and then **`[LIVE: owner]`** confirm with a real provider delivery. If `401`, leave webhooks unconfigured and raise it as a code decision.
 - [ ] **9.8 `[LIVE: owner]` SMTP end to end** (if not done in 4.1): run the probe; then wait for the first alert or the 08:00 UTC digest and confirm both recipients received it and `/status` shows `last_send_at`.

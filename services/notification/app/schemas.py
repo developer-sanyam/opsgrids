@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Channel = Literal["email", "whatsapp", "in_app"]
 TemplateCategory = Literal["utility", "marketing", "authentication"]
@@ -192,6 +192,8 @@ class MessageOut(BaseModel):
     event_type: str | None
     attempts: int
     last_error: str | None
+    #: Why a `suppressed` message was not sent, e.g. `consent:no_opt_in`. Null otherwise.
+    suppression_reason: str | None = None
     sent_at: datetime | None
     provider_message_id: str | None
     created_at: datetime
@@ -536,6 +538,100 @@ class SuppressionOut(BaseModel):
 
 class UnsubscribeOut(BaseModel):
     unsubscribed: bool
+
+
+# --------------------------------------------------------------------- engage consent ledger
+
+ConsentChannel = Literal["whatsapp", "email", "sms"]
+ConsentPurpose = Literal["marketing", "transactional"]
+ConsentStatus = Literal["opted_in", "opted_out"]
+#: What a person may claim. The sources this service writes itself (`inbound_keyword`,
+#: `unsubscribe_link`, `bounce`, `complaint`, `legacy_import`) are not writable — the same reason
+#: `SuppressionIn` has no `reason` — but they do appear in what is read back, so the read side
+#: types `source` as a plain string.
+ConsentApiSource = Literal["checkout", "web_form", "import", "admin", "api"]
+
+
+class ConsentEventIn(BaseModel):
+    """Record that somebody opted in or out. `source` and `evidence` are required: a bare "yes" is
+    exactly what the ledger exists to replace.
+
+    Name the subject by `address` or, for an email contact, by `contact_id` (the address is then
+    taken from the contact, sealed, and never returned). `evidence` is a short reference —
+    "checkout order 1042", "signup form, 2026-09-20" — never the address itself; a request whose
+    evidence contains the address is refused.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    channel: ConsentChannel
+    purpose: ConsentPurpose
+    status: ConsentStatus
+    source: ConsentApiSource
+    evidence: str = Field(min_length=3, max_length=500)
+    address: str | None = Field(default=None, min_length=3, max_length=254)
+    contact_id: uuid.UUID | None = None
+    #: When the person actually consented or refused. Defaults to now; may not be in the future.
+    occurred_at: AwareDatetime | None = None
+    #: Makes a retry return the original event instead of writing a second one.
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=120)
+
+    @model_validator(mode="after")
+    def _needs_a_subject(self) -> ConsentEventIn:
+        if self.address is None and self.contact_id is None:
+            raise ValueError("Give an address or a contact_id")
+        return self
+
+
+class ConsentLookupIn(BaseModel):
+    """A subject's history, looked up by address. A body rather than a query string so the address
+    never lands in an access log."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    channel: ConsentChannel
+    address: str = Field(min_length=3, max_length=254)
+
+
+class ConsentDecisionOut(BaseModel):
+    """What the consent decision says right now. `reason` is a stable machine-readable code:
+    `opted_in`, `no_opt_out`, `opted_out`, `no_opt_in`, `preference_suppressed`,
+    `suppressed_<reason>`, `invalid_address`."""
+
+    allowed: bool
+    reason: str
+
+
+class ConsentEventOut(BaseModel):
+    id: str
+    channel: ConsentChannel
+    purpose: ConsentPurpose
+    status: ConsentStatus
+    #: One of the API sources, or one this service writes itself (`inbound_keyword`,
+    #: `unsubscribe_link`, `bounce`, `complaint`, `legacy_import`). `legacy_import` is **unverified
+    #: consent** carried over from before the ledger existed.
+    source: str
+    evidence: str | None
+    #: Masked. The address is sealed at rest; `POST .../{id}:unmask` is the audited way to open it.
+    address: str
+    contact_id: str | None
+    recorded_by: str | None
+    occurred_at: datetime
+    created_at: datetime
+
+
+class ConsentRecordedOut(BaseModel):
+    """The event, and what the decision says now that it is in. An opt-in can be recorded for an
+    address a legacy suppression or a customer's own STOP still refuses — `effective` is how the
+    caller sees that it has not taken effect."""
+
+    event: ConsentEventOut
+    effective: ConsentDecisionOut
+
+
+class ConsentUnmaskedOut(BaseModel):
+    event_id: str
+    address: str
 
 
 # --------------------------------------------------------------------- engage lists

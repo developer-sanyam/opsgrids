@@ -15,7 +15,9 @@ not which rows they may see.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 
 from fastapi import FastAPI
 
@@ -93,6 +95,28 @@ ACCOUNT_PUBLIC_PATHS = frozenset({"/api/v1/account/signup"})
 #: cannot name. Anonymous, IP-rate-limited, no identity header, same as every other entry here.
 ENGAGE_PUBLIC_PATH_PREFIXES = frozenset({"/api/v1/engage/unsubscribe/"})
 
+#: The provider webhooks that reach this gateway, and the HTTP methods each accepts without a
+#: bearer token: **exact path -> methods**, never a prefix. One entry: Meta's WhatsApp callback.
+#:
+#: Public because a provider cannot hold one of our tokens — the authentication is an HMAC
+#: signature over the raw body, verified by notification-service. Until this was declared here
+#: the gateway answered every delivery and every subscription handshake with `401 Missing bearer
+#: token`, so inbound WhatsApp never reached the service that could have verified it.
+#:
+#: **Kept out of `public_paths` on purpose** (it is `GatewayPolicy.webhook_paths`). A member of
+#: `public_paths` shares the anonymous per-address bucket, is public for every method and passes
+#: a browser's cookie and `Origin` through. A webhook needs the opposite on each count: its own
+#: rate-limit buckets, `GET` (the subscription handshake) and `POST` (the deliveries) only — a
+#: `PUT`/`DELETE`/`PATCH` is a 401 like any other unlisted request — and no cookie, credential or
+#: CORS surface. The route sets its own `max_body_bytes` in both route tables, and
+#: `tests/infra/test_route_table_parity.py` pins that this set, both tables and that cap agree.
+#:
+#: **Not here, deliberately:** Razorpay's `/api/v1/webhooks/razorpay`. It is routed in production
+#: but declaring it public is a separate decision that has not been taken.
+WEBHOOK_PUBLIC_PATHS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {"/api/v1/webhooks/whatsapp": frozenset({"GET", "POST"})}
+)
+
 # Resolved relative to the service directory so `make run` and the container image agree.
 _routes_path = Path(cfg.routes_file)
 if not _routes_path.is_absolute():
@@ -104,8 +128,11 @@ policy = GatewayPolicy(
     audience=cfg.audience,
     public_paths=DEFAULT_PUBLIC_PATHS | STOREFRONT_PUBLIC_PATHS | ACCOUNT_PUBLIC_PATHS,
     public_path_prefixes=ENGAGE_PUBLIC_PATH_PREFIXES,
+    webhook_paths=WEBHOOK_PUBLIC_PATHS,
     rate_limit=cfg.rate_limit_per_minute,
     anonymous_rate_limit=cfg.anonymous_rate_limit_per_minute,
+    webhook_rate_limit=cfg.webhook_rate_limit_per_minute,
+    webhook_global_rate_limit=cfg.webhook_global_rate_limit_per_minute,
     upstream_timeout=cfg.upstream_timeout_seconds,
 )
 

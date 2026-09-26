@@ -16,7 +16,8 @@ The order of checks is deliberate, cheapest and most-conclusive first:
 
 Rate limiting comes *after* authentication so it counts against a person rather than an
 address, which is what makes a shared office NAT usable. The unauthenticated paths are
-limited by IP instead.
+limited by IP instead. Provider webhooks (`GatewayPolicy.webhook_paths`) take a third route:
+no token, exact path *and* method, their own rate-limit buckets, and no cookie or CORS surface.
 
 The proxy step caps the request body (`DEFAULT_MAX_BODY_BYTES`, or a route's own override)
 and enforces it against the bytes actually read. The gateway buffers a body whole before
@@ -32,8 +33,8 @@ import asyncio
 import json
 import posixpath
 import re
-from collections.abc import Iterator
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
@@ -112,6 +113,11 @@ SPOOFABLE = frozenset(
         ADMIN_HOP_HEADER,
     }
 )
+
+#: Request headers dropped from a forwarded provider webhook (`GatewayPolicy.webhook_paths`):
+#: everything that only a browser session carries. `access-control-request-*` is matched by
+#: prefix in `_is_browser_credential`.
+_WEBHOOK_STRIPPED_REQUEST_HEADERS = frozenset({"cookie", "authorization", "origin", "referer"})
 
 #: What `_normalize_path` collapses a run of slashes with. Anchors nowhere on its own — a
 #: *leading* doubled slash is POSIX-reserved and `posixpath.normpath` deliberately leaves it
@@ -297,6 +303,28 @@ class GatewayPolicy:
     #: the gateway's own policy, set `True` in exactly one place (admin-gateway's `main.py`),
     #: so holding the key is necessary but no longer sufficient.
     sign_admin_hop: bool = False
+    #: Provider webhooks: exact path -> the HTTP methods that are public on it.
+    #:
+    #: A separate list from `public_paths`, not a subset of it, because a webhook is a different
+    #: kind of anonymous. It carries no bearer token — the provider signs the body and the owning
+    #: service verifies that signature over the raw bytes — so it is not a person and has none of
+    #: a browser's credentials (see `_WEBHOOK_STRIPPED_REQUEST_HEADERS`); it is counted in its own
+    #: buckets (`webhook_rate_limit`, `webhook_global_rate_limit`) so a sign-in flood cannot
+    #: starve a provider and the other way round; and it is public **per method**: Meta's
+    #: subscription handshake is a GET and its deliveries are POSTs, and a PUT or DELETE to the
+    #: same path falls through to the bearer check like any other unlisted request.
+    #: Exact-matched against the normalised path, so `/api/v1/webhooks/whatsapp/../employees` is
+    #: judged as `/api/v1/employees`, which is not here.
+    #:
+    #: Last on purpose: added after the fields above, so an existing positional construction
+    #: keeps meaning what it meant.
+    webhook_paths: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    #: Per-address requests per minute on one webhook path. Generous: a provider delivers from a
+    #: small set of addresses and legitimately bursts, and it retries a 429, so a limit set too
+    #: low turns into redelivery rather than loss.
+    webhook_rate_limit: int = 600
+    #: All addresses together, per webhook path, per minute; `0` means none.
+    webhook_global_rate_limit: int = 0
 
     def __post_init__(self) -> None:
         # A prefix without a trailing slash is a bug waiting to widen: refused at construction
@@ -305,6 +333,25 @@ class GatewayPolicy:
         for prefix in self.public_path_prefixes:
             if not prefix.endswith("/"):
                 raise ValueError(f"public path prefix {prefix!r} must end with '/'")
+        # A webhook entry is matched against a normalised path, which never ends in `/` and never
+        # carries a query, so an entry that does either could never match — and one with no
+        # methods, or a lower-case one, would be public for nothing or fail to match GET.
+        for path, methods in self.webhook_paths.items():
+            if not path.startswith("/api/") or path.endswith("/") or "?" in path:
+                raise ValueError(
+                    f"webhook path {path!r} must be an exact /api/... path with no trailing "
+                    "slash and no query"
+                )
+            # A bare string is iterable, and `"POST"` would then pass as four one-letter "methods"
+            # (and `request.method in "POST"` is a substring test). Looked at as an `object`: the
+            # annotation rules it out, which is exactly why an untyped caller needs the check.
+            declared: object = methods
+            if (
+                isinstance(declared, str)
+                or not methods
+                or any(m != m.upper() or not m.isalpha() for m in methods)
+            ):
+                raise ValueError(f"webhook path {path!r} needs upper-case HTTP method names")
 
 
 DEFAULT_PUBLIC_PATHS = frozenset(
@@ -328,10 +375,12 @@ DEFAULT_PUBLIC_PATHS = frozenset(
         "/api/v1/auth/sso/callback",
         "/api/v1/auth/password/forgot",
         "/api/v1/auth/password/reset",
-        # Meta's WhatsApp webhooks. Public by necessity — the provider cannot hold one of our
-        # tokens — and authenticated instead by an HMAC-SHA256 signature over the raw body,
-        # verified in notification-service. The GET is Meta's subscription handshake.
-        "/webhooks/whatsapp",
+        # Provider webhooks (Meta's WhatsApp) are deliberately **not** here: they are
+        # `GatewayPolicy.webhook_paths`, declared by the gateway that fronts them. A
+        # `/webhooks/whatsapp` entry used to live in this set and could never match — this proxy
+        # only serves `/api/{path}`, so a path without the `/api/` prefix never reaches a
+        # public-path check — which made the webhook look public while the real one, at
+        # `/api/v1/webhooks/whatsapp`, was refused with a 401 for want of a bearer token.
         "/api/v1/invitations/accept",
     }
 )
@@ -479,6 +528,35 @@ def build_gateway(
         }
         headers["x-request-id"] = request.state.request_id
         headers["x-correlation-id"] = request.state.correlation_id
+
+        webhook_methods = policy.webhook_paths.get(full_path)
+        if webhook_methods is not None and request.method in webhook_methods:
+            # A provider webhook: no bearer token, by design — the provider signs the body and the
+            # owning service verifies that signature over the raw bytes, which are forwarded
+            # untouched. Judged on the same normalised `full_path` as everything above, exactly
+            # and per method (see `GatewayPolicy.webhook_paths`), and counted in its own buckets:
+            # one per address, then one for the path as a whole. The per-address one runs first, so
+            # a single address spends at most its own allowance of the shared one; and neither a
+            # sign-in flood nor a webhook flood can spend the other's allowance.
+            client_ip = request.client.host if request.client else "anonymous"
+            await enforce_rate_limit(
+                f"hook:{full_path}:{client_ip}", limit=policy.webhook_rate_limit
+            )
+            if policy.webhook_global_rate_limit:
+                await enforce_rate_limit(
+                    f"hook:{full_path}", limit=policy.webhook_global_rate_limit
+                )
+            # A provider is a server, not a browser. None of these mean anything to it and none
+            # should reach the service that verifies its signature: a session cookie or bearer
+            # token that rode along would be a credential handed to a route that ignores it, and
+            # an `Origin` would invite the upstream's CORS middleware to answer as though this
+            # were a page. No `x-org-slug` either — the host says nothing about which tenant a
+            # provider is calling for; the body's own routing key does.
+            for name in [n for n in headers if _is_browser_credential(n)]:
+                del headers[name]
+            return await _forward(
+                request, route, headers, policy, full_path, settings, webhook=True
+            )
 
         if full_path in policy.public_paths or any(
             full_path.startswith(prefix) for prefix in policy.public_path_prefixes
@@ -697,6 +775,18 @@ async def _read_capped_body(request: Request, limit: int) -> bytes:
     return b"".join(chunks)
 
 
+def _is_browser_credential(header: str) -> bool:
+    """A request header that only a browser session has any use for."""
+    name = header.lower()
+    return name in _WEBHOOK_STRIPPED_REQUEST_HEADERS or name.startswith("access-control-")
+
+
+def _is_cross_origin_response_header(header: str) -> bool:
+    """A response header that would set a cookie or open the response to another origin."""
+    name = header.lower()
+    return name == "set-cookie" or name.startswith("access-control-")
+
+
 async def _forward(
     request: Request,
     route: Route,
@@ -704,6 +794,8 @@ async def _forward(
     policy: GatewayPolicy,
     full_path: str,
     settings: ServiceSettings,
+    *,
+    webhook: bool = False,
 ) -> Response:
     client: httpx.AsyncClient = request.app.state.http
 
@@ -766,6 +858,13 @@ async def _forward(
         raise UpstreamUnavailableProblem("That service took too long to respond") from exc
 
     response_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in HOP_BY_HOP}
+    if webhook:
+        # The other half of "no cookie/CORS surface": whatever the owning service (or its own CORS
+        # middleware) attached, a provider's reply carries neither a cookie nor an allowance for
+        # a browser origin.
+        response_headers = {
+            k: v for k, v in response_headers.items() if not _is_cross_origin_response_header(k)
+        }
     body = await upstream.aread()
     return Response(
         content=body,

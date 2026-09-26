@@ -7,13 +7,29 @@ inbound messages unlocked (conversations, the service window, STOP) and what is 
 ## The endpoint
 
 ```
-GET  /webhooks/whatsapp   Meta's subscription handshake
-POST /webhooks/whatsapp   message status receipts
+GET  /api/v1/webhooks/whatsapp   Meta's subscription handshake
+POST /api/v1/webhooks/whatsapp   message status receipts and inbound messages
 ```
 
-Mounted at the root, outside `/api/v1`, and excluded from the OpenAPI document — this is the
-provider's endpoint, not public API. It is listed in the gateway's public paths because **Meta
-cannot hold one of our tokens**, so it is the only unauthenticated surface notification exposes.
+**The callback URL to give Meta is `https://<edge host>/api/v1/webhooks/whatsapp`** — the path
+app-gateway serves and forwards to notification unchanged. notification mounts the same router at
+`/api/v1/webhooks/whatsapp` and at the root, `/webhooks/whatsapp`; the root mount is for pointing a
+tunnel straight at the service in development and is not reachable through the edge. Excluded from
+the OpenAPI document — this is the provider's endpoint, not public API.
+
+app-gateway declares exactly this path, for exactly `GET` and `POST`, in `WEBHOOK_PUBLIC_PATHS`
+(`services/app-gateway/app/main.py`) because **Meta cannot hold one of our tokens**, so it is the
+only unauthenticated surface notification exposes. A `PUT`, `PATCH` or `DELETE` to it, and every
+other `/api/v1/webhooks/*` path (Razorpay's is routed but not public), still gets the gateway's
+`401`. On the way through the gateway gives it its own rate-limit buckets (per address, and per
+path: 600 and 3000 a minute by default, so it neither starves nor is starved by sign-in traffic),
+caps the body at 3 MiB (Meta documents up to 3 MB; set as `max_body_bytes` on the route in both
+route tables), drops cookies, `Authorization`, `Origin` and any `X-User`-style identity header, and
+forwards the raw body untouched — the signature below is verified over those exact bytes.
+notification enforces the same 3 MiB itself (`413`) while reading the body, before the signature
+check, so a caller that reaches it without the gateway cannot make it buffer more.
+`tests/infra/test_route_table_parity.py` fails if the gateway's list, either route table, the body
+cap or notification's mount drift apart.
 
 ## How it is trusted, since there is no token
 
@@ -139,7 +155,7 @@ bodies. A deployment that trusted everything would be worse than one that trusts
 
 ## Inbound messages
 
-`POST /webhooks/whatsapp` folds `messages` alongside `statuses` in the same body, item by item,
+`POST /api/v1/webhooks/whatsapp` folds `messages` alongside `statuses` in the same body, item by item,
 each in its own transaction — the same shape as a status receipt, and for the same reasons
 (§Redelivery above). For each one:
 

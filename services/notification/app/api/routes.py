@@ -155,6 +155,7 @@ def _message_out(row: Message, deliveries: list[Delivery]) -> MessageOut:
         event_type=row.event_type,
         attempts=row.attempts,
         last_error=row.last_error,
+        suppression_reason=row.suppression_reason,
         sent_at=row.sent_at,
         provider_message_id=row.provider_message_id,
         created_at=row.created_at,

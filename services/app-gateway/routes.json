@@ -26,7 +26,13 @@
     "even decoded. Operator sign-in belongs to admin-gateway alone (ADR-0003 §2) — the route",
     "itself takes no principal (staff credentials travel in the request body), so an ordinary",
     "tenant's own valid bearer token would otherwise have been enough to reach it here. Fixes",
-    "the security review's MAJOR 3."
+    "the security review's MAJOR 3.",
+    "",
+    "`/api/v1/webhooks/whatsapp` is Meta's callback. It carries no bearer token — Meta signs the",
+    "body and notification verifies it — so it is declared public in the gateway's own",
+    "`app/main.py` (`WEBHOOK_PUBLIC_PATHS`, exact path, GET and POST only), and says how large a",
+    "body it may carry: Meta documents up to 3 MiB, over the 2 MiB default. The prefix and the",
+    "cap must match `infrastructure/edge/routes.prod.json`; tests/infra checks it."
   ],
   "routes": [
     { "prefix": "/api/v1/auth/operator", "upstream": "http://localhost:8110", "blocked": true },
@@ -71,6 +77,7 @@
     { "prefix": "/api/v1/documents", "upstream": "http://localhost:8150", "max_body_bytes": 6291456 },
     { "prefix": "/api/v1/notifications", "upstream": "http://localhost:8151", "product": "notification" },
     { "prefix": "/api/v1/engage", "upstream": "http://localhost:8151", "product": "engage" },
+    { "prefix": "/api/v1/webhooks/whatsapp", "upstream": "http://localhost:8151", "max_body_bytes": 3145728 },
     { "prefix": "/api/v1/approvals", "upstream": "http://localhost:8152" },
 
     { "prefix": "/api/v1/billing", "upstream": "http://localhost:8160" },

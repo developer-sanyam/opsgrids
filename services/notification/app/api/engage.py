@@ -26,11 +26,12 @@ from fastapi import APIRouter, Body, Depends, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import dns_check, selectors, services, webhooks
+from app import consent, dns_check, selectors, services, webhooks
 from app import domain as _rules
 from app.domain import UnsubscribeTarget
 from app.models import (
     Campaign,
+    ConsentEvent,
     Contact,
     ContactList,
     Conversation,
@@ -52,6 +53,15 @@ from app.schemas import (
     CampaignTestSendOut,
     ConnectionIn,
     ConnectionOut,
+    ConsentChannel,
+    ConsentDecisionOut,
+    ConsentEventIn,
+    ConsentEventOut,
+    ConsentLookupIn,
+    ConsentPurpose,
+    ConsentRecordedOut,
+    ConsentStatus,
+    ConsentUnmaskedOut,
     ContactImportIn,
     ContactImportOut,
     ContactImportResult,
@@ -98,7 +108,7 @@ from platform_core.db import (
     get_tenant_session,
     set_tenant,
 )
-from platform_core.errors import NotFoundProblem
+from platform_core.errors import NotFoundProblem, ValidationProblem
 from platform_core.pagination import Page, PageQuery, paginate
 from platform_core.pii import mask as mask_pii
 
@@ -189,6 +199,11 @@ MessageUnmask = Annotated[
     ScopeContext,
     Depends(require("engage.inbox.message.unmask", minimum=Scope.ORG, amr={"otp"})),
 ]
+#: The same permission and the same step-up, reused for opening a consent event's address: there
+#: is no separate "unmask a consent subject" code, and adding one would need a production role
+#: reconcile. Revealing who a consent event is about is the same class of act as revealing a
+#: customer's words, and is gated, stepped-up and audited exactly the same way.
+ConsentUnmask = MessageUnmask
 
 
 # --------------------------------------------------------------------- assemblers
@@ -976,6 +991,152 @@ async def remove_suppression(
 ) -> Response:
     await services.remove_suppression(session, ctx, suppression_id=suppression_id, request=request)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --------------------------------------------------------------------- consent ledger
+#
+# The record of who opted in or out of what, through which source (`app/consent.py`). Deliberately
+# small: record an event, read a subject's history, open one address. Nothing here updates or
+# deletes an event — the ledger is append-only, and the database enforces it.
+#
+# **No new permission codes.** Reading and recording ride the existing contact permissions (the
+# subjects are the organization's audience) and unmasking rides the existing dangerous unmask
+# permission with its OTP step-up. Both are floored at ORG like the rest of Engage, so a
+# consent history is the organization's, never one person's own.
+
+
+def _consent_event_out(row: ConsentEvent) -> ConsentEventOut:
+    """The mask, never the address. `subject_enc` and `subject_index` have no field here."""
+    return ConsentEventOut(
+        id=str(row.id),
+        channel=row.channel,
+        purpose=row.purpose,
+        status=row.status,
+        source=row.source,
+        evidence=row.evidence,
+        address=row.subject_masked,
+        contact_id=str(row.contact_id) if row.contact_id else None,
+        recorded_by=str(row.recorded_by) if row.recorded_by else None,
+        occurred_at=row.occurred_at,
+        created_at=row.created_at,
+    )
+
+
+@router.post(
+    "/engage/consent/events",
+    response_model=ConsentRecordedOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record that an address opted in or out (append-only; source and evidence required)",
+    dependencies=[Entitled],
+)
+async def record_consent_event(
+    body: ConsentEventIn,
+    session: SessionDep,
+    ctx: ContactWrite,
+    request: Request,
+    response: Response,
+) -> ConsentRecordedOut:
+    """201 for a new event; 200 with the original event for a retry under the same
+    `idempotency_key`. `effective` says whether the decision now allows sending — an opt-in does
+    not lift a legacy suppression or a customer's STOP."""
+    recorded = await services.record_consent_event(
+        session,
+        ctx,
+        channel=body.channel,
+        purpose=body.purpose,
+        status=body.status,
+        source=body.source,
+        evidence=body.evidence,
+        address=body.address,
+        contact_id=body.contact_id,
+        occurred_at=body.occurred_at,
+        idempotency_key=body.idempotency_key,
+        request=request,
+    )
+    if recorded.replayed:
+        response.status_code = status.HTTP_200_OK
+    return ConsentRecordedOut(
+        event=_consent_event_out(recorded.event),
+        effective=ConsentDecisionOut(
+            allowed=recorded.effective.allowed, reason=recorded.effective.reason
+        ),
+    )
+
+
+@router.get(
+    "/engage/consent/events",
+    response_model=Page[ConsentEventOut],
+    summary="The consent ledger, newest first; addresses masked. `contact_id` narrows it to "
+    "one contact's history",
+    dependencies=[Entitled],
+)
+async def list_consent_events(
+    session: SessionDep,
+    ctx: ContactRead,
+    params: PageQuery,
+    channel: ConsentChannel | None = None,
+    purpose: ConsentPurpose | None = None,
+    event_status: Annotated[ConsentStatus | None, Query(alias="status")] = None,
+    contact_id: uuid.UUID | None = None,
+) -> Page[ConsentEventOut]:
+    subject_index: str | None = None
+    if contact_id is not None:
+        contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
+        if contact is None:
+            raise NotFoundProblem("No such contact")
+        # A contact is an email subject: their history is every email event for that address,
+        # whether or not it was recorded against this contact id.
+        subject_index = contact.email_index
+        channel = "email"
+    stmt = selectors.consent_events_stmt(
+        ctx,
+        channel=channel,
+        purpose=purpose,
+        status=event_status,
+        subject_index=subject_index,
+    )
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([_consent_event_out(r) for r in rows], total=total, params=params)
+
+
+@router.post(
+    "/engage/consent/events:lookup",
+    response_model=Page[ConsentEventOut],
+    summary="One subject's consent history, looked up by address (in the body, so it never "
+    "reaches an access log)",
+    dependencies=[Entitled],
+)
+async def lookup_consent_history(
+    body: ConsentLookupIn,
+    session: SessionDep,
+    ctx: ContactRead,
+    params: PageQuery,
+) -> Page[ConsentEventOut]:
+    try:
+        subject_index = consent.index_for(body.channel, body.address)
+    except _rules.RuleError as exc:
+        raise ValidationProblem(str(exc)) from exc
+    stmt = selectors.consent_events_stmt(ctx, channel=body.channel, subject_index=subject_index)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([_consent_event_out(r) for r in rows], total=total, params=params)
+
+
+@router.post(
+    "/engage/consent/events/{event_id}:unmask",
+    response_model=ConsentUnmaskedOut,
+    summary="Reveal the address one consent event is about (dangerous; audited every time)",
+    dependencies=[Entitled],
+)
+async def unmask_consent_event(
+    event_id: uuid.UUID,
+    session: SessionDep,
+    ctx: ConsentUnmask,
+    request: Request,
+) -> ConsentUnmaskedOut:
+    address = await services.unmask_consent_subject(
+        session, ctx, event_id=event_id, request=request
+    )
+    return ConsentUnmaskedOut(event_id=str(event_id), address=address)
 
 
 # --------------------------------------------------------------------- lists & campaigns

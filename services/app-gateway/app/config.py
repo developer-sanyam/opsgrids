@@ -30,6 +30,13 @@ class Settings(ServiceSettings):
     #: Sign-in and password reset are reachable without a token, so they are limited by
     #: address and much harder.
     anonymous_rate_limit_per_minute: int = 60
+    #: Provider webhooks (`WEBHOOK_PUBLIC_PATHS`) are counted in their own buckets, per address and
+    #: per path, so neither a sign-in flood nor a webhook flood starves the other. Generous by
+    #: design: Meta delivers from a handful of addresses, bursts, and retries a 429 — a limit that
+    #: bites turns into redelivery, not into a lost event. The global figure is the whole path's
+    #: ceiling per minute (`0` disables it).
+    webhook_rate_limit_per_minute: int = 600
+    webhook_global_rate_limit_per_minute: int = 3000
     upstream_timeout_seconds: float = 30.0
 
     def model_post_init(self, _: object) -> None:

@@ -13,6 +13,8 @@ make relay SERVICE=notification            # outbox relay
 - **Transactional plumbing** (`notification` product, gated on the `notification` entitlement):
   `templates`, `rules`, `messages`, the append-only `deliveries` ledger, `preferences`, and the
   WhatsApp inbox (`conversations`, `inbound_messages`).
+- **Consent** (`consent_events`, both products): the append-only ledger of who opted in or out of
+  what, and the one decision every send path asks — see "Consent" below.
 - **Engage** (`engage` product, gated separately at `/api/v1/engage`): an organisation's own
   sending identity (`email_connections`, `email_domains`, `senders`), its audience (`contacts`,
   `contact_lists`, `suppressions`), and its `campaigns`. Two products, one process, two
@@ -53,6 +55,131 @@ What that means concretely:
   the content and the connection, not the DNS.
 - `GET /engage/setup` folds connection, domain, sender, contacts and campaign into one
   get-started checklist for a fresh organisation's first screen.
+
+## Whose connection a message goes out on
+
+The process-wide transports (`transports.build`: one SMTP relay, one WhatsApp number, from the
+environment) belong to the **platform**. They carry **platform-owned** messages only — the
+set-password and reset email auth publishes under the platform tenant (the nil UUID, ADR-0013
+§3) — plus the `in_app` feed, which has no provider.
+
+Everything else is **tenant-owned**, and `app/dispatcher.py` sends it through that organization's
+own connection, resolved per send by `app/tenant_transport.py`:
+
+- `whatsapp` — the org's `provider_accounts` row: its `phone_number_id` and its sealed token,
+  opened for the send, on `WhatsAppCloudTransport`.
+- `email` — the org's `email_connections` row, through the same builder campaigns and test sends
+  use, so a tenant-named SMTP host passes the same egress guard (ADR-0016) on every send. It is
+  sent as the connection's login when that is an address (Google Workspace, Microsoft 365),
+  otherwise as the org's oldest verified sender.
+
+**The marker is `messages.organization_id`.** It is fixed when the message is staged and bound by
+row-level security, so a customer cannot mint a platform message and nothing about a rule, template
+or category can promote one. The default is fail-closed: only the nil tenant reaches the shared
+transport; a new customer-facing flow is safe without a line changed here.
+
+**No connection, no send — and no fallback.** A tenant-owned message whose org has no usable
+connection is failed at once (`state = failed`, never retried) with the reason in
+`messages.last_error`, the failed `deliveries` row and the `message.failed` event, and one
+structured log line (`dispatch.channel_unavailable`, with the organization id and reason, never a
+credential):
+
+| `last_error` | Meaning |
+|---|---|
+| `channel_not_connected` | No connected account for that org and channel (missing, disconnected, no token, or a `platform`-kind email connection). |
+| `channel_credentials_unreadable` | The stored token or password cannot be opened with this environment's `PII_ENCRYPTION_KEY`. Reconnect the channel. |
+| `smtp_host_not_allowed` | The org's SMTP host failed the egress guard on this send. |
+| `sender_not_configured` | An SMTP relay whose login is not an address, and the org has no verified sender to send as. |
+
+`EMAIL_TRANSPORT=log` is still honoured for tenant email, as it is for campaigns (the connection
+is required either way). `WHATSAPP_TRANSPORT` selects only the platform's own sender: a connected
+WhatsApp account is what enables that org's sending.
+
+A transport is built per send and closed with it; nothing is cached, so a disconnected or replaced
+credential stops being used on the next message. `email_connections.daily_cap` is enforced for
+campaigns only (`claim_campaign_batch`, which already counts rule-driven mail against it); a
+rule-driven send is not refused at the cap.
+
+## Consent
+
+Consent used to be split across two stores that never looked at each other: `preferences` (opt-outs
+for rule-driven sends, "absence means send") and `suppressions` (email, checked only by campaigns).
+Neither recorded **who** agreed, **when**, or **through what** — and Meta requires an opt-in for
+business-initiated WhatsApp messages. `consent_events` is the record, and `app/consent.py`'s
+`decide(session, organization_id, channel, purpose, address)` is the one question every send path
+now asks. Design: [ADR-0021](../../docs/adr/0021-consent-ledger.md).
+
+**The ledger.** One row per fact: `channel` (`whatsapp | email | sms`), `purpose` (`marketing |
+transactional`), the subject, `status` (`opted_in | opted_out`), `source`, `evidence`,
+`recorded_by`, `occurred_at`. **Append-only, enforced by the database**: `UPDATE` and `DELETE` are
+revoked from the app role (`migrations/env.py` re-applies the revoke after every schema-grant run),
+so a change of mind is a new row. The subject is the address **sealed** with a blind index — the
+same index `contacts`, `suppressions` and `conversations` use — and there is no plaintext address
+anywhere in the table. Reads return it masked; `POST /engage/consent/events/{id}:unmask` opens it
+behind the existing `engage.inbox.message.unmask` permission, an OTP step-up, and an audit row
+every time.
+
+**The policy.** The latest event for `(organization, channel, purpose, subject)` wins, ordered by
+`(occurred_at, created_at, id)`:
+
+| Purpose | Allowed when | Refused when |
+|---|---|---|
+| `transactional` | no event, or the latest is `opted_in` | the latest is `opted_out`; for email, also a `bounced` or `complained` suppression |
+| `marketing` | the latest is `opted_in` | the latest is `opted_out` **or there is no event at all** — silence is not consent |
+
+A STOP keyword opts the subject out of **both** purposes on that channel; an email unsubscribe link opts the address out of **marketing only** (invoices and receipts keep flowing).
+A rule is `marketing` when its `category` is `marketing` **or** the provider template it sends is
+registered as `marketing` (Meta's own classification, which is what carries the obligation);
+everything else is `transactional`. `in_app` has no consent regime.
+
+**The legacy stores still count.** `decide` also refuses when a `Preference` or a `Suppression`
+says no — deny if *either* says no — so nothing blocked before the ledger became allowed by it. The
+writers keep them in step: STOP/START, the unsubscribe link, `set_preference`,
+`add_suppression`/`remove_suppression` all write the ledger too. Lifting a refusal (START, an
+operator lifting a preference or a manual suppression) **restores consent that existed and never
+creates it**: transactional is re-opened, marketing only if the subject had opted in before.
+
+**Where it is called.** Rule staging (`stage_message`) and dispatch (`claim_for_send`) call
+`consent.check_send`; a refusal marks the message `suppressed` with a machine-readable
+`Message.suppression_reason` (`consent:no_opt_in`, `consent:opted_out`, ...). Campaigns read
+`selectors.sendable_contacts`, whose SQL predicate is pinned to `decide` by a test, and
+`claim_campaign_batch` asks again per batch (`consent.decide_indexes`, two queries for the batch)
+and records the reason on the recipient's `error` (`consent:opted_out`). The inbound STOP/START
+handler and both unsubscribe POSTs (one-click and the confirm form) write the ledger.
+
+**`legacy_import` is unverified consent — read this before relying on the ledger as evidence.**
+When the ledger was introduced, every existing active, unsuppressed contact was carried in as an
+`opted_in` email/marketing event with `source = legacy_import` so existing campaigns kept selecting
+the same people. Nothing records how or when they agreed; the evidence text says so. Likewise
+**contacts added or imported through the API are recorded as the organization's *attestation***
+(`source = admin` / `import`, attributed to the operator, evidence "attests ... (unverified)") —
+and only where the ledger holds no earlier marketing event for that address, so re-importing
+somebody never undoes their opt-out. Filter on `source` to tell a customer's own opt-in
+(`checkout`, `web_form`, `inbound_keyword`) from these. **WhatsApp marketing has no such carry-over**:
+there were no legacy WhatsApp marketing sends, so it needs an explicit `opted_in` event.
+
+**Backfill.** The migration (`d5a7c3e91f48`) runs `app/consent_backfill.py`: every `Suppression`
+becomes an `opted_out` event (`unsubscribed` → `unsubscribe_link`, `manual` → `admin`, `bounced` →
+`bounce`, `complained` → `complaint`; an unsubscribe or manual suppression opts out of marketing
+only, exactly what it did before, and a bounce or complaint of both), every `Preference` refusal
+becomes `opted_out` events for the purposes its category covers, and every active unsuppressed
+contact becomes the `legacy_import` opt-in above. It is idempotent (a deterministic
+`idempotency_key` per legacy row) and can be re-run at any time as the admin role:
+`cd services/notification && uv run python -m app.consent_backfill` — needed once if the previous
+release created contacts between the migration and the new code taking over.
+
+**API** (all under `/engage`, Engage entitlement, **no new permission codes**):
+
+| Route | Permission | |
+|---|---|---|
+| `POST /consent/events` | `engage.audience.contact.write` | Record an event. `source` (`checkout`, `web_form`, `import`, `admin`, `api`) and `evidence` are required; the system sources cannot be claimed. By `address` or, for email, `contact_id`. Optional `occurred_at` (not in the future) and `idempotency_key`. Returns the event (masked) and `effective`, the decision now. 201, or 200 on an idempotent replay. |
+| `GET /consent/events` | `engage.audience.contact.read` | The ledger, newest first, paged; filters `channel`, `purpose`, `status`, `contact_id`. |
+| `POST /consent/events:lookup` | `engage.audience.contact.read` | One subject's history by address, in the body so it never reaches an access log. |
+| `POST /consent/events/{id}:unmask` | `engage.inbox.message.unmask` + `amr=otp` | Open one event's address. Audited every time. |
+
+An opt-in can be recorded for an address a legacy suppression or a customer's STOP still refuses;
+`effective` says so (`suppressed_unsubscribed`, `preference_suppressed`, ...) rather than the
+caller assuming it took effect.
 
 ## Publishes
 
