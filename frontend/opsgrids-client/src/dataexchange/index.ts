@@ -1,4 +1,6 @@
+export { checkImportEntity } from "./checkEntity";
 export { collectPages, makeLookup } from "./lookups";
+export { majorToMinor, minorToMajor } from "./money";
 export { RowProblem, defineImportEntity } from "./types";
 export type {
   ColumnKind,

@@ -70,6 +70,9 @@ export interface ImportColumn {
   /** Exported but never imported and absent from the sample sheet: ids, timestamps, masked PII,
    *  rollups. An import ignores a read-only header without complaint. */
   readOnly?: boolean | undefined;
+  /** The opposite of `readOnly`: read on import and shown in the sample sheet, but not written by
+   *  an export because the list never returns it (opening stock, a value only create accepts). */
+  importOnly?: boolean | undefined;
 }
 
 /** A named set of reference data, loaded once per dialog open from the full list (all pages). */
@@ -270,6 +273,9 @@ export interface DataExchangeMeta {
 export interface UseImportExportOptions<Filters> {
   /** The screen's current list filters, passed to `export.fetchPage`. */
   filters?: Filters | undefined;
+  /** Called once when an import run ends (finished or cancelled) having created at least one
+   *  record: the screen reloads its list here so the new rows appear without a refresh. */
+  onImported?: ((summary: ImportSummary) => void) | undefined;
 }
 
 export interface UseImportExportResult {
