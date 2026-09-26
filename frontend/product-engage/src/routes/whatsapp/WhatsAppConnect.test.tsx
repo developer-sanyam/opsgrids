@@ -352,7 +352,9 @@ describe("the Meta window", () => {
 
     const reopen = (await screen.findByRole("button", { name: /Reopen Meta window/ })) as HTMLButtonElement;
     expect(reopen.disabled).toBe(true);
-    expect(screen.getByText("Loading Meta's sign-in…")).toBeTruthy();
+    // Wait for it: the button can be on screen a render before the loading note is, and a slow
+    // machine makes that gap long enough for a synchronous lookup to miss it.
+    expect(await screen.findByText("Loading Meta's sign-in…")).toBeTruthy();
     await user.click(reopen);
     expect(sdk.login).not.toHaveBeenCalled();
 
