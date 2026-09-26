@@ -3,10 +3,12 @@ import { useSearchParams } from "react-router-dom";
 
 import { DEFAULT_PAGE_SIZE, deleteProject, getAllMembers, listProjects } from "@/api/client";
 import type { ProjectHealth, ProjectOut, ProjectPhase } from "@/api/types";
+import { portfolioEntity } from "@/data/importExport/portfolio";
+import type { PortfolioFilters } from "@/data/importExport/portfolio";
 import { HEALTH_LABEL, PHASE_LABEL } from "@/data/labels";
 import { downloadCsv } from "@/lib/csv";
 import { formatDate } from "@/lib/format";
-import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
+import { Can, problemMessage, useAsync, useCan, useImportExport, useMutation } from "@opsgrids/client";
 import {
   Avatar,
   Button,
@@ -27,7 +29,13 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column, SelectOption, TableSelection } from "@/ui";
-import { BriefcaseIcon, DownloadIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
+import {
+  BriefcaseIcon,
+  DownloadIcon,
+  ImportExportButton,
+  useDebouncedValue,
+  useToast,
+} from "@opsgrids/ui";
 import { MilestoneFormDialog } from "./MilestoneFormDialog";
 import { ProjectDetailDialog } from "./ProjectDetailDialog";
 import { ProjectFormDialog } from "./ProjectFormDialog";
@@ -112,6 +120,13 @@ export function PortfolioPage() {
   );
   const projects = useAsync(loader, [debouncedSearch, health, phase, sort, page, size]);
   const rows = projects.status === "success" ? projects.data.items : [];
+
+  // What an export of this list must respect: the filters and sort on screen, not the page window.
+  const exportFilters = useMemo<PortfolioFilters>(
+    () => ({ q: debouncedSearch, health, phase, sort }),
+    [debouncedSearch, health, phase, sort],
+  );
+  const dx = useImportExport(portfolioEntity, { filters: exportFilters });
 
   const selection: TableSelection<ProjectOut> = {
     selected: selectedIds,
@@ -246,6 +261,13 @@ export function PortfolioPage() {
                 <span className="text-muted font-medium">projects</span>
               </span>
             ) : null}
+            <ImportExportButton
+              meta={dx.meta}
+              state={dx.state}
+              actions={dx.actions}
+              canImport={canWrite}
+              canExport
+            />
             <Can permission={WRITE}>
               <Button onClick={() => setCreating(true)}>New project</Button>
             </Can>
