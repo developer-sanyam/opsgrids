@@ -55,8 +55,8 @@ export function ProjectFormDialog({
   const [progress, setProgress] = useState(String(project?.progress_pct ?? 0));
   const [startDate, setStartDate] = useState(project?.start_date ?? "");
   const [targetDate, setTargetDate] = useState(project?.target_date ?? "");
-  const [budget, setBudget] = useState(minorToInput(project?.budget_minor ?? 0));
-  const [spent, setSpent] = useState(minorToInput(project?.spent_minor ?? 0));
+  const [budget, setBudget] = useState(minorToInput(project?.budget_minor ?? 0, project?.currency ?? "INR"));
+  const [spent, setSpent] = useState(minorToInput(project?.spent_minor ?? 0, project?.currency ?? "INR"));
   const [currency, setCurrency] = useState(project?.currency ?? "INR");
   const [teamSize, setTeamSize] = useState(String(project?.team_size ?? 0));
   const [summary, setSummary] = useState(project?.summary ?? "");
@@ -86,8 +86,8 @@ export function ProjectFormDialog({
 
   const save = useMutation(
     () => {
-      const budgetParsed = parseMinor(budget);
-      const spentParsed = parseMinor(spent);
+      const budgetParsed = parseMinor(budget, currency);
+      const spentParsed = parseMinor(spent, currency);
       const shared = {
         name: name.trim(),
         client: client.trim(),
@@ -123,9 +123,9 @@ export function ProjectFormDialog({
     if (!Number.isFinite(progressNumber) || progressNumber < 0 || progressNumber > 100) {
       found.progress_pct = "Enter a percentage between 0 and 100.";
     }
-    const budgetParsed = parseMinor(budget);
+    const budgetParsed = parseMinor(budget, currency);
     if (!budgetParsed.ok) found.budget_minor = budgetParsed.message;
-    const spentParsed = parseMinor(spent);
+    const spentParsed = parseMinor(spent, currency);
     if (!spentParsed.ok) found.spent_minor = spentParsed.message;
     if (currency.trim().length !== 3) found.currency = "Use a 3-letter ISO currency code, like INR.";
     if (startDate.trim() === "") found.start_date = "Give the project a start date.";

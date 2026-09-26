@@ -138,6 +138,44 @@ describe("columns", () => {
     expect(named).toEqual(["owners"]);
     expect(Object.keys(lookups ?? {})).toEqual(named);
   });
+
+  it("tells the user how to fix an owner the team list does not hold", () => {
+    const owner = portfolioEntity.columns.find((c) => c.key === "owner");
+    expect(owner?.lookupHint).toBe(
+      "Use the team member's name exactly as on the Team screen. If two members share a name, rename one first.",
+    );
+  });
+
+  it("names the Record ID column as the mark of a row that is already in the system", () => {
+    expect(portfolioEntity.recordIdKey).toBe("id");
+    const idColumn = portfolioEntity.columns.find((c) => c.key === portfolioEntity.recordIdKey);
+    expect(idColumn).toMatchObject({ header: "Record ID", readOnly: true });
+    expect(portfolioEntity.notes?.join("\n")).toMatch(/A row with a Record ID came out of the system/);
+  });
+
+  it("lets only the summary run over more than one line", () => {
+    const multiline = portfolioEntity.columns.filter((c) => c.multiline === true).map((c) => c.key);
+    expect(multiline).toEqual(["summary"]);
+  });
+
+  it("bounds every whole number by the column it is stored in", () => {
+    const byKey = Object.fromEntries(portfolioEntity.columns.map((c) => [c.key, c]));
+    // progress_pct is 0 to 100 on the server; team_size is a 32-bit integer, and a larger value is a 500.
+    expect(byKey.progress_pct).toMatchObject({ kind: "integer", min: 0, max: 100 });
+    expect(byKey.team_size).toMatchObject({ kind: "integer", min: 0, max: 2_147_483_647 });
+  });
+
+  it("describes open tasks as the stored figure it is, and keeps it out of the import", () => {
+    const openTasks = portfolioEntity.columns.find((c) => c.key === "open_tasks");
+    expect(openTasks).toMatchObject({ readOnly: true, kind: "integer" });
+    expect(openTasks?.help).toBe(
+      "The project's stored open-work figure, not counted from its tasks. Imported projects start at 0.",
+    );
+    expect(portfolioEntity.notes?.join("\n")).toMatch(
+      /Open tasks is a stored figure, not counted from tasks\..*an imported project starts with 0 open tasks/,
+    );
+    expect(portfolioEntity.notes?.join("\n")).not.toMatch(/counted by the system/);
+  });
 });
 
 describe("sample rows", () => {
@@ -281,15 +319,13 @@ describe("toPayload", () => {
     expect(body).not.toHaveProperty("milestone_count");
   });
 
-  it("refuses an owner who is not a team member, and says where to add them", () => {
+  it("fails the row, not the run, for an owner the list does not resolve: the engine's own message and hint reach the user first", () => {
     const attempt = () => portfolioEntity.toPayload(parsed({ owner: "Zed Nobody" }), context);
     expect(attempt).toThrow(RowProblem);
-    expect(attempt).toThrow(
-      'There is no team member called "Zed Nobody". Add them on the Team screen first, or leave Owner blank.',
-    );
+    expect(attempt).toThrow('"Zed Nobody" is not in the list.');
   });
 
-  it("refuses an owner name that two members share, and says what to do", () => {
+  it("does not resolve an owner name that two members share", () => {
     const shared: ImportContext = {
       signal,
       lookups: {
@@ -299,9 +335,9 @@ describe("toPayload", () => {
         ]),
       },
     };
-    expect(() => portfolioEntity.toPayload(parsed({ owner: "sam lee" }), shared)).toThrow(
-      'More than one team member is called "sam lee", so the owner cannot be chosen. Rename one of them on the Team screen, then import again.',
-    );
+    expect(() => portfolioEntity.toPayload(parsed({ owner: "sam lee" }), shared)).toThrow(RowProblem);
+    expect(shared.lookups.owners?.isAmbiguous("sam lee")).toBe(true);
+    expect(shared.lookups.owners?.labels).toEqual([]);
   });
 
   it("fails the row rather than crash when a required date is blank", () => {
@@ -378,6 +414,39 @@ describe("loadLookups", () => {
         json(500, { title: "Server error", status: 500 }),
     });
     await expect(portfolioEntity.loadLookups?.(signal)).rejects.toMatchObject({ status: 500 });
+  });
+
+  it("keeps a member the list serves twice once, so a real name is never called ambiguous", async () => {
+    stubApi({
+      "GET /api/v1/projects-workspace/members": (url) =>
+        url.searchParams.get("page") === "1"
+          ? json(200, {
+              items: [member("p-01", "Meera Iyer"), member("p-02", "Arjun Rao")],
+              total: 3,
+              page: 1,
+              size: 200,
+              pages: 2,
+            })
+          : json(200, {
+              items: [member("p-02", "Arjun Rao"), member("p-03", "Neha Kulkarni")],
+              total: 3,
+              page: 2,
+              size: 200,
+              pages: 2,
+            }),
+    });
+    const lookups = await portfolioEntity.loadLookups?.(signal);
+    expect(lookups?.owners?.labels).toEqual(["Meera Iyer", "Arjun Rao", "Neha Kulkarni"]);
+    expect(lookups?.owners?.isAmbiguous("Arjun Rao")).toBe(false);
+    expect(lookups?.owners?.resolve("Arjun Rao")).toBe("p-02");
+  });
+
+  it("fails rather than hand over a roster that stays short of the server's total", async () => {
+    stubApi({
+      "GET /api/v1/projects-workspace/members": () =>
+        json(200, { items: [member("p-01", "Meera Iyer")], total: 4, page: 1, size: 200, pages: 1 }),
+    });
+    await expect(portfolioEntity.loadLookups?.(signal)).rejects.toThrow(/changed while it was being read/);
   });
 });
 

@@ -132,3 +132,87 @@ describe("ProjectFormDialog", () => {
     expect(screen.getByRole("button", { name: "Save changes" })).toBeTruthy();
   });
 });
+
+describe("ProjectFormDialog: money in each currency's own decimals", () => {
+  function openEdit(existing: ProjectOut) {
+    vi.spyOn(client, "updateProject").mockResolvedValue(existing);
+    render(<ProjectFormDialog project={existing} members={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+    return userEvent.setup();
+  }
+
+  it.each([
+    ["INR", 250_000_000, 112_000_050, "2500000", "1120000.50"],
+    ["JPY", 1_500_000, 250_000, "1500000", "250000"],
+    ["KWD", 12_345, 5, "12.345", "0.005"],
+  ])("shows a %s project's budget and spend as %s and %s", (currency, budget, spent, budgetShown, spentShown) => {
+    openEdit({ ...CREATED, currency, budget_minor: budget, spent_minor: spent });
+    expect(screen.getByLabelText(/^Budget/)).toHaveProperty("value", budgetShown);
+    expect(screen.getByLabelText(/^Spent/)).toHaveProperty("value", spentShown);
+  });
+
+  it("saves a yen project untouched with its budget and spend exactly as stored", async () => {
+    const user = openEdit({ ...CREATED, currency: "JPY", budget_minor: 1_500_000, spent_minor: 250_000 });
+    await user.type(screen.getByLabelText("Name"), " II");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(client.updateProject).toHaveBeenCalledTimes(1));
+    expect(client.updateProject).toHaveBeenCalledWith(
+      "PRJ-200",
+      expect.objectContaining({ budget_minor: 1_500_000, spent_minor: 250_000, currency: "JPY" }),
+    );
+  });
+
+  it("saves a dinar project untouched with its budget exactly as stored", async () => {
+    const user = openEdit({ ...CREATED, currency: "KWD", budget_minor: 12_345, spent_minor: 0 });
+    await user.type(screen.getByLabelText("Name"), " II");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(client.updateProject).toHaveBeenCalledTimes(1));
+    expect(client.updateProject).toHaveBeenCalledWith(
+      "PRJ-200",
+      expect.objectContaining({ budget_minor: 12_345, spent_minor: 0, currency: "KWD" }),
+    );
+  });
+
+  it.each([
+    ["24000.50", "INR", 2_400_050],
+    ["1500000", "JPY", 1_500_000],
+    ["12.345", "KWD", 12_345],
+  ])("sends a budget of %s %s as %i minor units", async (typed, currency, minor) => {
+    vi.spyOn(client, "createProject").mockResolvedValue(CREATED);
+    const { user } = openCreate();
+
+    await fillRequired(user);
+    await user.type(screen.getByLabelText("Target date"), "2026-06-01");
+    const code = screen.getByLabelText("Currency");
+    await user.clear(code);
+    await user.type(code, currency);
+    await user.type(screen.getByLabelText(/^Budget/), typed);
+    await user.click(screen.getByRole("button", { name: "Create project" }));
+
+    await waitFor(() => expect(client.createProject).toHaveBeenCalledTimes(1));
+    expect(client.createProject).toHaveBeenCalledWith(
+      expect.objectContaining({ budget_minor: minor, currency }),
+    );
+  });
+
+  it("refuses a decimal budget for yen, before any request", async () => {
+    const spy = vi.spyOn(client, "createProject");
+    const { user } = openCreate();
+
+    await fillRequired(user);
+    await user.type(screen.getByLabelText("Target date"), "2026-06-01");
+    const code = screen.getByLabelText("Currency");
+    await user.clear(code);
+    await user.type(code, "JPY");
+    const budget = screen.getByLabelText(/^Budget/);
+    await user.clear(budget);
+    await user.type(budget, "1500.5");
+    await user.click(screen.getByRole("button", { name: "Create project" }));
+
+    expect(
+      await screen.findByText("Enter a whole-currency amount, like 24000. JPY has no decimal places."),
+    ).toBeTruthy();
+    expect(spy).not.toHaveBeenCalled();
+  });
+});
