@@ -4,13 +4,14 @@
  * Strictly sequential and throttled: the gateway allows 300 requests per user per minute, shared
  * with everything else the user does. A 429 is the only status ever retried (it says "wait",
  * where a 403 or 422 says "no" and does not fix itself); every other 4xx and every 5xx fails that
- * row once, with the server's own sentence. A 409 is not a failure: the record exists, so the row
- * is skipped, which is what makes re-uploading the same file safe.
+ * row once, with the server's own sentence. A 409 that says the record already exists is not a
+ * failure: the row is skipped, which is what makes re-uploading the same file safe.
  *
  * The clock and the sleep are injectable so the tests spend no real time.
  */
 
 import { ApiError } from "../http";
+import { fieldErrors } from "../problem";
 import { isAbortError, prepareMessage, rowMessage } from "./errors";
 import type { AnyEntity } from "./cells";
 import type { ImportContext, ImportProgress, ParsedRow, RowOutcome, RowStatus } from "./types";
@@ -53,6 +54,20 @@ export interface RunResult {
   /** Rows the entity's `toPayload` refused when their turn came. */
   invalid: number;
   cancelled: boolean;
+}
+
+/**
+ * Whether a 409 says "this record already exists". Only that is a skip: it is what makes
+ * re-uploading a file safe. A conflict of any other kind (a warehouse with no default bin, an
+ * unknown pipeline stage) means this row was refused, and calling it "already exists" would hide
+ * a row that was never imported. The services say it either with the `duplicate` field code or in
+ * their own sentence ("already exists", "already recorded", "conflicts with something that
+ * already exists").
+ */
+function isDuplicate(error: ApiError): boolean {
+  if (fieldErrors(error.problem).some((entry) => entry.code === "duplicate")) return true;
+  const sentences = [error.problem?.detail, error.problem?.title, error.message];
+  return sentences.some((sentence) => sentence !== undefined && /\balready\b/i.test(sentence));
 }
 
 const realSleep = (ms: number): Promise<void> =>
@@ -124,7 +139,7 @@ export async function runImport(args: RunImportArgs): Promise<RunResult> {
         return true;
       } catch (error) {
         if (isCancelled() && isAbortError(error)) return false;
-        if (error instanceof ApiError && error.status === 409) {
+        if (error instanceof ApiError && error.status === 409 && isDuplicate(error)) {
           conclude(item, "skipped", rowMessage(error));
           return true;
         }

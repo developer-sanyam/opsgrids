@@ -98,6 +98,42 @@ export function widthFor(longest: number): number {
   return Math.min(Math.max(longest + 2, 12), 48);
 }
 
+function isXmlCharacter(code: number): boolean {
+  if (code === 0x09 || code === 0x0a || code === 0x0d) return true;
+  if (code < 0x20 || code === 0x7f) return false;
+  if (code === 0xfffe || code === 0xffff) return false;
+  return code < 0xfdd0 || code > 0xfdef;
+}
+
+/**
+ * The text without what XML cannot carry: control characters, DEL, U+FFFE, U+FFFF, the U+FDD0 to
+ * U+FDEF non-characters and a surrogate that has lost its partner. One such character in a
+ * cell makes Excel offer to "repair" the whole workbook.
+ */
+function xmlSafe(text: string): string {
+  if (/^[ -~]*$/.test(text)) return text;
+  let safe = "";
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        safe += text.slice(i, i + 2);
+        i += 1;
+      }
+    } else if (code < 0xdc00 || code > 0xdfff) {
+      if (isXmlCharacter(code)) safe += text.charAt(i);
+    }
+  }
+  return safe;
+}
+
+/** Text as a cell can hold it: XML-safe, and cut to Excel's limit without splitting a surrogate pair. */
 export function clipCell(text: string): string {
-  return text.length > MAX_CELL_CHARACTERS ? `${text.slice(0, MAX_CELL_CHARACTERS - 1)}…` : text;
+  const safe = xmlSafe(text);
+  if (safe.length <= MAX_CELL_CHARACTERS) return safe;
+  let end = MAX_CELL_CHARACTERS - 1;
+  const last = safe.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return `${safe.slice(0, end)}…`;
 }

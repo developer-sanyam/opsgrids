@@ -9,7 +9,7 @@ import type * as ExcelJS from "exceljs";
 
 import { displayValue, importableColumns, isValidDate, utcMidnight } from "./cells";
 import type { AnyEntity } from "./cells";
-import { loadExcel, moneyNumberFormat, styleHeaderRow, validationsOf, widthFor, workbookToBlob } from "./excel";
+import { clipCell, loadExcel, moneyNumberFormat, styleHeaderRow, validationsOf, widthFor, workbookToBlob } from "./excel";
 import { currencyExponent } from "./money";
 import { substituteSampleRows } from "./sample";
 import { DEFAULT_MAX_ROWS } from "./workbook";
@@ -53,6 +53,11 @@ function isBlankSample(value: SheetValue | undefined): value is null | undefined
 
 /** How a sample value is written: numbers as numbers, dates as dates, everything else as text. */
 function sampleCell(column: ImportColumn, value: SheetValue | undefined): string | number | Date | null {
+  const written = plainSampleCell(column, value);
+  return typeof written === "string" ? clipCell(written) : written;
+}
+
+function plainSampleCell(column: ImportColumn, value: SheetValue | undefined): string | number | Date | null {
   if (isBlankSample(value)) return null;
   const shown = displayValue(value);
   switch (column.kind) {
@@ -193,12 +198,21 @@ function generalRules(entity: AnyEntity, columns: readonly ImportColumn[]): stri
     `Existing ${entity.noun} are skipped, never overwritten. Importing the same file again is safe.`,
     "The example rows on the Import sheet are ignored while they are unchanged. Delete them or replace them with your own.",
   ];
+  if (entity.recordIdKey !== undefined) {
+    rules.push(
+      "Rows exported from the system carry a Record ID; those rows are skipped, delete the Record ID to add a row as a new record.",
+    );
+  }
   if (has("date")) rules.push("Write dates as YYYY-MM-DD, e.g. 2026-03-04.");
   if (has("money")) {
     rules.push("Write money in major units (1499.50, not 149950) with the currency in the currency column.");
   }
   if (has("phone")) rules.push("Write phone numbers with the country code, starting with +.");
-  rules.push("Do not rename the headers on the Import sheet.");
+  rules.push(
+    "Hidden rows and columns are imported like any others",
+    "Formulas are read as their last calculated value",
+    "Do not rename the headers on the Import sheet.",
+  );
   return rules;
 }
 
@@ -245,10 +259,10 @@ function writeLists(sheet: ExcelJS.Worksheet, plan: ListPlan): void {
     const column = sheet.getColumn(index + 1);
     column.width = widthFor(Math.max(list.header.length, ...list.labels.map((label) => label.length)));
     const header = sheet.getCell(1, index + 1);
-    header.value = list.header;
+    header.value = clipCell(list.header);
     list.labels.forEach((label, row) => {
       const cell = sheet.getCell(row + 2, index + 1);
-      cell.value = label;
+      cell.value = clipCell(label);
       cell.numFmt = TEXT_FORMAT;
     });
   });

@@ -161,6 +161,7 @@ export interface ProductEntityOptions {
   loadLookups?: ImportEntity<ProductPayload, ProductItem, ProductFilters>["loadLookups"];
   columns?: readonly ImportColumn[];
   sampleRows?: readonly Record<string, SheetValue>[];
+  recordIdKey?: string;
 }
 
 export function makeProductEntity(
@@ -174,6 +175,7 @@ export function makeProductEntity(
     columns: options.columns ?? productColumns,
     sampleRows: options.sampleRows ?? productSamples,
     maxRows: options.maxRows,
+    recordIdKey: options.recordIdKey,
     notes: ["A SKU that already exists is skipped."],
     loadLookups: options.loadLookups ?? (() => Promise.resolve(productLookups)),
     toPayload: (row, ctx) => toProductPayload(row, ctx.lookups),

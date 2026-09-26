@@ -17,6 +17,7 @@ import {
   utcMidnight,
 } from "./cells";
 import type { AnyEntity, CellInput } from "./cells";
+import { EMAIL_MAX, normaliseEmail } from "./email";
 import { compareDecimals, parseMajorUnits, plainNumberString, describeMoneyProblem } from "./money";
 import type { ImportColumn, ImportContext, LookupSet, ParsedRow, ParsedValue } from "./types";
 import { RowProblem } from "./types";
@@ -31,7 +32,6 @@ export interface CoerceEnv {
 }
 
 const DEFAULT_CURRENCY = "INR";
-const EMAIL_MAX = 254;
 const ENUM_LIST_LIMIT = 12;
 
 const TRUE_WORDS = new Set(["yes", "y", "true", "1"]);
@@ -42,12 +42,6 @@ const fail = (error: string): Coerced => ({ ok: false, error });
 
 function quote(text: string): string {
   return `'${text.length > 40 ? `${text.slice(0, 37)}…` : text}'`;
-}
-
-function plural(header: string): string {
-  if (/[^aeiou]y$/i.test(header)) return `${header.slice(0, -1)}ies`;
-  if (/(?:s|x|z|ch|sh)$/i.test(header)) return `${header}es`;
-  return `${header}s`;
 }
 
 function normalise(text: string): string {
@@ -70,8 +64,18 @@ function textOf(cell: CellInput): string | null {
   if (typeof cell === "string") return cell.trim();
   if (typeof cell === "number") return plainNumberString(cell);
   if (typeof cell === "boolean") return cell ? "TRUE" : "FALSE";
-  if (cell instanceof Date) return isValidDate(cell) ? isoDate(cell) : null;
   return null;
+}
+
+/**
+ * A real date cell where text belongs is Excel's doing: "1-10" or "11-50" typed into a General
+ * cell becomes 10 January or 11 May. Accepting it as an ISO date would import the wrong text, so
+ * it is refused with the way out.
+ */
+function excelDateInTextColumn(column: ImportColumn): Coerced {
+  return fail(
+    `${column.header} was turned into a date by Excel (for example 1-10 becomes 10 January). Format the column as Text and type it again.`,
+  );
 }
 
 /** The text a number-typed cell holds: digits as typed, or the plain form of a number cell. */
@@ -94,6 +98,7 @@ function outOfBounds(column: ImportColumn, value: number): string | null {
 
 function coerceText(column: ImportColumn, cell: CellInput, env: CoerceEnv): Coerced {
   const { header } = column;
+  if (cell instanceof Date) return excelDateInTextColumn(column);
   const text = textOf(cell);
   if (text === null) return fail(`${header} must be text`);
   if (hasControlCharacter(text, column.multiline === true)) {
@@ -125,15 +130,16 @@ function coerceText(column: ImportColumn, cell: CellInput, env: CoerceEnv): Coer
 function coerceLookup(column: ImportColumn, name: string, text: string, env: CoerceEnv): Coerced {
   const lookup = env.lookups[name];
   if (lookup === undefined) {
-    return fail(`The list of ${plural(column.header)} could not be loaded, so ${column.header} cannot be checked`);
+    return fail(`The accepted values for ${column.header} could not be loaded, so it cannot be checked`);
   }
   if (lookup.resolve(text) !== undefined) return ok(text);
+  const hint = column.lookupHint === undefined ? "" : ` ${column.lookupHint}`;
   if (lookup.isAmbiguous(text)) {
     return fail(
-      `${quote(text)} matches more than one of the ${plural(column.header)} (see the Lists sheet), so it cannot be chosen`,
+      `${quote(text)} matches more than one of the accepted values for ${column.header} (see the Lists sheet), so it cannot be chosen.${hint}`,
     );
   }
-  return fail(`${quote(text)} is not in the list of ${plural(column.header)} (see the Lists sheet)`);
+  return fail(`${quote(text)} is not one of the accepted values for ${column.header} (see the Lists sheet).${hint}`);
 }
 
 function coerceInteger(column: ImportColumn, cell: CellInput): Coerced {
@@ -206,6 +212,7 @@ function coerceBoolean(column: ImportColumn, cell: CellInput): Coerced {
 
 function coerceEnum(column: ImportColumn, cell: CellInput): Coerced {
   const options = column.options ?? [];
+  if (cell instanceof Date) return excelDateInTextColumn(column);
   const text = textOf(cell);
   if (text === null || text === "") return fail(`${column.header} must be one of the allowed values`);
   const wanted = normalise(text);
@@ -223,13 +230,14 @@ function coerceEnum(column: ImportColumn, cell: CellInput): Coerced {
 
 function coerceEmail(column: ImportColumn, cell: CellInput): Coerced {
   const { header } = column;
-  const text = typeof cell === "string" ? cell.trim().toLowerCase() : null;
+  const invalid = fail(`${header} must be a valid email address, e.g. name@example.com`);
+  if (typeof cell !== "string") return invalid;
+  const trimmed = cell.trim();
+  if (hasControlCharacter(trimmed)) return invalid;
   const limit = Math.min(column.maxLength ?? EMAIL_MAX, EMAIL_MAX);
-  if (text === null || hasControlCharacter(text) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) {
-    return fail(`${header} must be a valid email address, e.g. name@example.com`);
-  }
-  if (text.length > limit) return fail(`${header} is too long (${text.length} characters; the limit is ${limit})`);
-  return ok(text);
+  if (trimmed.length > limit) return fail(`${header} is too long (${trimmed.length} characters; the limit is ${limit})`);
+  const address = normaliseEmail(trimmed);
+  return address === null ? invalid : ok(address);
 }
 
 function coercePhone(column: ImportColumn, cell: CellInput): Coerced {

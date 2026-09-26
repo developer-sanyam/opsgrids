@@ -16,6 +16,8 @@ import type { ImportColumn, LookupSet, SheetValue } from "./types";
 
 const TEXT_FORMAT = "@";
 const DEFAULT_MONEY_PLACES = 2;
+/** What a spreadsheet number keeps exactly (IEEE 754 double, as Excel shows it). */
+const MAX_NUMERIC_DIGITS = 15;
 
 /** `companies-2026-09-26.xlsx`, on the user's calendar day. */
 export function exportFileName(entity: Pick<AnyEntity, "fileStem">, date: Date): string {
@@ -37,10 +39,21 @@ function exportValue(column: ImportColumn, value: SheetValue | undefined): strin
   if (typeof value === "number") {
     return numeric ? value : (plainNumberString(value) ?? String(value));
   }
-  const text = value.trim();
+  const clipped = clipCell(value);
+  const text = clipped.trim();
   if (text === "") return null;
-  if (numeric && /^-?\d+(?:\.\d+)?$/.test(text)) return Number(text);
-  return clipCell(value);
+  // A number cell holds 15 significant digits; a longer value would come back changed when the
+  // file is imported again, so it stays the exact text it was.
+  if (numeric && /^-?\d+(?:\.\d+)?$/.test(text) && significantDigits(text) <= MAX_NUMERIC_DIGITS) {
+    return Number(text);
+  }
+  return clipped;
+}
+
+/** Digits that carry precision: no sign, no leading zeros, no trailing zeros of a fraction. */
+function significantDigits(decimal: string): number {
+  const [whole = "", fraction = ""] = decimal.replace(/^-/, "").split(".");
+  return `${whole}${fraction.replace(/0+$/, "")}`.replace(/^0+/, "").length;
 }
 
 function columnFormat(column: ImportColumn): string | null {

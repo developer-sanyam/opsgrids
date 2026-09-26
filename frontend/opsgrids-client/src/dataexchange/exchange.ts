@@ -12,6 +12,7 @@ import { problemMessage } from "../problem";
 import type { AnyEntity } from "./cells";
 import { downloadBlob } from "./download";
 import { exportFileName, buildExportWorkbook } from "./exporter";
+import { pagedRequest } from "./lookups";
 import { prepareImport } from "./preview";
 import type { PreparedImport } from "./preview";
 import { buildReportWorkbook, reportFileName } from "./report";
@@ -73,8 +74,24 @@ function failureNotice(what: string, error: unknown): string {
   return `${what} ${error instanceof ApiError ? problemMessage(error) : "Try again."}`;
 }
 
-async function loadLookups(entity: AnyEntity, signal: AbortSignal): Promise<LookupSet> {
-  return entity.loadLookups === undefined ? {} : entity.loadLookups(signal);
+/** Waits for `promise`, but only as long as `signal` allows; the promise itself carries on for whoever else needs it. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  const cancelled = (): DOMException => new DOMException("The request was cancelled", "AbortError");
+  if (signal.aborted) return Promise.reject(cancelled());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(cancelled());
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 function summarise(prepared: PreparedImport, result: RunResult): ImportSummary {
@@ -90,15 +107,16 @@ function summarise(prepared: PreparedImport, result: RunResult): ImportSummary {
 
 /**
  * Drops a row the list returned twice. Offset paging over an ordering that is not unique can hand
- * back one row on two pages (and skip another); the `id` column, when the entity has one, is what
- * tells two rows apart.
+ * back one row on two pages (and skip another); the record id column (`recordIdKey`, else a column
+ * keyed `id`), when the entity has one, is what tells two rows apart.
  */
 function withoutRepeats(entity: AnyEntity, items: readonly unknown[], lookups: LookupSet): unknown[] {
   const source = entity.export;
-  if (source === undefined || !entity.columns.some((column) => column.key === "id")) return [...items];
+  const idKey = entity.recordIdKey ?? "id";
+  if (source === undefined || !entity.columns.some((column) => column.key === idKey)) return [...items];
   const seen = new Set<string>();
   return items.filter((item) => {
-    const id = source.toRow(item, lookups).id;
+    const id = source.toRow(item, lookups)[idKey];
     if (id === null || id === undefined) return true;
     const key = String(id);
     if (seen.has(key)) return false;
@@ -120,6 +138,29 @@ export function createExchange(host: ExchangeHost): Exchange {
   let cancelRequested = false;
   let exportRun: AbortController | null = null;
   let reporting = false;
+  /**
+   * The reference lists, loaded once per dialog session and shared by every action in it: the
+   * pages of a large organisation's lists cost real requests from a shared budget, and opening a
+   * file, downloading the sample sheet and exporting would each ask for all of them again.
+   * Concurrent actions share one load in flight. Dropped when the dialog is reset or disposed and
+   * after an import that created records (the lists have changed); a failed load is not kept.
+   */
+  let lookupLoad: { loader: unknown; loading: Promise<LookupSet> } | null = null;
+
+  const lookupsFor = (entity: AnyEntity, signal: AbortSignal): Promise<LookupSet> => {
+    const loader = entity.loadLookups;
+    if (loader === undefined) return Promise.resolve({});
+    if (lookupLoad === null || lookupLoad.loader !== loader) {
+      // Tied to the dialog's life, not to the action that happened to ask first: cancelling an
+      // export must not fail the file being read on the same load.
+      const entry = { loader, loading: loader(life.signal) };
+      lookupLoad = entry;
+      entry.loading.catch(() => {
+        if (lookupLoad === entry) lookupLoad = null;
+      });
+    }
+    return untilAborted(lookupLoad.loading, signal);
+  };
 
   const publish = (patch: Partial<DataExchangeState>): void => {
     current = { ...current, ...patch };
@@ -136,7 +177,7 @@ export function createExchange(host: ExchangeHost): Exchange {
     publish({ phase: "reading", error: null, preview: null, progress: null, summary: null, notice: null });
     try {
       const sheet = await readWorkbook(file, entity);
-      const lookups = await loadLookups(entity, signal);
+      const lookups = await lookupsFor(entity, signal);
       if (mine !== session || signal.aborted) return;
       const built = prepareImport(entity, sheet, { lookups, signal }, file.name);
       prepared = built.prepared;
@@ -185,8 +226,12 @@ export function createExchange(host: ExchangeHost): Exchange {
     } finally {
       importing = false;
     }
-    // Outside the try: a screen's reload that throws is its own bug, not a failed import.
-    if (finished !== null && finished.created > 0 && attached) host.imported(finished);
+    if (finished !== null && finished.created > 0) {
+      // Rows now exist that the lists did not know about (a manager, a company): ask again next time.
+      lookupLoad = null;
+      // Outside the try: a screen's reload that throws is its own bug, not a failed import.
+      if (attached) host.imported(finished);
+    }
   };
 
   const cancelImport = (): void => {
@@ -202,6 +247,7 @@ export function createExchange(host: ExchangeHost): Exchange {
     }
     session += 1;
     prepared = null;
+    lookupLoad = null;
     publish({ phase: "menu", error: null, preview: null, progress: null, summary: null, notice: null });
   };
 
@@ -212,7 +258,7 @@ export function createExchange(host: ExchangeHost): Exchange {
     const mine = session;
     publish({ downloadingTemplate: true, notice: null });
     try {
-      const lookups = await loadLookups(entity, signal);
+      const lookups = await lookupsFor(entity, signal);
       const blob = await buildSampleWorkbook(entity, lookups);
       if (!signal.aborted) downloadBlob(sampleFileName(entity), blob);
     } catch (error) {
@@ -238,12 +284,17 @@ export function createExchange(host: ExchangeHost): Exchange {
     const cap = source.maxRows ?? DEFAULT_EXPORT_MAX_ROWS;
     publish({ exporting: { fetched: 0, total: 0 }, notice: null });
     try {
-      const lookups = await loadLookups(entity, run.signal);
+      const lookups = await lookupsFor(entity, run.signal);
       const fetched: unknown[] = [];
       let total = 0;
       for (let page = 1; ; page += 1) {
         if (!live()) return;
-        const result = await source.fetchPage({ page, size: EXPORT_PAGE_SIZE, filters, signal: run.signal });
+        // Through the same per-minute budget as the reference lists, waiting out a 429 once
+        // instead of failing a long export half way.
+        const result = await pagedRequest(
+          () => source.fetchPage({ page, size: EXPORT_PAGE_SIZE, filters, signal: run.signal }),
+          run.signal,
+        );
         if (!live()) return;
         total = result.total;
         fetched.push(...result.items);
@@ -309,6 +360,7 @@ export function createExchange(host: ExchangeHost): Exchange {
     },
     dispose() {
       attached = false;
+      lookupLoad = null;
       life.abort();
       cancelRequested = true;
       exportRun?.abort();

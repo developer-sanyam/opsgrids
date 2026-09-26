@@ -156,13 +156,71 @@ describe("checkImportEntity: the sample rows", () => {
       categories: makeLookup([]),
     });
     expect(problems).toEqual([
-      "Sample row 1 does not pass its own validation: 'Tools' is not in the list of Categories (see the Lists sheet)",
+      "Sample row 1 does not pass its own validation: 'Tools' is not one of the accepted values for Category (see the Lists sheet).",
     ]);
   });
 
   it("flags a column that is both read-only and import-only", () => {
     const problems = problemsFor([sku, { key: "x", header: "X", kind: "text", help: "X.", readOnly: true, importOnly: true }]);
     expect(problems).toContain('Column "x" is both readOnly and importOnly, so it would appear nowhere');
+  });
+
+  describe("recordIdKey", () => {
+    const idColumn: ImportColumn = { key: "id", header: "Record ID", kind: "text", help: "The id.", readOnly: true };
+    const check = (columns: readonly ImportColumn[], recordIdKey: string | undefined) =>
+      checkImportEntity(
+        makeProductEntity({ columns, sampleRows: [{ sku: "A", name: "B" }], ...(recordIdKey ? { recordIdKey } : {}) }),
+        productLookups,
+      );
+
+    it("accepts a key that names a read-only column, and an entity with none", () => {
+      expect(check([sku, name, idColumn], "id")).toEqual([]);
+      expect(check([sku, name], undefined)).toEqual([]);
+    });
+
+    it("flags a key that names no column", () => {
+      expect(check([sku, name], "id")).toContain('recordIdKey "id" names no column');
+    });
+
+    it("flags a key that names a column that is not read-only, since that column would be imported", () => {
+      expect(check([sku, name, { ...idColumn, readOnly: false }], "id")).toContain(
+        'recordIdKey "id" must name a readOnly column: the export\'s own id',
+      );
+      expect(check([sku, name], "sku")).toContain('recordIdKey "sku" must name a readOnly column: the export\'s own id');
+    });
+  });
+
+  describe("lookupHint and multiline", () => {
+    it("flags a lookupHint on a column that is not a lookup", () => {
+      const problems = problemsFor([sku, { key: "n", header: "Note", kind: "text", help: "A note.", lookupHint: "Import it first." }]);
+      expect(problems).toContain('Column "n" has a lookupHint but is not a lookup column');
+    });
+
+    it("accepts a lookupHint on a lookup column", () => {
+      const hinted: ImportColumn = {
+        key: "category",
+        header: "Category",
+        kind: "text",
+        help: "The category.",
+        lookup: "categories",
+        lookupHint: "Create it first.",
+      };
+      expect(problemsFor([sku, hinted], [{ sku: "A", category: "Hardware" }])).toEqual([]);
+    });
+
+    it("flags multiline on a column that is not text", () => {
+      const problems = problemsFor([sku, { key: "q", header: "Quantity", kind: "integer", help: "Units.", multiline: true }]);
+      expect(problems).toContain('Column "q" is marked multiline but is not a text column');
+      expect(problemsFor([sku, { key: "e", header: "Email", kind: "email", help: "Mail.", multiline: true }])).toContain(
+        'Column "e" is marked multiline but is not a text column',
+      );
+    });
+
+    it("accepts multiline on a text column", () => {
+      expect(
+        problemsFor([sku, { key: "n", header: "Notes", kind: "text", help: "Notes.", multiline: true }], [{ sku: "A" }]),
+      ).toEqual([]);
+    });
   });
 
   it("accepts an import-only column and a sample value for it", () => {

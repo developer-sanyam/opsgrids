@@ -4,6 +4,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../http";
+import { resetPageBudgetForTests } from "./lookups";
 import { buildSampleWorkbook } from "./template";
 import { fileOf, fileWithRows, loadBlob, makeProductEntity, productColumns, productLookups } from "./testkit";
 import type { ProductFilters, ProductItem, ProductPayload } from "./testkit";
@@ -25,6 +26,7 @@ interface Download {
 let downloads: Download[];
 
 beforeEach(() => {
+  resetPageBudgetForTests();
   downloads = [];
   const blobs = new Map<string, Blob>();
   URL.createObjectURL = vi.fn((blob: Blob) => {
@@ -180,7 +182,7 @@ describe("useImportExport: reading a file", () => {
     expect(preview?.rows.map((row) => row.row)).toEqual([4, 5, 2, 3]);
     expect(preview?.rows[0]).toMatchObject({ sample: false, error: "SKU is required" });
     expect(preview?.rows[1]?.error).toBe(
-      "'Nowhere' is not in the list of Categories (see the Lists sheet); Price must be a whole number for JPY, which has no decimal places",
+      "'Nowhere' is not one of the accepted values for Category (see the Lists sheet); Price must be a whole number for JPY, which has no decimal places",
     );
     expect(preview?.rows[2]).toMatchObject({
       error: null,
@@ -280,24 +282,21 @@ describe("useImportExport: reading a file", () => {
 
   it("drops a slow read that a newer choice has overtaken", async () => {
     const slow = deferred<typeof productLookups>();
-    let calls = 0;
-    const entity = makeProductEntity({
-      loadLookups: () => {
-        calls += 1;
-        return calls === 1 ? slow.promise : Promise.resolve(productLookups);
-      },
-    });
+    const loadLookups = vi.fn(() => slow.promise);
+    const entity = makeProductEntity({ loadLookups });
     const { result } = renderHook(() => useImportExport(entity));
     const older = await fileWithRows([...HEADERS], [["OLD-1", "Old", "", "", ""]], "old.xlsx");
     const newer = await fileWithRows([...HEADERS], validRows, "new.xlsx");
 
     const first = result.current.actions.openFile(older);
-    await waitFor(() => expect(calls).toBe(1));
-    await open(result, newer);
-    expect(result.current.state.preview?.fileName).toBe("new.xlsx");
+    await waitFor(() => expect(loadLookups).toHaveBeenCalledTimes(1));
+    // The newer choice waits on the same lists load rather than asking again.
+    const second = result.current.actions.openFile(newer);
+    await waitFor(() => expect(result.current.state.phase).toBe("reading"));
 
     slow.resolve(productLookups);
-    await settle(first);
+    await settle(Promise.all([first, second]).then(() => undefined));
+    expect(loadLookups).toHaveBeenCalledTimes(1);
     expect(result.current.state.preview?.fileName).toBe("new.xlsx");
   });
 
@@ -694,6 +693,43 @@ describe("useImportExport: exporting", () => {
     await exporting;
     expect(signal?.aborted).toBe(true);
     expect(downloads).toEqual([]);
+  });
+});
+
+describe("useImportExport: the lists are loaded once per dialog session", () => {
+  it("shares one load between opening a file, the sample sheet and an export, and reloads after reset", async () => {
+    const loadLookups = vi.fn(() => Promise.resolve(productLookups));
+    const entity = makeProductEntity({ loadLookups });
+    const { result } = renderHook(() => useImportExport(entity));
+    await open(result, await fileWithRows([...HEADERS], validRows));
+    await act(async () => {
+      await result.current.actions.downloadTemplate();
+    });
+    await act(async () => {
+      await result.current.actions.exportAll();
+    });
+    expect(loadLookups).toHaveBeenCalledTimes(1);
+    expect(downloads).toHaveLength(2);
+
+    act(() => result.current.actions.reset());
+    await act(async () => {
+      await result.current.actions.downloadTemplate();
+    });
+    expect(loadLookups).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads again after an import that created a row", async () => {
+    const loadLookups = vi.fn(() => Promise.resolve(productLookups));
+    const entity = makeProductEntity({ loadLookups });
+    const { result } = renderHook(() => useImportExport(entity));
+    await open(result, await fileWithRows([...HEADERS], [validRows[0] ?? []]));
+    await act(async () => {
+      await result.current.actions.startImport();
+    });
+    await act(async () => {
+      await result.current.actions.downloadTemplate();
+    });
+    expect(loadLookups).toHaveBeenCalledTimes(2);
   });
 });
 

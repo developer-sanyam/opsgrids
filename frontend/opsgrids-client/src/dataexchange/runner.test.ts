@@ -169,6 +169,71 @@ describe("runImport: a row that already exists (409)", () => {
   });
 });
 
+describe("runImport: a 409 is a skip only when the record already exists", () => {
+  async function runOne(error: ApiError) {
+    const h = harness(() => Promise.reject(error), rowsOf(1));
+    const result = await h.run();
+    return { result, outcome: result.outcomes[0], calls: h.create.mock.calls.length };
+  }
+
+  it.each([
+    "A supplier coded 'S-1' already exists",
+    "That SKU was already recorded",
+    "This conflicts with something that already exists",
+    "Company ALREADY EXISTS in this organisation",
+  ])("skips on the sentence %j", async (detail) => {
+    const { outcome, result } = await runOne(problem(409, detail));
+    expect(outcome).toMatchObject({ status: "skipped", message: detail });
+    expect(result).toMatchObject({ skipped: 1, failed: 0 });
+  });
+
+  it("skips on the duplicate field code, whatever the sentence says", async () => {
+    const error = problem(409, "The record could not be saved", [
+      { field: "code", code: "duplicate", message: "Code is taken" },
+    ]);
+    const { outcome } = await runOne(error);
+    expect(outcome?.status).toBe("skipped");
+  });
+
+  it("skips when only the problem's title says it", async () => {
+    const titled = new ApiError(409, "x", { title: "Company already exists" });
+    expect((await runOne(titled)).outcome?.status).toBe("skipped");
+  });
+
+  it.each([
+    "The warehouse has no default bin",
+    "Unknown pipeline stage 'Almost won'",
+    "Cannot receive stock while a stocktake is open",
+    "The version you are editing is out of date",
+  ])("fails, with the server's sentence, on the other conflict %j", async (detail) => {
+    const { outcome, result, calls } = await runOne(problem(409, detail));
+    expect(outcome).toMatchObject({ status: "failed", message: detail });
+    expect(result).toMatchObject({ skipped: 0, failed: 1, created: 0 });
+    expect(calls).toBe(1);
+  });
+
+  it("fails a 409 whose only field code is something else, and one with no body at all", async () => {
+    const coded = problem(409, "Stage is unknown", [{ field: "stage", code: "unknown_stage", message: "Stage is unknown" }]);
+    expect((await runOne(coded)).outcome?.status).toBe("failed");
+    const bare = await runOne(new ApiError(409, "Request failed with 409", null));
+    expect(bare.outcome).toMatchObject({ status: "failed", message: "Request failed with 409" });
+  });
+
+  it("does not mistake a word that merely contains 'already' for the sentence", async () => {
+    expect((await runOne(problem(409, "Unalready configured"))).outcome?.status).toBe("failed");
+  });
+
+  it("counts a refused conflict as failed in the progress the dialog shows, and goes on", async () => {
+    const h = harness((payload) => {
+      if (payload.sku === "SKU-1") return Promise.reject(problem(409, "The warehouse has no default bin"));
+      return Promise.resolve({ id: payload.sku });
+    }, rowsOf(2));
+    const result = await h.run();
+    expect(h.progress.at(-1)).toMatchObject({ done: 2, created: 1, skipped: 0, failed: 1 });
+    expect(result.outcomes.map((o) => o.status)).toEqual(["failed", "created"]);
+  });
+});
+
 describe("runImport: the rate limit (429)", () => {
   it("waits out the window counting down each second, then retries the same row and carries on", async () => {
     let calls = 0;
