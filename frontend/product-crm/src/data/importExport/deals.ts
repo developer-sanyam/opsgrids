@@ -6,8 +6,8 @@
  * from the full lists before anything is sent, and a primary contact must belong to the row's
  * company (the "New deal" form offers only that company's contacts).
  *
- * Deal names are unique across the whole organisation, not per company; a repeat is a 409 and is
- * skipped.
+ * Deal names are unique across the whole organisation, not per company, and the server compares
+ * them exactly, capitals included; a repeat is a 409 and is skipped.
  */
 import { RowProblem, defineImportEntity, minorToMajor } from "@opsgrids/client";
 import type { ColumnOption, ImportColumn } from "@opsgrids/client";
@@ -18,20 +18,25 @@ import type { DealIn } from "@/api/wire";
 import { STAGES } from "@/data/stages";
 
 import {
+  COMPANY_HINT,
+  CONTACT_HINT,
+  LOOKUP_ALL_OWNERS,
   LOOKUP_COMPANIES,
   LOOKUP_CONTACTS,
   LOOKUP_OWNERS,
+  OWNER_HINT,
   companyIdByName,
   contactRefOf,
   currencyOf,
   labelFor,
   loadCompanyLookup,
   loadContactLookups,
-  loadOwnerLookup,
+  loadOwnerLookups,
   numberOf,
   optionLabel,
   optionOf,
   ownerIdOrSelf,
+  requiredNumberOf,
   requiredTextOf,
   textOf,
 } from "./shared";
@@ -56,7 +61,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "text",
     required: true,
     maxLength: 200,
-    help: "The deal's name. Names are unique across the whole organisation: a deal with the same name is skipped.",
+    help: "The deal's name. Names are unique across the whole organisation and matched exactly, capitals included: a deal with the same exact name is skipped, while 'Q4 Renewal' and 'Q4 renewal' are different deals to the server.",
   },
   {
     key: "company",
@@ -64,6 +69,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "text",
     required: true,
     lookup: LOOKUP_COMPANIES,
+    lookupHint: COMPANY_HINT,
     help: "The name of a company that already exists, spelled as on the Companies screen. See the Lists sheet.",
   },
   {
@@ -71,6 +77,7 @@ const COLUMNS: readonly ImportColumn[] = [
     header: "Primary contact email",
     kind: "text",
     lookup: LOOKUP_CONTACTS,
+    lookupHint: CONTACT_HINT,
     help: "Email of the deal's main contact, from the Lists sheet. They must be a contact of the company. Leave blank for none.",
   },
   {
@@ -78,6 +85,7 @@ const COLUMNS: readonly ImportColumn[] = [
     header: "Owner email",
     kind: "text",
     lookup: LOOKUP_OWNERS,
+    lookupHint: OWNER_HINT,
     help: "Email of the team member who owns the deal, from the Lists sheet. Leave blank to own it yourself.",
   },
   {
@@ -139,7 +147,7 @@ const COLUMNS: readonly ImportColumn[] = [
     header: "Deal ID",
     kind: "text",
     readOnly: true,
-    help: "The record's id. Filled in on export and ignored on import.",
+    help: "The record's id. Filled in on export. A row that carries one is refused on import: it is already in the system.",
   },
   {
     key: "createdAt",
@@ -181,23 +189,25 @@ export const dealImport = defineImportEntity<DealIn, Deal, DealFilters>({
     },
   ],
   notes: [
-    "Deal names must be unique across the whole organisation, not just within a company. A deal whose name already exists is skipped, not updated.",
+    "Deal names must be unique across the whole organisation, not just within a company. Names are matched exactly, capitals included: a deal whose exact name already exists is skipped, not updated, while 'Q4 Renewal' and 'Q4 renewal' are different deals to the server.",
     "The company must already exist. If it is new, import it on the Companies screen first.",
     "A primary contact must be a contact of that company. Leave the column blank for none.",
     "Leave Owner email blank to own the deal yourself. Assigning a deal to someone else needs organisation-wide access; otherwise that row is refused and reported.",
     "Deal value is in whole currency units and uses the currency in the next column. Leave Currency blank for INR.",
     "Leave Stage blank for Lead, and Probability blank to use the stage's usual figure.",
+    "A file exported from the Deals list cannot be imported again as it is: its rows carry a Deal ID and are refused, because those deals already exist.",
   ],
+  recordIdKey: "id",
   loadLookups: async (signal) => {
     const [owners, companies, contacts] = await Promise.all([
-      loadOwnerLookup(signal),
+      loadOwnerLookups(signal),
       loadCompanyLookup(signal),
       loadContactLookups(signal),
     ]);
-    return { [LOOKUP_OWNERS]: owners, [LOOKUP_COMPANIES]: companies, ...contacts };
+    return { ...owners, [LOOKUP_COMPANIES]: companies, ...contacts };
   },
   toPayload: (row, ctx) => {
-    const company = requiredTextOf(row, "company", "Company");
+    const company = requiredTextOf(row, "company");
     const companyId = companyIdByName(company, ctx);
     const contactCell = textOf(row, "contact");
     let primaryContactId: string | undefined;
@@ -210,15 +220,13 @@ export const dealImport = defineImportEntity<DealIn, Deal, DealFilters>({
       }
       primaryContactId = contact.contactId;
     }
-    const value = numberOf(row, "value");
-    if (value === undefined) throw new RowProblem("Deal value is required.");
     const probability = numberOf(row, "probability");
     return {
-      name: requiredTextOf(row, "name", "Deal name"),
+      name: requiredTextOf(row, "name"),
       company_id: companyId,
       owner_id: ownerIdOrSelf(row, ctx),
-      value_minor: value,
-      close_date: requiredTextOf(row, "closeDate", "Close date"),
+      value_minor: requiredNumberOf(row, "value"),
+      close_date: requiredTextOf(row, "closeDate"),
       currency: currencyOf(row),
       stage: optionOf(row, "stage", STAGE_OPTIONS) ?? "lead",
       ...(probability !== undefined ? { probability } : {}),
@@ -241,7 +249,7 @@ export const dealImport = defineImportEntity<DealIn, Deal, DealFilters>({
       name: deal.name,
       company: labelFor(lookups[LOOKUP_COMPANIES], deal.company_id),
       contact: labelFor(lookups[LOOKUP_CONTACTS], deal.primary_contact_id),
-      owner: labelFor(lookups[LOOKUP_OWNERS], deal.owner_id),
+      owner: labelFor(lookups[LOOKUP_ALL_OWNERS], deal.owner_id),
       value: minorToMajor(deal.value_minor, deal.currency),
       currency: deal.currency,
       closeDate: deal.close_date,

@@ -11,10 +11,12 @@ import type { Company, CompanyStatus } from "@/api/types";
 import type { CompanyIn } from "@/api/wire";
 
 import {
+  LOOKUP_ALL_OWNERS,
   LOOKUP_OWNERS,
+  OWNER_HINT,
   currencyOf,
   labelFor,
-  loadOwnerLookup,
+  loadOwnerLookups,
   numberOf,
   optionLabel,
   optionOf,
@@ -50,6 +52,7 @@ const COLUMNS: readonly ImportColumn[] = [
     header: "Owner email",
     kind: "text",
     lookup: LOOKUP_OWNERS,
+    lookupHint: OWNER_HINT,
     help: "Email of the team member who owns the company, from the Lists sheet. Leave blank to own it yourself.",
   },
   {
@@ -116,7 +119,7 @@ const COLUMNS: readonly ImportColumn[] = [
     header: "Company ID",
     kind: "text",
     readOnly: true,
-    help: "The record's id. Filled in on export and ignored on import.",
+    help: "The record's id. Filled in on export. A row that carries one is refused on import: it is already in the system.",
   },
   {
     key: "createdAt",
@@ -162,10 +165,12 @@ export const companyImport = defineImportEntity<CompanyIn, Company, CompanyFilte
     "Leave Owner email blank to own the company yourself.",
     "If your role limits you to your own companies, you can only assign companies to yourself. A row naming another owner is refused and reported.",
     "Annual revenue is in whole currency units and uses the currency in the next column. Leave Currency blank for INR.",
+    "A file exported from the Companies list cannot be imported again as it is: its rows carry a Company ID and are refused, because those companies already exist.",
   ],
-  loadLookups: async (signal) => ({ [LOOKUP_OWNERS]: await loadOwnerLookup(signal) }),
+  recordIdKey: "id",
+  loadLookups: loadOwnerLookups,
   toPayload: (row, ctx) => ({
-    name: requiredTextOf(row, "name", "Company name"),
+    name: requiredTextOf(row, "name"),
     owner_id: ownerIdOrSelf(row, ctx),
     domain: textOf(row, "domain") ?? "",
     industry: textOf(row, "industry") ?? "",
@@ -182,7 +187,7 @@ export const companyImport = defineImportEntity<CompanyIn, Company, CompanyFilte
       listCompanies({ search: filters.search, status: filters.status, page, size, signal }),
     toRow: (company, lookups) => ({
       name: company.name,
-      owner: labelFor(lookups[LOOKUP_OWNERS], company.owner_id),
+      owner: labelFor(lookups[LOOKUP_ALL_OWNERS], company.owner_id),
       domain: company.domain,
       industry: company.industry,
       sizeBand: company.size_band,

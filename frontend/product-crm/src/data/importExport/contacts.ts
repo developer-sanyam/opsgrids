@@ -3,27 +3,36 @@
  * company must already exist, an email that is already on file is a 409 and is skipped, and a
  * caller limited to their own book may only assign contacts to themselves.
  *
+ * The server dedupes contacts on the exact email string, so `Asha.Rao@x.co` and `asha.rao@x.co`
+ * are two contacts to it, and importing the second would put one person on file twice. An address
+ * that matches one on file exactly still goes to the server, whose 409 is reported as skipped; one
+ * that differs from a stored address only in capitals is refused before anything is sent.
+ *
  * A contact's phone number is masked on the wire and never revealed here: the export writes the
  * mask in a read-only column, and the importable Phone column is left blank on export.
  */
-import { defineImportEntity } from "@opsgrids/client";
-import type { ColumnOption, ImportColumn } from "@opsgrids/client";
+import { RowProblem, defineImportEntity } from "@opsgrids/client";
+import type { ColumnOption, ImportColumn, Lookup } from "@opsgrids/client";
 
 import { createContact, listContacts } from "@/api/client";
 import type { Contact, ContactStatus } from "@/api/types";
 import type { ContactIn } from "@/api/wire";
 
 import {
+  COMPANY_HINT,
+  LOOKUP_ALL_OWNERS,
   LOOKUP_COMPANIES,
+  LOOKUP_CONTACT_EMAILS,
   LOOKUP_OWNERS,
+  OWNER_HINT,
   companyIdByName,
   labelFor,
   loadCompanyLookup,
-  loadOwnerLookup,
+  loadExistingContactEmails,
+  loadOwnerLookups,
   optionLabel,
   optionOf,
   ownerIdOrSelf,
-  phoneOf,
   requiredTextOf,
   textOf,
 } from "./shared";
@@ -56,7 +65,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "email",
     required: true,
     maxLength: 254,
-    help: "Their email address. It must be new: a contact with the same email is skipped.",
+    help: "Their email address. A contact whose exact address is already on file is skipped; one that differs only in capitals is refused.",
   },
   {
     key: "company",
@@ -64,6 +73,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "text",
     required: true,
     lookup: LOOKUP_COMPANIES,
+    lookupHint: COMPANY_HINT,
     help: "The name of a company that already exists, spelled as on the Companies screen. See the Lists sheet.",
   },
   {
@@ -71,6 +81,7 @@ const COLUMNS: readonly ImportColumn[] = [
     header: "Owner email",
     kind: "text",
     lookup: LOOKUP_OWNERS,
+    lookupHint: OWNER_HINT,
     help: "Email of the team member who owns the contact, from the Lists sheet. Leave blank to own it yourself.",
   },
   {
@@ -112,7 +123,7 @@ const COLUMNS: readonly ImportColumn[] = [
     header: "Contact ID",
     kind: "text",
     readOnly: true,
-    help: "The record's id. Filled in on export and ignored on import.",
+    help: "The record's id. Filled in on export. A row that carries one is refused on import: it is already in the system.",
   },
   {
     key: "createdAt",
@@ -122,6 +133,23 @@ const COLUMNS: readonly ImportColumn[] = [
     help: "When the contact was added. Filled in on export and ignored on import.",
   },
 ];
+
+/**
+ * Why this address cannot be sent, or null when it can. An address that is on file exactly as
+ * typed is fine (the server answers 409, which is reported as skipped); one that matches a stored
+ * address ignoring capitals, but not exactly, would be a second contact for the same person.
+ */
+function capitalsProblem(email: string, onFile: Lookup | undefined): string | null {
+  if (onFile === undefined || onFile.labelOf(email) !== undefined) return null;
+  const stored = onFile.resolve(email);
+  if (stored !== undefined) {
+    return `A contact with this email is already on file as ${stored}; addresses that differ only in capitals are treated as the same person.`;
+  }
+  if (onFile.isAmbiguous(email)) {
+    return "A contact with this email is already on file in other capitals; addresses that differ only in capitals are treated as the same person.";
+  }
+  return null;
+}
 
 export const contactImport = defineImportEntity<ContactIn, Contact, ContactFilters>({
   id: "crm.contacts",
@@ -149,21 +177,31 @@ export const contactImport = defineImportEntity<ContactIn, Contact, ContactFilte
   ],
   notes: [
     "The company must already exist. If it is new, import it on the Companies screen first.",
-    "Import only adds contacts. A contact whose email is already on file is skipped, not updated.",
+    "Import only adds contacts. A contact whose exact email is already on file is skipped, not updated.",
+    "Emails are matched exactly, as the server matches them. An address that differs from one on file only in capitals is refused, so the same person is not added twice.",
     "Phone numbers need a country code, like +91 98765 43210. A number without one is refused and reported.",
     "Leave Owner email blank to own the contact yourself. If your role limits you to your own contacts, you can only assign contacts to yourself.",
-    "Exports show phone numbers masked, as the app does. The masked column is ignored if you import that file again.",
+    "Exports show phone numbers masked, as the app does.",
+    "A file exported from the Contacts list cannot be imported again as it is: its rows carry a Contact ID and are refused, because those contacts already exist.",
   ],
+  recordIdKey: "id",
   loadLookups: async (signal) => {
-    const [owners, companies] = await Promise.all([loadOwnerLookup(signal), loadCompanyLookup(signal)]);
-    return { [LOOKUP_OWNERS]: owners, [LOOKUP_COMPANIES]: companies };
+    const [owners, companies, emails] = await Promise.all([
+      loadOwnerLookups(signal),
+      loadCompanyLookup(signal),
+      loadExistingContactEmails(signal),
+    ]);
+    return { ...owners, [LOOKUP_COMPANIES]: companies, [LOOKUP_CONTACT_EMAILS]: emails };
   },
   toPayload: (row, ctx) => {
-    const phone = phoneOf(row, "phone");
+    const email = requiredTextOf(row, "email");
+    const problem = capitalsProblem(email, ctx.lookups[LOOKUP_CONTACT_EMAILS]);
+    if (problem !== null) throw new RowProblem(problem);
+    const phone = textOf(row, "phone");
     return {
-      full_name: requiredTextOf(row, "fullName", "Full name"),
-      email: requiredTextOf(row, "email", "Email"),
-      company_id: companyIdByName(requiredTextOf(row, "company", "Company"), ctx),
+      full_name: requiredTextOf(row, "fullName"),
+      email,
+      company_id: companyIdByName(requiredTextOf(row, "company"), ctx),
       owner_id: ownerIdOrSelf(row, ctx),
       title: textOf(row, "title") ?? "",
       status: optionOf(row, "status", STATUS_OPTIONS) ?? "lead",
@@ -178,7 +216,7 @@ export const contactImport = defineImportEntity<ContactIn, Contact, ContactFilte
       fullName: contact.full_name,
       email: contact.email,
       company: labelFor(lookups[LOOKUP_COMPANIES], contact.company_id),
-      owner: labelFor(lookups[LOOKUP_OWNERS], contact.owner_id),
+      owner: labelFor(lookups[LOOKUP_ALL_OWNERS], contact.owner_id),
       title: contact.title,
       status: optionLabel(STATUS_OPTIONS, contact.status),
       phone: null,

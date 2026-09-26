@@ -117,28 +117,18 @@ describe("deals: toPayload", () => {
     expect(payloadFor({ ...MINIMAL, stage: "closed_lost", probability: 0 }).probability).toBe(0);
   });
 
-  it("refuses a company that does not exist, because the deal service would store the orphan", () => {
-    expect(() => payloadFor({ ...MINIMAL, company: "Nowhere Ltd" })).toThrow(RowProblem);
-    expect(() => payloadFor({ ...MINIMAL, company: "Nowhere Ltd" })).toThrow(
-      /No company is named "Nowhere Ltd"/,
-    );
-  });
-
-  it("refuses a primary contact who does not exist", () => {
-    expect(() => payloadFor({ ...MINIMAL, contact: "ghost@nowhere.example" })).toThrow(
-      /No contact has the email "ghost@nowhere.example"/,
-    );
-  });
-
   it("refuses a primary contact who belongs to another company", () => {
+    expect(() => payloadFor({ ...MINIMAL, contact: "daniel.okafor@cobaltfin.com" })).toThrow(RowProblem);
     expect(() => payloadFor({ ...MINIMAL, contact: "daniel.okafor@cobaltfin.com" })).toThrow(
-      /daniel.okafor@cobaltfin.com is not a contact of Northwind Logistics/,
+      "daniel.okafor@cobaltfin.com is not a contact of Northwind Logistics. Pick one of that company's contacts.",
     );
   });
 
-  it("refuses a blank owner when the account has no rep record to fall back on", () => {
+  it("refuses a blank owner when the signed-in account is not an active rep", () => {
     vi.mocked(getMySubjectRef).mockReturnValue(null);
-    expect(() => payloadFor(MINIMAL)).toThrow(/Owner email is blank/);
+    expect(() => payloadFor(MINIMAL)).toThrow(RowProblem);
+    vi.mocked(getMySubjectRef).mockReturnValue("own-3");
+    expect(() => payloadFor(MINIMAL)).toThrow(RowProblem);
   });
 });
 
@@ -163,11 +153,24 @@ describe("deals: loadLookups", () => {
     expect(lookups.companies?.resolve("cobalt financial")).toBeDefined();
     expect(lookups.owners?.resolve("sofia@example.com")).toBe("own-1");
   });
+
+  it("also loads every team member, deactivated ones too, for the export only", async () => {
+    gateway();
+    const lookups = await loadLookups(new AbortController().signal);
+    expect(lookups.ownersAll?.labelOf("own-3")).toBe("former@example.com");
+  });
 });
 
-describe("deals: notes", () => {
-  it("tells the user that deal names are unique across the whole organisation", () => {
+describe("deals: what the user is told about names", () => {
+  it("says deal names are unique across the whole organisation", () => {
     expect(dealImport.notes?.join(" ")).toMatch(/unique across the whole organisation/);
+  });
+
+  it("says names are matched exactly, capitals included, on the column and in the notes", () => {
+    const help = dealImport.columns.find((c) => c.key === "name")?.help;
+    expect(help).toMatch(/matched exactly, capitals included/);
+    expect(help).toContain("'Q4 Renewal' and 'Q4 renewal' are different deals to the server");
+    expect(dealImport.notes?.join(" ")).toMatch(/matched exactly, capitals included/);
   });
 });
 
@@ -251,6 +254,10 @@ describe("deals: export", () => {
       createdAt: "2026-08-01T09:00:00Z",
     });
     expect(Object.keys(row).sort()).toEqual(dealImport.columns.map((c) => c.key).sort());
+  });
+
+  it("names a deactivated rep as the owner, so the export says who owned the deal", () => {
+    expect(exported.toRow({ ...DEAL, owner_id: "own-3" }, ctx.lookups).owner).toBe("former@example.com");
   });
 
   it("writes a deal with no primary contact as blank", () => {

@@ -23,6 +23,11 @@ const LOOKUPS: LookupSet = {
     { label: "sofia@example.com", value: "own-1" },
     { label: "Grace@Example.com", value: "own-2" },
   ]),
+  ownersAll: makeLookup([
+    { label: "sofia@example.com", value: "own-1" },
+    { label: "Grace@Example.com", value: "own-2" },
+    { label: "former@example.com", value: "own-3" },
+  ]),
 };
 
 const ctx = contextWith(LOOKUPS);
@@ -86,32 +91,14 @@ describe("companies: toPayload", () => {
     });
   });
 
-  it("gives a blank owner to the signed-in rep", () => {
-    vi.mocked(getMySubjectRef).mockReturnValue("own-9");
-    expect(payloadFor({ name: "Solstice Energy" }).owner_id).toBe("own-9");
+  it("gives a blank owner to the signed-in rep when they are an active rep", () => {
+    vi.mocked(getMySubjectRef).mockReturnValue("own-2");
+    expect(payloadFor({ name: "Solstice Energy" }).owner_id).toBe("own-2");
   });
 
-  it("refuses a blank owner when the account has no rep record to fall back on", () => {
-    vi.mocked(getMySubjectRef).mockReturnValue(null);
+  it("refuses a blank owner when the signed-in account is not an active rep (the rule is in shared.test.ts)", () => {
+    vi.mocked(getMySubjectRef).mockReturnValue("own-3");
     expect(() => payloadFor({ name: "Solstice Energy" })).toThrow(RowProblem);
-    expect(() => payloadFor({ name: "Solstice Energy" })).toThrow(/Owner email is blank/);
-  });
-
-  it("names the email when no active team member has it", () => {
-    expect(() => payloadFor({ name: "Solstice Energy", owner: "nobody@example.com" })).toThrow(
-      /No active team member has the email "nobody@example.com"/,
-    );
-  });
-
-  it("refuses to guess between two team members with the same email", () => {
-    const twins = contextWith({
-      owners: makeLookup([
-        { label: "twin@example.com", value: "own-4" },
-        { label: "Twin@example.com", value: "own-5" },
-      ]),
-    });
-    const row = parsedRow(companyImport.columns, { name: "Solstice Energy", owner: "twin@example.com" });
-    expect(() => companyImport.toPayload(row, twins)).toThrow(/More than one team member/);
   });
 
   it("does not pre-empt the server for an owner the caller may not assign", () => {
@@ -128,6 +115,14 @@ describe("companies: loadLookups", () => {
     expect(owners?.labels).toEqual(["sofia@example.com", "Grace@Example.com"]);
     expect(owners?.resolve("GRACE@EXAMPLE.COM")).toBe("own-2");
     expect(owners?.resolve("former@example.com")).toBeUndefined();
+  });
+
+  it("also loads every team member, deactivated ones too, for the export only", async () => {
+    stubGateway(() => OWNERS_WIRE);
+    const lookups = await loadLookups(new AbortController().signal);
+    expect(lookups.ownersAll?.labelOf("own-3")).toBe("former@example.com");
+    const named = new Set(companyImport.columns.flatMap((c) => (c.lookup === undefined ? [] : [c.lookup])));
+    expect(named.has("ownersAll")).toBe(false);
   });
 
   it("hands the dialog's signal to the request, so closing the dialog cancels the load", async () => {
@@ -239,7 +234,11 @@ describe("companies: export", () => {
     expect(Object.keys(row).sort()).toEqual(companyImport.columns.map((c) => c.key).sort());
   });
 
-  it("leaves the owner blank when that rep is no longer in the team list", () => {
+  it("names a deactivated rep as the owner, so the export says who owned the company", () => {
+    expect(exported.toRow({ ...COMPANY, owner_id: "own-3" }, LOOKUPS).owner).toBe("former@example.com");
+  });
+
+  it("leaves the owner blank when that rep is not in the team list at all", () => {
     expect(exported.toRow({ ...COMPANY, owner_id: "own-gone" }, LOOKUPS).owner).toBeNull();
   });
 

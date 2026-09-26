@@ -162,10 +162,19 @@ function bodiesPosted(requests: readonly Recorded[], path: string): unknown[] {
   return requests.filter((r) => r.method === "POST" && r.url.pathname === `${API}${path}`).map((r) => r.body);
 }
 
-function listRequest(requests: readonly Recorded[], path: string): URL {
-  const found = requests.filter((r) => r.method === "GET" && r.url.pathname === `${API}${path}`);
-  expect(found, `requests to ${path}`).toHaveLength(1);
-  return present(found[0], `a request to ${path}`).url;
+const FILTER_PARAMS = ["q", "status", "stage", "owner_id"];
+
+/** The one request an export made to a list endpoint: the lookups read the same endpoints, but
+ *  only the export carries the screen's filters. */
+function exportRequest(requests: readonly Recorded[], path: string): URL {
+  const found = requests.filter(
+    (r) =>
+      r.method === "GET" &&
+      r.url.pathname === `${API}${path}` &&
+      FILTER_PARAMS.some((param) => r.url.searchParams.has(param)),
+  );
+  expect(found, `filtered requests to ${path}`).toHaveLength(1);
+  return present(found[0], `a filtered request to ${path}`).url;
 }
 
 /* ------------------------------ driving the dialog ------------------------------ */
@@ -219,13 +228,15 @@ async function exportList(user: User): Promise<Download> {
   return theDownload();
 }
 
-/** A file just exported can be edited and imported again: every one of its rows passes the preview. */
-async function expectImportableAgain(user: User, file: Download, rows: number): Promise<void> {
+/**
+ * A file just exported reads back: the dialog finds every row, and none of its headers is one it
+ * does not know. What the dialog then says about those rows, which carry a Record ID and so came
+ * out of the system, is the engine's own rule and is tested there.
+ */
+async function expectReadsBack(user: User, file: Download, rows: number): Promise<void> {
   await chooseFile(user, new File([file.blob], file.name, { type: XLSX_TYPE }));
   expect(figure("Rows in file")).toBe(String(rows));
-  expect(figure("Ready to import")).toBe(String(rows));
-  expect(figure("Need fixing")).toBe("0");
-  expect(figure("Sample rows skipped")).toBe("0");
+  expect(screen.queryByText(/^These columns are ignored/)).toBeNull();
 }
 
 async function downloadedSheet(download: Download, name: string): Promise<ExcelJS.Worksheet> {
@@ -247,7 +258,11 @@ function expectNoFormulas(workbook: ExcelJS.Workbook): void {
   }
 }
 
+/** The engine's sentence for an owner nobody has. It goes on to add the column's hint, which the
+ *  definitions test pins, so what the user sees here is compared by its start. */
 const OWNER_NOBODY = "'nobody@example.com' is not in the list of Owner emails (see the Lists sheet)";
+const NOBODY = expect.stringContaining(OWNER_NOBODY);
+const NO_COMPANY = "'Nowhere Ltd' is not in the list of Companies (see the Lists sheet)";
 const XLSX_NAME = /^[a-z]+-\d{4}-\d{2}-\d{2}\.xlsx$/;
 
 /* ---------------------------------- companies ---------------------------------- */
@@ -256,7 +271,7 @@ const COMPANY_FILTERS: CompanyFilters = { search: "north", status: "customer" };
 
 describe("companies: import from Excel", () => {
   const ROWS: Record<string, SheetValue>[] = [
-    // Row 2: every cell filled in. The Company ID column is read-only and the last one is unknown.
+    // Row 2: every cell filled in. Created is a read-only column and the last one is unknown: both are ignored.
     {
       name: "Solstice Energy",
       owner: "Grace@Example.com",
@@ -268,7 +283,7 @@ describe("companies: import from Excel", () => {
       status: "Customer",
       annualRevenue: 84000000.5,
       currency: "INR",
-      id: "left-over-from-an-export",
+      createdAt: "2024-02-11T09:00:00Z",
       "Internal note": "Chased by phone",
     },
     // Row 3: a name and nothing else.
@@ -312,7 +327,7 @@ describe("companies: import from Excel", () => {
     expect(screen.getByText("These columns are ignored: Internal note.")).toBeTruthy();
     expect(previewCheck(2)).toBe("Ready");
     expect(previewCheck(5)).toBe("Needs fixingCompany name is required");
-    expect(previewCheck(6)).toBe(`Needs fixing${OWNER_NOBODY}`);
+    expect(previewCheck(6)).toContain(`Needs fixing${OWNER_NOBODY}`);
     expect(previewCheck(7)).toBe("Sample rowAn unchanged example from the sample sheet. It is skipped.");
     expect(requests.filter((r) => r.method === "POST")).toHaveLength(0);
 
@@ -392,7 +407,7 @@ describe("companies: import from Excel", () => {
     const notCreated = rowsOf(screen.getByRole("region", { name: "Rows that were not created" }));
     expect(notCreated).toEqual([
       ["5", "—Empty", "Invalid", "Company name is required"],
-      ["6", "Nimbus Retail", "Invalid", OWNER_NOBODY],
+      ["6", "Nimbus Retail", "Invalid", NOBODY],
       ["8", "Existing Traders", "Skipped", "A company with that name already exists"],
       ["9", "Restricted Ltd", "Failed", "Request validation failed (domain: Domain must not include a scheme)"],
     ]);
@@ -422,7 +437,7 @@ describe("companies: import from Excel", () => {
       [3, "Kestrel Foods", "Created", null],
       [4, "Tokyo Tools KK", "Created", null],
       [5, null, "Invalid", "Company name is required"],
-      [6, "Nimbus Retail", "Invalid", OWNER_NOBODY],
+      [6, "Nimbus Retail", "Invalid", NOBODY],
       [8, "Existing Traders", "Skipped", "A company with that name already exists"],
       [9, "Restricted Ltd", "Failed", "Request validation failed (domain: Domain must not include a scheme)"],
     ]);
@@ -483,7 +498,8 @@ describe("companies: export to Excel", () => {
             domain: "-1+1",
             industry: "@SUM(A1:A9)",
             city: "+91 22 5555 0100",
-            owner_id: "own-1",
+            // A rep who has since left: the export still says who owned the company.
+            owner_id: "own-3",
           }),
           companyWire("comp-3", "Tokyo Tools KK", { currency: "JPY", annual_revenue_minor: 500, owner_id: "own-gone" }),
         ],
@@ -495,7 +511,7 @@ describe("companies: export to Excel", () => {
 
     const file = await exportList(user);
 
-    const list = listRequest(requests, "/customers");
+    const list = exportRequest(requests, "/customers");
     expect(Object.fromEntries(list.searchParams)).toEqual({ page: "1", size: "200", q: "north", status: "customer" });
     expect(file.name).toMatch(XLSX_NAME);
     expect(file.name.startsWith("companies-")).toBe(true);
@@ -534,7 +550,7 @@ describe("companies: export to Excel", () => {
       ],
       [
         '=HYPERLINK("http://evil.example","open me")',
-        "sofia@example.com",
+        "former@example.com",
         "-1+1",
         "@SUM(A1:A9)",
         null,
@@ -557,7 +573,7 @@ describe("companies: export to Excel", () => {
     expect(sheet.getCell("I2").numFmt).toBe("#,##0.00");
     expect(sheet.getCell("I4").numFmt).toBe("#,##0");
     expectNoFormulas(workbook);
-    await expectImportableAgain(user, file, 3);
+    await expectReadsBack(user, file, 3);
   });
 });
 
@@ -579,7 +595,7 @@ describe("deals: import from Excel", () => {
       stage: "Proposal",
       probability: 55,
       source: "Referral",
-      id: "left-over-from-an-export",
+      createdAt: "2024-02-11T09:00:00Z",
     },
     // Row 3: a three-decimal currency, the date as typed, everything optional left blank.
     {
@@ -630,7 +646,7 @@ describe("deals: import from Excel", () => {
     expect(figure("Need fixing")).toBe("3");
     expect(figure("Sample rows skipped")).toBe("1");
     expect(previewCheck(4)).toBe("Needs fixingDeal value is required");
-    expect(previewCheck(5)).toBe("Needs fixing'Nowhere Ltd' is not in the list of Companies (see the Lists sheet)");
+    expect(previewCheck(5)).toContain(`Needs fixing${NO_COMPANY}`);
     expect(previewCheck(6)).toBe(
       "Needs fixingdaniel.okafor@cobaltfin.com is not a contact of Northwind Logistics. Pick one of that company's contacts.",
     );
@@ -691,7 +707,7 @@ describe("deals: import from Excel", () => {
     expect(figure("Invalid")).toBe("3");
     expect(rowsOf(screen.getByRole("region", { name: "Rows that were not created" }))).toEqual([
       ["4", "Silent renewal", "Invalid", "Deal value is required"],
-      ["5", "Ghost deal", "Invalid", "'Nowhere Ltd' is not in the list of Companies (see the Lists sheet)"],
+      ["5", "Ghost deal", "Invalid", expect.stringContaining(NO_COMPANY)],
       [
         "6",
         "Wrong contact",
@@ -737,6 +753,7 @@ describe("deals: export to Excel", () => {
             currency: "KWD",
             value_minor: 150000,
             stage: "proposal",
+            owner_id: "own-3",
             source: "+1 555 0100",
             created_at: "2026-08-02T09:00:00Z",
           }),
@@ -749,7 +766,7 @@ describe("deals: export to Excel", () => {
 
     const file = await exportList(user);
 
-    const list = listRequest(requests, "/deals");
+    const list = exportRequest(requests, "/deals");
     expect(Object.fromEntries(list.searchParams)).toEqual({
       page: "1",
       size: "200",
@@ -797,7 +814,7 @@ describe("deals: export to Excel", () => {
         '=HYPERLINK("http://evil.example","open me")',
         "Cobalt Financial",
         null,
-        "sofia@example.com",
+        "former@example.com",
         150,
         "KWD",
         "2026-12-15",
@@ -813,7 +830,7 @@ describe("deals: export to Excel", () => {
     expect(sheet.getCell("J3").type).toBe(ExcelJS.ValueType.String);
     expect(sheet.getCell("E3").numFmt).toBe("#,##0.000");
     expectNoFormulas(workbook);
-    await expectImportableAgain(user, file, 2);
+    await expectReadsBack(user, file, 2);
   });
 });
 
@@ -822,8 +839,13 @@ describe("deals: export to Excel", () => {
 const CONTACT_FILTERS: ContactFilters = { search: "asha", status: "qualified" };
 
 describe("contacts: import and export", () => {
-  it("imports a contact with its company by name and its phone with a country code, and skips one already on file", async () => {
+  it("imports a contact with its company by name and its phone with a country code, skips one already on file, and refuses the rest with the reason", async () => {
     const requests = stubOrganisation({
+      lists: {
+        // Kiran is on file with capitals in the address. The server matches emails exactly, so an
+        // address that differs only in capitals would be a second Kiran to it.
+        [`${API}/contacts`]: [...CONTACTS, contactWire("cont-3", "Kiran.Bose@northwind.co", "comp-1")],
+      },
       creates: {
         [`${API}/contacts`]: creating("cont-new", "full_name", (id, name) => contactWire(id, "new@example.com", "comp-1", { full_name: name }), {
           "Daniel Okafor": problem(409, "Conflict", "A contact with that email already exists"),
@@ -839,20 +861,37 @@ describe("contacts: import and export", () => {
       await sheetFile(
         contactImport.columns,
         [
+          // Row 2: everything filled in.
           {
             fullName: "Priya Nair",
-            email: "Priya.Nair@Northwind.co",
+            email: "priya.nair@northwind.co",
             company: "Northwind Logistics",
             title: "Head of Finance",
             status: "Qualified",
             phone: "+91 98765 43210",
           },
+          // Row 3: on file with exactly this address, so the server's 409 decides.
           { fullName: "Daniel Okafor", email: "daniel.okafor@cobaltfin.com", company: "Cobalt Financial" },
+          // Row 4: on file, but only in other capitals.
+          { fullName: "Kiran Bose", email: "KIRAN.BOSE@northwind.co", company: "Northwind Logistics" },
+          // Row 5: a phone number without a country code.
+          {
+            fullName: "Vikram Shah",
+            email: "vikram.shah@northwind.co",
+            company: "Northwind Logistics",
+            phone: "98765 43210",
+          },
         ],
         "contacts.xlsx",
       ),
     );
+    expect(figure("Rows in file")).toBe("4");
     expect(figure("Ready to import")).toBe("2");
+    expect(figure("Need fixing")).toBe("2");
+    expect(previewCheck(4)).toBe(
+      "Needs fixingA contact with this email is already on file as Kiran.Bose@northwind.co; addresses that differ only in capitals are treated as the same person.",
+    );
+    expect(previewCheck(5)).toContain("country code");
     await runImport(user, 2);
 
     expect(bodiesPosted(requests, "/contacts")).toEqual([
@@ -874,9 +913,16 @@ describe("contacts: import and export", () => {
         status: "lead",
       },
     ]);
-    expect(screen.getByText("Everything imported. 1 contact was created. 1 already existed and was skipped.")).toBeTruthy();
+    expect(screen.getByText("2 rows were not imported. 1 contact was created.")).toBeTruthy();
     expect(rowsOf(screen.getByRole("region", { name: "Rows that were not created" }))).toEqual([
       ["3", "Daniel Okafor", "Skipped", "A contact with that email already exists"],
+      [
+        "4",
+        "Kiran Bose",
+        "Invalid",
+        "A contact with this email is already on file as Kiran.Bose@northwind.co; addresses that differ only in capitals are treated as the same person.",
+      ],
+      ["5", "Vikram Shah", "Invalid", expect.stringContaining("country code")],
     ]);
     await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
   }, 20_000);
@@ -893,7 +939,11 @@ describe("contacts: import and export", () => {
             phone: "+•• •••• ••210",
             last_activity_at: "2026-09-01T09:00:00Z",
           }),
-          contactWire("cont-2", "=cmd@example.com", "comp-2", { full_name: "@Evil Name", phone: "+•• ••••• ••345" }),
+          contactWire("cont-2", "=cmd@example.com", "comp-2", {
+            full_name: "@Evil Name",
+            owner_id: "own-3",
+            phone: "+•• ••••• ••345",
+          }),
         ],
       },
     });
@@ -903,10 +953,12 @@ describe("contacts: import and export", () => {
 
     const file = await exportList(user);
 
-    const list = listRequest(requests, "/contacts");
+    const list = exportRequest(requests, "/contacts");
     expect(Object.fromEntries(list.searchParams)).toEqual({ page: "1", size: "200", q: "asha", status: "qualified" });
     // Only the list is read: no reveal or unmask request of any kind.
+    // The contacts are read twice: once for the addresses already on file, once for the export.
     expect(requests.map((r) => `${r.method} ${r.url.pathname}`).sort()).toEqual([
+      `GET ${API}/contacts`,
       `GET ${API}/contacts`,
       `GET ${API}/customers`,
       `GET ${API}/customers/owners`,
@@ -945,7 +997,7 @@ describe("contacts: import and export", () => {
         "@Evil Name",
         "=cmd@example.com",
         "Cobalt Financial",
-        "sofia@example.com",
+        "former@example.com",
         null,
         "Lead",
         null,
@@ -957,7 +1009,7 @@ describe("contacts: import and export", () => {
     ]);
     expect(sheet.getCell("B3").type).toBe(ExcelJS.ValueType.String);
     expectNoFormulas(workbook);
-    await expectImportableAgain(user, file, 2);
+    await expectReadsBack(user, file, 2);
   });
 });
 
@@ -982,7 +1034,7 @@ describe("leads: import and export", () => {
           {
             fullName: "Kavya Menon",
             company: "Lotus Mills",
-            email: "Kavya@LotusMills.example",
+            email: "kavya@LotusMills.example",
             phone: "+91 90000 12345",
             notes: "Asked for a demo.\nCall after 4pm.",
           },
@@ -1024,7 +1076,7 @@ describe("leads: import and export", () => {
         [`${API}/leads`]: [
           leadWire("lead-1", "Meera Iyer", {
             company: "Halcyon Textiles",
-            owner_id: "own-2",
+            owner_id: "own-3",
             status: "working",
             source: "form",
             notes: "Asked for a demo.",
@@ -1038,7 +1090,7 @@ describe("leads: import and export", () => {
 
     const file = await exportList(user);
 
-    expect(Object.fromEntries(listRequest(requests, "/leads").searchParams)).toEqual({
+    expect(Object.fromEntries(exportRequest(requests, "/leads").searchParams)).toEqual({
       page: "1",
       size: "200",
       status: "working",
@@ -1064,7 +1116,7 @@ describe("leads: import and export", () => {
         "Halcyon Textiles",
         null,
         null,
-        "Grace@Example.com",
+        "former@example.com",
         "Asked for a demo.",
         "Working",
         "Web form",
@@ -1075,7 +1127,7 @@ describe("leads: import and export", () => {
       ],
     ]);
     expectNoFormulas(workbook);
-    await expectImportableAgain(user, file, 1);
+    await expectReadsBack(user, file, 1);
   });
 });
 
@@ -1223,6 +1275,11 @@ describe.each(TEMPLATES)("$name: the sample sheet", ({ name, entity, required, l
     const workbook = await downloadSample();
     const sheet = sheetOf(workbook, "Import");
     const lists = sheetOf(workbook, "Lists");
+
+    // Only the lists a column offers are on the Lists sheet. The lookups the entity loads for
+    // other purposes (every rep for the export, the contact emails already on file) never are.
+    const [listHeaders = []] = valuesOf(lists);
+    expect([...listHeaders].sort()).toEqual(Object.keys(lookups).sort());
 
     const dropdowns = [...Object.keys(lookups), ...enums];
     importable.forEach((column, index) => {

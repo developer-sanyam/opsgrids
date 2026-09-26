@@ -5,63 +5,102 @@
  *
  * The lookups are built from every page of the list (`collectPages`), never from the 200-row
  * `DirectoryProvider` the screens use for display: a book past 200 companies would otherwise have
- * its real companies called unknown.
+ * its real companies called unknown. `collectPages` is given each row's id, so a row the list
+ * serves twice is kept once and a list that stays short of the server's total is refused.
+ *
+ * By the time `toPayload` runs, the engine has refused every blank required cell and every name
+ * that is not in a lookup, with a sentence (and the column's `lookupHint`) the user can act on.
+ * The helpers below therefore have nothing to say to a user about those: reaching one of those
+ * cases is a bug in the engine or in a definition, and fails the row with the engine's generic
+ * "could not be prepared" sentence instead of a message that could never be the right one.
  */
 import { collectPages, makeLookup, RowProblem } from "@opsgrids/client";
 import type { ColumnOption, ImportContext, Lookup, LookupSet, ParsedRow } from "@opsgrids/client";
 
 import { getOwners, listCompanies, listContacts } from "@/api/client";
-import type { Owner } from "@/api/types";
+import type { Contact, Owner } from "@/api/types";
 import { getMySubjectRef } from "@/lib/subject";
 
+/** Active reps by email: what the Owner email column offers and accepts. */
 export const LOOKUP_OWNERS = "owners";
+/** Every rep by email, deactivated ones too. Used only to write an owner into an export, so it is
+ *  attached to no column and never reaches the Lists sheet or a dropdown. */
+export const LOOKUP_ALL_OWNERS = "ownersAll";
 export const LOOKUP_COMPANIES = "companies";
 export const LOOKUP_CONTACTS = "contacts";
-/** Contact email to the id of the company that contact belongs to. Not shown to the user: it lets
+/** Contact email to the id of the company that contact belongs to. Attached to no column: it lets
  *  a deal row check that its primary contact belongs to its company. */
 export const LOOKUP_CONTACT_COMPANIES = "contactCompanies";
+/** Each existing contact email to itself, exactly as on file. Attached to no column: it lets a
+ *  contact row tell an address that is already on file from one that differs only in capitals. */
+export const LOOKUP_CONTACT_EMAILS = "contactEmails";
 
-/** The list endpoints order by a name, and names tie: offset paging can then hand the same row
- *  out twice, which would make a real email or name look ambiguous. Keep the first of each id. */
-function distinctById<T extends { id: string }>(items: readonly T[]): T[] {
-  const seen = new Set<string>();
-  const kept: T[] = [];
-  for (const item of items) {
-    if (seen.has(item.id)) continue;
-    seen.add(item.id);
-    kept.push(item);
-  }
-  return kept;
-}
+/* ------------------------------- what to tell a user ------------------------------- */
+
+/** Added to the engine's "is not in the list" error on an Owner email column. */
+export const OWNER_HINT =
+  "Use the email of an active sales rep, see the Lists sheet. Leave blank to assign it to yourself.";
+/** The same, for a list where a blank owner is assigned by the organisation's rule. */
+export const OWNER_HINT_AUTO =
+  "Use the email of an active sales rep, see the Lists sheet. Leave blank to assign automatically.";
+export const COMPANY_HINT = "The company must already exist. Import companies first, then contacts and deals.";
+export const CONTACT_HINT = "The contact must already exist and work at that company.";
 
 /* --------------------------------- lookups --------------------------------- */
 
-/** Owners by email. Only active reps: the server refuses an assignment to a deactivated one. */
-export async function loadOwnerLookup(signal: AbortSignal): Promise<Lookup> {
-  const owners: Owner[] = await getOwners(signal);
-  return makeLookup(
-    owners.filter((o) => o.is_active).map((o) => ({ label: o.email, value: o.id })),
-  );
+const entry = (o: Owner) => ({ label: o.email, value: o.id });
+
+/**
+ * The reps twice over: `owners` holds the active ones (the server refuses an assignment to a
+ * deactivated rep, so it is what the column accepts), and `ownersAll` holds every one, so an
+ * export can still name who owns a record whose rep has since left.
+ */
+export async function loadOwnerLookups(signal: AbortSignal): Promise<LookupSet> {
+  const owners = await getOwners(signal);
+  return {
+    [LOOKUP_OWNERS]: makeLookup(owners.filter((o) => o.is_active).map(entry)),
+    [LOOKUP_ALL_OWNERS]: makeLookup(owners.map(entry)),
+  };
 }
 
 /** Companies by name (unique per organisation, ignoring case). */
 export async function loadCompanyLookup(signal: AbortSignal): Promise<Lookup> {
-  const rows = await collectPages((page, size) => listCompanies({ page, size, signal }), { signal });
-  return makeLookup(distinctById(rows).map((c) => ({ label: c.name, value: c.id })));
+  const rows = await collectPages((page, size) => listCompanies({ page, size, signal }), {
+    signal,
+    key: (company) => company.id,
+  });
+  return makeLookup(rows.map((c) => ({ label: c.name, value: c.id })));
+}
+
+async function loadAllContacts(signal: AbortSignal): Promise<Contact[]> {
+  return collectPages((page, size) => listContacts({ page, size, signal }), {
+    signal,
+    key: (contact) => contact.id,
+  });
 }
 
 /**
- * Contacts by email (unique per organisation), valued as the contact's id, and a second lookup
- * from the same emails to the company each contact belongs to. The deal service cannot see the
- * customer schema, so it accepts any contact id and would store one from another company without
- * complaint; a deal row is checked against the second lookup before anything is sent.
+ * Contacts by email, valued as the contact's id, and a second lookup from the same emails to the
+ * company each contact belongs to. The deal service cannot see the customer schema, so it accepts
+ * any contact id and would store one from another company without complaint; a deal row is
+ * checked against the second lookup before anything is sent.
  */
 export async function loadContactLookups(signal: AbortSignal): Promise<LookupSet> {
-  const rows = distinctById(await collectPages((page, size) => listContacts({ page, size, signal }), { signal }));
+  const rows = await loadAllContacts(signal);
   return {
     [LOOKUP_CONTACTS]: makeLookup(rows.map((c) => ({ label: c.email, value: c.id }))),
     [LOOKUP_CONTACT_COMPANIES]: makeLookup(rows.map((c) => ({ label: c.email, value: c.company_id }))),
   };
+}
+
+/**
+ * The contact emails already on file, each valued as itself: `labelOf` says whether this exact
+ * spelling exists (the server dedupes on the exact string), and `resolve` finds an address that
+ * differs from a stored one only in capitals.
+ */
+export async function loadExistingContactEmails(signal: AbortSignal): Promise<Lookup> {
+  const rows = await loadAllContacts(signal);
+  return makeLookup(rows.map((c) => ({ label: c.email, value: c.email })));
 }
 
 /* ---------------------------- reverse lookups (export) ---------------------------- */
@@ -75,6 +114,11 @@ export function labelFor(lookup: Lookup | undefined, id: string | null): string 
 
 /* ------------------------------- reading a row ------------------------------- */
 
+/** The engine let a row through that it should have refused. Not a sentence for the user. */
+function refusedByEngine(what: string): never {
+  throw new Error(`toPayload reached a row the engine should have refused: ${what}`);
+}
+
 /** A non-blank text cell, trimmed, or undefined. */
 export function textOf(row: ParsedRow, key: string): string | undefined {
   const value = row[key];
@@ -85,15 +129,18 @@ export function textOf(row: ParsedRow, key: string): string | undefined {
 
 /** A required text cell. The engine has already refused a blank one; this is what lets the
  *  payload type say `string`. */
-export function requiredTextOf(row: ParsedRow, key: string, what: string): string {
-  const value = textOf(row, key);
-  if (value === undefined) throw new RowProblem(`${what} is required.`);
-  return value;
+export function requiredTextOf(row: ParsedRow, key: string): string {
+  return textOf(row, key) ?? refusedByEngine(`${key} is blank`);
 }
 
 export function numberOf(row: ParsedRow, key: string): number | undefined {
   const value = row[key];
   return typeof value === "number" ? value : undefined;
+}
+
+/** A required number cell, on the same terms as `requiredTextOf`. */
+export function requiredNumberOf(row: ParsedRow, key: string): number {
+  return numberOf(row, key) ?? refusedByEngine(`${key} is blank`);
 }
 
 /** The option a coerced enum cell holds, or undefined when the cell is blank. */
@@ -117,50 +164,34 @@ export function currencyOf(row: ParsedRow): string {
   return (textOf(row, "currency") ?? "INR").toUpperCase();
 }
 
-const E164 = /^\+[1-9]\d{7,14}$/;
-
-/** A phone with its country code, as the API takes it (`+` and digits). The importer never
- *  guesses a country code, and the server refuses a number without one. */
-export function phoneOf(row: ParsedRow, key: string): string | undefined {
-  const phone = textOf(row, key);
-  if (phone === undefined) return undefined;
-  if (!E164.test(phone)) {
-    throw new RowProblem(
-      `"${phone}" is not a phone number with a country code. Write it like +91 98765 43210.`,
-    );
-  }
-  return phone;
-}
-
 /* ------------------------------ resolving names ------------------------------ */
+
+/** What a lookup column's cell resolves to. The engine has already refused a name the lookup does
+ *  not hold (or holds twice), so a miss here is a bug, not a row for the user to fix. */
+function resolved(lookup: Lookup | undefined, label: string, what: string): string {
+  return lookup?.resolve(label) ?? refusedByEngine(`${what} "${label}" is not in its lookup`);
+}
 
 /** The owner the Owner email cell names, or undefined when it is blank. */
 export function namedOwnerId(row: ParsedRow, ctx: ImportContext): string | undefined {
   const email = textOf(row, "owner");
-  if (email === undefined) return undefined;
-  const lookup = ctx.lookups[LOOKUP_OWNERS];
-  const id = lookup?.resolve(email);
-  if (id !== undefined) return id;
-  throw new RowProblem(
-    lookup?.isAmbiguous(email) === true
-      ? `More than one team member has the email "${email}".`
-      : `No active team member has the email "${email}". Pick one from the Lists sheet.`,
-  );
+  return email === undefined ? undefined : resolved(ctx.lookups[LOOKUP_OWNERS], email, "owner");
 }
 
 /**
  * The owner for a record that must have one: the named rep, or, when the cell is blank, the
  * caller's own rep record (the same "which rep am I" fact the Overview's "My pipeline" uses, and
- * what the deal service falls back to itself). Whether the caller may assign someone else is the
- * server's call, reported per row.
+ * what the deal service falls back to itself). That record has to be an active rep of the list
+ * the column accepts, or the server would refuse the row with a less helpful sentence. Whether
+ * the caller may assign someone else is the server's call, reported per row.
  */
 export function ownerIdOrSelf(row: ParsedRow, ctx: ImportContext): string {
   const named = namedOwnerId(row, ctx);
   if (named !== undefined) return named;
   const self = getMySubjectRef();
-  if (self === null) {
+  if (self === null || ctx.lookups[LOOKUP_OWNERS]?.labelOf(self) === undefined) {
     throw new RowProblem(
-      "Owner email is blank and your account has no team-member record to use instead. Fill in Owner email.",
+      "Your account has no active sales-rep record, so name an owner in the Owner email column.",
     );
   }
   return self;
@@ -168,14 +199,7 @@ export function ownerIdOrSelf(row: ParsedRow, ctx: ImportContext): string {
 
 /** The id of the company with this name, from the full list of companies. */
 export function companyIdByName(name: string, ctx: ImportContext): string {
-  const lookup = ctx.lookups[LOOKUP_COMPANIES];
-  const id = lookup?.resolve(name);
-  if (id !== undefined) return id;
-  throw new RowProblem(
-    lookup?.isAmbiguous(name) === true
-      ? `More than one company is named "${name}". Rename one of them, then import again.`
-      : `No company is named "${name}". Check the spelling against the Lists sheet, or add the company first.`,
-  );
+  return resolved(ctx.lookups[LOOKUP_COMPANIES], name, "company");
 }
 
 /** The contact the given email names, with the company that contact belongs to. */
@@ -183,13 +207,8 @@ export function contactRefOf(
   email: string,
   ctx: ImportContext,
 ): { companyId: string; contactId: string } {
-  const lookup = ctx.lookups[LOOKUP_CONTACTS];
-  const contactId = lookup?.resolve(email);
-  const companyId = ctx.lookups[LOOKUP_CONTACT_COMPANIES]?.resolve(email);
-  if (contactId !== undefined && companyId !== undefined) return { companyId, contactId };
-  throw new RowProblem(
-    lookup?.isAmbiguous(email) === true
-      ? `More than one contact has the email "${email}".`
-      : `No contact has the email "${email}". Check it against the Lists sheet, or add the contact first.`,
-  );
+  return {
+    contactId: resolved(ctx.lookups[LOOKUP_CONTACTS], email, "contact"),
+    companyId: resolved(ctx.lookups[LOOKUP_CONTACT_COMPANIES], email, "contact company"),
+  };
 }

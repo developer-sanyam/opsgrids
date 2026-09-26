@@ -16,12 +16,13 @@ import type { Lead, LeadSource, LeadStatus } from "@/api/types";
 import type { LeadIn } from "@/api/wire";
 
 import {
+  LOOKUP_ALL_OWNERS,
   LOOKUP_OWNERS,
+  OWNER_HINT_AUTO,
   labelFor,
-  loadOwnerLookup,
+  loadOwnerLookups,
   namedOwnerId,
   optionLabel,
-  phoneOf,
   requiredTextOf,
   textOf,
 } from "./shared";
@@ -69,7 +70,7 @@ const COLUMNS: readonly ImportColumn[] = [
     header: "Email",
     kind: "email",
     maxLength: 254,
-    help: "Their email address. A lead whose email is already on file is skipped. Left blank on export: the address is never shown.",
+    help: "Their email address, matched exactly as typed: a lead whose exact address is already on file is skipped. Left blank on export: the address is never shown.",
   },
   {
     key: "phone",
@@ -82,6 +83,7 @@ const COLUMNS: readonly ImportColumn[] = [
     header: "Owner email",
     kind: "text",
     lookup: LOOKUP_OWNERS,
+    lookupHint: OWNER_HINT_AUTO,
     help: "Email of the team member who owns the lead, from the Lists sheet. Leave blank to have it assigned by your round-robin rule.",
   },
   {
@@ -89,7 +91,8 @@ const COLUMNS: readonly ImportColumn[] = [
     header: "Notes",
     kind: "text",
     maxLength: 4000,
-    help: "Anything worth knowing about the lead.",
+    multiline: true,
+    help: "Anything worth knowing about the lead. It may run over several lines.",
   },
   {
     key: "status",
@@ -124,7 +127,7 @@ const COLUMNS: readonly ImportColumn[] = [
     header: "Lead ID",
     kind: "text",
     readOnly: true,
-    help: "The record's id. Filled in on export and ignored on import.",
+    help: "The record's id. Filled in on export. A row that carries one is refused on import: it is already in the system.",
   },
   {
     key: "createdAt",
@@ -160,20 +163,21 @@ export const leadImport = defineImportEntity<LeadIn, Lead, LeadFilters>({
   notes: [
     "Every imported lead starts as New with the source Import.",
     "Leave Owner email blank and your organisation's round-robin rule assigns the lead. If your role limits you to your own leads, you can only name yourself.",
-    "A lead whose email is already on file is skipped. A lead with no email cannot be checked, so importing the same file twice adds those leads twice.",
+    "A lead whose email is already on file is skipped. Lead emails are matched exactly as typed: a lead already captured through the web form with the same address in different capitals will be added again, because the server matches leads on the exact email.",
+    "A lead with no email cannot be checked, so importing the same file twice adds those leads twice.",
     "Phone numbers need a country code, like +91 98765 43210. A number without one is refused and reported.",
-    "Exports show email and phone masked, as the app does. The masked columns are ignored if you import that file again.",
+    "Exports show email and phone masked, as the app does.",
+    "A file exported from the Leads list cannot be imported again as it is: its rows carry a Lead ID and are refused, because those leads already exist and their masked emails could not be checked for duplicates.",
   ],
-  loadLookups: async (signal) => ({ [LOOKUP_OWNERS]: await loadOwnerLookup(signal) }),
+  recordIdKey: "id",
+  loadLookups: loadOwnerLookups,
   toPayload: (row, ctx) => {
     const owner = namedOwnerId(row, ctx);
-    const email = textOf(row, "email");
-    const phone = phoneOf(row, "phone");
     return {
-      full_name: requiredTextOf(row, "fullName", "Full name"),
+      full_name: requiredTextOf(row, "fullName"),
       company: textOf(row, "company") ?? null,
-      email: email ?? null,
-      phone: phone ?? null,
+      email: textOf(row, "email") ?? null,
+      phone: textOf(row, "phone") ?? null,
       source: IMPORT_SOURCE,
       ...(owner !== undefined ? { owner_id: owner } : {}),
       notes: textOf(row, "notes") ?? "",
@@ -188,7 +192,7 @@ export const leadImport = defineImportEntity<LeadIn, Lead, LeadFilters>({
       company: lead.company,
       email: null,
       phone: null,
-      owner: labelFor(lookups[LOOKUP_OWNERS], lead.owner_id),
+      owner: labelFor(lookups[LOOKUP_ALL_OWNERS], lead.owner_id),
       notes: lead.notes,
       status: optionLabel(STATUS_OPTIONS, lead.status),
       source: optionLabel(SOURCE_OPTIONS, lead.source),
