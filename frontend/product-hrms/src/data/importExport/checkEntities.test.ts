@@ -6,12 +6,20 @@
  */
 import { checkImportEntity, makeLookup } from "@opsgrids/client";
 import type { LookupSet } from "@opsgrids/client";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { OrgUnitNode } from "@/api/orgUnits";
 
 import { departmentEntries } from "./departments";
 import { employeesEntity } from "./employees";
+
+function json(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function unit(id: string, name: string, children: OrgUnitNode[] = []): OrgUnitNode {
   return {
@@ -53,6 +61,29 @@ describe("the employees entity definition", () => {
       ["A-100", "A-101"],
     );
     expect(checkImportEntity(employeesEntity, lookups)).toEqual([]);
+  });
+
+  it("passes with the lookups loadLookups builds from the department tree and every page of employees", async () => {
+    const directory = ["EMP-0007", "EMP-0012", "EMP-0031"].map((number, index) => ({
+      id: `e-${index + 1}`,
+      employee_no: number,
+    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string) => {
+        const url = new URL(input, "http://gateway.test");
+        if (url.pathname === "/api/v1/org-units") {
+          return json(200, [unit("d-eng", "Engineering", [unit("d-plat", "Platform")]), unit("d-hr", "Human Resources")]);
+        }
+        const page = Number(url.searchParams.get("page") ?? "1");
+        const items = directory.slice((page - 1) * 2, page * 2);
+        return json(200, { items, total: directory.length, page, size: 2, pages: 2 });
+      }),
+    );
+    const lookups = await employeesEntity.loadLookups?.(new AbortController().signal);
+    expect(lookups?.managers?.labels).toEqual(["EMP-0007", "EMP-0012", "EMP-0031"]);
+    expect(lookups?.departments?.labels).toEqual(["Engineering", "Platform", "Human Resources"]);
+    expect(checkImportEntity(employeesEntity, lookups ?? {})).toEqual([]);
   });
 
   it("passes when a department name is shared and so is written Parent / Child", () => {
