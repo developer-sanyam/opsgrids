@@ -47,6 +47,20 @@ export { DonutChart } from "./components/DonutChart";
 export type { DonutSlice } from "./components/DonutChart";
 export { Drawer } from "./components/Drawer";
 export { FileUpload } from "./components/FileUpload";
+export { ImportExportButton } from "./components/ImportExportButton";
+export type {
+  ImportExportButtonProps,
+  ImportExportMeta,
+  ImportExportPhase,
+  ImportExportPreview,
+  ImportExportPreviewRow,
+  ImportExportProgress,
+  ImportExportRowOutcome,
+  ImportExportRowStatus,
+  ImportExportSummary,
+  ImportExportViewActions,
+  ImportExportViewState,
+} from "./components/ImportExportButton";
 export type { StoredFile, UploadControls } from "./components/FileUpload";
 export { FilterBar } from "./components/FilterBar";
 export type { FilterChip, FilterSearch, FilterSelect } from "./components/FilterBar";
