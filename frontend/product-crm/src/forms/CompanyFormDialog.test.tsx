@@ -43,6 +43,7 @@ const USER: MeOut = {
   organization_id: "org-1",
   membership_id: "mem-1",
   roles: ["org_owner"],
+  role_names: ["Owner"],
   amr: ["pwd"],
   must_change_password: false,
   mfa_enabled: false,

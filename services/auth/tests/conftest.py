@@ -73,15 +73,20 @@ def membership(
     name: str,
     *,
     roles: list[str] | None = None,
+    role_names: list[str] | None = None,
     status: str = "active",
 ) -> DirectoryMembership:
+    resolved_roles = roles or ["MEMBER"]
     return DirectoryMembership(
         membership_id=membership_id,
         organization_id=org_id,
         organization_slug=slug,
         organization_name=name,
         status=status,
-        roles=roles or ["MEMBER"],
+        roles=resolved_roles,
+        # Defaults to a display label distinct from the code, so a test that forgets to
+        # pass one still fails loudly if code ever leaks through where a name belongs.
+        role_names=role_names or [f"{code.title()} Role" for code in resolved_roles],
         locations=[],
         permission_version=1,
     )
