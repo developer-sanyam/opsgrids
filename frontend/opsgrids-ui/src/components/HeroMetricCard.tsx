@@ -77,8 +77,8 @@ export function HeroMetricCard({
   const Arrow = rising ? ArrowUp : ArrowDown;
 
   return (
-    <div className={cn("flex items-center gap-4 overflow-hidden rounded-card bg-accent-soft p-4 shadow-card sm:p-6", className)}>
-      <span aria-hidden className="grid size-12 shrink-0 place-items-center rounded-full bg-accent text-on-accent">
+    <div className={cn("flex items-center gap-3 overflow-hidden rounded-card bg-accent-soft p-4 shadow-card sm:gap-4 sm:p-6", className)}>
+      <span aria-hidden className="grid size-10 shrink-0 place-items-center rounded-full bg-accent text-on-accent sm:size-12">
         {icon}
       </span>
       <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -86,7 +86,9 @@ export function HeroMetricCard({
           <p className="min-w-0 text-sm font-medium text-ink-soft">{label}</p>
           {sample ? <SampleChip {...(sample === true ? {} : sample)} /> : null}
         </div>
-        <p data-kpi-value className="tnum min-w-0 truncate text-2xl font-bold leading-tight text-ink">
+        {/* Never truncated: a KPI figure cut to "₹12,48,3…" is a wrong number. The type steps down
+            on a phone so a full grouped amount still fits beside the icon and the bars at 320px. */}
+        <p data-kpi-value className="tnum min-w-0 text-kpi-sm font-bold text-ink sm:text-kpi">
           {value}
         </p>
         {deltaPct !== undefined || caption ? (
