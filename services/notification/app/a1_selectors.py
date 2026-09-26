@@ -204,7 +204,23 @@ async def stats(
 
 # ----------------------------------------------------------------------------- triggers
 
-_CONTRACTS = Path(__file__).resolve().parents[3] / "libs" / "contracts" / "events"
+
+def find_contracts_dir(start: Path) -> Path | None:
+    """The repository's `libs/contracts/events`, found by walking up from `start`, or None.
+
+    The runtime image holds only this service (`/app`), not the repository, so the directory does
+    not exist there and the walk ends at the filesystem root: the trigger catalogue then lists
+    events without their variables, which is what "best effort" means for it. Never index a fixed
+    number of parents: a shallow install path has fewer than that.
+    """
+    for parent in start.resolve().parents:
+        candidate = parent / "libs" / "contracts" / "events"
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+_CONTRACTS = find_contracts_dir(Path(__file__))
 
 
 def _label(event_type: str) -> str:
@@ -248,9 +264,10 @@ def trigger_catalogue() -> tuple[dict[str, Any], ...]:
     items: list[dict[str, Any]] = []
     for event_type in domain.SUBSCRIBABLE_EVENTS:
         variables: list[dict[str, str]] = []
-        schema_file = _CONTRACTS / event_type / "v1.schema.json"
         try:
-            schema = json.loads(schema_file.read_text())
+            if _CONTRACTS is None:
+                raise OSError("no contracts directory in this install")
+            schema = json.loads((_CONTRACTS / event_type / "v1.schema.json").read_text())
             props = schema.get("properties")
             if isinstance(props, dict):
                 variables = _flatten("payload", props, 0)
