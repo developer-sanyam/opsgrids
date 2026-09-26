@@ -3,7 +3,6 @@ import { useState } from "react";
 import { deleteWarehouse, listWarehouses } from "@/api/client";
 import type { WarehouseOut } from "@/api/types";
 import { warehouseImport } from "@/data/importExport/warehouses";
-import { useReloadAfterImport } from "@/data/importExport/useReloadAfterImport";
 import {
   Can,
   problemMessage,
@@ -41,8 +40,9 @@ export function WarehousesPage() {
 
   const loader = () => listWarehouses({ size: 200 });
   const state = useAsync(loader, []);
-  const dx = useImportExport(warehouseImport);
-  useReloadAfterImport(dx.state.phase, state.reload);
+  // `state.reload` keeps one identity for the life of the screen. The dialog stays open on its
+  // result, so the rows it just created appear behind it as soon as the run ends.
+  const dx = useImportExport(warehouseImport, { onImported: state.reload });
 
   const remove = useMutation((warehouse: WarehouseOut) => deleteWarehouse(warehouse.id), {
     onSuccess: (_result, warehouse) => {
