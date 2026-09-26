@@ -26,7 +26,7 @@ function categoryName(category: string): string {
 }
 
 function optionLabel(template: ProviderTemplateOut): string {
-  return `${template.provider_name} (${categoryName(template.category)}, ${languageName(template.language)})`;
+  return `${template.id} (${categoryName(template.category)}, ${languageName(template.language)})`;
 }
 
 /**
@@ -71,7 +71,7 @@ export function TestMessageForm() {
     }
     setToError(null);
     if (chosen === null) return;
-    void send.mutate({ to: number, template_name: chosen.provider_name, language: chosen.language });
+    void send.mutate({ to: number, template_name: chosen.id, language: chosen.language });
   }
 
   return (
