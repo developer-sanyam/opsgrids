@@ -183,6 +183,7 @@ export const contactImport = defineImportEntity<ContactIn, Contact, ContactFilte
     "Leave Owner email blank to own the contact yourself. If your role limits you to your own contacts, you can only assign contacts to yourself.",
     "Exports show phone numbers masked, as the app does.",
     "A file exported from the Contacts list cannot be imported again as it is: its rows carry a Contact ID and are refused, because those contacts already exist.",
+    "An organisation with more than 20,000 contacts cannot import contacts in this release: the addresses already on file cannot all be checked, so nothing is imported.",
   ],
   recordIdKey: "id",
   loadLookups: async (signal) => {

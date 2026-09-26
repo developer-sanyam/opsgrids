@@ -92,6 +92,23 @@ export function valuesOf(sheet: ExcelJS.Worksheet): ExcelJS.CellValue[][] {
 }
 
 /**
+ * The same export with one column's cells emptied (the header stays), as a user would leave it
+ * after selecting the column in Excel and clearing its contents.
+ */
+export async function withColumnCleared(blob: Blob, sheetName: string, header: string, name: string): Promise<File> {
+  const workbook = await readBlob(blob);
+  const sheet = sheetOf(workbook, sheetName);
+  const [headers = []] = valuesOf(sheet);
+  const column = headers.indexOf(header) + 1;
+  if (column === 0) throw new Error(`The sheet has no column headed "${header}"`);
+  sheet.getColumn(column).eachCell({ includeEmpty: false }, (cell, row) => {
+    if (row > 1) cell.value = null;
+  });
+  const bytes = await workbook.xlsx.writeBuffer();
+  return new File([bytes], name, { type: XLSX_TYPE });
+}
+
+/**
  * A workbook file the way a user would have filled in the sample sheet: an "Import" sheet whose
  * header row is every one of the entity's own headers (required ones marked with an asterisk),
  * then one row per entry of `rows`, keyed by column key. A key that is no column of the entity

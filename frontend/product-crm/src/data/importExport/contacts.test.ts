@@ -100,6 +100,14 @@ describe("contacts: toPayload", () => {
   });
 });
 
+describe("contacts: what the user is told about a very large book", () => {
+  it("says an organisation with more than 20,000 contacts cannot import contacts in this release", () => {
+    expect(contactImport.notes?.join(" ")).toContain(
+      "An organisation with more than 20,000 contacts cannot import contacts in this release",
+    );
+  });
+});
+
 /**
  * The server dedupes contacts on the exact email string, so two spellings that differ only in
  * capitals are two contacts to it. The address reaches `toPayload` as the engine coerced it.

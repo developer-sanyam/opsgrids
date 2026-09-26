@@ -115,6 +115,22 @@ describe("the company and contact lookups", () => {
     expect(emails.resolve("asha.rao@northwind.co")).toBe("Asha.Rao@northwind.co");
   });
 
+  it("read up to 100 pages of contacts for the addresses on file, twice what the other lookups read", async () => {
+    // 52 pages of 200: more than the 50 a lookup reads by default, well inside the 100 this one may.
+    const pages = 52;
+    stubGateway(({ url }) => {
+      const page = Number(url.searchParams.get("page"));
+      const first = (page - 1) * 200;
+      const served = Array.from({ length: 200 }, (_, i) =>
+        contactWire(`cont-${first + i}`, `person${first + i}@northwind.co`, "comp-1"),
+      );
+      return pageOf(served, page, 200, pages * 200);
+    });
+    const emails = await loadExistingContactEmails(signal);
+    expect(emails.labelOf("person0@northwind.co")).toBe("person0@northwind.co");
+    expect(emails.labelOf(`person${pages * 200 - 1}@northwind.co`)).toBe(`person${pages * 200 - 1}@northwind.co`);
+  });
+
   it("keep a row the list serves on two pages once, so its name is not ambiguous", async () => {
     stubGateway(({ url }) =>
       Number(url.searchParams.get("page")) === 1
