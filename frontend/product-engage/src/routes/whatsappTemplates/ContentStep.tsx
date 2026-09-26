@@ -351,7 +351,7 @@ export function ContentStep({
       </div>
 
       <div className="flex flex-col gap-3 lg:col-span-1">
-        <h2 className="text-section text-ink">Preview</h2>
+        <h3 className="text-card-title text-ink">Preview</h3>
         <DraftPreview draft={draft} />
         <p className="text-caption text-muted">
           Sample values come from the examples you enter for each variable.
