@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ImportContext, ParsedRow } from "@opsgrids/client";
 
 import type { SupplierOut } from "@/api/types";
-import { pageOf, parseRow, rowProblems, stubGateway } from "./entityTestKit";
+import { pageOf, stubGateway } from "./entityTestKit";
 import { supplierImport } from "./suppliers";
 
 afterEach(() => {
@@ -69,29 +69,10 @@ describe("supplier columns", () => {
 });
 
 describe("supplier sample rows", () => {
-  it("has two or three rows that obey the entity's own rules", () => {
+  // Whether they pass the column rules and turn into a payload is `checkEntities.test.ts`'s job.
+  it("has two or three of them", () => {
     expect(supplierImport.sampleRows.length).toBeGreaterThanOrEqual(2);
     expect(supplierImport.sampleRows.length).toBeLessThanOrEqual(3);
-    for (const row of supplierImport.sampleRows) {
-      expect(rowProblems(supplierImport, row, {})).toEqual([]);
-    }
-  });
-
-  it("turns into a payload the API accepts", () => {
-    const [first] = supplierImport.sampleRows;
-    if (first === undefined) throw new Error("no sample rows");
-    expect(supplierImport.toPayload(parseRow(supplierImport, first), CONTEXT)).toStrictEqual({
-      code: "SUP-MER",
-      name: "Meridian Metals",
-      category: "raw_materials",
-      status: "active",
-      lead_time_days: 12,
-      currency: "INR",
-      contact_name: "Rajesh Pillai",
-      contact_email: "rajesh@meridianmetals.example",
-      location: "Jamshedpur",
-      since: "2019-04-02",
-    });
   });
 });
 

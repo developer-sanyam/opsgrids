@@ -4,7 +4,7 @@ import { RowProblem, makeLookup } from "@opsgrids/client";
 import type { ImportContext, LookupSet, ParsedRow } from "@opsgrids/client";
 
 import type { ItemCategoryOut } from "@/api/types";
-import { pageOf, parseRow, rowProblems, stubGateway } from "./entityTestKit";
+import { pageOf, stubGateway } from "./entityTestKit";
 import { itemCategoryImport } from "./itemCategories";
 
 afterEach(() => {
@@ -59,22 +59,11 @@ describe("item category columns", () => {
 });
 
 describe("item category sample rows", () => {
-  it("has two or three rows that obey the entity's own rules, none depending on another row", () => {
+  // Whether they pass the column rules and turn into a payload is `checkEntities.test.ts`'s job.
+  it("has two or three top-level ones, none depending on another row", () => {
     expect(itemCategoryImport.sampleRows.length).toBeGreaterThanOrEqual(2);
     expect(itemCategoryImport.sampleRows.length).toBeLessThanOrEqual(3);
-    for (const row of itemCategoryImport.sampleRows) {
-      expect(rowProblems(itemCategoryImport, row, {})).toEqual([]);
-      expect(row.parent ?? null).toBeNull();
-    }
-  });
-
-  it("turns into a payload the API accepts", () => {
-    const [first] = itemCategoryImport.sampleRows;
-    if (first === undefined) throw new Error("no sample rows");
-    expect(itemCategoryImport.toPayload(parseRow(itemCategoryImport, first), CONTEXT)).toStrictEqual({
-      code: "METALS",
-      name: "Metals",
-    });
+    for (const row of itemCategoryImport.sampleRows) expect(row.parent ?? null).toBeNull();
   });
 });
 

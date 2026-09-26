@@ -6,7 +6,6 @@ import type { InventoryItemOut } from "@/api/types";
 import { CATEGORY_LABEL } from "@/data/derive";
 import { inventoryImport } from "@/data/importExport/inventory";
 import type { InventoryFilters } from "@/data/importExport/inventory";
-import { useReloadAfterImport } from "@/data/importExport/useReloadAfterImport";
 import { useItemCategoryOptions } from "@/data/useItemCategoryOptions";
 import { useWarehouseOptions } from "@/data/useWarehouseOptions";
 import {
@@ -108,8 +107,9 @@ export function InventoryPage() {
     }),
     [debouncedSearch, warehouse, itemCategoryId, sort, filter],
   );
-  const dx = useImportExport(inventoryImport, { filters });
-  useReloadAfterImport(dx.state.phase, state.reload);
+  // `state.reload` keeps one identity for the life of the screen. The dialog stays open on its
+  // result, so the rows it just created appear behind it as soon as the run ends.
+  const dx = useImportExport(inventoryImport, { filters, onImported: state.reload });
 
   const remove = useMutation((item: InventoryItemOut) => deleteInventoryItem(item.id), {
     onSuccess: (_result, item) => {

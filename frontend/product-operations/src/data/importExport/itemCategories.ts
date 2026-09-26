@@ -11,7 +11,7 @@ import type { LookupSet } from "@opsgrids/client";
 
 import { createItemCategory, listItemCategories } from "@/api/client";
 import type { ItemCategoryIn, ItemCategoryOut } from "@/api/types";
-import { collectAll, labelForValue, optionalText, requiredText, resolveReference } from "./shared";
+import { collectAll, optionalText, requiredText, resolveReference } from "./shared";
 
 async function loadLookups(signal: AbortSignal): Promise<LookupSet> {
   const categories = await collectAll((page, size) => listItemCategories({ page, size, signal }), signal);
@@ -103,7 +103,7 @@ export const itemCategoryImport = defineImportEntity<ItemCategoryIn, ItemCategor
     toRow: (category, lookups) => ({
       code: category.code,
       name: category.name,
-      parent: labelForValue(lookups.parents, category.parent_id),
+      parent: category.parent_id === null ? null : (lookups.parents?.labelOf(category.parent_id) ?? null),
       id: category.id,
     }),
   },

@@ -5,7 +5,7 @@
  * rollups the service maintains and never accepts, so they are read-only columns: exported, ignored
  * on import.
  */
-import { defineImportEntity } from "@opsgrids/client";
+import { defineImportEntity, minorToMajor } from "@opsgrids/client";
 
 import { createSupplier, listSuppliers } from "@/api/client";
 import type { ListSuppliersParams } from "@/api/client";
@@ -14,7 +14,6 @@ import {
   CATEGORY_OPTIONS,
   CURRENCY_HINT,
   CURRENCY_PATTERN,
-  minorToMajor,
   optionLabel,
   optionalNumber,
   optionalOption,

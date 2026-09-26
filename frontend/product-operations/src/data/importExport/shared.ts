@@ -1,10 +1,10 @@
 /**
  * What the four Operations import definitions have in common (ADR-0022): reading a parsed row,
- * resolving a name against a lookup, walking a whole paged list, and writing money as a
- * major-unit decimal. Nothing here knows an entity; each entity file owns its own columns.
+ * resolving a name against a lookup, walking a whole paged list, and the currency cell. Nothing
+ * here knows an entity; each entity file owns its own columns.
  */
 import { RowProblem, collectPages } from "@opsgrids/client";
-import type { ColumnOption, ExportPage, Lookup, LookupSet, ParsedRow } from "@opsgrids/client";
+import type { ColumnOption, ExportPage, LookupSet, ParsedRow } from "@opsgrids/client";
 
 import type { Category } from "@/api/types";
 import { CATEGORY_LABEL } from "@/data/derive";
@@ -95,29 +95,6 @@ export function resolveReference(
   return value;
 }
 
-const labelIndexes = new WeakMap<Lookup, ReadonlyMap<string, string>>();
-
-/**
- * The label a lookup shows for a value, the reverse of `Lookup.resolve`: an item category's id
- * back to its code, for an export a person can read. Indexed once per lookup, so exporting ten
- * thousand rows does not scan the labels ten thousand times. A blank value, a missing lookup or a
- * value no label resolves to (a label that is ambiguous never resolves) gives null.
- */
-export function labelForValue(lookup: Lookup | undefined, value: string | null): string | null {
-  if (lookup === undefined || value === null) return null;
-  let index = labelIndexes.get(lookup);
-  if (index === undefined) {
-    const built = new Map<string, string>();
-    for (const label of lookup.labels) {
-      const resolved = lookup.resolve(label);
-      if (resolved !== undefined) built.set(resolved, label);
-    }
-    labelIndexes.set(lookup, built);
-    index = built;
-  }
-  return index.get(value) ?? null;
-}
-
 /** The label of an enum option for a value the API returned; an unlisted value is written as is. */
 export function optionLabel(options: readonly ColumnOption[], value: string): string {
   return options.find((option) => option.value === value)?.label ?? value;
@@ -144,34 +121,7 @@ export async function collectAll<T extends { id: string }>(
   });
 }
 
-/* ------------------------------ money ------------------------------ */
-
-/** Currencies whose minor unit is not a hundredth (`platform_core.money`). */
-const MINOR_DIGITS = new Map<string, number>([
-  ["JPY", 0],
-  ["KRW", 0],
-  ["VND", 0],
-  ["CLP", 0],
-  ["ISK", 0],
-  ["BHD", 3],
-  ["KWD", 3],
-  ["OMR", 3],
-  ["TND", 3],
-  ["JOD", 3],
-]);
-
-/**
- * An amount in minor units as the decimal a person types in major units: `6240` INR is `"62.40"`,
- * `5000` JPY is `"5000"`, `1250` KWD is `"1.250"`. Works on the digits of the integer, never on a
- * float, and keeps the currency's full precision so a re-import reads back the same amount.
- */
-export function minorToMajor(minor: number, currency: string): string {
-  const digits = MINOR_DIGITS.get(currency.toUpperCase()) ?? 2;
-  const sign = minor < 0 ? "-" : "";
-  const padded = String(Math.abs(minor)).padStart(digits + 1, "0");
-  if (digits === 0) return `${sign}${padded}`;
-  return `${sign}${padded.slice(0, -digits)}.${padded.slice(-digits)}`;
-}
+/* ------------------------------ currency ------------------------------ */
 
 /** The three-letter code a currency cell carries, upper-cased as the API stores it. */
 export const CURRENCY_PATTERN = /^[A-Za-z]{3}$/;

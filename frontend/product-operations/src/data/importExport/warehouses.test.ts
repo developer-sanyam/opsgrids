@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ImportContext, ParsedRow } from "@opsgrids/client";
 
 import type { WarehouseOut } from "@/api/types";
-import { pageOf, parseRow, rowProblems, stubGateway } from "./entityTestKit";
+import { pageOf, stubGateway } from "./entityTestKit";
 import { warehouseImport } from "./warehouses";
 
 afterEach(() => {
@@ -44,18 +44,10 @@ describe("warehouse columns", () => {
 });
 
 describe("warehouse sample rows", () => {
-  it("has two or three rows that obey the entity's own rules", () => {
+  // Whether they pass the column rules and turn into a payload is `checkEntities.test.ts`'s job.
+  it("has two or three of them", () => {
     expect(warehouseImport.sampleRows.length).toBeGreaterThanOrEqual(2);
     expect(warehouseImport.sampleRows.length).toBeLessThanOrEqual(3);
-    for (const row of warehouseImport.sampleRows) {
-      expect(rowProblems(warehouseImport, row, {})).toEqual([]);
-    }
-  });
-
-  it("turns into a payload the API accepts", () => {
-    const [first] = warehouseImport.sampleRows;
-    if (first === undefined) throw new Error("no sample rows");
-    expect(warehouseImport.toPayload(parseRow(warehouseImport, first), CONTEXT)).toStrictEqual(ROW);
   });
 });
 
