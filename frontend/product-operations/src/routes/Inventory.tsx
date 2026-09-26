@@ -1,12 +1,22 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { deleteInventoryItem, listInventory } from "@/api/client";
 import type { InventoryItemOut } from "@/api/types";
 import { CATEGORY_LABEL } from "@/data/derive";
+import { inventoryImport } from "@/data/importExport/inventory";
+import type { InventoryFilters } from "@/data/importExport/inventory";
+import { useReloadAfterImport } from "@/data/importExport/useReloadAfterImport";
 import { useItemCategoryOptions } from "@/data/useItemCategoryOptions";
 import { useWarehouseOptions } from "@/data/useWarehouseOptions";
-import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
+import {
+  Can,
+  problemMessage,
+  useAsync,
+  useCan,
+  useImportExport,
+  useMutation,
+} from "@opsgrids/client";
 import { formatMoney, formatMoneyCompact, formatNumber } from "@/lib/format";
 import { formatQty, qtyToMilli, stockValueMinor } from "@/lib/quantity";
 import {
@@ -27,7 +37,7 @@ import {
   Tag,
 } from "@/ui";
 import type { Column, StockLevel } from "@/ui";
-import { LayersIcon, PlusIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
+import { ImportExportButton, LayersIcon, PlusIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
 import { InventoryItemFormDialog } from "@/forms/InventoryItemFormDialog";
 import { StockAdjustmentDialog } from "@/forms/StockAdjustmentDialog";
 
@@ -86,6 +96,20 @@ export function InventoryPage() {
     page,
     size,
   ]);
+
+  // The export is the whole list under these filters, not the page on screen.
+  const filters = useMemo<InventoryFilters>(
+    () => ({
+      q: debouncedSearch,
+      warehouse,
+      item_category_id: itemCategoryId,
+      sort,
+      ...(filter === "low" ? { low_stock: true } : {}),
+    }),
+    [debouncedSearch, warehouse, itemCategoryId, sort, filter],
+  );
+  const dx = useImportExport(inventoryImport, { filters });
+  useReloadAfterImport(dx.state.phase, state.reload);
 
   const remove = useMutation((item: InventoryItemOut) => deleteInventoryItem(item.id), {
     onSuccess: (_result, item) => {
@@ -209,6 +233,13 @@ export function InventoryPage() {
               <span className="text-muted font-medium">Page value</span>
               <span className="tnum">{formatMoneyCompact(totalValue)}</span>
             </span>
+            <ImportExportButton
+              meta={dx.meta}
+              state={dx.state}
+              actions={dx.actions}
+              canImport={canWrite}
+              canExport
+            />
             <Can permission="operations.inventory.item.write" scope="ORG">
               <Button onClick={() => setCreating(true)} leadingIcon={<PlusIcon className="size-4" />}>
                 Add item

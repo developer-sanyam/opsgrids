@@ -137,6 +137,8 @@ export interface ListSuppliersParams {
   sort?: "spend" | "on_time" | "lead_time" | "name";
   page?: number;
   size?: number;
+  /** Aborts the request — the Excel export cancels a long run through it. */
+  signal?: AbortSignal;
 }
 
 function matchesSupplierFilters(s: SupplierOut, params: ListSuppliersParams): boolean {
@@ -183,7 +185,7 @@ export async function listSuppliers(params: ListSuppliersParams = {}): Promise<P
     status: params.status === "all" ? undefined : params.status,
     sort: params.sort,
   });
-  return apiRequest<Page<SupplierOut>>(`/operations/suppliers${query}`);
+  return apiRequest<Page<SupplierOut>>(`/operations/suppliers${query}`, { signal: params.signal });
 }
 
 export async function getSupplier(id: string): Promise<SupplierOut> {
@@ -580,6 +582,8 @@ export interface ListInventoryParams {
   sort?: "on_hand" | "value" | "sku";
   page?: number;
   size?: number;
+  /** Aborts the request — the Excel export cancels a long run through it. */
+  signal?: AbortSignal;
 }
 
 function matchesInventoryFilters(it: InventoryItemOut, params: ListInventoryParams): boolean {
@@ -631,7 +635,7 @@ export async function listInventory(params: ListInventoryParams = {}): Promise<P
     low_stock: params.low_stock,
     sort: params.sort,
   });
-  return apiRequest<Page<InventoryItemOut>>(`/operations/inventory${query}`);
+  return apiRequest<Page<InventoryItemOut>>(`/operations/inventory${query}`, { signal: params.signal });
 }
 
 export async function getInventoryItem(id: string): Promise<InventoryItemOut> {
@@ -821,7 +825,7 @@ export async function listMovements(
 
 /** `GET /operations/inventory/uoms` — the org's UOM directory, registry units first. */
 export async function listUoms(
-  params: { page?: number; size?: number } = {},
+  params: { page?: number; size?: number; signal?: AbortSignal } = {},
 ): Promise<Page<UomOut>> {
   const page = params.page ?? 1;
   const size = params.size ?? 200;
@@ -829,13 +833,13 @@ export async function listUoms(
     return settle(paginateFixture(UOMS, page, size));
   }
   const query = buildQuery({ page, size });
-  return apiRequest<Page<UomOut>>(`/operations/inventory/uoms${query}`);
+  return apiRequest<Page<UomOut>>(`/operations/inventory/uoms${query}`, { signal: params.signal });
 }
 
 /* ---------------------------- item categories ------------------------------ */
 
 export async function listItemCategories(
-  params: { page?: number; size?: number } = {},
+  params: { page?: number; size?: number; signal?: AbortSignal } = {},
 ): Promise<Page<ItemCategoryOut>> {
   const page = params.page ?? 1;
   const size = params.size ?? 200;
@@ -843,7 +847,9 @@ export async function listItemCategories(
     return settle(paginateFixture(ITEM_CATEGORIES, page, size));
   }
   const query = buildQuery({ page, size });
-  return apiRequest<Page<ItemCategoryOut>>(`/operations/inventory/categories${query}`);
+  return apiRequest<Page<ItemCategoryOut>>(`/operations/inventory/categories${query}`, {
+    signal: params.signal,
+  });
 }
 
 /** `POST /operations/inventory/categories` — `operations.inventory.item.write`. 409 duplicate
@@ -1051,6 +1057,8 @@ export async function deleteItemVariant(itemId: string, variantId: string): Prom
 export interface ListWarehousesParams {
   page?: number;
   size?: number;
+  /** Aborts the request — the Excel export cancels a long run through it. */
+  signal?: AbortSignal;
 }
 
 export async function listWarehouses(params: ListWarehousesParams = {}): Promise<Page<WarehouseOut>> {
@@ -1061,7 +1069,7 @@ export async function listWarehouses(params: ListWarehousesParams = {}): Promise
     return settle(paginateFixture(sorted, page, size));
   }
   const query = buildQuery({ page, size });
-  return apiRequest<Page<WarehouseOut>>(`/operations/warehouses${query}`);
+  return apiRequest<Page<WarehouseOut>>(`/operations/warehouses${query}`, { signal: params.signal });
 }
 
 /** `POST /operations/warehouses` — `operations.inventory.warehouse.write` (admin only). 409 on a

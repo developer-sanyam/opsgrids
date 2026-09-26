@@ -2,7 +2,16 @@ import { useState } from "react";
 
 import { deleteWarehouse, listWarehouses } from "@/api/client";
 import type { WarehouseOut } from "@/api/types";
-import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
+import { warehouseImport } from "@/data/importExport/warehouses";
+import { useReloadAfterImport } from "@/data/importExport/useReloadAfterImport";
+import {
+  Can,
+  problemMessage,
+  useAsync,
+  useCan,
+  useImportExport,
+  useMutation,
+} from "@opsgrids/client";
 import {
   Button,
   Card,
@@ -15,7 +24,7 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { PlusIcon, useToast, WarehouseIcon } from "@opsgrids/ui";
+import { ImportExportButton, PlusIcon, useToast, WarehouseIcon } from "@opsgrids/ui";
 import { WarehouseFormDialog } from "@/forms/WarehouseFormDialog";
 
 /**
@@ -32,6 +41,8 @@ export function WarehousesPage() {
 
   const loader = () => listWarehouses({ size: 200 });
   const state = useAsync(loader, []);
+  const dx = useImportExport(warehouseImport);
+  useReloadAfterImport(dx.state.phase, state.reload);
 
   const remove = useMutation((warehouse: WarehouseOut) => deleteWarehouse(warehouse.id), {
     onSuccess: (_result, warehouse) => {
@@ -80,11 +91,20 @@ export function WarehousesPage() {
         title="Warehouses"
         description="The stocking locations every inventory item and purchase order names."
         actions={
-          <Can permission="operations.inventory.warehouse.write" scope="ORG">
-            <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
-              New warehouse
-            </Button>
-          </Can>
+          <div className="flex items-center gap-2">
+            <ImportExportButton
+              meta={dx.meta}
+              state={dx.state}
+              actions={dx.actions}
+              canImport={canWrite}
+              canExport
+            />
+            <Can permission="operations.inventory.warehouse.write" scope="ORG">
+              <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
+                New warehouse
+              </Button>
+            </Can>
+          </div>
         }
       />
 
