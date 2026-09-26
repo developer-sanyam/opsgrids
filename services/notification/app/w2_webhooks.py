@@ -206,7 +206,7 @@ async def handle_changes(directory: AsyncSession, payload: dict[str, Any]) -> bo
             log.warning("webhook.unknown_waba", field=change.field)
             continue
         if change.field == ACCOUNT_UPDATE:
-            log.info("webhook.account_update", event=str(change.value.get("event") or ""))
+            log.info("webhook.account_update", account_event=str(change.value.get("event") or ""))
             continue
 
         for organization_id in targets:
