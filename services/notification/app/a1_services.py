@@ -32,7 +32,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
@@ -70,6 +70,7 @@ SWEEP_GRACE: Final = timedelta(minutes=5)
 FAILURE_LABELS: Final[dict[str, str]] = {
     "recipient_missing": "No recipient on the event",
     "recipient_invalid": "Recipient is not a valid address",
+    "automation_deleted": "The automation was deleted",
     "contact_lookup_unavailable": "Contact lookup unavailable",
     "template_missing": "Template not found",
     "template_not_approved": "Template not approved",
@@ -606,45 +607,33 @@ async def start_runs(
     source_event_id = uuid.UUID(str(raw_id))
     payload = envelope.get("payload") or {}
 
-    automations = list(
-        (
-            await session.execute(
-                select(Automation).where(
-                    Automation.organization_id == organization_id,
-                    Automation.trigger_event == event_type,
-                    Automation.status == "active",
-                    Automation.deleted_at.is_(None),
-                    Automation.current_version_id.is_not(None),
-                )
+    # The trigger to match is the *published version's*, never the automation row's copy: the row
+    # follows the draft, so a draft edited to another event after a pause must not repoint the
+    # version that is live (or that resume brings back).
+    live = (
+        await session.execute(
+            select(Automation, AutomationVersion)
+            .join(
+                AutomationVersion,
+                and_(
+                    AutomationVersion.id == Automation.current_version_id,
+                    AutomationVersion.organization_id == Automation.organization_id,
+                ),
             )
+            .where(
+                Automation.organization_id == organization_id,
+                Automation.status == "active",
+                Automation.deleted_at.is_(None),
+                AutomationVersion.trigger_event == event_type,
+            )
+            .order_by(Automation.id)
         )
-        .scalars()
-        .all()
-    )
-    if not automations:
+    ).all()
+    if not live:
         return []
-    versions = {
-        v.id: v
-        for v in (
-            await session.execute(
-                select(AutomationVersion).where(
-                    AutomationVersion.organization_id == organization_id,
-                    AutomationVersion.id.in_([a.current_version_id for a in automations]),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    }
 
     started: list[AutomationRun] = []
-    for automation in automations:
-        version = (
-            versions.get(automation.current_version_id) if automation.current_version_id else None
-        )
-        if version is None:
-            log.error("automation.version_missing", automation_id=str(automation.id))
-            continue
+    for automation, version in live:
         graph = version.graph
         trigger = next((n for n in graph["nodes"] if n["type"] == "trigger"), None)
         if trigger is None:
@@ -845,6 +834,23 @@ def _fail_run(run: AutomationRun, code: str, now: datetime) -> None:
     run.wake_token = None
 
 
+#: Why a run was ended without finishing: its automation was deleted while the run was parked.
+REASON_AUTOMATION_DELETED: Final = "automation_deleted"
+
+
+def _skip_run(run: AutomationRun, steps: list[AutomationRunStep], code: str, now: datetime) -> None:
+    """End a run that must not go on: `skipped`, with `code` as the machine-readable reason. Any
+    step still parked is closed the same way, so the trail never shows a wait that will not end."""
+    for step in steps:
+        if step.state in ("waiting", "running"):
+            _finish_step(step, "skipped", now, code)
+    run.state = "skipped"
+    run.failure_code = code
+    run.finished_at = now
+    run.next_wake_at = None
+    run.wake_token = None
+
+
 def _complete_run(run: AutomationRun, steps: list[AutomationRunStep], now: datetime) -> None:
     sends = [s for s in steps if s.type == "send_message"]
     consent_skipped = bool(sends) and all(s.state == "skipped" for s in sends)
@@ -952,7 +958,9 @@ async def _send(
     try:
         to_address = domain.normalize_recipient(channel, str(raw))
     except domain.RuleError as exc:
-        raise StepFailure("recipient_invalid", str(exc)) from exc
+        # A fixed sentence, never `str(exc)`: the rule's message quotes the raw address, and the
+        # step detail is returned by the run-detail route unmasked.
+        raise StepFailure("recipient_invalid", "the recipient is not a valid address") from exc
 
     values: dict[str, Any] = {}
     variable_map: dict[str, str] = config.get("variable_map") or {}
@@ -1078,13 +1086,26 @@ async def wake_run(
     now: datetime | None = None,
 ) -> str:
     """Resume a parked run exactly once. `stale` when the token no longer matches (already woken,
-    superseded or finished), `resumed` otherwise. The row lock plus the token compare-and-clear is
-    the whole guarantee: two wake-ups racing serialise on the lock and the second sees no token."""
+    superseded or finished), `skipped` when its automation was deleted meanwhile (the run ends,
+    nothing is sent), `resumed` otherwise. The row lock plus the token compare-and-clear is the
+    whole guarantee: two wake-ups racing serialise on the lock and the second sees no token."""
     now = now or datetime.now(UTC)
     run = await _locked_run(session, organization_id, run_id)
     if run is None or run.state != "waiting" or not wake_token or run.wake_token != wake_token:
         log.info("automation.wake.stale", run_id=str(run_id))
         return "stale"
+    # A parked run belongs to its automation: once that is deleted nothing may go out on its
+    # behalf. Pausing is different and deliberate: it lets in-flight runs finish, so a paused
+    # automation's waiting runs still resume here.
+    if await a1_selectors.get_automation(session, organization_id, run.automation_id) is None:
+        _skip_run(
+            run,
+            await _steps_for(session, organization_id, run.id),
+            REASON_AUTOMATION_DELETED,
+            now,
+        )
+        log.info("automation.wake.automation_deleted", run_id=str(run_id))
+        return "skipped"
     graph = await _graph_for(session, run)
     if graph is None:
         _fail_run(run, "graph_invalid", now)
@@ -1136,6 +1157,12 @@ async def retry_run(
         raise NotFoundProblem("No such run")
     if run.state != "failed":
         raise ConflictProblem(f"Only a failed run can be retried; this one is {run.state}")
+    if await a1_selectors.get_automation(session, ctx.organization_id, run.automation_id) is None:
+        message = "This run's automation was deleted, so it can no longer be retried"
+        raise ConflictProblem(
+            message,
+            errors=[{"field": "run_id", "code": REASON_AUTOMATION_DELETED, "message": message}],
+        )
     graph = await _graph_for(session, run)
     if graph is None:
         raise ConflictProblem("The version this run started on is gone")
@@ -1223,6 +1250,7 @@ async def sweep_overdue(
     *,
     discovery_factory: Any,
     work_scope: Any,
+    resolve_target: TargetResolver | None = None,
     now: datetime | None = None,
     limit: int = 50,
 ) -> int:
@@ -1245,6 +1273,7 @@ async def sweep_overdue(
                         organization_id=organization_id,
                         run_id=run_id,
                         wake_token=token,
+                        resolve_target=resolve_target,
                         now=at,
                     )
             except Exception:

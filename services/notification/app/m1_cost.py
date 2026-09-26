@@ -72,7 +72,12 @@ def resolve_window(
     """
     today = today or datetime.now(UTC).date()
     end = date_to or today
-    start = date_from or (end - timedelta(days=DEFAULT_RANGE_DAYS - 1))
+    try:
+        start = date_from or (end - timedelta(days=DEFAULT_RANGE_DAYS - 1))
+        # `DateWindow.end` is the day after `end`; a date at the calendar's edge has none.
+        _day_after_end = end + timedelta(days=1)
+    except OverflowError as exc:
+        raise RangeError("range_out_of_bounds", "A date is outside the supported range.") from exc
     if start > end:
         raise RangeError("range_inverted", "`from` must not be after `to`.")
     if (end - start).days + 1 > MAX_RANGE_DAYS:

@@ -9,8 +9,9 @@ Permissions are **reused**, not new (a new code needs a gated production role re
 
   * the three read routes take `engage.campaign.campaign.read` — delivery statistics, which
     every Engage viewer already holds;
-  * overriding the rate card takes `engage.audience.contact.write` — the write-level grant an
-    administrator holds and a viewer does not.
+  * overriding the rate card takes `engage.setup.whatsapp.write` — the WhatsApp setup grant only an
+    administrator holds. The rates decide what every dashboard says the organization spends, so it
+    is a settings-level change, not something anyone who can edit a contact should be able to do.
 
 The date range is two inclusive **UTC** dates, `?from=YYYY-MM-DD&to=YYYY-MM-DD`; omitted, it is the
 last 30 days ending today.
@@ -41,7 +42,7 @@ AnalyticsRead = Annotated[
     ScopeContext, Depends(require("engage.campaign.campaign.read", minimum=Scope.ORG))
 ]
 RateCardWrite = Annotated[
-    ScopeContext, Depends(require("engage.audience.contact.write", minimum=Scope.ORG))
+    ScopeContext, Depends(require("engage.setup.whatsapp.write", minimum=Scope.ORG))
 ]
 
 #: Each overview runs several grouped queries over up to a year of messages, so it is throttled per
@@ -50,9 +51,11 @@ RateCardWrite = Annotated[
 OVERVIEW_LIMIT_PER_MINUTE = 60
 
 
-async def _throttle(ctx: ScopeContext) -> None:
+async def throttle(ctx: ScopeContext, *, bucket: str = "engage.analytics") -> None:
+    """Spend one call from the organization's per-minute budget for `bucket`. The automation
+    stats route reuses this under its own bucket rather than growing a second limiter."""
     await enforce_rate_limit(
-        f"engage.analytics:{ctx.organization_id}",
+        f"{bucket}:{ctx.organization_id}",
         limit=OVERVIEW_LIMIT_PER_MINUTE,
         window_seconds=60,
     )
@@ -69,7 +72,8 @@ DateTo = Annotated[
 ]
 
 
-def _window(date_from: date | None, date_to: date | None) -> DateWindow:
+def query_window(date_from: date | None, date_to: date | None) -> DateWindow:
+    """The `?from=&to=` pair as a bounded window, or a 422 problem naming why it is not one."""
     try:
         return resolve_window(date_from, date_to)
     except RangeError as exc:
@@ -98,8 +102,8 @@ async def whatsapp_overview(
     date_from: DateFrom = None,
     date_to: DateTo = None,
 ) -> WhatsAppOverview:
-    window = _window(date_from, date_to)
-    await _throttle(ctx)
+    window = query_window(date_from, date_to)
+    await throttle(ctx)
     return await m1_analytics.whatsapp_overview(session, ctx.organization_id, window)
 
 
@@ -121,8 +125,8 @@ async def hub_overview(
     date_from: DateFrom = None,
     date_to: DateTo = None,
 ) -> HubOverview:
-    window = _window(date_from, date_to)
-    await _throttle(ctx)
+    window = query_window(date_from, date_to)
+    await throttle(ctx)
     return await m1_analytics.hub_overview(session, ctx.organization_id, window)
 
 

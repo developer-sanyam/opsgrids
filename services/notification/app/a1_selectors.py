@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -270,11 +270,3 @@ def trigger_catalogue() -> tuple[dict[str, Any], ...]:
 def default_window(now: datetime | None = None) -> tuple[datetime, datetime]:
     now = now or datetime.now(UTC)
     return now - timedelta(days=WINDOW_DAYS), now + timedelta(seconds=1)
-
-
-def day_bounds(start: date, end: date) -> tuple[datetime, datetime]:
-    """`[start, end]` inclusive dates as a half-open UTC interval."""
-    return (
-        datetime.combine(start, datetime.min.time(), tzinfo=UTC),
-        datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=UTC),
-    )

@@ -47,7 +47,8 @@ CARD = f"{BASE}/rate-card"
 RANGE = {"from": "2026-09-10", "to": "2026-09-12"}
 
 READ = "engage.campaign.campaign.read"
-WRITE = "engage.audience.contact.write"
+WRITE = "engage.setup.whatsapp.write"
+CONTACT_WRITE = "engage.audience.contact.write"
 
 
 def utc(day: int, hour: int = 0, minute: int = 0, second: int = 0, micro: int = 0) -> datetime:
@@ -531,6 +532,8 @@ async def test_another_organizations_data_never_leaks_in(
         {"from": "not-a-date", "to": "2026-09-12"},
         {"from": "2026-13-01", "to": "2026-09-12"},
         {"from": "2026-02-30"},
+        {"to": "9999-12-31"},  # the day after the last day does not exist
+        {"to": "0001-01-01"},  # neither does the default start, 29 days before the first
     ],
 )
 @pytest.mark.parametrize("path", [WA, HUB])
@@ -612,6 +615,22 @@ async def test_a_narrower_scope_than_org_is_refused(client, org_id, method, path
 async def test_a_reader_cannot_override_the_rate_card(client, session, org_id) -> None:
     with as_principal(viewer(org_id)):
         response = await client.put(CARD, json=ROUTES[3][2])
+    assert response.status_code == 403
+    rows = (
+        await session.execute(
+            select(MessagingRateCard).where(MessagingRateCard.organization_id == org_id)
+        )
+    ).all()
+    assert rows == []
+
+
+async def test_a_contact_editor_cannot_override_the_rate_card(client, session, org_id) -> None:
+    """The rates decide every cost figure the organization sees, so the grant that edits contacts
+    (and the viewer's read) must not reach them: only the WhatsApp setup grant does."""
+    contact_editor = caller(org_id, [READ, CONTACT_WRITE, "engage.campaign.campaign.write"])
+    with as_principal(contact_editor):
+        response = await client.put(CARD, json=ROUTES[3][2])
+        assert (await client.get(CARD)).status_code == 200  # reading stays open to a reader
     assert response.status_code == 403
     rows = (
         await session.execute(

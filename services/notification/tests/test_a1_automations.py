@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
@@ -911,22 +912,14 @@ async def test_stats_range_and_failure_reasons(
         assert inverted.status_code == 422
 
 
-async def test_the_cron_tick_wakes_an_overdue_wait_as_the_outbox_role_would(
-    session: Any, org_id: uuid.UUID, worker_engine: None
-) -> None:
-    """The driver's own tick (cross-tenant discovery on the BYPASSRLS outbox role, writes on the
-    app role under the tenant binding) resumes a wait whose scheduler wake-up never came."""
-    from contextlib import asynccontextmanager
-
+@asynccontextmanager
+async def _cron_driver(resolve_target: Any = None) -> AsyncIterator[Any]:
+    """The worker's `CampaignDriver` wired as production wires it: cross-tenant discovery on the
+    BYPASSRLS outbox role, every write on the app role under the tenant binding."""
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from app.cron import CampaignDriver
     from platform_core.db import TENANT_GUC
-
-    await _template(session, org_id)
-    wait = {"id": "w", "type": "wait", "config": {"seconds": 60}}
-    await _go_live(session, org_id, _linear(wait, _send_node()))
-    await consumers.fold(_event(org_id))
 
     cfg = settings()
     args = {"server_settings": {"search_path": f"{SCHEMA},public"}}
@@ -943,11 +936,28 @@ async def test_the_cron_tick_wakes_an_overdue_wait_as_the_outbox_role_would(
             )
             yield s
 
-    driver = CampaignDriver(
-        discovery_factory=async_sessionmaker(discovery_engine, expire_on_commit=False),
-        work_scope=work_scope,
-    )
     try:
+        yield CampaignDriver(
+            discovery_factory=async_sessionmaker(discovery_engine, expire_on_commit=False),
+            work_scope=work_scope,
+            resolve_target=resolve_target,
+        )
+    finally:
+        await discovery_engine.dispose()
+        await work_engine.dispose()
+
+
+async def test_the_cron_tick_wakes_an_overdue_wait_as_the_outbox_role_would(
+    session: Any, org_id: uuid.UUID, worker_engine: None
+) -> None:
+    """The driver's own tick (cross-tenant discovery on the BYPASSRLS outbox role, writes on the
+    app role under the tenant binding) resumes a wait whose scheduler wake-up never came."""
+    await _template(session, org_id)
+    wait = {"id": "w", "type": "wait", "config": {"seconds": 60}}
+    await _go_live(session, org_id, _linear(wait, _send_node()))
+    await consumers.fold(_event(org_id))
+
+    async with _cron_driver() as driver:
         # Not overdue yet: nothing to do.
         await driver.tick(datetime.now(UTC))
         assert (await _runs(session, org_id))[0].state == "waiting"
@@ -956,7 +966,239 @@ async def test_the_cron_tick_wakes_an_overdue_wait_as_the_outbox_role_would(
         (run,) = await _runs(session, org_id)
         assert run.state == "completed"
         await driver.tick(datetime.now(UTC) + timedelta(hours=2))
-    finally:
-        await discovery_engine.dispose()
-        await work_engine.dispose()
     assert len(await _messages(session, org_id)) == 1
+
+
+async def test_the_sweep_resolves_a_contact_id_recipient_like_the_scheduler_wake_does(
+    session: Any, org_id: uuid.UUID, worker_engine: None
+) -> None:
+    """A run parked before a contact-id send, woken by the lost-wake sweep, must be handed the
+    contact resolver; without it the send fails as `contact_lookup_unavailable` and backs off."""
+    await _template(session, org_id)
+    wait = {"id": "w", "type": "wait", "config": {"seconds": 60}}
+    contact_send = _send_node(recipient_path="payload.contact_id", recipient_kind="contact_id")
+    await _go_live(session, org_id, _linear(wait, contact_send))
+    contact_id = str(uuid.uuid4())
+    await consumers.fold(envelope_for(org_id, EVENT, {"number": "T-1", "contact_id": contact_id}))
+    (run,) = await _runs(session, org_id)
+    assert run.state == "waiting"
+
+    asked: list[tuple[str, str, str]] = []
+
+    async def resolver(org: str, contact: str, channel: str) -> str | None:
+        asked.append((org, contact, channel))
+        return "asha@example.com"
+
+    async with _cron_driver(resolver) as driver:
+        await driver.tick(datetime.now(UTC) + timedelta(hours=1))
+
+    (run,) = await _runs(session, org_id)
+    assert run.state == "completed", run.failure_code
+    assert asked == [(str(org_id), contact_id, "email")]
+    (message,) = await _messages(session, org_id)
+    assert message.to_address == "asha@example.com"
+
+
+# --------------------------------------------------------------------- review fixes (round 1)
+
+OTHER_EVENT = "support.desk.ticket.resolved"
+
+
+async def test_a_resumed_automation_runs_its_published_trigger_not_the_edited_draft(
+    session: Any, org_id: uuid.UUID, worker_engine: None
+) -> None:
+    """Publish on X, pause, repoint the draft at Y, resume: v1 is still what is live, so it fires
+    on X's events and never on Y's. The row's own trigger copy follows the draft and is not what
+    the executor matches on."""
+    await _template(session, org_id)
+    automation_id = await _go_live(session, org_id, _linear(_send_node()))
+    ctx = _ctx(org_id, WRITE, SEND)
+    async with session.begin():
+        await a1_services.set_status(session, ctx, automation_id=automation_id, target="paused")
+    async with session.begin():
+        row = await a1_services.update_automation(
+            session,
+            ctx,
+            automation_id=automation_id,
+            fields={"graph": _linear(_send_node(), trigger=OTHER_EVENT)},
+        )
+        assert row.trigger_event == OTHER_EVENT  # the draft copy moved; the version did not
+    async with session.begin():
+        await a1_services.set_status(session, ctx, automation_id=automation_id, target="active")
+
+    # Y's payload must not drive v1's graph...
+    async with session.begin():
+        started = await a1_services.start_runs(
+            session,
+            organization_id=org_id,
+            envelope=envelope_for(org_id, OTHER_EVENT, _event(org_id)["payload"]),
+        )
+    assert started == [] and await _runs(session, org_id) == []
+    assert await _messages(session, org_id) == []
+    # ...and X's still does.
+    await consumers.fold(_event(org_id))
+    (run,) = await _runs(session, org_id)
+    assert run.state == "completed" and run.version == 1
+    assert len(await _messages(session, org_id)) == 1
+
+
+async def _park_then_pause(
+    session: Any, org_id: uuid.UUID, *, delete: bool
+) -> tuple[uuid.UUID, dict[str, Any]]:
+    """A run parked on a wait; its automation then paused, and deleted when `delete`."""
+    await _template(session, org_id)
+    wait = {"id": "w", "type": "wait", "config": {"seconds": 3600}}
+    automation_id = await _go_live(session, org_id, _linear(wait, _send_node()))
+    await consumers.fold(_event(org_id))
+    (parked,) = await _outbox(session, "platform.schedule.requested")
+    ctx = _ctx(org_id, WRITE, SEND)
+    async with session.begin():
+        await a1_services.set_status(session, ctx, automation_id=automation_id, target="paused")
+    if delete:
+        async with session.begin():
+            await a1_services.delete_automation(session, ctx, automation_id=automation_id)
+    return automation_id, parked.payload["target"]["payload"]
+
+
+async def test_a_waiting_run_of_a_deleted_automation_ends_skipped_and_sends_nothing(
+    session: Any, org_id: uuid.UUID, worker_engine: None
+) -> None:
+    _, wake_payload = await _park_then_pause(session, org_id, delete=True)
+
+    wake = envelope_for(org_id, a1_services.EVT_RUN_WAKE, wake_payload)
+    assert await consumers.wake_automation_run(wake) == "skipped"
+
+    (run,) = await _runs(session, org_id)
+    assert run.state == "skipped" and run.failure_code == "automation_deleted"
+    assert run.finished_at is not None and run.wake_token is None and run.next_wake_at is None
+    assert await _messages(session, org_id) == []
+    assert await _outbox(session, services.EVT_MESSAGE_QUEUED) == []
+    steps = await _steps(session, org_id, run.id)
+    assert [(s.type, s.state) for s in steps] == [("trigger", "done"), ("wait", "skipped")]
+    assert steps[-1].detail == "automation_deleted"
+    # The same wake-up arriving again, and the sweep, find nothing left to do.
+    again = envelope_for(org_id, a1_services.EVT_RUN_WAKE, wake_payload)
+    assert await consumers.wake_automation_run(again) == "stale"
+    async with session.begin():
+        later = datetime.now(UTC) + timedelta(hours=2)
+        assert await a1_services.sweep_due(session, organization_id=org_id, now=later) == 0
+    assert await _messages(session, org_id) == []
+
+
+async def test_the_sweep_also_skips_a_waiting_run_of_a_deleted_automation(
+    session: Any, org_id: uuid.UUID, worker_engine: None
+) -> None:
+    await _park_then_pause(session, org_id, delete=True)
+    async with _cron_driver() as driver:
+        await driver.tick(datetime.now(UTC) + timedelta(hours=2))
+    (run,) = await _runs(session, org_id)
+    assert run.state == "skipped" and run.failure_code == "automation_deleted"
+    assert await _messages(session, org_id) == []
+
+
+async def test_pausing_still_lets_a_waiting_run_finish(
+    session: Any, org_id: uuid.UUID, worker_engine: None
+) -> None:
+    """Pause stops new runs starting; in-flight ones finish (documented). Only delete cuts them."""
+    _, wake_payload = await _park_then_pause(session, org_id, delete=False)
+    wake = envelope_for(org_id, a1_services.EVT_RUN_WAKE, wake_payload)
+    assert await consumers.wake_automation_run(wake) == "resumed"
+    (run,) = await _runs(session, org_id)
+    assert run.state == "completed"
+    assert len(await _messages(session, org_id)) == 1
+
+
+async def test_a_failed_run_of_a_deleted_automation_cannot_be_retried(
+    client: Any, session: Any, org_id: uuid.UUID, worker_engine: None
+) -> None:
+    await _template(session, org_id)
+    automation_id = await _go_live(session, org_id, _linear(_send_node()))
+    await _drop_template(session, org_id)
+    await consumers.fold(_event(org_id))
+    (run,) = await _runs(session, org_id)
+    assert run.state == "failed"
+    run_id = run.id
+
+    ctx = _ctx(org_id, WRITE, SEND)
+    async with session.begin():
+        await a1_services.set_status(session, ctx, automation_id=automation_id, target="paused")
+    async with session.begin():
+        await a1_services.delete_automation(session, ctx, automation_id=automation_id)
+    # The cause of the failure is fixed, so a retry that were allowed would now really send.
+    async with session.begin():
+        await session.execute(
+            update(Template).where(Template.organization_id == org_id).values(deleted_at=None)
+        )
+
+    with as_principal(caller(org_id, [f"{WRITE}:ORG"])):
+        response = await client.post(f"/api/v1/engage/automations/runs/{run_id}/retry")
+    assert response.status_code == 409, response.text
+    assert response.json()["errors"][0]["code"] == "automation_deleted"
+    with pytest.raises(ConflictProblem):
+        async with session.begin():
+            await a1_services.retry_run(session, ctx, run_id=run_id)
+
+    (run,) = await _runs(session, org_id)
+    assert run.state == "failed" and run.failure_code == "template_missing"
+    assert await _messages(session, org_id) == []
+
+
+async def test_an_invalid_recipient_never_puts_the_address_in_the_run_detail(
+    client: Any, session: Any, org_id: uuid.UUID, worker_engine: None
+) -> None:
+    await _template(session, org_id)
+    await _go_live(session, org_id, _linear(_send_node()))
+    address = "jane.doe-at-example.com"  # no @: the rule's own message would quote it verbatim
+    await consumers.fold(_event(org_id, requester={"email": address}))
+
+    (run,) = await _runs(session, org_id)
+    assert run.state == "failed" and run.failure_code == "recipient_invalid"
+    failed = [s for s in await _steps(session, org_id, run.id) if s.state == "failed"]
+    assert [s.detail for s in failed] == ["recipient_invalid: the recipient is not a valid address"]
+    assert address not in run.subject
+
+    with as_principal(caller(org_id, [f"{READ}:ORG"])):
+        response = await client.get(f"/api/v1/engage/automations/runs/{run.id}")
+    assert response.status_code == 200, response.text
+    assert address not in response.text
+    assert "jane.doe" not in response.text
+
+
+STATS = "/api/v1/engage/automations/stats"
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"from": "0001-01-01"},  # `to` defaults to today: a 2000-year scan
+        {"from": "2000-01-01", "to": "2026-09-26"},  # longer than a year
+        {"to": "9999-12-31"},  # the day after does not exist
+        {"to": "0001-01-01"},  # the default start before it does not exist
+        {"from": "2026-09-12", "to": "2026-09-10"},  # inverted
+    ],
+)
+async def test_stats_bound_the_range_however_it_is_sent(
+    client: Any, org_id: uuid.UUID, params: dict[str, str]
+) -> None:
+    with as_principal(caller(org_id, [f"{READ}:ORG"])):
+        response = await client.get(STATS, params=params)
+    assert response.status_code == 422, response.text
+    assert response.headers["content-type"].startswith("application/problem+json")
+
+
+async def test_stats_are_rate_limited_per_organization(client: Any, org_id: uuid.UUID) -> None:
+    from app.api.m1_analytics import OVERVIEW_LIMIT_PER_MINUTE
+
+    statuses: list[int] = []
+    with as_principal(caller(org_id, [f"{READ}:ORG"])):
+        # A fixed one-minute window can roll over mid-test: allow two windows' worth of calls.
+        for _ in range(2 * OVERVIEW_LIMIT_PER_MINUTE + 2):
+            response = await client.get(STATS)
+            statuses.append(response.status_code)
+            if response.status_code == 429:
+                break
+    assert statuses[-1] == 429, statuses
+    assert set(statuses[:-1]) == {200}
+    assert response.headers["retry-after"] == "60"
+    with as_principal(caller(uuid.uuid4(), [f"{READ}:ORG"])):
+        assert (await client.get(STATS)).status_code == 200
