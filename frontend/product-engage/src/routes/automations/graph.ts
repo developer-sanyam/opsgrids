@@ -272,6 +272,11 @@ export function moveStep(graph: Graph, id: string, direction: MoveDirection): Gr
   return { nodes: graph.nodes, edges };
 }
 
+/** A copy of `value` without `key`. Optional config fields are absent when unset, never `undefined`. */
+export function withoutKey<T extends object, K extends keyof T>(value: T, key: K): Omit<T, K> {
+  return Object.fromEntries(Object.entries(value).filter(([k]) => k !== key)) as Omit<T, K>;
+}
+
 /** Replace a node by id with a whole new node. */
 export function replaceNode(graph: Graph, node: GraphNode): Graph {
   return { nodes: graph.nodes.map((n) => (n.id === node.id ? node : n)), edges: graph.edges };
@@ -335,6 +340,33 @@ export function buildFlow(graph: Graph): Flow {
   const path = walk(graph, { from: trigger.id }, seen);
   const orphans = graph.nodes.filter((n) => !seen.has(n.id) && n.type !== "end");
   return { root: { node: trigger }, path, orphans };
+}
+
+/** Each step's position in reading order, trigger first, a condition's yes path before its no
+ *  path. It is what makes "Delete step 3" name one step when a flow has two waits. */
+export function numberSteps(flow: Flow): Map<string, number> {
+  const numbers = new Map<string, number>();
+  let next = 1;
+  function visit(slot: FlowSlot) {
+    for (const step of slot.steps) {
+      numbers.set(step.node.id, next);
+      next += 1;
+      if (step.branches !== undefined) {
+        visit(step.branches.yes);
+        visit(step.branches.no);
+      }
+    }
+  }
+  if (flow.root !== null) {
+    numbers.set(flow.root.node.id, next);
+    next += 1;
+  }
+  if (flow.path !== null) visit(flow.path);
+  for (const orphan of flow.orphans) {
+    numbers.set(orphan.id, next);
+    next += 1;
+  }
+  return numbers;
 }
 
 /** The insert point for adding a step after the last one in a slot. */
@@ -420,9 +452,11 @@ export function isWarning(problem: ValidationProblem): boolean {
 
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 
+/** What each channel offers. A channel whose templates could not be read is left out, so a send
+ *  step on it is not called wrong for a list nobody could load. */
 export interface TemplateCatalogue {
-  whatsapp: TemplateOption[];
-  email: TemplateOption[];
+  whatsapp?: TemplateOption[];
+  email?: TemplateOption[];
 }
 
 function reachable(graph: Graph, from: string): Set<string> {
@@ -475,8 +509,9 @@ function sendProblems(
   if (recipient_path.trim() === "") {
     problems.push({ node_id: node.id, code: "recipient_missing", message: "Choose where the recipient's address comes from." });
   }
-  const found = templates?.[channel].find((t) => t.ref === template.ref);
-  if (template.ref !== "" && templates !== undefined && found === undefined) {
+  const offered = templates?.[channel];
+  const found = offered?.find((t) => t.ref === template.ref);
+  if (template.ref !== "" && offered !== undefined && found === undefined) {
     problems.push({
       node_id: node.id,
       code: "template_unknown",

@@ -261,9 +261,10 @@ export async function listTriggers(): Promise<TriggerOut[]> {
   return result.items;
 }
 
-/** `POST /engage/automations`: 201, always a draft. */
-export async function createAutomation(input: AutomationIn): Promise<AutomationDetailOut> {
-  return apiRequest<AutomationDetailOut>(BASE, { method: "POST", body: input });
+/** `POST /engage/automations`: 201, always a draft. Only the row is relied on: the graph and the
+ *  service's validation are read back with `getAutomation`. */
+export async function createAutomation(input: AutomationIn): Promise<AutomationOut> {
+  return apiRequest<AutomationOut>(BASE, { method: "POST", body: input });
 }
 
 /** `GET /engage/automations/{id}`. */
@@ -272,11 +273,8 @@ export async function getAutomation(id: string): Promise<AutomationDetailOut> {
 }
 
 /** `PATCH /engage/automations/{id}`: drafts only; the service refuses anything else. */
-export async function updateAutomation(
-  id: string,
-  input: AutomationPatch,
-): Promise<AutomationDetailOut> {
-  return apiRequest<AutomationDetailOut>(idPath(id), { method: "PATCH", body: input });
+export async function updateAutomation(id: string, input: AutomationPatch): Promise<AutomationOut> {
+  return apiRequest<AutomationOut>(idPath(id), { method: "PATCH", body: input });
 }
 
 /** `DELETE /engage/automations/{id}`: draft or paused only. */
@@ -286,8 +284,8 @@ export async function deleteAutomation(id: string): Promise<void> {
 
 /** `POST /engage/automations/{id}/publish`: validates, freezes a version, goes `active`. A 422
  *  carries the problems; `problemsFrom` reads them off the error. */
-export async function publishAutomation(id: string): Promise<AutomationDetailOut> {
-  return apiRequest<AutomationDetailOut>(`${idPath(id)}/publish`, { method: "POST" });
+export async function publishAutomation(id: string): Promise<AutomationOut> {
+  return apiRequest<AutomationOut>(`${idPath(id)}/publish`, { method: "POST" });
 }
 
 /** `POST /engage/automations/{id}/pause`. */
