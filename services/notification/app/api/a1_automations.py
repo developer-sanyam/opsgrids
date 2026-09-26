@@ -11,7 +11,7 @@ campaign, so viewing takes `engage.campaign.campaign.read`, authoring, pausing a
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
@@ -39,14 +39,18 @@ from app.a1_schemas import (
     TriggersOut,
     ValidationOut,
 )
+from app.api.m1_analytics import query_window, throttle
 from app.config import settings
 from app.targets import make_resolver as make_target_resolver
 from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.db import get_tenant_session
-from platform_core.errors import NotFoundProblem, ValidationProblem
+from platform_core.errors import NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
 router = APIRouter(tags=["engage-automations"])
+
+#: The stats route's own per-organization budget (the limit itself is the analytics one).
+STATS_BUCKET = "engage.automation_stats"
 
 SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 Entitled = Depends(require_product("engage"))
@@ -141,14 +145,12 @@ async def automation_stats(
     from_: Annotated[date | None, Query(alias="from")] = None,
     to: Annotated[date | None, Query()] = None,
 ) -> StatsOut:
-    if from_ is not None and to is not None and from_ > to:
-        raise ValidationProblem("from must not be after to")
-    if from_ is not None and to is not None and (to - from_).days > 366:
-        raise ValidationProblem("the range is at most a year")
-    today = datetime.now(UTC).date()
-    last_day = to or today
-    first_day = from_ or (last_day - timedelta(days=a1_selectors.WINDOW_DAYS - 1))
-    start, end = a1_selectors.day_bounds(first_day, last_day)
+    # The same window rules as the messaging analytics: an omitted bound is filled in, the span
+    # is at most a year whatever was sent, and a date at the calendar's edge is a 422 rather than
+    # an overflow. Each call runs four grouped queries over the runs table, so it is throttled.
+    window = query_window(from_, to)
+    await throttle(ctx, bucket=STATS_BUCKET)
+    start, end = window.start, window.end
     raw = await a1_selectors.stats(session, ctx.organization_id, start=start, end=end)
     total, completed, failed, avg = raw["totals"]
     names = await a1_selectors.names_for(session, ctx.organization_id, [r[0] for r in raw["per"]])
