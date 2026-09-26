@@ -29,12 +29,13 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import dns_check, domain, memberships, selectors, webhooks, whatsapp_provider
+from app import consent, dns_check, domain, memberships, selectors, webhooks, whatsapp_provider
 from app.config import Settings, settings
 from app.models import (
     AuditLog,
     Campaign,
     CampaignRecipient,
+    ConsentEvent,
     Contact,
     ContactList,
     ContactListMember,
@@ -410,6 +411,14 @@ async def set_preference(
     pref.suppressed = suppressed
     pref.reason = reason
     await session.flush()
+    await _mirror_preference_into_ledger(
+        session,
+        ctx,
+        recipient=normalized,
+        channel=channel,
+        category=category,
+        suppressed=suppressed,
+    )
 
     record_audit(
         session,
@@ -424,6 +433,49 @@ async def set_preference(
         request=request,
     )
     return pref
+
+
+async def _mirror_preference_into_ledger(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    recipient: str,
+    channel: str,
+    category: str,
+    suppressed: bool,
+) -> None:
+    """Keep the consent ledger telling the same story as the `Preference` an operator just wrote.
+
+    A refusal is appended as `opted_out` for the purposes its category covers. **Lifting** one
+    appends `opted_in` only where consent existed before (`consent.restore`) — without it the
+    ledger's own earlier refusal would outlive the operator's lift and the lift would do nothing,
+    and with more than that it would manufacture marketing consent nobody gave. `in_app` has no
+    ledger and is skipped.
+    """
+    if channel not in consent.CHANNELS:
+        return
+    subject = consent.subject_for(channel, recipient)
+    purposes = consent.purposes_for_category(category)
+    if suppressed:
+        await consent.opt_out(
+            session,
+            organization_id=ctx.organization_id,
+            subject=subject,
+            purposes=purposes,
+            source=consent.SOURCE_ADMIN,
+            evidence=f"Operator set a preference refusal (category {category}).",
+            recorded_by=ctx.principal.sub,
+        )
+    else:
+        await consent.restore(
+            session,
+            organization_id=ctx.organization_id,
+            subject=subject,
+            purposes=purposes,
+            source=consent.SOURCE_ADMIN,
+            evidence=f"Operator lifted a preference refusal (category {category}).",
+            recorded_by=ctx.principal.sub,
+        )
 
 
 # --------------------------------------------------------------------- staging a message
@@ -463,6 +515,22 @@ async def stage_message(
 
     suppressions = await selectors.suppressions_for(session, organization_id, to_address)
     suppressed = domain.is_suppressed(suppressions, channel=channel, category=category)
+    suppression_reason = consent.STORED_PREFERENCE if suppressed else None
+    if not suppressed:
+        # The consent ledger's decision — the one every send path asks (`app/consent.py`).
+        # Marketing needs an opt-in on record; transactional only an absence of an opt-out. A
+        # refusal is stored on the message as a machine-readable reason, not just a state.
+        decision = await consent.check_send(
+            session,
+            organization_id,
+            channel=channel,
+            category=category,
+            address=to_address,
+            provider_template_code=provider_template_code,
+        )
+        if decision is not None and not decision.allowed:
+            suppressed = True
+            suppression_reason = consent.stored_reason(decision)
 
     message = Message(
         organization_id=organization_id,
@@ -473,6 +541,7 @@ async def stage_message(
         subject=subject,
         body=body,
         state=domain.STATE_SUPPRESSED if suppressed else domain.STATE_PENDING,
+        suppression_reason=suppression_reason,
         rule_code=rule_code,
         event_type=event_type,
         source_event_id=source_event_id,
@@ -491,6 +560,7 @@ async def stage_message(
             channel=channel,
             category=category,
             rule=rule_code,
+            reason=suppression_reason,
         )
         return message
 
@@ -847,9 +917,32 @@ async def claim_for_send(
     suppressions = await selectors.suppressions_for(session, organization_id, message.to_address)
     if domain.is_suppressed(suppressions, channel=message.channel, category=message.category):
         message.state = domain.STATE_SUPPRESSED
+        message.suppression_reason = consent.STORED_PREFERENCE
         message.updated_by = SYSTEM_ACTOR
         await session.flush()
         log.info("notification.suppressed_at_dispatch", message_id=str(message.id))
+        return None
+
+    # The consent ledger, asked again for the same reason: a recipient can opt out (or an
+    # operator can lift an opt-in) between staging and sending, and the later answer is true.
+    decision = await consent.check_send(
+        session,
+        organization_id,
+        channel=message.channel,
+        category=message.category,
+        address=message.to_address,
+        provider_template_code=message.provider_template_code,
+    )
+    if decision is not None and not decision.allowed:
+        message.state = domain.STATE_SUPPRESSED
+        message.suppression_reason = consent.stored_reason(decision)
+        message.updated_by = SYSTEM_ACTOR
+        await session.flush()
+        log.info(
+            "notification.suppressed_at_dispatch",
+            message_id=str(message.id),
+            reason=message.suppression_reason,
+        )
         return None
 
     message.state = domain.STATE_SENDING
@@ -1165,9 +1258,19 @@ async def fold_inbound_message(
     await session.flush()
 
     if webhooks.is_stop_keyword(inbound.body):
-        await _record_stop_request(session, organization_id=organization_id, phone=sender)
+        await _record_stop_request(
+            session,
+            organization_id=organization_id,
+            phone=sender,
+            reference=inbound.provider_message_id,
+        )
     elif webhooks.is_start_keyword(inbound.body):
-        await _record_start_request(session, organization_id=organization_id, phone=sender)
+        await _record_start_request(
+            session,
+            organization_id=organization_id,
+            phone=sender,
+            reference=inbound.provider_message_id,
+        )
 
     publish_event(
         session,
@@ -1528,16 +1631,38 @@ async def _set_whatsapp_preference(
     )
 
 
+def _keyword_evidence(keyword_kind: str, reference: str | None) -> str:
+    """What the ledger records for a customer's own STOP or START: the fact and a pointer to the
+    inbound message that carried it (Meta's `wamid`, an opaque provider id) — never the words
+    themselves or the number."""
+    where = f" (WhatsApp message {reference})" if reference else ""
+    return f"Customer replied with a {keyword_kind} keyword{where}."[:500]
+
+
 async def _record_stop_request(
-    session: AsyncSession, *, organization_id: uuid.UUID, phone: str
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    phone: str,
+    reference: str | None = None,
 ) -> None:
-    """STOP, UNSUBSCRIBE and the rest (`webhooks.STOP_KEYWORDS`)."""
+    """STOP, UNSUBSCRIBE and the rest (`webhooks.STOP_KEYWORDS`). Opts the number out of **both**
+    purposes on WhatsApp in the consent ledger, as well as writing the `Preference` every send
+    path already checks."""
     await _set_whatsapp_preference(
         session,
         organization_id=organization_id,
         phone=phone,
         suppressed=True,
         reason="customer_stop",
+    )
+    await consent.opt_out(
+        session,
+        organization_id=organization_id,
+        subject=consent.subject_for("whatsapp", phone),
+        purposes=consent.BOTH_PURPOSES,
+        source=consent.SOURCE_INBOUND_KEYWORD,
+        evidence=_keyword_evidence("STOP", reference),
     )
     log.info("notification.whatsapp.stop_received")
 
@@ -1549,13 +1674,21 @@ _CUSTOMER_STOP_REASON: Final = "customer_stop"
 
 
 async def _record_start_request(
-    session: AsyncSession, *, organization_id: uuid.UUID, phone: str
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    phone: str,
+    reference: str | None = None,
 ) -> None:
     """START, UNSTOP, SUBSCRIBE (`webhooks.START_KEYWORDS`) — the re-subscribe half of the same
     convention. A customer who typed STOP by habit should not have to contact support to undo it.
 
     Only un-suppresses a row this same convention suppressed. No preference row at all, or one
     suppressed for any other reason, is left exactly as it is — see `_CUSTOMER_STOP_REASON`.
+
+    In the consent ledger a START **restores, never creates** (`consent.restore`): transactional
+    is re-opened, and marketing only if the customer had opted in to it before their STOP. A bare
+    keyword is not the affirmative, specific marketing opt-in Meta requires.
     """
     pref = await selectors.get_preference(
         session, organization_id, phone, "whatsapp", domain.CATEGORY_ALL
@@ -1572,6 +1705,14 @@ async def _record_start_request(
         phone=phone,
         suppressed=False,
         reason="customer_start",
+    )
+    await consent.restore(
+        session,
+        organization_id=organization_id,
+        subject=consent.subject_for("whatsapp", phone),
+        purposes=consent.BOTH_PURPOSES,
+        source=consent.SOURCE_INBOUND_KEYWORD,
+        evidence=_keyword_evidence("START", reference),
     )
     log.info("notification.whatsapp.start_received")
 
@@ -3002,6 +3143,50 @@ def _sealed_email(email: str) -> tuple[bytes, str, str]:
     return sealed, masked, selectors.email_index(email)
 
 
+#: What the ledger records when an operator adds a contact. It is an **attestation** — the
+#: organization saying it may email this address — and the text says so: nothing here checks it,
+#: and a reader of the ledger must not mistake it for a customer's own opt-in.
+_CONTACT_ADDED_EVIDENCE = (
+    "Added to the audience by an operator. The organization attests that it may email this "
+    "address; no separate opt-in evidence was captured (unverified)."
+)
+_CONTACT_IMPORTED_EVIDENCE = (
+    "Imported into the audience by an operator. The organization attests that it may email these "
+    "addresses; no separate opt-in evidence was captured (unverified)."
+)
+
+
+def _email_subject(*, index: str, enc: bytes, masked: str) -> consent.Subject:
+    return consent.Subject(channel="email", index=index, enc=enc, masked=masked)
+
+
+async def _attest_new_contacts(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    contacts: list[Contact],
+    *,
+    source: str,
+    evidence: str,
+) -> None:
+    """Record the organization's opt-in attestation for contacts an operator just added, so "add a
+    contact, then send a campaign" keeps working now that marketing needs an opt-in on record.
+    Only where the ledger is silent for that address — see `consent.attest_opt_ins`."""
+    await consent.attest_opt_ins(
+        session,
+        organization_id=ctx.organization_id,
+        contacts=[
+            consent.ContactSubject(
+                subject=_email_subject(index=c.email_index, enc=c.email_enc, masked=c.email_masked),
+                contact_id=c.id,
+            )
+            for c in contacts
+        ],
+        source=source,
+        evidence=evidence,
+        recorded_by=ctx.principal.sub,
+    )
+
+
 def unsubscribe_key() -> bytes | None:
     """The key unsubscribe links are signed with, or None where it must not be used.
 
@@ -3113,6 +3298,9 @@ async def create_contact(
     )
     session.add(contact)
     await session.flush()
+    await _attest_new_contacts(
+        session, ctx, [contact], source=consent.SOURCE_ADMIN, evidence=_CONTACT_ADDED_EVIDENCE
+    )
 
     record_audit(
         session,
@@ -3143,6 +3331,7 @@ async def update_contact(
         raise NotFoundProblem("No such contact")
 
     before = {"email": contact.email_masked, "name": contact.name}
+    changed_address = False
     if email is not None:
         normalized = _normalize_email(email)
         index = selectors.email_index(normalized)
@@ -3150,6 +3339,7 @@ async def update_contact(
             if await selectors.contacts_by_index(session, ctx.organization_id, [index]):
                 raise ConflictProblem("Another contact already has that address")
             contact.email_enc, contact.email_masked, contact.email_index = _sealed_email(normalized)
+            changed_address = True
     if name is not None:
         contact.name = name
     if attributes is not None:
@@ -3157,6 +3347,13 @@ async def update_contact(
     contact.updated_by = str(ctx.principal.sub)
     contact.updated_at = datetime.now(UTC)
     await session.flush()
+    if changed_address:
+        # A new address is a new subject with no consent history, so without this an edited
+        # contact would quietly drop out of every campaign. Only where the ledger is silent for
+        # the new address — an address that opted out elsewhere keeps its refusal.
+        await _attest_new_contacts(
+            session, ctx, [contact], source=consent.SOURCE_ADMIN, evidence=_CONTACT_ADDED_EVIDENCE
+        )
 
     record_audit(
         session,
@@ -3374,6 +3571,13 @@ async def import_contacts(
             updated += 1
             results.append(("updated", contact, None))
     await session.flush()
+    await _attest_new_contacts(
+        session,
+        ctx,
+        [c for outcome, c, _ in results if outcome == "created" and c is not None],
+        source=consent.SOURCE_IMPORT,
+        evidence=_CONTACT_IMPORTED_EVIDENCE,
+    )
 
     record_audit(
         session,
@@ -3412,6 +3616,17 @@ async def add_suppression(
     )
     session.add(row)
     await session.flush()
+    # A manual suppression only ever stopped campaigns, so it opts out of marketing alone —
+    # the same mapping the backfill applied to every one that already existed.
+    await consent.opt_out(
+        session,
+        organization_id=ctx.organization_id,
+        subject=_email_subject(index=index, enc=sealed, masked=masked),
+        purposes=(consent.MARKETING,),
+        source=consent.SOURCE_ADMIN,
+        evidence="Manual suppression added by an operator.",
+        recorded_by=ctx.principal.sub,
+    )
 
     record_audit(
         session,
@@ -3454,8 +3669,25 @@ async def remove_suppression(
         before={"email": row.email_masked, "reason": row.reason},
         request=request,
     )
+    # Lifting the suppression must lift the ledger's own refusal too, or the operator's lift would
+    # change nothing: `consent.restore` re-opens marketing where the address had opted in before,
+    # and never invents an opt-in it did not have.
+    await consent.restore(
+        session,
+        organization_id=ctx.organization_id,
+        subject=_email_subject(index=row.email_index, enc=row.email_enc, masked=row.email_masked),
+        purposes=(consent.MARKETING,),
+        source=consent.SOURCE_ADMIN,
+        evidence="Manual suppression lifted by an operator.",
+        recorded_by=ctx.principal.sub,
+    )
     await session.delete(row)
     await session.flush()
+
+
+#: What the ledger records for a recipient's own click. No address, no token — a pointer to the
+#: mechanism only.
+_UNSUBSCRIBE_EVIDENCE = "Recipient used the unsubscribe link in a campaign email."
 
 
 async def unsubscribe(
@@ -3488,6 +3720,17 @@ async def unsubscribe(
         .returning(Suppression.id)
     )
     inserted = (await session.execute(stmt)).scalar_one_or_none()
+    # In the ledger whether or not a suppression already existed: the recipient's own act is
+    # worth recording even over a bounce, and `opt_out` adds nothing to a history that already
+    # ends in a refusal. An unsubscribe opts out of both purposes.
+    await consent.opt_out(
+        session,
+        organization_id=organization_id,
+        subject=_email_subject(index=index, enc=sealed, masked=masked),
+        purposes=consent.BOTH_PURPOSES,
+        source=consent.SOURCE_UNSUBSCRIBE_LINK,
+        evidence=_UNSUBSCRIBE_EVIDENCE,
+    )
     if inserted is None:
         return False
     record_audit(
@@ -3543,6 +3786,17 @@ async def unsubscribe_recipient(
         .returning(Suppression.id)
     )
     inserted = (await session.execute(stmt)).scalar_one_or_none()
+    await consent.opt_out(
+        session,
+        organization_id=organization_id,
+        subject=_email_subject(
+            index=recipient.email_index, enc=recipient.email_enc, masked=recipient.email_masked
+        ),
+        purposes=consent.BOTH_PURPOSES,
+        source=consent.SOURCE_UNSUBSCRIBE_LINK,
+        evidence=_UNSUBSCRIBE_EVIDENCE,
+        contact_id=recipient.contact_id,
+    )
     if inserted is None:
         return False, recipient.email_masked
     record_audit(
@@ -3557,6 +3811,193 @@ async def unsubscribe_recipient(
         request=request,
     )
     return True, recipient.email_masked
+
+
+# --------------------------------------------------------------------- consent ledger (API)
+#
+# The operator-facing writes. The ledger's automatic writers (STOP/START, unsubscribe, a contact
+# being added, a suppression or preference being set or lifted) live beside the thing that
+# triggers them above; the decision itself is `app/consent.py`.
+
+#: An event may be dated a little ahead of the server clock — the browser that recorded it is not
+#: perfectly synchronised — but not meaningfully: a future-dated event would be "latest" until the
+#: date arrived, outranking a real refusal recorded in the meantime.
+_CONSENT_FUTURE_SKEW = timedelta(minutes=5)
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedConsent:
+    """What `record_consent_event` did: the event, what the decision says now that it is in, and
+    whether this was a replay of an earlier request under the same idempotency key."""
+
+    event: ConsentEvent
+    effective: consent.ConsentDecision
+    replayed: bool
+
+
+async def record_consent_event(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    channel: str,
+    purpose: str,
+    status: str,
+    source: str,
+    evidence: str,
+    address: str | None,
+    contact_id: uuid.UUID | None,
+    occurred_at: datetime | None,
+    idempotency_key: str | None,
+    request: Request | None = None,
+) -> RecordedConsent:
+    """Record that a subject opted in or out — who said so, when and through what.
+
+    The subject is an `address` or, for an email contact, a `contact_id` (the address is then
+    copied sealed from the contact, never opened — an operator working from the masked contact
+    list has no plaintext to send). Both may be given if they agree. `source` is one of
+    `consent.API_SOURCES`: the sources this service writes itself cannot be claimed here.
+
+    **Recording a fact is not the same as it taking effect.** An `opted_in` for an address whose
+    `Suppression` is `unsubscribed`, or whose WhatsApp `Preference` is a customer's STOP, is
+    written — the person did say it — but the decision still refuses until the legacy store
+    lifts, because nothing that was blocked before may be unblocked by adding a row. The answer
+    is returned as `effective` so the caller sees which it is.
+
+    Idempotent on `idempotency_key`: a retry returns the original event, and a key reused for a
+    *different* event is a 409, not a silent second write.
+    """
+    if source not in consent.API_SOURCES:
+        raise ValidationProblem(f"source must be one of {', '.join(consent.API_SOURCES)}")
+
+    subject: consent.Subject
+    normalized_address: str | None = None
+    if address is not None:
+        try:
+            normalized_address = consent.normalize(channel, address)
+            subject = consent.subject_for(channel, address)
+        except domain.RuleError as exc:
+            raise ValidationProblem(str(exc)) from exc
+    if contact_id is not None:
+        if channel != "email":
+            raise ValidationProblem("contact_id names an email contact; give an address instead")
+        contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
+        if contact is None:
+            raise NotFoundProblem("No such contact")
+        if address is not None and subject.index != contact.email_index:
+            raise ValidationProblem("That address is not this contact's address")
+        subject = _email_subject(
+            index=contact.email_index, enc=contact.email_enc, masked=contact.email_masked
+        )
+    elif address is None:
+        raise ValidationProblem("Give an address or a contact_id")
+
+    if normalized_address is not None and normalized_address.lower() in evidence.lower():
+        # The column is not sealed. A reference ("order 1042", "form submission 88") is what
+        # belongs here, never the person.
+        raise ValidationProblem("evidence must not contain the address; use a reference")
+
+    now = datetime.now(UTC)
+    when = occurred_at.astimezone(UTC) if occurred_at is not None else now
+    if when > now + _CONSENT_FUTURE_SKEW:
+        raise ValidationProblem("occurred_at cannot be in the future")
+
+    replayed = False
+    event: ConsentEvent | None = None
+    if idempotency_key:
+        event = await selectors.get_consent_event_by_key(
+            session, ctx.organization_id, idempotency_key
+        )
+        replayed = event is not None
+    if event is None:
+        written = await consent.append(
+            session,
+            organization_id=ctx.organization_id,
+            subject=subject,
+            purposes=(purpose,),
+            status=status,
+            source=source,
+            evidence=evidence,
+            recorded_by=ctx.principal.sub,
+            contact_id=contact_id,
+            occurred_at=when,
+            idempotency_key=idempotency_key,
+        )
+        if written:
+            event = written[0]
+        elif idempotency_key:
+            # Lost a race to another request carrying the same key: theirs is the one that counts.
+            event = await selectors.get_consent_event_by_key(
+                session, ctx.organization_id, idempotency_key
+            )
+            replayed = True
+    if event is None:  # pragma: no cover - the insert wrote nothing and no key explains it
+        raise ConflictProblem("That consent event could not be recorded")
+    if replayed and (
+        (event.channel, event.purpose, event.status, event.subject_index)
+        != (channel, purpose, status, subject.index)
+    ):
+        raise ConflictProblem("That idempotency_key was already used for a different event")
+
+    if not replayed:
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=ctx.organization_id,
+            actor_id=ctx.principal.sub,
+            action="engage.consent.recorded",
+            entity="consent_event",
+            entity_id=event.id,
+            after={
+                "channel": channel,
+                "purpose": purpose,
+                "status": status,
+                "source": source,
+                "subject": subject.masked,
+            },
+            request=request,
+        )
+
+    if normalized_address is not None:
+        effective = await consent.decide(
+            session, ctx.organization_id, channel, purpose, normalized_address
+        )
+    else:
+        effective = (
+            await consent.decide_indexes(
+                session, ctx.organization_id, channel, purpose, [subject.index]
+            )
+        )[subject.index]
+    return RecordedConsent(event=event, effective=effective, replayed=replayed)
+
+
+async def unmask_consent_subject(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    event_id: uuid.UUID,
+    request: Request | None = None,
+) -> str:
+    """Reveal the address one consent event is about — the audited, stepped-up path.
+
+    Mirrors `unmask_inbound_message`: reaching here means the caller held the dangerous
+    `engage.inbox.message.unmask` permission and stepped up (`amr={"otp"}`). An
+    `entity.sensitive_read` row is written in the caller's transaction every time.
+    """
+    row = await selectors.get_consent_event(session, ctx.organization_id, event_id)
+    if row is None:
+        raise NotFoundProblem("No such consent event")
+    plaintext = pii.open_sealed(row.subject_enc, settings=settings())
+    record_sensitive_read(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        entity="consent_event",
+        entity_id=row.id,
+        fields=["subject"],
+        request=request,
+    )
+    return plaintext
 
 
 # --------------------------------------------------------------------- engage lists
@@ -4796,6 +5237,16 @@ async def claim_campaign_batch(
 
     indexes = [r.email_index for r in claimed]
     suppressed = await selectors.suppressed_indexes(session, organization_id, indexes)
+    # Consent is asked again here for the reason suppression is: an opt-out can land between
+    # expansion and this claim, and the later answer is the true one. One query pair for the
+    # whole batch (`consent.decide_indexes`), erased rows excluded — their index is blank.
+    consent_decisions = await consent.decide_indexes(
+        session,
+        organization_id,
+        "email",
+        consent.MARKETING,
+        [r.email_index for r in claimed if r.erased_at is None],
+    )
 
     cfg = settings()
     messages: list[ClaimedMessage] = []
@@ -4810,6 +5261,11 @@ async def claim_campaign_batch(
             # checked before `pii.open_sealed` rather than left to the `except` below — the
             # same outcome either way, but a clear reason instead of a decrypt failure.
             resolved.append((recipient.id, "failed", _ERASED_ERROR))
+            continue
+        refusal = consent_decisions.get(recipient.email_index)
+        if refusal is not None and not refusal.allowed:
+            # Recorded on the recipient as a machine-readable reason (`consent:opted_out`, ...).
+            resolved.append((recipient.id, "suppressed", consent.stored_reason(refusal)))
             continue
         try:
             address = pii.open_sealed(recipient.email_enc, settings=cfg)

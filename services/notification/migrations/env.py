@@ -66,6 +66,31 @@ def grant_campaign_sweep_reader(connection: Connection) -> None:
     connection.commit()
 
 
+#: Append-only at the database, enforced by a table privilege rather than a policy (ADR-0000 §9):
+#: a consent change of mind is a new row, never an edit (ADR-0021).
+APPEND_ONLY_TABLE = "consent_events"
+
+
+def reapply_append_only(connection: Connection) -> None:
+    """Re-revoke UPDATE/DELETE on `consent_events` from the app role, after the blanket re-grant.
+
+    `apply_schema_grants` re-grants UPDATE/DELETE on every table each run and only re-revokes
+    `audit_logs`, so the revoke in the migration alone would be undone by the next `alembic
+    upgrade`. Re-applying it here is what makes append-only hold across grant re-application (the
+    shape the console uses for `revenue_events`). Guarded on the table existing so a downgrade
+    past it is a no-op.
+    """
+    if not cfg.db_app_role:
+        return
+    if connection.execute(
+        text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.{APPEND_ONLY_TABLE}"}
+    ).scalar():
+        connection.execute(
+            text(f'REVOKE UPDATE, DELETE ON {SCHEMA}.{APPEND_ONLY_TABLE} FROM "{cfg.db_app_role}"')
+        )
+        connection.commit()
+
+
 def include_object(obj, name, type_, reflected, compare_to) -> bool:  # type: ignore[no-untyped-def]
     """Manage only this service's own schema.
 
@@ -97,6 +122,7 @@ def do_run_migrations(connection: Connection) -> None:
     # without them -- which is exactly what happened the first time this was left out.
     apply_schema_grants(connection, SCHEMA, cfg.db_app_role, outbox_role=cfg.db_outbox_role)
     grant_campaign_sweep_reader(connection)
+    reapply_append_only(connection)
 
 
 async def run_async_migrations() -> None:

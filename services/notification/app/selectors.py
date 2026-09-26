@@ -11,16 +11,19 @@ organization leaks, so routers never write SQL.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Select, exists, func, literal, or_, select, union_all
+from sqlalchemy import ColumnElement, Select, exists, func, literal, or_, select, tuple_, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.config import settings
 from app.models import (
     Campaign,
     CampaignRecipient,
+    ConsentEvent,
     Contact,
     ContactList,
     ContactListMember,
@@ -736,12 +739,16 @@ async def sendable_contacts(
     lock: bool = False,
 ) -> list[Contact]:
     """Contacts a campaign may send to: the organization's contacts minus every suppressed
-    address, whatever the reason.
+    address, whatever the reason, **and only those whose latest email/marketing consent event is
+    an opt-in** (`consent.decide` — silence is not consent).
 
     The exclusion is an anti-join on the blind index, so it holds for a suppression written
     before the contact existed and for one written after — a re-imported address that once
-    unsubscribed stays unreachable. Keyset-paged by id (`after_id`) so a sender can walk a large
-    audience without an OFFSET that shifts under concurrent writes.
+    unsubscribed stays unreachable. The consent predicate is `latest_consent_is`, the SQL form
+    of the decision `consent.decide` makes, restated here because the audience is read a page at
+    a time and a decision per contact would be a query per row; `tests/test_consent.py` pins the
+    two together. Keyset-paged by id (`after_id`) so a sender can walk a large audience without
+    an OFFSET that shifts under concurrent writes.
 
     `lock=True` is `expand_campaign`'s: `SELECT ... FOR KEY SHARE` on every contact in the
     page, held until expansion's transaction commits. Postgres's `DELETE` takes a row lock that
@@ -761,6 +768,13 @@ async def sendable_contacts(
         Contact.organization_id == ctx.organization_id,
         Contact.deleted_at.is_(None),
         ~suppressed,
+        latest_consent_is(
+            "opted_in",
+            organization_id=Contact.organization_id,
+            channel="email",
+            purpose="marketing",
+            subject_index=Contact.email_index,
+        ),
     )
     stmt = ctx.apply(stmt, owner_col=Contact.created_by)
     if list_id is not None:
@@ -1094,6 +1108,203 @@ async def due_campaigns(
 
 async def is_suppressed(session: AsyncSession, org_id: uuid.UUID, index: str) -> bool:
     return await get_suppression_by_index(session, org_id, index) is not None
+
+
+# --------------------------------------------------------------------- consent ledger
+#
+# `app/consent.py` is the one decision; these are its reads. Every one filters `organization_id`
+# explicitly, RLS or not.
+
+
+def latest_consent_is(
+    status: str,
+    *,
+    organization_id: Any,
+    channel: str,
+    purpose: str,
+    subject_index: Any,
+) -> ColumnElement[bool]:
+    """`EXISTS` an event with `status` for this subject that no later event supersedes — "the
+    latest event wins", as a correlated predicate an index can answer per row.
+
+    "Later" is `(occurred_at, created_at, id)`, the ordering every reader of the ledger shares.
+    Correlated on the caller's own columns (a contact's `organization_id` and `email_index`), so
+    it composes into any `select`.
+    """
+    event = aliased(ConsentEvent)
+    newer = aliased(ConsentEvent)
+    superseded = exists().where(
+        newer.organization_id == event.organization_id,
+        newer.channel == event.channel,
+        newer.purpose == event.purpose,
+        newer.subject_index == event.subject_index,
+        tuple_(newer.occurred_at, newer.created_at, newer.id)
+        > tuple_(event.occurred_at, event.created_at, event.id),
+    )
+    return exists().where(
+        event.organization_id == organization_id,
+        event.channel == channel,
+        event.purpose == purpose,
+        event.subject_index == subject_index,
+        event.status == status,
+        ~superseded,
+    )
+
+
+async def latest_consent_status(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    channel: str,
+    purpose: str,
+    indexes: list[str],
+) -> dict[str, str]:
+    """`{subject_index: status}` of each subject's latest event on one channel and purpose, in one
+    query. A subject with no event is simply absent."""
+    if not indexes:
+        return {}
+    stmt = (
+        select(ConsentEvent.subject_index, ConsentEvent.status)
+        .where(
+            ConsentEvent.organization_id == org_id,
+            ConsentEvent.channel == channel,
+            ConsentEvent.purpose == purpose,
+            ConsentEvent.subject_index.in_(indexes),
+        )
+        .distinct(ConsentEvent.subject_index)
+        .order_by(
+            ConsentEvent.subject_index,
+            ConsentEvent.occurred_at.desc(),
+            ConsentEvent.created_at.desc(),
+            ConsentEvent.id.desc(),
+        )
+    )
+    return {row[0]: row[1] for row in (await session.execute(stmt)).all()}
+
+
+async def latest_consent_status_by_purpose(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    channel: str,
+    index: str,
+    purposes: Sequence[str],
+) -> dict[str, str]:
+    """`{purpose: status}` of one subject's latest event in each of `purposes`."""
+    stmt = (
+        select(ConsentEvent.purpose, ConsentEvent.status)
+        .where(
+            ConsentEvent.organization_id == org_id,
+            ConsentEvent.channel == channel,
+            ConsentEvent.subject_index == index,
+            ConsentEvent.purpose.in_(list(purposes)),
+        )
+        .distinct(ConsentEvent.purpose)
+        .order_by(
+            ConsentEvent.purpose,
+            ConsentEvent.occurred_at.desc(),
+            ConsentEvent.created_at.desc(),
+            ConsentEvent.id.desc(),
+        )
+    )
+    return {row[0]: row[1] for row in (await session.execute(stmt)).all()}
+
+
+async def ever_opted_in_purposes(
+    session: AsyncSession, org_id: uuid.UUID, channel: str, index: str
+) -> set[str]:
+    """Which purposes this subject has, at any point, opted in to — what `consent.restore` checks
+    before it will re-open marketing."""
+    stmt = (
+        select(ConsentEvent.purpose)
+        .where(
+            ConsentEvent.organization_id == org_id,
+            ConsentEvent.channel == channel,
+            ConsentEvent.subject_index == index,
+            ConsentEvent.status == "opted_in",
+        )
+        .distinct()
+    )
+    return set((await session.execute(stmt)).scalars())
+
+
+async def subjects_with_marketing_events(
+    session: AsyncSession, org_id: uuid.UUID, channel: str, indexes: list[str]
+) -> set[str]:
+    """Which of these subjects already have *any* marketing event, in either direction — one
+    query for a whole import. What `consent.attest_opt_ins` uses to leave a recorded choice
+    alone."""
+    if not indexes:
+        return set()
+    stmt = (
+        select(ConsentEvent.subject_index)
+        .where(
+            ConsentEvent.organization_id == org_id,
+            ConsentEvent.channel == channel,
+            ConsentEvent.purpose == "marketing",
+            ConsentEvent.subject_index.in_(indexes),
+        )
+        .distinct()
+    )
+    return set((await session.execute(stmt)).scalars())
+
+
+async def suppression_reasons(
+    session: AsyncSession, org_id: uuid.UUID, indexes: list[str]
+) -> dict[str, str]:
+    """`{email_index: reason}` for the suppressed ones among `indexes`, in one query — the legacy
+    store the consent decision still honours."""
+    if not indexes:
+        return {}
+    stmt = select(Suppression.email_index, Suppression.reason).where(
+        Suppression.organization_id == org_id,
+        Suppression.email_index.in_(indexes),
+        Suppression.deleted_at.is_(None),
+    )
+    return {row[0]: row[1] for row in (await session.execute(stmt)).all()}
+
+
+def consent_events_stmt(
+    ctx: ScopeContext,
+    *,
+    channel: str | None = None,
+    purpose: str | None = None,
+    status: str | None = None,
+    subject_index: str | None = None,
+) -> Select[Any]:
+    """Scope-filtered consent history, newest first. `ctx.apply` is the enforcement point."""
+    stmt = select(ConsentEvent).where(ConsentEvent.organization_id == ctx.organization_id)
+    stmt = ctx.apply(stmt, owner_col=ConsentEvent.recorded_by)
+    if channel:
+        stmt = stmt.where(ConsentEvent.channel == channel)
+    if purpose:
+        stmt = stmt.where(ConsentEvent.purpose == purpose)
+    if status:
+        stmt = stmt.where(ConsentEvent.status == status)
+    if subject_index:
+        stmt = stmt.where(ConsentEvent.subject_index == subject_index)
+    return stmt.order_by(
+        ConsentEvent.occurred_at.desc(), ConsentEvent.created_at.desc(), ConsentEvent.id.desc()
+    )
+
+
+async def get_consent_event(
+    session: AsyncSession, org_id: uuid.UUID, event_id: uuid.UUID
+) -> ConsentEvent | None:
+    """Org-scoped fetch. None on a tenant mismatch — confirming an id exists in *some*
+    organization is itself a disclosure."""
+    stmt = select(ConsentEvent).where(
+        ConsentEvent.id == event_id, ConsentEvent.organization_id == org_id
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_consent_event_by_key(
+    session: AsyncSession, org_id: uuid.UUID, key: str
+) -> ConsentEvent | None:
+    """The event an idempotency key already wrote, if any."""
+    stmt = select(ConsentEvent).where(
+        ConsentEvent.organization_id == org_id, ConsentEvent.idempotency_key == key
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
 
 
 # --------------------------------------------------------------------- engage inbox (WhatsApp)

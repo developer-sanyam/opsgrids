@@ -566,6 +566,293 @@
         "title": "ConnectionOut",
         "type": "object"
       },
+      "ConsentDecisionOut": {
+        "description": "What the consent decision says right now. `reason` is a stable machine-readable code:\n`opted_in`, `no_opt_out`, `opted_out`, `no_opt_in`, `preference_suppressed`,\n`suppressed_<reason>`, `invalid_address`.",
+        "properties": {
+          "allowed": {
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "allowed",
+          "reason"
+        ],
+        "title": "ConsentDecisionOut",
+        "type": "object"
+      },
+      "ConsentEventIn": {
+        "additionalProperties": false,
+        "description": "Record that somebody opted in or out. `source` and `evidence` are required: a bare \"yes\" is\nexactly what the ledger exists to replace.\n\nName the subject by `address` or, for an email contact, by `contact_id` (the address is then\ntaken from the contact, sealed, and never returned). `evidence` is a short reference \u2014\n\"checkout order 1042\", \"signup form, 2026-09-20\" \u2014 never the address itself; a request whose\nevidence contains the address is refused.",
+        "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "maxLength": 254,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "channel": {
+            "enum": [
+              "whatsapp",
+              "email",
+              "sms"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "contact_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Id"
+          },
+          "evidence": {
+            "maxLength": 500,
+            "minLength": 3,
+            "title": "Evidence",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 8,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "purpose": {
+            "enum": [
+              "marketing",
+              "transactional"
+            ],
+            "title": "Purpose",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "checkout",
+              "web_form",
+              "import",
+              "admin",
+              "api"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "opted_in",
+              "opted_out"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "purpose",
+          "status",
+          "source",
+          "evidence"
+        ],
+        "title": "ConsentEventIn",
+        "type": "object"
+      },
+      "ConsentEventOut": {
+        "properties": {
+          "address": {
+            "title": "Address",
+            "type": "string"
+          },
+          "channel": {
+            "enum": [
+              "whatsapp",
+              "email",
+              "sms"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "contact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Id"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "purpose": {
+            "enum": [
+              "marketing",
+              "transactional"
+            ],
+            "title": "Purpose",
+            "type": "string"
+          },
+          "recorded_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded By"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "opted_in",
+              "opted_out"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "channel",
+          "purpose",
+          "status",
+          "source",
+          "evidence",
+          "address",
+          "contact_id",
+          "recorded_by",
+          "occurred_at",
+          "created_at"
+        ],
+        "title": "ConsentEventOut",
+        "type": "object"
+      },
+      "ConsentLookupIn": {
+        "additionalProperties": false,
+        "description": "A subject's history, looked up by address. A body rather than a query string so the address\nnever lands in an access log.",
+        "properties": {
+          "address": {
+            "maxLength": 254,
+            "minLength": 3,
+            "title": "Address",
+            "type": "string"
+          },
+          "channel": {
+            "enum": [
+              "whatsapp",
+              "email",
+              "sms"
+            ],
+            "title": "Channel",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "address"
+        ],
+        "title": "ConsentLookupIn",
+        "type": "object"
+      },
+      "ConsentRecordedOut": {
+        "description": "The event, and what the decision says now that it is in. An opt-in can be recorded for an\naddress a legacy suppression or a customer's own STOP still refuses \u2014 `effective` is how the\ncaller sees that it has not taken effect.",
+        "properties": {
+          "effective": {
+            "$ref": "#/components/schemas/ConsentDecisionOut"
+          },
+          "event": {
+            "$ref": "#/components/schemas/ConsentEventOut"
+          }
+        },
+        "required": [
+          "event",
+          "effective"
+        ],
+        "title": "ConsentRecordedOut",
+        "type": "object"
+      },
+      "ConsentUnmaskedOut": {
+        "properties": {
+          "address": {
+            "title": "Address",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "address"
+        ],
+        "title": "ConsentUnmaskedOut",
+        "type": "object"
+      },
       "ContactImportOut": {
         "properties": {
           "created": {
@@ -1526,6 +1813,17 @@
             ],
             "title": "Subject"
           },
+          "suppression_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suppression Reason"
+          },
           "to_address": {
             "title": "To Address",
             "type": "string"
@@ -1769,6 +2067,42 @@
           "pages"
         ],
         "title": "Page[ConnectionOut]",
+        "type": "object"
+      },
+      "Page_ConsentEventOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ConsentEventOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ConsentEventOut]",
         "type": "object"
       },
       "Page_ContactListOut_": {
@@ -4258,6 +4592,289 @@
           }
         },
         "summary": "Replace the organization's email connection",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/consent/events": {
+      "get": {
+        "operationId": "list_consent_events_api_v1_engage_consent_events_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "channel",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "whatsapp",
+                    "email",
+                    "sms"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Channel"
+            }
+          },
+          {
+            "in": "query",
+            "name": "purpose",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "marketing",
+                    "transactional"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Purpose"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "opted_in",
+                    "opted_out"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "contact_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Contact Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ConsentEventOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The consent ledger, newest first; addresses masked. `contact_id` narrows it to one contact's history",
+        "tags": [
+          "engage"
+        ]
+      },
+      "post": {
+        "description": "201 for a new event; 200 with the original event for a retry under the same\n`idempotency_key`. `effective` says whether the decision now allows sending \u2014 an opt-in does\nnot lift a legacy suppression or a customer's STOP.",
+        "operationId": "record_consent_event_api_v1_engage_consent_events_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsentEventIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentRecordedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record that an address opted in or out (append-only; source and evidence required)",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/consent/events/{event_id}:unmask": {
+      "post": {
+        "operationId": "unmask_consent_event_api_v1_engage_consent_events__event_id__unmask_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Event Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentUnmaskedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reveal the address one consent event is about (dangerous; audited every time)",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/consent/events:lookup": {
+      "post": {
+        "operationId": "lookup_consent_history_api_v1_engage_consent_events_lookup_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsentLookupIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ConsentEventOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One subject's consent history, looked up by address (in the body, so it never reaches an access log)",
         "tags": [
           "engage"
         ]

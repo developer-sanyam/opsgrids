@@ -14,6 +14,8 @@ The shape:
 - `Message`    — one rendered notification and its delivery state.
 - `Delivery`   — **append-only** ledger of provider attempts.
 - `Preference` — per-recipient, per-channel suppression.
+- `ConsentEvent` — **append-only** ledger of who opted in or out of what, when, and through
+                 which source (`app/consent.py` is the one place that reads it to decide).
 
 `Message` carries the rendered subject and body rather than a reference to the template that
 produced them. A template edited next month must not change what last month's message says it
@@ -43,6 +45,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -51,7 +55,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from platform_core.audit import AuditLogMixin
 from platform_core.events import OutboxMixin, ProcessedEventMixin
 from platform_core.models import Base as _Base
-from platform_core.models import TenantBase
+from platform_core.models import OrgScopedMixin, TenantBase, UUIDPrimaryKeyMixin, utcnow
 
 SCHEMA = "notification"
 
@@ -334,6 +338,10 @@ class Message(Base, TenantBase):
 
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(Text)
+    #: Why a `suppressed` message was not sent, as a machine-readable code (`consent:no_opt_in`,
+    #: `consent:opted_out`, `preference`, ...). Null on every message that was not suppressed —
+    #: and on those suppressed before this column existed, which carry the state and no reason.
+    suppression_reason: Mapped[str | None] = mapped_column(String(80))
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: Filled from provider receipts. Separate columns rather than only a state, because "when
     #: was it read" is a question analytics asks and a single state cannot answer.
@@ -811,6 +819,110 @@ class Suppression(Base, TenantBase):
         CheckConstraint(
             "reason IN ('unsubscribed', 'bounced', 'complained', 'manual')",
             name="reason",
+        ),
+    )
+
+
+class ConsentEvent(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One fact about consent: *this address said yes (or no) to this purpose on this channel,
+    then, through this source.* **Append-only.**
+
+    Consent is a history, never a boolean somebody flips (Engage design spec §13): "who agreed to
+    what, when, and how" is the question a regulator, a mailbox provider or Meta asks after a
+    complaint, and an answer that can be edited is not an answer. So nothing in this service
+    updates or deletes a row here — a change of mind is a **new** row — and the database enforces
+    it rather than trusting the code: `UPDATE` and `DELETE` are revoked from the application role
+    (`migrations/env.py`, `reapply_append_only`), the same table-privilege tool `audit_logs` and
+    the console's `revenue_events` use. There is deliberately no `updated_at`, `deleted_at` or
+    `TenantBase` here for the same reason: a column that implies a row can change invites the
+    code that changes it.
+
+    **The latest event for a subject wins**, per channel and purpose, ordered by `(occurred_at,
+    created_at, id)`. `app/consent.py` is the one place that reads that ordering into a decision
+    (`decide`); `selectors.sendable_contacts` restates the same predicate in SQL for the bulk
+    audience read and a test pins the two together.
+
+    The subject is the contact address, stored the way `suppressions` and `contacts` store it
+    (`platform_core.pii`): `subject_enc` holds it sealed, `subject_masked` is the only form an
+    ordinary read returns, and `subject_index` is the keyed blind index the decision looks it up
+    by. **There is no plaintext address in this table.** The index is the *same* one
+    `Contact.email_index`/`Suppression.email_index` carry for an email and `Conversation.
+    wa_address_index` carries for a WhatsApp number, so a lookup needs no decrypt and the legacy
+    stores' rows can be copied in without opening them.
+
+    `purpose` is `marketing` or `transactional`. An opt-out from a STOP keyword or an
+    unsubscribe link is written as **two rows**, one per purpose, so "the latest event per
+    purpose" stays a single ordering with no cross-purpose special case.
+
+    `source` says where the answer came from. The values a person may claim through the API are
+    `checkout`, `web_form`, `import`, `admin` and `api`; the rest are written only by this
+    service itself — `inbound_keyword` (a STOP/START reply), `unsubscribe_link`, `bounce`,
+    `complaint` and `legacy_import` — and cannot be forged by a caller, the same reason
+    `SuppressionIn` has no `reason` field. **`legacy_import` is unverified consent**: it marks
+    an existing contact carried over when this ledger was introduced, with no record of how or
+    when they agreed. It keeps existing campaigns working; it is not evidence of anything.
+
+    `contact_id` is a plain UUID naming a `contacts` row, never a foreign key (a deleted contact
+    must not delete the record that they once opted out — the suppression rule, applied here),
+    and null whenever the subject is not, or is no longer, a contact.
+
+    `idempotency_key` makes a retried write a no-op: unique per organization when present. The
+    backfill (`app/consent_backfill.py`) derives one per legacy row so it is safe to re-run.
+    """
+
+    __tablename__ = "consent_events"
+
+    #: whatsapp | email | sms.
+    channel: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: marketing | transactional.
+    purpose: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    subject_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    subject_masked: Mapped[str] = mapped_column(String(254), nullable=False)
+    subject_index: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
+    #: opted_in | opted_out.
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: Short free text or a reference — never the address itself. Nullable at the database
+    #: because the service's own writers (a STOP keyword) have a source but no prose; the API
+    #: refuses a caller-supplied event without one.
+    evidence: Mapped[str | None] = mapped_column(String(500))
+    #: The user who recorded it, when a person did. Null for events this service wrote itself.
+    recorded_by: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: When the person actually consented (or refused) — which is not always when it was
+    #: recorded. What "latest" is ordered by.
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), default=utcnow, nullable=False
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(200))
+
+    __table_args__ = (
+        CheckConstraint("channel IN ('whatsapp', 'email', 'sms')", name="channel"),
+        CheckConstraint("purpose IN ('marketing', 'transactional')", name="purpose"),
+        CheckConstraint("status IN ('opted_in', 'opted_out')", name="status"),
+        # The decision's own lookup: one subject's events on one channel and purpose, read newest
+        # first. Leads with `organization_id` like every index here (ADR-0002).
+        Index(
+            "ix_consent_events_org_subject",
+            "organization_id",
+            "channel",
+            "purpose",
+            "subject_index",
+            "occurred_at",
+        ),
+        # The history list, newest first.
+        Index("ix_consent_events_org_occurred", "organization_id", "occurred_at"),
+        # A retried write is one row. Partial, because most rows carry no key at all.
+        Index(
+            "uq_consent_events_org_idempotency",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
         ),
     )
 
