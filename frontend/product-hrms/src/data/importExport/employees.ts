@@ -1,19 +1,12 @@
 import { collectPages, defineImportEntity, makeLookup } from "@opsgrids/client";
-import type { ImportColumn, LookupSet, SheetValue } from "@opsgrids/client";
+import type { ImportColumn, Lookup, LookupSet, SheetValue } from "@opsgrids/client";
 
 import { createEmployee, listEmployees } from "@/api/client";
 import type { EmployeeIn, EmployeeOut, EmployeeStatus, EmploymentType, WorkMode } from "@/api/types";
 import { employeeStatusLabel } from "@/lib/format";
 
 import { departmentEntries, loadOrgUnitTree } from "./departments";
-import {
-  labelOfOption,
-  labelOfValue,
-  optionOf,
-  requiredTextOf,
-  resolveReference,
-  textOf,
-} from "./rowValues";
+import { labelOfOption, optionOf, requiredTextOf, resolveReference, textOf } from "./rowValues";
 
 /** What the Employees screen tracks, and so what an export of it must respect. */
 export interface EmployeeFilters {
@@ -222,6 +215,11 @@ function managerId(lookups: LookupSet, employeeNo: string): string {
   });
 }
 
+/** The sheet text for a department or manager id: blank when there is none or the caller cannot name it. */
+function referenceLabel(lookup: Lookup | undefined, id: string | null): string {
+  return id === null ? "" : (lookup?.labelOf(id) ?? "");
+}
+
 async function loadLookups(signal: AbortSignal): Promise<LookupSet> {
   const [tree, employees] = await Promise.all([
     loadOrgUnitTree(),
@@ -287,13 +285,13 @@ export const employeesEntity = defineImportEntity<EmployeeIn, EmployeeOut, Emplo
       full_name: employee.full_name,
       designation: employee.designation,
       job_title: employee.job_title,
-      department: labelOfValue(lookups[DEPARTMENTS], employee.department_id),
+      department: referenceLabel(lookups[DEPARTMENTS], employee.department_id),
       location_code: employee.location_code,
       employment_type: labelOfOption(EMPLOYMENT_OPTIONS, employee.employment_type),
       work_mode: labelOfOption(WORK_MODE_OPTIONS, employee.work_mode),
       date_of_joining: employee.date_of_joining,
-      reporting_manager: labelOfValue(lookups[MANAGERS], employee.reporting_manager_id),
-      dotted_line_manager: labelOfValue(lookups[MANAGERS], employee.dotted_line_manager_id),
+      reporting_manager: referenceLabel(lookups[MANAGERS], employee.reporting_manager_id),
+      dotted_line_manager: referenceLabel(lookups[MANAGERS], employee.dotted_line_manager_id),
       status: employeeStatusLabel(employee.status),
       date_of_exit: employee.date_of_exit,
       created_at: employee.created_at,

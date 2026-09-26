@@ -1,11 +1,10 @@
-import { RowProblem, defineImportEntity } from "@opsgrids/client";
+import { RowProblem, defineImportEntity, minorToMajor } from "@opsgrids/client";
 import type { ImportColumn, SheetValue } from "@opsgrids/client";
 
 import { createAsset, listAssets } from "@/api/client";
 import type { Asset, AssetIn, AssetStatus, AssetType } from "@/api/types";
 import { assetStatusLabel, assetTypeLabel } from "@/lib/format";
 
-import { minorToMajor } from "./money";
 import { labelOfOption, numberOf, optionOf, requiredTextOf, textOf } from "./rowValues";
 
 /** What the Assets screen tracks, and so what an export of it must respect. */
@@ -200,11 +199,12 @@ export const assetsEntity = defineImportEntity<AssetIn, Asset, AssetFilters>({
     if (purchased !== null) body.purchased_at = purchased;
     const warranty = textOf(row, "warranty_expires_at");
     if (warranty !== null) body.warranty_expires_at = warranty;
+    // The engine fills a blank currency cell with the default, so the currency column says nothing
+    // about whether one was written: it is sent with a cost, and only then.
     const cost = numberOf(row, "cost");
-    if (cost !== null) body.cost_minor = cost;
-    const currency = textOf(row, "cost_currency");
-    if (cost !== null || currency !== null) {
-      body.cost_currency = (currency ?? DEFAULT_CURRENCY).toUpperCase();
+    if (cost !== null) {
+      body.cost_minor = cost;
+      body.cost_currency = (textOf(row, "cost_currency") ?? DEFAULT_CURRENCY).toUpperCase();
     }
     return body;
   },
