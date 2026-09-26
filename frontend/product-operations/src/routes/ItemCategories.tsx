@@ -2,7 +2,15 @@ import { useMemo, useState } from "react";
 
 import { deleteItemCategory, listItemCategories } from "@/api/client";
 import type { ItemCategoryOut } from "@/api/types";
-import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
+import { itemCategoryImport } from "@/data/importExport/itemCategories";
+import {
+  Can,
+  problemMessage,
+  useAsync,
+  useCan,
+  useImportExport,
+  useMutation,
+} from "@opsgrids/client";
 import {
   Button,
   Card,
@@ -16,7 +24,7 @@ import {
   Tag,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { FolderIcon, PlusIcon, useToast } from "@opsgrids/ui";
+import { FolderIcon, ImportExportButton, PlusIcon, useToast } from "@opsgrids/ui";
 import { ItemCategoryFormDialog } from "@/forms/ItemCategoryFormDialog";
 
 interface Row {
@@ -78,6 +86,9 @@ export function ItemCategoriesPage() {
 
   const loader = () => listItemCategories({ size: 200 });
   const state = useAsync(loader, []);
+  // `state.reload` keeps one identity for the life of the screen. The dialog stays open on its
+  // result, so the rows it just created appear behind it as soon as the run ends.
+  const dx = useImportExport(itemCategoryImport, { onImported: state.reload });
   const rows = useMemo(
     () => (state.status === "success" ? orderedWithDepth(state.data.items) : []),
     [state],
@@ -145,11 +156,20 @@ export function ItemCategoriesPage() {
         title="Item categories"
         description="The item master's own catalogue tree — separate from the procurement category every item already carries."
         actions={
-          <Can permission="operations.inventory.item.write" scope="ORG">
-            <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
-              New category
-            </Button>
-          </Can>
+          <div className="flex items-center gap-2">
+            <ImportExportButton
+              meta={dx.meta}
+              state={dx.state}
+              actions={dx.actions}
+              canImport={canWrite}
+              canExport
+            />
+            <Can permission="operations.inventory.item.write" scope="ORG">
+              <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
+                New category
+              </Button>
+            </Can>
+          </div>
         }
       />
 

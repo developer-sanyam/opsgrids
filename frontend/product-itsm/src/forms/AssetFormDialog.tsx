@@ -42,7 +42,7 @@ export function AssetFormDialog({ asset, onClose, onSaved }: AssetFormDialogProp
   const [serial, setSerial] = useState(asset?.serial ?? "");
   const [purchasedAt, setPurchasedAt] = useState(asset?.purchased_at ?? "");
   const [warrantyExpiresAt, setWarrantyExpiresAt] = useState(asset?.warranty_expires_at ?? "");
-  const [cost, setCost] = useState(asset ? minorToInput(asset.cost_minor) : "");
+  const [cost, setCost] = useState(asset ? minorToInput(asset.cost_minor, asset.cost_currency) : "");
   const [currency, setCurrency] = useState(asset?.cost_currency ?? "INR");
 
   const fields = {
@@ -89,12 +89,12 @@ export function AssetFormDialog({ asset, onClose, onSaved }: AssetFormDialogProp
       nameRef.current?.focus();
       return;
     }
-    const parsedCost = parseMinor(cost);
+    const currencyCode = currency.trim().toUpperCase() || "INR";
+    const parsedCost = parseMinor(cost, currencyCode);
     if (!parsedCost.ok) {
       setCostError(parsedCost.message);
       return;
     }
-    const currencyCode = currency.trim().toUpperCase() || "INR";
     const shared = {
       name: trimmedName,
       type,

@@ -3,6 +3,8 @@
  * regardless of the viewer's zone; money is handled as integer minor units and never as a float.
  */
 
+import { currencyDecimals } from "./money";
+
 /** The real "today", as an ISO calendar date. One `now()` for the whole app — injectable with a
  *  fixed `Date` in a test, and never the frozen fixture constant in live mode. */
 export function today(date: Date = new Date()): string {
@@ -63,16 +65,20 @@ export function formatPct(fraction: number): string {
  * never a hardcoded symbol. Money is never stored or computed as a float; this only formats for
  * display. Falls back to a plain "CODE amount" for a currency `Intl` doesn't recognize rather
  * than throwing mid-render.
+ *
+ * A minor unit is a hundredth only for most currencies: 1500000 of "JPY" is "¥15,00,000" and 1250
+ * of "KWD" is "KWD 1.250", by the currency's own decimals.
  */
 export function formatMoney(minorUnits: number, currency: string): string {
-  const amount = minorUnits / 100;
+  const decimals = currencyDecimals(currency);
+  const amount = minorUnits / 10 ** decimals;
   try {
     return new Intl.NumberFormat("en-IN", {
       style: "currency",
       currency,
-      maximumFractionDigits: amount % 1 === 0 ? 0 : 2,
+      maximumFractionDigits: amount % 1 === 0 ? 0 : decimals,
     }).format(amount);
   } catch {
-    return `${currency} ${amount.toFixed(2)}`;
+    return `${currency} ${amount.toFixed(decimals)}`;
   }
 }

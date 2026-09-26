@@ -20,3 +20,9 @@ packages:
 # esbuild ships a platform binary its postinstall fetches; vitest needs it.
 allowBuilds:
   esbuild: true
+
+# exceljs (the Excel import/export engine, ADR-0022) pins unzipper ^0.10, whose `binary` chain
+# (buffers, chainsaw, traverse) carries no licence metadata and is unmaintained. Only exceljs's
+# Node-only streaming reader uses unzipper; the browser build and `workbook.xlsx.load` do not.
+overrides:
+  "exceljs>unzipper": "0.12.5"

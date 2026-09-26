@@ -4,7 +4,9 @@
   "private": true,
   "description": "Standalone Operations product app — procurement, inventory and the paperwork between them.",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "vite --port 4380 --strictPort",
     "build": "tsc --noEmit && vite build",
@@ -31,6 +33,7 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.0.0",
     "eslint": "^9.17.0",
+    "exceljs": "4.4.0",
     "jsdom": "25.0.1",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0",

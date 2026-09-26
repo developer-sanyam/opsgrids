@@ -19,7 +19,7 @@
  * ship in a production build.
  */
 
-import { apiRequest } from "@opsgrids/client";
+import { ApiError, apiRequest } from "@opsgrids/client";
 import {
   activityFromWire,
   companyFromWire,
@@ -89,6 +89,23 @@ const FULL_PAGE = 200;
 /** The real default page size for a paginated list screen (Companies, Contacts). */
 const DEFAULT_PAGE_SIZE = 25;
 
+/**
+ * A fixture write refused the way the server refuses one: an `ApiError` carrying the status and
+ * the problem document. Callers that read the status behave the same against fixtures as against
+ * the gateway (an import reports a 409 as "skipped", not as a failure), and `problemMessage`
+ * finds the sentence.
+ */
+function refusal(
+  status: 404 | 409 | 422,
+  title: string,
+  detail: string,
+  errors?: readonly { field: string; code: string; message: string }[],
+): ApiError {
+  return new ApiError(status, detail, { title, status, detail, ...(errors !== undefined ? { errors } : {}) });
+}
+
+const conflict = (detail: string): ApiError => refusal(409, "Conflict", detail);
+
 /** Small artificial delay so loading states are exercised in fixtures mode. */
 function settle<T>(value: T, ms = 240): Promise<T> {
   return new Promise((resolve) => setTimeout(() => resolve(value), ms));
@@ -101,6 +118,9 @@ function paginateFixture<T>(items: T[], page: number, size: number): Page<T> {
   const start = (page - 1) * size;
   return { items: items.slice(start, start + size), total, page, size, pages };
 }
+
+/** A phone number with its country code, once spaces, hyphens, dots and brackets are stripped. */
+const E164 = /^\+[1-9]\d{7,14}$/;
 
 function fixtureId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`;
@@ -115,6 +135,8 @@ export interface ListDealsParams {
   companyId?: string;
   page?: number;
   size?: number;
+  /** Aborts the request — the import/export dialog cancels an export or a lookup load. */
+  signal?: AbortSignal | undefined;
 }
 
 export async function listDeals(params: ListDealsParams = {}): Promise<Page<Deal>> {
@@ -137,7 +159,9 @@ export async function listDeals(params: ListDealsParams = {}): Promise<Page<Deal
   if (params.stage && params.stage !== "all") query.set("stage", params.stage);
   if (params.ownerId && params.ownerId !== "all") query.set("owner_id", params.ownerId);
   if (params.companyId) query.set("company_id", params.companyId);
-  const result = await apiRequest<WirePage<DealOut>>(`/deals?${query.toString()}`);
+  const result = await apiRequest<WirePage<DealOut>>(`/deals?${query.toString()}`, {
+    signal: params.signal,
+  });
   return mapPage(result, dealFromWire);
 }
 
@@ -174,8 +198,9 @@ export async function getDeal(id: string): Promise<Deal> {
 /** `POST /deals` — `crm.pipeline.deal.write`. */
 export async function createDeal(input: DealIn): Promise<Deal> {
   if (USE_FIXTURES) {
-    if (DEALS.some((d) => d.name.toLowerCase() === input.name.toLowerCase())) {
-      throw new Error("A deal with that name already exists.");
+    // The server compares deal names exactly, capitals included.
+    if (DEALS.some((d) => d.name === input.name)) {
+      throw conflict("A deal with that name already exists");
     }
     const deal: Deal = {
       id: fixtureId("deal"),
@@ -329,6 +354,7 @@ export interface ListCompaniesParams {
   status?: CompanyStatus | "all";
   page?: number;
   size?: number;
+  signal?: AbortSignal | undefined;
 }
 
 export async function listCompanies(params: ListCompaniesParams = {}): Promise<Page<Company>> {
@@ -350,7 +376,9 @@ export async function listCompanies(params: ListCompaniesParams = {}): Promise<P
   const query = new URLSearchParams({ page: String(page), size: String(size) });
   if (params.search?.trim()) query.set("q", params.search.trim());
   if (params.status && params.status !== "all") query.set("status", params.status);
-  const result = await apiRequest<WirePage<CompanyOut>>(`/customers?${query.toString()}`);
+  const result = await apiRequest<WirePage<CompanyOut>>(`/customers?${query.toString()}`, {
+    signal: params.signal,
+  });
   return mapPage(result, companyFromWire);
 }
 
@@ -367,8 +395,9 @@ export async function getCompany(id: string): Promise<Company> {
 /** `POST /customers` — `crm.book.company.write`. 409 on a duplicate name within the org. */
 export async function createCompany(input: CompanyIn): Promise<Company> {
   if (USE_FIXTURES) {
-    if (COMPANIES.some((c) => c.name.toLowerCase() === input.name.toLowerCase())) {
-      throw new Error("A company with that name already exists.");
+    // The server compares company names ignoring case and surrounding spaces.
+    if (COMPANIES.some((c) => c.name.trim().toLowerCase() === input.name.trim().toLowerCase())) {
+      throw conflict("A company with that name already exists");
     }
     const company: Company = {
       id: fixtureId("comp"),
@@ -452,6 +481,7 @@ export interface ListContactsParams {
   companyId?: string;
   page?: number;
   size?: number;
+  signal?: AbortSignal | undefined;
 }
 
 export async function listContacts(params: ListContactsParams = {}): Promise<Page<Contact>> {
@@ -475,7 +505,9 @@ export async function listContacts(params: ListContactsParams = {}): Promise<Pag
   if (params.search?.trim()) query.set("q", params.search.trim());
   if (params.status && params.status !== "all") query.set("status", params.status);
   if (params.companyId) query.set("company_id", params.companyId);
-  const result = await apiRequest<WirePage<ContactOut>>(`/contacts?${query.toString()}`);
+  const result = await apiRequest<WirePage<ContactOut>>(`/contacts?${query.toString()}`, {
+    signal: params.signal,
+  });
   return mapPage(result, contactFromWire);
 }
 
@@ -500,11 +532,17 @@ function maskPhone(rawPhone: string): string {
 /** `POST /contacts` — `crm.book.contact.write`. No `phone` field: see `ContactIn`'s doc comment. */
 export async function createContact(input: ContactIn): Promise<Contact> {
   if (USE_FIXTURES) {
-    if (CONTACTS.some((c) => c.email.toLowerCase() === input.email.toLowerCase())) {
-      throw new Error("A contact with that email already exists.");
+    // The server compares contact emails exactly, capitals included.
+    if (CONTACTS.some((c) => c.email === input.email)) {
+      throw conflict("A contact with that email already exists");
     }
     if (!COMPANIES.some((c) => c.id === input.company_id)) {
-      throw new Error("That company could not be found.");
+      throw refusal(404, "Not found", "That company is not part of this organization");
+    }
+    if (input.raw_phone !== undefined && !E164.test(input.raw_phone.replace(/[\s\-().]/g, ""))) {
+      throw refusal(422, "Validation failed", "Request validation failed", [
+        { field: "raw_phone", code: "invalid_phone", message: "That is not a valid phone number with a country code" },
+      ]);
     }
     const contact: Contact = {
       id: fixtureId("con"),
@@ -680,9 +718,9 @@ export async function logActivity(input: ActivityIn): Promise<Activity> {
 // The rep directory is `GET /customers/owners` — reference data owned by the customer service,
 // resolved by every `owner_id` in the product including deal-service's.
 
-export async function getOwners(): Promise<Owner[]> {
+export async function getOwners(signal?: AbortSignal): Promise<Owner[]> {
   if (USE_FIXTURES) return settle(OWNERS);
-  const rows = await apiRequest<OwnerOut[]>(`/customers/owners`);
+  const rows = await apiRequest<OwnerOut[]>(`/customers/owners`, { signal });
   return rows.map(ownerFromWire);
 }
 
@@ -691,7 +729,7 @@ export async function getOwners(): Promise<Owner[]> {
 export async function createOwner(input: OwnerIn): Promise<Owner> {
   if (USE_FIXTURES) {
     if (OWNERS.some((o) => o.email.toLowerCase() === input.email.toLowerCase())) {
-      throw new Error("A team member with that email already exists.");
+      throw conflict("An owner with that email already exists");
     }
     const owner: Owner = {
       id: fixtureId("own"),
@@ -750,6 +788,7 @@ export interface ListLeadsParams {
   ownerId?: string | "all";
   page?: number;
   size?: number;
+  signal?: AbortSignal | undefined;
 }
 
 export async function listLeads(params: ListLeadsParams = {}): Promise<Page<Lead>> {
@@ -767,7 +806,9 @@ export async function listLeads(params: ListLeadsParams = {}): Promise<Page<Lead
   const query = new URLSearchParams({ page: String(page), size: String(size) });
   if (params.status && params.status !== "all") query.set("status", params.status);
   if (params.ownerId && params.ownerId !== "all") query.set("owner_id", params.ownerId);
-  const result = await apiRequest<WirePage<LeadOut>>(`/leads?${query.toString()}`);
+  const result = await apiRequest<WirePage<LeadOut>>(`/leads?${query.toString()}`, {
+    signal: params.signal,
+  });
   return mapPage(result, leadFromWire);
 }
 
@@ -785,6 +826,15 @@ export async function getLead(id: string): Promise<Lead> {
  *  round-robin — fixtures mode leaves it unassigned, since there is no rule to simulate. */
 export async function createLead(input: LeadIn): Promise<Lead> {
   if (USE_FIXTURES) {
+    // The server compares lead emails exactly, capitals included.
+    if (input.email !== undefined && input.email !== null && LEADS.some((l) => l.email === input.email)) {
+      throw conflict("A lead with that email already exists");
+    }
+    if (input.phone !== undefined && input.phone !== null && !E164.test(input.phone.replace(/[\s\-().]/g, ""))) {
+      throw refusal(422, "Validation failed", "Request validation failed", [
+        { field: "phone", code: "invalid_phone", message: "That is not a valid phone number with a country code" },
+      ]);
+    }
     const lead: Lead = {
       id: fixtureId("lead"),
       full_name: input.full_name,

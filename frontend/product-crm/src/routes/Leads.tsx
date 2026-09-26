@@ -4,9 +4,11 @@ import { Link } from "react-router-dom";
 import { listLeads } from "@/api/client";
 import type { Lead, LeadStatus } from "@/api/types";
 import { useDirectory } from "@/data/directoryContext";
+import { leadImport } from "@/data/importExport/leads";
+import type { LeadFilters } from "@/data/importExport/leads";
 import { formatDate } from "@/lib/format";
-import { Can, problemMessage, useAsync } from "@opsgrids/client";
-import { PlusIcon, UserPlusIcon } from "@opsgrids/ui";
+import { Can, problemMessage, useAsync, useCan, useImportExport } from "@opsgrids/client";
+import { ImportExportButton, PlusIcon, UserPlusIcon } from "@opsgrids/ui";
 import {
   Button,
   Card,
@@ -92,6 +94,14 @@ export function LeadsPage() {
   );
   const leads = useAsync(loader, [status, page, size]);
   const columns = useMemo(() => buildColumns(), []);
+  const canCreate = useCan("crm.lead.lead.write", "OWN");
+
+  // The export writes the whole filtered list, not the page on screen, so it needs the filters
+  // the list itself is loaded with.
+  const importFilters = useMemo<LeadFilters>(() => ({ status }), [status]);
+  // New rows show without a refresh: the list reloads.
+  const { reload: reloadLeads } = leads;
+  const dx = useImportExport(leadImport, { filters: importFilters, onImported: reloadLeads });
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -100,11 +110,20 @@ export function LeadsPage() {
         title="Leads"
         description="Captured ahead of the pipeline — qualify a lead, then convert it into a company and a deal."
         actions={
-          <Can permission="crm.lead.lead.write" scope="OWN">
-            <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
-              Capture lead
-            </Button>
-          </Can>
+          <>
+            <ImportExportButton
+              meta={dx.meta}
+              state={dx.state}
+              actions={dx.actions}
+              canImport={canCreate}
+              canExport
+            />
+            <Can permission="crm.lead.lead.write" scope="OWN">
+              <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
+                Capture lead
+              </Button>
+            </Can>
+          </>
         }
       />
 

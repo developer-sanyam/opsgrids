@@ -5,11 +5,13 @@ import { deleteDeal, listDeals } from "@/api/client";
 import type { Company, Deal, DealStage } from "@/api/types";
 import { dealsByStage } from "@/data/derive";
 import { useDirectory } from "@/data/directoryContext";
+import { dealImport } from "@/data/importExport/deals";
+import type { DealFilters } from "@/data/importExport/deals";
 import { companyName } from "@/data/lookups";
 import { STAGES } from "@/data/stages";
-import { cn, HandshakeIcon, KanbanIcon, LayoutIcon, PlusIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
+import { cn, HandshakeIcon, ImportExportButton, KanbanIcon, LayoutIcon, PlusIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
 import { formatDate, formatMoney } from "@/lib/format";
-import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
+import { Can, problemMessage, useAsync, useCan, useImportExport, useMutation } from "@opsgrids/client";
 import {
   Button,
   Card,
@@ -148,6 +150,16 @@ export function DealsPage() {
   );
   const deals = useAsync(loader, [debouncedSearch, stage, ownerId, effectivePage, effectiveSize, view]);
 
+  // The export writes the whole filtered pipeline, not the page or the board on screen, so it
+  // needs the filters the list is loaded with (and neither the view nor the page).
+  const importFilters = useMemo<DealFilters>(
+    () => ({ search: debouncedSearch, stage, ownerId }),
+    [debouncedSearch, stage, ownerId],
+  );
+  // New rows show without a refresh: the board or the list reloads.
+  const { reload: reloadDeals } = deals;
+  const dx = useImportExport(dealImport, { filters: importFilters, onImported: reloadDeals });
+
   const remove = useMutation((deal: Deal) => deleteDeal(deal.id), {
     onSuccess: (_result, deal) => {
       setDeleting(null);
@@ -205,6 +217,13 @@ export function DealsPage() {
                 <span className="hidden sm:inline">List</span>
               </button>
             </div>
+            <ImportExportButton
+              meta={dx.meta}
+              state={dx.state}
+              actions={dx.actions}
+              canImport={canWrite}
+              canExport
+            />
             <Can permission="crm.pipeline.deal.write" scope="OWN">
               <Button size="md" leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
                 New deal

@@ -4,10 +4,12 @@ import { Link } from "react-router-dom";
 import { deleteContact, listContacts } from "@/api/client";
 import type { Contact, ContactStatus } from "@/api/types";
 import { useDirectory } from "@/data/directoryContext";
+import { contactImport } from "@/data/importExport/contacts";
+import type { ContactFilters } from "@/data/importExport/contacts";
 import { companyName, ownerName } from "@/data/lookups";
-import { ArrowRightIcon, ChevronDown, cn, MailIcon, PhoneIcon, PlusIcon, useDebouncedValue, UsersIcon, useToast } from "@opsgrids/ui";
+import { ArrowRightIcon, ChevronDown, cn, ImportExportButton, MailIcon, PhoneIcon, PlusIcon, useDebouncedValue, UsersIcon, useToast } from "@opsgrids/ui";
 import { formatDate, formatRelative } from "@/lib/format";
-import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
+import { Can, problemMessage, useAsync, useCan, useImportExport, useMutation } from "@opsgrids/client";
 import {
   Avatar,
   Button,
@@ -113,6 +115,22 @@ export function ContactsPage() {
   );
   const contacts = useAsync(loader, [debouncedSearch, status, page, size]);
 
+  // The export writes the whole filtered list, not the page on screen, so it needs the filters
+  // the list itself is loaded with.
+  const importFilters = useMemo<ContactFilters>(
+    () => ({ search: debouncedSearch, status }),
+    [debouncedSearch, status],
+  );
+  // New rows show without a refresh: the list reloads, and so does the directory that names
+  // contacts on the other screens, as after a single "New contact".
+  const { reload: reloadContacts } = contacts;
+  const { reload: reloadDirectory } = directory;
+  const onImported = useCallback(() => {
+    reloadContacts();
+    reloadDirectory();
+  }, [reloadContacts, reloadDirectory]);
+  const dx = useImportExport(contactImport, { filters: importFilters, onImported });
+
   const remove = useMutation((contact: Contact) => deleteContact(contact.id), {
     onSuccess: (_result, contact) => {
       setDeleting(null);
@@ -139,11 +157,20 @@ export function ContactsPage() {
         eyebrow="Records"
         title="Contacts"
         actions={
-          <Can permission="crm.book.contact.write" scope="OWN">
-            <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
-              New contact
-            </Button>
-          </Can>
+          <>
+            <ImportExportButton
+              meta={dx.meta}
+              state={dx.state}
+              actions={dx.actions}
+              canImport={canWrite}
+              canExport
+            />
+            <Can permission="crm.book.contact.write" scope="OWN">
+              <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
+                New contact
+              </Button>
+            </Can>
+          </>
         }
       />
 

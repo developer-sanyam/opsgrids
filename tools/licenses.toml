@@ -75,6 +75,10 @@ allowed = [
     "Unlicense",
     # File-level copyleft, acceptable for an unmodified dependency (as above)
     "MPL-2.0",
+    # pako (a zlib port, via exceljs's jszip) is "(MIT AND Zlib)": MIT for the JavaScript, the Zlib
+    # licence for the ported C. Both are permissive; Zlib asks only that the origin is not
+    # misrepresented.
+    "Zlib",
 ]
 
 # npm packages allowed by name, each with the reason. Empty: every production package declares

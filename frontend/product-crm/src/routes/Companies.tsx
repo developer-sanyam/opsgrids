@@ -4,10 +4,12 @@ import { Link } from "react-router-dom";
 import { deleteCompany, listCompanies } from "@/api/client";
 import type { Company, CompanyStatus, Owner } from "@/api/types";
 import { useDirectory } from "@/data/directoryContext";
+import { companyImport } from "@/data/importExport/companies";
+import type { CompanyFilters } from "@/data/importExport/companies";
 import { ownerName } from "@/data/lookups";
 import { downloadCsv } from "@/lib/csv";
 import { formatMoneyCompact } from "@/lib/format";
-import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
+import { Can, problemMessage, useAsync, useCan, useImportExport, useMutation } from "@opsgrids/client";
 import {
   Avatar,
   Button,
@@ -26,7 +28,7 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column, TableSelection } from "@/ui";
-import { BuildingIcon, DownloadIcon, GlobeIcon, MapPinIcon, PlusIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
+import { BuildingIcon, DownloadIcon, GlobeIcon, ImportExportButton, MapPinIcon, PlusIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
 import { CompanyFormDialog } from "@/forms/CompanyFormDialog";
 
 type StatusFilter = CompanyStatus | "all";
@@ -161,6 +163,22 @@ export function CompaniesPage() {
   );
   const companies = useAsync(loader, [debouncedSearch, status, page, size]);
 
+  // The export writes the whole filtered list, not the page on screen, so it needs the filters
+  // the list itself is loaded with.
+  const importFilters = useMemo<CompanyFilters>(
+    () => ({ search: debouncedSearch, status }),
+    [debouncedSearch, status],
+  );
+  // New rows show without a refresh: the list reloads, and so does the directory that names
+  // companies on the other screens, as after a single "New company".
+  const { reload: reloadCompanies } = companies;
+  const { reload: reloadDirectory } = directory;
+  const onImported = useCallback(() => {
+    reloadCompanies();
+    reloadDirectory();
+  }, [reloadCompanies, reloadDirectory]);
+  const dx = useImportExport(companyImport, { filters: importFilters, onImported });
+
   // A ticked row is a row on screen (DataTable's contract for select-all); a new page or filter
   // invalidates it rather than carrying a stale selection across to rows nobody saw ticked.
   useEffect(() => {
@@ -228,11 +246,20 @@ export function CompaniesPage() {
         eyebrow="Records"
         title="Companies"
         actions={
-          <Can permission="crm.book.company.write" scope="OWN">
-            <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
-              New company
-            </Button>
-          </Can>
+          <>
+            <ImportExportButton
+              meta={dx.meta}
+              state={dx.state}
+              actions={dx.actions}
+              canImport={canWrite}
+              canExport
+            />
+            <Can permission="crm.book.company.write" scope="OWN">
+              <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
+                New company
+              </Button>
+            </Can>
+          </>
         }
       />
 

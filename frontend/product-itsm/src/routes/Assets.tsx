@@ -4,8 +4,10 @@ import { useNavigate } from "react-router-dom";
 
 import { listAssets } from "@/api/client";
 import type { Asset, AssetStatus, AssetType } from "@/api/types";
+import { assetsEntity } from "@/data/importExport/assets";
+import type { AssetFilters } from "@/data/importExport/assets";
 import { assetTypeLabel, daysUntil, formatDate } from "@/lib/format";
-import { Can, problemMessage, useAsync, useCan } from "@opsgrids/client";
+import { Can, problemMessage, useAsync, useCan, useImportExport } from "@opsgrids/client";
 import {
   AssetStatusPill,
   Card,
@@ -23,6 +25,7 @@ import {
   BoxIcon,
   Button,
   DownloadIcon,
+  ImportExportButton,
   KeyIcon,
   LaptopIcon,
   MonitorIcon,
@@ -101,6 +104,12 @@ export function AssetsPage() {
     [search, type, status, page, size],
   );
   const state = useAsync(loader, [search, type, status, page, size]);
+
+  // What an export of this list must respect: the filters on screen, not the page window.
+  const exportFilters = useMemo<AssetFilters>(() => ({ search, type, status }), [search, type, status]);
+  // The list's own reload (one identity for the life of the screen), so assets an import created
+  // show up without a refresh.
+  const dx = useImportExport(assetsEntity, { filters: exportFilters, onImported: state.reload });
 
   const items = useMemo(
     () => (state.status === "success" ? state.data.items : NO_ASSETS),
@@ -220,6 +229,13 @@ export function AssetsPage() {
               <span className="tnum">{state.status === "success" ? state.data.total : "—"}</span>
               <span className="text-muted font-medium">total</span>
             </span>
+            <ImportExportButton
+              meta={dx.meta}
+              state={dx.state}
+              actions={dx.actions}
+              canImport={canWrite}
+              canExport
+            />
             <Can permission={CAN_WRITE} scope="OWN">
               <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
                 Add asset
