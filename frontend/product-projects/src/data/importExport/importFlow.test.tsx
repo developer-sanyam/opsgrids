@@ -184,7 +184,7 @@ function stubGateway(team: readonly MemberOut[] = TEAM) {
       if (method === "POST" && url.pathname === "/api/v1/projects-workspace/projects" && isRecord(body)) {
         const code = String(body.code);
         if (PORTFOLIO.some((existing) => existing.code === code)) {
-          return problem(409, "Conflict", `A project with code '${code}' already exists`);
+          return problem(409, "Conflict", `A project coded '${code}' already exists`);
         }
         if (code === "PRJ-205") {
           return problem(403, "Forbidden", "You can only make yourself the owner of a project.");
@@ -331,7 +331,7 @@ const FILE_ROWS: Record<string, ExcelJS.CellValue>[] = [
 
 const MISSING_START = "Start date is required";
 // The engine's own sentences for a reference the list does not hold; each may go on to say how to fix it.
-const UNKNOWN_OWNER = /^'Nobody Here' is not in the list of Owners \(see the Lists sheet\)/;
+const UNKNOWN_OWNER = /^'Nobody Here' is not in the list of Owners/;
 const AMBIGUOUS_OWNER = /^'Sam Patel' matches more than one of the Owners/;
 const BACKWARDS = "The target date cannot be before the start date.";
 
@@ -410,7 +410,7 @@ describe("importing projects from Excel", () => {
       expect(figure("Invalid")).toBe("4");
       expect(screen.getByText("5 rows were not imported. 2 projects were created.")).toBeTruthy();
       const table = within(screen.getByRole("region", { name: "Rows that were not created" }));
-      const duplicate = "A project with code 'PRJ-105' already exists";
+      const duplicate = "A project coded 'PRJ-105' already exists";
       const refused = "You can only make yourself the owner of a project.";
       for (const text of [duplicate, refused, MISSING_START, UNKNOWN_OWNER, AMBIGUOUS_OWNER, BACKWARDS]) {
         expect(table.getByText(text), String(text)).toBeTruthy();
@@ -461,7 +461,7 @@ describe("importing projects from Excel", () => {
         "Row | Project code | Status | Message",
         "2 | PRJ-201 | Created | ",
         "3 | PRJ-202 | Created | ",
-        "4 | PRJ-105 | Skipped | A project with code 'PRJ-105' already exists",
+        "4 | PRJ-105 | Skipped | A project coded 'PRJ-105' already exists",
         "5 | PRJ-205 | Failed | You can only make yourself the owner of a project.",
         `6 | PRJ-206 | Invalid | ${MISSING_START}`,
       ]);

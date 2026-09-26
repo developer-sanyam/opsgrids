@@ -343,8 +343,8 @@ const FILE_ROWS: Record<string, ExcelJS.CellValue>[] = [
 
 const MISSING_NUMBER = "Employee number is required";
 // The engine's own sentence for a reference the list does not hold; it may go on to say how to fix it.
-const UNKNOWN_DEPARTMENT = /^'Skunkworks' is not in the list of Departments \(see the Lists sheet\)/;
-const UNKNOWN_LOCATION = /^'Bangalore' is not in the list of Location codes \(see the Lists sheet\)/;
+const UNKNOWN_DEPARTMENT = /^'Skunkworks' is not in the list of Departments/;
+const UNKNOWN_LOCATION = /^'Bangalore' is not in the list of Location codes/;
 
 describe("importing employees from Excel", () => {
   it(
