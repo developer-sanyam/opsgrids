@@ -1374,7 +1374,12 @@ services:
     build:
       context: ../..
       dockerfile: services/customer/Dockerfile
-    environment: *service-env
+    # Customer 360 (`GET /customers/{id}/360`) asks notification for a contact's channel state and
+    # deal for its opportunities. Unset, those two sections come back unavailable, never an error.
+    environment:
+      <<: *service-env
+      NOTIFICATION_INTERNAL_URL: http://notification:8000
+      DEAL_INTERNAL_URL: http://deal:8000
     networks:
       - back
 
