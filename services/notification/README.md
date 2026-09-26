@@ -54,6 +54,50 @@ What that means concretely:
 - `GET /engage/setup` folds connection, domain, sender, contacts and campaign into one
   get-started checklist for a fresh organisation's first screen.
 
+## Whose connection a message goes out on
+
+The process-wide transports (`transports.build`: one SMTP relay, one WhatsApp number, from the
+environment) belong to the **platform**. They carry **platform-owned** messages only — the
+set-password and reset email auth publishes under the platform tenant (the nil UUID, ADR-0013
+§3) — plus the `in_app` feed, which has no provider.
+
+Everything else is **tenant-owned**, and `app/dispatcher.py` sends it through that organization's
+own connection, resolved per send by `app/tenant_transport.py`:
+
+- `whatsapp` — the org's `provider_accounts` row: its `phone_number_id` and its sealed token,
+  opened for the send, on `WhatsAppCloudTransport`.
+- `email` — the org's `email_connections` row, through the same builder campaigns and test sends
+  use, so a tenant-named SMTP host passes the same egress guard (ADR-0016) on every send. It is
+  sent as the connection's login when that is an address (Google Workspace, Microsoft 365),
+  otherwise as the org's oldest verified sender.
+
+**The marker is `messages.organization_id`.** It is fixed when the message is staged and bound by
+row-level security, so a customer cannot mint a platform message and nothing about a rule, template
+or category can promote one. The default is fail-closed: only the nil tenant reaches the shared
+transport; a new customer-facing flow is safe without a line changed here.
+
+**No connection, no send — and no fallback.** A tenant-owned message whose org has no usable
+connection is failed at once (`state = failed`, never retried) with the reason in
+`messages.last_error`, the failed `deliveries` row and the `message.failed` event, and one
+structured log line (`dispatch.channel_unavailable`, with the organization id and reason, never a
+credential):
+
+| `last_error` | Meaning |
+|---|---|
+| `channel_not_connected` | No connected account for that org and channel (missing, disconnected, no token, or a `platform`-kind email connection). |
+| `channel_credentials_unreadable` | The stored token or password cannot be opened with this environment's `PII_ENCRYPTION_KEY`. Reconnect the channel. |
+| `smtp_host_not_allowed` | The org's SMTP host failed the egress guard on this send. |
+| `sender_not_configured` | An SMTP relay whose login is not an address, and the org has no verified sender to send as. |
+
+`EMAIL_TRANSPORT=log` is still honoured for tenant email, as it is for campaigns (the connection
+is required either way). `WHATSAPP_TRANSPORT` selects only the platform's own sender: a connected
+WhatsApp account is what enables that org's sending.
+
+A transport is built per send and closed with it; nothing is cached, so a disconnected or replaced
+credential stops being used on the next message. `email_connections.daily_cap` is enforced for
+campaigns only (`claim_campaign_batch`, which already counts rule-driven mail against it); a
+rule-driven send is not refused at the cap.
+
 ## Publishes
 
 Transactional: `notification.delivery.message.{queued,sent,failed,delivered,read}`,

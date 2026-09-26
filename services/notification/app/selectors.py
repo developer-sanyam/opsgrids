@@ -421,6 +421,26 @@ async def get_sender_by_address(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def first_usable_sender(session: AsyncSession, org_id: uuid.UUID) -> Sender | None:
+    """The organization's oldest sender that has proved itself with a test send, or None.
+
+    What a rule-driven email is sent as when the connection's own login is not an address
+    (`app/tenant_transport.py`). Oldest first, `id` breaking a tie, so the choice is stable from
+    one send to the next rather than whichever row the planner returned.
+    """
+    stmt = (
+        select(Sender)
+        .where(
+            Sender.organization_id == org_id,
+            Sender.deleted_at.is_(None),
+            Sender.verified_at.is_not(None),
+        )
+        .order_by(Sender.created_at.asc(), Sender.id.asc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def setup_checklist(session: AsyncSession, ctx: ScopeContext) -> list[dict[str, Any]]:
     """The "get started" checklist: five steps, in the order an organization actually completes
     them, each folded from the same rows every other Engage screen already reads — nothing here
