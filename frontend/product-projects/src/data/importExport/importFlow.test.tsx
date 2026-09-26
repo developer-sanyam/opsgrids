@@ -473,6 +473,63 @@ describe("importing projects from Excel", () => {
   );
 
   it(
+    "creates nothing when every row already exists, and does not ask the screen to reload",
+    async () => {
+      const gateway = stubGateway();
+      const onImported = vi.fn();
+      const user = await openDialog(NO_FILTERS, onImported);
+      const dates = { start_date: "2026-01-05", target_date: "2026-02-05" };
+      const again = [
+        { code: "PRJ-105", name: "Kiosk pilot", ...dates },
+        { code: "PRJ-106", name: "Payments gateway migration", ...dates },
+      ];
+
+      await user.upload(fileInput(), await importFile(again));
+      await screen.findByRole("dialog", { name: "Review your file" });
+      await user.click(screen.getByRole("button", { name: "Import 2 rows" }));
+      await screen.findByRole("dialog", { name: "Import finished" }, { timeout: 10_000 });
+
+      expect(gateway.posts()).toHaveLength(2);
+      expect(screen.getByText("Nothing new to import. Every row already exists, so nothing was overwritten.")).toBeTruthy();
+      expect(figure("Created")).toBe("0");
+      expect(figure("Skipped, already exist")).toBe("2");
+      expect(onImported).not.toHaveBeenCalled();
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "stops after the row in flight when cancelled, keeps what was created, and tells the screen once",
+    async () => {
+      const gateway = stubGateway();
+      const onImported = vi.fn();
+      const user = await openDialog(NO_FILTERS, onImported);
+      const rows = [3021, 3022, 3023, 3024].map((number) => ({
+        code: `PRJ-${number}`,
+        name: `Project ${number}`,
+        start_date: "2026-01-05",
+        target_date: "2026-02-05",
+      }));
+
+      await user.upload(fileInput(), await importFile(rows));
+      await screen.findByRole("dialog", { name: "Review your file" });
+      await user.click(screen.getByRole("button", { name: "Import 4 rows" }));
+      await waitFor(() => expect(gateway.posts().length).toBeGreaterThan(0));
+      await user.click(screen.getByRole("button", { name: "Cancel import" }));
+      await screen.findByRole("dialog", { name: "Import cancelled" }, { timeout: 10_000 });
+
+      const sent = gateway.posts().length;
+      expect(sent).toBeGreaterThanOrEqual(1);
+      expect(sent).toBeLessThan(4);
+      expect(figure("Created")).toBe(String(sent));
+      expect(screen.getByText(/The remaining rows were not sent\.$/)).toBeTruthy();
+      expect(onImported).toHaveBeenCalledTimes(1);
+      expect(onImported).toHaveBeenCalledWith(expect.objectContaining({ created: sent, cancelled: true }));
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
     "refuses a file that lacks the required columns before anything is sent",
     async () => {
       const gateway = stubGateway();
@@ -559,6 +616,76 @@ describe("exporting projects to Excel", () => {
         }),
       );
       expect(formulas).toEqual([]);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "writes a file that imports again as the same records, owner, dates and money included",
+    async () => {
+      const gateway = stubGateway();
+      const user = await openDialog();
+      await user.click(screen.getByRole("button", { name: "Export to Excel" }));
+      await waitFor(() => expect(downloads).toHaveLength(1));
+      const blob = downloads[0]?.blob;
+      if (blob === undefined) throw new Error("Nothing was downloaded");
+
+      await user.upload(fileInput(), new File([blob], "projects-export.xlsx", { type: XLSX_TYPE }));
+      await screen.findByRole("dialog", { name: "Review your file" });
+      expect(figure("Rows in file")).toBe("3");
+      expect(figure("Ready to import")).toBe("3");
+      expect(figure("Need fixing")).toBe("0");
+
+      await user.click(screen.getByRole("button", { name: "Import 3 rows" }));
+      await screen.findByRole("dialog", { name: "Import finished" }, { timeout: 10_000 });
+
+      // Every code is in the portfolio already, so each row is skipped; what was sent is what the
+      // API had returned, the owner by id and the money to the minor unit of each currency, and
+      // never the counts or the record id.
+      const dates = { start_date: "2026-01-05", target_date: "2026-06-30" };
+      expect(gateway.posts().map((request) => request.body)).toEqual([
+        {
+          code: "PRJ-104",
+          name: "=1+1",
+          client: "+91 Traders",
+          owner_ref: "p-01",
+          phase: "build",
+          health: "at_risk",
+          progress_pct: 45,
+          ...dates,
+          budget_minor: 250000050,
+          spent_minor: 112000000,
+          currency: "INR",
+          team_size: 6,
+          summary: "@SUM(A1)",
+        },
+        {
+          code: "PRJ-105",
+          name: "Kiosk pilot",
+          phase: "discovery",
+          health: "on_track",
+          progress_pct: 0,
+          ...dates,
+          budget_minor: 12345,
+          spent_minor: 0,
+          currency: "KWD",
+          team_size: 0,
+        },
+        {
+          code: "PRJ-106",
+          name: "Payments gateway migration",
+          owner_ref: "p-02",
+          phase: "discovery",
+          health: "on_track",
+          progress_pct: 0,
+          ...dates,
+          budget_minor: 1500000,
+          spent_minor: 250000,
+          currency: "JPY",
+          team_size: 0,
+        },
+      ]);
+      expect(figure("Skipped, already exist")).toBe("3");
     },
     TEST_TIMEOUT,
   );
