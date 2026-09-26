@@ -15,17 +15,20 @@ reader that no other organization already holds it.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Final
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import selectors, services, w1_domain, w1_selectors, w2_selectors
+from app import selectors, services, w1_domain, w1_selectors, w2_selectors, whatsapp_provider
 from app.config import Settings, graph_version, meta_app_secret, settings
 from app.models import AuditLog, OutboxEvent, ProviderAccount
+from app.w1_graph import GraphError, MetaGraph
 from app.w1_models import ConnectionHealth, SetupRun, WhatsAppNumber
 from app.w1_schemas import (
     HealthOut,
@@ -161,12 +164,18 @@ async def start_signup(
         async with session.begin_nested():
             session.add(run)
             await session.flush()
-    except IntegrityError:
+    except IntegrityError as exc:
         # A retry that raced this one past the read above: hand back the winner.
         winner = await w1_selectors.run_by_code_hash(session, org, code_hash)
-        if winner is None:
-            raise
-        return winner
+        if winner is not None:
+            return winner
+        # Not the same code, so it is the unique index on running setups: another request got a
+        # setup in between the read above and this insert.
+        raise problem(
+            ConflictProblem,
+            "A WhatsApp setup is already running for this organization.",
+            "setup_in_progress",
+        ) from exc
 
     record_audit(
         session,
@@ -243,7 +252,8 @@ async def apply_numbers(
     default that vanished is visible instead of silently re-pointed. The default flag is set from
     `default_phone_number_id` (the number `provider_accounts` sends on); it is never invented.
     `mark_missing=False` is for a partial list (one number read back), which says nothing about
-    the others.
+    the other numbers of this WABA. A cached number of a different WABA (one this organization has
+    left) is marked `disconnected` either way: it is not on the account any more.
     """
     now = now or datetime.now(UTC)
     rows = {r.phone_number_id: r for r in await w1_selectors.numbers(session, organization_id)}
@@ -268,7 +278,12 @@ async def apply_numbers(
         row.status = w1_domain.status_from_meta(item.get("status"))
         row.refreshed_at = now
     for pnid, row in rows.items():
-        if mark_missing and pnid not in seen and row.waba_id == waba_id:
+        if pnid in seen:
+            continue
+        # Not listed on this WABA: a number the list dropped (only a full list says so), or a row
+        # cached from a WABA this organization has since left, which is never live whatever the
+        # list was.
+        if mark_missing or row.waba_id != waba_id:
             row.status = "disconnected"
             row.refreshed_at = now
     if default_phone_number_id is not None:
@@ -319,28 +334,101 @@ def numbers_stale(rows: list[WhatsAppNumber], now: datetime | None = None) -> bo
 # --------------------------------------------------------------------- default number
 
 
-async def set_default_number(
-    session: AsyncSession,
-    ctx: ScopeContext,
-    *,
-    directory: AsyncSession,
-    number_id: uuid.UUID,
-    request: Request | None = None,
-) -> None:
-    """Make one cached number the one sends go out on.
+@dataclass(frozen=True, slots=True)
+class DefaultCandidate:
+    """What one default-number change was checked against, and the token to prove it with. Built
+    in one short transaction, used for the Graph call outside any, and compared again in the
+    transaction that writes. Holds an opened token: never log it, never return it."""
 
-    Mirrors it into `provider_accounts` (the routing row), so the number's global uniqueness is
-    checked on `directory`, the cross-tenant reader — the tenant session cannot see another
-    organization's row — with the unique constraint as the net for the race after that check.
-    """
-    org = ctx.organization_id
+    waba_id: str
+    phone_number_id: str
+    token: str = field(repr=False)
+
+
+async def _default_preconditions(
+    session: AsyncSession, org: uuid.UUID, number_id: uuid.UUID
+) -> tuple[WhatsAppNumber, ProviderAccount]:
+    """The number and the account it would become the default of, or the refusal. The number must
+    be on the account's own WABA: a cached row of a WABA the organization has left is not its
+    number any more, whatever its status says."""
     number = await w1_selectors.get_number(session, org, number_id)
     if number is None:
         raise NotFoundProblem("No such number.")
     account = await selectors.get_whatsapp_connection(session, org)
     if account is None or account.status != "connected":
         raise problem(ConflictProblem, "Connect WhatsApp first.", "channel_not_connected")
-    if number.status == "disconnected":
+    if number.status == "disconnected" or number.waba_id != account.waba_id:
+        raise problem(
+            ConflictProblem, "That number is not active on the WhatsApp account.", "number_inactive"
+        )
+    return number, account
+
+
+async def prepare_default_number(
+    session: AsyncSession, ctx: ScopeContext, *, number_id: uuid.UUID
+) -> DefaultCandidate | None:
+    """First half of setting the default: check the request and hand back what Meta must confirm.
+
+    `None` when the number already is the default (nothing to change, nothing to prove). Read-only,
+    so the caller can end its transaction before it calls Meta."""
+    number, account = await _default_preconditions(session, ctx.organization_id, number_id)
+    if number.is_default and account.phone_number_id == number.phone_number_id:
+        return None
+    token = _account_token(account)
+    if token is None:
+        raise problem(ConflictProblem, "Connect WhatsApp first.", "channel_not_connected")
+    return DefaultCandidate(
+        waba_id=account.waba_id, phone_number_id=number.phone_number_id, token=token
+    )
+
+
+async def verify_default_candidate(
+    candidate: DefaultCandidate, *, transport: httpx.AsyncBaseTransport | None = None
+) -> None:
+    """Ask Meta, with the connection's own token, whether the number is on the WABA and readable.
+    The webhook routing key is about to move to it, so a stale cache row is not evidence enough.
+    Raises 409 `ownership_check_failed` when Meta does not confirm, or cannot be reached."""
+    cfg = settings()
+    async with httpx.AsyncClient(
+        timeout=cfg.whatsapp_timeout_seconds, transport=transport
+    ) as client:
+        try:
+            await whatsapp_provider.verify_ownership(
+                cfg,
+                waba_id=candidate.waba_id,
+                phone_number_id=candidate.phone_number_id,
+                access_token=candidate.token,
+                client=client,
+            )
+        except whatsapp_provider.WhatsAppOwnershipError as exc:
+            raise problem(
+                ConflictProblem,
+                "Meta would not confirm that this WhatsApp account controls that number.",
+                "ownership_check_failed",
+            ) from exc
+
+
+async def set_default_number(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    directory: AsyncSession,
+    number_id: uuid.UUID,
+    verified: DefaultCandidate,
+    request: Request | None = None,
+) -> None:
+    """Make one cached number the one sends go out on, after Meta confirmed it (`verified`).
+
+    Mirrors it into `provider_accounts` (the routing row), so the number's global uniqueness is
+    checked on `directory`, the cross-tenant reader — the tenant session cannot see another
+    organization's row — with the unique constraint as the net for the race after that check.
+    Everything the first half read is checked again here, because the connection may have been
+    replaced while Meta was being asked: the confirmation only counts for the WABA and number it
+    was given for.
+    """
+    org = ctx.organization_id
+    number, account = await _default_preconditions(session, org, number_id)
+    if (account.waba_id, number.phone_number_id) != (verified.waba_id, verified.phone_number_id):
         raise problem(
             ConflictProblem, "That number is not active on the WhatsApp account.", "number_inactive"
         )
@@ -442,17 +530,36 @@ async def health_snapshot(session: AsyncSession, organization_id: uuid.UUID) -> 
 # --------------------------------------------------------------------- disconnect
 
 
+#: What a disconnect tells the person when Meta could not be asked to stop the old account's events.
+SUBSCRIPTION_NOT_RELEASED: Final = (
+    "WhatsApp was disconnected here, but Meta could not be asked to stop sending that account's "
+    "events to us. Remove the app from the account in Meta Business settings to finish."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class Released:
+    """The WABA a disconnect left, and the token that could still speak for it, opened before it
+    was wiped so the app can be unsubscribed from that WABA after the commit."""
+
+    waba_id: str
+    token: str | None = field(repr=False)
+
+
 async def disconnect(
     session: AsyncSession, ctx: ScopeContext, *, request: Request | None = None
-) -> None:
+) -> Released:
     """Mark the connection disconnected and wipe the sealed token. History (templates, messages,
     conversations, the numbers cache) is kept. The row keeps its number, so an inbound message
     still routes here and is kept, exactly as `ProviderAccount` documents for a disconnected
-    account; nothing is sent from it."""
+    account; nothing is sent from it.
+
+    Returns what `release_subscription` needs to stop the old WABA's events after the commit."""
     org = ctx.organization_id
     account = await selectors.get_whatsapp_connection(session, org)
     if account is None or account.organization_id != org or account.status != "connected":
         raise problem(ConflictProblem, "WhatsApp is not connected.", "channel_not_connected")
+    released = Released(waba_id=account.waba_id, token=_account_token(account))
     account.status = "disconnected"
     account.access_token_enc = None
     account.updated_by = str(ctx.principal.sub)
@@ -475,6 +582,48 @@ async def disconnect(
         after={"waba_id": account.waba_id, "phone_number_id": account.phone_number_id},
         request=request,
     )
+    return released
+
+
+async def unsubscribe_waba(
+    waba_id: str, token: str, *, transport: httpx.AsyncBaseTransport | None = None
+) -> bool:
+    """Best-effort: stop `waba_id`'s webhooks reaching this app. True when Meta confirmed.
+
+    Never raises for Meta's answer: an organization that has left a WABA must be able to, whether
+    or not Meta is reachable, so a refusal is logged (status and code only, never the token or
+    Meta's body) and reported as False."""
+    try:
+        await MetaGraph(settings(), transport=transport).unsubscribe_app(waba_id, token)
+    except GraphError as exc:
+        log.warning("w1.unsubscribe_failed", status=exc.status, code=exc.code)
+        return False
+    return True
+
+
+async def release_subscription(
+    directory: AsyncSession,
+    organization_id: uuid.UUID,
+    released: Released,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> bool:
+    """After a disconnect committed: unsubscribe the app from the WABA it left. True when there
+    was nothing left to do (the WABA is still another organization's connection, so its events
+    must keep coming) or Meta confirmed; False when the person should be told to remove the app
+    from that account themselves."""
+    if released.token is None:
+        return False
+    try:
+        holders = await w2_selectors.organizations_for_waba(directory, released.waba_id)
+    except Exception as exc:
+        # Not knowing whether another organization shares the WABA is not a reason to cut it off.
+        log.warning("w1.release_lookup_failed", error_type=type(exc).__name__)
+        return False
+    if any(holder != organization_id for holder in holders):
+        log.info("w1.unsubscribe_skipped_shared_waba")
+        return True
+    return await unsubscribe_waba(released.waba_id, released.token, transport=transport)
 
 
 # --------------------------------------------------------------------- test message
@@ -492,8 +641,10 @@ async def stage_test_message(
     (`consent.check_send`, inside `services.stage_message`) first, then the dispatcher sends it on
     this organization's own connection through the tenant transport. Nothing is sent from here.
 
-    Refused with `channel_not_connected` when there is no connected account, and with
-    `consent_denied` when the consent ledger does not allow this send."""
+    Refused with `channel_not_connected` when there is no connected account, `template_not_found`
+    when the template is not one this account has synced, and `consent_denied` when the consent
+    ledger does not allow this send (a marketing template needs an opt-in like any marketing
+    send)."""
     org = ctx.organization_id
     account = await selectors.get_whatsapp_connection(session, org)
     if (
@@ -507,9 +658,15 @@ async def stage_test_message(
         )
 
     row = await w1_selectors.provider_template(session, org, template_name, language)
-    body = (row.preview_text if row is not None and row.preview_text else "") or (
-        f"Test message using template {template_name} ({language})"
-    )
+    if row is None:
+        # A template we have not synced has no category we can check, and the category decides
+        # whether the recipient must have opted in. Sync, then send.
+        raise problem(
+            NotFoundProblem,
+            "That template has not been synced for this WhatsApp account.",
+            "template_not_found",
+        )
+    body = row.preview_text or f"Test message using template {template_name} ({language})"
     template: dict[str, Any] = {"name": template_name, "language": {"code": language}}
     examples = _body_examples(row)
     if examples:
@@ -529,6 +686,9 @@ async def stage_test_message(
         rule_code="w1.test_message",
         dedupe_key=f"w1-test:{uuid.uuid4()}",
         actor=services._actor(ctx),
+        # The row's code is what `consent.purpose_for_send` reads the template's category from:
+        # a marketing template needs an opt-in on record, here and again when it is claimed.
+        provider_template_code=row.code,
         provider_template_payload=template,
     )
     if message is None:  # pragma: no cover - a fresh uuid dedupe key never collides

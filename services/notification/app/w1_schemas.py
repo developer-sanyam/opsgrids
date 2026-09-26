@@ -80,6 +80,14 @@ class WhatsAppOkOut(BaseModel):
     ok: Literal[True] = True
 
 
+class DisconnectOut(WhatsAppOkOut):
+    """The connection is gone either way. `detail` is present only when Meta could not be asked
+    to stop sending the old account's events here, so the person can remove the app from that
+    account themselves; it never carries a token."""
+
+    detail: str | None = None
+
+
 class TokenHealthOut(BaseModel):
     state: Literal["valid", "expiring", "invalid", "unknown"]
     checked_at: str | None

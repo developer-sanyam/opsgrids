@@ -10,7 +10,9 @@ commit and `consumers.run_whatsapp_setup` calls `run_setup` here, on the worker'
    the code.
 2. **number**: discover the WABA and its numbers, prove the token controls the chosen one
    (`whatsapp_provider.verify_ownership`), then store the sealed token, the WABA and the number in
-   the organization's `provider_accounts` row and fill the numbers cache.
+   the organization's `provider_accounts` row and fill the numbers cache. When this replaces a
+   connection on another WABA, that WABA's cached numbers are marked disconnected and the app is
+   unsubscribed from it (best effort, after everything else in the step).
 3. **webhook**: subscribe the app to the WABA (`POST /{waba}/subscribed_apps`).
 4. **templates**: `w2_services.sync_templates`.
 5. **verify**: read the number and the subscription back from Meta.
@@ -343,6 +345,13 @@ async def _step_number(session: AsyncSession, run: SetupRun, ctx: Ctx) -> str:
     sealed, _ = pii.seal(token, kind="generic", settings=ctx.cfg)
     account = await selectors.get_whatsapp_connection(session, org)
     created = account is None
+    # A signup on a different WABA replaces the connection: the token that could still speak for
+    # the old one is opened now, before it is overwritten, so the app can be unsubscribed from it.
+    left_waba: str | None = None
+    left_token: str | None = None
+    if account is not None and account.status == "connected" and account.waba_id != waba_id:
+        left_waba = account.waba_id
+        left_token = w1_services._account_token(account)
     if account is None:
         account = ProviderAccount(
             organization_id=org,
@@ -412,7 +421,17 @@ async def _step_number(session: AsyncSession, run: SetupRun, ctx: Ctx) -> str:
             "channel": "whatsapp",
         },
     )
-    return f"Registered {len(remote)} number{'s' if len(remote) != 1 else ''}"
+    detail = f"Registered {len(remote)} number{'s' if len(remote) != 1 else ''}"
+    # Last, so a step that fails before here has not cut the old WABA off. Best effort: the new
+    # connection stands whether or not Meta answers.
+    released = (
+        await w1_services.unsubscribe_waba(left_waba, left_token, transport=ctx.transport)
+        if left_waba is not None and left_token is not None
+        else True
+    )
+    if not released:
+        detail += "; the previous account's event subscription could not be removed"
+    return detail
 
 
 async def _connected_credentials(

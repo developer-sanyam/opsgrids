@@ -67,8 +67,8 @@ def template(meta_id: str, name: str) -> dict[str, Any]:
 
 class FakeMeta:
     """Just enough Graph for Embedded Signup. `fail` maps a route name to the HTTP status it
-    answers with (`oauth`, `debug_token`, `me`, `numbers`, `number`, `subscribe`, `subscribed`,
-    `templates`)."""
+    answers with (`oauth`, `debug_token`, `me`, `numbers`, `number`, `subscribe`, `unsubscribe`,
+    `subscribed`, `templates`)."""
 
     def __init__(self) -> None:
         self.calls: list[httpx.Request] = []
@@ -120,6 +120,8 @@ class FakeMeta:
         if len(parts) == 2 and parts[1] == "subscribed_apps":
             if method == "POST":
                 return "subscribe", httpx.Response(200, json={"success": True})
+            if method == "DELETE":
+                return "unsubscribe", httpx.Response(200, json={"success": True})
             data = [{"whatsapp_business_api_data": {"id": app}} for app in self.subscribed]
             return "subscribed", httpx.Response(200, json={"data": data})
         if len(parts) == 2 and parts[1] == "message_templates":
@@ -128,6 +130,10 @@ class FakeMeta:
 
     def routes_called(self) -> list[str]:
         return ["/".join(c.url.path.strip("/").split("/")[1:]) for c in self.calls]
+
+    def unsubscribes(self) -> list[httpx.Request]:
+        """The `DELETE /{waba}/subscribed_apps` calls, in order."""
+        return [c for c in self.calls if c.method == "DELETE"]
 
 
 @pytest.fixture(name="signup_configured")

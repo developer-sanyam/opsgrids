@@ -17,9 +17,10 @@ import httpx
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import consent, services
+from app import consent, services, w1_selectors, w1_services
 from app.api.w1_signup import graph_transport
 from app.main import app
 from app.models import AuditLog, Message, OutboxEvent, ProviderAccount, ProviderTemplate
@@ -37,6 +38,7 @@ from tests.w1_helpers import (  # noqa: F401
     configure_signup,
     connect,
 )
+from tests.w1_helpers import number as meta_number
 
 pytestmark = pytest.mark.integration
 
@@ -197,6 +199,53 @@ async def test_a_second_setup_while_one_runs_is_a_conflict(
     assert second.json()["errors"] == [{"code": "setup_in_progress"}]
 
 
+async def test_a_second_setup_that_raced_past_the_read_still_gets_setup_in_progress(
+    client: AsyncClient,
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    signup_configured: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two requests with different codes can both read "nothing running" and both insert. The
+    unique index on running setups refuses the second insert, and it is answered as the same 409
+    the read gives, not as a 500."""
+    with as_principal(admin(org_id)):
+        first = await client.post(f"{BASE}/signup/complete", json={"code": "code-one"})
+
+        async def nothing_running(*_args: Any, **_kwargs: Any) -> list[SetupRun]:
+            return []
+
+        monkeypatch.setattr(w1_selectors, "running_runs", nothing_running)
+        second = await client.post(f"{BASE}/signup/complete", json={"code": "code-two"})
+    assert first.status_code == 202
+    assert second.status_code == 409
+    assert second.json()["errors"] == [{"code": "setup_in_progress"}]
+    async with session.begin():
+        runs = (await session.execute(select(SetupRun))).scalars().all()
+    assert [r.status for r in runs] == ["running"]
+
+
+def _run_row(org: uuid.UUID, code_hash: str, status: str) -> SetupRun:
+    return SetupRun(organization_id=org, status=status, steps=[], code_hash=code_hash)
+
+
+async def test_the_database_allows_one_running_setup_per_organization(
+    session: AsyncSession, org_id: uuid.UUID
+) -> None:
+    async with session.begin():
+        session.add_all(
+            [
+                _run_row(org_id, "h-running", "running"),
+                _run_row(org_id, "h-done", "done"),
+                _run_row(org_id, "h-failed", "failed"),
+            ]
+        )
+    with pytest.raises(IntegrityError):
+        async with session.begin():
+            session.add(_run_row(org_id, "h-second", "running"))
+            await session.flush()
+
+
 async def test_another_organizations_setup_is_a_404_not_a_leak(
     client: AsyncClient, org_id: uuid.UUID, signup_configured: None
 ) -> None:
@@ -307,11 +356,60 @@ async def test_numbers_never_show_another_organizations_numbers(
     assert nobody.json() == {"items": []}
 
 
+@pytest.mark.parametrize("mark_missing", [True, False])
+async def test_numbers_cached_from_a_waba_the_organization_left_are_marked_disconnected(
+    session: AsyncSession, org_id: uuid.UUID, mark_missing: bool
+) -> None:
+    """Rows of a previous WABA are not on the account any more, whether the list Meta gave for the
+    current one is whole or a single number read back."""
+    await connect(session, org_id, cached=CACHED)
+    async with session.begin():
+        session.add(
+            WhatsAppNumber(
+                organization_id=org_id,
+                waba_id="8000",
+                phone_number_id="5555",
+                display_phone_number="+1 555 010 0000",
+                status="connected",
+                refreshed_at=datetime.now(UTC),
+            )
+        )
+    remote = [meta_number("1001", "+91 98765 43210"), meta_number("1002", "+91 91234 56789")]
+    async with session.begin():
+        rows = await w1_services.apply_numbers(
+            session,
+            org_id,
+            waba_id=WABA,
+            remote=remote,
+            default_phone_number_id="1001",
+            mark_missing=mark_missing,
+        )
+    assert {r.phone_number_id: r.status for r in rows} == {
+        "1001": "connected",
+        "1002": "connected",
+        "5555": "disconnected",
+    }
+
+
 # --------------------------------------------------------------------- default number
 
 
+async def _cached_number(session: AsyncSession, phone_number_id: str) -> WhatsAppNumber:
+    async with session.begin():
+        return (
+            await session.execute(
+                select(WhatsAppNumber).where(WhatsAppNumber.phone_number_id == phone_number_id)
+            )
+        ).scalar_one()
+
+
+async def _routing_number(session: AsyncSession) -> str:
+    async with session.begin():
+        return (await session.execute(select(ProviderAccount))).scalar_one().phone_number_id
+
+
 async def test_setting_the_default_moves_the_sending_number(
-    client: AsyncClient, session: AsyncSession, org_id: uuid.UUID
+    client: AsyncClient, session: AsyncSession, org_id: uuid.UUID, meta: FakeMeta
 ) -> None:
     await connect(session, org_id, cached=CACHED)
     async with session.begin():
@@ -343,6 +441,75 @@ async def test_setting_the_default_moves_the_sending_number(
         )
     assert account.phone_number_id == "1002"
     assert len(audited) == 1
+    # Meta was asked, with this connection's own token, before the routing key moved.
+    assert meta.routes_called() == ["1002", f"{WABA}/phone_numbers"]
+    assert all(c.headers["authorization"] == f"Bearer {TOKEN}" for c in meta.calls)
+
+
+async def test_setting_the_number_that_already_is_the_default_asks_nobody(
+    client: AsyncClient, session: AsyncSession, org_id: uuid.UUID, meta: FakeMeta
+) -> None:
+    await connect(session, org_id, cached=CACHED)
+    current = await _cached_number(session, "1001")
+    with as_principal(admin(org_id)):
+        response = await client.post(f"{BASE}/numbers/{current.id}/default")
+    assert response.status_code == 200 and meta.calls == []
+
+
+async def test_a_cached_number_of_a_waba_the_organization_left_cannot_become_the_default(
+    client: AsyncClient, session: AsyncSession, org_id: uuid.UUID, meta: FakeMeta
+) -> None:
+    """A row cached from an earlier WABA can still say `connected`; the routing key must not move
+    to a number that is not on the account's own WABA."""
+    await connect(session, org_id, cached=CACHED)
+    async with session.begin():
+        session.add(
+            WhatsAppNumber(
+                organization_id=org_id,
+                waba_id="8000",
+                phone_number_id="5555",
+                display_phone_number="+1 555 010 0000",
+                status="connected",
+                refreshed_at=datetime.now(UTC),
+            )
+        )
+    stale = await _cached_number(session, "5555")
+    with as_principal(admin(org_id)):
+        response = await client.post(f"{BASE}/numbers/{stale.id}/default")
+    assert response.status_code == 409
+    assert response.json()["errors"] == [{"code": "number_inactive"}]
+    assert await _routing_number(session) == "1001"
+    assert meta.calls == []
+
+
+@pytest.mark.parametrize("failing", [{"number": 401}, {"number": 500}, {"numbers": 500}])
+async def test_a_number_meta_does_not_confirm_cannot_become_the_default(
+    client: AsyncClient,
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    failing: dict[str, int],
+) -> None:
+    """The cache is not evidence: Meta is asked whether this token controls the number, and a
+    refusal or an outage leaves the routing key where it was."""
+    await connect(session, org_id, cached=CACHED)
+    meta.fail = failing
+    target = await _cached_number(session, "1002")
+    with as_principal(admin(org_id)):
+        response = await client.post(f"{BASE}/numbers/{target.id}/default")
+    assert response.status_code == 409
+    assert response.json()["errors"] == [{"code": "ownership_check_failed"}]
+    assert TOKEN not in response.text
+    assert await _routing_number(session) == "1001"
+    async with session.begin():
+        audited = (
+            await session.execute(
+                select(func.count())
+                .select_from(AuditLog)
+                .where(AuditLog.action == "engage.whatsapp.default_number_changed")
+            )
+        ).scalar_one()
+    assert audited == 0
 
 
 async def test_a_number_another_organization_already_holds_cannot_become_the_default(
@@ -350,6 +517,7 @@ async def test_a_number_another_organization_already_holds_cannot_become_the_def
     session: AsyncSession,
     admin_session: AsyncSession,
     org_id: uuid.UUID,
+    meta: FakeMeta,
 ) -> None:
     await connect(session, org_id, cached=CACHED)
     async with admin_session.begin():
@@ -482,10 +650,47 @@ async def test_health_of_one_organization_is_not_another(
 # --------------------------------------------------------------------- test message
 
 
+async def _seed_template(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    *,
+    category: str = "utility",
+    code: str = "order_update_utility",
+    name: str = "order_update",
+) -> None:
+    """A synced WhatsApp template. `code` (ours) deliberately differs from `name` (Meta's)."""
+    async with session.begin():
+        session.add(
+            ProviderTemplate(
+                organization_id=org_id,
+                code=code,
+                channel="whatsapp",
+                provider_name=name,
+                language="en",
+                category=category,
+                status="approved",
+                variables=[],
+                preview_text="Hello",
+            )
+        )
+
+
+async def _queued_count(session: AsyncSession) -> int:
+    async with session.begin():
+        return (
+            await session.execute(
+                select(func.count())
+                .select_from(OutboxEvent)
+                .where(OutboxEvent.event_type == services.EVT_MESSAGE_QUEUED)
+            )
+        ).scalar_one()
+
+
 async def test_a_test_message_is_staged_through_consent_for_the_dispatcher(
     client: AsyncClient, session: AsyncSession, org_id: uuid.UUID
 ) -> None:
     await connect(session, org_id)
+    await _seed_template(session, org_id)
     with as_principal(admin(org_id)):
         response = await client.post(f"{BASE}/test-message", json=TEST_BODY)
     assert response.status_code == 200
@@ -511,7 +716,61 @@ async def test_a_test_message_is_staged_through_consent_for_the_dispatcher(
         "name": "order_update",
         "language": {"code": "en"},
     }
+    # The template's code is what the consent decision (here and at dispatch) classifies by.
+    assert message.provider_template_code == "order_update_utility"
     assert len(queued) == 1  # the dispatcher sends it, on this organization's own connection
+
+
+async def test_a_marketing_test_message_to_a_number_that_never_opted_in_is_refused(
+    client: AsyncClient, session: AsyncSession, org_id: uuid.UUID
+) -> None:
+    """Meta's own category is what carries the opt-in obligation. Without the template's code the
+    purpose fell back to transactional and any number could be sent an approved marketing
+    template through this route."""
+    await connect(session, org_id)
+    await _seed_template(session, org_id, category="marketing", code="spring_offer_marketing")
+    with as_principal(admin(org_id)):
+        response = await client.post(f"{BASE}/test-message", json=TEST_BODY)
+    assert response.status_code == 409
+    assert response.json()["errors"] == [{"code": "consent_denied"}]
+    assert await _queued_count(session) == 0
+
+
+async def test_a_marketing_test_message_goes_through_once_the_number_has_opted_in(
+    client: AsyncClient, session: AsyncSession, org_id: uuid.UUID
+) -> None:
+    await connect(session, org_id)
+    await _seed_template(session, org_id, category="marketing", code="spring_offer_marketing")
+    async with session.begin():
+        await consent.append(
+            session,
+            organization_id=org_id,
+            subject=consent.subject_for("whatsapp", "+919876543210"),
+            purposes=[consent.MARKETING],
+            status="opted_in",
+            source=consent.SOURCE_ADMIN,
+            evidence="test",
+        )
+    with as_principal(admin(org_id)):
+        response = await client.post(f"{BASE}/test-message", json=TEST_BODY)
+    assert response.status_code == 200
+    assert await _queued_count(session) == 1
+    async with session.begin():
+        message = (await session.execute(select(Message))).scalar_one()
+    assert (message.state, message.provider_template_code) == ("pending", "spring_offer_marketing")
+
+
+async def test_a_test_message_with_a_template_that_was_never_synced_is_refused(
+    client: AsyncClient, session: AsyncSession, org_id: uuid.UUID
+) -> None:
+    """A template we have not synced has no category to check the opt-in against."""
+    await connect(session, org_id)
+    with as_principal(admin(org_id)):
+        response = await client.post(f"{BASE}/test-message", json=TEST_BODY)
+    assert response.status_code == 404
+    assert response.json()["errors"] == [{"code": "template_not_found"}]
+    async with session.begin():
+        assert (await session.execute(select(func.count()).select_from(Message))).scalar_one() == 0
 
 
 async def test_a_test_message_without_a_connection_is_refused_with_a_code(
@@ -529,6 +788,7 @@ async def test_a_test_message_to_someone_who_opted_out_is_refused_by_the_consent
     client: AsyncClient, session: AsyncSession, org_id: uuid.UUID
 ) -> None:
     await connect(session, org_id)
+    await _seed_template(session, org_id)
     async with session.begin():
         await consent.opt_out(
             session,
@@ -576,7 +836,7 @@ async def test_a_test_message_body_is_validated(
 
 
 async def test_disconnect_wipes_the_token_and_keeps_the_history(
-    client: AsyncClient, session: AsyncSession, org_id: uuid.UUID
+    client: AsyncClient, session: AsyncSession, org_id: uuid.UUID, meta: FakeMeta
 ) -> None:
     await connect(session, org_id, cached=CACHED)
     async with session.begin():
@@ -622,8 +882,75 @@ async def test_disconnect_wipes_the_token_and_keeps_the_history(
     assert len(audited) == 1 and TOKEN not in str(audited[0].after)
 
 
+async def test_disconnect_unsubscribes_the_app_from_the_waba_it_leaves(
+    client: AsyncClient, session: AsyncSession, org_id: uuid.UUID, meta: FakeMeta
+) -> None:
+    await connect(session, org_id, cached=CACHED)
+    with as_principal(admin(org_id)):
+        response = await client.post(f"{BASE}/disconnect")
+    assert response.status_code == 200 and response.json() == {"ok": True}
+    (call,) = meta.unsubscribes()
+    assert call.url.path.endswith(f"/{WABA}/subscribed_apps")
+    # With the token the connection held before it was wiped, in the header only.
+    assert call.headers["authorization"] == f"Bearer {TOKEN}"
+    assert TOKEN not in str(call.url)
+    assert await _routing_number(session) == "1001"  # the row itself is kept, as documented
+
+
+async def test_a_disconnect_still_succeeds_when_meta_cannot_be_asked_to_unsubscribe(
+    client: AsyncClient,
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    await connect(session, org_id, cached=CACHED)
+    meta.fail = {"unsubscribe": 500}
+    with as_principal(admin(org_id)):
+        response = await client.post(f"{BASE}/disconnect")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert "Meta Business" in body["detail"]
+    assert TOKEN not in response.text + caplog.text
+    async with session.begin():
+        account = (await session.execute(select(ProviderAccount))).scalar_one()
+    assert account.status == "disconnected" and account.access_token_enc is None
+
+
+async def test_a_disconnect_leaves_a_waba_another_organization_still_uses_subscribed(
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+) -> None:
+    """The subscription is per WABA, not per organization: unsubscribing it would silence a
+    different organization that connected the same account."""
+    await connect(session, org_id, cached=CACHED)
+    async with admin_session.begin():
+        admin_session.add(
+            ProviderAccount(
+                organization_id=uuid.uuid4(),
+                channel="whatsapp",
+                waba_id=WABA,
+                phone_number_id="7007",
+                display_number="+1",
+                status="connected",
+            )
+        )
+    with as_principal(admin(org_id)):
+        response = await client.post(f"{BASE}/disconnect")
+    assert response.status_code == 200 and response.json() == {"ok": True}
+    assert meta.unsubscribes() == []
+
+
 async def test_disconnect_only_touches_the_callers_own_connection(
-    client: AsyncClient, session: AsyncSession, admin_session: AsyncSession, org_id: uuid.UUID
+    client: AsyncClient,
+    session: AsyncSession,
+    admin_session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
 ) -> None:
     other = uuid.uuid4()
     await connect(session, org_id)

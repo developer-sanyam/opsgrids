@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Index, LargeBinary, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Index, LargeBinary, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -58,6 +58,14 @@ class SetupRun(Base, UUIDPrimaryKeyMixin, OrgScopedMixin, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("organization_id", "code_hash", name="uq_w1_setup_runs_code"),
         Index("ix_w1_setup_runs_org_status", "organization_id", "status", "created_at"),
+        # At most one running setup per organization, enforced here rather than by a read that
+        # two concurrent requests can both pass (`w1_services.start_signup`).
+        Index(
+            "uq_w1_setup_runs_org_running",
+            "organization_id",
+            unique=True,
+            postgresql_where=text("status = 'running'"),
+        ),
     )
 
 
