@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any, Final
 
-from sqlalchemy import Date, case, cast, exists, func, literal_column, select, text
+from sqlalchemy import Date, case, cast, exists, func, literal_column, select, text, true
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
@@ -320,39 +320,52 @@ async def reply_counts(
 
 
 async def totals(session: AsyncSession, org: uuid.UUID) -> WhatsAppTotals:
-    """Point-in-time counts, not range-bound: what exists now. One statement, five scalar
-    subqueries, each with its own organization filter."""
-
-    def count_of(model: Any, *where: Any) -> Any:
-        return (
-            select(func.count())
-            .select_from(model)
-            .where(model.organization_id == org, model.deleted_at.is_(None), *where)
-            .scalar_subquery()
+    """Point-in-time counts, not range-bound: what exists now. One statement joining three
+    one-row aggregates — each table is scanned once, with the counts split by `FILTER`, and each
+    aggregate carries its own organization filter."""
+    rules = (
+        select(func.count().label("automations"))
+        .where(
+            Rule.organization_id == org,
+            Rule.deleted_at.is_(None),
+            Rule.channel == "whatsapp",
+            Rule.active.is_(True),
         )
-
-    stmt = select(
-        count_of(Rule, Rule.channel == "whatsapp", Rule.active.is_(True)).label("automations"),
-        count_of(
-            ProviderTemplate,
+        .subquery("r")
+    )
+    templates = (
+        select(
+            func.count().filter(ProviderTemplate.status == "approved").label("approved"),
+            func.count().filter(ProviderTemplate.status == "pending").label("pending"),
+        )
+        .where(
+            ProviderTemplate.organization_id == org,
+            ProviderTemplate.deleted_at.is_(None),
             ProviderTemplate.channel == "whatsapp",
-            ProviderTemplate.status == "approved",
-        ).label("approved"),
-        count_of(
-            ProviderTemplate,
-            ProviderTemplate.channel == "whatsapp",
-            ProviderTemplate.status == "pending",
-        ).label("pending"),
-        count_of(
-            Conversation, Conversation.channel == "whatsapp", Conversation.status == "open"
-        ).label("open"),
-        count_of(
-            Conversation,
+        )
+        .subquery("t")
+    )
+    conversations = (
+        select(
+            func.count().label("open"),
+            func.count().filter(Conversation.assignee_membership_id.is_(None)).label("unassigned"),
+        )
+        .where(
+            Conversation.organization_id == org,
+            Conversation.deleted_at.is_(None),
             Conversation.channel == "whatsapp",
             Conversation.status == "open",
-            Conversation.assignee_membership_id.is_(None),
-        ).label("unassigned"),
+        )
+        .subquery("c")
     )
+    # Each side is exactly one row, so the joins are on `true` by design.
+    stmt = select(
+        rules.c.automations,
+        templates.c.approved,
+        templates.c.pending,
+        conversations.c.open,
+        conversations.c.unassigned,
+    ).select_from(rules.join(templates, true()).join(conversations, true()))
     row = (await session.execute(stmt)).one()
     return WhatsAppTotals(
         active_automations=row.automations,
