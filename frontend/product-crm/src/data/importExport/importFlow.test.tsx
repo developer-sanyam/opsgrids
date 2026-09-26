@@ -45,7 +45,7 @@ import {
   stubApi,
 } from "./entityTestKit";
 import type { Recorded, Reply } from "./entityTestKit";
-import { XLSX_TYPE, captureDownloads, readBlob, sheetFile, sheetOf, validationAt, valuesOf } from "./importFlowKit";
+import { XLSX_TYPE, captureDownloads, readBlob, sheetFile, sheetOf, validationAt, valuesOf, withColumnCleared } from "./importFlowKit";
 import type { Download } from "./importFlowKit";
 import { leadImport } from "./leads";
 import type { LeadFilters } from "./leads";
@@ -229,14 +229,19 @@ async function exportList(user: User): Promise<Download> {
 }
 
 /**
- * A file just exported reads back: the dialog finds every row, and none of its headers is one it
- * does not know. What the dialog then says about those rows, which carry a Record ID and so came
- * out of the system, is the engine's own rule and is tested there.
+ * A file just exported reads back, and is refused: every row carries the record's own ID, so it
+ * came out of the system and is already there. The dialog says so on each row, sends nothing,
+ * and does not call any header unknown.
  */
-async function expectReadsBack(user: User, file: Download, rows: number): Promise<void> {
+async function expectRefusedAsExported(user: User, file: Download, rows: number): Promise<void> {
   await chooseFile(user, new File([file.blob], file.name, { type: XLSX_TYPE }));
   expect(figure("Rows in file")).toBe(String(rows));
+  expect(figure("Ready to import")).toBe("0");
+  expect(figure("Need fixing")).toBe(String(rows));
   expect(screen.queryByText(/^These columns are ignored/)).toBeNull();
+  for (let row = 2; row < rows + 2; row += 1) expect(previewCheck(row)).toBe(`Needs fixing${RECORD_ID_REFUSED}`);
+  const nothingToSend = screen.getByRole("button", { name: "Import 0 rows" });
+  expect(nothingToSend instanceof HTMLButtonElement && nothingToSend.disabled).toBe(true);
 }
 
 async function downloadedSheet(download: Download, name: string): Promise<ExcelJS.Worksheet> {
@@ -258,11 +263,26 @@ function expectNoFormulas(workbook: ExcelJS.Workbook): void {
   }
 }
 
-/** The engine's sentence for an owner nobody has. It goes on to add the column's hint, which the
- *  definitions test pins, so what the user sees here is compared by its start. */
-const OWNER_NOBODY = "'nobody@example.com' is not in the list of Owner emails (see the Lists sheet)";
-const NOBODY = expect.stringContaining(OWNER_NOBODY);
-const NO_COMPANY = "'Nowhere Ltd' is not in the list of Companies (see the Lists sheet)";
+/**
+ * What the engine says about a name a list does not have: its own sentence, then the column's
+ * `lookupHint`. Written out in full, so a change to either is a change to what the user reads.
+ */
+const OWNER_HINT = "Use the email of an active sales rep, see the Lists sheet. Leave blank to assign it to yourself.";
+const notAnOwner = (email: string): string =>
+  `'${email}' is not one of the accepted values for Owner email (see the Lists sheet). ${OWNER_HINT}`;
+const OWNER_NOBODY = notAnOwner("nobody@example.com");
+const NO_COMPANY =
+  "'Nowhere Ltd' is not one of the accepted values for Company (see the Lists sheet). " +
+  "The company must already exist. Import companies first, then contacts and deals.";
+const NO_CONTACT =
+  "'ghost@nowhere.example' is not one of the accepted values for Primary contact email (see the Lists sheet). " +
+  "The contact must already exist and work at that company.";
+/** A conflict that is not a duplicate: no "already", no `duplicate` code. */
+const OVER_THE_LIMIT = "The organisation is over its plan limit for companies";
+/** What the engine says about a row that came out of an export. */
+const RECORD_ID_REFUSED =
+  "This row has a Record ID, so it came from an export and is already in the system. " +
+  "Clear the Record ID cell to add it as a new record.";
 const XLSX_NAME = /^[a-z]+-\d{4}-\d{2}-\d{2}\.xlsx$/;
 
 /* ---------------------------------- companies ---------------------------------- */
@@ -300,6 +320,8 @@ describe("companies: import from Excel", () => {
     { name: "Existing Traders" },
     // Row 9: the server refuses it.
     { name: "Restricted Ltd", domain: "https://restricted.example" },
+    // Row 10: a conflict that is not a duplicate: nothing exists, the record was refused.
+    { name: "Overflow Ltd" },
   ];
 
   it("previews the rows, sends the valid ones with names turned into ids, and reports every outcome", async () => {
@@ -310,6 +332,7 @@ describe("companies: import from Excel", () => {
           "Restricted Ltd": problem(422, "Unprocessable Entity", "Request validation failed", [
             { field: "domain", code: "invalid", message: "Domain must not include a scheme" },
           ]),
+          "Overflow Ltd": problem(409, "Conflict", OVER_THE_LIMIT),
         }),
       },
     });
@@ -320,18 +343,18 @@ describe("companies: import from Excel", () => {
     await chooseFile(user, await sheetFile(companyImport.columns, ROWS, "companies.xlsx"));
 
     // The preview: counts, the reason for every row that will not go, and what is ignored.
-    expect(figure("Rows in file")).toBe("8");
-    expect(figure("Ready to import")).toBe("5");
+    expect(figure("Rows in file")).toBe("9");
+    expect(figure("Ready to import")).toBe("6");
     expect(figure("Need fixing")).toBe("2");
     expect(figure("Sample rows skipped")).toBe("1");
     expect(screen.getByText("These columns are ignored: Internal note.")).toBeTruthy();
     expect(previewCheck(2)).toBe("Ready");
     expect(previewCheck(5)).toBe("Needs fixingCompany name is required");
-    expect(previewCheck(6)).toContain(`Needs fixing${OWNER_NOBODY}`);
+    expect(previewCheck(6)).toBe(`Needs fixing${OWNER_NOBODY}`);
     expect(previewCheck(7)).toBe("Sample rowAn unchanged example from the sample sheet. It is skipped.");
     expect(requests.filter((r) => r.method === "POST")).toHaveLength(0);
 
-    await runImport(user, 5);
+    await runImport(user, 6);
 
     // What went over the wire, row by row, in sheet order: the owner as an id, the caller as the
     // owner when the cell is blank, money as integer minor units of the row's own currency.
@@ -396,26 +419,41 @@ describe("companies: import from Excel", () => {
         annual_revenue_minor: 0,
         currency: "INR",
       },
+      {
+        name: "Overflow Ltd",
+        owner_id: "own-1",
+        domain: "",
+        industry: "",
+        size_band: "",
+        city: "",
+        country: "",
+        status: "prospect",
+        annual_revenue_minor: 0,
+        currency: "INR",
+      },
     ]);
 
-    // The result: the sentence, the four counts, and each row that was not created with its reason.
-    expect(screen.getByText("3 rows were not imported. 3 companies were created.")).toBeTruthy();
+    // The result: the sentence, the four counts, and each row that was not created with its
+    // reason. A 409 that says the company exists is skipped; one that says anything else, like the
+    // plan limit on row 10, is a failure with the server's sentence.
+    expect(screen.getByText("4 rows were not imported. 3 companies were created.")).toBeTruthy();
     expect(figure("Created")).toBe("3");
     expect(figure("Skipped, already exist")).toBe("1");
-    expect(figure("Failed")).toBe("1");
+    expect(figure("Failed")).toBe("2");
     expect(figure("Invalid")).toBe("2");
     const notCreated = rowsOf(screen.getByRole("region", { name: "Rows that were not created" }));
     expect(notCreated).toEqual([
       ["5", "—Empty", "Invalid", "Company name is required"],
-      ["6", "Nimbus Retail", "Invalid", NOBODY],
+      ["6", "Nimbus Retail", "Invalid", OWNER_NOBODY],
       ["8", "Existing Traders", "Skipped", "A company with that name already exists"],
       ["9", "Restricted Ltd", "Failed", "Request validation failed (domain: Domain must not include a scheme)"],
+      ["10", "Overflow Ltd", "Failed", OVER_THE_LIMIT],
     ]);
 
     // The screen is told once, so it can reload its list.
     await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
     const summary = present(onImported.mock.calls[0]?.[0], "the summary");
-    expect(summary).toMatchObject({ created: 3, skipped: 1, failed: 1, invalid: 2, cancelled: false });
+    expect(summary).toMatchObject({ created: 3, skipped: 1, failed: 2, invalid: 2, cancelled: false });
     expect(summary.outcomes.map((o) => [o.row, o.status, o.id])).toEqual([
       [2, "created", "comp-new-1"],
       [3, "created", "comp-new-2"],
@@ -424,6 +462,7 @@ describe("companies: import from Excel", () => {
       [6, "invalid", undefined],
       [8, "skipped", undefined],
       [9, "failed", undefined],
+      [10, "failed", undefined],
     ]);
 
     // The result report keeps all of it, without the untouched sample row.
@@ -437,9 +476,10 @@ describe("companies: import from Excel", () => {
       [3, "Kestrel Foods", "Created", null],
       [4, "Tokyo Tools KK", "Created", null],
       [5, null, "Invalid", "Company name is required"],
-      [6, "Nimbus Retail", "Invalid", NOBODY],
+      [6, "Nimbus Retail", "Invalid", OWNER_NOBODY],
       [8, "Existing Traders", "Skipped", "A company with that name already exists"],
       [9, "Restricted Ltd", "Failed", "Request validation failed (domain: Domain must not include a scheme)"],
+      [10, "Overflow Ltd", "Failed", OVER_THE_LIMIT],
     ]);
 
     await user.click(screen.getByRole("button", { name: "Done" }));
@@ -504,6 +544,7 @@ describe("companies: export to Excel", () => {
           companyWire("comp-3", "Tokyo Tools KK", { currency: "JPY", annual_revenue_minor: 500, owner_id: "own-gone" }),
         ],
       },
+      creates: { [`${API}/customers`]: creating("comp-new", "name", companyWire) },
     });
     const user = userEvent.setup();
     render(<Harness entity={companyImport} filters={COMPANY_FILTERS} onImported={onImported} />);
@@ -573,8 +614,47 @@ describe("companies: export to Excel", () => {
     expect(sheet.getCell("I2").numFmt).toBe("#,##0.00");
     expect(sheet.getCell("I4").numFmt).toBe("#,##0");
     expectNoFormulas(workbook);
-    await expectReadsBack(user, file, 3);
-  });
+    await expectRefusedAsExported(user, file, 3);
+
+    // Clearing the Record ID cells turns the same rows into new records: the two whose owner is
+    // accepted go through, and the one owned by a rep who has left is refused like any other
+    // owner the list does not offer.
+    await chooseFile(user, await withColumnCleared(file.blob, "Export", "Company ID", "companies-cleared.xlsx"));
+    await waitFor(() => expect(figure("Ready to import")).toBe("2"));
+    expect(figure("Rows in file")).toBe("3");
+    expect(figure("Need fixing")).toBe("1");
+    expect(previewCheck(2)).toBe("Ready");
+    expect(previewCheck(3)).toBe(`Needs fixing${notAnOwner("former@example.com")}`);
+    expect(previewCheck(4)).toBe("Ready");
+    await runImport(user, 2);
+    expect(bodiesPosted(requests, "/customers")).toEqual([
+      {
+        name: "Northwind Logistics",
+        owner_id: "own-2",
+        domain: "northwind.co",
+        industry: "Logistics",
+        size_band: "501-1000",
+        city: "Mumbai",
+        country: "India",
+        status: "customer",
+        annual_revenue_minor: 8400000050,
+        currency: "INR",
+      },
+      {
+        name: "Tokyo Tools KK",
+        owner_id: "own-1",
+        domain: "",
+        industry: "",
+        size_band: "",
+        city: "",
+        country: "",
+        status: "prospect",
+        annual_revenue_minor: 500,
+        currency: "JPY",
+      },
+    ]);
+    expect(screen.getByText("1 row was not imported. 2 companies were created.")).toBeTruthy();
+  }, 20_000);
 });
 
 /* ------------------------------------ deals ------------------------------------ */
@@ -624,6 +704,14 @@ describe("deals: import from Excel", () => {
     { name: "Existing deal", company: "Northwind Logistics", value: 500, closeDate: "2027-04-30" },
     // Row 9: the server refuses an owner this caller may not assign.
     { name: "Assigned elsewhere", company: "Cobalt Financial", owner: "grace@example.com", value: 750, closeDate: "2027-05-31" },
+    // Row 10: a primary contact nobody has.
+    {
+      name: "Ghost contact",
+      company: "Northwind Logistics",
+      contact: "ghost@nowhere.example",
+      value: 1000,
+      closeDate: "2027-06-30",
+    },
   ];
 
   it("resolves company, contact and owner from the full lists, and reports each row's outcome", async () => {
@@ -641,16 +729,17 @@ describe("deals: import from Excel", () => {
 
     await chooseFile(user, await sheetFile(dealImport.columns, ROWS, "deals.xlsx"));
 
-    expect(figure("Rows in file")).toBe("8");
+    expect(figure("Rows in file")).toBe("9");
     expect(figure("Ready to import")).toBe("4");
-    expect(figure("Need fixing")).toBe("3");
+    expect(figure("Need fixing")).toBe("4");
     expect(figure("Sample rows skipped")).toBe("1");
     expect(previewCheck(4)).toBe("Needs fixingDeal value is required");
-    expect(previewCheck(5)).toContain(`Needs fixing${NO_COMPANY}`);
+    expect(previewCheck(5)).toBe(`Needs fixing${NO_COMPANY}`);
     expect(previewCheck(6)).toBe(
       "Needs fixingdaniel.okafor@cobaltfin.com is not a contact of Northwind Logistics. Pick one of that company's contacts.",
     );
     expect(previewCheck(7)).toContain("Sample row");
+    expect(previewCheck(10)).toBe(`Needs fixing${NO_CONTACT}`);
     expect(requests.filter((r) => r.method === "POST")).toHaveLength(0);
 
     await runImport(user, 4);
@@ -700,14 +789,14 @@ describe("deals: import from Excel", () => {
       },
     ]);
 
-    expect(screen.getByText("4 rows were not imported. 2 deals were created.")).toBeTruthy();
+    expect(screen.getByText("5 rows were not imported. 2 deals were created.")).toBeTruthy();
     expect(figure("Created")).toBe("2");
     expect(figure("Skipped, already exist")).toBe("1");
     expect(figure("Failed")).toBe("1");
-    expect(figure("Invalid")).toBe("3");
+    expect(figure("Invalid")).toBe("4");
     expect(rowsOf(screen.getByRole("region", { name: "Rows that were not created" }))).toEqual([
       ["4", "Silent renewal", "Invalid", "Deal value is required"],
-      ["5", "Ghost deal", "Invalid", expect.stringContaining(NO_COMPANY)],
+      ["5", "Ghost deal", "Invalid", NO_COMPANY],
       [
         "6",
         "Wrong contact",
@@ -716,6 +805,7 @@ describe("deals: import from Excel", () => {
       ],
       ["8", "Existing deal", "Skipped", "A deal with that name already exists"],
       ["9", "Assigned elsewhere", "Failed", "You can only assign deals you own to yourself"],
+      ["10", "Ghost contact", "Invalid", NO_CONTACT],
     ]);
 
     await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
@@ -723,7 +813,7 @@ describe("deals: import from Excel", () => {
       created: 2,
       skipped: 1,
       failed: 1,
-      invalid: 3,
+      invalid: 4,
       cancelled: false,
     });
     await user.click(screen.getByRole("button", { name: "Done" }));
@@ -830,7 +920,7 @@ describe("deals: export to Excel", () => {
     expect(sheet.getCell("J3").type).toBe(ExcelJS.ValueType.String);
     expect(sheet.getCell("E3").numFmt).toBe("#,##0.000");
     expectNoFormulas(workbook);
-    await expectReadsBack(user, file, 2);
+    await expectRefusedAsExported(user, file, 2);
   });
 });
 
@@ -849,6 +939,7 @@ describe("contacts: import and export", () => {
       creates: {
         [`${API}/contacts`]: creating("cont-new", "full_name", (id, name) => contactWire(id, "new@example.com", "comp-1", { full_name: name }), {
           "Daniel Okafor": problem(409, "Conflict", "A contact with that email already exists"),
+          "Kiran Bose": problem(409, "Conflict", "A contact with that email already exists"),
         }),
       },
     });
@@ -881,18 +972,25 @@ describe("contacts: import and export", () => {
             company: "Northwind Logistics",
             phone: "98765 43210",
           },
+          // Row 6: on file with exactly these capitals, so the address goes to the server as
+          // typed and the server's 409 decides.
+          { fullName: "Kiran Bose", email: "Kiran.Bose@northwind.co", company: "Northwind Logistics" },
+          // Row 7: a new address with capitals in its local part and its domain. The local part is
+          // sent as typed (the server treats it as case-sensitive); only the domain is lower-cased.
+          { fullName: "Tara Menon", email: "Tara.Menon@Northwind.CO", company: "Northwind Logistics" },
         ],
         "contacts.xlsx",
       ),
     );
-    expect(figure("Rows in file")).toBe("4");
-    expect(figure("Ready to import")).toBe("2");
+    expect(figure("Rows in file")).toBe("6");
+    expect(figure("Ready to import")).toBe("4");
     expect(figure("Need fixing")).toBe("2");
     expect(previewCheck(4)).toBe(
       "Needs fixingA contact with this email is already on file as Kiran.Bose@northwind.co; addresses that differ only in capitals are treated as the same person.",
     );
-    expect(previewCheck(5)).toContain("country code");
-    await runImport(user, 2);
+    expect(previewCheck(5)).toBe("Needs fixingPhone must start with + and the country code, e.g. +919876543210");
+    expect(previewCheck(6)).toBe("Ready");
+    await runImport(user, 4);
 
     expect(bodiesPosted(requests, "/contacts")).toEqual([
       {
@@ -912,8 +1010,24 @@ describe("contacts: import and export", () => {
         title: "",
         status: "lead",
       },
+      {
+        full_name: "Kiran Bose",
+        email: "Kiran.Bose@northwind.co",
+        company_id: "comp-1",
+        owner_id: "own-1",
+        title: "",
+        status: "lead",
+      },
+      {
+        full_name: "Tara Menon",
+        email: "Tara.Menon@northwind.co",
+        company_id: "comp-1",
+        owner_id: "own-1",
+        title: "",
+        status: "lead",
+      },
     ]);
-    expect(screen.getByText("2 rows were not imported. 1 contact was created.")).toBeTruthy();
+    expect(screen.getByText("2 rows were not imported. 2 contacts were created.")).toBeTruthy();
     expect(rowsOf(screen.getByRole("region", { name: "Rows that were not created" }))).toEqual([
       ["3", "Daniel Okafor", "Skipped", "A contact with that email already exists"],
       [
@@ -922,7 +1036,8 @@ describe("contacts: import and export", () => {
         "Invalid",
         "A contact with this email is already on file as Kiran.Bose@northwind.co; addresses that differ only in capitals are treated as the same person.",
       ],
-      ["5", "Vikram Shah", "Invalid", expect.stringContaining("country code")],
+      ["5", "Vikram Shah", "Invalid", "Phone must start with + and the country code, e.g. +919876543210"],
+      ["6", "Kiran Bose", "Skipped", "A contact with that email already exists"],
     ]);
     await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
   }, 20_000);
@@ -1009,7 +1124,7 @@ describe("contacts: import and export", () => {
     ]);
     expect(sheet.getCell("B3").type).toBe(ExcelJS.ValueType.String);
     expectNoFormulas(workbook);
-    await expectReadsBack(user, file, 2);
+    await expectRefusedAsExported(user, file, 2);
   });
 });
 
@@ -1034,7 +1149,7 @@ describe("leads: import and export", () => {
           {
             fullName: "Kavya Menon",
             company: "Lotus Mills",
-            email: "kavya@LotusMills.example",
+            email: "Kavya.Menon@LotusMills.EXAMPLE",
             phone: "+91 90000 12345",
             notes: "Asked for a demo.\nCall after 4pm.",
           },
@@ -1046,11 +1161,13 @@ describe("leads: import and export", () => {
     await runImport(user, 2);
 
     // A note keeps its line break; a blank owner is left out so the round-robin rule assigns it.
+    // The server matches lead emails exactly, so the address keeps its local part as typed and
+    // only its domain is lower-cased.
     expect(bodiesPosted(requests, "/leads")).toEqual([
       {
         full_name: "Kavya Menon",
         company: "Lotus Mills",
-        email: "kavya@lotusmills.example",
+        email: "Kavya.Menon@lotusmills.example",
         phone: "+919000012345",
         source: "import",
         notes: "Asked for a demo.\nCall after 4pm.",
@@ -1127,7 +1244,7 @@ describe("leads: import and export", () => {
       ],
     ]);
     expectNoFormulas(workbook);
-    await expectReadsBack(user, file, 1);
+    await expectRefusedAsExported(user, file, 1);
   });
 });
 

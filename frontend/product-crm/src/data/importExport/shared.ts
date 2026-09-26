@@ -72,10 +72,16 @@ export async function loadCompanyLookup(signal: AbortSignal): Promise<Lookup> {
   return makeLookup(rows.map((c) => ({ label: c.name, value: c.id })));
 }
 
-async function loadAllContacts(signal: AbortSignal): Promise<Contact[]> {
+/** Pages of contacts the contact-email lookup reads: 100 of 200, so 20,000 contacts. A book past
+ *  that is refused loudly by `collectPages` rather than checked in part, and still fits the shared
+ *  request budget beside the company lookup. */
+export const CONTACT_EMAIL_PAGES = 100;
+
+async function loadAllContacts(signal: AbortSignal, maxPages?: number): Promise<Contact[]> {
   return collectPages((page, size) => listContacts({ page, size, signal }), {
     signal,
     key: (contact) => contact.id,
+    ...(maxPages !== undefined ? { maxPages } : {}),
   });
 }
 
@@ -99,7 +105,7 @@ export async function loadContactLookups(signal: AbortSignal): Promise<LookupSet
  * differs from a stored one only in capitals.
  */
 export async function loadExistingContactEmails(signal: AbortSignal): Promise<Lookup> {
-  const rows = await loadAllContacts(signal);
+  const rows = await loadAllContacts(signal, CONTACT_EMAIL_PAGES);
   return makeLookup(rows.map((c) => ({ label: c.email, value: c.email })));
 }
 
