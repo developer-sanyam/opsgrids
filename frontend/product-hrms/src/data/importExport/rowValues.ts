@@ -48,24 +48,3 @@ export function resolveReference(
   if (value !== undefined) return value;
   throw new RowProblem(lookup?.isAmbiguous(label) ? problems.ambiguous : problems.missing);
 }
-
-const labelsByLookup = new WeakMap<Lookup, ReadonlyMap<string, string>>();
-
-/**
- * The label a lookup gives an id: the reverse of `resolve`, for writing a reference back to a
- * sheet. Built once per lookup, because an export asks it for every row.
- */
-export function labelOfValue(lookup: Lookup | undefined, value: string | null): string {
-  if (lookup === undefined || value === null) return "";
-  let byValue = labelsByLookup.get(lookup);
-  if (byValue === undefined) {
-    const built = new Map<string, string>();
-    for (const label of lookup.labels) {
-      const resolved = lookup.resolve(label);
-      if (resolved !== undefined) built.set(resolved, label);
-    }
-    byValue = built;
-    labelsByLookup.set(lookup, byValue);
-  }
-  return byValue.get(value) ?? "";
-}
