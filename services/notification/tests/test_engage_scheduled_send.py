@@ -29,6 +29,7 @@ from app.config import settings
 from app.transports import RecordingTransport
 from platform_core.auth import Scope
 from platform_core.db import dispose_engine, init_engine
+from platform_core.errors import BusinessRuleProblem
 from platform_core.events import validate_event_schema
 from tests.helpers import ctx_for, envelope_for
 from tests.test_engage_campaigns import (
@@ -204,6 +205,52 @@ async def test_a_campaign_that_stops_being_sendable_before_it_fires_is_paused_no
     transport = RecordingTransport()
     assert await _drain(session, org_id, campaign_id, transport=transport) == "paused"
     assert transport.sent == []
+
+
+async def test_a_campaign_paused_at_fire_time_cannot_be_resumed_while_the_gate_still_fails(
+    session, org_id, worker_engine
+):
+    """`resume_campaign` re-runs the send gate the firing applied: pressing resume on a campaign
+    that `activate_scheduled_campaign` paused must not skip the rule that paused it. Once the
+    problem is fixed the same call goes through."""
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "a@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    at = datetime.now(UTC) + timedelta(hours=1)
+    await _schedule(session, org_id, campaign_id, at)
+    (requested,) = await _staged(session, SCHEDULE_REQUESTED)
+    async with session.begin():
+        await session.execute(
+            update(models.EmailConnection)
+            .where(models.EmailConnection.organization_id == org_id)
+            .values(status="disconnected")
+        )
+    assert await consumers.expand_campaign_send(_firing(org_id, requested), now=at) == "not_sending"
+    paused = await _reload(session, campaign_id)
+    assert paused.status == "paused" and "provider" in paused.pause_reason
+
+    with pytest.raises(BusinessRuleProblem, match="provider"):
+        async with session.begin():
+            await services.resume_campaign(
+                session, ctx_for(org_id, K_WRITE, Scope.ORG), campaign_id=campaign_id
+            )
+    session.expire_all()
+    refused = await _reload(session, campaign_id)
+    assert refused.status == "paused"
+    assert refused.pause_reason == paused.pause_reason
+    assert refused.paused_at == paused.paused_at
+
+    async with session.begin():
+        await session.execute(
+            update(models.EmailConnection)
+            .where(models.EmailConnection.organization_id == org_id)
+            .values(status="connected")
+        )
+    async with session.begin():
+        resumed = await services.resume_campaign(
+            session, ctx_for(org_id, K_WRITE, Scope.ORG), campaign_id=campaign_id
+        )
+    assert resumed.status == "sending" and resumed.pause_reason == ""
 
 
 async def test_a_scheduled_campaign_fired_early_is_dropped(session, org_id):

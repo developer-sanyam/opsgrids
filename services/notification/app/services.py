@@ -4621,12 +4621,18 @@ async def resume_campaign(
 ) -> Campaign:
     """An operator's explicit "try again now" — bypasses the driver's own backoff
     (`Settings.engage_campaign_pause_retry_seconds`) by clearing `paused_at` immediately, so the
-    very next tick attempts this campaign regardless of when it last failed."""
+    very next tick attempts this campaign regardless of when it last failed.
+
+    Re-runs `_ensure_campaign_sendable` first, the same gate `activate_scheduled_campaign` applies
+    at fire time: a campaign paused because that gate failed must not slip past it just because
+    someone pressed resume. When it still fails the 422 carries the failing rule's own message
+    and the campaign stays `paused` with its `pause_reason` untouched."""
     row = await selectors.get_campaign(session, ctx.organization_id, campaign_id, lock=True)
     if row is None:
         raise NotFoundProblem("No such campaign")
     if row.status != "paused":
         raise ConflictProblem(f"Only a paused campaign can be resumed; this one is {row.status}")
+    await _ensure_campaign_sendable(session, ctx, row)
     row.status = "sending"
     row.pause_reason = ""
     row.paused_at = None

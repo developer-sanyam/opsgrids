@@ -1293,14 +1293,18 @@ async def test_resume_endpoint_retries_now_and_refuses_a_non_paused_campaign(
             batch_size=10,
             lease_seconds=300,
         )
-    assert (await _reload(session, campaign_id)).status == "paused"
+    paused = await _reload(session, campaign_id)
+    assert paused.status == "paused"
 
     with as_principal(caller(org_id, ALL)):
-        # Still no connection: resuming flips the status but the very next claim pauses again.
-        resumed = await client.post(f"{CAMPAIGNS}/{campaign_id}/resume")
-        assert resumed.status_code == 200, resumed.text
-        assert resumed.json()["status"] == "sending"
-        assert (await client.post(f"{CAMPAIGNS}/{campaign_id}/resume")).status_code == 409
+        # Still no connection: resume re-runs the send gate and is refused, the campaign left
+        # paused with the reason it already had.
+        refused = await client.post(f"{CAMPAIGNS}/{campaign_id}/resume")
+        assert refused.status_code == 422, refused.text
+        assert "provider" in refused.json()["detail"].lower()
+        still_paused = await _reload(session, campaign_id)
+        assert still_paused.status == "paused"
+        assert still_paused.pause_reason == paused.pause_reason
 
     async with session.begin():
         session.add(
@@ -1312,6 +1316,13 @@ async def test_resume_endpoint_retries_now_and_refuses_a_non_paused_campaign(
                 daily_cap=2000,
             )
         )
+
+    with as_principal(caller(org_id, ALL)):
+        resumed = await client.post(f"{CAMPAIGNS}/{campaign_id}/resume")
+        assert resumed.status_code == 200, resumed.text
+        assert resumed.json()["status"] == "sending"
+        assert (await client.post(f"{CAMPAIGNS}/{campaign_id}/resume")).status_code == 409
+
     wire = RecordingTransport()
     assert await _drain(session, org_id, campaign_id, transport=wire) == "done"
     assert [m.to_address for m in wire.sent] == ["a@example.com"]
