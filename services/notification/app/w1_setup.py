@@ -377,7 +377,7 @@ async def _step_number(session: AsyncSession, run: SetupRun, ctx: Ctx) -> str:
         default_phone_number_id=phone_number_id,
     )
     await w1_services.record_token_check(
-        session, org, state="valid", expires_at=expires_at, setup_id=run.id
+        session, org, state="valid", expires_at=expires_at, setup_id=run.id, reset_expiry=True
     )
     run.token_enc = None  # it now lives, sealed, on the provider account
 

@@ -76,7 +76,7 @@ class NumbersOut(BaseModel):
     items: list[NumberOut]
 
 
-class OkOut(BaseModel):
+class WhatsAppOkOut(BaseModel):
     ok: Literal[True] = True
 
 

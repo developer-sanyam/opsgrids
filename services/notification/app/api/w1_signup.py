@@ -28,13 +28,13 @@ from app.w1_graph import GraphError, MetaGraph
 from app.w1_schemas import (
     HealthOut,
     NumbersOut,
-    OkOut,
     SendTestMessageIn,
     SendTestMessageOut,
     SignupCompleteIn,
     SignupCompleteOut,
     SignupConfigOut,
     SignupStatusOut,
+    WhatsAppOkOut,
 )
 from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.cache import enforce_rate_limit
@@ -208,7 +208,7 @@ async def list_numbers(
 
 @router.post(
     "/engage/whatsapp/numbers/{number_id}/default",
-    response_model=OkOut,
+    response_model=WhatsAppOkOut,
     summary="Send from this number by default",
     dependencies=[Entitled],
 )
@@ -218,11 +218,11 @@ async def set_default(
     directory: DirectorySessionDep,
     ctx: WhatsAppWrite,
     request: Request,
-) -> OkOut:
+) -> WhatsAppOkOut:
     await w1_services.set_default_number(
         session, ctx, directory=directory, number_id=number_id, request=request
     )
-    return OkOut()
+    return WhatsAppOkOut()
 
 
 # --------------------------------------------------------------------- health, test, disconnect
@@ -268,10 +268,10 @@ async def test_message(
 
 @router.post(
     "/engage/whatsapp/disconnect",
-    response_model=OkOut,
+    response_model=WhatsAppOkOut,
     summary="Disconnect WhatsApp and wipe the stored token",
     dependencies=[Entitled],
 )
-async def disconnect(session: SessionDep, ctx: WhatsAppWrite, request: Request) -> OkOut:
+async def disconnect(session: SessionDep, ctx: WhatsAppWrite, request: Request) -> WhatsAppOkOut:
     await w1_services.disconnect(session, ctx, request=request)
-    return OkOut()
+    return WhatsAppOkOut()

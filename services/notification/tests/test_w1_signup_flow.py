@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +121,8 @@ async def test_the_happy_path_connects_the_number_and_runs_every_step(
     capsys: pytest.CaptureFixture[str],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    expiry = datetime.now(UTC) + timedelta(days=60)
+    meta.token_expires_at = int(expiry.timestamp())
     setup_id, envelope = await start(session, org_id, waba_id=WABA, phone_number_id="1002")
     # Before the worker runs: persisted, running, code sealed, nothing exchanged yet.
     before = await run_of(session, setup_id)
@@ -162,6 +165,9 @@ async def test_the_happy_path_connects_the_number_and_runs_every_step(
         "1002": "yellow",
     }
     assert health.token_state == "valid" and health.webhook_subscribed_at is not None
+    # The expiry Meta reported survives the later steps' health updates.
+    assert health.token_expires_at is not None
+    assert abs((health.token_expires_at - expiry).total_seconds()) < 2
     assert [t.provider_name for t in templates] == ["order_update"]
 
     # The token goes only in the Authorization header of the calls that need it; the code and the

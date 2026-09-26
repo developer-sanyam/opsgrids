@@ -91,12 +91,20 @@ def initial_steps() -> list[dict[str, Any]]:
     return [{"key": k, "label": label, "state": "waiting", "detail": None} for k, label in STEPS]
 
 
-def run_out(run: SetupRun) -> SignupStatusOut:
+def run_out(run: SetupRun, now: datetime | None = None) -> SignupStatusOut:
+    """The run as the status route shows it. A run still `running` long past any real setup (its
+    event was lost, or the worker is down) is reported `failed` with `timed_out` rather than as
+    an endless spinner; a read writes nothing, and the run is superseded by the next
+    `signup/complete`."""
+    now = now or datetime.now(UTC)
+    status, error_code = run.status, run.error_code
+    if status == "running" and now - run.created_at > w1_domain.SETUP_STALE_AFTER:
+        status, error_code = "failed", "timed_out"
     return SignupStatusOut(
         setup_id=run.id,
-        status=run.status,
+        status=status,
         steps=[SignupStepOut(**step) for step in run.steps],
-        error_code=run.error_code,
+        error_code=error_code,
     )
 
 
@@ -278,8 +286,11 @@ async def record_token_check(
     expires_at: datetime | None = None,
     setup_id: uuid.UUID | None = None,
     subscribed: bool = False,
+    reset_expiry: bool = False,
 ) -> ConnectionHealth:
-    """Remember what Meta last said about the token (and, from a setup, the subscription)."""
+    """Remember what Meta last said about the token (and, from a setup, the subscription).
+    The expiry is kept as recorded unless a new one is given or `reset_expiry` says the token
+    is a new one (a signup: `None` then means "does not expire")."""
     now = datetime.now(UTC)
     health = await w1_selectors.get_health(session, organization_id)
     if health is None:
@@ -288,7 +299,7 @@ async def record_token_check(
         session.add(health)
     health.token_state = state
     health.token_checked_at = now
-    if expires_at is not None or state == "valid":
+    if expires_at is not None or reset_expiry:
         health.token_expires_at = expires_at
     if subscribed:
         health.webhook_subscribed_at = now

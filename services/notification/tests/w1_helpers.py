@@ -80,6 +80,8 @@ class FakeMeta:
         ]
         self.templates: list[dict[str, Any]] = [template("t1", "order_update")]
         self.subscribed: list[str] = [APP_ID]
+        #: Epoch seconds `debug_token` reports; 0 is Meta's "does not expire".
+        self.token_expires_at = 0
 
     def _refuse(self, route: str) -> httpx.Response | None:
         status = self.fail.get(route)
@@ -104,7 +106,7 @@ class FakeMeta:
         if parts == ["debug_token"]:
             scopes = [{"scope": "whatsapp_business_management", "target_ids": self.granted}]
             return "debug_token", httpx.Response(
-                200, json={"data": {"granular_scopes": scopes, "expires_at": 0}}
+                200, json={"data": {"granular_scopes": scopes, "expires_at": self.token_expires_at}}
             )
         if parts == ["me"]:
             return "me", httpx.Response(200, json={"id": "biz"})
