@@ -34,6 +34,12 @@ function checkColumn(entity: AnyEntity, column: ImportColumn, lookups: LookupSet
   if (column.pattern !== undefined && column.patternHint === undefined) {
     problems.push(`${name} has a pattern but no patternHint, so a user cannot tell what is expected`);
   }
+  if (column.lookupHint !== undefined && column.lookup === undefined) {
+    problems.push(`${name} has a lookupHint but is not a lookup column`);
+  }
+  if (column.multiline === true && column.kind !== "text") {
+    problems.push(`${name} is marked multiline but is not a text column`);
+  }
   if (column.readOnly === true && column.importOnly === true) {
     problems.push(`${name} is both readOnly and importOnly, so it would appear nowhere`);
   }
@@ -95,6 +101,15 @@ export function checkImportEntity(entity: AnyEntity, lookups: LookupSet): string
     problems.push(`More than one column has the header "${header}" (headers are matched ignoring case, spaces and a trailing *)`);
   }
   for (const column of entity.columns) problems.push(...checkColumn(entity, column, lookups));
+
+  if (entity.recordIdKey !== undefined) {
+    const holder = entity.columns.find((column) => column.key === entity.recordIdKey);
+    if (holder === undefined) {
+      problems.push(`recordIdKey "${entity.recordIdKey}" names no column`);
+    } else if (holder.readOnly !== true) {
+      problems.push(`recordIdKey "${entity.recordIdKey}" must name a readOnly column: the export's own id`);
+    }
+  }
 
   const known = new Map(entity.columns.map((column) => [column.key, column]));
   const importable = importableColumns(entity);

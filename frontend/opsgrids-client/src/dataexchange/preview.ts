@@ -4,7 +4,7 @@
  * name that matches nothing) is reported now, in the preview, rather than halfway through a run.
  */
 
-import { displayValue, importableColumns } from "./cells";
+import { displayValue, importableColumns, isBlank } from "./cells";
 import type { AnyEntity } from "./cells";
 import { coerceRow } from "./coerce";
 import { prepareMessage } from "./errors";
@@ -15,6 +15,14 @@ import type { ParsedSheet } from "./workbook";
 
 /** How many rows the preview lists (invalid ones first); the counts cover them all. */
 export const PREVIEW_ROW_LIMIT = 200;
+
+export const RECORD_ID_MESSAGE =
+  "This row has a Record ID, so it came from an export and is already in the system. Clear the Record ID cell to add it as a new record.";
+
+/** One sentence for a row with several problems: a lone one is kept as it is, several are separated with `;`. */
+function joinProblems(problems: readonly string[]): string {
+  return problems.length === 1 ? problems.join("") : problems.map((problem) => problem.replace(/\.$/, "")).join("; ");
+}
 
 export interface PreparedImport {
   /** Rows that passed every check, ready to send. */
@@ -34,6 +42,7 @@ export function prepareImport(
   const identifying = columns.find((column) => column.required === true) ?? columns[0];
 
   const isSample = sampleMatcher(entity, ctx.lookups);
+  const { recordIdKey } = entity;
   const valid: RunnerRow[] = [];
   const invalid: RowOutcome[] = [];
   const shown: PreviewRow[] = [];
@@ -43,6 +52,14 @@ export function prepareImport(
     const values: Record<string, string> = {};
     for (const column of sheet.columns) values[column.key] = displayValue(cells[column.key]);
     const label = identifying === undefined ? "" : (values[identifying.key] ?? "");
+
+    // A row that carries an export's record id is already in the system. Said first and alone:
+    // the column errors of a row that must not be sent would only bury the reason.
+    if (recordIdKey !== undefined && !isBlank(cells[recordIdKey])) {
+      invalid.push({ row, status: "invalid", message: RECORD_ID_MESSAGE, label });
+      shown.push({ row, values, error: RECORD_ID_MESSAGE, sample: false });
+      continue;
+    }
 
     // Before any validation: an unchanged example row is never reported wrong, whatever the
     // organisation's lists hold.
@@ -62,7 +79,7 @@ export function prepareImport(
     }
 
     if (errors.length > 0) {
-      const message = errors.join("; ");
+      const message = joinProblems(errors);
       invalid.push({ row, status: "invalid", message, label });
       shown.push({ row, values, error: message, sample: false });
     } else {

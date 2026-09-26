@@ -168,7 +168,9 @@ describe("dropdowns", () => {
   it("attaches a list to enum, boolean and lookup columns", async () => {
     const sheet = sheetOf(await buildAndLoad(), "Import");
     expect(validationFor(sheet, "C")).toMatchObject({ type: "list", formulae: ['"In stock,Discontinued"'] });
-    expect(validationFor(sheet, "D")).toMatchObject({ type: "list", formulae: ['"Hardware,Fasteners,Twin,twin"'] });
+    // "Twin" and "twin" are two records with one name, so a dropdown offering them would offer a
+    // value the importer then refuses: the lookup does not list them.
+    expect(validationFor(sheet, "D")).toMatchObject({ type: "list", formulae: ['"Hardware,Fasteners"'] });
     expect(validationFor(sheet, "F")).toMatchObject({ type: "list", formulae: ['"INR,USD,JPY,KWD"'] });
     expect(validationFor(sheet, "J")).toMatchObject({ type: "list", formulae: ['"Yes,No"'] });
   });
@@ -277,6 +279,22 @@ describe("the Instructions sheet", () => {
     expect(lines.indexOf("Notes")).toBeLessThan(lines.indexOf("General rules"));
   });
 
+  it("says that hidden rows and columns are imported and that formulas are read as their last value", async () => {
+    const lines = textOf(sheetOf(await buildAndLoad(), "Instructions")).flat();
+    expect(lines).toContain("Hidden rows and columns are imported like any others");
+    expect(lines).toContain("Formulas are read as their last calculated value");
+    expect(lines.indexOf("General rules")).toBeLessThan(lines.indexOf("Hidden rows and columns are imported like any others"));
+  });
+
+  it("says them for an entity with no dates, money or phones as well", async () => {
+    const plain: ImportColumn[] = [{ key: "sku", header: "SKU", kind: "text", required: true, help: "The sku." }];
+    const lines = textOf(
+      sheetOf(await buildAndLoad(makeProductEntity({ columns: plain, sampleRows: [{ sku: "A" }] }), {}), "Instructions"),
+    ).flat();
+    expect(lines).toContain("Hidden rows and columns are imported like any others");
+    expect(lines).toContain("Formulas are read as their last calculated value");
+  });
+
   it("states the entity's own row limit", async () => {
     const lines = textOf(sheetOf(await buildAndLoad(makeProductEntity({ maxRows: 250 })), "Instructions")).flat();
     expect(lines).toContain("Up to 250 rows per file.");
@@ -310,7 +328,7 @@ describe("the Lists sheet", () => {
   it("has one column per lookup with the labels in display order", async () => {
     const lists = sheetOf(await buildAndLoad(), "Lists");
     const column = [1, 2, 3, 4, 5].map((row) => lists.getCell(row, 1).value);
-    expect(column).toEqual(["Category", "Hardware", "Fasteners", "Twin", "twin"]);
+    expect(column).toEqual(["Category", "Hardware", "Fasteners", null, null]);
     expect(lists.getCell(1, 2).value).toBeNull();
   });
 
@@ -392,7 +410,77 @@ describe("examples that name something this organisation lacks", () => {
     const parsed = await readWorkbook(await fileOf(workbook), entity);
     const { preview } = prepareImport(entity, parsed, context, "edited.xlsx");
     expect(preview).toMatchObject({ total: 2, sample: 1, valid: 0, invalid: 1 });
-    expect(preview.rows[0]?.error).toBe("'Hardware' is not in the list of Categories (see the Lists sheet)");
+    expect(preview.rows[0]?.error).toBe("'Hardware' is not one of the accepted values for Category (see the Lists sheet).");
+  });
+});
+
+describe("a sample sheet the user has changed", () => {
+  const context = { lookups: productLookups, signal: new AbortController().signal };
+
+  async function previewOf(edit: (sheet: ExcelJS.Worksheet) => void) {
+    const workbook = await buildAndLoad();
+    edit(sheetOf(workbook, "Import"));
+    const parsed = await readWorkbook(await fileOf(workbook), entity);
+    return prepareImport(entity, parsed, context, "edited.xlsx").preview;
+  }
+
+  it("still has its examples skipped after an optional column is deleted", async () => {
+    // Weight is column H: the first example has a value for it, the second none.
+    const preview = await previewOf((sheet) => sheet.spliceColumns(8, 1));
+    expect(preview).toMatchObject({ total: 2, sample: 2, valid: 0, invalid: 0 });
+    expect(preview.columns.map((column) => column.key)).not.toContain("weight");
+  });
+
+  it("still has its examples skipped after several optional columns are deleted", async () => {
+    // Launch date, Active, Supplier email, Supplier phone: I to L.
+    const preview = await previewOf((sheet) => sheet.spliceColumns(9, 4));
+    expect(preview).toMatchObject({ total: 2, sample: 2, valid: 0, invalid: 0 });
+  });
+
+  it("still has its examples skipped after the columns are reordered", async () => {
+    // Swap SKU and Name, and move the Category column to the far end.
+    const preview = await previewOf((sheet) => {
+      const rows = [1, 2, 3].map((r) => [1, 2, 4].map((c) => sheet.getCell(r, c).value));
+      rows.forEach(([sku, name, category], index) => {
+        sheet.getCell(index + 1, 1).value = name ?? null;
+        sheet.getCell(index + 1, 2).value = sku ?? null;
+        sheet.getCell(index + 1, 4).value = null;
+        sheet.getCell(index + 1, 13).value = category ?? null;
+      });
+    });
+    expect(preview).toMatchObject({ total: 2, sample: 2, valid: 0, invalid: 0 });
+  });
+
+  it("still has its examples skipped when a column the entity does not know is added", async () => {
+    const preview = await previewOf((sheet) => {
+      sheet.getCell("M1").value = "Favourite colour";
+      sheet.getCell("M2").value = "blue";
+      sheet.getCell("M3").value = "green";
+    });
+    expect(preview).toMatchObject({ total: 2, sample: 2, valid: 0, invalid: 0, unknownHeaders: ["Favourite colour"] });
+  });
+
+  it("turns an example into a real row the moment one of its cells is changed", async () => {
+    const preview = await previewOf((sheet) => {
+      sheet.getCell("B2").value = "Steel bracket, extended";
+    });
+    expect(preview).toMatchObject({ total: 2, sample: 1, valid: 1, invalid: 0 });
+  });
+
+  it("turns an example into a real row when a cell is cleared, and judges it as one", async () => {
+    const preview = await previewOf((sheet) => {
+      sheet.getCell("B2").value = null;
+    });
+    expect(preview).toMatchObject({ total: 2, sample: 1, valid: 0, invalid: 1 });
+    expect(preview.rows[0]?.error).toBe("Name is required");
+  });
+
+  it("does not let a deleted column hide a real row that shares an example's SKU and name", async () => {
+    const preview = await previewOf((sheet) => {
+      sheet.spliceColumns(8, 1);
+      sheet.getCell("G2").value = 999;
+    });
+    expect(preview).toMatchObject({ sample: 1, valid: 1 });
   });
 });
 

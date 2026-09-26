@@ -33,6 +33,48 @@ describe("rowMessage", () => {
     );
   });
 
+  it("says a sentence once when the server repeats it in the detail and in the one field error", () => {
+    const sentence = "A supplier coded 'X' already exists";
+    const error = new ApiError(409, "x", {
+      detail: sentence,
+      errors: [{ field: "code", code: "duplicate", message: sentence }],
+    });
+    expect(rowMessage(error)).toBe(sentence);
+  });
+
+  it("treats the repeat as the same sentence despite case, spacing and a closing full stop", () => {
+    const error = new ApiError(409, "x", {
+      detail: "A supplier coded 'X' already exists.",
+      errors: [{ field: "code", code: "duplicate", message: "  a supplier coded 'x'   ALREADY EXISTS " }],
+    });
+    expect(rowMessage(error)).toBe("A supplier coded 'X' already exists.");
+  });
+
+  it("drops only the repeats: a field message that adds something stays, with its field", () => {
+    const error = new ApiError(422, "x", {
+      detail: "Validation failed",
+      errors: [
+        { field: "name", code: "missing", message: "Validation failed" },
+        { field: "email", code: "value_error", message: "Not a valid email address" },
+        { field: "phone", code: "value_error", message: "Not a valid email address" },
+      ],
+    });
+    expect(rowMessage(error)).toBe(
+      "Validation failed (email: Not a valid email address; phone: Not a valid email address)",
+    );
+  });
+
+  it("gives just the headline when every field message repeats it", () => {
+    const error = new ApiError(409, "x", {
+      detail: "Already there",
+      errors: [
+        { field: "a", code: "duplicate", message: "already there" },
+        { field: "b", code: "duplicate", message: "Already there." },
+      ],
+    });
+    expect(rowMessage(error)).toBe("Already there");
+  });
+
   it("drops a field error that is not the documented shape", () => {
     const error = new ApiError(422, "x", {
       detail: "Invalid",

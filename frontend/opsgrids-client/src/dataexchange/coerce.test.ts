@@ -116,9 +116,37 @@ describe("text", () => {
     expect(value(text, 12.5)).toBe("12.5");
   });
 
-  it("turns a date cell into an ISO date and a boolean into TRUE or FALSE", () => {
-    expect(value(text, new Date(Date.UTC(2026, 2, 4)))).toBe("2026-03-04");
+  it("turns a boolean into TRUE or FALSE", () => {
     expect(value(text, true)).toBe("TRUE");
+    expect(value(text, false)).toBe("FALSE");
+  });
+
+  describe("a date cell where text belongs", () => {
+    // "1-10" or "11-50" typed into a General cell becomes 10 January or 11 May.
+    const turned = "Name was turned into a date by Excel (for example 1-10 becomes 10 January). Format the column as Text and type it again.";
+
+    it("is refused, for the text Excel turned into it, with the way out", () => {
+      expect(error(text, new Date(Date.UTC(2026, 0, 10)))).toBe(turned);
+      expect(error(text, new Date(Date.UTC(2026, 4, 11)))).toBe(turned);
+    });
+
+    it("is refused in every kind of text column: multiline, lookup and enum as well", () => {
+      const date = new Date(Date.UTC(2026, 0, 10));
+      expect(error(column("text", { header: "Name", multiline: true }), date)).toBe(turned);
+      expect(error(column("text", { header: "Name", lookup: "categories" }), date)).toBe(turned);
+      const size = column("enum", { header: "Name", options: [{ value: "1-10", label: "1-10" }] });
+      expect(error(size, date)).toBe(turned);
+    });
+
+    it("is not touched when the text was typed as text", () => {
+      expect(value(text, "1-10")).toBe("1-10");
+      expect(value(text, "11-50")).toBe("11-50");
+      expect(value(column("enum", { options: [{ value: "1-10", label: "1-10" }] }), "1-10")).toBe("1-10");
+    });
+
+    it("does not affect a date column", () => {
+      expect(value(column("date"), new Date(Date.UTC(2026, 0, 10)))).toBe("2026-01-10");
+    });
   });
 });
 
@@ -310,14 +338,24 @@ describe("enum", () => {
 
 describe("email", () => {
   const email = column("email", { header: "Email" });
+  const invalid = "Email must be a valid email address, e.g. name@example.com";
 
-  it("trims and lower-cases", () => {
-    expect(value(email, "  Ada.Lovelace@Example.COM ")).toBe("ada.lovelace@example.com");
+  it("trims, keeps the local part exactly as typed and lower-cases only the domain", () => {
+    // The server dedupes on the exact string, and EmailStr lower-cases only the domain.
+    expect(value(email, "  Ada.Lovelace@Example.COM ")).toBe("Ada.Lovelace@example.com");
+    expect(value(email, "ORDERS@EXAMPLE.COM")).toBe("ORDERS@example.com");
+    expect(value(email, "ada@example.com")).toBe("ada@example.com");
+  });
+
+  it("gives an address that came out of an export back unchanged, so a re-import matches the record", () => {
+    for (const stored of ["Ada.Lovelace@example.com", "o.Brien+Tag@example.co.uk", "X_Y@sub.example.org"]) {
+      expect(value(email, stored)).toBe(stored);
+    }
   });
 
   it("refuses what is not an address", () => {
     for (const cell of ["ada", "ada@", "@example.com", "ada@example", "a b@example.com", "a@@example.com", 42]) {
-      expect(error(email, cell), String(cell)).toBe("Email must be a valid email address, e.g. name@example.com");
+      expect(error(email, cell), String(cell)).toBe(invalid);
     }
   });
 
@@ -325,6 +363,11 @@ describe("email", () => {
     const long = `${"a".repeat(250)}@example.com`;
     expect(error(email, long)).toMatch(/Email is too long/);
     expect(value(email, `${"a".repeat(64)}@example.com`)).toBe(`${"a".repeat(64)}@example.com`);
+  });
+
+  it("refuses a line break inside the address, and forgives one at the edge", () => {
+    expect(error(email, "a@example.com\nx")).toBe(invalid);
+    expect(value(email, "a@example.com\n")).toBe("a@example.com");
   });
 });
 
@@ -367,8 +410,10 @@ describe("lookup", () => {
     expect(value(category, "  Fasteners ")).toBe("Fasteners");
   });
 
-  it("names the value and the list when it is unknown", () => {
-    expect(error(category, "Tools")).toBe("'Tools' is not in the list of Categories (see the Lists sheet)");
+  it("names the value and the column when it is unknown", () => {
+    expect(error(category, "Tools")).toBe(
+      "'Tools' is not one of the accepted values for Category (see the Lists sheet).",
+    );
   });
 
   it("says when a label matches more than one entry", () => {
@@ -376,20 +421,49 @@ describe("lookup", () => {
     expect(error(category, "twin")).toContain("(see the Lists sheet)");
   });
 
-  it("pluralises the header sensibly", () => {
-    const lookups = { owners: makeLookup([]), addresses: makeLookup([]), warehouses: makeLookup([]) };
+  it("needs no pluralising: the header is quoted as it is, whatever it ends in", () => {
+    const lookups = { units: makeLookup([]), owners: makeLookup([]), addresses: makeLookup([]) };
     const ask = (header: string, name: string): string => {
-      const result = coerceValue(column("text", { header, lookup: name }), "zzz", { lookups });
+      const result = coerceValue(column("text", { header, lookup: name }), "kgs", { lookups });
       return result.ok ? "" : result.error;
     };
-    expect(ask("Owner email", "owners")).toContain("list of Owner emails");
-    expect(ask("Address", "addresses")).toContain("list of Addresses");
-    expect(ask("Warehouse", "warehouses")).toContain("list of Warehouses");
+    expect(ask("Unit of measure", "units")).toBe(
+      "'kgs' is not one of the accepted values for Unit of measure (see the Lists sheet).",
+    );
+    expect(ask("Owner email", "owners")).toContain("accepted values for Owner email (");
+    expect(ask("Address", "addresses")).toContain("accepted values for Address (");
+    expect(ask("Unit of measure", "units")).not.toMatch(/measures|Measures/);
+  });
+
+  it("adds the column's hint to an unknown value, after the reason", () => {
+    const manager = column("text", {
+      header: "Manager email",
+      lookup: "categories",
+      lookupHint: "Import the manager first, then run this file again: rows already imported are skipped.",
+    });
+    expect(error(manager, "nobody@example.com")).toBe(
+      "'nobody@example.com' is not one of the accepted values for Manager email (see the Lists sheet). Import the manager first, then run this file again: rows already imported are skipped.",
+    );
+  });
+
+  it("adds the hint to an ambiguous value too", () => {
+    const hinted = column("text", { header: "Category", lookup: "categories", lookupHint: "Rename one of them." });
+    const message = error(hinted, "twin");
+    expect(message).toContain("matches more than one of the accepted values for Category");
+    expect(message.endsWith("so it cannot be chosen. Rename one of them.")).toBe(true);
+  });
+
+  it("adds nothing when the column has no hint, and never doubles a space", () => {
+    expect(error(category, "Tools")).toBe("'Tools' is not one of the accepted values for Category (see the Lists sheet).");
+    expect(error(category, "twin")).not.toMatch(/\s{2}/);
   });
 
   it("explains itself when the list was never loaded", () => {
     const result = coerceValue(category, "Hardware", { lookups: {} });
-    expect(result.ok).toBe(false);
+    expect(result).toEqual({
+      ok: false,
+      error: "The accepted values for Category could not be loaded, so it cannot be checked",
+    });
   });
 });
 
@@ -410,7 +484,7 @@ describe("coerceRow", () => {
         weight: "0.75",
         launched: new Date(Date.UTC(2026, 2, 4)),
         active: "yes",
-        email: "Orders@Example.com",
+        email: "Orders@Example.COM",
         phone: "+91 98765 43210",
       },
       ctx,
@@ -427,7 +501,7 @@ describe("coerceRow", () => {
       weight: 0.75,
       launched: "2026-03-04",
       active: true,
-      email: "orders@example.com",
+      email: "Orders@example.com",
       phone: "+919876543210",
     });
   });

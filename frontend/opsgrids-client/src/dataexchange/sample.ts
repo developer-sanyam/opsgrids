@@ -20,14 +20,11 @@ import type { ImportColumn, LookupSet, SheetValue } from "./types";
 const YES = new Set(["yes", "y", "true", "1"]);
 const NO = new Set(["no", "n", "false", "0"]);
 
-function spelling(text: string): string {
-  return text.trim().replace(/\s+/g, " ").toLowerCase();
-}
-
 /**
  * The entity's sample rows as the sample sheet writes them: where a lookup column's example is
- * not among the organisation's labels, the lookup's first label stands in for it. A lookup with
- * no labels leaves the example alone, and a blank example stays blank.
+ * not one the organisation has, the first label of the lookup that actually resolves stands in
+ * for it (never an ambiguous one: it would be refused on the way back in). A lookup with nothing
+ * usable in it leaves the example alone, and a blank example stays blank.
  */
 export function substituteSampleRows(entity: AnyEntity, lookups: LookupSet): Record<string, SheetValue>[] {
   const lookupColumns = importableColumns(entity).filter((column) => column.lookup !== undefined);
@@ -36,9 +33,9 @@ export function substituteSampleRows(entity: AnyEntity, lookups: LookupSet): Rec
     for (const column of lookupColumns) {
       const lookup = column.lookup === undefined ? undefined : lookups[column.lookup];
       const example = displayValue(sample[column.key]);
-      const first = lookup?.labels[0];
-      if (lookup === undefined || first === undefined || example === "") continue;
-      if (!lookup.labels.some((label) => spelling(label) === spelling(example))) row[column.key] = first;
+      if (lookup === undefined || example === "" || lookup.resolve(example) !== undefined) continue;
+      const standIn = lookup.labels.find((label) => lookup.resolve(label) !== undefined);
+      if (standIn !== undefined) row[column.key] = standIn;
     }
     return row;
   });
@@ -68,9 +65,13 @@ function comparable(column: ImportColumn, cell: CellInput | undefined): string {
 }
 
 /**
- * A test for "is this row an unchanged example": every importable column of the row equals the
- * same column of one sample row, either as the entity ships it or as the sample sheet wrote it
- * for this organisation.
+ * A test for "is this row an unchanged example": every importable column the file has equals the
+ * same column of one sample row, either as the entity ships it or as the sample sheet wrote it for
+ * this organisation. Only the columns the file has are compared. A user who deletes an optional
+ * column and leaves the examples in has not turned them into records, and a column that is not in
+ * the file cannot be told apart from one that was cleared. Reordering columns, or adding one the
+ * entity does not know, changes nothing; editing or clearing a cell of a column that is there makes
+ * the row a real one.
  */
 export function sampleMatcher(
   entity: AnyEntity,
@@ -78,8 +79,11 @@ export function sampleMatcher(
 ): (cells: Readonly<Record<string, CellInput>>) => boolean {
   const columns = importableColumns(entity);
   const candidates = [...entity.sampleRows, ...substituteSampleRows(entity, lookups)];
-  return (cells) =>
-    candidates.some((sample) =>
-      columns.every((column) => comparable(column, cells[column.key]) === comparable(column, sample[column.key])),
+  return (cells) => {
+    const present = columns.filter((column) => Object.hasOwn(cells, column.key));
+    if (present.length === 0) return false;
+    return candidates.some((sample) =>
+      present.every((column) => comparable(column, cells[column.key]) === comparable(column, sample[column.key])),
     );
+  };
 }

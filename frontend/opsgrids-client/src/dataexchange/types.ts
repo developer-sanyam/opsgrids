@@ -13,11 +13,15 @@
 export type SheetValue = string | number | boolean | Date | null;
 
 /** What a column's value is once coerced and validated. Dates are `YYYY-MM-DD`, money is integer
- *  minor units, an enum is the option's `value`, an email is lower-cased, a phone keeps `+` and
- *  digits only. */
+ *  minor units, an enum is the option's `value`, an email keeps its local part exactly as typed and
+ *  has its domain lower-cased (the server dedupes on that string), a phone keeps `+` and digits
+ *  only. */
 export type ParsedValue = string | number | boolean | null;
 
-/** One row after coercion, keyed by `ImportColumn.key`. Blank optional cells are `null`. */
+/** One row after coercion, keyed by `ImportColumn.key`. Blank optional cells are `null`, with one
+ *  exception: a blank currency cell (the column a money column's `currencyKey` names) parses as
+ *  that money column's `defaultCurrency`, not `null`, so an entity can tell that the row's money is
+ *  priced. An entity sends the currency only alongside an amount. */
 export type ParsedRow = Readonly<Record<string, ParsedValue>>;
 
 export type ColumnKind =
@@ -59,7 +63,9 @@ export interface ImportColumn {
   /** money: the `key` of the column holding the ISO currency (default `"currency"`). When that
    *  column is blank the value of `defaultCurrency` applies. */
   currencyKey?: string | undefined;
-  /** money and currency columns: the currency used when the row names none. Default `"INR"`. */
+  /** money and currency columns: the currency used when the row names none. Default `"INR"`. A
+   *  blank currency cell therefore parses as this value (not `null`), so an entity can tell that the
+   *  row's money is priced; it should send the currency only alongside an amount. */
   defaultCurrency?: string | undefined;
   /**
    * The name of a set returned by `loadLookups`. The cell must equal one of its labels (ignoring

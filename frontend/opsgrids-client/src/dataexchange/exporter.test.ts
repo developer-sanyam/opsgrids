@@ -178,6 +178,90 @@ describe("the export workbook", () => {
   });
 });
 
+describe("numbers with more digits than a spreadsheet keeps", () => {
+  /** An entity whose export writes exactly these raw values for the numeric columns. */
+  function withValues(values: Record<string, string | number>) {
+    const base = makeProductEntity();
+    return {
+      ...base,
+      export: {
+        ...base.export,
+        fetchPage: base.export?.fetchPage ?? (() => Promise.resolve({ items: [], total: 0, pages: 1 })),
+        toRow: () => ({ id: "p-1", sku: "A-1", name: "Bracket", currency: "INR", ...values }),
+      },
+    };
+  }
+
+  async function cell(address: string, values: Record<string, string | number>): Promise<ExcelJS.CellValue> {
+    return (await exported([item()], withValues(values))).getCell(address).value;
+  }
+
+  it("writes a money value of more than 15 significant digits as text, so re-importing gets every digit", async () => {
+    // Largest safe integer of minor units: 90071992547409.91 in INR, 16 digits.
+    expect(await cell("F2", { price: "90071992547409.91" })).toBe("90071992547409.91");
+  });
+
+  it("writes a money value of 15 significant digits or fewer as a number", async () => {
+    expect(await cell("F2", { price: "1234567890123.45" })).toBe(1234567890123.45);
+    expect(await cell("F2", { price: "999999999999999" })).toBe(999999999999999);
+    expect(await cell("F2", { price: "1499.50" })).toBe(1499.5);
+  });
+
+  it("puts the line at 15 for a decimal and an integer as well", async () => {
+    expect(await cell("I2", { weight: "0.123456789012345" })).toBe(0.123456789012345);
+    expect(await cell("I2", { weight: "0.1234567890123456" })).toBe("0.1234567890123456");
+    expect(await cell("H2", { quantity: "123456789012345" })).toBe(123456789012345);
+    expect(await cell("H2", { quantity: "1234567890123456" })).toBe("1234567890123456");
+  });
+
+  it("counts only digits that carry precision: not leading zeros, and not a fraction's trailing zeros", async () => {
+    expect(await cell("I2", { weight: "0.000000000000000012345" })).toBe(1.2345e-17);
+    expect(await cell("I2", { weight: "1.500000000000000000000" })).toBe(1.5);
+    expect(await cell("I2", { weight: "-0.1234567890123456" })).toBe("-0.1234567890123456");
+    expect(await cell("I2", { weight: "-0.123456789012345" })).toBe(-0.123456789012345);
+  });
+
+  it("counts every digit of a whole number, trailing zeros included", async () => {
+    expect(await cell("H2", { quantity: "1000000000000000" })).toBe("1000000000000000");
+  });
+
+  it("leaves a value that is already a JavaScript number as the number it is", async () => {
+    expect(await cell("H2", { quantity: 9007199254740991 })).toBe(9007199254740991);
+  });
+
+  it("reads back through the importer to exactly the digits that went out", async () => {
+    const values = { sku: "A-1", name: "Bracket", price: "90071992547409.91", currency: "INR" };
+    const entity = withValues({ price: values.price });
+    const parsed = await readWorkbook(await fileOf(await loadBlob(await buildExportWorkbook(entity, [item()], productLookups))), makeProductEntity());
+    const { prepared } = prepareImport(
+      makeProductEntity(),
+      parsed,
+      { lookups: productLookups, signal: new AbortController().signal },
+      "export.xlsx",
+    );
+    expect(prepared.valid[0]?.values.price).toBe(9007199254740991);
+  });
+});
+
+describe("characters XML cannot carry", () => {
+  it("removes them from every text cell, header and value alike, and keeps the rest", async () => {
+    const dirty = "a\u0000b￾c￿d﷐e﷯f\uD800g\uDC00h\u007fi😀j";
+    const sheet = await exported([item({ name: dirty, sku: `￾${dirty}` })]);
+    expect(sheet.getCell("C2").value).toBe("abcdefghi😀j");
+    expect(sheet.getCell("B2").value).toBe("abcdefghi😀j");
+  });
+
+  it("keeps a tab, a line feed and a carriage return in a cell", async () => {
+    const sheet = await exported([item({ name: "line one\nline two\ttabbed" })]);
+    expect(sheet.getCell("C2").value).toBe("line one\nline two\ttabbed");
+  });
+
+  it("still writes a file the library can read back when a value is all invalid characters", async () => {
+    const sheet = await exported([item({ name: "￾￿\u0000" })]);
+    expect(sheet.getCell("C2").value).toBeNull();
+  });
+});
+
 describe("formula injection", () => {
   const hostile = [
     '=HYPERLINK("https://evil.example","click me")',

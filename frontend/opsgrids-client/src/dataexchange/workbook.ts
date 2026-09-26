@@ -1,18 +1,21 @@
 /**
  * Reads an .xlsx into rows of `CellInput` keyed by column, and nothing more: no coercion, no
- * network. Everything the file could do to us is decided here: which sheet, how big, which
- * headers, and what a cell is.
+ * network. Everything the file could do to us is decided here: how big it is (packed, then
+ * unpacked, before the spreadsheet library is even loaded), which sheet, which headers, and how
+ * many rows. What a cell is lives in `cellValue.ts`.
  *
- * A formula cell is never evaluated: its stored result is the value, and an error result is an
- * invalid cell. That is the reading half of the formula-injection rule (ADR-0022).
+ * Hidden rows and columns are read like any others: hiding is presentation, and the user chose
+ * this file.
  */
 
 import type * as ExcelJS from "exceljs";
 
-import { InvalidCell, displayValue, headerKey, importableColumns, isBlank, isValidDate } from "./cells";
+import { InvalidCell, displayValue, headerKey, importableColumns, isBlank } from "./cells";
 import type { AnyEntity, CellInput } from "./cells";
+import { fromExcelValue, readCell } from "./cellValue";
 import { loadExcel, loadableBytes, readBytes } from "./excel";
 import type { ImportColumn } from "./types";
+import { inspectArchive } from "./zipGuard";
 
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 export const MAX_COLUMNS = 60;
@@ -29,7 +32,8 @@ export class WorkbookReadError extends Error {
 export interface SheetRow {
   /** The row's number in the sheet (the header is row 1, so data starts at 2). */
   row: number;
-  /** Importable columns only, by `ImportColumn.key`. */
+  /** Importable columns by `ImportColumn.key`, and the entity's `recordIdKey` column when the
+   *  header row has it (an export's own id, read only to recognise a row that came from one). */
   cells: Readonly<Record<string, CellInput>>;
 }
 
@@ -47,6 +51,18 @@ export interface ParsedSheet {
 
 const RESAVE_HINT = "Open it in Excel and choose Save As → Excel Workbook (.xlsx), then choose the new file.";
 
+function unreadable(file: File): WorkbookReadError {
+  return new WorkbookReadError(
+    `"${file.name}" could not be read as an Excel workbook. If it is password-protected, remove the password and try again.`,
+  );
+}
+
+function tooLargeUnpacked(): WorkbookReadError {
+  return new WorkbookReadError(
+    "This file is much larger when unpacked than an import can safely read. Save it again in Excel without images or extra data, or split it into smaller files.",
+  );
+}
+
 function checkFile(file: File): void {
   if (!/\.xlsx$/i.test(file.name)) {
     throw new WorkbookReadError(`"${file.name}" is not an .xlsx file. ${RESAVE_HINT}`);
@@ -58,35 +74,6 @@ function checkFile(file: File): void {
       `"${file.name}" is ${megabytes} MB and the limit is 5 MB. Remove unused rows and columns, or split the file.`,
     );
   }
-}
-
-function errorCell(code: string): InvalidCell {
-  return new InvalidCell(code, `contains the error ${code}`);
-}
-
-function fromValue(value: ExcelJS.CellValue): CellInput {
-  if (value === null || value === undefined) return null;
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
-  if (value instanceof Date) {
-    return isValidDate(value) ? value : new InvalidCell("#DATE", "is not a valid date");
-  }
-  if ("error" in value) return errorCell(value.error);
-  if ("richText" in value) return value.richText.map((run) => run.text).join("");
-  if ("hyperlink" in value) {
-    return typeof value.text === "string" ? value.text : value.hyperlink.replace(/^mailto:/i, "");
-  }
-  // A formula: take the result the file stored. Evaluating it would run the author's code.
-  const { result } = value;
-  if (result === undefined) {
-    return new InvalidCell(
-      "=",
-      "holds a formula with no calculated value. Open the file in Excel, save it and choose it again",
-    );
-  }
-  if (typeof result === "object" && !(result instanceof Date)) return errorCell(result.error);
-  return result instanceof Date && !isValidDate(result)
-    ? new InvalidCell("#DATE", "is not a valid date")
-    : result;
 }
 
 function sheetLabel(name: string): string {
@@ -104,6 +91,8 @@ function pickSheet(workbook: ExcelJS.Workbook): ExcelJS.Worksheet | undefined {
 
 interface HeaderMap {
   mapped: { col: number; column: ImportColumn }[];
+  /** The column holding an export's record id, when the entity names one and the file has it. */
+  recordId: { col: number; key: string } | null;
   unknown: string[];
   ignored: number;
 }
@@ -111,7 +100,7 @@ interface HeaderMap {
 function mapHeaders(sheet: ExcelJS.Worksheet, entity: AnyEntity): HeaderMap {
   const found: { col: number; text: string }[] = [];
   sheet.getRow(1).eachCell({ includeEmpty: false }, (cell, col) => {
-    const value = fromValue(cell.value);
+    const value = fromExcelValue(cell.value);
     const text = value instanceof InvalidCell ? "" : displayValue(value);
     if (text !== "") found.push({ col, text });
   });
@@ -129,7 +118,7 @@ function mapHeaders(sheet: ExcelJS.Worksheet, entity: AnyEntity): HeaderMap {
 
   const known = new Map(entity.columns.map((column) => [headerKey(column.header), column]));
   const seen = new Set<string>();
-  const result: HeaderMap = { mapped: [], unknown: [], ignored: 0 };
+  const result: HeaderMap = { mapped: [], recordId: null, unknown: [], ignored: 0 };
   for (const { col, text } of found) {
     const key = headerKey(text);
     if (key === "") continue;
@@ -139,8 +128,11 @@ function mapHeaders(sheet: ExcelJS.Worksheet, entity: AnyEntity): HeaderMap {
     seen.add(key);
     const column = known.get(key);
     if (column === undefined) result.unknown.push(text);
-    else if (column.readOnly === true) result.ignored += 1;
-    else result.mapped.push({ col, column });
+    else if (column.readOnly === true) {
+      result.ignored += 1;
+      // Read-only columns are ignored, except the one that says a row came out of the system.
+      if (column.key === entity.recordIdKey) result.recordId = { col, key: column.key };
+    } else result.mapped.push({ col, column });
   }
   return result;
 }
@@ -152,15 +144,18 @@ function mapHeaders(sheet: ExcelJS.Worksheet, entity: AnyEntity): HeaderMap {
  */
 export async function readWorkbook(file: File, entity: AnyEntity): Promise<ParsedSheet> {
   checkFile(file);
-  const [excel, bytes] = await Promise.all([loadExcel(), readBytes(file)]);
+  const bytes = await readBytes(file);
+  // Before the library is loaded, let alone asked to unpack anything.
+  const archive = inspectArchive(bytes);
+  if (archive === "malformed") throw unreadable(file);
+  if (archive === "too-large") throw tooLargeUnpacked();
 
+  const excel = await loadExcel();
   const workbook = new excel.Workbook();
   try {
     await workbook.xlsx.load(loadableBytes(bytes));
   } catch {
-    throw new WorkbookReadError(
-      `"${file.name}" could not be read as an Excel workbook. If it is password-protected, remove the password and try again.`,
-    );
+    throw unreadable(file);
   }
 
   const sheet = pickSheet(workbook);
@@ -181,8 +176,13 @@ export async function readWorkbook(file: File, entity: AnyEntity): Promise<Parse
     const cells: Record<string, CellInput> = {};
     let hasValue = false;
     for (const { col, column } of headers.mapped) {
-      const value = fromValue(row.getCell(col).value);
+      const value = readCell(row.getCell(col));
       cells[column.key] = value;
+      if (!isBlank(value)) hasValue = true;
+    }
+    if (headers.recordId !== null) {
+      const value = readCell(row.getCell(headers.recordId.col));
+      cells[headers.recordId.key] = value;
       if (!isBlank(value)) hasValue = true;
     }
     if (hasValue) rows.push({ row: rowNumber, cells });

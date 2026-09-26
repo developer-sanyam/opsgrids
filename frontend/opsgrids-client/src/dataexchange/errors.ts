@@ -11,11 +11,21 @@ import { RowProblem } from "./types";
 export const NETWORK_MESSAGE = "The request could not be completed. Check your connection and try again.";
 export const PREPARE_MESSAGE = "This row could not be prepared for import.";
 
+/** A sentence reduced to what makes it the same sentence: no case, no edge or inner spacing, no closing full stop. */
+function sameSentence(text: string): string {
+  return text.trim().replace(/\s+/g, " ").replace(/\.$/, "").toLowerCase();
+}
+
 export function rowMessage(error: unknown): string {
   if (error instanceof RowProblem) return error.message;
   if (error instanceof ApiError) {
     const headline = problemMessage(error);
-    const fields = fieldErrors(error.problem).map((entry) => `${entry.field}: ${entry.message}`);
+    // The server often says the same sentence in `detail` and again as the one field error
+    // ("A supplier coded 'X' already exists (code: A supplier coded 'X' already exists)").
+    const said = sameSentence(headline);
+    const fields = fieldErrors(error.problem)
+      .filter((entry) => sameSentence(entry.message) !== said)
+      .map((entry) => `${entry.field}: ${entry.message}`);
     return fields.length > 0 ? `${headline} (${fields.join("; ")})` : headline;
   }
   return NETWORK_MESSAGE;
