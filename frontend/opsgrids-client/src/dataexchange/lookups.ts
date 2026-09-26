@@ -19,8 +19,18 @@ export function makeLookup(entries: readonly { label: string; value: string }[])
     byLabel.set(key, byLabel.has(key) && byLabel.get(key) !== value ? null : value);
     if (!byValue.has(value)) byValue.set(value, label);
   }
+  // The labels a user may type: each once, and never one that resolves to nothing. An ambiguous
+  // label in the Lists sheet or a dropdown would offer a value the importer then refuses.
+  const listed = new Set<string>();
+  const labels: string[] = [];
+  for (const { label } of entries) {
+    const key = normalise(label);
+    if (byLabel.get(key) === null || listed.has(key)) continue;
+    listed.add(key);
+    labels.push(label);
+  }
   return {
-    labels: entries.map((e) => e.label),
+    labels,
     resolve: (label) => byLabel.get(normalise(label)) ?? undefined,
     isAmbiguous: (label) => byLabel.get(normalise(label)) === null,
     labelOf: (value) => byValue.get(value),
