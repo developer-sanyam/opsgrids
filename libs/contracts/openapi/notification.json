@@ -2573,6 +2573,42 @@
         "title": "Page[WhatsAppConnectionOut]",
         "type": "object"
       },
+      "Page_WhatsAppTemplateOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WhatsAppTemplateOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[WhatsAppTemplateOut]",
+        "type": "object"
+      },
       "PreferenceIn": {
         "additionalProperties": false,
         "description": "Record or lift a refusal. `category` of `*` covers the whole channel.",
@@ -2672,6 +2708,51 @@
           "updated_at"
         ],
         "title": "PreferenceOut",
+        "type": "object"
+      },
+      "PreviewButtonOut": {
+        "properties": {
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "quick_reply",
+              "url",
+              "phone"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "type",
+          "text"
+        ],
+        "title": "PreviewButtonOut",
         "type": "object"
       },
       "ProviderTemplateIn": {
@@ -3442,6 +3523,289 @@
         "title": "SuppressionOut",
         "type": "object"
       },
+      "SyncOut": {
+        "properties": {
+          "created": {
+            "title": "Created",
+            "type": "integer"
+          },
+          "removed": {
+            "title": "Removed",
+            "type": "integer"
+          },
+          "synced": {
+            "title": "Synced",
+            "type": "integer"
+          },
+          "updated": {
+            "title": "Updated",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "synced",
+          "created",
+          "updated",
+          "removed"
+        ],
+        "title": "SyncOut",
+        "type": "object"
+      },
+      "TemplateBodyIn": {
+        "additionalProperties": false,
+        "properties": {
+          "examples": {
+            "items": {
+              "maxLength": 5000,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Examples",
+            "type": "array"
+          },
+          "text": {
+            "maxLength": 5000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "TemplateBodyIn",
+        "type": "object"
+      },
+      "TemplateButtonIn": {
+        "additionalProperties": false,
+        "properties": {
+          "example": {
+            "anyOf": [
+              {
+                "maxLength": 5000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Example"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "text": {
+            "maxLength": 5000,
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "quick_reply",
+              "url",
+              "phone"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "maxLength": 5000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "type",
+          "text"
+        ],
+        "title": "TemplateButtonIn",
+        "type": "object"
+      },
+      "TemplateComponentsIn": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "$ref": "#/components/schemas/TemplateBodyIn"
+          },
+          "buttons": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/TemplateButtonIn"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buttons"
+          },
+          "footer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TemplateFooterIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "header": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TemplateHeaderIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "title": "TemplateComponentsIn",
+        "type": "object"
+      },
+      "TemplateCreateIn": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "enum": [
+              "utility",
+              "marketing",
+              "authentication"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "components": {
+            "$ref": "#/components/schemas/TemplateComponentsIn"
+          },
+          "language": {
+            "maxLength": 40,
+            "title": "Language",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 600,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "category",
+          "language",
+          "components"
+        ],
+        "title": "TemplateCreateIn",
+        "type": "object"
+      },
+      "TemplateFooterIn": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "maxLength": 5000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "TemplateFooterIn",
+        "type": "object"
+      },
+      "TemplateHeaderIn": {
+        "additionalProperties": false,
+        "properties": {
+          "example": {
+            "anyOf": [
+              {
+                "maxLength": 5000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Example"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 5000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "type": {
+            "enum": [
+              "text",
+              "image",
+              "video",
+              "document"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "title": "TemplateHeaderIn",
+        "type": "object"
+      },
+      "TemplateHistoryOut": {
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "meta_webhook",
+              "sync",
+              "submit"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "at",
+          "source"
+        ],
+        "title": "TemplateHistoryOut",
+        "type": "object"
+      },
       "TemplateIn": {
         "additionalProperties": false,
         "properties": {
@@ -3557,6 +3921,73 @@
         "title": "TemplateOut",
         "type": "object"
       },
+      "TemplatePreviewIn": {
+        "additionalProperties": false,
+        "properties": {
+          "values": {
+            "additionalProperties": {
+              "maxLength": 1024,
+              "type": "string"
+            },
+            "maxProperties": 100,
+            "propertyNames": {
+              "maxLength": 120
+            },
+            "title": "Values",
+            "type": "object"
+          }
+        },
+        "title": "TemplatePreviewIn",
+        "type": "object"
+      },
+      "TemplatePreviewOut": {
+        "properties": {
+          "body": {
+            "default": "",
+            "title": "Body",
+            "type": "string"
+          },
+          "buttons": {
+            "items": {
+              "$ref": "#/components/schemas/PreviewButtonOut"
+            },
+            "title": "Buttons",
+            "type": "array"
+          },
+          "footer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Footer"
+          },
+          "header": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Header"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "buttons"
+        ],
+        "title": "TemplatePreviewOut",
+        "type": "object"
+      },
       "TemplateVariableIn": {
         "additionalProperties": false,
         "description": "One value a provider template expects.\n\n`key` is our vocabulary \u2014 the dotted path a rule's payload resolves, the same name the ERP\nwrites as `{{customer_name}}`. The provider's side is `position` for a positional template\nor `parameter_name` for a named one. Keeping both here is the mapping layer: the ERP speaks\none language and nothing outside this row has to know which form Meta wants.",
@@ -3664,6 +4095,95 @@
           "key"
         ],
         "title": "TemplateVariableOut",
+        "type": "object"
+      },
+      "TemplateVariableSpecOut": {
+        "properties": {
+          "button_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Button Index"
+          },
+          "component": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Component"
+          },
+          "example": {
+            "title": "Example",
+            "type": "string"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
+          },
+          "kind": {
+            "enum": [
+              "text",
+              "url",
+              "date",
+              "number"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parameter_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parameter Name"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
+          }
+        },
+        "required": [
+          "index",
+          "name",
+          "kind",
+          "example"
+        ],
+        "title": "TemplateVariableSpecOut",
         "type": "object"
       },
       "TestSendIn": {
@@ -3832,6 +4352,422 @@
           "status"
         ],
         "title": "WhatsAppConnectionOut",
+        "type": "object"
+      },
+      "WhatsAppTemplateDetailOut": {
+        "properties": {
+          "body_preview": {
+            "title": "Body Preview",
+            "type": "string"
+          },
+          "category": {
+            "enum": [
+              "utility",
+              "marketing",
+              "authentication"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "channel": {
+            "enum": [
+              "whatsapp",
+              "email"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "components": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Components",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateHistoryOut"
+            },
+            "title": "History",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "meta_template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meta Template Id"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parameter_format": {
+            "enum": [
+              "positional",
+              "named"
+            ],
+            "title": "Parameter Format",
+            "type": "string"
+          },
+          "preview_text": {
+            "title": "Preview Text",
+            "type": "string"
+          },
+          "provider_name": {
+            "title": "Provider Name",
+            "type": "string"
+          },
+          "provider_template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Template Id"
+          },
+          "quality": {
+            "enum": [
+              "high",
+              "medium",
+              "low",
+              "unknown"
+            ],
+            "title": "Quality",
+            "type": "string"
+          },
+          "rejection_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejection Reason"
+          },
+          "row_id": {
+            "format": "uuid",
+            "title": "Row Id",
+            "type": "string"
+          },
+          "sendable": {
+            "title": "Sendable",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "pending",
+              "approved",
+              "rejected",
+              "paused",
+              "disabled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "status_checked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Checked At"
+          },
+          "status_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Reason"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted At"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "variables": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateVariableSpecOut"
+            },
+            "title": "Variables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "row_id",
+          "channel",
+          "name",
+          "provider_name",
+          "meta_template_id",
+          "provider_template_id",
+          "language",
+          "category",
+          "parameter_format",
+          "status",
+          "quality",
+          "rejection_reason",
+          "status_reason",
+          "status_checked_at",
+          "components",
+          "body_preview",
+          "preview_text",
+          "variables",
+          "sendable",
+          "submitted_at",
+          "created_at",
+          "updated_at",
+          "history"
+        ],
+        "title": "WhatsAppTemplateDetailOut",
+        "type": "object"
+      },
+      "WhatsAppTemplateOut": {
+        "properties": {
+          "body_preview": {
+            "title": "Body Preview",
+            "type": "string"
+          },
+          "category": {
+            "enum": [
+              "utility",
+              "marketing",
+              "authentication"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "channel": {
+            "enum": [
+              "whatsapp",
+              "email"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "components": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Components",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "meta_template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meta Template Id"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parameter_format": {
+            "enum": [
+              "positional",
+              "named"
+            ],
+            "title": "Parameter Format",
+            "type": "string"
+          },
+          "preview_text": {
+            "title": "Preview Text",
+            "type": "string"
+          },
+          "provider_name": {
+            "title": "Provider Name",
+            "type": "string"
+          },
+          "provider_template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Template Id"
+          },
+          "quality": {
+            "enum": [
+              "high",
+              "medium",
+              "low",
+              "unknown"
+            ],
+            "title": "Quality",
+            "type": "string"
+          },
+          "rejection_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejection Reason"
+          },
+          "row_id": {
+            "format": "uuid",
+            "title": "Row Id",
+            "type": "string"
+          },
+          "sendable": {
+            "title": "Sendable",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "pending",
+              "approved",
+              "rejected",
+              "paused",
+              "disabled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "status_checked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Checked At"
+          },
+          "status_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Reason"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted At"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "variables": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateVariableSpecOut"
+            },
+            "title": "Variables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "row_id",
+          "channel",
+          "name",
+          "provider_name",
+          "meta_template_id",
+          "provider_template_id",
+          "language",
+          "category",
+          "parameter_format",
+          "status",
+          "quality",
+          "rejection_reason",
+          "status_reason",
+          "status_checked_at",
+          "components",
+          "body_preview",
+          "preview_text",
+          "variables",
+          "sendable",
+          "submitted_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "WhatsAppTemplateOut",
         "type": "object"
       }
     }
@@ -6756,7 +7692,7 @@
     },
     "/api/v1/engage/whatsapp/templates": {
       "get": {
-        "description": "What can be sent outside a conversation window, and what is still in review.\n\nThe same rows `notification`'s own `GET /notifications/provider-templates` reads\n(`selectors.provider_templates_stmt`) \u2014 read here under Engage's own permission so an\norganization that has bought Engage but not the transactional `notification` product can\nstill see the real approval status of the templates it sends through its own WhatsApp\naccount, rather than a 403 for a permission it was never sold.",
+        "description": "What can be sent outside a conversation window, and what is still in review.\n\nThe same rows `notification`'s own `GET /notifications/provider-templates` reads\n(`selectors.provider_templates_stmt`) \u2014 read here under Engage's own permission so an\norganization that has bought Engage but not the transactional `notification` product can\nstill see the real approval status of the templates it sends through its own WhatsApp\naccount, rather than a 403 for a permission it was never sold.\n\nFilterable by category, status and a search over name and wording (`w2_selectors`).",
         "operationId": "list_whatsapp_templates_api_v1_engage_whatsapp_templates_get",
         "parameters": [
           {
@@ -6773,8 +7709,73 @@
                   "type": "null"
                 }
               ],
+              "default": "whatsapp",
               "description": "email or whatsapp",
               "title": "Channel"
+            }
+          },
+          {
+            "in": "query",
+            "name": "category",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "utility",
+                    "marketing",
+                    "authentication"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Category"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "draft",
+                    "pending",
+                    "approved",
+                    "rejected",
+                    "paused",
+                    "disabled"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "description": "Name or wording contains",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Name or wording contains",
+              "title": "Q"
             }
           },
           {
@@ -6806,7 +7807,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_ProviderTemplateOut_"
+                  "$ref": "#/components/schemas/Page_WhatsAppTemplateOut_"
                 }
               }
             },
@@ -6824,6 +7825,46 @@
           }
         },
         "summary": "WhatsApp templates and their real approval status",
+        "tags": [
+          "engage"
+        ]
+      },
+      "post": {
+        "description": "Validates locally (every problem at once, per field, as a 422), submits to Meta, and\nstores the answer as `pending`. Meta's review then moves the status by webhook.",
+        "operationId": "create_whatsapp_template_api_v1_engage_whatsapp_templates_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateCreateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhatsAppTemplateDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a template and submit it to Meta for review",
         "tags": [
           "engage"
         ]
@@ -6864,6 +7905,123 @@
           }
         },
         "summary": "Register or update a WhatsApp template",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/templates/sync": {
+      "post": {
+        "description": "Reads every template Meta holds for this organization's WABA and folds it into the rows:\nnew ones created, changed ones updated, ones Meta no longer has removed (soft-deleted).\n\nWrite permission although it reads Meta: it rewrites our rows, including their status.",
+        "operationId": "sync_whatsapp_templates_api_v1_engage_whatsapp_templates_sync_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Pull the WABA's templates from Meta",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/templates/{template_ref}": {
+      "get": {
+        "operationId": "get_whatsapp_template_api_v1_engage_whatsapp_templates__template_ref__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_ref",
+            "required": true,
+            "schema": {
+              "title": "Template Ref",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhatsAppTemplateDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One WhatsApp template, with its status history",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/templates/{template_ref}/preview": {
+      "post": {
+        "description": "Read permission: it renders text and changes nothing. Strict \u2014 a placeholder with no value\nis a 422 naming it, not a preview with a hole in it.",
+        "operationId": "preview_whatsapp_template_api_v1_engage_whatsapp_templates__template_ref__preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_ref",
+            "required": true,
+            "schema": {
+              "title": "Template Ref",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplatePreviewIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplatePreviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Render a template with sample values",
         "tags": [
           "engage"
         ]

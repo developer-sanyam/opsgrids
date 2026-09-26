@@ -60,7 +60,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import selectors, services, webhooks
+from app import selectors, services, w2_webhooks, webhooks
 from app.config import settings
 from app.models import ProcessedEvent
 from platform_core.db import get_directory_session, session_scope
@@ -179,6 +179,11 @@ async def receive(request: Request, directory: DirectorySessionDep) -> Response:
         log.warning("webhook.undecodable")
         return Response(status_code=status.HTTP_200_OK)
 
+    # Account-level changes (template status and quality, number quality) name a WABA rather than a
+    # number, so they are routed by `w2_webhooks` from `entry.id`, before the per-number folds and
+    # independent of whether the body carries any number at all.
+    template_transient = await w2_webhooks.handle_changes(directory, payload)
+
     # Rule 4: resolved **per number**, never once for the whole body. Meta can and does batch
     # several WABAs into one POST; a single `organization_id` picked from the first change would
     # fold every other change in the body against it.
@@ -189,6 +194,8 @@ async def receive(request: Request, directory: DirectorySessionDep) -> Response:
 
     if not phone_ids:
         log.info("webhook.no_phone_number_id")
+        if template_transient:
+            return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
         return Response(status_code=status.HTTP_200_OK)
 
     total_statuses = 0
@@ -197,7 +204,7 @@ async def receive(request: Request, directory: DirectorySessionDep) -> Response:
     # Meta redelivers the body — but every other item is still folded first. `processed_events`
     # is what makes that safe: whatever already folded dedupes on the way back, and only the item
     # that actually failed does any work the second time.
-    had_transient_failure = False
+    had_transient_failure = template_transient
 
     for phone_id in phone_ids:
         account = await selectors.account_for_phone_number(directory, phone_id)
