@@ -352,7 +352,7 @@ export function CampaignAnalyticsPage() {
         }
         actions={<ActionLink to={`/campaigns/${encodeURIComponent(campaignId)}`} variant="secondary">View campaign</ActionLink>}
       />
-      <LoadingStatus loading={analytics.status === "loading"} what="campaign analytics" />
+      <LoadingStatus status={analytics.status} what="campaign analytics" />
 
       {analytics.status === "error" ? (
         <DashboardFailure

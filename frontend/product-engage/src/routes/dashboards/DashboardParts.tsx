@@ -205,11 +205,18 @@ export function ActivityCard({
 }
 
 /** Screen readers hear that a dashboard is loading and when it is done; sighted users see the
- *  skeletons. Without this a refetch after a range change is silent. */
-export function LoadingStatus({ loading, what }: { loading: boolean; what: string }) {
+ *  skeletons. Without this a refetch after a range change is silent. A failure says nothing here:
+ *  its own `role="alert"` message is the announcement, and "loaded" would contradict it. */
+export function LoadingStatus({
+  status,
+  what,
+}: {
+  status: "loading" | "success" | "error";
+  what: string;
+}) {
   return (
     <p role="status" className="sr-only">
-      {loading ? `Loading ${what}` : `${what} loaded`}
+      {status === "loading" ? `Loading ${what}` : status === "success" ? `${what} loaded` : ""}
     </p>
   );
 }

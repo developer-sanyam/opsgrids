@@ -235,7 +235,7 @@ export function CommunicationHubPage() {
         actions={<DateRangeControl controls={dates} />}
       />
       <SectionTabs section="hub" />
-      <LoadingStatus loading={state.status === "loading"} what="communication overview" />
+      <LoadingStatus status={state.status} what="communication overview" />
 
       {state.status === "error" ? (
         <DashboardFailure

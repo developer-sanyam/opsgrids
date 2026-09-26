@@ -132,7 +132,7 @@ export function WhatsAppOverviewPage() {
         actions={<DateRangeControl controls={dates} />}
       />
       <SectionTabs section="whatsapp" />
-      <LoadingStatus loading={state.status === "loading"} what="WhatsApp overview" />
+      <LoadingStatus status={state.status} what="WhatsApp overview" />
 
       {state.status === "error" ? (
         <DashboardFailure

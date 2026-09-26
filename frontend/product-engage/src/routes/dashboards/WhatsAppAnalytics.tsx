@@ -243,7 +243,7 @@ export function WhatsAppAnalyticsPage() {
         actions={<DateRangeControl controls={dates} />}
       />
       <SectionTabs section="whatsapp" />
-      <LoadingStatus loading={state.status === "loading"} what="WhatsApp analytics" />
+      <LoadingStatus status={state.status} what="WhatsApp analytics" />
 
       {state.status === "error" ? (
         <DashboardFailure

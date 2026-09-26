@@ -131,7 +131,7 @@ export function EmailOverviewPage() {
         }
       />
       <SectionTabs section="email" />
-      <LoadingStatus loading={state.status === "loading"} what="email overview" />
+      <LoadingStatus status={state.status} what="email overview" />
 
       {state.status === "error" ? (
         <DashboardFailure

@@ -106,9 +106,12 @@ describe("the WhatsApp overview", () => {
 
     expect(await screen.findByText("Couldn't load the WhatsApp overview")).toBeTruthy();
     expect(screen.getByText("The analytics store is unavailable")).toBeTruthy();
+    // The failure is its own announcement; a live region saying "loaded" would contradict it.
+    expect(screen.queryByText("WhatsApp overview loaded")).toBeNull();
 
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByText("12,842")).toBeTruthy();
+    expect(screen.getByText("WhatsApp overview loaded")).toBeTruthy();
     expect(read).toHaveBeenCalledTimes(2);
   });
 
