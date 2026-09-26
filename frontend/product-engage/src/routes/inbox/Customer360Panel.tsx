@@ -210,10 +210,11 @@ function ProfileField({
 }
 
 function Profile({ data }: { data: Customer360 }) {
+  const headingId = useId();
   const { customer } = data;
   const place = [customer.company, customer.city].filter((part) => part !== null).join(" · ");
   return (
-    <section aria-labelledby="c360-profile" className="flex flex-col gap-3">
+    <section aria-labelledby={headingId} className="flex flex-col gap-3">
       <div className="flex items-center gap-3">
         <span
           aria-hidden
@@ -222,7 +223,7 @@ function Profile({ data }: { data: Customer360 }) {
           {initials(customer.name)}
         </span>
         <div className="flex min-w-0 flex-col gap-1">
-          <h3 id="c360-profile" className="truncate text-sm font-semibold text-ink">
+          <h3 id={headingId} className="truncate text-sm font-semibold text-ink">
             {customer.name}
           </h3>
           <span>
@@ -265,10 +266,16 @@ function windowLine(openUntil: string | null): string {
 }
 
 function Channels({ data }: { data: Customer360 }) {
-  const { whatsapp, email } = data.channels;
+  const headingId = useId();
+  // A channel is unavailable when its summary is null or the service named it in `unavailable`
+  // (under its own name, or under the whole `channels` object).
+  const gone = (name: "whatsapp" | "email") =>
+    data.unavailable.includes("channels") || data.unavailable.includes(name);
+  const whatsapp = gone("whatsapp") ? null : data.channels.whatsapp;
+  const email = gone("email") ? null : data.channels.email;
   return (
-    <section aria-labelledby="c360-channels" className="flex flex-col gap-3">
-      <h3 id="c360-channels" className="text-sm font-semibold text-ink">
+    <section aria-labelledby={headingId} className="flex flex-col gap-3">
+      <h3 id={headingId} className="text-sm font-semibold text-ink">
         Channels
       </h3>
 
@@ -326,12 +333,13 @@ function Channels({ data }: { data: Customer360 }) {
 }
 
 function QuickActions({ data }: { data: Customer360 }) {
+  const headingId = useId();
   // Only actions with a route that exists today. Finance has `invoices/new`; nothing else the
   // design lists (task, order, ticket) has a create route in another app yet.
   if (isUnavailable(data, "finance")) return null;
   return (
-    <section aria-labelledby="c360-actions" className="flex flex-col gap-2">
-      <h3 id="c360-actions" className="text-sm font-semibold text-ink">
+    <section aria-labelledby={headingId} className="flex flex-col gap-2">
+      <h3 id={headingId} className="text-sm font-semibold text-ink">
         Quick actions
       </h3>
       <div className="flex flex-wrap gap-2">
@@ -350,12 +358,13 @@ function QuickActions({ data }: { data: Customer360 }) {
 }
 
 function Loaded({ data }: { data: Customer360 }) {
+  const modulesId = useId();
   return (
     <div className="flex flex-col gap-4">
       <Profile data={data} />
       <Channels data={data} />
-      <section aria-labelledby="c360-modules" className="flex flex-col">
-        <h3 id="c360-modules" className="sr-only">
+      <section aria-labelledby={modulesId} className="flex flex-col">
+        <h3 id={modulesId} className="sr-only">
           Across OpsGrids
         </h3>
         <ul className="flex flex-col">

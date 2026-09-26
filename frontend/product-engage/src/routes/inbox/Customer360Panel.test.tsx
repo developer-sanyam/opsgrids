@@ -159,6 +159,18 @@ describe("partial results", () => {
   });
 });
 
+describe("partial results: channels named in `unavailable`", () => {
+  it("hides a channel the service named, and keeps the other", async () => {
+    vi.spyOn(api, "getCustomer360").mockResolvedValue({ ...CUSTOMER_360, unavailable: ["whatsapp"] });
+    renderPanel();
+    await screen.findByText("Priya Raghavan");
+
+    expect(screen.queryByText(/WhatsApp: /)).toBeNull();
+    expect(screen.getAllByText("Not available")).toHaveLength(1);
+    expect(screen.getByText("Email: Subscribed")).toBeTruthy();
+  });
+});
+
 describe("no customer linked", () => {
   it("says so, and makes no request", () => {
     const load = vi.spyOn(api, "getCustomer360").mockResolvedValue(CUSTOMER_360);
