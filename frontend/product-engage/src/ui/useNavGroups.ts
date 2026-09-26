@@ -53,6 +53,8 @@ const GROUPS: NavGroup[] = [
       { to: "/connection", label: "Connections", icon: PlugIcon },
       { to: "/domains", label: "Domains", icon: GlobeIcon },
       { to: "/senders", label: "Senders", icon: UsersIcon },
+      { to: "/email/templates", label: "Email templates", icon: FileTextIcon },
+      { to: "/email/settings", label: "Email settings", icon: SettingsIcon },
     ],
   },
   {
