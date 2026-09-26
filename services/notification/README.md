@@ -210,10 +210,38 @@ An opt-in can be recorded for an address a legacy suppression or a customer's ST
 `effective` says so (`suppressed_unsubscribed`, `preference_suppressed`, ...) rather than the
 caller assuming it took effect.
 
+## WhatsApp Embedded Signup, numbers and health (`app/w1_*.py`)
+
+`POST /engage/whatsapp/signup/complete` seals the popup's one-time code on a `w1_setup_runs` row,
+stages `notification.whatsapp.setup_requested` through the outbox and answers 202. After commit the
+worker (`consumers.run_whatsapp_setup` → `app/w1_setup.py`) runs five steps, each committed before
+the next: `token` (exchange the code), `number` (discover the WABA, prove ownership, store the
+sealed token in `provider_accounts`, fill the numbers cache), `webhook` (`POST /{waba}/subscribed_apps`),
+`templates` (`w2_services.sync_templates`), `verify` (read the number and subscription back). A
+failing step fails the run with a machine-readable `error_code` (`code_exchange_failed`,
+`ownership_check_failed`, `number_claimed`, `webhook_subscribe_failed`, `templates_sync_failed`,
+`webhook_not_subscribed`, `meta_unreachable`, ...). The code and the token are sealed at rest, wiped
+as soon as they are spent, and never appear in a response, an event, an audit row or a log line.
+
+| Route | Permission | Notes |
+|---|---|---|
+| `GET /engage/whatsapp/signup/config` | `engage.setup.whatsapp.read` | `enabled: false` unless `META_APP_ID`, `META_APP_SECRET` and `META_EMBEDDED_SIGNUP_CONFIG_ID` are set. |
+| `POST /engage/whatsapp/signup/complete` | `engage.setup.whatsapp.write` | 202; idempotent on the code; 409 `setup_in_progress`. |
+| `GET /engage/whatsapp/signup/{id}` | `engage.setup.whatsapp.read` | Steps and state; another organization's id is a 404. |
+| `GET /engage/whatsapp/numbers` | `engage.setup.whatsapp.read` | Cached; refreshed from Graph when older than ten minutes. |
+| `POST /engage/whatsapp/numbers/{id}/default` | `engage.setup.whatsapp.write` | Mirrors the number into `provider_accounts`; 409 `number_claimed`. |
+| `GET /engage/whatsapp/health` | `engage.setup.whatsapp.read` | From our own tables; never calls Meta. |
+| `POST /engage/whatsapp/test-message` | `engage.setup.whatsapp.write` | Staged through the consent decision; 409 `channel_not_connected` / `consent_denied`. |
+| `POST /engage/whatsapp/disconnect` | `engage.setup.whatsapp.write` | Wipes the sealed token; history is kept. |
+
+`phone_number_quality_update` webhooks reach the numbers cache through
+`w2_webhooks.register_number_quality_handler` (registered in `app/api/w1_signup.py`).
+
 ## Publishes
 
 Transactional: `notification.delivery.message.{queued,sent,failed,delivered,read}`,
-`notification.whatsapp.inbound_received`.
+`notification.whatsapp.inbound_received`. Internal to this service:
+`notification.whatsapp.setup_requested` (a WhatsApp signup is ready to run).
 
 Engage sending identity: `engage.setup.connection.{created,replaced}`,
 `engage.setup.whatsapp.{created,replaced}`, `engage.setup.domain.{created,verified}`,

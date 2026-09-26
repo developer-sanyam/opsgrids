@@ -1134,4 +1134,5 @@ from app import (  # noqa: E402
     a1_models,  # noqa: F401
     e1_models,  # noqa: F401
     m1_models,  # noqa: F401
+    w1_models,  # noqa: F401
 )

@@ -2515,6 +2515,42 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HealthOut": {
+        "properties": {
+          "connected": {
+            "title": "Connected",
+            "type": "boolean"
+          },
+          "number": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NumberHealthOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "templates": {
+            "$ref": "#/components/schemas/TemplatesHealthOut"
+          },
+          "token": {
+            "$ref": "#/components/schemas/TokenHealthOut"
+          },
+          "webhook": {
+            "$ref": "#/components/schemas/WebhookHealthOut"
+          }
+        },
+        "required": [
+          "connected",
+          "token",
+          "webhook",
+          "templates",
+          "number"
+        ],
+        "title": "HealthOut",
+        "type": "object"
+      },
       "HubCosts": {
         "properties": {
           "by_channel": {
@@ -2966,6 +3002,126 @@
           "unread_count"
         ],
         "title": "NotificationPage",
+        "type": "object"
+      },
+      "NumberHealthOut": {
+        "properties": {
+          "messaging_limit": {
+            "title": "Messaging Limit",
+            "type": "string"
+          },
+          "quality_rating": {
+            "title": "Quality Rating",
+            "type": "string"
+          }
+        },
+        "required": [
+          "quality_rating",
+          "messaging_limit"
+        ],
+        "title": "NumberHealthOut",
+        "type": "object"
+      },
+      "NumberOut": {
+        "properties": {
+          "display_phone_number": {
+            "title": "Display Phone Number",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "messaging_limit": {
+            "enum": [
+              "TIER_250",
+              "TIER_1K",
+              "TIER_10K",
+              "TIER_100K",
+              "UNLIMITED",
+              "unknown"
+            ],
+            "title": "Messaging Limit",
+            "type": "string"
+          },
+          "name_status": {
+            "enum": [
+              "approved",
+              "pending_review",
+              "declined",
+              "none"
+            ],
+            "title": "Name Status",
+            "type": "string"
+          },
+          "phone_number_id": {
+            "title": "Phone Number Id",
+            "type": "string"
+          },
+          "quality_rating": {
+            "enum": [
+              "green",
+              "yellow",
+              "red",
+              "unknown"
+            ],
+            "title": "Quality Rating",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "connected",
+              "pending_verification",
+              "disconnected"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "verified_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified Name"
+          }
+        },
+        "required": [
+          "id",
+          "phone_number_id",
+          "display_phone_number",
+          "verified_name",
+          "name_status",
+          "quality_rating",
+          "messaging_limit",
+          "status",
+          "is_default"
+        ],
+        "title": "NumberOut",
+        "type": "object"
+      },
+      "NumbersOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NumberOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "NumbersOut",
         "type": "object"
       },
       "OkOut": {
@@ -4897,6 +5053,47 @@
         "title": "SendIn",
         "type": "object"
       },
+      "SendTestMessageIn": {
+        "additionalProperties": false,
+        "properties": {
+          "language": {
+            "pattern": "^[a-z]{2,3}(_[A-Za-z]{2,4})?$",
+            "title": "Language",
+            "type": "string"
+          },
+          "template_name": {
+            "pattern": "^[a-z0-9_]{1,512}$",
+            "title": "Template Name",
+            "type": "string"
+          },
+          "to": {
+            "pattern": "^\\+[1-9]\\d{6,14}$",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "template_name",
+          "language"
+        ],
+        "title": "SendTestMessageIn",
+        "type": "object"
+      },
+      "SendTestMessageOut": {
+        "properties": {
+          "message_id": {
+            "format": "uuid",
+            "title": "Message Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id"
+        ],
+        "title": "SendTestMessageOut",
+        "type": "object"
+      },
       "SenderIn": {
         "additionalProperties": false,
         "description": "Add a named identity mail may go out as.\n\nThe address is checked against the domain by the writer rather than here: whether\n`sales@company.com` belongs to a domain this organization has proven is a fact about rows,\nnot about the string.",
@@ -5084,6 +5281,160 @@
           "link"
         ],
         "title": "SetupStepOut",
+        "type": "object"
+      },
+      "SignupCompleteIn": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "phone_number_id": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{1,30}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone Number Id"
+          },
+          "waba_id": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{1,30}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waba Id"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "SignupCompleteIn",
+        "type": "object"
+      },
+      "SignupCompleteOut": {
+        "properties": {
+          "setup_id": {
+            "format": "uuid",
+            "title": "Setup Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "running",
+            "default": "running",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "setup_id"
+        ],
+        "title": "SignupCompleteOut",
+        "type": "object"
+      },
+      "SignupConfigOut": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "SignupStatusOut": {
+        "properties": {
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "setup_id": {
+            "format": "uuid",
+            "title": "Setup Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "running",
+              "done",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/SignupStepOut"
+            },
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "setup_id",
+          "status",
+          "steps"
+        ],
+        "title": "SignupStatusOut",
+        "type": "object"
+      },
+      "SignupStepOut": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "key": {
+            "enum": [
+              "token",
+              "number",
+              "webhook",
+              "templates",
+              "verify"
+            ],
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "waiting",
+              "running",
+              "done",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "state"
+        ],
+        "title": "SignupStepOut",
         "type": "object"
       },
       "StatsOut": {
@@ -5971,6 +6322,31 @@
         "title": "TemplateVariableSpecOut",
         "type": "object"
       },
+      "TemplatesHealthOut": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "synced_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Synced At"
+          }
+        },
+        "required": [
+          "count",
+          "synced_at"
+        ],
+        "title": "TemplatesHealthOut",
+        "type": "object"
+      },
       "TestSendIn": {
         "additionalProperties": false,
         "description": "Where to send the message that opens the gate.\n\nThe subject and body are fixed by the service. Their only job is to prove the path works,\nand a customisable test message is a send nobody reviewed going to an address of the\ncaller's choosing.",
@@ -5986,6 +6362,37 @@
           "to_address"
         ],
         "title": "TestSendIn",
+        "type": "object"
+      },
+      "TokenHealthOut": {
+        "properties": {
+          "checked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked At"
+          },
+          "state": {
+            "enum": [
+              "valid",
+              "expiring",
+              "invalid",
+              "unknown"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "checked_at"
+        ],
+        "title": "TokenHealthOut",
         "type": "object"
       },
       "TrackingFlags": {
@@ -6176,6 +6583,36 @@
         "title": "ValidationOut",
         "type": "object"
       },
+      "WebhookHealthOut": {
+        "properties": {
+          "last_event_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Event At"
+          },
+          "state": {
+            "enum": [
+              "receiving",
+              "silent",
+              "unverified"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "last_event_at"
+        ],
+        "title": "WebhookHealthOut",
+        "type": "object"
+      },
       "WhatsAppConnectionIn": {
         "additionalProperties": false,
         "description": "Connect the organization's WhatsApp Cloud API account.\n\n`access_token` is write-only, sealed on the way in the same way an email connection's\nsecret is \u2014 it has no counterpart on the way out, not masked, not truncated.",
@@ -6246,6 +6683,18 @@
           "status"
         ],
         "title": "WhatsAppConnectionOut",
+        "type": "object"
+      },
+      "WhatsAppOkOut": {
+        "properties": {
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "title": "WhatsAppOkOut",
         "type": "object"
       },
       "WhatsAppOverview": {
@@ -10830,6 +11279,221 @@
         ]
       }
     },
+    "/api/v1/engage/whatsapp/disconnect": {
+      "post": {
+        "operationId": "disconnect_api_v1_engage_whatsapp_disconnect_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhatsAppOkOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Disconnect WhatsApp and wipe the stored token",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/health": {
+      "get": {
+        "description": "From our own tables only; never calls Meta, so it is cheap to poll.",
+        "operationId": "health_api_v1_engage_whatsapp_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Is WhatsApp connected and healthy",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/numbers": {
+      "get": {
+        "description": "The cached list, refreshed from Meta first when it is older than ten minutes. A refresh\nthat fails does not fail the read: the cache is served, and a refused token is recorded so\nthe health card says so.",
+        "operationId": "list_numbers_api_v1_engage_whatsapp_numbers_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NumbersOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The phone numbers on this organization's WhatsApp Business Account",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/numbers/{number_id}/default": {
+      "post": {
+        "operationId": "set_default_api_v1_engage_whatsapp_numbers__number_id__default_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Number Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhatsAppOkOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send from this number by default",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/signup/complete": {
+      "post": {
+        "description": "202: the setup is persisted and queued, not done. Poll `GET signup/{setup_id}`. A repeat of\nthe same `code` returns the setup it already started.",
+        "operationId": "signup_complete_api_v1_engage_whatsapp_signup_complete_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupCompleteIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupCompleteOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finish Embedded Signup: start the background setup",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/signup/config": {
+      "get": {
+        "description": "`enabled: false` (with `reason: not_configured`) when the platform has no Meta app set up,\nso the screen shows an honest state instead of a button that cannot work. The app secret is\nnever part of this.",
+        "operationId": "signup_config_api_v1_engage_whatsapp_signup_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupConfigOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "What the browser needs to open Meta's Embedded Signup",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/signup/{setup_id}": {
+      "get": {
+        "operationId": "signup_status_api_v1_engage_whatsapp_signup__setup_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "setup_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Setup Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "How far a WhatsApp setup has got",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
     "/api/v1/engage/whatsapp/templates": {
       "get": {
         "description": "What can be sent outside a conversation window, and what is still in review.\n\nThe same rows `notification`'s own `GET /notifications/provider-templates` reads\n(`selectors.provider_templates_stmt`) \u2014 read here under Engage's own permission so an\norganization that has bought Engage but not the transactional `notification` product can\nstill see the real approval status of the templates it sends through its own WhatsApp\naccount, rather than a 403 for a permission it was never sold.\n\nFilterable by category, status and a search over name and wording (`w2_selectors`).",
@@ -11162,6 +11826,48 @@
           }
         },
         "summary": "Render a template with sample values",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/test-message": {
+      "post": {
+        "description": "Goes through the consent decision and the organization's own connection like any send.\n409 `channel_not_connected` when there is no connection, 409 `consent_denied` when the\nrecipient may not be messaged.",
+        "operationId": "test_message_api_v1_engage_whatsapp_test_message_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendTestMessageIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendTestMessageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send a template message to one number to prove the connection",
         "tags": [
           "engage"
         ]
