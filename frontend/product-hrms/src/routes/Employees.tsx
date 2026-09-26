@@ -1,11 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { listEmployees } from "@/api/client";
 import { getOrgUnitNameById } from "@/api/orgUnits";
 import type { EmployeeOut, EmployeeStatus } from "@/api/types";
 import { resolveDepartment } from "@/data/departments";
-import { Can, useAsync } from "@opsgrids/client";
+import { employeesEntity } from "@/data/importExport/employees";
+import type { EmployeeFilters } from "@/data/importExport/employees";
+import { Can, useAsync, useCan, useImportExport } from "@opsgrids/client";
 import { employmentLabel } from "@/lib/format";
 import {
   Avatar,
@@ -20,7 +22,15 @@ import {
   Skeleton,
   Tag,
 } from "@/ui";
-import { LoadMore, MapPinIcon, PlusIcon, Select, UsersIcon, useToast } from "@opsgrids/ui";
+import {
+  ImportExportButton,
+  LoadMore,
+  MapPinIcon,
+  PlusIcon,
+  Select,
+  UsersIcon,
+  useToast,
+} from "@opsgrids/ui";
 import { EmployeeForm } from "@/ui/EmployeeForm";
 
 type StatusFilter = EmployeeStatus | "all";
@@ -97,6 +107,14 @@ export function EmployeesPage() {
     [search, status, departmentId, page],
   );
 
+  // What an export of this list must respect: the filters on screen, not the page window.
+  const exportFilters = useMemo<EmployeeFilters>(
+    () => ({ q: search, status, departmentId: departmentId || undefined }),
+    [search, status, departmentId],
+  );
+  const dx = useImportExport(employeesEntity, { filters: exportFilters });
+  const canImport = useCan("hrms.people.employee.write", "ORG");
+
   // Server paging, appended — `LoadMore`'s own contract. A filter change resets the window.
   useEffect(() => {
     if (query.status !== "success") return;
@@ -122,6 +140,13 @@ export function EmployeesPage() {
               <span className="tnum">{total}</span>
               <span className="text-muted font-medium">people</span>
             </span>
+            <ImportExportButton
+              meta={dx.meta}
+              state={dx.state}
+              actions={dx.actions}
+              canImport={canImport}
+              canExport
+            />
             <Can permission="hrms.people.employee.write" scope="ORG">
               <Button onClick={() => setCreating(true)} leadingIcon={<PlusIcon className="size-4" />}>
                 Add employee
