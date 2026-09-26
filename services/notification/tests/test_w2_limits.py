@@ -12,8 +12,8 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import w2_templates
-from app.models import ProviderTemplate
 from app.main import app
+from app.models import ProviderTemplate
 from tests.test_w2_templates_api import (
     BASE,
     FakeMeta,
