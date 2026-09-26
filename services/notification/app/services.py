@@ -3836,6 +3836,23 @@ class RecordedConsent:
     replayed: bool
 
 
+_EMAIL_IN_TEXT = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
+#: A run of digits that could be a phone number: digits with the separators people put in one,
+#: ten or more of them. A reference like "order 1042" has far fewer; a long order number can trip
+#: this, which costs the operator one reworded line and never a leaked number.
+_PHONE_IN_TEXT = re.compile(r"\+?\d[\d\s().-]{8,}\d")
+
+
+def _evidence_names_a_person(evidence: str) -> bool:
+    """Does free-text `evidence` carry an email address or something shaped like a phone number?"""
+    if _EMAIL_IN_TEXT.search(evidence):
+        return True
+    return any(
+        sum(ch.isdigit() for ch in match.group()) >= 10
+        for match in _PHONE_IN_TEXT.finditer(evidence)
+    )
+
+
 async def record_consent_event(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -3892,10 +3909,15 @@ async def record_consent_event(
     elif address is None:
         raise ValidationProblem("Give an address or a contact_id")
 
-    if normalized_address is not None and normalized_address.lower() in evidence.lower():
+    if (
+        normalized_address is not None and normalized_address.lower() in evidence.lower()
+    ) or _evidence_names_a_person(evidence):
         # The column is not sealed. A reference ("order 1042", "form submission 88") is what
-        # belongs here, never the person.
-        raise ValidationProblem("evidence must not contain the address; use a reference")
+        # belongs here, never the person: not their address, not any email address, and not a
+        # phone number however it is written.
+        raise ValidationProblem(
+            "evidence must be a reference, not an email address or a phone number"
+        )
 
     now = datetime.now(UTC)
     when = occurred_at.astimezone(UTC) if occurred_at is not None else now

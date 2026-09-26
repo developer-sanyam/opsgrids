@@ -238,6 +238,37 @@ async def test_evidence_may_not_contain_the_address(client, session, org_id) -> 
     assert await _events(session, org_id) == []
 
 
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "customer 98123 45678 said yes on call",
+        "919812345678 confirmed by voice",
+        "asked at +91 98123-45678 on the phone",
+        "(981) 234-5678 by voice",
+        "someone.else@other.example agreed",
+    ],
+)
+async def test_evidence_may_not_carry_any_phone_number_or_email_address(
+    client, session, org_id, evidence
+) -> None:
+    """The free-text column is unsealed, so no address of anyone, in any spelling, goes in it."""
+    with as_principal(caller(org_id, BOTH)):
+        for payload in (
+            body(channel="whatsapp", address=PHONE, evidence=evidence),
+            body(evidence=evidence),
+        ):
+            assert (await client.post(BASE, json=payload)).status_code == 422
+    assert await _events(session, org_id) == []
+
+
+async def test_a_plain_reference_is_still_accepted_as_evidence(client, org_id) -> None:
+    with as_principal(caller(org_id, BOTH)):
+        response = await client.post(
+            BASE, json=body(channel="whatsapp", address=PHONE, evidence="order 1042, form 88")
+        )
+    assert response.status_code == 201
+
+
 async def test_a_whatsapp_marketing_opt_in_takes_effect(client, session, org_id) -> None:
     payload = body(channel="whatsapp", address=PHONE, source="checkout", evidence="order 1042")
     with as_principal(caller(org_id, BOTH)):
