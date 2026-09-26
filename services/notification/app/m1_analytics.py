@@ -641,7 +641,11 @@ def build_cost(
             # The API only ever writes one currency across all four categories, so this is a row
             # edited by hand. One total cannot span two currencies; the odd one is left unpriced
             # (and said so in the log) rather than added to the wrong unit.
-            log.warning("notification.analytics.rate_card_mixed_currency", category=category)
+            log.warning(
+                "notification.analytics.rate_card_mixed_currency",
+                organization_id=str(org),
+                category=category,
+            )
             rate = None
         amount = (
             m1_cost.estimate_minor(messages, rate.amount_minor_per_1000_messages) if rate else 0
@@ -741,7 +745,7 @@ async def _email_overview(
         # parallel slice and may not exist here, which the type checker cannot know either.
         overview = importlib.import_module("app.e1_analytics").email_overview
     except (ImportError, AttributeError):
-        log.warning("notification.analytics.email_overview_unavailable")
+        log.warning("notification.analytics.email_overview_unavailable", organization_id=str(org))
         return None
     result = await overview(session, org, window.date_from, window.date_to)
     if hasattr(result, "model_dump"):

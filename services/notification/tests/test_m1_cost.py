@@ -211,6 +211,28 @@ def test_cost_lines_add_up_to_the_total_from_rounded_per_category_amounts() -> N
     assert [line.category for line in cost.by_category] == list(m1_cost.CATEGORIES)
 
 
+def test_a_rate_in_another_currency_is_left_unpriced_rather_than_added_in_the_wrong_unit() -> None:
+    odd = rate(PLATFORM, "utility", 11500, date(2026, 9, 1))
+    odd.currency = "USD"
+    picked = m1_analytics.pick_rates(
+        [
+            rate(PLATFORM, "marketing", 78460, date(2026, 9, 1)),
+            odd,
+            rate(PLATFORM, "authentication", 11500, date(2026, 9, 1)),
+            rate(PLATFORM, "service", 0, date(2026, 9, 1)),
+        ],
+        ORG,
+        date(2026, 9, 10),
+    )
+    cost = m1_analytics.build_cost(
+        {"marketing": 1000, "utility": 1000, "authentication": 1000, "service": 0}, picked, ORG
+    )
+    lines = {line.category: line.amount.amount_minor for line in cost.by_category}
+    assert lines == {"marketing": 78460, "utility": 0, "authentication": 11500, "service": 0}
+    assert cost.total.currency == "INR"
+    assert cost.total.amount_minor == 78460 + 11500
+
+
 def test_failure_labels_are_never_empty() -> None:
     assert m1_analytics.failure_label("131026") == "Message undeliverable"
     assert "503" in m1_analytics.failure_label("http_503")

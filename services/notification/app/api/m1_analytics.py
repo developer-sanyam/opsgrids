@@ -28,6 +28,7 @@ from app import m1_analytics
 from app.m1_cost import DateWindow, RangeError, resolve_window
 from app.m1_schemas import HubOverview, RateCardIn, RateCardOut, WhatsAppOverview
 from platform_core.auth import Scope, ScopeContext, require, require_product
+from platform_core.cache import enforce_rate_limit
 from platform_core.db import get_tenant_session
 from platform_core.errors import ValidationProblem
 
@@ -42,6 +43,20 @@ AnalyticsRead = Annotated[
 RateCardWrite = Annotated[
     ScopeContext, Depends(require("engage.audience.contact.write", minimum=Scope.ORG))
 ]
+
+#: Each overview runs several grouped queries over up to a year of messages, so it is throttled per
+#: organization. Generous for a dashboard that refreshes now and then, tight enough that a script
+#: polling it cannot become the largest reader of the messages table.
+OVERVIEW_LIMIT_PER_MINUTE = 60
+
+
+async def _throttle(ctx: ScopeContext) -> None:
+    await enforce_rate_limit(
+        f"engage.analytics:{ctx.organization_id}",
+        limit=OVERVIEW_LIMIT_PER_MINUTE,
+        window_seconds=60,
+    )
+
 
 #: `from` is a Python keyword, so the parameter is named `date_from` and aliased on the wire.
 DateFrom = Annotated[
@@ -67,6 +82,14 @@ def _window(date_from: date | None, date_to: date | None) -> DateWindow:
     "/engage/analytics/whatsapp/overview",
     response_model=WhatsAppOverview,
     summary="WhatsApp delivery, replies, categories, failures and an estimated cost",
+    description=(
+        "Computed on demand from the message ledger. Buckets are **UTC calendar days**; `from` and "
+        "`to` are inclusive UTC dates (default: the last 30 days). `cost` is an ESTIMATE "
+        "(`estimated: true`): messages x rate / 1000 in integer minor units, rounded half-up per "
+        "category, using the organization's rate card. Until the organization enters its own "
+        "rates, the rate card is the platform's PLACEHOLDER defaults (`placeholder-2026-09`), "
+        "which are not Meta's real rates for any country."
+    ),
     dependencies=[Entitled],
 )
 async def whatsapp_overview(
@@ -76,6 +99,7 @@ async def whatsapp_overview(
     date_to: DateTo = None,
 ) -> WhatsAppOverview:
     window = _window(date_from, date_to)
+    await _throttle(ctx)
     return await m1_analytics.whatsapp_overview(session, ctx.organization_id, window)
 
 
@@ -83,6 +107,12 @@ async def whatsapp_overview(
     "/engage/analytics/overview",
     response_model=HubOverview,
     summary="The communication hub: both channels' numbers and one estimated cost",
+    description=(
+        "WhatsApp numbers computed here; email numbers come from the email analytics overview "
+        "and are `null` when that module is not deployed. Same UTC-day range semantics and the "
+        "same cost caveats as the WhatsApp overview: the cost is an estimate from PLACEHOLDER "
+        "rates until the organization overrides the rate card."
+    ),
     dependencies=[Entitled],
 )
 async def hub_overview(
@@ -92,6 +122,7 @@ async def hub_overview(
     date_to: DateTo = None,
 ) -> HubOverview:
     window = _window(date_from, date_to)
+    await _throttle(ctx)
     return await m1_analytics.hub_overview(session, ctx.organization_id, window)
 
 
@@ -99,6 +130,13 @@ async def hub_overview(
     "/engage/analytics/rate-card",
     response_model=RateCardOut,
     summary="The per-1000-message rates behind the cost estimate",
+    description=(
+        "The rate in force today for each message category. The shipped defaults are "
+        "PLACEHOLDERS (`placeholder-2026-09`, INR paise per 1000 messages: marketing 78460, "
+        "utility 11500, authentication 11500, service 0), not Meta's published rates. Real rates "
+        "for the organization's country must be entered with PUT. `placeholder` is true while any "
+        "rate in force is a shipped default."
+    ),
     dependencies=[Entitled],
 )
 async def read_rate_card(session: SessionDep, ctx: AnalyticsRead) -> RateCardOut:
@@ -110,6 +148,13 @@ async def read_rate_card(session: SessionDep, ctx: AnalyticsRead) -> RateCardOut
     "/engage/analytics/rate-card",
     response_model=RateCardOut,
     summary="Override the rate card with the organization's real rates",
+    description=(
+        "Exactly one rate per category (marketing, utility, authentication, service), all in one "
+        "ISO currency, integer minor units per 1000 messages. Takes effect from `effective_from` "
+        "(a UTC date, default today); saving the same date again replaces it, a later date adds a "
+        "price point and keeps the earlier ones. The organization's own rate always beats the "
+        "platform default once in force. Audited."
+    ),
     dependencies=[Entitled],
 )
 async def override_rate_card(

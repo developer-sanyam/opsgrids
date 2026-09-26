@@ -962,3 +962,27 @@ async def test_the_hub_reports_which_channels_are_connected(
     assert [c["key"] for c in body["channels"]] == ["whatsapp", "email", "sms", "push"]
     assert body["costs"]["estimated"] is True
     assert {c["channel"] for c in body["costs"]["by_channel"]} == {"whatsapp", "email"}
+
+
+# --------------------------------------------------------------------- rate limiting
+
+
+async def test_the_overview_routes_are_rate_limited_per_organization(client, org_id) -> None:
+    from app.api.m1_analytics import OVERVIEW_LIMIT_PER_MINUTE
+
+    statuses: list[int] = []
+    with as_principal(viewer(org_id)):
+        # A fixed one-minute window can roll over mid-test, so allow two windows' worth of calls
+        # before giving up; the loop stops at the first refusal.
+        for _ in range(2 * OVERVIEW_LIMIT_PER_MINUTE + 2):
+            response = await client.get(WA, params=RANGE)
+            statuses.append(response.status_code)
+            if response.status_code == 429:
+                break
+    assert statuses[-1] == 429, statuses
+    assert set(statuses[:-1]) == {200}
+    assert response.headers["retry-after"] == "60"
+
+    # Another organization's budget is its own.
+    with as_principal(viewer(uuid.uuid4())):
+        assert (await client.get(WA, params=RANGE)).status_code == 200

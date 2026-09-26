@@ -4497,6 +4497,7 @@
   "paths": {
     "/api/v1/engage/analytics/overview": {
       "get": {
+        "description": "WhatsApp numbers computed here; email numbers come from the email analytics overview and are `null` when that module is not deployed. Same UTC-day range semantics and the same cost caveats as the WhatsApp overview: the cost is an estimate from PLACEHOLDER rates until the organization overrides the rate card.",
         "operationId": "hub_overview_api_v1_engage_analytics_overview_get",
         "parameters": [
           {
@@ -4568,6 +4569,7 @@
     },
     "/api/v1/engage/analytics/rate-card": {
       "get": {
+        "description": "The rate in force today for each message category. The shipped defaults are PLACEHOLDERS (`placeholder-2026-09`, INR paise per 1000 messages: marketing 78460, utility 11500, authentication 11500, service 0), not Meta's published rates. Real rates for the organization's country must be entered with PUT. `placeholder` is true while any rate in force is a shipped default.",
         "operationId": "read_rate_card_api_v1_engage_analytics_rate_card_get",
         "responses": {
           "200": {
@@ -4587,6 +4589,7 @@
         ]
       },
       "put": {
+        "description": "Exactly one rate per category (marketing, utility, authentication, service), all in one ISO currency, integer minor units per 1000 messages. Takes effect from `effective_from` (a UTC date, default today); saving the same date again replaces it, a later date adds a price point and keeps the earlier ones. The organization's own rate always beats the platform default once in force. Audited.",
         "operationId": "override_rate_card_api_v1_engage_analytics_rate_card_put",
         "requestBody": {
           "content": {
@@ -4628,6 +4631,7 @@
     },
     "/api/v1/engage/analytics/whatsapp/overview": {
       "get": {
+        "description": "Computed on demand from the message ledger. Buckets are **UTC calendar days**; `from` and `to` are inclusive UTC dates (default: the last 30 days). `cost` is an ESTIMATE (`estimated: true`): messages x rate / 1000 in integer minor units, rounded half-up per category, using the organization's rate card. Until the organization enters its own rates, the rate card is the platform's PLACEHOLDER defaults (`placeholder-2026-09`), which are not Meta's real rates for any country.",
         "operationId": "whatsapp_overview_api_v1_engage_analytics_whatsapp_overview_get",
         "parameters": [
           {
