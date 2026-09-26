@@ -241,6 +241,25 @@ describe("publishing", () => {
     await waitFor(() => expect((screen.getByRole("button", { name: "Publish" }) as HTMLButtonElement).disabled).toBe(false));
   });
 
+  it("leaves at once on Cancel when there is nothing unsaved", async () => {
+    openDraft();
+    await userEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(await screen.findByText("List page")).toBeTruthy();
+  });
+
+  it("asks before Cancel throws away unsaved changes, and keeps them on Keep editing", async () => {
+    openDraft();
+    await userEvent.type(await screen.findByLabelText(/^Name/), " v2");
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Discard your changes?")).toBeTruthy();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Keep editing" }));
+    expect((screen.getByLabelText(/^Name/) as HTMLInputElement).value).toBe(`${AUTOMATION_DRAFT.name} v2`);
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Discard changes" }));
+    expect(await screen.findByText("List page")).toBeTruthy();
+  });
+
   it("refuses to save without a name and says so on the field", async () => {
     const create = vi.spyOn(api, "createAutomation");
     renderBuilder("/automations/new");

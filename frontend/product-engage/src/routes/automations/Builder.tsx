@@ -123,6 +123,7 @@ function BuilderView({ automation, initial }: { automation: AutomationDetailOut 
   const [confirming, setConfirming] = useState<"pause" | "resume" | "delete" | null>(null);
   const [confirmFailure, setConfirmFailure] = useState<string | null>(null);
   const [tab, setTab] = useState<"flow" | "runs">("flow");
+  const [discarding, setDiscarding] = useState(false);
 
   const readOnly = status !== "draft";
   const dirty = name !== saved.name || description !== saved.description || !graphsEqual(graph, saved.graph);
@@ -476,7 +477,7 @@ function BuilderView({ automation, initial }: { automation: AutomationDetailOut 
                 </InlineAlert>
               )}
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <Button variant="secondary" onClick={() => navigate("/automations")}>
+                <Button variant="secondary" onClick={() => (dirty ? setDiscarding(true) : navigate("/automations"))}>
                   Cancel
                 </Button>
                 <div className="flex flex-wrap gap-2">
@@ -502,6 +503,16 @@ function BuilderView({ automation, initial }: { automation: AutomationDetailOut 
           )}
         </>
       )}
+
+      <ConfirmDialog
+        open={discarding}
+        onClose={() => setDiscarding(false)}
+        onConfirm={() => navigate("/automations")}
+        title="Discard your changes?"
+        body="This automation has changes that haven't been saved. Leaving now loses them."
+        confirmLabel="Discard changes"
+        cancelLabel="Keep editing"
+      />
 
       <ConfirmDialog
         open={removing !== null}
