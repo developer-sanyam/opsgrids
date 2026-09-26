@@ -1,10 +1,20 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { deleteSupplier, listSuppliers } from "@/api/client";
 import type { Category, SupplierOut, SupplierStatus } from "@/api/types";
 import { CATEGORY_LABEL } from "@/data/derive";
-import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
+import { supplierImport } from "@/data/importExport/suppliers";
+import type { SupplierFilters } from "@/data/importExport/suppliers";
+import { useReloadAfterImport } from "@/data/importExport/useReloadAfterImport";
+import {
+  Can,
+  problemMessage,
+  useAsync,
+  useCan,
+  useImportExport,
+  useMutation,
+} from "@opsgrids/client";
 import { downloadCsv } from "@/lib/csv";
 import { formatMoney } from "@/lib/format";
 import {
@@ -25,7 +35,14 @@ import {
   SupplierStatusPill,
 } from "@/ui";
 import type { Column, TableSelection } from "@/ui";
-import { DownloadIcon, FactoryIcon, PlusIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
+import {
+  DownloadIcon,
+  FactoryIcon,
+  ImportExportButton,
+  PlusIcon,
+  useDebouncedValue,
+  useToast,
+} from "@opsgrids/ui";
 import { SupplierFormDialog } from "@/forms/SupplierFormDialog";
 
 const CATEGORY_FILTERS: { value: Category | "all"; label: string }[] = [
@@ -75,6 +92,14 @@ export function SuppliersPage() {
     listSuppliers({ q: debouncedSearch, category, status, sort: sortParam, page, size });
   const state = useAsync(loader, [debouncedSearch, category, status, sort, page, size]);
   const rows = state.status === "success" ? state.data.items : [];
+
+  // The export is the whole list under these filters, not the page on screen.
+  const filters = useMemo<SupplierFilters>(
+    () => ({ q: debouncedSearch, category, status, sort: sortParam }),
+    [debouncedSearch, category, status, sortParam],
+  );
+  const dx = useImportExport(supplierImport, { filters });
+  useReloadAfterImport(dx.state.phase, state.reload);
 
   // A ticked row is a row on screen; a new page, sort or filter invalidates the selection rather
   // than carrying it to rows nobody saw ticked.
@@ -216,11 +241,20 @@ export function SuppliersPage() {
         eyebrow="Procurement"
         title="Suppliers"
         actions={
-          <Can permission="operations.procurement.supplier.write" scope="ORG">
-            <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
-              New supplier
-            </Button>
-          </Can>
+          <div className="flex items-center gap-2">
+            <ImportExportButton
+              meta={dx.meta}
+              state={dx.state}
+              actions={dx.actions}
+              canImport={canWrite}
+              canExport
+            />
+            <Can permission="operations.procurement.supplier.write" scope="ORG">
+              <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
+                New supplier
+              </Button>
+            </Can>
+          </div>
         }
       />
 
