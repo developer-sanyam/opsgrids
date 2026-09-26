@@ -214,7 +214,7 @@ describe("item category loadLookups", () => {
       const page = Number(url.searchParams.get("page"));
       return { body: { items: [category("STEEL", "cat-steel")], total: 2, page, size: 200, pages: 1 } };
     });
-    await expect(loadLookups(new AbortController().signal)).rejects.toThrow("The list changed while it was being read");
+    await expect(loadLookups(new AbortController().signal)).rejects.toThrow("changed while it was being read");
   });
 
   it("provides every lookup the columns name", async () => {

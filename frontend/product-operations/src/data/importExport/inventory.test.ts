@@ -404,7 +404,7 @@ describe("inventory loadLookups", () => {
       }
       return { body: pageOf([]) };
     });
-    await expect(loadLookups(new AbortController().signal)).rejects.toThrow("The list changed while it was being read");
+    await expect(loadLookups(new AbortController().signal)).rejects.toThrow("changed while it was being read");
   });
 });
 

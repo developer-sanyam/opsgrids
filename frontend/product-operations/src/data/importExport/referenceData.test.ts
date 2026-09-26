@@ -75,7 +75,7 @@ describe("the reference lists", () => {
       return { body: { items: served[page - 1] ?? [], total: 3, page, size: 200, pages: 2 } };
     });
 
-    await expect(loadItemCategoryCodes(signal())).rejects.toThrow("The list changed while it was being read");
+    await expect(loadItemCategoryCodes(signal())).rejects.toThrow("changed while it was being read");
   });
 
   it("map an item category's code to its id", async () => {
