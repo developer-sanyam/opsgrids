@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RowProblem } from "@opsgrids/client";
-import type { ImportContext } from "@opsgrids/client";
+import type { ImportContext, ParsedValue } from "@opsgrids/client";
 
 import type { Deal } from "@/api/types";
 import { getMySubjectRef } from "@/lib/subject";
@@ -11,8 +11,9 @@ import {
   companyWire,
   contactWire,
   contextWith,
+  dealWire,
   pageOf,
-  parseRow,
+  parsedRow,
   present,
   stubGateway,
 } from "./entityTestKit";
@@ -61,12 +62,12 @@ afterEach(() => {
 const MINIMAL = {
   name: "Northwind fleet renewal",
   company: "Northwind Logistics",
-  value: "3200000",
+  value: 320000000,
   closeDate: "2026-12-15",
 };
 
-function payloadFor(cells: Record<string, string | number>) {
-  return dealImport.toPayload(parseRow(dealImport.columns, cells), ctx);
+function payloadFor(cells: Record<string, ParsedValue>) {
+  return dealImport.toPayload(parsedRow(dealImport.columns, cells), ctx);
 }
 
 describe("deals: toPayload", () => {
@@ -74,11 +75,11 @@ describe("deals: toPayload", () => {
     expect(
       payloadFor({
         ...MINIMAL,
-        value: "3200000.50",
+        value: 320000050,
         currency: "inr",
         contact: "Asha.Rao@Northwind.co",
         owner: "grace@example.com",
-        stage: "Closed Won",
+        stage: "closed_won",
         probability: 100,
         source: "Referral",
       }),
@@ -113,7 +114,7 @@ describe("deals: toPayload", () => {
   });
 
   it("sends a probability of zero rather than treating it as blank", () => {
-    expect(payloadFor({ ...MINIMAL, stage: "Closed Lost", probability: 0 }).probability).toBe(0);
+    expect(payloadFor({ ...MINIMAL, stage: "closed_lost", probability: 0 }).probability).toBe(0);
   });
 
   it("refuses a company that does not exist, because the deal service would store the orphan", () => {
@@ -157,7 +158,8 @@ describe("deals: loadLookups", () => {
 
     const contactPages = calls.filter((c) => c.url.pathname === "/api/v1/contacts");
     expect(contactPages.map((c) => c.url.searchParams.get("page"))).toEqual(["1", "2"]);
-    expect(lookups.contacts?.resolve("last.person@northwind.co")).toBeDefined();
+    expect(lookups.contacts?.resolve("last.person@northwind.co")).toBe("cont-201");
+    expect(lookups.contactCompanies?.resolve("last.person@northwind.co")).toBe("comp-1");
     expect(lookups.companies?.resolve("cobalt financial")).toBeDefined();
     expect(lookups.owners?.resolve("sofia@example.com")).toBe("own-1");
   });
@@ -171,24 +173,7 @@ describe("deals: notes", () => {
 
 describe("deals: create", () => {
   it("POSTs the payload to /deals and returns the new id", async () => {
-    const calls = stubGateway(
-      () => ({
-        id: "deal-9",
-        name: "Northwind fleet renewal",
-        company_id: "comp-1",
-        primary_contact_id: null,
-        value_minor: 320000000,
-        currency: "INR",
-        stage: "lead",
-        owner_id: "own-1",
-        probability: 20,
-        close_date: "2026-12-15",
-        created_at: "2026-09-27T09:00:00Z",
-        last_activity_at: null,
-        source: "",
-      }),
-      201,
-    );
+    const calls = stubGateway(() => dealWire("deal-9", "Northwind fleet renewal"), 201);
     const payload = payloadFor(MINIMAL);
     const created = await dealImport.create(payload, ctx);
     expect(calls[0]?.url.pathname).toBe("/api/v1/deals");

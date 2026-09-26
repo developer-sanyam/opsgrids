@@ -3,7 +3,7 @@
  * the server keeps every rule: the name is unique per organisation (a repeat is a 409 and is
  * skipped), and a caller limited to their own book may only assign companies to themselves.
  */
-import { defineImportEntity } from "@opsgrids/client";
+import { defineImportEntity, minorToMajor } from "@opsgrids/client";
 import type { ColumnOption, ImportColumn } from "@opsgrids/client";
 
 import { createCompany, listCompanies } from "@/api/client";
@@ -13,12 +13,11 @@ import type { CompanyIn } from "@/api/wire";
 import {
   LOOKUP_OWNERS,
   currencyOf,
+  labelFor,
   loadOwnerLookup,
-  minorToMajor,
   numberOf,
   optionLabel,
   optionOf,
-  ownerEmail,
   ownerIdOrSelf,
   requiredTextOf,
   textOf,
@@ -183,7 +182,7 @@ export const companyImport = defineImportEntity<CompanyIn, Company, CompanyFilte
       listCompanies({ search: filters.search, status: filters.status, page, size, signal }),
     toRow: (company, lookups) => ({
       name: company.name,
-      owner: ownerEmail(lookups[LOOKUP_OWNERS], company.owner_id),
+      owner: labelFor(lookups[LOOKUP_OWNERS], company.owner_id),
       domain: company.domain,
       industry: company.industry,
       sizeBand: company.size_band,

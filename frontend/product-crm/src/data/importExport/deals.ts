@@ -9,7 +9,7 @@
  * Deal names are unique across the whole organisation, not per company; a repeat is a 409 and is
  * skipped.
  */
-import { RowProblem, defineImportEntity } from "@opsgrids/client";
+import { RowProblem, defineImportEntity, minorToMajor } from "@opsgrids/client";
 import type { ColumnOption, ImportColumn } from "@opsgrids/client";
 
 import { createDeal, listDeals } from "@/api/client";
@@ -22,18 +22,15 @@ import {
   LOOKUP_CONTACTS,
   LOOKUP_OWNERS,
   companyIdByName,
-  companyName,
-  contactEmail,
   contactRefOf,
   currencyOf,
+  labelFor,
   loadCompanyLookup,
-  loadContactLookup,
+  loadContactLookups,
   loadOwnerLookup,
-  minorToMajor,
   numberOf,
   optionLabel,
   optionOf,
-  ownerEmail,
   ownerIdOrSelf,
   requiredTextOf,
   textOf,
@@ -159,11 +156,13 @@ export const dealImport = defineImportEntity<DealIn, Deal, DealFilters>({
   nounSingular: "deal",
   fileStem: "deals",
   columns: COLUMNS,
+  // No example names a primary contact. The sample sheet swaps an example company or contact the
+  // organisation lacks for the first one it has, each on its own, so a contact could end up beside
+  // a company it does not belong to and the example would fail its own check.
   sampleRows: [
     {
       name: "Northwind fleet renewal",
       company: "Northwind Logistics",
-      contact: "asha.rao@northwind.co",
       value: 3200000,
       currency: "INR",
       closeDate: "2026-12-15",
@@ -193,13 +192,9 @@ export const dealImport = defineImportEntity<DealIn, Deal, DealFilters>({
     const [owners, companies, contacts] = await Promise.all([
       loadOwnerLookup(signal),
       loadCompanyLookup(signal),
-      loadContactLookup(signal),
+      loadContactLookups(signal),
     ]);
-    return {
-      [LOOKUP_OWNERS]: owners,
-      [LOOKUP_COMPANIES]: companies,
-      [LOOKUP_CONTACTS]: contacts,
-    };
+    return { [LOOKUP_OWNERS]: owners, [LOOKUP_COMPANIES]: companies, ...contacts };
   },
   toPayload: (row, ctx) => {
     const company = requiredTextOf(row, "company", "Company");
@@ -244,9 +239,9 @@ export const dealImport = defineImportEntity<DealIn, Deal, DealFilters>({
       }),
     toRow: (deal, lookups) => ({
       name: deal.name,
-      company: companyName(lookups[LOOKUP_COMPANIES], deal.company_id),
-      contact: contactEmail(lookups[LOOKUP_CONTACTS], deal.primary_contact_id),
-      owner: ownerEmail(lookups[LOOKUP_OWNERS], deal.owner_id),
+      company: labelFor(lookups[LOOKUP_COMPANIES], deal.company_id),
+      contact: labelFor(lookups[LOOKUP_CONTACTS], deal.primary_contact_id),
+      owner: labelFor(lookups[LOOKUP_OWNERS], deal.owner_id),
       value: minorToMajor(deal.value_minor, deal.currency),
       currency: deal.currency,
       closeDate: deal.close_date,

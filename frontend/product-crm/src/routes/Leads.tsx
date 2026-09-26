@@ -99,7 +99,9 @@ export function LeadsPage() {
   // The export writes the whole filtered list, not the page on screen, so it needs the filters
   // the list itself is loaded with.
   const importFilters = useMemo<LeadFilters>(() => ({ status }), [status]);
-  const dx = useImportExport(leadImport, { filters: importFilters });
+  // New rows show without a refresh: the list reloads.
+  const { reload: reloadLeads } = leads;
+  const dx = useImportExport(leadImport, { filters: importFilters, onImported: reloadLeads });
 
   return (
     <div className="rise flex flex-col gap-6">

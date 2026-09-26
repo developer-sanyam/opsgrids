@@ -8,15 +8,18 @@
  * its real companies called unknown.
  */
 import { collectPages, makeLookup, RowProblem } from "@opsgrids/client";
-import type { ColumnOption, ImportContext, Lookup, ParsedRow } from "@opsgrids/client";
+import type { ColumnOption, ImportContext, Lookup, LookupSet, ParsedRow } from "@opsgrids/client";
 
 import { getOwners, listCompanies, listContacts } from "@/api/client";
-import type { Contact, Owner } from "@/api/types";
+import type { Owner } from "@/api/types";
 import { getMySubjectRef } from "@/lib/subject";
 
 export const LOOKUP_OWNERS = "owners";
 export const LOOKUP_COMPANIES = "companies";
 export const LOOKUP_CONTACTS = "contacts";
+/** Contact email to the id of the company that contact belongs to. Not shown to the user: it lets
+ *  a deal row check that its primary contact belongs to its company. */
+export const LOOKUP_CONTACT_COMPANIES = "contactCompanies";
 
 /** The list endpoints order by a name, and names tie: offset paging can then hand the same row
  *  out twice, which would make a real email or name look ambiguous. Keep the first of each id. */
@@ -48,59 +51,26 @@ export async function loadCompanyLookup(signal: AbortSignal): Promise<Lookup> {
 }
 
 /**
- * A contact reference is `<company id>:<contact id>` so a deal row can check that its primary
- * contact belongs to its company: the deal service cannot see the customer schema, so it accepts
- * any id and would otherwise store a contact from another company without complaint.
+ * Contacts by email (unique per organisation), valued as the contact's id, and a second lookup
+ * from the same emails to the company each contact belongs to. The deal service cannot see the
+ * customer schema, so it accepts any contact id and would store one from another company without
+ * complaint; a deal row is checked against the second lookup before anything is sent.
  */
-function contactRef(contact: Contact): string {
-  return `${contact.company_id}:${contact.id}`;
-}
-
-function splitContactRef(ref: string): { companyId: string; contactId: string } {
-  const [companyId = "", contactId = ""] = ref.split(":");
-  return { companyId, contactId };
-}
-
-/** Contacts by email (unique per organisation), valued as a contact reference. */
-export async function loadContactLookup(signal: AbortSignal): Promise<Lookup> {
-  const rows = await collectPages((page, size) => listContacts({ page, size, signal }), { signal });
-  return makeLookup(distinctById(rows).map((c) => ({ label: c.email, value: contactRef(c) })));
+export async function loadContactLookups(signal: AbortSignal): Promise<LookupSet> {
+  const rows = distinctById(await collectPages((page, size) => listContacts({ page, size, signal }), { signal }));
+  return {
+    [LOOKUP_CONTACTS]: makeLookup(rows.map((c) => ({ label: c.email, value: c.id }))),
+    [LOOKUP_CONTACT_COMPANIES]: makeLookup(rows.map((c) => ({ label: c.email, value: c.company_id }))),
+  };
 }
 
 /* ---------------------------- reverse lookups (export) ---------------------------- */
 
-const reverseIndexes = new WeakMap<Lookup, Map<string, string>>();
-
-/** Value back to its label, for writing an id as the name or email a person recognises. Built once
- *  per lookup. `keyOf` maps a lookup value to the id being searched for. */
-function labelOf(
-  lookup: Lookup | undefined,
-  id: string | null,
-  keyOf: (value: string) => string = (value) => value,
-): string | null {
+/** What the sheet shows for a reference: the label (email or name) the lookup holds for the id, or
+ *  blank when the id is blank or the lookup does not know it. */
+export function labelFor(lookup: Lookup | undefined, id: string | null): string | null {
   if (lookup === undefined || id === null) return null;
-  let index = reverseIndexes.get(lookup);
-  if (index === undefined) {
-    index = new Map();
-    for (const label of lookup.labels) {
-      const value = lookup.resolve(label);
-      if (value !== undefined) index.set(keyOf(value), label);
-    }
-    reverseIndexes.set(lookup, index);
-  }
-  return index.get(id) ?? null;
-}
-
-export function ownerEmail(lookup: Lookup | undefined, ownerId: string | null): string | null {
-  return labelOf(lookup, ownerId);
-}
-
-export function companyName(lookup: Lookup | undefined, companyId: string | null): string | null {
-  return labelOf(lookup, companyId);
-}
-
-export function contactEmail(lookup: Lookup | undefined, contactId: string | null): string | null {
-  return labelOf(lookup, contactId, (ref) => splitContactRef(ref).contactId);
+  return lookup.labelOf(id) ?? null;
 }
 
 /* ------------------------------- reading a row ------------------------------- */
@@ -208,43 +178,18 @@ export function companyIdByName(name: string, ctx: ImportContext): string {
   );
 }
 
-/** The contact the given email names, as `{ companyId, contactId }`. */
+/** The contact the given email names, with the company that contact belongs to. */
 export function contactRefOf(
   email: string,
   ctx: ImportContext,
 ): { companyId: string; contactId: string } {
   const lookup = ctx.lookups[LOOKUP_CONTACTS];
-  const ref = lookup?.resolve(email);
-  if (ref !== undefined) return splitContactRef(ref);
+  const contactId = lookup?.resolve(email);
+  const companyId = ctx.lookups[LOOKUP_CONTACT_COMPANIES]?.resolve(email);
+  if (contactId !== undefined && companyId !== undefined) return { companyId, contactId };
   throw new RowProblem(
     lookup?.isAmbiguous(email) === true
       ? `More than one contact has the email "${email}".`
       : `No contact has the email "${email}". Check it against the Lists sheet, or add the contact first.`,
   );
-}
-
-/* ---------------------------------- money ---------------------------------- */
-
-/** Decimal places of a currency's minor unit, as `platform_core.money`. Two unless listed. */
-const EXPONENTS: ReadonlyMap<string, number> = new Map([
-  ["JPY", 0],
-  ["KRW", 0],
-  ["VND", 0],
-  ["CLP", 0],
-  ["ISK", 0],
-  ["BHD", 3],
-  ["KWD", 3],
-  ["OMR", 3],
-  ["TND", 3],
-  ["JOD", 3],
-]);
-
-/** Integer minor units to a major-unit decimal string, on the digits: `840000000000` INR is
- *  `"8400000000.00"`, `1500` KWD is `"1.500"`, `500` JPY is `"500"`. Never a float. */
-export function minorToMajor(minor: number, currency: string): string {
-  const exponent = EXPONENTS.get(currency.toUpperCase()) ?? 2;
-  const sign = minor < 0 ? "-" : "";
-  const digits = String(Math.abs(minor)).padStart(exponent + 1, "0");
-  if (exponent === 0) return `${sign}${digits}`;
-  return `${sign}${digits.slice(0, -exponent)}.${digits.slice(-exponent)}`;
 }
