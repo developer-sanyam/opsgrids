@@ -1,17 +1,26 @@
 import type { CompanyStatus, ContactStatus, DealStage, LeadStatus } from "@/api/types";
 import { stageLabel } from "@/data/stages";
-import { cn } from "@opsgrids/ui";
+import { StatusBadge } from "@opsgrids/ui";
+import type { StatusTone } from "@opsgrids/ui";
 
-const PILL_BASE =
-  "inline-flex items-center gap-1.5 rounded-full pl-2 pr-2.5 py-1 text-xs font-semibold whitespace-nowrap";
+/*
+ * Thin wrappers over the shared `StatusBadge` (opsgrids-ui's status registry) so the same word
+ * carries the same colour in every app. Words the registry does not know take an explicit tone
+ * override rather than a sixth colour — listed here:
+ *   - CompanyStatus/ContactStatus "prospect"/"lead" -> info, "customer" -> success
+ *   - ContactStatus "qualified" -> info
+ *   - DealStage "lead"/"qualified"/"proposal" -> info, "negotiation" -> warning,
+ *     "closed_won" -> success, "closed_lost" -> danger
+ *   - LeadStatus "working" -> info, "qualified" -> warning
+ */
 
 /* --------------------------------- company -------------------------------- */
 
-const COMPANY_TONE: Record<CompanyStatus, string> = {
-  customer: "bg-present-soft text-present",
-  prospect: "bg-info-soft text-info",
-  lead: "bg-cyan-soft text-cyan",
-  churned: "bg-ground text-muted",
+const COMPANY_TONE: Record<CompanyStatus, StatusTone> = {
+  customer: "success",
+  prospect: "info",
+  lead: "info",
+  churned: "neutral",
 };
 
 const COMPANY_LABEL: Record<CompanyStatus, string> = {
@@ -21,23 +30,18 @@ const COMPANY_LABEL: Record<CompanyStatus, string> = {
   churned: "Churned",
 };
 
-/** A company's relationship status. A dot backs up the colour so it never rests on hue alone. */
+/** A company's relationship status. */
 export function CompanyStatusPill({ status }: { status: CompanyStatus }) {
-  return (
-    <span className={cn(PILL_BASE, COMPANY_TONE[status])}>
-      <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      {COMPANY_LABEL[status]}
-    </span>
-  );
+  return <StatusBadge tone={COMPANY_TONE[status]} label={COMPANY_LABEL[status]} />;
 }
 
 /* --------------------------------- contact -------------------------------- */
 
-const CONTACT_TONE: Record<ContactStatus, string> = {
-  customer: "bg-present-soft text-present",
-  qualified: "bg-info-soft text-info",
-  lead: "bg-cyan-soft text-cyan",
-  dormant: "bg-ground text-muted",
+const CONTACT_TONE: Record<ContactStatus, StatusTone> = {
+  customer: "success",
+  qualified: "info",
+  lead: "info",
+  dormant: "neutral",
 };
 
 const CONTACT_LABEL: Record<ContactStatus, string> = {
@@ -47,45 +51,28 @@ const CONTACT_LABEL: Record<ContactStatus, string> = {
   dormant: "Dormant",
 };
 
+/** A contact's relationship status. */
 export function ContactStatusPill({ status }: { status: ContactStatus }) {
-  return (
-    <span className={cn(PILL_BASE, CONTACT_TONE[status])}>
-      <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      {CONTACT_LABEL[status]}
-    </span>
-  );
+  return <StatusBadge tone={CONTACT_TONE[status]} label={CONTACT_LABEL[status]} />;
 }
 
 /* ---------------------------------- stage --------------------------------- */
 
-const STAGE_TONE: Record<DealStage, string> = {
-  lead: "bg-ground text-muted",
-  qualified: "bg-info-soft text-info",
-  proposal: "bg-accent-soft text-accent-ink",
-  negotiation: "bg-late-soft text-late",
-  closed_won: "bg-present-soft text-present",
-  closed_lost: "bg-danger-soft text-danger",
+const STAGE_TONE: Record<DealStage, StatusTone> = {
+  lead: "info",
+  qualified: "info",
+  proposal: "info",
+  negotiation: "warning",
+  closed_won: "success",
+  closed_lost: "danger",
 };
 
 /** A deal's pipeline stage as a pill. */
 export function StagePill({ stage }: { stage: DealStage }) {
-  return (
-    <span className={cn(PILL_BASE, STAGE_TONE[stage])}>
-      <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      {stageLabel(stage)}
-    </span>
-  );
+  return <StatusBadge tone={STAGE_TONE[stage]} label={stageLabel(stage)} />;
 }
 
 /* ---------------------------------- lead ---------------------------------- */
-
-const LEAD_TONE: Record<LeadStatus, string> = {
-  new: "bg-info-soft text-info",
-  working: "bg-accent-soft text-accent-ink",
-  qualified: "bg-late-soft text-late",
-  disqualified: "bg-ground text-muted",
-  converted: "bg-present-soft text-present",
-};
 
 const LEAD_LABEL: Record<LeadStatus, string> = {
   new: "New",
@@ -95,12 +82,16 @@ const LEAD_LABEL: Record<LeadStatus, string> = {
   converted: "Converted",
 };
 
+/** "new", "disqualified" and "converted" are registered words; "working"/"qualified" are not. */
+const LEAD_TONE: Record<LeadStatus, StatusTone> = {
+  new: "info",
+  working: "info",
+  qualified: "warning",
+  disqualified: "neutral",
+  converted: "success",
+};
+
 /** A lead's place in the intake lifecycle. */
 export function LeadStatusPill({ status }: { status: LeadStatus }) {
-  return (
-    <span className={cn(PILL_BASE, LEAD_TONE[status])}>
-      <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      {LEAD_LABEL[status]}
-    </span>
-  );
+  return <StatusBadge tone={LEAD_TONE[status]} label={LEAD_LABEL[status]} />;
 }

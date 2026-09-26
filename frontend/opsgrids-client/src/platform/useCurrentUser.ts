@@ -15,8 +15,9 @@ export interface CurrentUser {
   /**
    * The caller's role in the active organization, joined for display when they hold more than
    * one. `null` when `MeOut` carries no role for the active organization (`roles: []`, or no
-   * matching entry in `organizations` — a role *code*, since `MeOut` does not carry a friendlier
-   * label; see the report for this gap).
+   * matching entry in `organizations`). A display name from `role_names` — the `roles` table's
+   * own `name`, the one source for it — falling back to the role code itself for any entry the
+   * server did not have a name for.
    */
   roleDisplay: string | null;
 }
@@ -38,11 +39,13 @@ export function useCurrentUser(): CurrentUser | null {
     if (!user) return null;
     const activeOrg = user.organizations.find((org) => org.organization_id === user.organization_id) ?? null;
     const roles = activeOrg ? activeOrg.roles : user.roles;
+    const roleNames = (activeOrg ? activeOrg.role_names : user.role_names) ?? [];
+    const displayNames = roles.map((code, index) => roleNames[index] || code);
     return {
       name: user.full_name,
       email: user.email,
       initials: initialsOf(user.full_name),
-      roleDisplay: roles.length > 0 ? roles.join(", ") : null,
+      roleDisplay: displayNames.length > 0 ? displayNames.join(", ") : null,
     };
   }, [user]);
 }

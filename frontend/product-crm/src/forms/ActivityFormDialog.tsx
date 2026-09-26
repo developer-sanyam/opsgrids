@@ -4,7 +4,15 @@ import { logActivity } from "@/api/client";
 import type { Activity, ActivityDirection, ActivityType, Company, Contact } from "@/api/types";
 import { maybe } from "@/lib/optional";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { DateTimeField, FormDialog, InlineAlert, Select, TextArea, TextField } from "@opsgrids/ui";
+import {
+  DateTimeField,
+  FormDialog,
+  InlineAlert,
+  Select,
+  TextArea,
+  TextField,
+  useFormDirty,
+} from "@opsgrids/ui";
 
 const TYPE_OPTIONS: { value: ActivityType; label: string }[] = [
   { value: "call", label: "Call" },
@@ -60,6 +68,10 @@ export function ActivityFormDialog({
   const [companyId, setCompanyId] = useState(context?.companyId ?? "");
   const [contactId, setContactId] = useState(context?.contactId ?? "");
 
+  const fields = { type, subject, body, direction, occurredAt, companyId, contactId };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
+
   const [subjectError, setSubjectError] = useState<string | undefined>(undefined);
   const [companyError, setCompanyError] = useState<string | undefined>(undefined);
   const [occurredAtError, setOccurredAtError] = useState<string | undefined>(undefined);
@@ -114,6 +126,7 @@ export function ActivityFormDialog({
       submitLabel="Log activity"
       pendingLabel="Logging…"
       pending={save.pending}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? {
             error: problemMessage(save.error),
@@ -134,6 +147,7 @@ export function ActivityFormDialog({
             }}
             placeholder="Choose a company"
             options={companies.map((c) => ({ value: c.id, label: c.name }))}
+            required
             {...maybe("error", companyError ?? save.fieldErrors.company_id)}
           />
           <Select
@@ -171,6 +185,7 @@ export function ActivityFormDialog({
         value={subject}
         onChange={(e) => setSubject(e.target.value)}
         placeholder="Discovery call on renewal scope"
+        required
         {...maybe("error", subjectError ?? save.fieldErrors.subject)}
       />
 

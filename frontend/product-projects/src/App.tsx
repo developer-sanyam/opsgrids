@@ -1,7 +1,9 @@
-import { AppShell as Shell, Button, InlineAlert } from "@opsgrids/ui";
-import { usePermissions } from "@opsgrids/client";
-import { Sidebar } from "./ui";
+import { AppShell as Shell, Button, InlineAlert, moduleIcon } from "@opsgrids/ui";
+import { getAuthOrigin, NotificationsBell, useAdminLinks, useAuth, useCurrentUser, usePermissions, usePlatformModules } from "@opsgrids/client";
+import { useNavGroups } from "./ui";
 import { LogoMark } from "./ui/LogoMark";
+
+const DASHBOARD_ORIGIN_FALLBACK = "https://app.opsgrids.com";
 
 /**
  * The permission gate fails closed: while `GET /members/me/grants` is loading every write
@@ -13,42 +15,48 @@ function PermissionsStatusBanner() {
   const { status, reloadGrants } = usePermissions();
   if (status !== "error") return null;
   return (
-    <div className="mb-3">
-      <InlineAlert
-        tone="warning"
-        title="Couldn't check your permissions"
-        action={
-          <Button variant="outline" size="sm" onClick={reloadGrants}>
-            Try again
-          </Button>
-        }
-      >
-        Some actions may be hidden until this is retried. Anything you could already see stays
-        visible.
-      </InlineAlert>
-    </div>
+    <InlineAlert
+      tone="warning"
+      title="Couldn't check your permissions"
+      action={
+        <Button variant="outline" size="sm" onClick={reloadGrants}>
+          Try again
+        </Button>
+      }
+    >
+      Some actions may be hidden until this is retried. Anything you could already see stays
+      visible.
+    </InlineAlert>
   );
 }
 
 /**
- * The app shell — the sidebar rail, the mobile drawer and the routed main column — is
- * `@opsgrids/ui`'s `AppShell`. This file supplies the two things that are this product's: its mark
- * and its name in the compact top bar, plus the one place a failed permissions fetch is announced
- * for every screen underneath it.
+ * The app shell — the sidebar, the rail, the mobile header/bottom nav and the routed main column —
+ * is `@opsgrids/ui`'s `AppShell`. This file supplies everything that is this product's: its mark,
+ * its own nav, and the cross-product modules and admin links from `@opsgrids/client`'s hooks.
  */
 export function AppShell() {
+  const { logout } = useAuth();
+  const currentUser = useCurrentUser();
+  const { groups, pinned } = useNavGroups();
+  const modules = usePlatformModules();
+  const adminLinks = useAdminLinks();
+  const adminOrigin = getAuthOrigin() ?? DASHBOARD_ORIGIN_FALLBACK;
+
+  if (!currentUser) return null;
+
   return (
-    <div className="flex flex-col">
-      <div className="mx-auto w-full max-w-[1600px] px-3 pt-3 sm:px-4">
-        <PermissionsStatusBanner />
-      </div>
-      <Shell
-        logo={<LogoMark className="size-7" />}
-        productName="OpsGrids Projects"
-        renderSidebar={({ onNavigate }) => (
-          <Sidebar {...(onNavigate ? { onNavigate } : {})} />
-        )}
-      />
-    </div>
+    <Shell
+      product={{ name: "OpsGrids Projects", mark: <LogoMark className="size-7" /> }}
+      nav={groups}
+      pinned={pinned}
+      modules={modules.map((m) => ({ key: m.key, label: m.label, href: m.href, icon: moduleIcon(m.iconKey) }))}
+      adminLinks={adminLinks.map((l) => ({ key: l.key, label: l.label, href: `${adminOrigin}${l.href}` }))}
+      user={{ name: currentUser.name, email: currentUser.email, roleLabel: currentUser.roleDisplay }}
+      onSignOut={() => void logout()}
+      search={{ placeholder: "Search projects", fallback: { label: "Search projects for", to: "/portfolio" } }}
+      notifications={<NotificationsBell />}
+      banner={<PermissionsStatusBanner />}
+    />
   );
 }

@@ -26,6 +26,7 @@ import {
   needsAttention,
   netRevenueForMonth,
   outstandingMinor,
+  revenueHistory,
   totalOutstanding,
   totalOverdue,
 } from "@/data/derive";
@@ -34,15 +35,12 @@ import type { ComplianceSummary } from "@/data/compliance";
 import { today as realToday } from "@/lib/format";
 import { ApiError, apiRequest } from "@opsgrids/client";
 import {
-  CASHFLOW,
-  CASH_BALANCE_MINOR,
   EWAY_BILLS,
   FILINGS_BY_INVOICE,
   fixtureReturnDetail,
   fixtureReturnDiff,
   GST_REGISTRATION,
   INVOICES,
-  KPI_TRENDS,
   LEDGER_ACCOUNTS,
   PAYMENTS,
   PURCHASES,
@@ -749,44 +747,18 @@ export async function getOverview(): Promise<OverviewSummary> {
     const summary: OverviewSummary = {
       period_label: "August 2026",
       kpis: [
-        {
-          key: "revenue",
-          label: "Revenue this period",
-          value_minor: revenue,
-          deltaPct: KPI_TRENDS.revenue.deltaPct,
-          series: [...KPI_TRENDS.revenue.series],
-          caption: "Net of credit notes",
-        },
+        { key: "revenue", label: "Revenue this period", value_minor: revenue, caption: "Net of credit notes" },
         {
           key: "receivables",
           label: "Outstanding receivables",
           value_minor: receivables,
-          deltaPct: KPI_TRENDS.receivables.deltaPct,
-          series: [...KPI_TRENDS.receivables.series],
           caption: "Across all open invoices",
         },
-        {
-          key: "overdue",
-          label: "Overdue",
-          value_minor: overdue,
-          deltaPct: KPI_TRENDS.overdue.deltaPct,
-          series: [...KPI_TRENDS.overdue.series],
-          caption: "Past the due date",
-        },
-        {
-          key: "cash",
-          label: "Cash balance",
-          value_minor: CASH_BALANCE_MINOR,
-          deltaPct: KPI_TRENDS.cash.deltaPct,
-          series: [...KPI_TRENDS.cash.series],
-          caption: "Bank + cash on hand",
-          sample: true,
-        },
+        { key: "overdue", label: "Overdue", value_minor: overdue, caption: "Past the due date" },
       ],
-      cashflow: [...CASHFLOW],
       aging: agingBuckets(INVOICES, TODAY),
       attention: needsAttention(INVOICES),
-      cashflow_sample: true,
+      revenue_history: [revenueHistory(INVOICES, PAYMENTS, month)],
     };
     return settle(summary);
   }

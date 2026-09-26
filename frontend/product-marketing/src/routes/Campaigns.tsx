@@ -4,9 +4,10 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { deleteCampaign, getCampaigns } from "@/api/client";
 import type { Campaign, CampaignStatus, Channel } from "@/api/types";
 import { roas } from "@/data/derive";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { downloadCsv } from "@/lib/csv";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
-import { MegaphoneIcon, PlusIcon, cn, useToast } from "@opsgrids/ui";
+import { MegaphoneIcon, PlusIcon, cn, useDebouncedValue, useToast } from "@opsgrids/ui";
+import type { TableSelection } from "@opsgrids/ui";
 import { formatMoneyCompact, formatNumber, formatRoas } from "@/lib/format";
 import {
   BudgetBar,
@@ -69,6 +70,7 @@ export function CampaignsPage() {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Campaign | null>(null);
   const [deleting, setDeleting] = useState<Campaign | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const canWrite = useCan(WRITE_PERMISSION, "ORG");
 
   // The sidebar's ⌘K search lands here with `?q=` — sync it into local state without touching the
@@ -108,6 +110,7 @@ export function CampaignsPage() {
     {
       key: "name",
       header: "Campaign",
+      mobile: "title",
       render: (c) => (
         <button
           type="button"
@@ -127,6 +130,7 @@ export function CampaignsPage() {
     {
       key: "status",
       header: "Status",
+      mobile: "status",
       render: (c) => <CampaignStatusPill status={c.status} />,
     },
     {
@@ -168,6 +172,7 @@ export function CampaignsPage() {
       key: "actions",
       header: "",
       align: "right",
+      mobile: "actions",
       render: (c) => (
         <RowActions
           label={c.name}
@@ -180,6 +185,40 @@ export function CampaignsPage() {
       ),
     },
   ];
+
+  const campaignSelection: TableSelection<Campaign> | undefined =
+    campaigns.status === "success"
+      ? {
+          selected,
+          onToggle: (key, next) =>
+            setSelected((prev) => {
+              const nextSet = new Set(prev);
+              if (next) nextSet.add(key);
+              else nextSet.delete(key);
+              return nextSet;
+            }),
+          onToggleAll: (next) =>
+            setSelected(next ? new Set(campaigns.data.items.map((c) => c.id)) : new Set()),
+          label: (c) => c.name,
+        }
+      : undefined;
+
+  function exportSelectedCampaigns() {
+    if (campaigns.status !== "success") return;
+    const chosen = campaigns.data.items.filter((c) => selected.has(c.id));
+    downloadCsv(
+      "campaigns.csv",
+      ["Name", "Channel", "Status", "Leads", "Revenue", "ROAS"],
+      chosen.map((c) => [
+        c.name,
+        c.channel,
+        c.status,
+        String(c.leads),
+        formatMoneyCompact(c.revenue_minor, c.currency),
+        formatRoas(roas(c.revenue_minor, c.spent_minor)),
+      ]),
+    );
+  }
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -270,6 +309,13 @@ export function CampaignsPage() {
               rowKey={(c) => c.id}
               caption="Campaigns with channel, status, budget, leads, revenue and ROAS"
               onRowClick={(c) => navigate(`/campaigns/${c.id}`)}
+              mobileCard="auto"
+              selection={campaignSelection}
+              bulkActions={
+                <Button variant="outline" size="sm" onClick={exportSelectedCampaigns}>
+                  Export selected
+                </Button>
+              }
               emptyState={
                 <EmptyState
                   icon={<MegaphoneIcon className="size-6" />}

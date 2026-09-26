@@ -38,6 +38,14 @@ export function GrantLeaveBalanceDialog({
   // every submit would defeat the server's own idempotency check entirely.
   const [idempotencyKey] = useState(() => crypto.randomUUID());
 
+  // Create-only dialog: dirty against the blank state it opened on.
+  const dirty =
+    employee !== null ||
+    leaveTypeId !== (leaveTypes[0]?.id ?? "") ||
+    entryType !== "grant" ||
+    halfDays !== "" ||
+    note !== "";
+
   const save = useMutation(
     () =>
       grantLeaveBalance({
@@ -60,6 +68,7 @@ export function GrantLeaveBalanceDialog({
       submitLabel="Grant"
       pendingLabel="Granting…"
       pending={save.pending}
+      dirty={dirty}
       {...(save.error ? { error: problemMessage(save.error) } : {})}
     >
       <EmployeePicker
@@ -73,6 +82,7 @@ export function GrantLeaveBalanceDialog({
         value={leaveTypeId}
         onChange={(e) => setLeaveTypeId(e.target.value)}
         options={leaveTypes.map((t) => ({ value: t.id, label: `${t.name} (${t.code})` }))}
+        required
         error={save.fieldErrors.leave_type_id}
       />
       <Select
@@ -89,6 +99,7 @@ export function GrantLeaveBalanceDialog({
         value={halfDays}
         onChange={(e) => setHalfDays(e.target.value)}
         helper="Always a credit — this endpoint only adds to the balance."
+        required
         error={save.fieldErrors.half_days}
       />
       <TextArea

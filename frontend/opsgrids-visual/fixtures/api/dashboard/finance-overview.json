@@ -1,0 +1,36 @@
+{
+  "period_label": "September 2026",
+  "kpis": [],
+  "cashflow": [],
+  "cashflow_sample": true,
+  "aging": [],
+  "attention": [],
+  "revenue_history": [
+    {
+      "currency": "INR",
+      "revenue_current_minor": 124832000,
+      "revenue_previous_minor": 111450000,
+      "revenue_delta_pct": 12.0,
+      "received_current_minor": 82456000,
+      "received_previous_minor": 80000000,
+      "received_delta_pct": 3.07,
+      "outstanding_current_minor": 24832000,
+      "outstanding_previous_minor": 20000000,
+      "outstanding_delta_pct": 24.16,
+      "months": [
+        { "month": "2025-10", "label": "Oct 2025", "revenue_minor": 86000000, "received_minor": 73000000, "outstanding_minor": 13000000 },
+        { "month": "2025-11", "label": "Nov 2025", "revenue_minor": 87500000, "received_minor": 74500000, "outstanding_minor": 13000000 },
+        { "month": "2025-12", "label": "Dec 2025", "revenue_minor": 91000000, "received_minor": 77000000, "outstanding_minor": 14000000 },
+        { "month": "2026-01", "label": "Jan 2026", "revenue_minor": 89500000, "received_minor": 76000000, "outstanding_minor": 13500000 },
+        { "month": "2026-02", "label": "Feb 2026", "revenue_minor": 93000000, "received_minor": 79000000, "outstanding_minor": 14000000 },
+        { "month": "2026-03", "label": "Mar 2026", "revenue_minor": 96000000, "received_minor": 81500000, "outstanding_minor": 14500000 },
+        { "month": "2026-04", "label": "Apr 2026", "revenue_minor": 98500000, "received_minor": 83500000, "outstanding_minor": 15000000 },
+        { "month": "2026-05", "label": "May 2026", "revenue_minor": 100500000, "received_minor": 85000000, "outstanding_minor": 15500000 },
+        { "month": "2026-06", "label": "Jun 2026", "revenue_minor": 104000000, "received_minor": 88000000, "outstanding_minor": 16000000 },
+        { "month": "2026-07", "label": "Jul 2026", "revenue_minor": 107500000, "received_minor": 91000000, "outstanding_minor": 16500000 },
+        { "month": "2026-08", "label": "Aug 2026", "revenue_minor": 111450000, "received_minor": 80000000, "outstanding_minor": 20000000 },
+        { "month": "2026-09", "label": "Sep 2026", "revenue_minor": 124832000, "received_minor": 82456000, "outstanding_minor": 24832000 }
+      ]
+    }
+  ]
+}

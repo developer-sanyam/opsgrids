@@ -398,13 +398,21 @@ export interface StatusSlice {
   pct: number;
 }
 
-/** A point on the spend-over-time chart (representative series, minor units). */
+/** A point on the spend-over-time chart, in minor units. Real committed spend by month. */
 export interface SpendPoint {
   label: string;
   spend_minor: number;
 }
 
-export type SpendRange = "monthly" | "quarterly" | "yearly";
+/** One supplier's share of lifetime spend — the top-suppliers breakdown on the overview. */
+export interface SupplierSpend {
+  id: string;
+  name: string;
+  category: Category;
+  spend_minor: number;
+  /** Share of total supplier spend, 0–100. */
+  pct: number;
+}
 
 /** One row in the "needs attention" list. */
 export interface AttentionItem {
@@ -414,4 +422,24 @@ export interface AttentionItem {
   detail: string;
   href: string;
   tone: "danger" | "late";
+}
+
+/**
+ * `GET /operations/overview` — the procurement & inventory rollup, computed server-side from
+ * every purchase order, inventory item and supplier row for this organization (never capped to a
+ * single fetched page). `on_time_pct` is `null` until this organization has received its first
+ * purchase order — a real absence of data, not a manufactured 0%.
+ */
+export interface OverviewOut {
+  open_pos: number;
+  inventory_value_minor: number;
+  low_stock_count: number;
+  out_of_stock_count: number;
+  on_time_pct: number | null;
+  currency: string;
+  spend_trend: SpendPoint[];
+  spend_by_category: CategorySpend[];
+  po_status_mix: StatusSlice[];
+  top_suppliers: SupplierSpend[];
+  attention: AttentionItem[];
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { daysUntil, formatDate, formatMoney } from "./money";
+import { daysUntil, formatDate, formatMoney, formatMoneyCompact, formatMoneyKpi, formatMoneyWhole } from "./money";
 
 describe("formatMoney", () => {
   it("divides by the currency's own minor-unit exponent, not a flat 100", () => {
@@ -9,9 +9,28 @@ describe("formatMoney", () => {
   });
 });
 
+describe("formatMoneyCompact", () => {
+  it("compacts to lakhs with one fraction digit when the rounded figure needs it", () => {
+    expect(formatMoneyCompact(1_324_200_00, "INR")).toBe("₹13.2L");
+  });
+});
+
+describe("formatMoneyKpi", () => {
+  it("stays grouped for a figure short enough to fit a KPI card", () => {
+    expect(formatMoneyKpi(1_248_320_00, "INR")).toBe("₹12,48,320");
+  });
+
+  it("switches to compact notation once the grouped figure risks overflowing the card", () => {
+    const minor = 12_345_678_900; // ₹12,34,56,789 grouped — long enough to clip a phone KPI card.
+    expect(formatMoneyWhole(minor, "INR").length).toBeGreaterThan(12);
+    expect(formatMoneyKpi(minor, "INR")).toBe(formatMoneyCompact(minor, "INR"));
+    expect(formatMoneyKpi(minor, "INR")).not.toBe(formatMoneyWhole(minor, "INR"));
+  });
+});
+
 describe("formatDate", () => {
   it("renders a wire date for a person, and an em dash for nothing", () => {
-    expect(formatDate("2026-09-20T00:00:00Z")).toBe("20 Sept 2026");
+    expect(formatDate("2026-09-20T00:00:00Z")).toBe("20 Sep 2026");
     expect(formatDate(null)).toBe("—");
     expect(formatDate("not-a-date")).toBe("—");
   });

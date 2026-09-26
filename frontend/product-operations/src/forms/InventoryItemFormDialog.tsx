@@ -8,7 +8,16 @@ import { useWarehouseOptions } from "@/data/useWarehouseOptions";
 import { minorToInput, parseInt0, parseMinor } from "@/lib/money";
 import { useMutation } from "@opsgrids/client";
 import { formDialogError } from "@/lib/formError";
-import { CheckboxGroup, FormDialog, SectionHeader, Select, Switch, TextField } from "@/ui";
+import {
+  CheckboxGroup,
+  FormDialog,
+  FormSection,
+  Select,
+  Stepper,
+  Switch,
+  TextField,
+} from "@/ui";
+import type { StepItem } from "@/ui";
 
 const TRACKING_OPTIONS = [
   { value: "track_lot", label: "Lot tracking" },
@@ -28,6 +37,11 @@ const CATEGORY_OPTIONS: { value: Category; label: string }[] = [
 
 const SKU_PATTERN = /^[A-Za-z0-9._-]+$/;
 
+const STEPS: StepItem[] = [
+  { id: "details", title: "Item details", description: "Identity, stock and value" },
+  { id: "master", title: "Item master", description: "Optional classification and tracking" },
+];
+
 interface InventoryItemFormDialogProps {
   /** `null` creates. */
   item: InventoryItemOut | null;
@@ -40,11 +54,17 @@ interface InventoryItemFormDialogProps {
  * `PATCH /operations/inventory/{id}`. `sku`, `currency` and `on_hand` are never editable here:
  * the SKU is the join key a PO line uses, the currency is the unit the value accumulated in, and
  * stock only ever moves through "Adjust stock".
+ *
+ * Two steps behind the shared `Stepper`: item details (what a PO line needs), then the optional
+ * item master fields. `FormDialog`'s own footer doubles as each step's forward action — "Continue"
+ * on the first step, the real save on the second — so there is exactly one primary button on
+ * screen at a time; the way back to the first step is the step rail itself.
  */
 export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryItemFormDialogProps) {
   const warehouses = useWarehouseOptions();
   const itemCategories = useItemCategoryOptions();
   const secondaryUoms = useUomOptions();
+  const [step, setStep] = useState(0);
   const [sku, setSku] = useState(item?.sku ?? "");
   const [name, setName] = useState(item?.name ?? "");
   const [category, setCategory] = useState<Category | "">(item?.category ?? "");
@@ -80,7 +100,46 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
     { onSuccess: (saved) => onSaved(saved) },
   );
 
-  function submit() {
+  const dirty =
+    sku !== (item?.sku ?? "") ||
+    name !== (item?.name ?? "") ||
+    category !== (item?.category ?? "") ||
+    warehouse !== (item?.warehouse ?? "") ||
+    uom !== (item?.uom ?? "") ||
+    reorderPoint !== String(item?.reorder_point ?? 0) ||
+    unitValue !== (item ? minorToInput(item.unit_value_minor) : "") ||
+    (!item && (currency !== "INR" || openingOnHand !== "0")) ||
+    itemCategoryId !== (item?.item_category_id ?? "") ||
+    secondaryUomId !== (item?.secondary_uom_id ?? "") ||
+    hsnCode !== (item?.hsn_code ?? "") ||
+    tracking.join(",") !== TRACKING_OPTIONS.filter((o) => item?.[o.value]).map((o) => o.value).join(",") ||
+    isActive !== (item?.is_active ?? true);
+
+  const detailsInvalid = Boolean(
+    skuError ??
+      nameError ??
+      categoryError ??
+      warehouseError ??
+      uomError ??
+      reorderError ??
+      valueError ??
+      openingError ??
+      save.fieldErrors.sku ??
+      save.fieldErrors.name ??
+      save.fieldErrors.category ??
+      save.fieldErrors.warehouse ??
+      save.fieldErrors.uom ??
+      save.fieldErrors.reorder_point ??
+      save.fieldErrors.unit_value_minor ??
+      save.fieldErrors.currency,
+  );
+  const stepItems: StepItem[] = STEPS.map((s, index) => ({
+    ...s,
+    invalid: index === 0 ? detailsInvalid : false,
+  }));
+
+  /** Everything the details step is responsible for. Returns whether it's clean. */
+  function validateDetails(): boolean {
     setSkuError(undefined);
     setNameError(undefined);
     setCategoryError(undefined);
@@ -94,37 +153,63 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
     if (!item && (trimmedSku.length < 1 || !SKU_PATTERN.test(trimmedSku))) {
       setSkuError("Letters, numbers, dots, hyphens and underscores only.");
       firstFieldRef.current?.focus();
-      return;
+      return false;
     }
     const trimmedName = name.trim();
     if (trimmedName.length < 1) {
       setNameError("Give the item a name.");
-      return;
+      return false;
     }
     if (category === "") {
       setCategoryError("Choose a category.");
-      return;
+      return false;
     }
     if (warehouse === "") {
       setWarehouseError("Choose a warehouse.");
-      return;
+      return false;
     }
     const trimmedUom = uom.trim();
     if (trimmedUom.length < 1) {
       setUomError("Give it a unit of measure, like MT, pcs or L.");
-      return;
+      return false;
     }
     const reorder = parseInt0(reorderPoint);
     if (!reorder.ok) {
       setReorderError(reorder.message);
-      return;
+      return false;
     }
     const value = parseMinor(unitValue);
     if (!value.ok) {
       setValueError(value.message);
+      return false;
+    }
+    if (!item) {
+      const opening = parseInt0(openingOnHand);
+      if (!opening.ok) {
+        setOpeningError(opening.message);
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function continueToMaster() {
+    if (validateDetails()) setStep(1);
+  }
+
+  function submit() {
+    if (!validateDetails()) {
+      setStep(0);
       return;
     }
+    // `validateDetails` above already refused an empty category — this is only for the
+    // narrowing, so the payload below can carry a `Category` rather than `Category | ""`.
+    if (category === "") return;
 
+    const trimmedName = name.trim();
+    const trimmedUom = uom.trim();
+    const reorder = parseInt0(reorderPoint);
+    const value = parseMinor(unitValue);
     const trackingFlags = {
       track_lot: tracking.includes("track_lot"),
       track_roll: tracking.includes("track_roll"),
@@ -138,8 +223,8 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
         category,
         warehouse,
         uom: trimmedUom,
-        reorder_point: reorder.value,
-        unit_value_minor: value.minor,
+        reorder_point: reorder.ok ? reorder.value : 0,
+        unit_value_minor: value.ok ? value.minor : 0,
         item_category_id: itemCategoryId === "" ? null : itemCategoryId,
         secondary_uom_id: secondaryUomId === "" ? null : secondaryUomId,
         hsn_code: hsnCode.trim(),
@@ -151,20 +236,16 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
     }
 
     const opening = parseInt0(openingOnHand);
-    if (!opening.ok) {
-      setOpeningError(opening.message);
-      return;
-    }
     const input: InventoryItemIn = {
-      sku: trimmedSku,
+      sku: sku.trim(),
       name: trimmedName,
       category,
       warehouse,
       uom: trimmedUom,
-      reorder_point: reorder.value,
-      unit_value_minor: value.minor,
+      reorder_point: reorder.ok ? reorder.value : 0,
+      unit_value_minor: value.ok ? value.minor : 0,
       currency: currency.trim().toUpperCase() || "INR",
-      opening_on_hand: opening.value,
+      opening_on_hand: opening.ok ? opening.value : 0,
       ...(itemCategoryId === "" ? {} : { item_category_id: itemCategoryId }),
       ...(secondaryUomId === "" ? {} : { secondary_uom_id: secondaryUomId }),
       hsn_code: hsnCode.trim(),
@@ -174,161 +255,171 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
     void save.mutate(input);
   }
 
+  function handleSubmit() {
+    if (step === 0) continueToMaster();
+    else submit();
+  }
+
   return (
     <FormDialog
       open
       onClose={onClose}
-      onSubmit={submit}
+      onSubmit={handleSubmit}
       title={item ? `Edit ${item.name}` : "Add inventory item"}
-      submitLabel={item ? "Save changes" : "Create item"}
+      submitLabel={step === 0 ? "Continue" : item ? "Save changes" : "Create item"}
       pendingLabel={item ? "Saving…" : "Creating…"}
       pending={save.pending}
       initialFocusRef={firstFieldRef}
       size="lg"
+      dirty={dirty}
       {...formDialogError(save.error, save.fieldErrors)}
     >
-      <div className="grid gap-4 sm:grid-cols-2">
-        <TextField
-          ref={firstFieldRef}
-          label="SKU"
-          value={sku}
-          onChange={(e) => setSku(e.target.value)}
-          disabled={item !== null}
-          helper={item ? "A SKU can't change once created." : "Letters, numbers, . - and _."}
-          {...((skuError ?? save.fieldErrors.sku) !== undefined ? { error: skuError ?? save.fieldErrors.sku } : {})}
-        />
-        <TextField
-          label="Name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          {...((nameError ?? save.fieldErrors.name) !== undefined ? { error: nameError ?? save.fieldErrors.name } : {})}
-        />
-      </div>
+      <Stepper steps={stepItems} current={step} onStepChange={setStep} label="Item form progress" />
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Select
-          label="Category"
-          value={category}
-          onChange={(e) => setCategory(e.target.value as Category)}
-          placeholder="Choose a category"
-          options={CATEGORY_OPTIONS}
-          {...((categoryError ?? save.fieldErrors.category) !== undefined ? { error: categoryError ?? save.fieldErrors.category } : {})}
-        />
-        <Select
-          label="Warehouse"
-          value={warehouse}
-          onChange={(e) => setWarehouse(e.target.value)}
-          placeholder={warehouses.status === "loading" ? "Loading warehouses…" : "Choose a warehouse"}
-          options={warehouses.options}
-          disabled={warehouses.status !== "success" || warehouses.options.length === 0}
-          {...(warehouses.status === "success" && warehouses.options.length === 0
-            ? { helper: "Add a warehouse first, on the Warehouses screen." }
-            : {})}
-          {...((warehouseError ?? save.fieldErrors.warehouse) !== undefined ? { error: warehouseError ?? save.fieldErrors.warehouse } : {})}
-        />
-      </div>
-
-      <div className="grid gap-4 sm:grid-cols-3">
-        <TextField
-          label="Unit of measure"
-          value={uom}
-          onChange={(e) => setUom(e.target.value)}
-          placeholder="MT, pcs, L…"
-          {...((uomError ?? save.fieldErrors.uom) !== undefined ? { error: uomError ?? save.fieldErrors.uom } : {})}
-        />
-        <TextField
-          label="Reorder point"
-          inputMode="numeric"
-          value={reorderPoint}
-          onChange={(e) => setReorderPoint(e.target.value)}
-          {...((reorderError ?? save.fieldErrors.reorder_point) !== undefined ? { error: reorderError ?? save.fieldErrors.reorder_point } : {})}
-        />
-        <TextField
-          label="Unit value"
-          inputMode="decimal"
-          value={unitValue}
-          onChange={(e) => setUnitValue(e.target.value)}
-          helper="Major units per unit of measure."
-          {...((valueError ?? save.fieldErrors.unit_value_minor) !== undefined ? { error: valueError ?? save.fieldErrors.unit_value_minor } : {})}
-        />
-      </div>
-
-      {item ? null : (
-        <div className="grid gap-4 sm:grid-cols-2">
+      {step === 0 ? (
+        <FormSection title="Item details" headingLevel={3}>
           <TextField
-            label="Opening quantity"
+            ref={firstFieldRef}
+            label="SKU"
+            value={sku}
+            onChange={(e) => setSku(e.target.value)}
+            disabled={item !== null}
+            helper={item ? "A SKU can't change once created." : "Letters, numbers, . - and _."}
+            required={item === null}
+            {...((skuError ?? save.fieldErrors.sku) !== undefined ? { error: skuError ?? save.fieldErrors.sku } : {})}
+          />
+          <TextField
+            label="Name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            required
+            {...((nameError ?? save.fieldErrors.name) !== undefined ? { error: nameError ?? save.fieldErrors.name } : {})}
+          />
+          <Select
+            label="Category"
+            value={category}
+            onChange={(e) => setCategory(e.target.value as Category)}
+            placeholder="Choose a category"
+            options={CATEGORY_OPTIONS}
+            required
+            {...((categoryError ?? save.fieldErrors.category) !== undefined ? { error: categoryError ?? save.fieldErrors.category } : {})}
+          />
+          <Select
+            label="Warehouse"
+            value={warehouse}
+            onChange={(e) => setWarehouse(e.target.value)}
+            placeholder={warehouses.status === "loading" ? "Loading warehouses…" : "Choose a warehouse"}
+            options={warehouses.options}
+            disabled={warehouses.status !== "success" || warehouses.options.length === 0}
+            required
+            {...(warehouses.status === "success" && warehouses.options.length === 0
+              ? { helper: "Add a warehouse first, on the Warehouses screen." }
+              : {})}
+            {...((warehouseError ?? save.fieldErrors.warehouse) !== undefined ? { error: warehouseError ?? save.fieldErrors.warehouse } : {})}
+          />
+          <TextField
+            label="Unit of measure"
+            value={uom}
+            onChange={(e) => setUom(e.target.value)}
+            placeholder="MT, pcs, L…"
+            required
+            {...((uomError ?? save.fieldErrors.uom) !== undefined ? { error: uomError ?? save.fieldErrors.uom } : {})}
+          />
+          <TextField
+            label="Reorder point"
             inputMode="numeric"
-            value={openingOnHand}
-            onChange={(e) => setOpeningOnHand(e.target.value)}
-            helper="Recorded as this item's first stock movement."
-            {...((openingError) !== undefined ? { error: openingError } : {})}
+            value={reorderPoint}
+            onChange={(e) => setReorderPoint(e.target.value)}
+            required
+            {...((reorderError ?? save.fieldErrors.reorder_point) !== undefined ? { error: reorderError ?? save.fieldErrors.reorder_point } : {})}
           />
           <TextField
-            label="Currency"
-            value={currency}
-            onChange={(e) => setCurrency(e.target.value.toUpperCase())}
-            maxLength={3}
-            helper="Three-letter ISO code."
-            {...((save.fieldErrors.currency) !== undefined ? { error: save.fieldErrors.currency } : {})}
+            label="Unit value"
+            inputMode="decimal"
+            value={unitValue}
+            onChange={(e) => setUnitValue(e.target.value)}
+            helper="Major units per unit of measure."
+            required
+            {...((valueError ?? save.fieldErrors.unit_value_minor) !== undefined ? { error: valueError ?? save.fieldErrors.unit_value_minor } : {})}
           />
-        </div>
+
+          {item ? null : (
+            <>
+              <TextField
+                label="Opening quantity"
+                inputMode="numeric"
+                value={openingOnHand}
+                onChange={(e) => setOpeningOnHand(e.target.value)}
+                helper="Recorded as this item's first stock movement."
+                {...((openingError) !== undefined ? { error: openingError } : {})}
+              />
+              <TextField
+                label="Currency"
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value.toUpperCase())}
+                maxLength={3}
+                helper="Three-letter ISO code."
+                required
+                {...((save.fieldErrors.currency) !== undefined ? { error: save.fieldErrors.currency } : {})}
+              />
+            </>
+          )}
+        </FormSection>
+      ) : (
+        <FormSection
+          title="Item master"
+          description="Optional classification and tracking — all additive, all editable later."
+          headingLevel={3}
+        >
+          <Select
+            label="Item category"
+            value={itemCategoryId}
+            onChange={(e) => setItemCategoryId(e.target.value)}
+            placeholder={
+              itemCategories.status === "loading" ? "Loading categories…" : "No category"
+            }
+            options={itemCategories.options}
+            disabled={itemCategories.status !== "success"}
+            helper="The org's own catalogue tree — separate from the procurement category above."
+          />
+          <Select
+            label="Secondary UOM"
+            value={secondaryUomId}
+            onChange={(e) => setSecondaryUomId(e.target.value)}
+            placeholder={secondaryUoms.status === "loading" ? "Loading units…" : "None"}
+            options={secondaryUoms.options}
+            disabled={secondaryUoms.status !== "success"}
+            helper="An alternate reporting or purchase unit."
+          />
+          <TextField
+            label="HSN code"
+            value={hsnCode}
+            onChange={(e) => setHsnCode(e.target.value)}
+            placeholder="e.g. 5208"
+            helper="Tax classification, optional."
+          />
+          <div className="col-span-full grid gap-4 sm:grid-cols-2">
+            <CheckboxGroup
+              label="Tracking"
+              options={TRACKING_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+              value={tracking}
+              onChange={setTracking}
+              orientation="horizontal"
+              helper="What this item's stock keeps a record of, beyond its ledger bucket."
+            />
+            <Switch
+              checked={isActive}
+              onChange={setIsActive}
+              label="Active"
+              description={
+                isActive
+                  ? "Shows up in item pickers and new transactions."
+                  : "Hidden from pickers; its history is untouched."
+              }
+            />
+          </div>
+        </FormSection>
       )}
-
-      <SectionHeader
-        title="Item master"
-        subtitle="Optional classification and tracking — all additive, all editable later."
-      />
-
-      <div className="grid gap-4 sm:grid-cols-3">
-        <Select
-          label="Item category"
-          value={itemCategoryId}
-          onChange={(e) => setItemCategoryId(e.target.value)}
-          placeholder={
-            itemCategories.status === "loading" ? "Loading categories…" : "No category"
-          }
-          options={itemCategories.options}
-          disabled={itemCategories.status !== "success"}
-          helper="The org's own catalogue tree — separate from the procurement category above."
-        />
-        <Select
-          label="Secondary UOM"
-          value={secondaryUomId}
-          onChange={(e) => setSecondaryUomId(e.target.value)}
-          placeholder={secondaryUoms.status === "loading" ? "Loading units…" : "None"}
-          options={secondaryUoms.options}
-          disabled={secondaryUoms.status !== "success"}
-          helper="An alternate reporting or purchase unit."
-        />
-        <TextField
-          label="HSN code"
-          value={hsnCode}
-          onChange={(e) => setHsnCode(e.target.value)}
-          placeholder="e.g. 5208"
-          helper="Tax classification, optional."
-        />
-      </div>
-
-      <div className="grid gap-4 sm:grid-cols-2">
-        <CheckboxGroup
-          label="Tracking"
-          options={TRACKING_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-          value={tracking}
-          onChange={setTracking}
-          orientation="horizontal"
-          helper="What this item's stock keeps a record of, beyond its ledger bucket."
-        />
-        <Switch
-          checked={isActive}
-          onChange={setIsActive}
-          label="Active"
-          description={
-            isActive
-              ? "Shows up in item pickers and new transactions."
-              : "Hidden from pickers; its history is untouched."
-          }
-        />
-      </div>
     </FormDialog>
   );
 }

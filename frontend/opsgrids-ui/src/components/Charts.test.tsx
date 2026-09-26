@@ -63,6 +63,28 @@ describe("LineChart", () => {
     await user.keyboard("{Escape}");
     expect(plot.textContent).not.toContain("25 Aug");
   });
+
+  it("categoryStride overrides the default thinning, for a caller that knows its own width", () => {
+    const months = Array.from({ length: 12 }, (_, index) => `M${index + 1}`);
+    render(
+      <LineChart
+        label="Revenue by month"
+        categories={months}
+        categoryStride={3}
+        series={[{ key: "revenue", label: "Revenue", values: months.map((_, index) => index * 10) }]}
+      />,
+    );
+    // Every third label, and always the last (`CategoryAxis`'s own rule) — not the default's
+    // every second. Both the visible axis and the off-screen table say "M1"; only the axis is a
+    // `<span>`, so the tag tells the two apart.
+    const isAxisLabel = (text: string) => screen.getAllByText(text).some((el) => el.tagName === "SPAN");
+    expect(isAxisLabel("M1")).toBe(true);
+    expect(isAxisLabel("M4")).toBe(true);
+    expect(isAxisLabel("M7")).toBe(true);
+    expect(isAxisLabel("M12")).toBe(true);
+    expect(isAxisLabel("M2")).toBe(false);
+    expect(isAxisLabel("M3")).toBe(false);
+  });
 });
 
 describe("BarChart", () => {
@@ -125,6 +147,41 @@ describe("DonutChart", () => {
       ["Suspended", "4", "3%"],
     ]);
   });
+
+  it("drops the value from the visible legend at showValue=false, keeping it in the title and the data table", () => {
+    render(
+      <DonutChart
+        label="Revenue by plan"
+        showValue={false}
+        slices={[{ key: "operations", label: "Operations", value: 37099 }]}
+      />,
+    );
+    const item = screen.getByTitle("37,099");
+    expect(within(item).queryByText("37,099")).toBeNull();
+    expect(within(item).getByText("Operations")).toBeTruthy();
+    expect(within(item).getByText("100%")).toBeTruthy();
+    const table = screen.getByRole("table", { name: "Revenue by plan. Total: 37,099" });
+    expect(rowsOf(table).slice(1)).toEqual([["Operations", "37,099", "100%"]]);
+  });
+
+  it("never sits the legend beside the ring at layout=stacked", () => {
+    const { container } = render(
+      <DonutChart label="Revenue by plan" layout="stacked" slices={[{ key: "operations", label: "Operations", value: 1 }]} />,
+    );
+    expect(container.querySelector("figure")?.className).not.toContain("sm:flex-row");
+  });
+
+  it("draws a smaller ring at size=sm, for a card sharing its row with two others", () => {
+    const { container, rerender } = render(
+      <DonutChart label="Accounts by status" slices={[{ key: "active", label: "Active", value: 1 }]} />,
+    );
+    const ringAt = () => container.querySelector("[aria-hidden]");
+    expect(ringAt()?.className).toContain("size-36");
+    rerender(
+      <DonutChart label="Accounts by status" slices={[{ key: "active", label: "Active", value: 1 }]} size="sm" />,
+    );
+    expect(ringAt()?.className).toContain("size-24");
+  });
 });
 
 describe("ChartCard", () => {
@@ -177,5 +234,16 @@ describe("MetricCard", () => {
     expect(container.querySelector("svg")?.getAttribute("class")).toContain("text-positive");
     rerender(<MetricCard label="Open incidents" value="9" trend={{ value: 14, goodWhen: "down" }} />);
     expect(container.querySelector("svg")?.getAttribute("class")).toContain("text-negative");
+  });
+
+  it("shows a plain caption instead of a trend when there is no comparison period", () => {
+    render(<MetricCard label="Pending Tasks" value="18" caption="Assigned to you" />);
+    expect(screen.getByText("Assigned to you")).toBeTruthy();
+    expect(screen.queryByText(/Up|Down/)).toBeNull();
+  });
+
+  it("marks the headline figure so the containment check can find it, at every size", () => {
+    render(<MetricCard label="Accounts" value="128" size="tile" />);
+    expect(screen.getByText("128").hasAttribute("data-kpi-value")).toBe(true);
   });
 });

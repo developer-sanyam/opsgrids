@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
 import { problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
@@ -18,12 +18,15 @@ import {
   SearchInput,
   Select,
   Skeleton,
+  StatusBadge,
   Tag,
   TextArea,
   TextField,
+  statusTone,
+  useDebouncedValue,
   useToast,
 } from "@opsgrids/ui";
-import type { Column, ComboboxOption } from "@opsgrids/ui";
+import type { Column, ComboboxOption, TableSelection } from "@opsgrids/ui";
 
 import {
   createInvitation,
@@ -39,6 +42,7 @@ import {
   updateMember,
 } from "@/api";
 import type { Invitation, InvitationCreate, InvitationCreated, Location, Member, MemberPatch, OrgUnit, Role } from "@/api/types";
+import { downloadCsv } from "@/lib/csv";
 import { formatDate } from "@/lib/money";
 import { flattenOrgUnits } from "@/lib/orgUnits";
 import { PageHeader } from "@/ui";
@@ -58,17 +62,13 @@ export function MembersPage() {
   const canAssignRoles = useCan(ROLE_WRITE_PERMISSION, "ORG");
 
   const [rawQuery, setRawQuery] = useState("");
-  const [query, setQuery] = useState("");
+  const query = useDebouncedValue(rawQuery);
   const [orgUnitId, setOrgUnitId] = useState("");
   const [status, setStatus] = useState("");
   const [linked, setLinked] = useState("");
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(25);
-
-  useEffect(() => {
-    const handle = setTimeout(() => setQuery(rawQuery), 300);
-    return () => clearTimeout(handle);
-  }, [rawQuery]);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const units = useAsync(listOrgUnits, []);
   const locations = useAsync(listLocations, []);
@@ -119,6 +119,7 @@ export function MembersPage() {
     {
       key: "name",
       header: "Name",
+      mobile: "title",
       render: (m) => (
         <div className="flex items-center gap-2">
           <span className="font-semibold text-ink">{m.display_name ?? m.full_name}</span>
@@ -138,11 +139,17 @@ export function MembersPage() {
         </div>
       ),
     },
-    { key: "status", header: "Status", render: (m) => <Tag tone={m.status === "active" ? "positive" : "neutral"}>{m.status}</Tag> },
+    {
+      key: "status",
+      header: "Status",
+      mobile: "status",
+      render: (m) => <StatusBadge tone={statusTone(m.status) ?? "neutral"} label={m.status} />,
+    },
     {
       key: "actions",
       header: "",
       align: "right",
+      mobile: "actions",
       render: (m) => (
         <RowActions
           label={m.display_name ?? m.full_name}
@@ -163,6 +170,39 @@ export function MembersPage() {
       ),
     },
   ];
+
+  const memberSelection: TableSelection<Member> | undefined =
+    members.status === "success"
+      ? {
+          selected,
+          onToggle: (key, next) =>
+            setSelected((prev) => {
+              const nextSet = new Set(prev);
+              if (next) nextSet.add(key);
+              else nextSet.delete(key);
+              return nextSet;
+            }),
+          onToggleAll: (next) =>
+            setSelected(next ? new Set(members.data.items.map((m) => m.id)) : new Set()),
+          label: (m) => m.display_name ?? m.full_name,
+        }
+      : undefined;
+
+  function exportSelectedMembers() {
+    if (members.status !== "success") return;
+    const chosen = members.data.items.filter((m) => selected.has(m.id));
+    downloadCsv(
+      "members.csv",
+      ["Name", "Email", "Job title", "Department", "Status"],
+      chosen.map((m) => [
+        m.display_name ?? m.full_name,
+        m.email,
+        m.job_title ?? "",
+        units.status === "success" ? departmentName(units.data, m.org_unit_id) : "",
+        m.status,
+      ]),
+    );
+  }
 
   return (
     <div className="flex flex-col gap-8">
@@ -187,6 +227,13 @@ export function MembersPage() {
               rows={members.data.items}
               rowKey={(m) => m.id}
               columns={columns}
+              mobileCard="auto"
+              selection={memberSelection}
+              bulkActions={
+                <Button variant="outline" size="sm" onClick={exportSelectedMembers}>
+                  Export selected
+                </Button>
+              }
               toolbar={
                 <div className="flex flex-wrap items-center gap-3">
                   <SearchInput
@@ -275,44 +322,45 @@ export function MembersPage() {
         {invitations.status === "error" ? (
           <ErrorState title="Couldn't load invitations" message={problemMessage(invitations.error)} onRetry={invitations.reload} />
         ) : null}
-        {invitations.status === "success" && invitations.data.length === 0 ? (
-          <p className="text-sm text-muted">No invitations are waiting to be accepted.</p>
-        ) : null}
-        {invitations.status === "success" && invitations.data.length > 0 ? (
+        {invitations.status === "success" ? (
           <Card className="p-0">
-            <table className="w-full min-w-[40rem] text-left text-sm">
-              <thead>
-                <tr className="text-xs uppercase tracking-wide text-muted">
-                  <th className="px-5 py-3 font-semibold">Email</th>
-                  <th className="px-5 py-3 font-semibold">Roles</th>
-                  <th className="px-5 py-3 font-semibold">Expires</th>
-                  <th className="px-5 py-3 font-semibold">Created</th>
-                  <th className="px-5 py-3 text-right font-semibold">
-                    <span className="sr-only">Actions</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {invitations.data.map((invite) => (
-                  <tr key={invite.id} className="border-t border-line">
-                    <td className="px-5 py-3 font-semibold text-ink">{invite.email}</td>
-                    <td className="px-5 py-3">
-                      <div className="flex flex-wrap gap-1">
-                        {invite.role_codes.length === 0 ? <span className="text-xs text-faint">Default</span> : invite.role_codes.map((r) => <Tag key={r}>{r}</Tag>)}
-                      </div>
-                    </td>
-                    <td className="px-5 py-3 text-ink-soft">{formatDate(invite.expires_at)}</td>
-                    <td className="px-5 py-3 text-ink-soft">{formatDate(invite.created_at)}</td>
-                    <td className="px-5 py-3 text-right">
-                      <RowActions
-                        label={invite.email}
-                        actions={[{ label: "Revoke", tone: "danger", onSelect: () => setRevoking(invite), hidden: !canWrite }]}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <DataTable
+              rows={invitations.data}
+              rowKey={(i) => i.id}
+              mobileCard="auto"
+              columns={[
+                { key: "email", header: "Email", mobile: "title", render: (i) => <span className="font-semibold text-ink">{i.email}</span> },
+                {
+                  key: "roles",
+                  header: "Roles",
+                  render: (i) => (
+                    <div className="flex flex-wrap gap-1">
+                      {i.role_codes.length === 0 ? <span className="text-xs text-faint">Default</span> : i.role_codes.map((r) => <Tag key={r}>{r}</Tag>)}
+                    </div>
+                  ),
+                },
+                { key: "expires", header: "Expires", render: (i) => <span className="text-ink-soft">{formatDate(i.expires_at)}</span> },
+                { key: "created", header: "Created", render: (i) => <span className="text-ink-soft">{formatDate(i.created_at)}</span> },
+                {
+                  key: "actions",
+                  header: "",
+                  align: "right",
+                  mobile: "actions",
+                  render: (i) => (
+                    <RowActions
+                      label={i.email}
+                      actions={[{ label: "Revoke", tone: "danger", onSelect: () => setRevoking(i), hidden: !canWrite }]}
+                    />
+                  ),
+                },
+              ]}
+              emptyState={
+                <EmptyState
+                  title="No invitations are waiting to be accepted"
+                  description="Invite someone above and their invitation appears here until they accept it."
+                />
+              }
+            />
           </Card>
         ) : null}
       </section>
@@ -407,6 +455,17 @@ function MemberForm({
   const [startedOn, setStartedOn] = useState(member.started_on ?? "");
   const nameRef = useRef<HTMLInputElement>(null);
 
+  // The same comparison `submit` below uses to build the patch — nothing to send means nothing
+  // changed. `manager` starts `null` and is filled in from `member.manager_membership_id` by the
+  // fetch below, so once it lands the two agree and this stays false until someone picks a new one.
+  const dirty =
+    displayName.trim() !== (member.display_name ?? "") ||
+    jobTitle.trim() !== (member.job_title ?? "") ||
+    orgUnitId !== (member.org_unit_id ?? "") ||
+    (manager?.id ?? null) !== member.manager_membership_id ||
+    locationCodes.join(",") !== member.location_codes.join(",") ||
+    startedOn !== (member.started_on ?? "");
+
   useAsync(async () => {
     if (!member.manager_membership_id) return null;
     const found = await getMember(member.manager_membership_id);
@@ -443,6 +502,7 @@ function MemberForm({
       pending={save.pending}
       size="lg"
       initialFocusRef={nameRef}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? { error: problemMessage(save.error) }
         : {})}
@@ -518,6 +578,10 @@ function RoleAssignDialog({
 }) {
   const [selected, setSelected] = useState<string[]>(member.roles);
 
+  // Order-independent: a checkbox group's own order isn't meaningful, only the set is.
+  const dirty =
+    JSON.stringify([...selected].sort()) !== JSON.stringify([...member.roles].sort());
+
   const save = useMutation((codes: string[]) => setMemberRoles(member.id, codes), {
     onSuccess: (updated) => {
       onClose();
@@ -535,6 +599,7 @@ function RoleAssignDialog({
       submitLabel="Save roles"
       pendingLabel="Saving…"
       pending={save.pending}
+      dirty={dirty}
       {...(save.error ? { error: problemMessage(save.error) } : {})}
     >
       {roles.length === 0 ? (
@@ -565,6 +630,9 @@ function InviteDialog({ roles, onClose, onSaved }: { roles: Role[]; onClose: () 
   const [created, setCreated] = useState<InvitationCreated | null>(null);
   const [copied, setCopied] = useState(false);
   const emailRef = useRef<HTMLInputElement>(null);
+
+  // Create-only dialog: dirty against the blank state it opened on.
+  const dirty = email !== "" || roleCodes.length > 0 || expiresInDays !== "14";
 
   const save = useMutation((payload: InvitationCreate) => createInvitation(payload), {
     onSuccess: (invitation) => {
@@ -631,6 +699,7 @@ function InviteDialog({ roles, onClose, onSaved }: { roles: Role[]; onClose: () 
       pendingLabel="Creating…"
       pending={save.pending}
       initialFocusRef={emailRef}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? { error: problemMessage(save.error) }
         : {})}
@@ -641,6 +710,7 @@ function InviteDialog({ roles, onClose, onSaved }: { roles: Role[]; onClose: () 
         type="email"
         value={email}
         onChange={(e) => setEmail(e.target.value)}
+        required
         error={emailError ?? save.fieldErrors.email}
       />
       <div className="max-h-48 overflow-y-auto">

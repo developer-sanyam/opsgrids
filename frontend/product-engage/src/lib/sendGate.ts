@@ -1,6 +1,6 @@
 import { ApiError } from "@opsgrids/client";
 
-import { DASHBOARD_PRODUCTS_URL } from "@/lib/dashboard";
+import { dashboardProductsUrl } from "@/lib/dashboard";
 import { isNotActivated } from "@/lib/errors";
 
 /**
@@ -102,7 +102,7 @@ export function explainSendFailure(error: unknown): SendGateReason {
       message:
         "Campaigns can only be sent while Engage is active. Someone who manages your organization's products can start it from Products in the OpsGrids dashboard.",
       hint: null,
-      next: { kind: "link", label: "Open Products in the dashboard", to: DASHBOARD_PRODUCTS_URL, external: true },
+      next: { kind: "link", label: "Open Products in the dashboard", to: dashboardProductsUrl(), external: true },
     };
   }
   if (error.status === 403) {

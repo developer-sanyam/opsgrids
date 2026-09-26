@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { WEEK_DATES, TODAY, getProjects, getTasks, getTimesheets, getPeople, getTimesheetSummary } from "@/api/client";
@@ -25,7 +25,7 @@ import {
   Skeleton,
   UtilizationTrend,
 } from "@/ui";
-import { CalendarIcon, CheckCircleIcon, ClockIcon, PlusIcon, SearchIcon, UsersIcon } from "@opsgrids/ui";
+import { CalendarIcon, CheckCircleIcon, ClockIcon, PlusIcon, UsersIcon } from "@opsgrids/ui";
 
 interface OverviewData {
   projects: Project[];
@@ -46,10 +46,11 @@ async function loadOverview(): Promise<OverviewData> {
   return { projects, tasks, timesheets, people, timesheetSummary };
 }
 
-/** The Overview's top bar: breadcrumb + title, then search / week / new-project controls. */
+/** The Overview's top bar: breadcrumb + title, then week / new-project controls. The shell's own
+ *  header already has a search that reaches Projects (`AppShell`'s `search.fallback`), so this
+ *  doesn't repeat it. */
 function OverviewHeader({ orgName }: { orgName: string }) {
   const navigate = useNavigate();
-  const [query, setQuery] = useState("");
 
   return (
     <header className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
@@ -62,28 +63,6 @@ function OverviewHeader({ orgName }: { orgName: string }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const q = query.trim();
-            navigate(q ? `/projects?q=${encodeURIComponent(q)}` : "/projects");
-          }}
-          className="hidden h-11 min-w-0 items-center gap-2 rounded-full bg-surface px-4 shadow-card focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2 md:flex md:w-60"
-        >
-          <SearchIcon className="size-[18px] shrink-0 text-faint" />
-          <label htmlFor="overview-search" className="sr-only">
-            Search projects
-          </label>
-          <input
-            id="overview-search"
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search projects…"
-            className="min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-faint focus:outline-none"
-          />
-        </form>
-
         <span className="hidden h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold text-ink-soft shadow-card sm:inline-flex">
           <CalendarIcon className="size-4 text-muted" />
           <span className="tnum">This week · {formatWeekRange(WEEK_DATES)}</span>

@@ -15,16 +15,28 @@ import {
   SearchInput,
   Select,
   Skeleton,
-  Tag,
+  StatusBadge,
+  statusTone,
+  useDebouncedValue,
   useToast,
 } from "@opsgrids/ui";
-import type { Column } from "@opsgrids/ui";
+import type { Column, StatusTone, TableSelection } from "@opsgrids/ui";
 
 import { USE_FIXTURES } from "@/api/client";
+import { downloadCsv } from "@/lib/csv";
 import { formatPriceBand } from "@/lib/format";
 import { ProductForm } from "./ProductForm";
 import { deleteProduct, listCategories, listProducts, updateProduct } from "./api";
 import type { ProductOut, ProductSort, ProductStatus } from "./types";
+
+/**
+ * `draft` here is a plain in-progress state, not the at-risk sense the shared word registry gives
+ * some products' drafts — kept as this app has always shown it. See
+ * `opsgrids-ui/src/lib/status.ts`.
+ */
+const STATUS_TONE_OVERRIDE: Partial<Record<ProductStatus, StatusTone>> = {
+  draft: "warning",
+};
 
 const WRITE = "storefront.catalogue.product.write";
 const READ = "storefront.catalogue.product.read";
@@ -41,7 +53,8 @@ export function ProductsPage() {
   const canWrite = useCan(WRITE, "ORG");
   const canRead = useCan(READ, "ORG");
   const [params] = useSearchParams();
-  const [query, setQuery] = useState(params.get("q") ?? "");
+  const [rawQuery, setRawQuery] = useState(params.get("q") ?? "");
+  const query = useDebouncedValue(rawQuery);
   const [status, setStatus] = useState<ProductStatus | "">("");
   const [categoryId, setCategoryId] = useState("");
   const [sort, setSort] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "updated_at", dir: "desc" });
@@ -50,6 +63,7 @@ export function ProductsPage() {
   const [editing, setEditing] = useState<ProductOut | null>(null);
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<ProductOut | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const categories = useAsync(() => listCategories({ size: 200 }), []);
   const categoryOptions =
@@ -89,6 +103,40 @@ export function ProductsPage() {
     }
   }
 
+  const productSelection: TableSelection<ProductOut> | undefined =
+    products.status === "success"
+      ? {
+          selected,
+          onToggle: (key, next) =>
+            setSelected((prev) => {
+              const nextSet = new Set(prev);
+              if (next) nextSet.add(key);
+              else nextSet.delete(key);
+              return nextSet;
+            }),
+          onToggleAll: (next) =>
+            setSelected(next ? new Set(products.data.items.map((p) => p.id)) : new Set()),
+          label: (p) => p.name,
+        }
+      : undefined;
+
+  function exportSelectedProducts() {
+    if (products.status !== "success") return;
+    const chosen = products.data.items.filter((p) => selected.has(p.id));
+    downloadCsv(
+      "products.csv",
+      ["Product", "Code", "Category", "Price", "Status", "Stock"],
+      chosen.map((p) => [
+        p.name,
+        p.code,
+        p.category,
+        formatPriceBand(p),
+        p.status,
+        p.in_stock ? "In stock" : "Out of stock",
+      ]),
+    );
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
@@ -122,15 +170,22 @@ export function ProductsPage() {
                 rowKey={(p) => p.id}
                 sort={sort}
                 onSort={(key) => setSort((s) => ({ key, dir: s.key === key && s.dir === "asc" ? "desc" : "asc" }))}
+                mobileCard="auto"
+                selection={productSelection}
+                bulkActions={
+                  <Button variant="outline" size="sm" onClick={exportSelectedProducts}>
+                    Export selected
+                  </Button>
+                }
                 toolbar={
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="flex flex-wrap items-center gap-3">
                       <SearchInput
                         label="Search products"
                         placeholder="Code, name or brand"
-                        value={query}
+                        value={rawQuery}
                         onChange={(e) => {
-                          setQuery(e.target.value);
+                          setRawQuery(e.target.value);
                           setPage(1);
                         }}
                       />
@@ -177,7 +232,7 @@ export function ProductsPage() {
                         <Button
                           variant="outline"
                           onClick={() => {
-                            setQuery("");
+                            setRawQuery("");
                             setStatus("");
                             setCategoryId("");
                           }}
@@ -196,6 +251,7 @@ export function ProductsPage() {
                       key: "name",
                       header: "Product",
                       sortKey: "name",
+                      mobile: "title",
                       render: (p) => (
                         <div className="flex flex-col gap-0.5">
                           <span className="font-bold text-ink">{p.name}</span>
@@ -214,21 +270,23 @@ export function ProductsPage() {
                     {
                       key: "status",
                       header: "Status",
+                      mobile: "status",
                       render: (p) => (
-                        <Tag tone={p.status === "active" ? "positive" : p.status === "archived" ? "neutral" : "warning"}>
-                          {p.status}
-                        </Tag>
+                        <StatusBadge tone={STATUS_TONE_OVERRIDE[p.status] ?? statusTone(p.status) ?? "neutral"} label={p.status} />
                       ),
                     },
                     {
                       key: "in_stock",
                       header: "Stock",
-                      render: (p) => <Tag tone={p.in_stock ? "positive" : "warning"}>{p.in_stock ? "In stock" : "Out of stock"}</Tag>,
+                      render: (p) => (
+                        <StatusBadge tone={p.in_stock ? "success" : "warning"} label={p.in_stock ? "In stock" : "Out of stock"} />
+                      ),
                     },
                     {
                       key: "actions",
                       header: "",
                       align: "right",
+                      mobile: "actions",
                       render: (p) => (
                         <RowActions
                           label={p.name}

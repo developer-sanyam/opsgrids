@@ -5,7 +5,6 @@ import { useNavigate } from "react-router-dom";
 import { listAssets } from "@/api/client";
 import type { Asset, AssetStatus, AssetType } from "@/api/types";
 import { assetTypeLabel, daysUntil, formatDate } from "@/lib/format";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { Can, problemMessage, useAsync, useCan } from "@opsgrids/client";
 import {
   AssetStatusPill,
@@ -23,6 +22,7 @@ import type { Column } from "@/ui";
 import {
   BoxIcon,
   Button,
+  DownloadIcon,
   KeyIcon,
   LaptopIcon,
   MonitorIcon,
@@ -32,7 +32,9 @@ import {
   ServerIcon,
   useToast,
 } from "@opsgrids/ui";
+import type { TableSelection } from "@opsgrids/ui";
 import { AssetFormDialog } from "@/forms/AssetFormDialog";
+import { downloadCsv, toCsv } from "@/lib/exportCsv";
 
 const CAN_WRITE = "itsm.cmdb.asset.write";
 
@@ -87,35 +89,37 @@ export function AssetsPage() {
   const toast = useToast();
   const canWrite = useCan(CAN_WRITE, "OWN");
   const [search, setSearch] = useState("");
-  const debouncedSearch = useDebouncedValue(search);
   const [type, setType] = useState<AssetType | "all">("all");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(25);
   const [creating, setCreating] = useState(false);
+  const [selectedTags, setSelectedTags] = useState<ReadonlySet<string>>(new Set());
 
   const loader = useCallback(
-    () => listAssets({ search: debouncedSearch, type, status, page, size }),
-    [debouncedSearch, type, status, page, size],
+    () => listAssets({ search, type, status, page, size }),
+    [search, type, status, page, size],
   );
-  const state = useAsync(loader, [debouncedSearch, type, status, page, size]);
+  const state = useAsync(loader, [search, type, status, page, size]);
 
   const items = useMemo(
     () => (state.status === "success" ? state.data.items : NO_ASSETS),
     [state],
   );
-  const hasFilters = debouncedSearch.trim() !== "" || type !== "all" || status !== "all";
+  const hasFilters = search.trim() !== "" || type !== "all" || status !== "all";
 
   const columns: Column<Asset>[] = useMemo(
     () => [
       {
         key: "tag",
         header: "Tag",
+        mobile: "field",
         render: (a) => <span className="tnum font-semibold text-ink-soft">{a.tag}</span>,
       },
       {
         key: "name",
         header: "Asset",
+        mobile: "title",
         render: (a) => {
           const Icon = TYPE_ICON[a.type];
           return (
@@ -150,6 +154,7 @@ export function AssetsPage() {
       {
         key: "status",
         header: "Status",
+        mobile: "status",
         render: (a) => <AssetStatusPill status={a.status} />,
       },
       {
@@ -173,6 +178,35 @@ export function AssetsPage() {
     ],
     [],
   );
+
+  const selection: TableSelection<Asset> = {
+    selected: selectedTags,
+    onToggle: (key, next) =>
+      setSelectedTags((prev) => {
+        const nextSet = new Set(prev);
+        if (next) nextSet.add(key);
+        else nextSet.delete(key);
+        return nextSet;
+      }),
+    onToggleAll: (next) => setSelectedTags(next ? new Set(items.map((a) => a.tag)) : new Set()),
+    label: (a) => a.name,
+  };
+
+  function exportSelected() {
+    const rows = items.filter((a) => selectedTags.has(a.tag));
+    const csv = toCsv(
+      ["Tag", "Name", "Type", "Owner", "Status", "Warranty expires"],
+      rows.map((a) => [
+        a.tag,
+        a.name,
+        assetTypeLabel(a.type),
+        a.owner ?? "Unassigned",
+        a.status,
+        a.warranty_expires_at ?? "",
+      ]),
+    );
+    downloadCsv(`assets-selected-${rows.length}.csv`, csv);
+  }
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -201,8 +235,8 @@ export function AssetsPage() {
             label="Search assets"
             placeholder="Search by tag, name, owner or serial…"
             value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
+            onDebouncedChange={(next) => {
+              setSearch(next);
               setPage(1);
             }}
             containerClassName="lg:max-w-sm"
@@ -264,6 +298,18 @@ export function AssetsPage() {
               rowKey={(a) => a.tag}
               caption="Assets"
               onRowClick={(a) => navigate(`/assets/${a.tag}`)}
+              mobileCard="auto"
+              selection={selection}
+              bulkActions={
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  leadingIcon={<DownloadIcon className="size-4" />}
+                  onClick={exportSelected}
+                >
+                  Export selected
+                </Button>
+              }
               emptyState={
                 <EmptyState
                   icon={<BoxIcon className="size-6" />}

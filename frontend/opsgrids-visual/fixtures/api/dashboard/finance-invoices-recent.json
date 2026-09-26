@@ -1,0 +1,113 @@
+{
+  "items": [
+    {
+      "id": "fi000000-0000-4000-8000-000000000001",
+      "number": "INV-8264",
+      "document_type": "invoice",
+      "customer_id": "fc000000-0000-4000-8000-000000000001",
+      "issued_date": "2026-09-14",
+      "due_date": "2026-09-28",
+      "status": "paid",
+      "currency": "INR",
+      "lines": [
+        { "id": "fl000000-0000-4000-8000-000000000001", "description": "Consulting services", "quantity": 1, "unit_price_minor": 1200000, "amount_minor": 1200000 }
+      ],
+      "subtotal_minor": 1200000,
+      "tax_rate_pct": 0,
+      "tax_minor": 0,
+      "total_minor": 1200000,
+      "amount_paid_minor": 1200000,
+      "notes": null,
+      "corrects_invoice_id": null,
+      "einvoice": { "required": false, "status": null }
+    },
+    {
+      "id": "fi000000-0000-4000-8000-000000000002",
+      "number": "INV-8263",
+      "document_type": "invoice",
+      "customer_id": "fc000000-0000-4000-8000-000000000002",
+      "issued_date": "2026-09-12",
+      "due_date": "2026-09-26",
+      "status": "sent",
+      "currency": "INR",
+      "lines": [
+        { "id": "fl000000-0000-4000-8000-000000000002", "description": "Implementation services", "quantity": 1, "unit_price_minor": 1245000, "amount_minor": 1245000 }
+      ],
+      "subtotal_minor": 1245000,
+      "tax_rate_pct": 0,
+      "tax_minor": 0,
+      "total_minor": 1245000,
+      "amount_paid_minor": 0,
+      "notes": null,
+      "corrects_invoice_id": null,
+      "einvoice": { "required": false, "status": null }
+    },
+    {
+      "id": "fi000000-0000-4000-8000-000000000003",
+      "number": "INV-8262",
+      "document_type": "invoice",
+      "customer_id": "fc000000-0000-4000-8000-000000000003",
+      "issued_date": "2026-08-25",
+      "due_date": "2026-09-08",
+      "status": "overdue",
+      "currency": "INR",
+      "lines": [
+        { "id": "fl000000-0000-4000-8000-000000000003", "description": "Annual maintenance contract", "quantity": 1, "unit_price_minor": 4800000, "amount_minor": 4800000 }
+      ],
+      "subtotal_minor": 4800000,
+      "tax_rate_pct": 0,
+      "tax_minor": 0,
+      "total_minor": 4800000,
+      "amount_paid_minor": 0,
+      "notes": null,
+      "corrects_invoice_id": null,
+      "einvoice": { "required": false, "status": null }
+    },
+    {
+      "id": "fi000000-0000-4000-8000-000000000004",
+      "number": "INV-8261",
+      "document_type": "invoice",
+      "customer_id": "fc000000-0000-4000-8000-000000000001",
+      "issued_date": "2026-09-05",
+      "due_date": "2026-09-19",
+      "status": "paid",
+      "currency": "INR",
+      "lines": [
+        { "id": "fl000000-0000-4000-8000-000000000004", "description": "Consulting services", "quantity": 1, "unit_price_minor": 498000, "amount_minor": 498000 }
+      ],
+      "subtotal_minor": 498000,
+      "tax_rate_pct": 0,
+      "tax_minor": 0,
+      "total_minor": 498000,
+      "amount_paid_minor": 498000,
+      "notes": null,
+      "corrects_invoice_id": null,
+      "einvoice": { "required": false, "status": null }
+    },
+    {
+      "id": "fi000000-0000-4000-8000-000000000005",
+      "number": "INV-8260",
+      "document_type": "invoice",
+      "customer_id": "fc000000-0000-4000-8000-000000000002",
+      "issued_date": "2026-09-02",
+      "due_date": "2026-09-16",
+      "status": "draft",
+      "currency": "INR",
+      "lines": [
+        { "id": "fl000000-0000-4000-8000-000000000005", "description": "Draft — onboarding services", "quantity": 1, "unit_price_minor": 350000, "amount_minor": 350000 }
+      ],
+      "subtotal_minor": 350000,
+      "tax_rate_pct": 0,
+      "tax_minor": 0,
+      "total_minor": 350000,
+      "amount_paid_minor": 0,
+      "notes": null,
+      "corrects_invoice_id": null,
+      "einvoice": { "required": false, "status": null }
+    }
+  ],
+  "total": 5,
+  "page": 1,
+  "size": 5,
+  "pages": 1
+}

@@ -1,217 +1,157 @@
-import { useCallback, useMemo, useState } from "react";
-import type { CSSProperties } from "react";
+import { useCallback, useMemo } from "react";
+import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { getAllMilestones, getAllProjects, TRENDS_ARE_SAMPLE } from "@/api/client";
-import type { MilestoneOut, ProjectOut } from "@/api/types";
-import { useAuth } from "@opsgrids/client";
+import { Can, problemMessage, useAsync, useCan } from "@opsgrids/client";
+import {
+  AlertTriangleIcon,
+  BriefcaseIcon,
+  ChartCard,
+  CheckCircleIcon,
+  DonutChart,
+  FlagIcon,
+  isStatusWord,
+  MetricCard,
+  PlusIcon,
+  StatusBadge,
+} from "@opsgrids/ui";
+import type { DonutSlice } from "@opsgrids/ui";
+
+import {
+  countCompletedProjects,
+  getAllMilestones,
+  getAllProjects,
+  getAllTasks,
+  listMyTasks,
+} from "@/api/client";
+import type { MilestoneOut, ProjectHealth, ProjectOut, TaskOut } from "@/api/types";
 import {
   activeProjects,
-  averageProgress,
   healthBreakdown,
   milestonesDue,
-  needsAttention,
-  onTimeFraction,
-  totalBudgetMinor,
-  totalSpentMinor,
+  overdueTasks,
+  sortByDueDate,
 } from "@/data/derive";
-import { formatMoney, formatPct, today } from "@/lib/format";
-import { problemMessage, useAsync } from "@opsgrids/client";
+import { MILESTONE_STATUS_LABEL, STAGE_LABEL } from "@/data/labels";
+import { formatDate, today } from "@/lib/format";
 import {
-  Burndown,
   Button,
   Card,
+  DataTable,
+  EmptyState,
   ErrorState,
-  HealthBreakdown,
-  KpiCard,
-  NeedsAttention,
+  PageHeader,
   ProgressBar,
-  SampleChip,
   SectionHeader,
   Skeleton,
-  StatCard,
 } from "@/ui";
-import type { KpiTone } from "@/ui";
-import {
-  ArrowRightIcon,
-  BriefcaseIcon,
-  FlagIcon,
-  GaugeIcon,
-  PlusIcon,
-  SearchIcon,
-  TargetIcon,
-} from "@opsgrids/ui";
-import { SAMPLE_DATA } from "@/ui/sampleCopy";
+import type { Column } from "@/ui";
 
-/** A stable empty reference so the derived-data memos don't churn while loading. */
+const WRITE = "projects.portfolio.project.write";
+
+const COUNT = new Intl.NumberFormat("en-IN");
+
+/** A stable empty reference so the derived-data memos don't churn while a source is loading. */
 const EMPTY_PROJECTS: ProjectOut[] = [];
 const EMPTY_MILESTONES: MilestoneOut[] = [];
+const EMPTY_TASKS: TaskOut[] = [];
+
+const HEALTH_TONE: Record<ProjectHealth, "accent" | "positive" | "info" | "cyan" | "warning" | "danger"> = {
+  on_track: "positive",
+  at_risk: "warning",
+  delayed: "danger",
+};
+
+/** A due date sorts before an undated one, which sorts last — the same rule `derive.ts` applies
+ *  to milestones, needed again here for tasks (a different shape, same two fields). */
+function byDueDateSoonestFirst(a: { due_date: string | null }, b: { due_date: string | null }): number {
+  if (a.due_date === null && b.due_date === null) return 0;
+  if (a.due_date === null) return 1;
+  if (b.due_date === null) return -1;
+  return a.due_date.localeCompare(b.due_date);
+}
+
+/** The Overview's top bar: breadcrumb-free title, a sentence of orientation, then "New project" —
+ *  gated on the write grant, not merely hidden by convention (the dashboard audit flagged this
+ *  control as reachable with no permission check at all). */
+function OverviewHeader({ onNewProject }: { onNewProject: () => void }) {
+  return (
+    <PageHeader
+      title="Overview"
+      description="Delivery across every project."
+      actions={
+        <Can permission={WRITE}>
+          <Button leadingIcon={<PlusIcon className="size-4" />} onClick={onNewProject}>
+            New project
+          </Button>
+        </Can>
+      }
+    />
+  );
+}
+
+/** The KPI row's shared branch: a skeleton while loading, an inline retry on failure, or the
+ *  real card — one shape per source, so a failed task scan never blanks the projects the
+ *  portfolio call already returned. */
+function KpiSlot({
+  status,
+  label,
+  error,
+  onRetry,
+  children,
+}: {
+  status: "loading" | "success" | "error";
+  label: string;
+  error: Error | null;
+  onRetry: () => void;
+  children: ReactNode;
+}) {
+  if (status === "loading") {
+    return (
+      <Card className="flex items-start gap-4 p-4 sm:p-6" role="status" aria-busy="true">
+        <span className="sr-only">{`Loading ${label}`}</span>
+        <Skeleton className="size-11 shrink-0 rounded-tile" />
+        <div className="flex min-w-0 flex-1 flex-col gap-2">
+          <Skeleton className="h-3 w-24 rounded-full" />
+          <Skeleton className="h-7 w-16 rounded-tile" />
+        </div>
+      </Card>
+    );
+  }
+  if (status === "error") {
+    return (
+      <Card className="flex flex-col justify-center gap-3 p-4 sm:p-6">
+        <p className="text-sm font-semibold text-ink">{`Couldn't load ${label.toLowerCase()}.`}</p>
+        <p className="text-xs text-muted">{problemMessage(error)}</p>
+        <Button variant="secondary" size="sm" onClick={onRetry}>
+          Try again
+        </Button>
+      </Card>
+    );
+  }
+  return <>{children}</>;
+}
 
 /**
- * A representative resource-utilization figure and trend for the KPI row. `services/projects` has
- * no capacity source at all — not even the constant `/overview` exposes reaches this app, since
- * the SPA derives its rollups from the project and milestone lists rather than re-implementing
- * that endpoint (see the audit's "Must not be built"). Kept only because it's chip-marked below as
- * sample data, exactly like the burndown chart, and never presented as a live figure.
+ * The Project Manager's home: delivery KPIs with no invented trend, the portfolio's own progress
+ * and health, the caller's own tasks, and the deadlines coming up next.
+ *
+ * `utilization_pct` and the release/sprint burndown are gone from this screen entirely —
+ * `/projects-workspace/overview` now answers both as `null` (this service has no capacity source
+ * and no dated delivery snapshot), and a placeholder number here previously looked live and was
+ * not (dashboard audit, §3.9). "On hold" is not a project phase this service has (`discovery`,
+ * `design`, `build`, `stabilize`, `launch`, `live`), so the KPI row does not carry a card for it;
+ * "Milestones due" takes that slot instead, with a real count behind it.
  */
-const SAMPLE_UTILIZATION_PCT = 87;
-const SAMPLE_UTILIZATION_SERIES = [79, 82, 80, 84, 86, 85, 87];
-
-/** The Overview's top bar: breadcrumb + title, then the search / add controls. Search is visible
- *  at every width — a control hidden below `md` is a control most visits never see. */
-function OverviewHeader({ orgName }: { orgName: string }) {
-  const navigate = useNavigate();
-  const [query, setQuery] = useState("");
-
-  return (
-    <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-      <div className="flex flex-col gap-1">
-        <nav aria-label="Breadcrumb" className="text-sm font-medium text-muted">
-          Workspace <span className="text-faint">/</span>{" "}
-          <span className="text-ink-soft">{orgName}</span>
-        </nav>
-        <h1 className="display text-3xl font-extrabold leading-tight sm:text-[2.1rem]">
-          Overview
-        </h1>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const q = query.trim();
-            navigate(q ? `/portfolio?q=${encodeURIComponent(q)}` : "/portfolio");
-          }}
-          className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-full bg-surface px-4 shadow-card focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2 sm:w-60 sm:flex-none"
-        >
-          <SearchIcon className="size-[18px] shrink-0 text-faint" />
-          <label htmlFor="overview-search" className="sr-only">
-            Search projects
-          </label>
-          <input
-            id="overview-search"
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search projects…"
-            className="min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-faint focus:outline-none"
-          />
-        </form>
-
-        <Button
-          size="md"
-          leadingIcon={<PlusIcon className="size-4" />}
-          onClick={() => navigate("/portfolio?new=1")}
-        >
-          New project
-        </Button>
-      </div>
-    </header>
-  );
-}
-
-interface StatConfig {
-  key: string;
-  label: string;
-  value: string;
-  icon: React.ReactNode;
-  tone: KpiTone;
-}
-
-/** The three headline figures with no history endpoint behind them — real numbers, no invented
- *  trend, rendered as plain `StatCard`s rather than a `KpiCard` with a fabricated delta. */
-function buildStats(projects: ProjectOut[], milestones: MilestoneOut[]): StatConfig[] {
-  const active = activeProjects(projects);
-  const onTime = onTimeFraction(milestones);
-  const due = milestonesDue(milestones, today());
-  return [
-    {
-      key: "active",
-      label: "Active projects",
-      value: String(active),
-      icon: <BriefcaseIcon className="size-5" />,
-      tone: "accent",
-    },
-    {
-      key: "on_time",
-      label: "On-time delivery",
-      value: formatPct(onTime),
-      icon: <TargetIcon className="size-5" />,
-      tone: "positive",
-    },
-    {
-      key: "due",
-      label: "Milestones due (14d)",
-      value: String(due),
-      icon: <FlagIcon className="size-5" />,
-      tone: "info",
-    },
-  ];
-}
-
-/** A compact portfolio snapshot: budget vs spend, average progress, and a link into the portfolio. */
-function PortfolioSnapshot({ projects }: { projects: ProjectOut[] }) {
-  const budget = totalBudgetMinor(projects);
-  const spent = totalSpentMinor(projects);
-  const spentPct = budget === 0 ? 0 : Math.round((spent / budget) * 100);
-  const avg = averageProgress(projects.filter((p) => p.phase !== "live"));
-  // A portfolio can carry more than one currency; the snapshot only totals cleanly when every
-  // project shares one, so it names the currency it used rather than silently summing across them.
-  const currency = projects[0]?.currency ?? "INR";
-  const mixedCurrency = projects.some((p) => p.currency !== currency);
-
-  return (
-    <div className="flex flex-col gap-5">
-      <div className="flex flex-col gap-1">
-        <span className="text-sm text-muted">
-          Committed budget{mixedCurrency ? ` (${currency} only)` : ""}
-        </span>
-        <span className="display text-3xl font-extrabold tnum leading-none">
-          {formatMoney(budget, currency)}
-        </span>
-      </div>
-
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted">Spent to date</span>
-          <span className="font-semibold text-ink tnum">
-            {formatMoney(spent, currency)} · {spentPct}%
-          </span>
-        </div>
-        <ProgressBar value={spentPct} />
-      </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        <div className="rounded-tile bg-ground px-3 py-3">
-          <span className="block text-xs text-muted">Avg. progress</span>
-          <span className="text-lg font-extrabold tnum">{avg}%</span>
-        </div>
-        <div className="rounded-tile bg-ground px-3 py-3">
-          <span className="block text-xs text-muted">In delivery</span>
-          <span className="text-lg font-extrabold tnum">{activeProjects(projects)}</span>
-        </div>
-      </div>
-
-      <Link
-        to="/portfolio"
-        className="inline-flex h-10 items-center justify-center gap-1.5 rounded-full border border-line bg-surface text-sm font-semibold text-ink hover:bg-ground transition-colors"
-      >
-        Open portfolio
-        <ArrowRightIcon className="size-4" />
-      </Link>
-    </div>
-  );
-}
-
 export function OverviewPage() {
-  const { user } = useAuth();
+  const navigate = useNavigate();
+  const canWrite = useCan(WRITE);
+
   const projectsState = useAsync(useCallback(getAllProjects, []), []);
   const milestonesState = useAsync(useCallback(() => getAllMilestones(), []), []);
-
-  const orgName =
-    user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
-    user?.organizations[0]?.name ??
-    "OpsGrids";
+  const tasksState = useAsync(useCallback(() => getAllTasks(), []), []);
+  const completedState = useAsync(useCallback(countCompletedProjects, []), []);
+  const myTasksState = useAsync(useCallback(() => listMyTasks(100), []), []);
 
   const projects = useMemo(
     () => (projectsState.status === "success" ? projectsState.data : EMPTY_PROJECTS),
@@ -221,135 +161,272 @@ export function OverviewPage() {
     () => (milestonesState.status === "success" ? milestonesState.data : EMPTY_MILESTONES),
     [milestonesState],
   );
+  const tasks = useMemo(
+    () => (tasksState.status === "success" ? tasksState.data : EMPTY_TASKS),
+    [tasksState],
+  );
+  const myTasks = useMemo(
+    () => (myTasksState.status === "success" ? myTasksState.data.items : EMPTY_TASKS),
+    [myTasksState],
+  );
 
-  const stats = useMemo(() => buildStats(projects, milestones), [projects, milestones]);
+  const active = activeProjects(projects);
+  const dueSoon = milestonesDue(milestones, today());
+  const overdue = overdueTasks(tasks, today());
+  const completed = completedState.status === "success" ? completedState.data : 0;
+
   const health = useMemo(() => healthBreakdown(projects), [projects]);
-  const attention = useMemo(() => needsAttention(milestones), [milestones]);
+  const healthSlices: DonutSlice[] = health.map((slice) => ({
+    key: slice.key,
+    label: slice.label,
+    value: slice.count,
+    tone: HEALTH_TONE[slice.key],
+  }));
 
-  const ready = projectsState.status === "success" && milestonesState.status === "success";
-  const failed = projectsState.status === "error" || milestonesState.status === "error";
-  const errorMessage =
-    (projectsState.status === "error" && problemMessage(projectsState.error)) ||
-    (milestonesState.status === "error" && problemMessage(milestonesState.error)) ||
-    "Couldn't load the portfolio.";
-  const reload = () => {
-    projectsState.reload();
-    milestonesState.reload();
-  };
+  const topProjects = useMemo(
+    () =>
+      [...projects]
+        .filter((p) => p.phase !== "live")
+        .sort((a, b) => a.target_date.localeCompare(b.target_date))
+        .slice(0, 8),
+    [projects],
+  );
+
+  const myUpcoming = useMemo(
+    () => myTasks.filter((t) => t.stage !== "done").sort(byDueDateSoonestFirst).slice(0, 6),
+    [myTasks],
+  );
+
+  const deadlines = useMemo(
+    () => sortByDueDate(milestones.filter((m) => m.status !== "completed")).slice(0, 6),
+    [milestones],
+  );
+
+  const goToNewProject = () => navigate("/portfolio?new=1");
+
+  const projectColumns: Column<ProjectOut>[] = [
+    {
+      key: "project",
+      header: "Project",
+      render: (row) => (
+        <div className="flex min-w-0 flex-col">
+          <span className="truncate font-semibold text-ink">{row.name}</span>
+          <span className="text-xs text-muted">{row.code}</span>
+        </div>
+      ),
+      mobile: "title",
+    },
+    {
+      key: "health",
+      header: "Health",
+      render: (row) => <StatusBadge status={row.health} />,
+      mobile: "status",
+    },
+    {
+      key: "progress",
+      header: "Progress",
+      render: (row) => <ProgressBar value={row.progress_pct} health={row.health} showLabel />,
+      mobile: "field",
+    },
+    {
+      key: "target",
+      header: "Target date",
+      render: (row) => formatDate(row.target_date),
+      mobile: "field",
+      cellClassName: "whitespace-nowrap",
+    },
+  ];
+
+  const taskColumns: Column<TaskOut>[] = [
+    {
+      key: "title",
+      header: "Task",
+      render: (row) => <span className="font-semibold text-ink">{row.title}</span>,
+      mobile: "title",
+    },
+    { key: "project", header: "Project", render: (row) => row.project_code, mobile: "field" },
+    {
+      key: "stage",
+      header: "Stage",
+      render: (row) =>
+        isStatusWord(row.stage) ? <StatusBadge status={row.stage} /> : <StatusBadge tone="neutral" label={STAGE_LABEL[row.stage]} />,
+      mobile: "status",
+    },
+    {
+      key: "due",
+      header: "Due",
+      render: (row) => formatDate(row.due_date),
+      mobile: "field",
+      cellClassName: "whitespace-nowrap",
+    },
+  ];
+
+  const milestoneColumns: Column<MilestoneOut>[] = [
+    {
+      key: "title",
+      header: "Milestone",
+      render: (row) => <span className="font-semibold text-ink">{row.title}</span>,
+      mobile: "title",
+    },
+    { key: "project", header: "Project", render: (row) => row.project_name, mobile: "field" },
+    {
+      key: "status",
+      header: "Status",
+      render: (row) =>
+        isStatusWord(row.status) ? (
+          <StatusBadge status={row.status} />
+        ) : (
+          <StatusBadge tone="danger" label={MILESTONE_STATUS_LABEL[row.status]} />
+        ),
+      mobile: "status",
+    },
+    {
+      key: "due",
+      header: "Due",
+      render: (row) => formatDate(row.due_date),
+      mobile: "field",
+      cellClassName: "whitespace-nowrap",
+    },
+  ];
 
   return (
     <div className="rise flex flex-col gap-5">
-      <OverviewHeader orgName={orgName} />
+      <OverviewHeader onNewProject={goToNewProject} />
 
-      {/* Row 1 — KPI cards */}
-      <section aria-label="Key metrics" className="cascade grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {!ready && !failed
-          ? Array.from({ length: 4 }).map((_, i) => (
-              <Card key={i} className="flex flex-col gap-4 p-5" style={{ "--i": i } as CSSProperties}>
-                <div className="flex justify-between">
-                  <Skeleton className="size-10 rounded-tile" />
-                  <Skeleton className="h-8 w-20" />
-                </div>
-                <Skeleton className="h-4 w-24" />
-                <Skeleton className="h-9 w-20 rounded-tile" />
-              </Card>
-            ))
-          : null}
-        {failed ? (
-          <Card className="p-5 sm:col-span-2 xl:col-span-4">
-            <ErrorState
-              title="Couldn't load the portfolio"
-              message={errorMessage}
-              action={<Button onClick={reload}>Try again</Button>}
-            />
-          </Card>
-        ) : null}
-        {ready
-          ? stats.map((stat, i) => (
-              <div key={stat.key} style={{ "--i": i } as CSSProperties}>
-                <StatCard label={stat.label} value={stat.value} icon={stat.icon} tone={stat.tone} />
-              </div>
-            ))
-          : null}
-        {ready ? (
-          <div style={{ "--i": stats.length } as CSSProperties}>
-            <KpiCard
-              label="Resource utilization"
-              value={`${SAMPLE_UTILIZATION_PCT}%`}
-              deltaPct={3.1}
-              series={SAMPLE_UTILIZATION_SERIES}
-              icon={<GaugeIcon className="size-5" />}
-              tone="cyan"
-              sample={SAMPLE_DATA}
-            />
-          </div>
-        ) : null}
+      {/* Row 1 — KPI cards. No delta on any of the four: none has a real comparison period. */}
+      <section aria-label="Key metrics" className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <KpiSlot status={projectsState.status} label="Active projects" error={projectsState.error} onRetry={projectsState.reload}>
+          <MetricCard label="Active projects" value={COUNT.format(active)} icon={<BriefcaseIcon className="size-5" />} tone="accent" />
+        </KpiSlot>
+
+        <KpiSlot status={completedState.status} label="Completed" error={completedState.error} onRetry={completedState.reload}>
+          <MetricCard label="Completed" value={COUNT.format(completed)} icon={<CheckCircleIcon className="size-5" />} tone="positive" />
+        </KpiSlot>
+
+        <KpiSlot status={tasksState.status} label="Overdue tasks" error={tasksState.error} onRetry={tasksState.reload}>
+          <MetricCard label="Overdue tasks" value={COUNT.format(overdue)} icon={<AlertTriangleIcon className="size-5" />} tone="danger" />
+        </KpiSlot>
+
+        <KpiSlot status={milestonesState.status} label="Milestones due (14d)" error={milestonesState.error} onRetry={milestonesState.reload}>
+          <MetricCard label="Milestones due (14d)" value={COUNT.format(dueSoon)} icon={<FlagIcon className="size-5" />} tone="info" />
+        </KpiSlot>
       </section>
 
-      {/* Row 2 — burndown · health breakdown */}
+      {/* Row 2 — project progress · project health */}
       <section aria-label="Delivery overview" className="grid grid-cols-1 gap-5 xl:grid-cols-3">
-        <Card className="flex flex-col gap-4 p-6 xl:col-span-2">
+        <Card className="flex flex-col gap-4 p-4 sm:p-6 xl:col-span-2">
           <SectionHeader
-            title="Release burndown"
-            subtitle="Remaining scope against the plan"
-            {...(TRENDS_ARE_SAMPLE ? { action: <SampleChip {...SAMPLE_DATA} /> } : {})}
-          />
-          {ready ? (
-            <Burndown />
-          ) : failed ? (
-            <ErrorState message={errorMessage} />
-          ) : (
-            <Skeleton className="h-64 w-full rounded-tile" />
-          )}
-        </Card>
-
-        <Card className="flex flex-col gap-5 p-6 xl:col-span-1">
-          <SectionHeader title="Project health" subtitle="Across the portfolio" />
-          {ready ? (
-            <HealthBreakdown slices={health} total={projects.length} />
-          ) : failed ? (
-            <ErrorState message={errorMessage} />
-          ) : (
-            <Skeleton className="h-56 w-full rounded-tile" />
-          )}
-        </Card>
-      </section>
-
-      {/* Row 3 — needs attention · portfolio snapshot */}
-      <section aria-label="Attention and portfolio" className="grid grid-cols-1 gap-5 xl:grid-cols-3 items-start">
-        <Card className="flex flex-col gap-4 p-6 xl:col-span-2">
-          <SectionHeader
-            title="Needs attention"
-            subtitle="Milestones slipping or at risk"
+            title="Project progress"
+            subtitle="Active projects, soonest target date first"
             action={
-              <Link
-                to="/milestones"
-                className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
-              >
-                All milestones
+              <Link to="/portfolio" className="text-sm font-semibold text-accent-ink transition-colors hover:text-accent">
+                View all
               </Link>
             }
           />
-          {ready ? (
-            <NeedsAttention milestones={attention} now={today()} />
-          ) : failed ? (
-            <ErrorState message={errorMessage} />
-          ) : (
-            <div className="flex flex-col gap-3 py-2">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <Skeleton key={i} className="h-12 w-full rounded-tile" />
-              ))}
-            </div>
-          )}
+          <DataTable
+            columns={projectColumns}
+            rows={topProjects}
+            rowKey={(row) => row.id}
+            loading={projectsState.status === "loading"}
+            errorState={
+              projectsState.status === "error" ? (
+                <ErrorState message={problemMessage(projectsState.error)} onRetry={projectsState.reload} />
+              ) : undefined
+            }
+            emptyState={
+              <EmptyState
+                title="No projects in delivery"
+                description="Create a project to track its milestones and tasks here."
+                action={
+                  canWrite ? (
+                    <Button size="sm" onClick={goToNewProject}>
+                      New project
+                    </Button>
+                  ) : undefined
+                }
+              />
+            }
+            mobileCard="auto"
+          />
         </Card>
 
-        <Card className="flex flex-col gap-5 p-6 xl:col-span-1">
-          <SectionHeader title="Portfolio" subtitle="Budget & delivery" />
-          {ready ? (
-            <PortfolioSnapshot projects={projects} />
-          ) : (
-            <Skeleton className="h-64 w-full rounded-tile" />
-          )}
+        <div className="xl:col-span-1">
+          <ChartCard
+            title="Project health"
+            description="Across the portfolio"
+            loading={projectsState.status === "loading"}
+            error={
+              projectsState.status === "error" ? (
+                <ErrorState message={problemMessage(projectsState.error)} onRetry={projectsState.reload} />
+              ) : undefined
+            }
+            empty={
+              projectsState.status === "success" && projects.length === 0 ? (
+                <EmptyState title="No projects yet" description="Health appears here once a project exists." />
+              ) : undefined
+            }
+            skeleton="donut"
+          >
+            {projectsState.status === "success" && projects.length > 0 ? (
+              <DonutChart label="Project health" slices={healthSlices} />
+            ) : null}
+          </ChartCard>
+        </div>
+      </section>
+
+      {/* Row 3 — my tasks · deadlines */}
+      <section aria-label="My tasks and deadlines" className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <Card className="flex flex-col gap-4 p-4 sm:p-6">
+          <SectionHeader
+            title="My tasks"
+            action={
+              <Link to="/board" className="text-sm font-semibold text-accent-ink transition-colors hover:text-accent">
+                View all
+              </Link>
+            }
+          />
+          <DataTable
+            columns={taskColumns}
+            rows={myUpcoming}
+            rowKey={(row) => row.id}
+            loading={myTasksState.status === "loading"}
+            errorState={
+              myTasksState.status === "error" ? (
+                <ErrorState message={problemMessage(myTasksState.error)} onRetry={myTasksState.reload} />
+              ) : undefined
+            }
+            emptyState={
+              <EmptyState title="Nothing assigned to you" description="Cards assigned to you on the board appear here." />
+            }
+            mobileCard="auto"
+          />
+        </Card>
+
+        <Card className="flex flex-col gap-4 p-4 sm:p-6">
+          <SectionHeader
+            title="Deadlines"
+            action={
+              <Link to="/milestones" className="text-sm font-semibold text-accent-ink transition-colors hover:text-accent">
+                View all
+              </Link>
+            }
+          />
+          <DataTable
+            columns={milestoneColumns}
+            rows={deadlines}
+            rowKey={(row) => row.id}
+            loading={milestonesState.status === "loading"}
+            errorState={
+              milestonesState.status === "error" ? (
+                <ErrorState message={problemMessage(milestonesState.error)} onRetry={milestonesState.reload} />
+              ) : undefined
+            }
+            emptyState={
+              <EmptyState title="No upcoming deadlines" description="Milestone due dates appear here as you set them." />
+            }
+            mobileCard="auto"
+          />
         </Card>
       </section>
     </div>

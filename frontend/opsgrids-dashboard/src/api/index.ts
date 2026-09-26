@@ -7,13 +7,20 @@ import { apiRequest } from "@opsgrids/client";
 
 import type {
   Activation,
+  AttendanceRecord,
+  Company,
   CreditBalance,
+  DealActivity,
   Domain,
   DomainCreate,
+  FinanceCustomerSummary,
+  FinanceInvoiceSummary,
+  FinanceOverview,
   Invitation,
   InvitationCreate,
   InvitationCreated,
   Invoice,
+  LeaveBalance,
   Location,
   LocationCreate,
   LocationPatch,
@@ -28,6 +35,7 @@ import type {
   Permission,
   Plan,
   Product,
+  ProjectTask,
   Role,
   RoleWrite,
   SignupRequest,
@@ -307,4 +315,73 @@ export function verifyDomain(id: string): Promise<Domain> {
 /** `DELETE /domains/{id}`. */
 export function releaseDomain(id: string): Promise<void> {
   return apiRequest<void>(`/domains/${id}`, { method: "DELETE" });
+}
+
+// ------------------------------------------------------------------ the owner/executive home
+//
+// Every tenant token shares audience `app` (`services/app-gateway/app/config.py`), so this same
+// session reads every product's own summary endpoints through the gateway. `src/routes/Home.tsx`
+// calls each of these only once the caller's entitlement and grants say it may — never to find
+// out whether it may.
+
+/** `GET /finance/overview`, trimmed to `revenue_history` (see `FinanceOverview`). Needs
+ * `finance.reports.summary.read:ORG`. */
+export function getFinanceOverview(): Promise<FinanceOverview> {
+  return apiRequest<FinanceOverview>("/finance/overview");
+}
+
+/** `GET /finance/invoices` — newest-first by the service's own default (`sort=issued_desc`), so
+ * `size` alone gives the most recent documents with no extra sort parameter. A `status` narrows
+ * to one lifecycle state, for a `Page.total` count. Needs `finance.billing.invoice.read:ORG`. */
+export function listFinanceInvoices(params: { status?: string; size: number }): Promise<Page<FinanceInvoiceSummary>> {
+  return apiRequest<Page<FinanceInvoiceSummary>>(
+    `/finance/invoices${query({ status: params.status, size: params.size })}`,
+  );
+}
+
+/** `GET /finance/customers` — a bounded directory read to resolve `customer_id` to a name, the
+ * same convenience `product-finance`'s own `getCustomerById` uses; never the page a person
+ * browses. Needs `finance.billing.customer.read:ORG`. */
+export function listFinanceCustomers(): Promise<Page<FinanceCustomerSummary>> {
+  return apiRequest<Page<FinanceCustomerSummary>>(`/finance/customers${query({ size: 200 })}`);
+}
+
+/** `GET /customers?status=customer&size=1` → `Page.total` — companies marked as customers.
+ * Needs `crm.book.company.read`. */
+export function countCrmCustomers(): Promise<Page<Company>> {
+  return apiRequest<Page<Company>>(`/customers${query({ status: "customer", size: 1 })}`);
+}
+
+/** `GET /deals/activities` — real timestamps (`occurred_at`), newest first. Needs
+ * `crm.pipeline.activity.read`. */
+export function listDealActivities(size: number): Promise<Page<DealActivity>> {
+  return apiRequest<Page<DealActivity>>(`/deals/activities${query({ size })}`);
+}
+
+/** `GET /projects-workspace/tasks?assignee=me` — resolved server-side to the caller's own cards,
+ * so one bounded call gives both the Pending Tasks count and the Tasks list, never a scan. Needs
+ * `projects.board.task.read`. */
+export function listMyTasks(size: number): Promise<Page<ProjectTask>> {
+  return apiRequest<Page<ProjectTask>>(`/projects-workspace/tasks${query({ assignee: "me", size })}`);
+}
+
+// ------------------------------------------------------------------ the employee workspace
+//
+// `src/ui/home/EmployeeWorkspace.tsx`'s own self-service reads — HRMS routes `/attendance` and
+// `/leave` straight to the tenant's HRMS services (`services/app-gateway/routes.json`), scoped
+// server-side to the caller's own record by `employee_id`, never by anything this app decides.
+
+/** `GET /attendance?employee_id=…&date_from=…&date_to=…` — one caller's own record for one work
+ * day, `date` as `yyyy-mm-dd`. Empty when they have not checked in yet: a punch is what creates
+ * the row. Needs `hrms.time.attendance.read`. */
+export function getMyAttendance(employeeId: string, date: string): Promise<Page<AttendanceRecord>> {
+  return apiRequest<Page<AttendanceRecord>>(
+    `/attendance${query({ employee_id: employeeId, date_from: date, date_to: date, size: 1 })}`,
+  );
+}
+
+/** `GET /leave/balances?employee_id=…` — every leave type this employee has a balance for, in
+ * half-days. Needs `hrms.time.leave_balance.read`. */
+export function listMyLeaveBalances(employeeId: string): Promise<LeaveBalance[]> {
+  return apiRequest<LeaveBalance[]>(`/leave/balances${query({ employee_id: employeeId })}`);
 }

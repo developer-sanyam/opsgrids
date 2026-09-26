@@ -13,7 +13,6 @@ export {
   ErrorState,
   KpiCard,
   PageHeader,
-  SampleChip,
   SearchInput,
   SectionHeader,
   Skeleton,
@@ -21,7 +20,7 @@ export {
 } from "@opsgrids/ui";
 export type { Column, KpiTone } from "@opsgrids/ui";
 
-export { Sidebar } from "./Sidebar";
+export { useNavGroups } from "./useNavGroups";
 export { PriorityPill, TicketStatusPill } from "./StatusPill";
 export { SlaPill } from "./SlaPill";
 export { TicketVolumeChart } from "./TicketVolumeChart";

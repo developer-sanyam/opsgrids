@@ -197,9 +197,16 @@ export function Toaster({ children }: { children: ReactNode }) {
       <LiveRegion message={assertive.message} seq={assertive.seq} assertive />
       {toasts.length > 0 ? (
         <div
+          // `bottom-4`/`bottom-6` are the toast layer's own clearance; `--shell-bottom-inset`
+          // (console.css) adds the fixed bottom navigation's height and safe area on top of it
+          // when `AppShell` is rendering one — zero everywhere else, including desktop and
+          // tablet, where there is no bottom nav to clear. The breakpoint matches `AppShell`'s
+          // own (768px, `md`): below it there is a bottom nav to clear and the layer is
+          // full-width; at and above it the layer anchors to the corner instead.
+          style={{ bottom: "calc(1rem + var(--shell-bottom-inset))" }}
           className={cn(
-            "toast-layer pointer-events-none fixed inset-x-4 bottom-4 flex flex-col-reverse gap-2",
-            "sm:inset-x-auto sm:right-6 sm:bottom-6 sm:items-end",
+            "toast-layer pointer-events-none fixed inset-x-4 flex flex-col-reverse gap-2",
+            "md:inset-x-auto md:right-6 md:items-end",
           )}
         >
           {toasts.map((toast) => (

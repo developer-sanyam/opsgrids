@@ -28,12 +28,14 @@ const ORG_A: OrganizationChoice = {
   slug: "acme-india",
   name: "Acme India",
   roles: ["finance_admin"],
+  role_names: ["Finance Admin"],
 };
 const ORG_B: OrganizationChoice = {
   organization_id: "org-b",
   slug: "acme-uk",
   name: "Acme UK",
   roles: ["finance_viewer"],
+  role_names: ["Finance Viewer"],
 };
 
 const COMPLETE = {

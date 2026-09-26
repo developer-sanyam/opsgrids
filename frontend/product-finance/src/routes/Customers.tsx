@@ -4,11 +4,10 @@ import { useNavigate } from "react-router-dom";
 import { archiveCustomer, listCustomers } from "@/api/client";
 import type { CustomerSort } from "@/api/client";
 import type { CustomerStanding, CustomerSummary } from "@/api/types";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { formatDate } from "@/lib/format";
 import { formatAmount } from "@/lib/money";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
-import { PlusIcon, UsersIcon, cn, useToast } from "@opsgrids/ui";
+import { cn, PlusIcon, useDebouncedValue, UsersIcon, useToast } from "@opsgrids/ui";
 import {
   Avatar,
   Button,

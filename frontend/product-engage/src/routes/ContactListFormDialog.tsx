@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 
+import { useUnsavedChangesWarning } from "@opsgrids/ui";
+
 import { createList, editList } from "@/api/client";
 import type { ContactListOut } from "@/api/types";
 import { failureMessage } from "@/lib/errors";
-import { Button, Dialog, InlineAlert, TextArea, TextField } from "@/ui";
+import { Button, ConfirmDialog, Dialog, InlineAlert, TextArea, TextField } from "@/ui";
 
 /**
  * Create or rename a contact list.
@@ -44,14 +46,20 @@ export function ContactListFormDialog({
   const [errors, setErrors] = useState<Errors>({});
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [confirmingClose, setConfirmingClose] = useState(false);
 
   const editing = list !== null;
+  const dirty =
+    values.name !== (list === null ? "" : list.name) ||
+    values.description !== (list === null ? "" : list.description);
+  useUnsavedChangesWarning(open && dirty);
 
   useEffect(() => {
     if (!open) return;
     setValues(list === null ? EMPTY : { name: list.name, description: list.description });
     setErrors({});
     setFailure(null);
+    setConfirmingClose(false);
   }, [open, list]);
 
   function close() {
@@ -59,6 +67,17 @@ export function ContactListFormDialog({
     setErrors({});
     setFailure(null);
     onClose();
+  }
+
+  // Cancel, Escape and the close control ask first when there's something to lose; a successful
+  // save closes through `onSaved` → the caller's own `open`, which never asks.
+  function requestClose() {
+    if (submitting) return;
+    if (dirty) {
+      setConfirmingClose(true);
+      return;
+    }
+    close();
   }
 
   function set<K extends keyof Values>(key: K, value: Values[K]) {
@@ -106,7 +125,7 @@ export function ContactListFormDialog({
   return (
     <Dialog
       open={open}
-      onClose={close}
+      onClose={requestClose}
       title={editing ? "Rename list" : "Create a list"}
       description={
         editing
@@ -116,7 +135,7 @@ export function ContactListFormDialog({
       size="md"
       footer={
         <>
-          <Button variant="ghost" onClick={close} disabled={submitting}>
+          <Button variant="ghost" onClick={requestClose} disabled={submitting}>
             Cancel
           </Button>
           <Button onClick={() => void submit()} disabled={submitting}>
@@ -140,6 +159,7 @@ export function ContactListFormDialog({
 
       <form
         className="flex flex-col gap-6"
+        noValidate
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
@@ -150,6 +170,7 @@ export function ContactListFormDialog({
           value={values.name}
           onChange={(event) => set("name", event.target.value)}
           placeholder="Enterprise accounts"
+          required
           disabled={submitting}
           {...(errors.name !== undefined ? { error: errors.name } : {})}
         />
@@ -163,6 +184,19 @@ export function ContactListFormDialog({
           disabled={submitting}
         />
       </form>
+
+      <ConfirmDialog
+        open={open && confirmingClose}
+        onClose={() => setConfirmingClose(false)}
+        onConfirm={() => {
+          setConfirmingClose(false);
+          close();
+        }}
+        title="Discard unsaved changes?"
+        body={`What you've entered in “${editing ? "Rename list" : "Create a list"}” hasn't been saved and will be lost.`}
+        confirmLabel="Discard changes"
+        cancelLabel="Keep editing"
+      />
     </Dialog>
   );
 }

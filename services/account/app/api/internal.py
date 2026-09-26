@@ -106,6 +106,11 @@ async def _serialise(session: AsyncSession, user: User) -> dict[str, Any]:
                     membership.status if organization.status != "suspended" else "suspended"
                 ),
                 "roles": [link.role.code for link in membership.roles],
+                # Index-aligned with `roles`, for display: the `roles` table's `name` column
+                # is the one source for a friendly label — see `to_operator_member_out`, which
+                # resolves the same way for the admin members list. Additive: nothing that
+                # reads `roles` needs to change.
+                "role_names": [link.role.name for link in membership.roles],
                 "locations": (
                     [c.strip() for c in membership.location_codes.split(",") if c.strip()]
                     if membership.location_codes

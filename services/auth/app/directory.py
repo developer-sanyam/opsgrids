@@ -44,6 +44,10 @@ class DirectoryMembership:
     organization_name: str
     status: str
     roles: list[str] = field(default_factory=list)
+    #: Index-aligned with `roles` — account-service's one source for the label, the `roles`
+    #: table's own `name` column (`_serialise` in its internal API). Additive alongside
+    #: `roles`, which stays codes: nothing that already reads `roles` has to change.
+    role_names: list[str] = field(default_factory=list)
     locations: list[str] = field(default_factory=list)
     permission_version: int = 0
     employee_id: uuid.UUID | None = None
@@ -51,6 +55,14 @@ class DirectoryMembership:
     @property
     def is_active(self) -> bool:
         return self.status == "active"
+
+    def display_names_for(self, codes: list[str]) -> list[str]:
+        """Names for `codes`, falling back to the code itself for one this membership does
+        not carry a name for — a role granted after this membership was fetched, or a token
+        claim that has drifted from the current grant. Codes and names are matched by
+        position rather than turned into a dict, since a role code is unique per membership."""
+        by_code = dict(zip(self.roles, self.role_names, strict=False))
+        return [by_code.get(code, code) for code in codes]
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +170,7 @@ class HttpDirectory:
                     organization_name=m["organization_name"],
                     status=m["status"],
                     roles=list(m.get("roles", [])),
+                    role_names=list(m.get("role_names", [])),
                     locations=list(m.get("locations", [])),
                     permission_version=int(m.get("permission_version", 0)),
                     employee_id=uuid.UUID(m["employee_id"]) if m.get("employee_id") else None,

@@ -23,7 +23,7 @@ export {
 } from "@opsgrids/ui";
 export type { TagTone } from "@opsgrids/ui";
 
-export { Sidebar } from "./Sidebar";
+export { useNavGroups } from "./useNavGroups";
 export { LogoMark } from "./LogoMark";
 export { DeviceToggle } from "./DeviceToggle";
 export { DEVICE_WIDTHS } from "./deviceWidths";

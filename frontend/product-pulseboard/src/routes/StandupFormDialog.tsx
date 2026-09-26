@@ -4,7 +4,7 @@ import { postStandup } from "@/api/client";
 import type { Person, StandupEntry } from "@/api/types";
 import { withOptional } from "@/lib/optional";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, Select, TextArea } from "@opsgrids/ui";
+import { FormDialog, Select, TextArea, useFormDirty } from "@opsgrids/ui";
 import type { SelectOption } from "@opsgrids/ui";
 
 /**
@@ -33,6 +33,11 @@ export function StandupFormDialog({
   const [today, setToday] = useState(entry?.today ?? "");
   const [blocked, setBlocked] = useState(entry?.blockers !== null && entry?.blockers !== undefined);
   const [blockers, setBlockers] = useState(entry?.blockers ?? "");
+
+  const fields = { personRef, yesterday, today, blocked, blockers };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
+
   const [personError, setPersonError] = useState<string | undefined>(undefined);
   const personRef2 = useRef<HTMLSelectElement>(null);
 
@@ -82,6 +87,7 @@ export function StandupFormDialog({
       pending={save.pending}
       initialFocusRef={personRef2}
       size="lg"
+      dirty={dirty}
       {...withOptional("error", nonFieldError)}
       {...withOptional("reference", (save.error as ApiError | null)?.problem?.request_id)}
     >
@@ -92,6 +98,7 @@ export function StandupFormDialog({
         onChange={(e) => setPersonRef(e.target.value)}
         options={personOptions}
         disabled={editing}
+        required
         {...withOptional("error", personError ?? save.fieldErrors.person_ref)}
       />
       <TextArea
@@ -99,6 +106,7 @@ export function StandupFormDialog({
         value={yesterday}
         onChange={(e) => setYesterday(e.target.value)}
         maxLength={4000}
+        required
         {...withOptional("error", save.fieldErrors.yesterday)}
       />
       <TextArea
@@ -106,6 +114,7 @@ export function StandupFormDialog({
         value={today}
         onChange={(e) => setToday(e.target.value)}
         maxLength={4000}
+        required
         {...withOptional("error", save.fieldErrors.today)}
       />
       <label className="flex items-center gap-2 text-sm font-medium text-ink-soft">

@@ -45,13 +45,18 @@ export function formatMoney(
   const major = toMajor(minor, currency);
   const { precise = false, compact = false } = options;
 
-  const fractionDigits = precise ? exp : 0;
+  // Compact keeps one fraction digit when the rounded figure needs it ("₹13.2L") and drops it
+  // when it doesn't ("₹97K") — `minimumFractionDigits: 0` with `maximumFractionDigits: 1` is
+  // exactly that. A precise or plain grouped figure is unchanged: the currency's own minor-unit
+  // digits, or none.
+  const minFractionDigits = precise ? exp : 0;
+  const maxFractionDigits = precise ? exp : compact ? 1 : 0;
   try {
     return new Intl.NumberFormat("en-IN", {
       style: "currency",
       currency,
-      minimumFractionDigits: fractionDigits,
-      maximumFractionDigits: fractionDigits,
+      minimumFractionDigits: minFractionDigits,
+      maximumFractionDigits: maxFractionDigits,
       ...(compact ? { notation: "compact" } : {}),
     }).format(major);
   } catch {

@@ -86,9 +86,43 @@ export { useCurrentUser } from "./platform/useCurrentUser";
 export type { CurrentUser } from "./platform/useCurrentUser";
 export { useAdminLinks } from "./platform/useAdminLinks";
 export type { AdminLink, AdminLinkKey } from "./platform/useAdminLinks";
+export { useGlobalSearch } from "./platform/useGlobalSearch";
+export type {
+  GlobalSearchGroup,
+  GlobalSearchResultItem,
+  GlobalSearchState,
+  GlobalSearchStatus,
+  UseGlobalSearchOptions,
+} from "./platform/useGlobalSearch";
+
+export {
+  fetchMyNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+} from "./notifications/api";
+export type {
+  FetchNotificationsParams,
+  MarkAllReadResult,
+  NotificationItem,
+  NotificationPage,
+} from "./notifications/api";
+export { useNotifications } from "./notifications/useNotifications";
+export type {
+  UseNotificationsOptions,
+  UseNotificationsResult,
+} from "./notifications/useNotifications";
+export { NotificationsBell } from "./notifications/NotificationsBell";
 
 export { settle } from "./fixtures";
 export { useAsync } from "./useAsync";
 export type { AsyncControls, AsyncState } from "./useAsync";
 export { useMutation } from "./useMutation";
 export type { Mutation, MutationOptions } from "./useMutation";
+
+export {
+  ASSET_ACCEPTED_TYPES,
+  ASSET_MAX_UPLOAD_BYTES,
+  ASSET_PUBLIC_HELPER,
+  uploadAsset,
+} from "./documents/assets";
+export type { AssetOut, UploadAssetControls } from "./documents/assets";

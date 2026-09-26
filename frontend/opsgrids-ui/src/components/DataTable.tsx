@@ -329,17 +329,15 @@ export function DataTable<T>({
   }
 
   // A pinned header needs a scroll area of the table's own: `sticky` pins against the nearest
-  // scrolling ancestor, and the sideways-scroll wrapper already is one.
+  // scrolling ancestor, and the sideways-scroll wrapper already is one. A plain wide table gets
+  // the same treatment once it has something to scroll to: a scroll area with nothing focusable
+  // in it is one a keyboard cannot move (axe's scrollable-region-focusable), so only the loading
+  // skeleton — which has nothing to scroll to yet — clips instead.
   const scroller = stickyHeader
-    ? {
-        className: "max-h-dvh overflow-auto",
-        tabIndex: 0,
-        role: "region",
-        "aria-label": caption ?? "Table",
-      }
-    : // Skeletons have nothing to scroll to, and a scroll area with nothing focusable in it is one a
-      // keyboard cannot move (axe's scrollable-region-focusable) — so a loading table clips instead.
-      { className: loading ? "overflow-hidden" : "overflow-x-auto" };
+    ? { className: "max-h-dvh overflow-auto", tabIndex: 0, role: "region", "aria-label": caption ?? "Table" }
+    : loading
+      ? { className: "overflow-hidden" }
+      : { className: "overflow-x-auto", tabIndex: 0, role: "region", "aria-label": caption ?? "Table" };
   const pinned = stickyHeader
     ? "sticky top-0 z-10 bg-surface after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-line"
     : undefined;

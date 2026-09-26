@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { getInvoice, issueInvoice, listCustomers, MAX_PAGE_SIZE } from "@/api/client";
@@ -20,6 +20,8 @@ import {
   Switch,
   TextArea,
   TextField,
+  UnsavedChangesGuard,
+  useFormDirty,
 } from "@/ui";
 import { PlusIcon, useToast } from "@opsgrids/ui";
 import type { ProblemJson } from "@opsgrids/client";
@@ -140,19 +142,42 @@ function IssueForm({
       : [blankLine()],
   );
 
+  const fields = {
+    customerId,
+    issuedDate,
+    dueDate,
+    taxRatePct,
+    supplyType,
+    placeOfSupply,
+    reverseCharge,
+    notes,
+    lines,
+  };
+  const [initial] = useState(fields);
+  const changed = useFormDirty(initial, fields);
+
   const [customerError, setCustomerError] = useState<string | undefined>(undefined);
   const [dateError, setDateError] = useState<string | undefined>(undefined);
   const [linesError, setLinesError] = useState<string | undefined>(undefined);
   const [confirming, setConfirming] = useState(false);
+  // Set on a successful issue, then handed to `onIssued` from an effect — never from the same
+  // handler as the save — so `UnsavedChangesGuard`'s blocker has already dropped before the
+  // navigation it would otherwise catch and ask about.
+  const [issued, setIssued] = useState<Invoice | null>(null);
+  const dirty = changed && issued === null;
 
   const rate = Number(taxRatePct);
   const preview = useMemo(() => previewTotal(lines, rate), [lines, rate]);
   const previewTotalMinor = preview.subtotal + preview.tax;
 
   const issue = useMutation((input: InvoiceIssueIn) => issueInvoice(input), {
-    onSuccess: (invoice) => onIssued(invoice),
+    onSuccess: (invoice) => setIssued(invoice),
   });
   const issueProblem: ProblemJson | null = issue.error instanceof ApiError ? issue.error.problem : null;
+
+  useEffect(() => {
+    if (issued) onIssued(issued);
+  }, [issued, onIssued]);
 
   function updateLine(index: number, patch: Partial<LineDraft>) {
     setLines((current) => current.map((l, i) => (i === index ? { ...l, ...patch } : l)));
@@ -254,6 +279,7 @@ function IssueForm({
 
   return (
     <>
+      <UnsavedChangesGuard when={dirty} subject={isCreditNote ? "this credit note" : "this invoice"} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3 items-start">
         <Card className="flex flex-col gap-5 p-6 lg:col-span-2 lg:p-8">
           {correcting ? (
@@ -271,6 +297,7 @@ function IssueForm({
               placeholder="Choose a customer"
               options={customers}
               disabled={isCreditNote}
+              required
               error={customerError ?? fieldError(issueProblem, "customer_id")}
             />
             <Select
@@ -288,6 +315,7 @@ function IssueForm({
               type="date"
               value={issuedDate}
               onChange={(e) => setIssuedDate(e.target.value)}
+              required
               error={dateError ? undefined : fieldError(issueProblem, "issued_date")}
             />
             <TextField
@@ -295,6 +323,7 @@ function IssueForm({
               type="date"
               value={dueDate}
               onChange={(e) => setDueDate(e.target.value)}
+              required
               error={dateError ?? fieldError(issueProblem, "due_date")}
             />
           </div>
@@ -309,6 +338,7 @@ function IssueForm({
                     label="Description"
                     value={line.description}
                     onChange={(e) => updateLine(i, { description: e.target.value })}
+                    required
                     error={fieldError(issueProblem, `lines.${i}.description`)}
                   />
                 </div>
@@ -318,6 +348,7 @@ function IssueForm({
                     inputMode="decimal"
                     value={line.quantity}
                     onChange={(e) => updateLine(i, { quantity: e.target.value })}
+                    required
                   />
                 </div>
                 <div className="sm:col-span-2">
@@ -326,6 +357,7 @@ function IssueForm({
                     inputMode="decimal"
                     value={line.unitPrice}
                     onChange={(e) => updateLine(i, { unitPrice: e.target.value })}
+                    required
                   />
                 </div>
                 <div className="sm:col-span-2">

@@ -50,11 +50,21 @@ const CRM = {
   routes: CRM_ROUTES,
 } as const;
 
+/**
+ * The Owner Home fan-out reads finance and projects too (dashboard audit §5.4), on top of the
+ * marketplace's own crm/hrms — a separate claim set from `CUSTOMER_CLAIMS` so widening it can
+ * never move the CRM app's own baselines.
+ */
+const OWNER_CLAIMS = {
+  ...CUSTOMER_CLAIMS,
+  ent: ["crm", "hrms", "finance", "projects"],
+};
+
 const DASHBOARD = {
   app: "dashboard",
   origin: ORIGIN.dashboard,
   session: { tokenKey: "opsgrids.dashboard.access_token", themeKey: "opsgrids.dashboard.theme" },
-  token: unsignedToken({ ...CUSTOMER_CLAIMS, aud: "dashboard", roles: ["owner"] }),
+  token: unsignedToken({ ...OWNER_CLAIMS, aud: "dashboard", roles: ["owner"] }),
   routes: DASHBOARD_ROUTES,
 } as const;
 
@@ -74,8 +84,18 @@ export const PAGES: PageSpec[] = [
   {
     ...DASHBOARD,
     routes: [...DASHBOARD.routes],
-    surface: "page/dashboard/marketplace",
+    surface: "page/dashboard/home",
     path: "/",
+    ready: (page) => page.getByRole("region", { name: "Key metrics" }),
+    capture: "fullpage",
+  },
+  {
+    ...DASHBOARD,
+    routes: [...DASHBOARD.routes],
+    surface: "page/dashboard/marketplace",
+    // The Owner Home moved to `/`; the marketplace it displaced is `/products` now (dashboard
+    // audit §5.4). Its own fixtures are unchanged, so its baseline still matches pixel for pixel.
+    path: "/products",
     ready: heading("Start what your organisation needs"),
     capture: "fullpage",
   },
@@ -116,7 +136,9 @@ export const PAGES: PageSpec[] = [
     routes: [...INTERNAL.routes],
     surface: "page/internal/overview",
     path: "/",
-    ready: heading("Overview"),
+    // "Super Admin" alone below 640px (mock-1's phone header), the full "Super Admin Dashboard"
+    // from `sm` up — a substring every width's heading carries.
+    ready: heading("Super Admin"),
     capture: "fullpage",
   },
   {

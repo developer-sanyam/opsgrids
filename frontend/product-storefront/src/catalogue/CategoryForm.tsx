@@ -1,11 +1,19 @@
 import { useRef, useState } from "react";
 
-import { useMutation } from "@opsgrids/client";
+import {
+  ASSET_ACCEPTED_TYPES,
+  ASSET_MAX_UPLOAD_BYTES,
+  ASSET_PUBLIC_HELPER,
+  problemMessage,
+  uploadAsset,
+  useMutation,
+} from "@opsgrids/client";
 import type { ApiError } from "@opsgrids/client";
-import { FormDialog, Switch, TextArea, TextField } from "@opsgrids/ui";
-import { problemMessage } from "@opsgrids/client";
+import { FileUpload, FormDialog, Switch, TextArea, TextField } from "@opsgrids/ui";
+import type { StoredFile } from "@opsgrids/ui";
 
-import { isHttpsImageUrl } from "./imageUrl";
+import { UPLOAD_NEEDS_SERVICE, USE_FIXTURES } from "@/api/client";
+import { resolveImageSrc } from "@/theme/render/assetSrc";
 import { createCategory, updateCategory } from "./api";
 import type { CategoryInput, CategoryOut } from "./types";
 
@@ -28,9 +36,17 @@ export function CategoryForm({
   const [isActive, setIsActive] = useState(category?.is_active ?? true);
   const [keyError, setKeyError] = useState<string | undefined>(undefined);
   const [labelError, setLabelError] = useState<string | undefined>(undefined);
-  const [imageError, setImageError] = useState<string | undefined>(undefined);
   const keyRef = useRef<HTMLInputElement>(null);
   const labelRef = useRef<HTMLInputElement>(null);
+
+  // Compared against the same seed the fields above initialised from — this form unmounts on
+  // close (FormDialog's resetting-is-structural note), so `category` never changes under it.
+  const dirty =
+    key !== (category?.key ?? "") ||
+    label !== (category?.label ?? "") ||
+    blurb !== (category?.blurb ?? "") ||
+    imageUrl !== (category?.image_url ?? "") ||
+    isActive !== (category?.is_active ?? true);
 
   const save = useMutation(
     (input: CategoryInput) =>
@@ -41,7 +57,6 @@ export function CategoryForm({
   function submit() {
     setKeyError(undefined);
     setLabelError(undefined);
-    setImageError(undefined);
 
     if (!category && !KEY_PATTERN.test(key.trim())) {
       setKeyError("Lowercase letters, digits and hyphens, starting with a letter or digit.");
@@ -53,21 +68,29 @@ export function CategoryForm({
       labelRef.current?.focus();
       return;
     }
-    const trimmedImage = imageUrl.trim();
-    if (trimmedImage !== "" && !isHttpsImageUrl(trimmedImage)) {
-      setImageError("Enter a full https:// image address.");
-      return;
-    }
 
     void save.mutate({
       key: key.trim(),
       label: label.trim(),
       blurb: blurb.trim() === "" ? null : blurb.trim(),
-      image_url: trimmedImage === "" ? null : trimmedImage,
+      image_url: imageUrl.trim() === "" ? null : imageUrl.trim(),
       sort_order: category?.sort_order ?? 0,
       is_active: isActive,
     });
   }
+
+  // The category's existing image, carried into the field as its one starting file — `category`
+  // never changes while this dialog is open.
+  const currentImagePreview = category?.image_url ? resolveImageSrc(category.image_url) : null;
+  const initialImageFiles: StoredFile<string>[] = category?.image_url
+    ? [
+        {
+          name: "Current image",
+          value: category.image_url,
+          ...(currentImagePreview !== null ? { previewUrl: currentImagePreview } : {}),
+        },
+      ]
+    : [];
 
   return (
     <FormDialog
@@ -79,6 +102,7 @@ export function CategoryForm({
       pendingLabel={category ? "Saving…" : "Creating…"}
       pending={save.pending}
       initialFocusRef={category ? labelRef : keyRef}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? { error: problemMessage(save.error), reference: (save.error as ApiError).problem?.request_id }
         : {})}
@@ -90,6 +114,7 @@ export function CategoryForm({
         onChange={(event) => setKey(event.target.value.toLowerCase())}
         helper={category ? "Set once, when the category is created." : "Lowercase, e.g. fasteners."}
         disabled={category !== null}
+        required
         error={keyError ?? save.fieldErrors.key}
       />
       <TextField
@@ -97,6 +122,7 @@ export function CategoryForm({
         label="Label"
         value={label}
         onChange={(event) => setLabel(event.target.value)}
+        required
         error={labelError ?? save.fieldErrors.label}
       />
       <TextArea
@@ -108,20 +134,23 @@ export function CategoryForm({
         maxLength={200}
         error={save.fieldErrors.blurb}
       />
-      <TextField
-        label="Image address"
-        value={imageUrl}
-        onChange={(event) => setImageUrl(event.target.value)}
-        placeholder="https://"
+      <FileUpload<string>
+        label="Category image"
+        accept={[...ASSET_ACCEPTED_TYPES]}
+        maxSize={ASSET_MAX_UPLOAD_BYTES}
+        maxFiles={1}
         optional
-        helper="A full https:// address, with a preview below. Uploads aren't available on this box yet."
-        error={imageError ?? save.fieldErrors.image_url}
+        helper={ASSET_PUBLIC_HELPER}
+        initialFiles={initialImageFiles}
+        disabled={save.pending}
+        error={save.fieldErrors.image_url}
+        onUpload={async (file, controls) => {
+          if (USE_FIXTURES) throw new Error(UPLOAD_NEEDS_SERVICE);
+          const asset = await uploadAsset(file, controls);
+          return asset.public_path;
+        }}
+        onChange={(files) => setImageUrl(files[0] ?? "")}
       />
-      {imageUrl.trim() !== "" && isHttpsImageUrl(imageUrl.trim()) ? (
-        <div className="h-24 w-full overflow-hidden rounded-tile border border-line bg-ground">
-          <img src={imageUrl.trim()} alt="" className="h-full w-full object-cover" />
-        </div>
-      ) : null}
       <Switch
         label="Active"
         checked={isActive}

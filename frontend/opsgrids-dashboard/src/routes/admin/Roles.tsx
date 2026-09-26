@@ -17,10 +17,11 @@ import {
   TextField,
   useToast,
 } from "@opsgrids/ui";
-import type { Column } from "@opsgrids/ui";
+import type { Column, TableSelection } from "@opsgrids/ui";
 
 import { createRole, deleteRole, listPermissions, listRoles, updateRole } from "@/api";
 import type { Grant, Permission, Role, RoleWrite, Scope } from "@/api/types";
+import { downloadCsv } from "@/lib/csv";
 import { PageHeader } from "@/ui";
 
 const WRITE_PERMISSION = "core.identity.role.write";
@@ -52,6 +53,7 @@ export function RolesPage() {
   const [editing, setEditing] = useState<Role | null>(null);
   const [duplicating, setDuplicating] = useState<Role | null>(null);
   const [deleting, setDeleting] = useState<Role | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const remove = useMutation((role: Role) => deleteRole(role.id), {
     onSuccess: (_result, role) => {
@@ -88,13 +90,16 @@ export function RolesPage() {
     );
   }
 
+  const roleRows = roles.data;
+
   const columns: Column<Role>[] = [
-    { key: "name", header: "Name", render: (r) => <span className="font-semibold text-ink">{r.name}</span> },
+    { key: "name", header: "Name", mobile: "title", render: (r) => <span className="font-semibold text-ink">{r.name}</span> },
     { key: "code", header: "Code", render: (r) => <span className="tnum text-xs text-faint">{r.code}</span> },
     { key: "product", header: "Product", render: (r) => r.product ?? "Any" },
     {
       key: "kind",
       header: "Kind",
+      mobile: "status",
       render: (r) => (
         <div className="flex gap-1">
           {r.is_system ? <Tag tone="info">System</Tag> : <Tag tone="neutral">Custom</Tag>}
@@ -107,6 +112,7 @@ export function RolesPage() {
       key: "actions",
       header: "",
       align: "right",
+      mobile: "actions",
       render: (r) => (
         <RowActions
           label={r.name}
@@ -120,6 +126,28 @@ export function RolesPage() {
     },
   ];
 
+  const roleSelection: TableSelection<Role> = {
+    selected,
+    onToggle: (key, next) =>
+      setSelected((prev) => {
+        const nextSet = new Set(prev);
+        if (next) nextSet.add(key);
+        else nextSet.delete(key);
+        return nextSet;
+      }),
+    onToggleAll: (next) => setSelected(next ? new Set(roleRows.map((r) => r.id)) : new Set()),
+    label: (r) => r.name,
+  };
+
+  function exportSelectedRoles() {
+    const chosen = roleRows.filter((r) => selected.has(r.id));
+    downloadCsv(
+      "roles.csv",
+      ["Name", "Code", "Product", "Kind", "Grants"],
+      chosen.map((r) => [r.name, r.code, r.product ?? "Any", r.is_system ? "System" : "Custom", String(r.grants.length)]),
+    );
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
@@ -131,9 +159,16 @@ export function RolesPage() {
 
       <Card className="p-0">
         <DataTable
-          rows={roles.data}
+          rows={roleRows}
           rowKey={(r) => r.id}
           columns={columns}
+          mobileCard="auto"
+          selection={roleSelection}
+          bulkActions={
+            <Button variant="outline" size="sm" onClick={exportSelectedRoles}>
+              Export selected
+            </Button>
+          }
           emptyState={
             <EmptyState
               title="No roles yet"
@@ -228,6 +263,19 @@ function RoleForm({
 
   const grouped = useMemo(() => groupPermissions(permissions), [permissions]);
 
+  // A read-only system role can't be edited, so it's never "dirty" — closing it never discards
+  // anything. Otherwise compared against the same seed the fields above initialised from.
+  const initialCode = role ? role.code : seedFrom ? `${seedFrom.code}_COPY` : "";
+  const initialGrants = new Map((source?.grants ?? []).map((g) => [g.permission_code, g.scope]));
+  const grantsKey = (m: Map<string, Scope>) =>
+    Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b)).join(",");
+  const dirty =
+    !readOnly &&
+    (name.trim() !== (source?.name ?? "") ||
+      code !== initialCode ||
+      description.trim() !== (source?.description ?? "") ||
+      grantsKey(grants) !== grantsKey(initialGrants));
+
   const save = useMutation(
     (payload: RoleWrite) => (role ? updateRole(role.id, payload) : createRole(payload)),
     { onSuccess: (result) => { onClose(); onSaved(result); } },
@@ -283,6 +331,7 @@ function RoleForm({
       pending={save.pending}
       size="lg"
       initialFocusRef={nameRef}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? { error: problemMessage(save.error) }
         : {})}
@@ -299,6 +348,7 @@ function RoleForm({
             label="Name"
             value={name}
             onChange={(e) => setName(e.target.value)}
+            required
             error={nameError ?? save.fieldErrors.name}
           />
           <TextField
@@ -307,6 +357,7 @@ function RoleForm({
             onChange={(e) => setCode(e.target.value.toUpperCase().replace(/\s+/g, "_"))}
             helper={role ? "Cannot be changed." : "Cannot be changed once created."}
             disabled={role !== null}
+            required
             error={codeError ?? save.fieldErrors.code}
           />
           <TextArea label="Description" optional value={description} onChange={(e) => setDescription(e.target.value)} />

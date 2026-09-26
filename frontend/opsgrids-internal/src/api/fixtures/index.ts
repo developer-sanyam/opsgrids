@@ -16,6 +16,7 @@ import type {
 } from "@/api/types";
 import { orgDirectory, orgStateFor, buildOrgStates } from "./orgs";
 import { buildPlatformMetrics } from "./metrics";
+import { PRODUCT_NAME, planVersionById } from "./catalog";
 
 export * from "./catalog";
 export * from "./orgs";
@@ -31,19 +32,26 @@ export function buildOrganizationsOut(): OrganizationsOut {
 
 export function buildSubscriptionsOut(): SubscriptionsOut {
   // Re-flattened the same way `services/console/app/api/routes.py::list_subscriptions` builds it:
-  // one row per organization × subscribed product, off `subscription_states`.
+  // one row per organization × subscribed product, off `subscription_states`, with catalog's
+  // display names joined in the same best-effort way (never blanking the rest of the row).
   const rows: SubscriptionOut[] = buildOrgStates().flatMap((state) =>
-    Object.entries(state.subscription_states).map(([productKey, entry]) => ({
-      organization_id: state.organization_id,
-      name: state.name,
-      slug: state.slug,
-      product_key: productKey,
-      state: String(entry.state ?? "unknown"),
-      plan_version_id: entry.plan_version_id ?? null,
-      amount_minor: entry.amount_minor ?? 0,
-      currency: entry.currency ?? null,
-      trial_ends_at: entry.trial_ends_at ?? null,
-    })),
+    Object.entries(state.subscription_states).map(([productKey, entry]) => {
+      const rawVersion = entry.plan_version_id ?? null;
+      const version = rawVersion ? planVersionById(rawVersion) : undefined;
+      return {
+        organization_id: state.organization_id,
+        name: state.name,
+        slug: state.slug,
+        product_key: productKey,
+        product_name: PRODUCT_NAME[productKey] ?? null,
+        state: String(entry.state ?? "unknown"),
+        plan_version_id: rawVersion,
+        plan_name: version?.plan_name ?? null,
+        amount_minor: entry.amount_minor ?? 0,
+        currency: entry.currency ?? null,
+        trial_ends_at: entry.trial_ends_at ?? null,
+      };
+    }),
   );
   return { subscriptions: rows };
 }
@@ -73,7 +81,7 @@ export function simulateOverride(request: OverrideRequest): OverrideResult {
   return {
     action: request.action,
     organization_id: request.organization_id,
-    delegated_to: request.action === "suspend" ? "subscription" : "billing",
+    delegated_to: request.action === "comp_grant" ? "billing" : "subscription",
     result: { status: "accepted", note: "fixtures mode — not sent to a live service" },
   };
 }

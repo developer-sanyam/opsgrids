@@ -10,25 +10,30 @@ export {
   Card,
   Combobox,
   ConfirmDialog,
+  DataTable,
   Dialog,
   EmptyState,
   ErrorState,
+  FormSection,
   InlineAlert,
   PageHeader,
   Pagination,
   RadioGroup,
+  RowActions,
   SearchInput,
   SectionHeader,
   Select,
   Skeleton,
+  StatusBadge,
   Tag,
   TextArea,
   TextField,
   useAnnounce,
+  useDebouncedValue,
 } from "@opsgrids/ui";
-export type { ComboboxOption, RadioOption, SelectOption, TagTone } from "@opsgrids/ui";
+export type { Column, ComboboxOption, RadioOption, SelectOption, TableSelection, TagTone } from "@opsgrids/ui";
 
-export { Sidebar } from "./Sidebar";
+export { useNavGroups } from "./useNavGroups";
 export { LogoMark } from "./LogoMark";
 export {
   CampaignStatusTag,

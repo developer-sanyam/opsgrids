@@ -39,3 +39,20 @@ export const LongTitle: Story = {
     actions: <Button>Edit account</Button>,
   },
 };
+
+/** A dashboard whose title and period control must share one row on a phone (mock-1, mock-2):
+ *  the description drops below `sm` instead of pushing the actions onto a line of their own.
+ *  Resize the canvas below 640px to see it disappear. */
+export const DescriptionHiddenOnPhone: Story = {
+  args: {
+    title: (
+      <>
+        <span className="sm:hidden">Super Admin</span>
+        <span className="hidden sm:inline">Super Admin Dashboard</span>
+      </>
+    ),
+    description: "Manage all accounts, monitor usage, and oversee the platform.",
+    descriptionClassName: "hidden sm:block",
+    actions: <Button variant="outline">Last 30 Days</Button>,
+  },
+};

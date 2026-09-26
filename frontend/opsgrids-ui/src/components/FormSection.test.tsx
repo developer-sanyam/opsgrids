@@ -1,7 +1,8 @@
 /**
- * The required-marker convention (owner ruling, 2026-09-25): inside a `FormSection` a required
- * field gets a red asterisk; outside one nothing changes. The asterisk must never change what the
- * field is called — that name is what a screen reader reads and what every app's tests look up.
+ * The required-marker convention (owner ruling, 2026-09-25, widened 2026-09-25 to every form): a
+ * required `TextField`, `TextArea` or `Select` gets a red asterisk whether or not it sits inside a
+ * `FormSection`. The asterisk must never change what the field is called — that name is what a
+ * screen reader reads and what every app's tests look up.
  */
 
 import { describe, expect, it } from "vitest";
@@ -51,10 +52,15 @@ describe("FormSection", () => {
     expect(screen.getByRole("textbox", { name: "Product name" })).toBe(input);
   });
 
-  it("changes nothing for a required field outside a section — existing forms keep their labels", () => {
+  it("marks a required field outside a section too — the asterisk isn't tied to being here", () => {
     render(<TextField label="Deal name" required />);
-    expect(asterisks()).toBe(0);
+    expect(asterisks()).toBe(1);
     expect(screen.getByLabelText("Deal name")).toHaveProperty("required", true);
+  });
+
+  it("draws nothing for a field that isn't required, in or out of a section", () => {
+    render(<TextField label="Nickname" />);
+    expect(asterisks()).toBe(0);
   });
 });
 

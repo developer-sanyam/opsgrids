@@ -37,6 +37,25 @@ for (const spec of PAGES) {
             }
             await expect(spec.ready(page)).toBeVisible();
 
+            // Never wider than the viewport it was given — a horizontal scrollbar on a page is
+            // always a bug here, not a design choice, and this catches it even when a screenshot
+            // diff alone would not (two same-sized images can still both be wrong).
+            const overflow = await page.evaluate(() => ({
+              scrollWidth: document.documentElement.scrollWidth,
+              clientWidth: document.documentElement.clientWidth,
+            }));
+            expect.soft(overflow.scrollWidth, "page wider than the viewport").toBeLessThanOrEqual(overflow.clientWidth);
+
+            // Every KPI figure fits the box it is drawn in — a card can be the right size and
+            // still clip the one number it exists to show, which the page-width check above
+            // would never catch.
+            const kpiOverflows = await page.evaluate(() =>
+              Array.from(document.querySelectorAll("[data-kpi-value]"))
+                .filter((el) => el.scrollWidth > el.clientWidth)
+                .map((el) => el.textContent),
+            );
+            expect.soft(kpiOverflows, "KPI value wider than its own box").toEqual([]);
+
             await expect
               .soft(page)
               .toHaveScreenshot(snapshotName(spec.surface, theme, width), { fullPage: spec.capture === "fullpage" });

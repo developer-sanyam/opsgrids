@@ -1,34 +1,6 @@
-import type { ComponentType, SVGProps } from "react";
-
 import type { Ticket } from "@/api/types";
-import { AlertTriangleIcon, CheckCircleIcon, ClockIcon, PauseCircleIcon, cn } from "@opsgrids/ui";
+import { StatusBadge } from "@opsgrids/ui";
 import { slaInfo } from "@/lib/sla";
-import type { SlaState } from "@/lib/sla";
-
-type IconType = ComponentType<SVGProps<SVGSVGElement>>;
-
-/**
- * SLA state, deliberately labelled: every state pairs a colour with an icon *and* a word, so an
- * agent can read "Breached" or "Due in 28m" without depending on the red/amber/green at all —
- * the frontend rule that state must never be conveyed by colour alone.
- */
-const TONE: Record<SlaState, string> = {
-  breached: "bg-danger-soft text-danger",
-  due_soon: "bg-late-soft text-late",
-  on_track: "bg-present-soft text-present",
-  paused: "bg-ground text-muted",
-  met: "bg-present-soft text-present",
-  missed: "bg-danger-soft text-danger",
-};
-
-const ICON: Record<SlaState, IconType> = {
-  breached: AlertTriangleIcon,
-  due_soon: ClockIcon,
-  on_track: ClockIcon,
-  paused: PauseCircleIcon,
-  met: CheckCircleIcon,
-  missed: AlertTriangleIcon,
-};
 
 interface SlaPillProps {
   ticket: Ticket;
@@ -37,20 +9,14 @@ interface SlaPillProps {
   className?: string;
 }
 
+/**
+ * SLA state, deliberately labelled — the badge's word ("Breached", "Due in 28m") carries the
+ * meaning, never the tone alone. Every state but `missed` is a registered word; `missed` takes an
+ * explicit tone. Missing from the registry: `missed`.
+ */
 export function SlaPill({ ticket, dense = false, className }: SlaPillProps) {
   const info = slaInfo(ticket);
-  const Icon = ICON[info.state];
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1.5 rounded-full pl-1.5 pr-2.5 py-1 text-xs font-semibold whitespace-nowrap tnum",
-        TONE[info.state],
-        className,
-      )}
-      title={info.label}
-    >
-      <Icon className="size-3.5" aria-hidden />
-      {dense ? info.shortLabel : info.label}
-    </span>
-  );
+  const label = dense ? info.shortLabel : info.label;
+  if (info.state === "missed") return <StatusBadge tone="danger" label={label} className={className} />;
+  return <StatusBadge status={info.state} label={label} className={className} />;
 }

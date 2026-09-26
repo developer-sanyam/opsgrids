@@ -36,6 +36,10 @@ class OrganizationChoice(BaseModel):
     slug: str
     name: str
     roles: list[str]
+    #: Index-aligned with `roles` — display labels from account-service's `roles` table,
+    #: falling back to the code itself for one it has no name for. Additive: `roles` is
+    #: unchanged, this rides alongside it (`DirectoryMembership.display_names_for`).
+    role_names: list[str] = Field(default_factory=list)
 
 
 class TokenOut(BaseModel):
@@ -130,6 +134,8 @@ class MeOut(BaseModel):
     organization_id: uuid.UUID | None
     membership_id: uuid.UUID | None
     roles: list[str]
+    #: Index-aligned with `roles`, same source and fallback as `OrganizationChoice.role_names`.
+    role_names: list[str] = Field(default_factory=list)
     amr: list[str]
     must_change_password: bool
     mfa_enabled: bool

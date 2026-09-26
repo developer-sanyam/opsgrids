@@ -1,7 +1,6 @@
 import type { InputHTMLAttributes, Ref } from "react";
 
 import { fieldSkin } from "../lib/field";
-import { useMarksRequired } from "../lib/formSection";
 import { FormField } from "./FormField";
 
 type NativeInput = Omit<
@@ -45,14 +44,13 @@ export function TextField({
   ref,
   ...props
 }: TextFieldProps) {
-  const marksRequired = useMarksRequired();
   return (
     <FormField
       label={label}
       {...(helper !== undefined ? { helper } : {})}
       {...(error !== undefined ? { error } : {})}
       optional={optional}
-      required={marksRequired && required === true}
+      required={required === true}
       hideLabel={hideLabel}
       {...(containerClassName !== undefined ? { className: containerClassName } : {})}
     >

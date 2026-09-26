@@ -1,15 +1,16 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import type { CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { getAllEmployees, listAttendanceRoster } from "@/api/client";
+import { getAllEmployees, getAttendanceDaySummary } from "@/api/client";
 import { getOrgUnitNameById } from "@/api/orgUnits";
-import type { EmployeeOut } from "@/api/types";
+import type { EmployeeOut, TrendPoint, TrendRange } from "@/api/types";
 import { Can, useAsync, useAuth } from "@opsgrids/client";
 import {
   activeCount,
   distinctDepartmentCount,
   headcountByDepartment,
+  headcountTrend,
   workforceMix,
 } from "@/data/derive";
 import {
@@ -25,7 +26,7 @@ import {
   WorkforceMix,
 } from "@/ui";
 import type { KpiTone, MiniStat } from "@/ui";
-import { CalendarCheckIcon, CalendarIcon, CheckSquareIcon, PlusIcon, SearchIcon, UsersIcon } from "@opsgrids/ui";
+import { CalendarCheckIcon, CalendarIcon, CheckSquareIcon, PlusIcon, UsersIcon } from "@opsgrids/ui";
 
 /** The real clock — never a frozen fixture date. */
 function todayISO(): string {
@@ -38,12 +39,13 @@ const EMPTY_EMPLOYEES: EmployeeOut[] = [];
 /** A stable empty org-unit map, used while the tree loads or when the org has none to read. */
 const EMPTY_ORG_UNITS: ReadonlyMap<string, string> = new Map();
 
-/** The Dashboard's top bar: breadcrumb + title, then the search / date / add controls. Every
- *  control here does real work — the old period select changed nothing and is gone, along with
- *  the notification bell's permanently-on unread dot (no notifications backend exists). */
+/** The Dashboard's top bar: breadcrumb + title, then the date / add controls. Every control here
+ *  does real work — the old period select changed nothing and is gone, along with the
+ *  notification bell's permanently-on unread dot (no notifications backend exists). The shell's
+ *  own header already has a search that reaches Employees (`AppShell`'s `search.fallback`), so
+ *  this doesn't repeat it. */
 function DashboardHeader({ orgName }: { orgName: string }) {
   const navigate = useNavigate();
-  const [query, setQuery] = useState("");
   const today = useMemo(() => new Date(), []);
 
   return (
@@ -59,28 +61,6 @@ function DashboardHeader({ orgName }: { orgName: string }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const q = query.trim();
-            navigate(q ? `/employees?q=${encodeURIComponent(q)}` : "/employees");
-          }}
-          className="hidden h-11 min-w-0 items-center gap-2 rounded-full bg-surface px-4 shadow-card focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2 md:flex md:w-60"
-        >
-          <SearchIcon className="size-[18px] shrink-0 text-faint" />
-          <label htmlFor="dash-search" className="sr-only">
-            Search employees
-          </label>
-          <input
-            id="dash-search"
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search employees…"
-            className="min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-faint focus:outline-none"
-          />
-        </form>
-
         <span className="hidden h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold text-ink-soft shadow-card sm:inline-flex">
           <CalendarIcon className="size-4 text-muted" />
           <span className="tnum">
@@ -152,7 +132,7 @@ export function DashboardPage() {
   const { user } = useAuth();
   const employees = useAsync(getAllEmployees, []);
   const today = useMemo(() => todayISO(), []);
-  const attendance = useAsync(useCallback(() => listAttendanceRoster(today, { size: 200 }), [today]), [today]);
+  const attendance = useAsync(useCallback(() => getAttendanceDaySummary(today), [today]), [today]);
   // Department names come from the org-unit tree. It is permission-gated and often empty, and its
   // loader already degrades any failure to an empty map — so a 403 here is never a dashboard error,
   // just names that fall back to each employee's job_title.
@@ -167,10 +147,8 @@ export function DashboardPage() {
 
   const attendanceSummary = useMemo(() => {
     if (attendance.status !== "success") return null;
-    const records = attendance.data.items;
-    const present = records.filter((r) => r.status === "present" || r.status === "half_day").length;
-    const absent = records.filter((r) => r.status === "absent").length;
-    const rate = records.length === 0 ? 0 : (present / records.length) * 100;
+    const { total, presentOrHalfDay, absent } = attendance.data;
+    const rate = total === 0 ? 0 : (presentOrHalfDay / total) * 100;
     return { rate: `${rate.toFixed(1)}%`, absent };
   }, [attendance]);
 
@@ -190,6 +168,14 @@ export function DashboardPage() {
     [items, orgUnitMap],
   );
   const mix = useMemo(() => workforceMix(items), [items]);
+  const headcountSeries = useMemo<Record<TrendRange, TrendPoint[]>>(
+    () => ({
+      monthly: headcountTrend(items, "monthly"),
+      quarterly: headcountTrend(items, "quarterly"),
+      yearly: headcountTrend(items, "yearly"),
+    }),
+    [items],
+  );
 
   const miniStats: MiniStat[] = useMemo(() => {
     const locations = new Set(items.map((e) => e.location_code).filter(Boolean)).size;
@@ -251,7 +237,7 @@ export function DashboardPage() {
         <Card className="flex flex-col gap-4 p-6 xl:col-span-2">
           <SectionHeader title="Headcount Trend" subtitle="Team size over time" />
           {employees.status === "success" ? (
-            <HeadcountTrend current={total} sample />
+            <HeadcountTrend current={total} series={headcountSeries} />
           ) : (
             <Skeleton className="h-56 w-full rounded-tile" />
           )}

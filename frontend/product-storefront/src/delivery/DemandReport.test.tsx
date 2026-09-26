@@ -11,11 +11,11 @@ import type { StoreOut } from "./types";
 /**
  * All four async states of the demand report, including the empty one that has to explain itself.
  *
- * **Queries here are scoped to the `<table>` on purpose.** The report renders two layouts — the
- * table from `sm` up, a stacked list below it — and jsdom applies no media queries, so both are in
- * the DOM at once and a bare `getByText` finds each row twice. In a browser exactly one is
- * `display: none`, and a `display: none` subtree is not in the accessibility tree either, so no
- * screen reader hears it twice. The last test below pins that the two carry the same facts.
+ * The report is a `DataTable` with `mobileCard="auto"`: below 768px it renders one card per row
+ * instead of the table, chosen by a real media query rather than a CSS-hidden second copy, so
+ * nothing is ever in the DOM (or the accessibility tree) twice. jsdom has no layout engine and
+ * reports the wide table either way (see `useMediaQuery`'s own doc comment) — the narrow card
+ * layout is `DataTable`'s own responsibility and covered by its tests, not repeated here.
  */
 
 const PUBLISHED: StoreOut = {
@@ -81,7 +81,7 @@ describe("DemandReport", () => {
     expect(within(table).getByText("400050")).toBeTruthy();
   });
 
-  it("says the same thing in the narrow layout as in the table", async () => {
+  it("names the code, the outcome and the count in one row", async () => {
     vi.spyOn(api, "getDemand").mockResolvedValue({
       truncated: false,
       total: 3,
@@ -91,12 +91,10 @@ describe("DemandReport", () => {
     });
     render(<DemandReport store={PUBLISHED} />);
 
-    await waitFor(() => screen.getByRole("table"));
-    // One in the table, one in the list. Both name the code, the outcome and the count; the
-    // browser shows exactly one.
-    expect(screen.getAllByText("421201")).toHaveLength(2);
-    expect(screen.getAllByText("Not mapped")).toHaveLength(2);
-    expect(screen.getAllByText("34")).toHaveLength(2);
+    const table = await screen.findByRole("table");
+    expect(within(table).getByText("421201")).toBeTruthy();
+    expect(within(table).getByText("Not mapped")).toBeTruthy();
+    expect(within(table).getByText("34")).toBeTruthy();
   });
 
   it("explains *why* it is empty rather than saying 'no data'", async () => {

@@ -119,19 +119,10 @@ export type ProductFormErrors = Partial<
     | "mrp"
     | "moq"
     | "leadTimeDays"
-    | "deliveryEtaMinutes"
-    | "imageUrl",
+    | "deliveryEtaMinutes",
     string
   >
 > & { variants?: Record<string, VariantRowErrors> };
-
-function isHttpsUrl(value: string): boolean {
-  try {
-    return new URL(value).protocol === "https:";
-  } catch {
-    return false;
-  }
-}
 
 /** Mirrors the server's rules and never replaces them — a 422 the server still sends lands on
  *  the same fields through `useMutation`'s `fieldErrors`. */
@@ -165,9 +156,6 @@ export function validateProductForm(values: ProductFormValues, categories: Categ
   }
   if (values.deliveryEtaMinutes.trim() !== "" && !/^\d+$/.test(values.deliveryEtaMinutes.trim())) {
     errors.deliveryEtaMinutes = "Enter a whole number of minutes, or leave it blank.";
-  }
-  if (values.imageUrl.trim() !== "" && !isHttpsUrl(values.imageUrl.trim())) {
-    errors.imageUrl = "Enter a full https:// image address.";
   }
 
   const variantErrors: Record<string, Partial<Record<"label" | "priceMin" | "priceMax" | "mrp", string>>> = {};

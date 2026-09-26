@@ -21,6 +21,9 @@ interface ApplyLeaveDialogProps {
 export function ApplyLeaveDialog({ onClose, onSaved }: ApplyLeaveDialogProps) {
   const [leaveTypes, setLeaveTypes] = useState<LeaveTypeOut[]>([]);
   const [leaveTypeId, setLeaveTypeId] = useState("");
+  // The default this dialog opened on, so picking the first leave type automatically is never
+  // mistaken for something a person typed — only a later, deliberate change of it is "dirty".
+  const [initialLeaveTypeId, setInitialLeaveTypeId] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [halfDayStart, setHalfDayStart] = useState(false);
@@ -32,12 +35,24 @@ export function ApplyLeaveDialog({ onClose, onSaved }: ApplyLeaveDialogProps) {
     listLeaveTypes({ size: 100 }).then((page) => {
       if (!active) return;
       setLeaveTypes(page.items);
-      if (page.items[0]) setLeaveTypeId((current) => current || page.items[0]!.id);
+      if (page.items[0]) {
+        setLeaveTypeId((current) => current || page.items[0]!.id);
+        setInitialLeaveTypeId((current) => current || page.items[0]!.id);
+      }
     });
     return () => {
       active = false;
     };
   }, []);
+
+  // Create-only dialog: dirty against the blank state it opened on.
+  const dirty =
+    leaveTypeId !== initialLeaveTypeId ||
+    startDate !== "" ||
+    endDate !== "" ||
+    halfDayStart ||
+    halfDayEnd ||
+    reason !== "";
 
   const singleDay = startDate !== "" && startDate === endDate;
 
@@ -65,6 +80,7 @@ export function ApplyLeaveDialog({ onClose, onSaved }: ApplyLeaveDialogProps) {
       submitLabel="Submit request"
       pendingLabel="Submitting…"
       pending={save.pending}
+      dirty={dirty}
       {...(save.error ? { error: problemMessage(save.error) } : {})}
     >
       <Select
@@ -72,6 +88,7 @@ export function ApplyLeaveDialog({ onClose, onSaved }: ApplyLeaveDialogProps) {
         value={leaveTypeId}
         onChange={(e) => setLeaveTypeId(e.target.value)}
         options={leaveTypes.map((t) => ({ value: t.id, label: `${t.name} (${t.code})` }))}
+        required
         error={save.fieldErrors.leave_type_id}
       />
       <TextField
@@ -79,6 +96,7 @@ export function ApplyLeaveDialog({ onClose, onSaved }: ApplyLeaveDialogProps) {
         type="date"
         value={startDate}
         onChange={(e) => setStartDate(e.target.value)}
+        required
         error={save.fieldErrors.start_date}
       />
       <TextField
@@ -87,6 +105,7 @@ export function ApplyLeaveDialog({ onClose, onSaved }: ApplyLeaveDialogProps) {
         value={endDate}
         min={startDate || undefined}
         onChange={(e) => setEndDate(e.target.value)}
+        required
         error={save.fieldErrors.end_date}
       />
       <Switch
@@ -103,6 +122,7 @@ export function ApplyLeaveDialog({ onClose, onSaved }: ApplyLeaveDialogProps) {
         onChange={(e) => setReason(e.target.value)}
         maxLength={500}
         counterFrom={400}
+        required
         error={save.fieldErrors.reason}
       />
     </FormDialog>

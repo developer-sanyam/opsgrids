@@ -2,11 +2,10 @@ import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { getOverview, listAgents, listTickets, TRENDS_ARE_SAMPLE } from "@/api/client";
+import { getOverview, listAgents, listTickets } from "@/api/client";
 import type { Agent, Overview, Ticket } from "@/api/types";
 import { Can, useAsync, useAuth } from "@opsgrids/client";
 import { agentById, needsAttentionList } from "@/data/derive";
-import { KPI_DELTA, KPI_TREND } from "@/data/samples";
 import { now as clockNow } from "@/lib/clock";
 import { formatDate, formatMinutes } from "@/lib/format";
 import {
@@ -31,9 +30,7 @@ import {
   ClockIcon,
   InboxIcon,
   PlusIcon,
-  SearchIcon,
 } from "@opsgrids/ui";
-import { SAMPLE_TREND } from "@/ui/sampleCopy";
 import { NewTicketDialog } from "@/ui/NewTicketDialog";
 
 /** A stable empty reference so derived-data memos don't churn while loading. */
@@ -55,7 +52,9 @@ const STATUS_COLORS: Record<string, string> = {
   solved: "var(--color-present)",
 };
 
-/** The Overview's top bar: breadcrumb + title, then search / date / new-ticket. */
+/** The Overview's top bar: breadcrumb + title, then date / new-ticket. The shell's own header
+ *  already has a search that reaches the queue (`AppShell`'s `search.fallback`), so this doesn't
+ *  repeat it. */
 function OverviewHeader({
   orgName,
   onNewTicket,
@@ -63,9 +62,6 @@ function OverviewHeader({
   orgName: string;
   onNewTicket: () => void;
 }) {
-  const navigate = useNavigate();
-  const [query, setQuery] = useState("");
-
   return (
     <header className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
       <div className="flex flex-col gap-1">
@@ -79,28 +75,6 @@ function OverviewHeader({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const q = query.trim();
-            navigate(q ? `/queue?q=${encodeURIComponent(q)}` : "/queue");
-          }}
-          className="hidden h-11 min-w-0 items-center gap-2 rounded-full bg-surface px-4 shadow-card focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2 md:flex md:w-60"
-        >
-          <SearchIcon className="size-[18px] shrink-0 text-faint" />
-          <label htmlFor="overview-search" className="sr-only">
-            Search tickets
-          </label>
-          <input
-            id="overview-search"
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search tickets…"
-            className="min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-faint focus:outline-none"
-          />
-        </form>
-
         <span className="hidden h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold text-ink-soft shadow-card sm:inline-flex">
           <CalendarIcon className="size-4 text-muted" />
           <span className="tnum">Last 7 days · to {formatDate(clockNow().toISOString())}</span>
@@ -120,21 +94,20 @@ interface KpiConfig {
   key: string;
   label: string;
   value: string;
-  deltaPct: number;
-  series: number[];
   icon: React.ReactNode;
   tone: KpiTone;
   goodWhen: "up" | "down";
 }
 
+/** `GET /support/overview` answers the current snapshot only — no trailing history to compare
+ *  against — so every card renders its live figure alone, with no delta and no sparkline. An
+ *  invented trend is worse than none. */
 function buildKpis(overview: Overview): KpiConfig[] {
   return [
     {
       key: "open",
       label: "Open tickets",
       value: String(overview.open_tickets),
-      deltaPct: KPI_DELTA.open,
-      series: [...KPI_TREND.open],
       icon: <InboxIcon className="size-5" />,
       tone: "accent",
       goodWhen: "down",
@@ -143,8 +116,6 @@ function buildKpis(overview: Overview): KpiConfig[] {
       key: "breaching",
       label: "Breaching SLA",
       value: String(overview.breaching_sla),
-      deltaPct: KPI_DELTA.breaching,
-      series: [...KPI_TREND.breaching],
       icon: <AlertTriangleIcon className="size-5" />,
       tone: "warning",
       goodWhen: "down",
@@ -153,8 +124,6 @@ function buildKpis(overview: Overview): KpiConfig[] {
       key: "frt",
       label: "First-response time",
       value: formatMinutes(overview.first_response_median_min),
-      deltaPct: KPI_DELTA.firstResponse,
-      series: [...KPI_TREND.firstResponse],
       icon: <ClockIcon className="size-5" />,
       tone: "info",
       goodWhen: "down",
@@ -163,8 +132,6 @@ function buildKpis(overview: Overview): KpiConfig[] {
       key: "csat",
       label: "CSAT",
       value: overview.csat_pct === null ? "—" : `${overview.csat_pct}%`,
-      deltaPct: KPI_DELTA.csat,
-      series: [...KPI_TREND.csat],
       icon: <CheckCircleIcon className="size-5" />,
       tone: "positive",
       goodWhen: "up",
@@ -273,12 +240,9 @@ export function OverviewPage() {
                 <KpiCard
                   label={kpi.label}
                   value={kpi.value}
-                  deltaPct={kpi.deltaPct}
-                  series={kpi.series}
                   icon={kpi.icon}
                   tone={kpi.tone}
                   goodWhen={kpi.goodWhen}
-                  sample={TRENDS_ARE_SAMPLE ? SAMPLE_TREND : false}
                 />
               </div>
             ))

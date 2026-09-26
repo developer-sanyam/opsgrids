@@ -2,7 +2,6 @@ import { useId } from "react";
 import type { ReactNode } from "react";
 
 import { cn } from "../lib/cn";
-import { FormSectionContext } from "../lib/formSection";
 
 interface FormSectionProps {
   /** "Basic information", "Pricing & stock". */
@@ -32,10 +31,10 @@ const GRID = {
  * wrote by hand, with a different column count per app. It is a `<section>` named by its heading,
  * so a screen reader's landmark list reads the form's structure.
  *
- * **Required fields inside are marked.** A `TextField`, `TextArea` or `Select` given `required`
- * shows a red asterisk after its label (the owner's ruling for the redesign; see
- * `lib/formSection.ts`). The asterisk is decoration for the eye; the control's own `required`
- * is what a screen reader announces, as "required", once.
+ * **Required fields inside are marked**, the same as anywhere else. A `TextField`, `TextArea` or
+ * `Select` given `required` shows a red asterisk after its label; being inside this section
+ * changes nothing about that. The asterisk is decoration for the eye; the control's own
+ * `required` is what a screen reader announces, as "required", once.
  */
 export function FormSection({
   title,
@@ -57,9 +56,7 @@ export function FormSection({
         </Heading>
         {description ? <p className="text-sm text-muted">{description}</p> : null}
       </div>
-      <FormSectionContext value={true}>
-        <div className={cn("grid gap-4", GRID[columns])}>{children}</div>
-      </FormSectionContext>
+      <div className={cn("grid gap-4", GRID[columns])}>{children}</div>
     </section>
   );
 }

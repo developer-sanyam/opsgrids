@@ -102,7 +102,7 @@ export function KpiCard({
         )}
 
         <div className="flex flex-wrap items-center gap-2">
-          <span className={cn("text-kpi", figure === "money" ? "money" : "tnum")}>
+          <span data-kpi-value className={cn("text-kpi", figure === "money" ? "money" : "tnum")}>
             {value}
           </span>
           {deltaPct !== undefined ? <DeltaPill value={deltaPct} goodWhen={goodWhen} /> : null}

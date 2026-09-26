@@ -55,6 +55,13 @@ export function ItemCategoryFormDialog({
   const [nameError, setNameError] = useState<string | undefined>(undefined);
   const firstFieldRef = useRef<HTMLInputElement>(null);
 
+  // Compared against the same seed the fields above initialised from — this form unmounts on
+  // close (FormDialog's resetting-is-structural note), so `category` never changes under it.
+  const dirty =
+    code !== (category?.code ?? "") ||
+    name !== (category?.name ?? "") ||
+    parentId !== (category?.parent_id ?? "");
+
   const save = useMutation(
     (input: ItemCategoryIn | ItemCategoryPatch) =>
       category
@@ -105,6 +112,7 @@ export function ItemCategoryFormDialog({
       pendingLabel={category ? "Saving…" : "Creating…"}
       pending={save.pending}
       initialFocusRef={firstFieldRef}
+      dirty={dirty}
       {...formDialogError(save.error, save.fieldErrors)}
     >
       <TextField
@@ -113,6 +121,7 @@ export function ItemCategoryFormDialog({
         value={code}
         onChange={(e) => setCode(e.target.value)}
         disabled={category !== null}
+        required
         helper={category ? "A category's code can't change." : "Letters, numbers, . - and _."}
         {...((codeError ?? save.fieldErrors.code) !== undefined
           ? { error: codeError ?? save.fieldErrors.code }
@@ -122,6 +131,7 @@ export function ItemCategoryFormDialog({
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
+        required
         {...((nameError ?? save.fieldErrors.name) !== undefined
           ? { error: nameError ?? save.fieldErrors.name }
           : {})}

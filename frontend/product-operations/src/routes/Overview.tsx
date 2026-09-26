@@ -1,407 +1,461 @@
-import { useMemo, useState } from "react";
-import type { CSSProperties } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import type { ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
 
-import { FULL_PAGE, listInventory, listPurchaseOrders, listSuppliers, TRENDS_ARE_SAMPLE } from "@/api/client";
-import { ON_TIME_SAMPLE } from "@/api/fixtures";
-import type { InventoryItemOut, PurchaseOrderOut, SupplierOut } from "@/api/types";
-import { Can, useAuth } from "@opsgrids/client";
+import { getOverview, listInventory, listPurchaseOrders, listSuppliers } from "@/api/client";
+import type { InventoryItemOut, OverviewOut, PurchaseOrderOut } from "@/api/types";
+import { Can, problemMessage, useAsync } from "@opsgrids/client";
+import { isOutOfStock, poTotalMinor } from "@/data/derive";
+import { formatDate, formatMoney, formatMoneyCompact } from "@/lib/format";
+import { formatQty } from "@/lib/quantity";
 import {
-  attentionItems,
-  inventoryValueMinor,
-  lowStockItems,
-  openPoCount,
-  poStatusMix,
-  poTotalMinor,
-  spendByCategory,
-  weightedOnTimePct,
-} from "@/data/derive";
-import { useAsync } from "@opsgrids/client";
-import { today } from "@/lib/now";
-import { formatMoneyCompact, formatNumber } from "@/lib/format";
-import {
+  BarList,
   Button,
   Card,
-  CategoryBreakdown,
+  CardSkeleton,
+  ChartCard,
+  DataTable,
+  DonutChart,
+  EmptyState,
   ErrorState,
-  KpiCard,
+  LineChart,
+  MetricCard,
   NeedsAttention,
+  PageHeader,
   PoStatusPill,
-  SampleChip,
-  SearchInput,
   SectionHeader,
   Skeleton,
-  SpendTrend,
-  StatusMix,
-  TopSuppliers,
+  StockPill,
 } from "@/ui";
-import type { KpiTone, MiniStat } from "@/ui";
-import { AlertTriangleIcon, ClipboardListIcon, CoinsIcon, PlusIcon, TruckIcon } from "@opsgrids/ui";
-import { SAMPLE_DATA, SAMPLE_TREND } from "@/ui/sampleCopy";
+import type { Column, KpiTone } from "@/ui";
+import {
+  AlertOctagonIcon,
+  AlertTriangleIcon,
+  BuildingIcon,
+  ClipboardListIcon,
+  CoinsIcon,
+  LayersIcon,
+  PlusIcon,
+  TruckIcon,
+} from "@opsgrids/ui";
 
-const EMPTY_POS: PurchaseOrderOut[] = [];
-const EMPTY_INVENTORY: InventoryItemOut[] = [];
-const EMPTY_SUPPLIERS: SupplierOut[] = [];
+const COUNT = new Intl.NumberFormat("en-IN");
 
-/** The Overview's top bar: breadcrumb + title, then a search that actually searches, and New PO. */
-function OverviewHeader({ orgName }: { orgName: string }) {
-  const navigate = useNavigate();
-  const [query, setQuery] = useState("");
-
-  return (
-    <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-      <div className="flex flex-col gap-1">
-        <nav aria-label="Breadcrumb" className="text-sm font-medium text-muted">
-          Workspace <span className="text-faint">/</span>{" "}
-          <span className="text-ink-soft">{orgName}</span>
-        </nav>
-        <h1 className="display text-3xl font-extrabold leading-tight sm:text-[2.1rem]">Overview</h1>
-      </div>
-
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const q = query.trim();
-            navigate(q ? `/purchase-orders?q=${encodeURIComponent(q)}` : "/purchase-orders");
-          }}
-          className="sm:w-64"
-        >
-          <SearchInput
-            label="Search purchase orders"
-            placeholder="Search POs…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-        </form>
-
-        <Can permission="operations.procurement.purchase_order.write" scope="OWN">
-          <Button
-            size="md"
-            leadingIcon={<PlusIcon className="size-4" />}
-            onClick={() => navigate("/purchase-orders/new")}
-          >
-            New PO
-          </Button>
-        </Can>
-      </div>
-    </header>
-  );
-}
-
+/** One KPI tile's own async slice — its own loading/error/value, so a failure in one count (say,
+ *  the active-suppliers total) never blanks the five rollups that came back fine on the same
+ *  page. Mirrors the Super Admin dashboard's `KpiRow`. */
 interface KpiConfig {
   key: string;
   label: string;
-  value: string;
-  deltaPct: number;
-  goodWhen?: "down";
-  series: number[];
-  icon: React.ReactNode;
+  icon: ReactNode;
   tone: KpiTone;
+  status: "loading" | "error" | "success";
+  value?: string;
+  onRetry: () => void;
 }
 
-function buildKpis(
-  pos: PurchaseOrderOut[],
-  inventory: InventoryItemOut[],
-  suppliers: SupplierOut[],
-): KpiConfig[] {
-  const open = openPoCount(pos);
-  const invValue = inventoryValueMinor(inventory);
-  const low = lowStockItems(inventory).length;
-  const onTime = weightedOnTimePct(suppliers);
+function KpiTile({ kpi }: { kpi: KpiConfig }) {
+  if (kpi.status === "loading") {
+    return <CardSkeleton lines={1} label={`Loading ${kpi.label.toLowerCase()}`} />;
+  }
+  if (kpi.status === "error") {
+    return (
+      <Card className="flex flex-col justify-center gap-3 p-4 sm:p-6">
+        <p className="text-sm font-semibold text-ink">{`Couldn't load ${kpi.label.toLowerCase()}.`}</p>
+        <Button variant="secondary" size="sm" onClick={kpi.onRetry}>
+          Try again
+        </Button>
+      </Card>
+    );
+  }
+  return <MetricCard label={kpi.label} value={kpi.value ?? "—"} icon={kpi.icon} tone={kpi.tone} />;
+}
+
+/** A compact recent-purchase-orders table: the newest orders, each linking to its detail. */
+function recentOrderColumns(): Column<PurchaseOrderOut>[] {
   return [
     {
-      key: "open_pos",
-      label: "Open POs",
-      value: formatNumber(open),
-      deltaPct: 3.1,
-      series: [5, 6, 6, 7, 6, 7, open],
-      icon: <ClipboardListIcon className="size-5" />,
-      tone: "accent",
+      key: "po_number",
+      header: "PO Number",
+      mobile: "title",
+      cellClassName: "whitespace-nowrap",
+      render: (po) => <span className="font-semibold text-ink tnum">{po.po_number}</span>,
     },
+    { key: "supplier", header: "Supplier", mobile: "field", render: (po) => po.supplier_name },
     {
-      key: "inventory_value",
-      label: "Inventory value",
-      value: formatMoneyCompact(invValue),
-      deltaPct: 2.4,
-      series: [82, 84, 83, 88, 90, 92, 96],
-      icon: <CoinsIcon className="size-5" />,
-      tone: "info",
+      key: "amount",
+      header: "Amount",
+      align: "right",
+      mobile: "field",
+      render: (po) => (
+        <span className="tnum font-semibold text-ink">{formatMoney(poTotalMinor(po), po.currency)}</span>
+      ),
     },
+    { key: "status", header: "Status", mobile: "status", render: (po) => <PoStatusPill status={po.status} /> },
     {
-      key: "low_stock",
-      label: "Low-stock items",
-      value: formatNumber(low),
-      deltaPct: -1.8,
-      goodWhen: "down",
-      series: [9, 8, 8, 7, 6, 6, low],
-      icon: <AlertTriangleIcon className="size-5" />,
-      tone: "warning",
-    },
-    {
-      key: "on_time",
-      label: "On-time delivery",
-      value: `${onTime.toFixed(1)}%`,
-      deltaPct: ON_TIME_SAMPLE.rateDelta,
-      series: ON_TIME_SAMPLE.series,
-      icon: <TruckIcon className="size-5" />,
-      tone: "positive",
+      key: "expected",
+      header: "Expected",
+      align: "right",
+      mobile: "field",
+      cellClassName: "whitespace-nowrap",
+      render: (po) => formatDate(po.expected_date),
     },
   ];
 }
 
-/** A compact recent-purchase-orders panel: the newest orders, each linking to its detail. */
-function RecentOrders({ pos }: { pos: PurchaseOrderOut[] }) {
-  const navigate = useNavigate();
-  const recent = useMemo(
-    () =>
-      pos
-        .slice()
-        .sort((a, b) => b.created_date.localeCompare(a.created_date))
-        .slice(0, 6),
-    [pos],
-  );
-  return (
-    <ul className="flex flex-col">
-      {recent.map((po) => (
-        <li key={po.id}>
-          <button
-            type="button"
-            onClick={() => navigate(`/purchase-orders/${po.id}`)}
-            className="flex w-full items-center gap-3 rounded-tile px-2 py-2.5 text-left hover:bg-ground transition-colors"
-          >
-            <span className="grid size-9 shrink-0 place-items-center rounded-tile bg-accent-soft text-accent-ink">
-              <ClipboardListIcon className="size-[18px]" />
-            </span>
-            <div className="flex min-w-0 flex-1 flex-col leading-tight">
-              <span className="truncate text-sm font-semibold text-ink tnum">{po.po_number}</span>
-              <span className="truncate text-xs text-muted">{po.supplier_name}</span>
-            </div>
-            <span className="hidden shrink-0 tnum text-sm font-semibold text-ink sm:block">
-              {formatMoneyCompact(poTotalMinor(po))}
-            </span>
-            <PoStatusPill status={po.status} />
-          </button>
-        </li>
-      ))}
-    </ul>
-  );
+function lowStockColumns(): Column<InventoryItemOut>[] {
+  return [
+    {
+      key: "item",
+      header: "Item",
+      mobile: "title",
+      render: (it) => (
+        <div className="flex flex-col leading-tight">
+          <span className="font-semibold text-ink">{it.name}</span>
+          <span className="text-xs text-muted tnum">{it.sku}</span>
+        </div>
+      ),
+    },
+    { key: "warehouse", header: "Warehouse", mobile: "field", render: (it) => it.warehouse },
+    {
+      key: "on_hand",
+      header: "On hand",
+      align: "right",
+      mobile: "field",
+      render: (it) => (
+        <span className="tnum font-semibold text-ink whitespace-nowrap">
+          {formatQty(it.on_hand_qty)} <span className="text-xs font-normal text-muted">{it.uom}</span>
+        </span>
+      ),
+    },
+    {
+      key: "status",
+      header: "Status",
+      mobile: "status",
+      render: (it) => <StockPill level={isOutOfStock(it) ? "out" : "low"} />,
+    },
+  ];
+}
+
+/** Purchase orders grouped by status, as donut slices — no explicit tone per slice, so the chart
+ *  assigns each present status the next colour in its own rotation, deterministic since the
+ *  server always returns them in lifecycle order. */
+function statusDonutSlices(overview: OverviewOut) {
+  return overview.po_status_mix.map((slice) => ({ key: slice.key, label: slice.label, value: slice.count }));
 }
 
 export function OverviewPage() {
-  const { user } = useAuth();
-  const posState = useAsync(() => listPurchaseOrders({ size: FULL_PAGE }), []);
-  const inventoryState = useAsync(() => listInventory({ size: FULL_PAGE }), []);
-  const suppliersState = useAsync(() => listSuppliers({ size: FULL_PAGE }), []);
+  const navigate = useNavigate();
 
-  const orgName =
-    user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
-    user?.organizations[0]?.name ??
-    "OpsGrids";
-
-  const pos = posState.status === "success" ? posState.data.items : EMPTY_POS;
-  const inventory =
-    inventoryState.status === "success" ? inventoryState.data.items : EMPTY_INVENTORY;
-  const suppliers =
-    suppliersState.status === "success" ? suppliersState.data.items : EMPTY_SUPPLIERS;
-
-  const ready =
-    posState.status === "success" &&
-    inventoryState.status === "success" &&
-    suppliersState.status === "success";
-  const failed =
-    posState.status === "error" ||
-    inventoryState.status === "error" ||
-    suppliersState.status === "error";
-  const firstError =
-    (posState.status === "error" && posState.error) ||
-    (inventoryState.status === "error" && inventoryState.error) ||
-    (suppliersState.status === "error" && suppliersState.error) ||
-    null;
-
-  function retryAll() {
-    posState.reload();
-    inventoryState.reload();
-    suppliersState.reload();
-  }
-
-  const kpis = useMemo(
-    () => buildKpis(pos, inventory, suppliers),
-    [pos, inventory, suppliers],
-  );
-  const categories = useMemo(() => spendByCategory(pos), [pos]);
-  const statusMix = useMemo(() => poStatusMix(pos), [pos]);
-  const attention = useMemo(
-    () => attentionItems(pos, inventory, today()),
-    [pos, inventory],
-  );
-  const topSuppliers = useMemo(
-    () => suppliers.slice().sort((a, b) => b.spend_minor - a.spend_minor).slice(0, 5),
-    [suppliers],
+  const overview = useAsync(() => getOverview(), []);
+  const productsCount = useAsync(() => listInventory({ size: 1 }).then((r) => r.total), []);
+  const suppliersCount = useAsync(() => listSuppliers({ size: 1, status: "active" }).then((r) => r.total), []);
+  const recentOrders = useAsync(() => listPurchaseOrders({ sort: "created", size: 6 }).then((r) => r.items), []);
+  const lowStock = useAsync(
+    () => listInventory({ low_stock: true, sort: "on_hand", size: 5 }).then((r) => r.items),
+    [],
   );
 
-  const miniStats: MiniStat[] = useMemo(() => {
-    const warehouses = new Set(inventory.map((i) => i.warehouse)).size;
-    const activeSuppliers = suppliers.filter((s) => s.status === "active").length;
-    const skuCount = inventory.length;
-    return [
-      { label: "Active suppliers", metric: "partners", total: String(activeSuppliers) },
-      { label: "Warehouses", metric: "sites", total: String(warehouses) },
-      { label: "Tracked SKUs", metric: "items", total: String(skuCount) },
-    ];
-  }, [inventory, suppliers]);
+  const currency = overview.status === "success" ? overview.data.currency : "INR";
+
+  const kpis: KpiConfig[] = [
+    {
+      key: "products",
+      label: "Products",
+      icon: <LayersIcon className="size-5" />,
+      tone: "info",
+      status: productsCount.status,
+      onRetry: productsCount.reload,
+      ...(productsCount.status === "success" ? { value: COUNT.format(productsCount.data) } : {}),
+    },
+    {
+      key: "stock_value",
+      label: "Stock Value",
+      icon: <CoinsIcon className="size-5" />,
+      tone: "accent",
+      status: overview.status,
+      onRetry: overview.reload,
+      ...(overview.status === "success"
+        ? { value: formatMoneyCompact(overview.data.inventory_value_minor, overview.data.currency) }
+        : {}),
+    },
+    {
+      key: "low_stock",
+      label: "Low Stock",
+      icon: <AlertTriangleIcon className="size-5" />,
+      tone: "warning",
+      status: overview.status,
+      onRetry: overview.reload,
+      ...(overview.status === "success" ? { value: COUNT.format(overview.data.low_stock_count) } : {}),
+    },
+    {
+      key: "out_of_stock",
+      label: "Out of Stock",
+      icon: <AlertOctagonIcon className="size-5" />,
+      tone: "danger",
+      status: overview.status,
+      onRetry: overview.reload,
+      ...(overview.status === "success" ? { value: COUNT.format(overview.data.out_of_stock_count) } : {}),
+    },
+    {
+      key: "pending_pos",
+      label: "Pending Purchase Orders",
+      icon: <ClipboardListIcon className="size-5" />,
+      tone: "cyan",
+      status: overview.status,
+      onRetry: overview.reload,
+      ...(overview.status === "success" ? { value: COUNT.format(overview.data.open_pos) } : {}),
+    },
+    {
+      key: "suppliers",
+      label: "Suppliers",
+      icon: <BuildingIcon className="size-5" />,
+      tone: "positive",
+      status: suppliersCount.status,
+      onRetry: suppliersCount.reload,
+      ...(suppliersCount.status === "success" ? { value: COUNT.format(suppliersCount.data) } : {}),
+    },
+    {
+      key: "on_time",
+      label: "On-Time Delivery",
+      icon: <TruckIcon className="size-5" />,
+      tone: "positive",
+      status: overview.status,
+      onRetry: overview.reload,
+      ...(overview.status === "success"
+        ? { value: overview.data.on_time_pct !== null ? `${overview.data.on_time_pct.toFixed(1)}%` : "No data yet" }
+        : {}),
+    },
+  ];
 
   return (
-    <div className="rise flex flex-col gap-5">
-      <OverviewHeader orgName={orgName} />
+    <div className="rise flex flex-col gap-6">
+      <PageHeader
+        eyebrow="Operations"
+        title="Overview"
+        description="Stock, purchase orders and suppliers across your organization."
+        actions={
+          <Can permission="operations.procurement.purchase_order.write" scope="OWN">
+            <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => navigate("/purchase-orders/new")}>
+              New PO
+            </Button>
+          </Can>
+        }
+      />
 
-      {/* Row 1 — KPI cards */}
-      <section aria-label="Key metrics" className="cascade grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {!ready && !failed
-          ? Array.from({ length: 4 }).map((_, i) => (
-              <Card key={i} className="flex flex-col gap-4 p-5" style={{ "--i": i } as CSSProperties}>
-                <div className="flex justify-between">
-                  <Skeleton className="size-10 rounded-tile" />
-                  <Skeleton className="h-8 w-20" />
-                </div>
-                <Skeleton className="h-4 w-24" />
-                <Skeleton className="h-9 w-24 rounded-tile" />
-              </Card>
-            ))
-          : null}
-        {failed ? (
-          <Card className="p-5 sm:col-span-2 xl:col-span-4">
-            <ErrorState message={firstError?.message ?? "Could not load the dashboard."} onRetry={retryAll} />
-          </Card>
-        ) : null}
-        {ready
-          ? kpis.map((kpi, i) => (
-              <div key={kpi.key} style={{ "--i": i } as CSSProperties}>
-                <KpiCard
-                  label={kpi.label}
-                  value={kpi.value}
-                  deltaPct={kpi.deltaPct}
-                  {...(kpi.goodWhen ? { goodWhen: kpi.goodWhen } : {})}
-                  series={kpi.series}
-                  icon={kpi.icon}
-                  tone={kpi.tone}
-                  sample={TRENDS_ARE_SAMPLE ? SAMPLE_TREND : false}
-                />
-              </div>
-            ))
-          : null}
+      <section aria-label="Key metrics" className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        {kpis.map((kpi) => (
+          <KpiTile key={kpi.key} kpi={kpi} />
+        ))}
       </section>
 
-      {/* Row 2 — category bars · spend trend · status mix */}
-      <section aria-label="Spend overview" className="grid grid-cols-1 gap-5 xl:grid-cols-4">
-        <Card className="flex flex-col gap-5 p-6 xl:col-span-1">
-          <SectionHeader title="Spend by Category" subtitle="Where the money goes" />
-          {ready && categories.length > 0 ? (
-            <CategoryBreakdown data={categories} />
-          ) : failed ? (
-            <ErrorState message={firstError?.message ?? "Failed to load."} onRetry={retryAll} />
-          ) : (
-            <Skeleton className="h-56 w-full rounded-tile" />
-          )}
-        </Card>
+      <section aria-label="Spend overview" className="grid grid-cols-1 gap-4 xl:grid-cols-4">
+        <div className="xl:col-span-1">
+          <ChartCard
+            title="Spend by Category"
+            description="Committed procurement spend"
+            loading={overview.status === "loading"}
+            skeleton="bar"
+            error={
+              overview.status === "error" ? (
+                <ErrorState message={problemMessage(overview.error)} onRetry={overview.reload} />
+              ) : undefined
+            }
+            empty={
+              overview.status === "success" && overview.data.spend_by_category.length === 0 ? (
+                <EmptyState title="No spend yet" description="Categories appear once a purchase order is approved." />
+              ) : undefined
+            }
+          >
+            {overview.status === "success" && overview.data.spend_by_category.length > 0 ? (
+              <BarList
+                label="Committed spend by category"
+                items={overview.data.spend_by_category.map((c) => ({ key: c.key, label: c.name, value: c.spend_minor }))}
+                formatValue={(v) => formatMoneyCompact(v, currency)}
+              />
+            ) : null}
+          </ChartCard>
+        </div>
 
-        <Card className="flex flex-col gap-4 p-6 xl:col-span-2">
-          <SectionHeader
+        <div className="xl:col-span-2">
+          <ChartCard
             title="Spend Over Time"
-            subtitle="Committed procurement spend"
-            {...(TRENDS_ARE_SAMPLE ? { action: <SampleChip {...SAMPLE_DATA} /> } : {})}
-          />
-          {ready ? <SpendTrend /> : <Skeleton className="h-56 w-full rounded-tile" />}
-        </Card>
+            description="Committed procurement spend by month"
+            loading={overview.status === "loading"}
+            error={
+              overview.status === "error" ? (
+                <ErrorState message={problemMessage(overview.error)} onRetry={overview.reload} />
+              ) : undefined
+            }
+            empty={
+              overview.status === "success" && overview.data.spend_trend.length === 0 ? (
+                <EmptyState title="No spend history yet" description="A trend appears once a purchase order is approved." />
+              ) : undefined
+            }
+          >
+            {overview.status === "success" && overview.data.spend_trend.length > 0 ? (
+              <LineChart
+                label="Committed spend by month"
+                categories={overview.data.spend_trend.map((p) => p.label)}
+                series={[
+                  {
+                    key: "spend",
+                    label: "Spend",
+                    values: overview.data.spend_trend.map((p) => p.spend_minor),
+                  },
+                ]}
+                formatValue={(v) => formatMoneyCompact(v, currency)}
+              />
+            ) : null}
+          </ChartCard>
+        </div>
 
-        <Card className="flex flex-col gap-5 p-6 xl:col-span-1">
-          <SectionHeader title="PO Status" subtitle="Orders by stage" />
-          {ready && statusMix.length > 0 ? (
-            <StatusMix slices={statusMix} total={pos.length} stats={miniStats} />
-          ) : failed ? (
-            <ErrorState message={firstError?.message ?? "Failed to load."} onRetry={retryAll} />
-          ) : (
-            <Skeleton className="h-56 w-full rounded-tile" />
-          )}
-        </Card>
+        <div className="xl:col-span-1">
+          <ChartCard
+            title="PO Status"
+            description="Orders by stage"
+            loading={overview.status === "loading"}
+            skeleton="donut"
+            error={
+              overview.status === "error" ? (
+                <ErrorState message={problemMessage(overview.error)} onRetry={overview.reload} />
+              ) : undefined
+            }
+            empty={
+              overview.status === "success" && overview.data.po_status_mix.length === 0 ? (
+                <EmptyState title="No purchase orders yet" description="Statuses appear once you raise the first one." />
+              ) : undefined
+            }
+          >
+            {overview.status === "success" && overview.data.po_status_mix.length > 0 ? (
+              <DonutChart label="Purchase orders by status" slices={statusDonutSlices(overview.data)} />
+            ) : null}
+          </ChartCard>
+        </div>
       </section>
 
-      {/* Row 3 — recent orders · needs attention + top suppliers */}
-      <section aria-label="Operations detail" className="grid grid-cols-1 gap-5 xl:grid-cols-3 items-start">
-        <Card className="flex flex-col gap-4 p-6 xl:col-span-2">
+      <section aria-label="Purchase orders and low stock" className="grid grid-cols-1 gap-4 xl:grid-cols-3 items-start">
+        <Card className="flex flex-col gap-4 p-4 sm:p-6 xl:col-span-2">
           <SectionHeader
             title="Recent Purchase Orders"
-            subtitle={ready ? `${pos.length} orders in the pipeline` : "Loading…"}
             action={
-              <Link
-                to="/purchase-orders"
-                className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
+              <button
+                type="button"
+                onClick={() => navigate("/purchase-orders")}
+                className="text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
               >
-                View all
-              </Link>
+                View All
+              </button>
             }
           />
-          {!ready && !failed ? (
-            <div className="flex flex-col gap-3 py-2">
-              {Array.from({ length: 6 }).map((_, i) => (
+          <DataTable
+            columns={recentOrderColumns()}
+            rows={recentOrders.status === "success" ? recentOrders.data : []}
+            rowKey={(po) => po.id}
+            loading={recentOrders.status === "loading"}
+            onRowClick={(po) => navigate(`/purchase-orders/${po.id}`)}
+            errorState={
+              recentOrders.status === "error" ? (
+                <ErrorState message={problemMessage(recentOrders.error)} onRetry={recentOrders.reload} />
+              ) : undefined
+            }
+            emptyState={<EmptyState title="No purchase orders yet" description="Raise the first one to start procurement." />}
+            mobileCard="auto"
+          />
+        </Card>
+
+        <Card className="flex flex-col gap-4 p-4 sm:p-6">
+          <SectionHeader
+            title="Low-Stock Items"
+            action={
+              <button
+                type="button"
+                onClick={() => navigate("/inventory?low_stock=true")}
+                className="text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
+              >
+                View All
+              </button>
+            }
+          />
+          <DataTable
+            columns={lowStockColumns()}
+            rows={lowStock.status === "success" ? lowStock.data : []}
+            rowKey={(it) => it.id}
+            loading={lowStock.status === "loading"}
+            onRowClick={(it) => navigate(`/inventory/${it.id}`)}
+            errorState={
+              lowStock.status === "error" ? (
+                <ErrorState message={problemMessage(lowStock.error)} onRetry={lowStock.reload} />
+              ) : undefined
+            }
+            emptyState={<EmptyState title="Nothing low" description="Every item is above its reorder point." />}
+            mobileCard="auto"
+          />
+        </Card>
+      </section>
+
+      <section aria-label="Attention and suppliers" className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <Card className="flex flex-col gap-4 p-4 sm:p-6">
+          <SectionHeader
+            title="Needs Attention"
+            action={
+              overview.status === "success" ? (
+                <span className="tnum rounded-full bg-danger-soft px-3 py-1 text-xs font-bold text-danger">
+                  {overview.data.attention.length}
+                </span>
+              ) : undefined
+            }
+          />
+          {overview.status === "loading" ? (
+            <div className="flex flex-col gap-2" role="status" aria-busy="true">
+              <span className="sr-only">Loading attention items</span>
+              {Array.from({ length: 4 }).map((_, i) => (
                 <Skeleton key={i} className="h-12 w-full rounded-tile" />
               ))}
             </div>
-          ) : null}
-          {failed ? <ErrorState message={firstError?.message ?? "Failed to load."} onRetry={retryAll} /> : null}
-          {ready ? <RecentOrders pos={pos} /> : null}
+          ) : overview.status === "error" ? (
+            <ErrorState message={problemMessage(overview.error)} onRetry={overview.reload} />
+          ) : overview.data.attention.length > 0 ? (
+            <NeedsAttention items={overview.data.attention.slice(0, 6)} />
+          ) : (
+            <EmptyState title="All clear" description="Stock is healthy and every delivery is on schedule." />
+          )}
         </Card>
 
-        <div className="flex flex-col gap-5">
-          <Card className="flex flex-col gap-4 p-6">
-            <SectionHeader
-              title="Needs Attention"
-              action={
-                <span className="tnum rounded-full bg-danger-soft px-2.5 py-1 text-xs font-bold text-danger">
-                  {ready ? attention.length : 0}
-                </span>
-              }
-            />
-            {ready ? (
-              attention.length > 0 ? (
-                <NeedsAttention items={attention.slice(0, 6)} />
-              ) : (
-                <p className="py-6 text-center text-sm text-muted">
-                  Nothing needs attention — stock is healthy and every delivery is on schedule.
-                </p>
-              )
-            ) : (
-              <div className="flex flex-col gap-2">
-                {Array.from({ length: 4 }).map((_, i) => (
-                  <Skeleton key={i} className="h-12 w-full rounded-tile" />
-                ))}
-              </div>
-            )}
-          </Card>
-
-          <Card className="flex flex-col gap-4 p-6">
-            <SectionHeader
-              title="Top Suppliers"
-              subtitle="By lifetime spend"
-              action={
-                <Link
-                  to="/suppliers"
-                  className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
+        <div>
+          <ChartCard
+            title="Top Suppliers"
+            description="By lifetime spend"
+            loading={overview.status === "loading"}
+            error={
+              overview.status === "error" ? (
+                <ErrorState message={problemMessage(overview.error)} onRetry={overview.reload} />
+              ) : undefined
+            }
+            empty={
+              overview.status === "success" && overview.data.top_suppliers.length === 0 ? (
+                <EmptyState title="No suppliers yet" description="Add a supplier to start tracking spend." />
+              ) : undefined
+            }
+            action={
+              overview.status === "success" && overview.data.top_suppliers.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => navigate("/suppliers")}
+                  className="text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
                 >
-                  View all
-                </Link>
-              }
-            />
-            {ready ? (
-              <TopSuppliers suppliers={topSuppliers} />
-            ) : (
-              <div className="flex flex-col gap-2">
-                {Array.from({ length: 4 }).map((_, i) => (
-                  <Skeleton key={i} className="h-11 w-full rounded-tile" />
-                ))}
-              </div>
-            )}
-          </Card>
+                  View All
+                </button>
+              ) : undefined
+            }
+          >
+            {overview.status === "success" && overview.data.top_suppliers.length > 0 ? (
+              <BarList
+                label="Suppliers by lifetime spend"
+                items={overview.data.top_suppliers.map((s) => ({ key: s.id, label: s.name, value: s.spend_minor }))}
+                formatValue={(v) => formatMoneyCompact(v, currency)}
+              />
+            ) : null}
+          </ChartCard>
         </div>
       </section>
     </div>

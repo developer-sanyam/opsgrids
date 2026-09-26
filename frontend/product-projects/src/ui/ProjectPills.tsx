@@ -10,28 +10,15 @@ import {
   PHASE_LABEL,
   PRIORITY_LABEL,
 } from "@/data/labels";
-import { cn } from "@opsgrids/ui";
+import { StatusBadge, cn } from "@opsgrids/ui";
+import type { StatusTone } from "@opsgrids/ui";
 import { healthColor } from "./healthColor";
-
-const PILL_BASE =
-  "inline-flex items-center gap-1.5 rounded-full pl-2 pr-2.5 py-1 text-xs font-semibold";
 
 /* ------------------------------- health -------------------------------- */
 
-const HEALTH_TONE: Record<ProjectHealth, string> = {
-  on_track: "bg-present-soft text-present",
-  at_risk: "bg-late-soft text-late",
-  delayed: "bg-danger-soft text-danger",
-};
-
-/** Delivery health, with a dot backing up the colour so meaning never rests on hue alone. */
+/** "on_track", "at_risk" and "delayed" are all registered words. */
 export function HealthPill({ health }: { health: ProjectHealth }) {
-  return (
-    <span className={cn(PILL_BASE, HEALTH_TONE[health])}>
-      <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      {HEALTH_LABEL[health]}
-    </span>
-  );
+  return <StatusBadge status={health} label={HEALTH_LABEL[health]} />;
 }
 
 /** A bare health dot, for dense rows where a full pill would be too heavy. */
@@ -65,42 +52,25 @@ export function PhasePill({ phase }: { phase: ProjectPhase }) {
 
 /* --------------------------- milestone status --------------------------- */
 
-const MILESTONE_TONE: Record<MilestoneStatus, string> = {
-  completed: "bg-present-soft text-present",
-  on_track: "bg-info-soft text-info",
-  due_soon: "bg-cyan-soft text-cyan",
-  at_risk: "bg-late-soft text-late",
-  slipping: "bg-danger-soft text-danger",
+/** "completed", "on_track" and "due_soon"/"at_risk" are registered words; "slipping" is not. */
+const MILESTONE_TONE: Record<MilestoneStatus, StatusTone> = {
+  completed: "success",
+  on_track: "success",
+  due_soon: "warning",
+  at_risk: "warning",
+  slipping: "danger",
 };
 
 export function MilestoneStatusPill({ status }: { status: MilestoneStatus }) {
-  return (
-    <span className={cn(PILL_BASE, MILESTONE_TONE[status])}>
-      <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      {MILESTONE_STATUS_LABEL[status]}
-    </span>
-  );
+  return <StatusBadge tone={MILESTONE_TONE[status]} label={MILESTONE_STATUS_LABEL[status]} />;
 }
 
 /* ------------------------------- priority ------------------------------- */
 
-const PRIORITY_TONE: Record<TaskPriority, string> = {
-  urgent: "bg-danger-soft text-danger",
-  high: "bg-late-soft text-late",
-  medium: "bg-info-soft text-info",
-  low: "bg-ground text-muted",
-};
-
+/** "urgent", "high", "medium" and "low" are all registered words. */
 export function PriorityPill({ priority }: { priority: TaskPriority }) {
   return (
-    <span
-      className={cn(
-        "inline-flex items-center rounded-full px-2 py-0.5 text-[0.7rem] font-bold uppercase tracking-wide",
-        PRIORITY_TONE[priority],
-      )}
-    >
-      {PRIORITY_LABEL[priority]}
-    </span>
+    <StatusBadge status={priority} label={PRIORITY_LABEL[priority]} className="uppercase tracking-wide" />
   );
 }
 

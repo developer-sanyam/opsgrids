@@ -81,7 +81,7 @@ class Template(Base, TenantBase):
 
     #: Stable code the rules refer to, e.g. ``ticket_acknowledged``. Unique per org and channel.
     code: Mapped[str] = mapped_column(String(80), nullable=False)
-    #: email | whatsapp.
+    #: email | whatsapp | in_app.
     channel: Mapped[str] = mapped_column(String(20), nullable=False)
     #: Email subject line. Null for channels that have none.
     subject: Mapped[str | None] = mapped_column(String(300))
@@ -124,7 +124,7 @@ class Rule(Base, TenantBase):
     #: A `Template.code` whose body we render and send as free text. Null when the rule
     #: sends a provider-held template instead — exactly one of the two is set.
     template_code: Mapped[str | None] = mapped_column(String(80))
-    #: email | whatsapp.
+    #: email | whatsapp | in_app.
     channel: Mapped[str] = mapped_column(String(20), nullable=False)
     #: Suppression bucket a recipient can opt out of, e.g. ``billing``, ``marketing``.
     category: Mapped[str] = mapped_column(String(40), nullable=False, default="operational")
@@ -285,13 +285,21 @@ class Message(Base, TenantBase):
 
     `subject` and `body` are the **rendered** text, stored rather than re-derived. A template
     edited next month must not change what last month's message says it said.
+
+    A `channel == "in_app"` row is also the whole of `GET /notifications/me` — `app/inbox.py`
+    reads this same table, filtered to one recipient's own rows, rather than a second table kept
+    in sync with it. Its `sent` means "in the feed"; there is no provider for it to fail against.
     """
 
     __tablename__ = "messages"
 
-    #: email | whatsapp.
+    #: email | whatsapp | in_app. `in_app` is the platform's own feed (`app/inbox.py`) rather
+    #: than a provider — see `domain.CHANNELS`.
     channel: Mapped[str] = mapped_column(String(20), nullable=False)
     category: Mapped[str] = mapped_column(String(40), nullable=False, default="operational")
+    #: An email, an E.164 phone number, or — for `channel == "in_app"` — the recipient's
+    #: **membership id**. Generic on purpose: this column has never meant "email address", only
+    #: "wherever the channel sends", the same reasoning `subject` already leans on for whatsapp.
     to_address: Mapped[str] = mapped_column(String(254), nullable=False)
     subject: Mapped[str | None] = mapped_column(String(300))
     body: Mapped[str] = mapped_column(Text, nullable=False)
@@ -352,6 +360,17 @@ class Message(Base, TenantBase):
         ),
         # The thread view: every outbound reply in one conversation, oldest first.
         Index("ix_messages_org_conversation", "organization_id", "conversation_id"),
+        # `app/inbox.py`'s hot path: one recipient's own feed, newest first, keyset-paged on
+        # `(created_at, id)`. `ix_messages_org_channel` alone would still work but forces a sort
+        # over every message on the channel; this one is built for the query the feed actually
+        # runs.
+        Index(
+            "ix_messages_org_channel_recipient",
+            "organization_id",
+            "channel",
+            "to_address",
+            "created_at",
+        ),
         # Two rules on one event are two messages; one event twice is one message.
         UniqueConstraint("organization_id", "dedupe_key", name="uq_messages_org_dedupe"),
     )

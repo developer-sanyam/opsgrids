@@ -57,12 +57,14 @@ function LeaveTypesScreen() {
     {
       key: "code",
       header: "Code",
+      mobile: "field",
       render: (t) => <span className="tnum font-semibold">{t.code}</span>,
     },
-    { key: "name", header: "Name", render: (t) => t.name },
+    { key: "name", header: "Name", mobile: "title", render: (t) => t.name },
     {
       key: "paid",
       header: "Paid",
+      mobile: "status",
       render: (t) => <Tag tone={t.is_paid ? "positive" : "neutral"}>{t.is_paid ? "Paid" : "Unpaid"}</Tag>,
     },
     {
@@ -76,6 +78,7 @@ function LeaveTypesScreen() {
       key: "actions",
       header: "",
       align: "right",
+      mobile: "actions",
       render: (t) => (
         <RowActions
           label={t.name}
@@ -130,6 +133,7 @@ function LeaveTypesScreen() {
             columns={columns}
             rows={leaveTypes.data.items}
             rowKey={(t) => t.id}
+            mobileCard="auto"
             emptyState={
               <EmptyState
                 icon={<ClipboardListIcon className="size-6" />}

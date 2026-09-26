@@ -37,4 +37,9 @@ export const WithError: Story = {
   args: { defaultValue: "", placeholder: "Choose a warehouse", error: "Choose where this stock is received." },
 };
 
+/** The native `required` marks the label too: a red asterisk beside it, never inside it. */
+export const Required: Story = {
+  args: { defaultValue: "", placeholder: "Choose a warehouse", required: true },
+};
+
 export const Disabled: Story = { args: { disabled: true } };

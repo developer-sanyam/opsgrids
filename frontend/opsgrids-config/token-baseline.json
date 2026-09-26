@@ -1,13 +1,9 @@
 {
-  "opsgrids-dashboard/src/App.tsx": {
-    "arbitrary": 2
-  },
   "opsgrids-dashboard/src/routes/AcceptInvitation.tsx": {
     "spacing": 1
   },
   "opsgrids-dashboard/src/routes/Invoices.tsx": {
-    "arbitrary": 1,
-    "spacing": 17
+    "spacing": 7
   },
   "opsgrids-dashboard/src/routes/Login.tsx": {
     "spacing": 1
@@ -27,16 +23,11 @@
   "opsgrids-dashboard/src/routes/Signup.tsx": {
     "spacing": 1
   },
-  "opsgrids-dashboard/src/routes/Subscriptions.tsx": {
-    "arbitrary": 1,
-    "spacing": 11
-  },
   "opsgrids-dashboard/src/routes/admin/Domains.tsx": {
     "spacing": 2
   },
   "opsgrids-dashboard/src/routes/admin/Members.tsx": {
-    "arbitrary": 2,
-    "spacing": 10
+    "arbitrary": 1
   },
   "opsgrids-dashboard/src/routes/admin/OrgUnits.tsx": {
     "spacing": 2
@@ -48,14 +39,9 @@
     "arbitrary": 2,
     "spacing": 5
   },
-  "opsgrids-internal/src/App.tsx": {
-    "arbitrary": 8,
-    "spacing": 2,
-    "radius": 1
-  },
   "opsgrids-internal/src/routes/AccountActions.tsx": {
     "arbitrary": 1,
-    "spacing": 10
+    "spacing": 9
   },
   "opsgrids-internal/src/routes/AccountDetail.tsx": {
     "spacing": 6
@@ -78,8 +64,7 @@
     "spacing": 3
   },
   "opsgrids-internal/src/routes/Overview.tsx": {
-    "arbitrary": 1,
-    "spacing": 4
+    "spacing": 1
   },
   "opsgrids-internal/src/routes/Plans.tsx": {
     "colour": 1,
@@ -154,12 +139,6 @@
   "opsgrids-internal/src/ui/SearchInput.tsx": {
     "arbitrary": 1
   },
-  "opsgrids-internal/src/ui/Sidebar.tsx": {
-    "colour": 1,
-    "arbitrary": 6,
-    "spacing": 13,
-    "radius": 2
-  },
   "opsgrids-internal/src/ui/States.tsx": {
     "colour": 1,
     "spacing": 1
@@ -177,7 +156,7 @@
     "spacing": 1
   },
   "opsgrids-ui/src/components/AppShell.tsx": {
-    "arbitrary": 8
+    "arbitrary": 1
   },
   "opsgrids-ui/src/components/Card.stories.tsx": {
     "spacing": 1
@@ -207,9 +186,7 @@
     "spacing": 1
   },
   "opsgrids-ui/src/components/Sidebar.tsx": {
-    "arbitrary": 5,
-    "spacing": 5,
-    "radius": 1
+    "spacing": 3
   },
   "opsgrids-ui/src/components/States.stories.tsx": {
     "spacing": 2
@@ -252,8 +229,7 @@
     "spacing": 9
   },
   "product-crm/src/routes/Overview.tsx": {
-    "arbitrary": 2,
-    "spacing": 7
+    "spacing": 4
   },
   "product-crm/src/routes/Team.tsx": {
     "arbitrary": 1,
@@ -271,17 +247,6 @@
     "arbitrary": 2,
     "spacing": 1
   },
-  "product-crm/src/ui/PipelineFunnel.tsx": {
-    "arbitrary": 1,
-    "spacing": 1
-  },
-  "product-crm/src/ui/PipelineTrend.tsx": {
-    "arbitrary": 1,
-    "spacing": 5
-  },
-  "product-crm/src/ui/StatusPill.tsx": {
-    "spacing": 2
-  },
   "product-engage/src/routes/Connection.tsx": {
     "spacing": 2
   },
@@ -295,7 +260,6 @@
     "arbitrary": 1
   },
   "product-engage/src/routes/Contacts.tsx": {
-    "arbitrary": 1,
     "spacing": 1
   },
   "product-engage/src/routes/ConversationThread.tsx": {
@@ -329,7 +293,6 @@
     "arbitrary": 1
   },
   "product-engage/src/routes/Suppressions.tsx": {
-    "arbitrary": 1,
     "spacing": 1
   },
   "product-engage/src/routes/WhatsAppConnection.tsx": {
@@ -405,9 +368,6 @@
     "arbitrary": 1,
     "spacing": 2
   },
-  "product-finance/src/ui/CashflowChart.tsx": {
-    "spacing": 2
-  },
   "product-finance/src/ui/ComplianceCard.tsx": {
     "spacing": 5
   },
@@ -420,7 +380,7 @@
     "spacing": 4
   },
   "product-finance/src/ui/StatusPill.tsx": {
-    "spacing": 3
+    "spacing": 1
   },
   "product-hrms/src/routes/Approvals.tsx": {
     "spacing": 3
@@ -430,7 +390,7 @@
     "spacing": 5
   },
   "product-hrms/src/routes/Dashboard.tsx": {
-    "arbitrary": 2,
+    "arbitrary": 1,
     "spacing": 7
   },
   "product-hrms/src/routes/Delegations.tsx": {
@@ -480,9 +440,6 @@
   "product-hrms/src/ui/PolicyCard.tsx": {
     "spacing": 1
   },
-  "product-hrms/src/ui/StatusPill.tsx": {
-    "spacing": 2
-  },
   "product-hrms/src/ui/WorkforceMix.tsx": {
     "arbitrary": 1,
     "spacing": 4
@@ -513,7 +470,7 @@
     "spacing": 9
   },
   "product-itsm/src/routes/Overview.tsx": {
-    "arbitrary": 2,
+    "arbitrary": 1,
     "spacing": 8
   },
   "product-itsm/src/routes/RequestDetail.tsx": {
@@ -535,10 +492,6 @@
     "spacing": 1
   },
   "product-itsm/src/ui/PriorityBreakdown.tsx": {
-    "arbitrary": 1,
-    "spacing": 2
-  },
-  "product-itsm/src/ui/StatusPill.tsx": {
     "arbitrary": 1,
     "spacing": 2
   },
@@ -585,9 +538,6 @@
   "product-marketing/src/ui/StatTile.tsx": {
     "arbitrary": 1
   },
-  "product-marketing/src/ui/StatusPill.tsx": {
-    "spacing": 2
-  },
   "product-operations/src/routes/Inventory.tsx": {
     "spacing": 2
   },
@@ -606,16 +556,12 @@
     "colour": 1,
     "spacing": 3
   },
-  "product-operations/src/routes/Overview.tsx": {
-    "arbitrary": 2,
-    "spacing": 10
-  },
   "product-operations/src/routes/PurchaseOrderDetail.tsx": {
     "arbitrary": 1,
     "spacing": 9
   },
   "product-operations/src/routes/PurchaseOrderForm.tsx": {
-    "spacing": 3
+    "spacing": 2
   },
   "product-operations/src/routes/PurchaseOrders.tsx": {
     "spacing": 2
@@ -626,29 +572,12 @@
   "product-operations/src/routes/Suppliers.tsx": {
     "spacing": 2
   },
-  "product-operations/src/ui/CategoryBreakdown.tsx": {
-    "spacing": 2
-  },
   "product-operations/src/ui/NeedsAttention.tsx": {
     "arbitrary": 2,
     "spacing": 4
   },
-  "product-operations/src/ui/SpendTrend.tsx": {
-    "arbitrary": 1,
-    "spacing": 6
-  },
-  "product-operations/src/ui/StatusMix.tsx": {
-    "arbitrary": 1,
-    "spacing": 4
-  },
   "product-operations/src/ui/StatusPill.tsx": {
-    "spacing": 2
-  },
-  "product-operations/src/ui/TopSuppliers.tsx": {
     "spacing": 1
-  },
-  "product-projects/src/App.tsx": {
-    "arbitrary": 1
   },
   "product-projects/src/api/fixtures.ts": {
     "spacing": 10
@@ -673,8 +602,7 @@
     "spacing": 3
   },
   "product-projects/src/routes/Overview.tsx": {
-    "arbitrary": 2,
-    "spacing": 9
+    "spacing": 3
   },
   "product-projects/src/routes/Portfolio.tsx": {
     "spacing": 3
@@ -710,15 +638,11 @@
     "spacing": 1
   },
   "product-projects/src/ui/ProjectPills.tsx": {
-    "arbitrary": 1,
-    "spacing": 4
+    "spacing": 1
   },
   "product-projects/src/ui/StatCard.tsx": {
     "arbitrary": 1,
     "spacing": 1
-  },
-  "product-pulseboard/src/App.tsx": {
-    "arbitrary": 1
   },
   "product-pulseboard/src/routes/Board.tsx": {
     "arbitrary": 1,
@@ -734,7 +658,7 @@
     "spacing": 9
   },
   "product-pulseboard/src/routes/Overview.tsx": {
-    "arbitrary": 3,
+    "arbitrary": 2,
     "spacing": 16
   },
   "product-pulseboard/src/routes/People.tsx": {
@@ -765,10 +689,6 @@
   "product-pulseboard/src/ui/StandupList.tsx": {
     "arbitrary": 2,
     "spacing": 9
-  },
-  "product-pulseboard/src/ui/StatusPill.tsx": {
-    "arbitrary": 1,
-    "spacing": 3
   },
   "product-pulseboard/src/ui/TimeGrid.tsx": {
     "arbitrary": 7,
@@ -859,9 +779,6 @@
     "arbitrary": 1,
     "spacing": 1
   },
-  "product-support/src/App.tsx": {
-    "arbitrary": 1
-  },
   "product-support/src/routes/Agents.tsx": {
     "arbitrary": 1,
     "spacing": 10
@@ -876,7 +793,7 @@
     "spacing": 3
   },
   "product-support/src/routes/Overview.tsx": {
-    "arbitrary": 2,
+    "arbitrary": 1,
     "spacing": 9
   },
   "product-support/src/routes/Queue.tsx": {
@@ -888,12 +805,6 @@
     "spacing": 16
   },
   "product-support/src/ui/CategoryBreakdown.tsx": {
-    "spacing": 2
-  },
-  "product-support/src/ui/SlaPill.tsx": {
-    "spacing": 3
-  },
-  "product-support/src/ui/StatusPill.tsx": {
     "spacing": 2
   },
   "product-support/src/ui/TicketVolumeChart.tsx": {

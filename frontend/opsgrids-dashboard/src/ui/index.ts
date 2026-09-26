@@ -6,5 +6,5 @@
 export { Button, Card, PageHeader } from "@opsgrids/ui";
 
 export { LogoMark } from "./LogoMark";
-export { Sidebar } from "./Sidebar";
+export { useNavGroups } from "./useNavGroups";
 export { AuthCard, Field, InlineError, inputClass } from "./forms";

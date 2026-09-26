@@ -83,6 +83,15 @@ export function formatInt(value: number): string {
   return new Intl.NumberFormat("en-IN").format(value);
 }
 
+/** `"2026-09"` (a `SeriesPointOut.period`) -> `"Sep"` — a chart's x-axis label. */
+export function monthLabel(period: string): string {
+  const [year, month] = period.split("-");
+  if (!year || !month) return period;
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, 1));
+  if (Number.isNaN(date.getTime())) return period;
+  return date.toLocaleDateString("en-IN", { month: "short", timeZone: "UTC" });
+}
+
 /** What a bulk list row shows for an organization, given only the account-service mirror
  *  (`name`/`slug`, both nullable until the identity fold or the backfill reaches a row) and the
  *  id that is always present. `secondary` is the slug when there's a name to lead with, and

@@ -1,0 +1,81 @@
+import { usePermission } from "@opsgrids/client";
+import {
+  BuildingIcon,
+  CalendarCheckIcon,
+  CalendarIcon,
+  ClipboardListIcon,
+  ClockIcon,
+  HomeIcon,
+  InboxIcon,
+  MapPinIcon,
+  ReplyIcon,
+  SettingsIcon,
+  UserPlusIcon,
+  UsersIcon,
+} from "@opsgrids/ui";
+import type { NavEntry, NavGroup } from "@opsgrids/ui";
+import { useInboxCount } from "@/lib/useInboxCount";
+
+function mainMenu(canSeeLeave: boolean): NavGroup {
+  return {
+    title: "Main Menu",
+    items: [
+      { to: "/", label: "Dashboard", icon: HomeIcon, end: true },
+      { to: "/attendance", label: "Attendance", icon: CalendarCheckIcon },
+      ...(canSeeLeave ? ([{ to: "/leave", label: "Leave", icon: CalendarIcon }] as NavEntry[]) : []),
+    ],
+  };
+}
+
+/**
+ * This product's navigation, for `AppShell`'s `nav` prop.
+ *
+ * Every entry here opens a screen backed by a live endpoint, or an honest link-out to the app
+ * that owns the real one (Departments, Locations, Team Members — `opsgrids-admin`). Notifications,
+ * Tasks, Reports, Integrations, Settings and Help had no backend and no link-out target, so they
+ * are gone from here and from the router (audit gap 9).
+ */
+export function useNavGroups(): { groups: NavGroup[]; pinned: NavEntry[] } {
+  // The quiet grey count on "Waiting on me" — never omitted on a read failure by hiding the
+  // group itself: a 403 here means either a per-principal grant gap or an un-reconciled
+  // organization (§2.8), and hiding the entry would make that deploy-order mistake invisible.
+  const inboxCount = useInboxCount();
+  // §1.2, §2.4 rule 2: "Approval settings" is hidden without `policy.write:ORG` — the one entry
+  // in this group the server cannot gate by filtering, so it is hidden client-side instead. The
+  // route itself stays reachable by URL either way (§4.G's read-only "No permission" rendering).
+  const canConfigureApprovals = usePermission("core.approval.policy.write", "ORG");
+  const canReadShifts = usePermission("hrms.time.shift.read", "OWN");
+  const canSeeLeave = usePermission("hrms.time.leave_request.read", "OWN");
+  const approvals: NavGroup = {
+    title: "Approvals",
+    items: [
+      { to: "/approvals", label: "Waiting on me", icon: InboxIcon, ...(inboxCount ? { count: inboxCount } : {}) },
+      { to: "/approvals/mine", label: "My requests", icon: ClipboardListIcon },
+      { to: "/approvals/delegations", label: "Delegations", icon: ReplyIcon },
+      ...(canConfigureApprovals
+        ? [{ to: "/approvals/settings", label: "Approval settings", icon: SettingsIcon }]
+        : []),
+    ],
+  };
+
+  const canReadLeaveTypes = usePermission("hrms.time.leave_type.read", "ORG");
+  const records: NavGroup = {
+    title: "Records",
+    items: [
+      { to: "/employees", label: "Employees", icon: UsersIcon },
+      ...(canReadShifts ? ([{ to: "/shifts", label: "Shifts & geo-fences", icon: ClockIcon }] as NavEntry[]) : []),
+      ...(canReadLeaveTypes
+        ? ([{ to: "/leave/types", label: "Leave types", icon: ClipboardListIcon }] as NavEntry[])
+        : []),
+      { to: "/departments", label: "Departments", icon: BuildingIcon },
+      { to: "/locations", label: "Locations", icon: MapPinIcon },
+    ],
+  };
+
+  const workspace: NavGroup = {
+    title: "Workspace",
+    items: [{ to: "/team", label: "Team Members", icon: UserPlusIcon }],
+  };
+
+  return { groups: [mainMenu(canSeeLeave), approvals, records, workspace], pinned: [] };
+}

@@ -10,9 +10,20 @@
 
 import type { MockRoute } from "../../lib/api";
 
-/** What every customer app asks first: who is signed in, and what they may do. */
+/**
+ * What every customer app asks first: who is signed in, and what they may do — and, once the
+ * shell mounts, what is in the header bell. The feed is empty on purpose: the bell renders
+ * nothing for an empty feed, so the baselines show the shell exactly as it was, and the bell's
+ * own states are pinned by its unit tests.
+ */
 function session(app: "crm" | "dashboard"): MockRoute[] {
   return [
+    {
+      method: "GET",
+      path: "/api/v1/notifications/me",
+      fixture: "common/notifications.json",
+      contract: { spec: "notification", path: "/api/v1/notifications/me" },
+    },
     {
       method: "GET",
       path: "/api/v1/auth/me",
@@ -74,9 +85,104 @@ export const CRM_ROUTES: MockRoute[] = [
     fixture: "crm/activities.json",
     contract: { spec: "deal", path: "/api/v1/deals/activities" },
   },
+  // The overview's lead KPI and "leads by status" donut: one `size=1` call per status, read for
+  // its `total` alone (`loadLeadStats` in `product-crm/src/routes/Overview.tsx`).
+  {
+    method: "GET",
+    path: "/api/v1/leads",
+    query: { status: "new", size: "1" },
+    fixture: "crm/leads-new.json",
+    contract: { spec: "lead", path: "/api/v1/leads" },
+  },
+  {
+    method: "GET",
+    path: "/api/v1/leads",
+    query: { status: "working", size: "1" },
+    fixture: "crm/leads-working.json",
+    contract: { spec: "lead", path: "/api/v1/leads" },
+  },
+  {
+    method: "GET",
+    path: "/api/v1/leads",
+    query: { status: "qualified", size: "1" },
+    fixture: "crm/leads-qualified.json",
+    contract: { spec: "lead", path: "/api/v1/leads" },
+  },
+  {
+    method: "GET",
+    path: "/api/v1/leads",
+    query: { status: "converted", size: "1" },
+    fixture: "crm/leads-converted.json",
+    contract: { spec: "lead", path: "/api/v1/leads" },
+  },
+  {
+    method: "GET",
+    path: "/api/v1/leads",
+    query: { status: "disqualified", size: "1" },
+    fixture: "crm/leads-disqualified.json",
+    contract: { spec: "lead", path: "/api/v1/leads" },
+  },
 ];
 
 const PLANNED_PRODUCTS = ["crm", "hrms", "operations", "finance", "projects", "itsm"] as const;
+const INVOICE_STATUSES = ["draft", "sent", "paid", "overdue", "void"] as const;
+
+/** The Owner Home fan-out (dashboard audit §5.4): one real summary call per widget, gated on the
+ * `ent`/grants `lib/pages.ts` mints for this token, never a scan. */
+const HOME_ROUTES: MockRoute[] = [
+  {
+    method: "GET",
+    path: "/api/v1/finance/overview",
+    fixture: "dashboard/finance-overview.json",
+    contract: { spec: "finance", path: "/api/v1/finance/overview" },
+  },
+  {
+    // The Recent Invoices card: the plain, unfiltered call, lowest specificity so a status-
+    // filtered request below always wins the match.
+    method: "GET",
+    path: "/api/v1/finance/invoices",
+    fixture: "dashboard/finance-invoices-recent.json",
+    contract: { spec: "finance", path: "/api/v1/finance/invoices" },
+  },
+  ...INVOICE_STATUSES.map(
+    (status): MockRoute => ({
+      method: "GET",
+      path: "/api/v1/finance/invoices",
+      query: { status },
+      fixture: `dashboard/finance-invoices-status-${status}.json`,
+      contract: { spec: "finance", path: "/api/v1/finance/invoices" },
+    }),
+  ),
+  {
+    method: "GET",
+    path: "/api/v1/finance/customers",
+    fixture: "dashboard/finance-customers.json",
+    contract: { spec: "finance", path: "/api/v1/finance/customers" },
+  },
+  {
+    // Total Customers: the same company directory `product-crm`'s own Overview reads.
+    method: "GET",
+    path: "/api/v1/customers",
+    query: { status: "customer" },
+    fixture: "crm/companies.json",
+    contract: { spec: "customer", path: "/api/v1/customers" },
+  },
+  {
+    // Recent Activity's CRM half — the same timeline `product-crm`'s own Overview reads.
+    method: "GET",
+    path: "/api/v1/deals/activities",
+    query: { size: "5" },
+    fixture: "crm/activities.json",
+    contract: { spec: "deal", path: "/api/v1/deals/activities" },
+  },
+  {
+    method: "GET",
+    path: "/api/v1/projects-workspace/tasks",
+    query: { assignee: "me" },
+    fixture: "dashboard/projects-tasks.json",
+    contract: { spec: "projects", path: "/api/v1/projects-workspace/tasks" },
+  },
+];
 
 export const DASHBOARD_ROUTES: MockRoute[] = [
   ...session("dashboard"),
@@ -107,6 +213,7 @@ export const DASHBOARD_ROUTES: MockRoute[] = [
       contract: { spec: "catalog", path: "/api/v1/plans" },
     }),
   ),
+  ...HOME_ROUTES,
 ];
 
 export const INTERNAL_ROUTES: MockRoute[] = [
@@ -124,9 +231,27 @@ export const INTERNAL_ROUTES: MockRoute[] = [
   },
   {
     method: "GET",
+    path: "/api/v1/admin/metrics/series",
+    fixture: "internal/series.json",
+    contract: { spec: "console", path: "/api/v1/admin/metrics/series" },
+  },
+  {
+    method: "GET",
     path: "/api/v1/admin/organizations",
     fixture: "internal/organizations.json",
     contract: { spec: "console", path: "/api/v1/admin/organizations" },
+  },
+  {
+    method: "GET",
+    path: "/api/v1/admin/subscriptions",
+    fixture: "internal/subscriptions.json",
+    contract: { spec: "console", path: "/api/v1/admin/subscriptions" },
+  },
+  {
+    method: "GET",
+    path: "/api/v1/admin/audit",
+    fixture: "internal/audit.json",
+    contract: { spec: "console", path: "/api/v1/admin/audit" },
   },
 ];
 

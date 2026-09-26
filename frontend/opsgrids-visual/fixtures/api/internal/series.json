@@ -1,0 +1,43 @@
+{
+  "currency": "INR",
+  "mrr_minor": [
+    { "period": "2026-04", "value": 98000000 },
+    { "period": "2026-05", "value": 102000000 },
+    { "period": "2026-06", "value": 108000000 },
+    { "period": "2026-07", "value": 115000000 },
+    { "period": "2026-08", "value": 122000000 },
+    { "period": "2026-09", "value": 132420000 }
+  ],
+  "new_organizations": [
+    { "period": "2026-04", "value": 0 },
+    { "period": "2026-05", "value": 0 },
+    { "period": "2026-06", "value": 1 },
+    { "period": "2026-07", "value": 0 },
+    { "period": "2026-08", "value": 1 },
+    { "period": "2026-09", "value": 1 }
+  ],
+  "trials_started": [
+    { "period": "2026-04", "value": 1 },
+    { "period": "2026-05", "value": 0 },
+    { "period": "2026-06", "value": 1 },
+    { "period": "2026-07", "value": 0 },
+    { "period": "2026-08", "value": 1 },
+    { "period": "2026-09", "value": 1 }
+  ],
+  "trial_conversions": [
+    { "period": "2026-04", "value": 0 },
+    { "period": "2026-05", "value": 0 },
+    { "period": "2026-06", "value": 0 },
+    { "period": "2026-07", "value": 1 },
+    { "period": "2026-08", "value": 0 },
+    { "period": "2026-09", "value": 0 }
+  ],
+  "churned": [
+    { "period": "2026-04", "value": 0 },
+    { "period": "2026-05", "value": 0 },
+    { "period": "2026-06", "value": 0 },
+    { "period": "2026-07", "value": 0 },
+    { "period": "2026-08", "value": 0 },
+    { "period": "2026-09", "value": 0 }
+  ]
+}

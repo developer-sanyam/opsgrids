@@ -4,7 +4,7 @@ import { updateOwner } from "@/api/client";
 import type { Owner } from "@/api/types";
 import { maybe } from "@/lib/optional";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, TextField } from "@opsgrids/ui";
+import { FormDialog, TextField, useFormDirty } from "@opsgrids/ui";
 
 interface OwnerEditDialogProps {
   owner: Owner;
@@ -18,6 +18,11 @@ export function OwnerEditDialog({ owner, onClose, onSaved }: OwnerEditDialogProp
   const [fullName, setFullName] = useState(owner.full_name);
   const [email, setEmail] = useState(owner.email);
   const [role, setRole] = useState(owner.role);
+
+  const fields = { fullName, email, role };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
+
   const [fullNameError, setFullNameError] = useState<string | undefined>(undefined);
   const [emailError, setEmailError] = useState<string | undefined>(undefined);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -59,6 +64,7 @@ export function OwnerEditDialog({ owner, onClose, onSaved }: OwnerEditDialogProp
       pendingLabel="Saving…"
       pending={save.pending}
       initialFocusRef={nameRef}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? {
             error: problemMessage(save.error),
@@ -71,6 +77,7 @@ export function OwnerEditDialog({ owner, onClose, onSaved }: OwnerEditDialogProp
         label="Full name"
         value={fullName}
         onChange={(e) => setFullName(e.target.value)}
+        required
         {...maybe("error", fullNameError ?? save.fieldErrors.full_name)}
       />
       <TextField
@@ -78,6 +85,7 @@ export function OwnerEditDialog({ owner, onClose, onSaved }: OwnerEditDialogProp
         type="email"
         value={email}
         onChange={(e) => setEmail(e.target.value)}
+        required
         {...maybe("error", emailError ?? save.fieldErrors.email)}
       />
       <TextField

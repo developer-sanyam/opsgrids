@@ -47,6 +47,22 @@ def test_build_defaults_to_the_log_transport() -> None:
     assert built["whatsapp"].name == "log"
 
 
+def test_build_always_wires_the_in_app_transport() -> None:
+    """No credentials and no `kind` setting to be half-configured without — `in_app` has exactly
+    one implementation."""
+    built = transports.build(Settings())
+    assert built["in_app"].name == "in_app"
+
+
+async def test_in_app_transport_sends_nothing_and_never_fails() -> None:
+    receipt = await transports.InAppTransport().send(
+        transports.Outgoing(
+            to_address="00000000-0000-0000-0000-000000000000", subject=None, body="B"
+        )
+    )
+    assert receipt.provider == "in_app"
+
+
 def test_build_refuses_whatsapp_without_credentials() -> None:
     """A service that quietly stops sending looks exactly like one with nothing to send, and
     only a customer finds the difference. So this is a startup failure, not a downgrade."""

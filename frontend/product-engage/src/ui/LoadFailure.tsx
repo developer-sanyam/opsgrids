@@ -1,6 +1,6 @@
 import { ArrowUpRight, Card, EmptyState, ErrorState, MailIcon } from "@opsgrids/ui";
 
-import { DASHBOARD_PRODUCTS_URL } from "@/lib/dashboard";
+import { dashboardProductsUrl } from "@/lib/dashboard";
 import { isNotActivated } from "@/lib/errors";
 
 /**
@@ -25,7 +25,7 @@ export function EngageNotActive() {
         description="Someone who manages your organization's products, usually an owner or admin, can start it from Products in the OpsGrids dashboard. Once it's on, come back here to set up sending — you may be asked to sign in again."
         action={
           <a
-            href={DASHBOARD_PRODUCTS_URL}
+            href={dashboardProductsUrl()}
             className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-accent px-5 text-[0.95rem] font-semibold text-white transition-colors duration-150 hover:bg-accent-strong active:bg-accent-strong focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             Open Products in the dashboard

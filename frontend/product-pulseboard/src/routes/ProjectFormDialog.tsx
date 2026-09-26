@@ -5,7 +5,7 @@ import type { Person, Project, ProjectStatus } from "@/api/types";
 import { minorToInput, parseMinor } from "@/lib/money";
 import { withOptional } from "@/lib/optional";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, Select, Switch, TextField } from "@opsgrids/ui";
+import { FormDialog, Select, Switch, TextField, useFormDirty } from "@opsgrids/ui";
 import type { SelectOption } from "@opsgrids/ui";
 
 const CODE_PATTERN = /^[A-Za-z0-9_-]{1,40}$/;
@@ -53,6 +53,25 @@ export function ProjectFormDialog({
   const [dueDate, setDueDate] = useState(project?.due_date ?? "");
   const [billable, setBillable] = useState(project?.billable ?? true);
   const [openTasks, setOpenTasks] = useState(String(project?.open_tasks ?? 0));
+
+  const fields = {
+    code,
+    name,
+    client,
+    status,
+    progress,
+    budget,
+    spent,
+    currency,
+    ownerRef,
+    startDate,
+    dueDate,
+    billable,
+    openTasks,
+  };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
+
   const [errors, setErrors] = useState<FormErrors>({});
   const codeRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -133,6 +152,7 @@ export function ProjectFormDialog({
       pending={save.pending}
       initialFocusRef={editing ? nameRef : codeRef}
       size="lg"
+      dirty={dirty}
       {...withOptional("error", nonFieldError)}
       {...withOptional("reference", (save.error as ApiError | null)?.problem?.request_id)}
     >
@@ -145,6 +165,7 @@ export function ProjectFormDialog({
             onChange={(e) => setCode(e.target.value)}
             placeholder="PB-20"
             helper="Immutable once created — timesheets and tasks join on it."
+            required
             {...withOptional("error", errors.code ?? save.fieldErrors.code)}
           />
         ) : (
@@ -155,6 +176,7 @@ export function ProjectFormDialog({
           label="Name"
           value={name}
           onChange={(e) => setName(e.target.value)}
+          required
           {...withOptional("error", errors.name ?? save.fieldErrors.name)}
         />
       </div>

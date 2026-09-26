@@ -452,6 +452,12 @@ export interface CampaignPatch {
   scheduled_at?: string | null;
 }
 
+/** `POST /engage/campaigns/{campaign_id}/schedule`. Also how an already-`scheduled` campaign is
+ *  rescheduled — same endpoint, same shape, a new instant. */
+export interface CampaignScheduleIn {
+  scheduled_at: string;
+}
+
 /** Recipient counts, folded from `campaign_recipients` by a single grouped query. There is no
  *  `delivered`, `bounced` or `unsubscribed` count here: the service's `campaign_recipients.status`
  *  vocabulary is exactly `queued | sending | sent | failed | suppressed` (`models.py`), because a

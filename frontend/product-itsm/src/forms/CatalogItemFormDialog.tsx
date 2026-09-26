@@ -8,7 +8,7 @@ import type {
   CatalogItemUpdate,
 } from "@/api/types";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, Select, TextArea, TextField } from "@opsgrids/ui";
+import { FormDialog, Select, TextArea, TextField, useFormDirty } from "@opsgrids/ui";
 
 const CATEGORY_OPTIONS: { value: CatalogCategory; label: string }[] = [
   { value: "onboarding", label: "Onboarding" },
@@ -33,6 +33,10 @@ export function CatalogItemFormDialog({ item, onClose, onSaved }: CatalogItemFor
   const [category, setCategory] = useState<CatalogCategory>(item?.category ?? "software");
   const [description, setDescription] = useState(item?.description ?? "");
   const [slaDays, setSlaDays] = useState(item ? String(item.sla_days) : "1");
+
+  const fields = { code, name, category, description, slaDays };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
 
   const [codeError, setCodeError] = useState<string | undefined>(undefined);
   const [nameError, setNameError] = useState<string | undefined>(undefined);
@@ -101,6 +105,7 @@ export function CatalogItemFormDialog({ item, onClose, onSaved }: CatalogItemFor
       pendingLabel={item ? "Saving…" : "Adding…"}
       pending={save.pending}
       initialFocusRef={item ? nameRef : codeRef}
+      dirty={dirty}
       error={hasTopLevelError ? problemMessage(save.error) : undefined}
       reference={hasTopLevelError ? (save.error as ApiError).problem?.request_id : undefined}
     >
@@ -112,6 +117,7 @@ export function CatalogItemFormDialog({ item, onClose, onSaved }: CatalogItemFor
           onChange={(e) => setCode(e.target.value)}
           maxLength={20}
           helper="The catalog item's permanent identity, e.g. CAT-11. Cannot change later."
+          required
           error={codeError ?? save.fieldErrors.id}
         />
       )}
@@ -121,6 +127,7 @@ export function CatalogItemFormDialog({ item, onClose, onSaved }: CatalogItemFor
         value={name}
         onChange={(e) => setName(e.target.value)}
         maxLength={160}
+        required
         error={nameError ?? save.fieldErrors.name}
       />
       <Select
@@ -143,6 +150,7 @@ export function CatalogItemFormDialog({ item, onClose, onSaved }: CatalogItemFor
         inputMode="numeric"
         value={slaDays}
         onChange={(e) => setSlaDays(e.target.value)}
+        required
         error={slaError ?? save.fieldErrors.sla_days}
       />
     </FormDialog>

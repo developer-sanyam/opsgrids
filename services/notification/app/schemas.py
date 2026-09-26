@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-Channel = Literal["email", "whatsapp"]
+Channel = Literal["email", "whatsapp", "in_app"]
 TemplateCategory = Literal["utility", "marketing", "authentication"]
 ParameterFormat = Literal["positional", "named"]
 TemplateStatus = Literal["draft", "pending", "approved", "rejected", "paused", "disabled"]

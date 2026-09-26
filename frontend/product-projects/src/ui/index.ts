@@ -29,9 +29,9 @@ export {
   TextArea,
   TextField,
 } from "@opsgrids/ui";
-export type { Column, KpiTone, RowAction, SelectOption } from "@opsgrids/ui";
+export type { Column, KpiTone, RowAction, SelectOption, TableSelection } from "@opsgrids/ui";
 
-export { Sidebar } from "./Sidebar";
+export { useNavGroups } from "./useNavGroups";
 export { StatCard } from "./StatCard";
 export {
   HealthDot,

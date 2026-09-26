@@ -211,9 +211,9 @@ describe("the fixtures", () => {
     }
   });
 
-  it("cover every campaign status the screens must render but scheduled, which nothing sets", () => {
+  it("cover every campaign status the screens must render", () => {
     expect(new Set(CAMPAIGNS.map((c) => c.status))).toEqual(
-      new Set(["draft", "sending", "paused", "sent"]),
+      new Set(["draft", "scheduled", "sending", "paused", "sent"]),
     );
   });
 

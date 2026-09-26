@@ -7,8 +7,7 @@ import { dealsByStage } from "@/data/derive";
 import { useDirectory } from "@/data/directoryContext";
 import { companyName } from "@/data/lookups";
 import { STAGES } from "@/data/stages";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
-import { HandshakeIcon, KanbanIcon, LayoutIcon, PlusIcon, cn, useToast } from "@opsgrids/ui";
+import { cn, HandshakeIcon, KanbanIcon, LayoutIcon, PlusIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
 import { formatDate, formatMoney } from "@/lib/format";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {

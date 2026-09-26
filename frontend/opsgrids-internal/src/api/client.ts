@@ -6,8 +6,8 @@
  * every function below then calls a real, shipped `/api/v1/admin/*` staff route (ADR-0003 §2 and
  * its addendum) with the operator token from the session — `/admin/organizations`,
  * `/admin/organizations/{id}`, `/admin/organizations/{id}/pricing`, `/admin/metrics/overview`,
- * `/admin/subscriptions`, `/admin/usage`, `/admin/audit`, `/admin/overrides` (console-service) and
- * `/admin/credit-ledger` (billing-service). Every shape below has been checked field-for-field
+ * `/admin/metrics/series`, `/admin/subscriptions`, `/admin/usage`, `/admin/audit`,
+ * `/admin/overrides` (console-service) and `/admin/credit-ledger` (billing-service). Every shape below has been checked field-for-field
  * against the deployed schemas (`services/console/app/schemas.py`,
  * `services/billing/app/schemas.py`, `libs/contracts/openapi/*.json`) — see `types.ts`'s module
  * docstring for what that audit found and what it means for each screen.
@@ -47,6 +47,7 @@ import type {
   OverrideRequest,
   OverrideResult,
   MetricsOverviewOut,
+  MetricsSeriesOut,
   Page,
   SetPriceRequest,
   SetPriceResult,
@@ -81,6 +82,17 @@ export async function getOverview(): Promise<MetricsOverviewOut> {
     return settle(buildOverviewMetrics());
   }
   return apiRequest<MetricsOverviewOut>("/admin/metrics/overview");
+}
+
+/** `GET /admin/metrics/series?months=` — monthly account growth and commercial history, for the
+ *  Account Growth chart and every "vs last month" delta on the dashboard. `owner`/`billing_ops`
+ *  only, same as `getOverview`. */
+export async function getMetricsSeries(months: number): Promise<MetricsSeriesOut> {
+  if (USE_FIXTURES) {
+    const { buildMetricsSeries } = await loadFixtures();
+    return settle(buildMetricsSeries(months));
+  }
+  return apiRequest<MetricsSeriesOut>(`/admin/metrics/series?months=${months}`);
 }
 
 /* ----------------------------- accounts ----------------------------- */

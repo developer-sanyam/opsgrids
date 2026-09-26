@@ -203,30 +203,122 @@ export function SuspendAction({ org, onClose, onDone }: ActionProps) {
 
 /* ------------------------------ reactivate ------------------------------- */
 
-/** There is no `reactivate` override on the live API — `delegation.py` resolves exactly `suspend`
- *  and `comp_grant`; anything else is a 400. Rather than ship a form that can only ever fail, this
- *  says so plainly. */
-export function ReactivateAction({ org, onClose }: Omit<ActionProps, "onDone">) {
+/** `delegation.py`'s bound on `reactivate`'s reason — an over-long one is a 422 at console's own
+ *  boundary rather than a 503 from subscription-service's refusal. */
+const MAX_REACTIVATE_REASON_LENGTH = 200;
+
+/** `POST /admin/overrides` now resolves `reactivate` too, the same shape as `suspend`: a real
+ *  subscription id off the per-product pricing composite (`/admin/subscriptions` carries none),
+ *  and — unlike suspend — a reason that is *required*, since lifting a hold is exactly the act
+ *  whose why an audit trail must carry. */
+export function ReactivateAction({ org, onClose, onDone }: ActionProps) {
+  const reasonId = useId();
+  const [reason, setReason] = useState("");
+  const [subscriptionId, setSubscriptionId] = useState<string>("");
+  const { submitting, error, result, run } = useOverride(onDone);
+
+  const pricing = useAsync(() => getOrganizationPricing(org.organization_id), [org.organization_id]);
+  // Only a suspended subscription is a candidate — reactivating one already running is not a
+  // state the owning service's own change accepts (a 409 the operator would just have to retry).
+  const suspended: ProductPricing[] =
+    pricing.status === "success"
+      ? pricing.data.products.filter((p) => p.subscription?.state === "suspended")
+      : [];
+  const chosen = subscriptionId || suspended[0]?.subscription?.id || "";
+  const trimmedReason = reason.trim();
+  const reasonValid = trimmedReason.length > 0 && trimmedReason.length <= MAX_REACTIVATE_REASON_LENGTH;
+
   return (
     <Modal
       open
       onClose={onClose}
       title={`Reactivate ${org.name}`}
-      description="Restores entitlement; the customer regains access on the next token refresh."
+      description="Restores entitlement; the customer regains access on the next access-token refresh (≤ 15 min)."
       icon={<PlayIcon className="size-5" />}
     >
-      <div className="flex flex-col gap-4">
-        <p className="rounded-tile bg-ground px-3 py-2.5 text-sm leading-relaxed text-muted">
-          Reactivating isn't available from the console yet. `/admin/overrides` only resolves
-          <span className="mono"> suspend</span> and <span className="mono"> comp_grant</span> —
-          there is no reactivate action on the live API to delegate this to.
-        </p>
-        <div className="flex justify-end">
-          <Button variant="outline" onClick={onClose} type="button">
-            Close
-          </Button>
-        </div>
-      </div>
+      {result ? (
+        <ResultPanel result={result} onClose={onClose} />
+      ) : (
+        <form
+          className="flex flex-col gap-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!chosen || !reasonValid) return;
+            void run({
+              action: "reactivate",
+              organization_id: org.organization_id,
+              subscription_id: chosen,
+              reason: trimmedReason,
+            });
+          }}
+        >
+          {error ? <ErrorNote message={error} /> : null}
+
+          {pricing.status === "loading" ? (
+            <Skeleton className="h-24 w-full" />
+          ) : pricing.status === "error" ? (
+            <ErrorState message={pricing.error.message} />
+          ) : suspended.length === 0 ? (
+            <p className="rounded-tile bg-ground px-3 py-2 text-sm text-muted">
+              {org.name} has no suspended subscription on any product — there is nothing to
+              reactivate.
+            </p>
+          ) : (
+            <fieldset className="flex flex-col gap-2">
+              <legend className="pb-1 text-sm font-semibold text-ink-soft">Which subscription?</legend>
+              {suspended.map((p) => (
+                <label
+                  key={p.product_key}
+                  className="flex items-center gap-2 rounded-tile border border-line px-3 py-2 text-sm has-[:checked]:border-accent has-[:checked]:bg-accent-soft"
+                >
+                  <input
+                    type="radio"
+                    name="subscription"
+                    value={p.subscription?.id}
+                    checked={chosen === p.subscription?.id}
+                    onChange={() => setSubscriptionId(p.subscription?.id ?? "")}
+                    className="size-4 accent-accent"
+                  />
+                  <span className="font-semibold text-ink">{p.product_name}</span>
+                  <AccountStatusPill status={p.subscription?.state ?? "unknown"} />
+                </label>
+              ))}
+            </fieldset>
+          )}
+
+          <div className="flex flex-col gap-1">
+            <FieldLabel htmlFor={reasonId}>Reason (required)</FieldLabel>
+            <textarea
+              id={reasonId}
+              required
+              rows={3}
+              maxLength={MAX_REACTIVATE_REASON_LENGTH}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="e.g. Payment received — dunning hold cleared"
+              className={`${INPUT} h-auto py-2`}
+              aria-describedby={`${reasonId}-count`}
+            />
+            <span id={`${reasonId}-count`} className="text-xs text-faint">
+              {trimmedReason.length}/{MAX_REACTIVATE_REASON_LENGTH}
+            </span>
+          </div>
+          <DelegationNote>
+            POSTs <span className="mono">{"{action: \"reactivate\"}"}</span> to{" "}
+            <span className="mono">/api/v1/admin/overrides</span>, which delegates to
+            subscription-service's <span className="mono">/internal</span> reactivate. Entitlement
+            is restored on the next access-token refresh.
+          </DelegationNote>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={onClose} type="button">
+              Cancel
+            </Button>
+            <Button type="submit" disabled={submitting || !reasonValid || !chosen}>
+              {submitting ? "Reactivating…" : "Reactivate account"}
+            </Button>
+          </div>
+        </form>
+      )}
     </Modal>
   );
 }

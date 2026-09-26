@@ -32,6 +32,14 @@ export function AudienceFormDialog({ audience, onClose, onSaved }: AudienceFormD
   const [definedOnError, setDefinedOnError] = useState<string | undefined>(undefined);
   const nameRef = useRef<HTMLInputElement>(null);
 
+  // Compared against the same seed the fields above initialised from — this form unmounts on
+  // close (FormDialog's resetting-is-structural note), so `audience` never changes under it.
+  const dirty =
+    name !== (audience?.name ?? "") ||
+    size !== String(audience?.size ?? "") ||
+    criteria !== (audience?.criteria ?? "") ||
+    definedOn !== (audience?.created_at ?? today());
+
   const save = useMutation(
     (input: AudienceIn | AudiencePatch) =>
       audience
@@ -96,6 +104,7 @@ export function AudienceFormDialog({ audience, onClose, onSaved }: AudienceFormD
       pendingLabel={audience ? "Saving…" : "Creating…"}
       pending={save.pending}
       initialFocusRef={nameRef}
+      dirty={dirty}
       {...(save.error && Object.keys(save.fieldErrors).length === 0
         ? {
             error: problemMessage(save.error),
@@ -110,6 +119,7 @@ export function AudienceFormDialog({ audience, onClose, onSaved }: AudienceFormD
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
+        required
         error={nameError ?? save.fieldErrors.name}
       />
       <TextField
@@ -118,6 +128,7 @@ export function AudienceFormDialog({ audience, onClose, onSaved }: AudienceFormD
         value={size}
         onChange={(e) => setSize(e.target.value)}
         helper="How many people in this segment can be reached."
+        required
         error={sizeError ?? save.fieldErrors.size}
       />
       <TextField
@@ -126,6 +137,7 @@ export function AudienceFormDialog({ audience, onClose, onSaved }: AudienceFormD
         value={definedOn}
         onChange={(e) => setDefinedOn(e.target.value)}
         helper="The date this segment's definition was set — not today's date, unless that's when it happened."
+        required
         error={definedOnError ?? save.fieldErrors.created_at}
       />
       <TextArea

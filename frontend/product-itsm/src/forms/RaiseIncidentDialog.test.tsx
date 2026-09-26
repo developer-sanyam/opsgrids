@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, waitForElementToBeRemoved } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -16,10 +16,19 @@ const USER: MeOut = {
   organization_id: "org-1",
   membership_id: "mem-1",
   roles: ["itsm_agent"],
+  role_names: ["ITSM Agent"],
   amr: ["pwd"],
   must_change_password: false,
   mfa_enabled: false,
-  organizations: [{ organization_id: "org-1", slug: "opsgrids", name: "OpsGrids", roles: ["itsm_agent"] }],
+  organizations: [
+    {
+      organization_id: "org-1",
+      slug: "opsgrids",
+      name: "OpsGrids",
+      roles: ["itsm_agent"],
+      role_names: ["ITSM Agent"],
+    },
+  ],
 };
 
 const AUTH_VALUE: AuthContextValue = {
@@ -72,7 +81,12 @@ function open(onCreated = vi.fn(), grants: string[] = ["itsm.service.incident.wr
       </PermissionContext.Provider>
     </AuthContext.Provider>,
   );
-  return { user: userEvent.setup(), onCreated };
+  // Real timers throughout this file (no `vi.useFakeTimers`), so the per-keystroke `setTimeout`
+  // `user.type` schedules by default has nothing advancing it but the event loop itself — on a
+  // busy runner that queues behind everything else and keystrokes land late enough to interleave
+  // across fields. `delay: null` dispatches every event in the same microtask instead, which is
+  // what removes the race rather than papering over it with a longer timeout.
+  return { user: userEvent.setup({ delay: null }), onCreated };
 }
 
 describe("RaiseIncidentDialog", () => {
@@ -132,7 +146,7 @@ describe("RaiseIncidentDialog", () => {
 
     expect(vi.mocked(client.createIncident)).toHaveBeenCalledTimes(1);
     resolve(INCIDENT);
-    await waitFor(() => expect(screen.queryByText(/raising…/i)).toBeNull());
+    await waitForElementToBeRemoved(() => screen.queryByText(/raising…/i));
   });
 
   it("on success, calls onCreated and the dialog resets on close", async () => {
@@ -156,7 +170,12 @@ describe("RaiseIncidentDialog", () => {
     );
     const { user } = open();
 
-    await user.type(screen.getByLabelText(/summary/i), "x".repeat(301));
+    // A real keystroke-by-keystroke `user.type` of 301 characters is the slow part of this test
+    // (every character is its own render), and it buys nothing here — the mocked response, not
+    // what's actually typed, is what the field error comes from. `fireEvent.change` sets it in one
+    // native `change` event, the same way `DelegationForm.test.tsx`'s `fillEnds` avoids the same
+    // cost for a bulk value.
+    fireEvent.change(screen.getByLabelText(/summary/i), { target: { value: "x".repeat(301) } });
     await user.click(screen.getByRole("button", { name: /raise incident/i }));
 
     expect(await screen.findByText(/keep it under 300 characters/i)).toBeTruthy();

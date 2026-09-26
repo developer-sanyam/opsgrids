@@ -131,6 +131,7 @@ function DraftView({
         resolved={resolved}
         dirty={dirty}
         onSent={(sent) => onChanged(`${sent.name} is sending.`)}
+        onScheduled={(_scheduled, message) => onChanged(message)}
         onFocusField={(field) =>
           setFocusRequest((current) => ({ field, nonce: (current?.nonce ?? 0) + 1 }))
         }

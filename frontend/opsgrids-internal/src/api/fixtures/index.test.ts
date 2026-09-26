@@ -11,6 +11,7 @@ describe("the barrel client.ts destructures via a dynamic import", () => {
       "CREDIT_LEDGER",
       "AUDIT_LOG",
       "buildOverviewMetrics",
+      "buildMetricsSeries",
       "buildOrganizationsOut",
       "buildSubscriptionsOut",
       "buildUsageListOut",
@@ -37,6 +38,17 @@ describe("simulateOverride", () => {
     });
     expect(result.action).toBe("suspend");
     expect(result.organization_id).toBe("org_1");
+    expect(result.delegated_to).toBe("subscription");
+  });
+
+  it("accepts a reactivate override and delegates to subscription", () => {
+    const result = simulateOverride({
+      action: "reactivate",
+      organization_id: "org_1",
+      subscription_id: "sub_1",
+      reason: "Payment received",
+    });
+    expect(result.action).toBe("reactivate");
     expect(result.delegated_to).toBe("subscription");
   });
 

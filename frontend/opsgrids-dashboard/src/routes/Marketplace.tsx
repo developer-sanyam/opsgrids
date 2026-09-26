@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
-import { ApiError } from "@opsgrids/client";
+import { ApiError, getPlatformHost, PLATFORM_PRODUCTS } from "@opsgrids/client";
+import type { PlatformProductKey } from "@opsgrids/client";
 import { EmptyState, ErrorState, SearchInput, Skeleton } from "@opsgrids/ui";
 
 import { listActivations, listPlans, listProducts, listSubscriptions, startTrial } from "@/api";
@@ -11,24 +12,20 @@ import { daysUntil, formatDate } from "@/lib/money";
 import { Button, Card, PageHeader } from "@/ui";
 import { shortProductName } from "../lib/productName";
 
+/** Every key `@opsgrids/client`'s platform catalogue answers a host for — `crm`'s `sales` alias
+ *  and `operations`'s `inventory` alias never appear as a product `key` here, so they need no
+ *  entry of their own. */
+const PLATFORM_PRODUCT_KEYS = new Set<string>(PLATFORM_PRODUCTS.map((product) => product.key));
+
 /**
- * Where each product's own app lives (ADR-0001's "one hostname per product", ADR-0013 §4). A
+ * Where each product's own app lives (ADR-0001's "one hostname per product", ADR-0013 §4),
+ * env-configurable via `configurePlatformHosts` (dev and staging never link to production). A
  * product with no entry has no console on this deployment yet, and the card says so rather than
  * linking into a 404.
  */
-const PRODUCT_HOSTS: Record<string, string> = {
-  operations: "https://ops.opsgrids.com/",
-  hrms: "https://people.opsgrids.com/",
-  crm: "https://revenue.opsgrids.com/",
-  pulseboard: "https://pulse.opsgrids.com/",
-  projects: "https://projects.opsgrids.com/",
-  support: "https://support.opsgrids.com/",
-  marketing: "https://marketing.opsgrids.com/",
-  finance: "https://finance.opsgrids.com/",
-  itsm: "https://it.opsgrids.com/",
-  storefront: "https://store.opsgrids.com/",
-  engage: "https://engage.opsgrids.com/",
-};
+function productHost(key: string): string | undefined {
+  return PLATFORM_PRODUCT_KEYS.has(key) ? getPlatformHost(key as PlatformProductKey) : undefined;
+}
 
 /** The contact address for pricing, agreed per organisation rather than shown here (the owner's call). */
 const PRICING_CONTACT_EMAIL = "info@opsgrids.com";
@@ -229,7 +226,7 @@ export function MarketplacePage() {
 function ProductCard({ row, busy, onStart }: { row: Row; busy: boolean; onStart: () => void }) {
   const { product, subscription, activation } = row;
   const offer = trialOffer(row.plans);
-  const host = PRODUCT_HOSTS[product.key];
+  const host = productHost(product.key);
   const entitled = activation?.entitles === true;
   const trialDays = daysUntil(subscription?.trial_ends_at ?? null);
 

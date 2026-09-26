@@ -7,7 +7,6 @@
 
 import { FIXTURE_CUSTOMERS } from "@/data/customers";
 import type {
-  CashflowPoint,
   EInvoiceFiling,
   EInvoiceState,
   EwayBillWithInvoice,
@@ -604,29 +603,6 @@ export const PAYMENTS: Payment[] = PAYMENT_SEEDS.map((seed) => {
 export function invoiceByNumber(number: string): Invoice | null {
   return INVOICE_BY_NUMBER.get(number) ?? null;
 }
-
-/* ------------------------ cash movement & the books ----------------------- */
-
-/** Six months of cash in / out for the overview area chart (representative aggregate). */
-export const CASHFLOW: CashflowPoint[] = [
-  { label: "Mar", inflow_minor: paise(3_820_000), outflow_minor: paise(2_610_000) },
-  { label: "Apr", inflow_minor: paise(5_240_000), outflow_minor: paise(3_180_000) },
-  { label: "May", inflow_minor: paise(6_180_000), outflow_minor: paise(3_460_000) },
-  { label: "Jun", inflow_minor: paise(4_920_000), outflow_minor: paise(3_890_000) },
-  { label: "Jul", inflow_minor: paise(7_150_000), outflow_minor: paise(4_120_000) },
-  { label: "Aug", inflow_minor: paise(5_860_000), outflow_minor: paise(4_530_000) },
-];
-
-/** Bank + cash on hand across accounts — no invoice can imply this, so it is a booked figure. */
-export const CASH_BALANCE_MINOR = paise(18_640_000);
-
-/** Trend series + deltas for the four overview KPIs (scaled to lakh for the sparkline shape). */
-export const KPI_TRENDS = {
-  revenue: { series: [42, 51, 55, 49, 71, 63, 70], deltaPct: 8.4 },
-  receivables: { series: [58, 61, 64, 69, 66, 72, 74], deltaPct: 6.1 },
-  overdue: { series: [12, 9, 14, 11, 16, 19, 21], deltaPct: 12.7 },
-  cash: { series: [141, 152, 149, 168, 172, 179, 186], deltaPct: 3.9 },
-} as const;
 
 /* ------------------------- IMS reconciliation queue ------------------------ *
  * The inbound half of the book: what suppliers filed against this organization, what the platform

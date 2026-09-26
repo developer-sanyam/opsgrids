@@ -2,7 +2,6 @@ import type { Ref, SelectHTMLAttributes } from "react";
 
 import { ChevronDown } from "../icons";
 import { fieldSkin } from "../lib/field";
-import { useMarksRequired } from "../lib/formSection";
 import { FormField } from "./FormField";
 
 export interface SelectOption {
@@ -53,13 +52,12 @@ export function Select({
   ref,
   ...props
 }: SelectProps) {
-  const marksRequired = useMarksRequired();
   return (
     <FormField
       label={label}
       {...(helper !== undefined ? { helper } : {})}
       {...(error !== undefined ? { error } : {})}
-      required={marksRequired && required === true}
+      required={required === true}
       hideLabel={hideLabel}
       {...(containerClassName !== undefined ? { className: containerClassName } : {})}
     >

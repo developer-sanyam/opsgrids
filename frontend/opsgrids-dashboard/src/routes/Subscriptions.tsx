@@ -1,36 +1,42 @@
-import { Fragment, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
+  Button,
   Card,
   ConfirmDialog,
+  DataTable,
   EmptyState,
   ErrorState,
   FormDialog,
-  InlineAlert,
   RowActions,
   Select,
   Skeleton,
-  Tag,
+  StatusBadge,
   TextArea,
+  statusTone,
   useToast,
 } from "@opsgrids/ui";
-import type { TagTone } from "@opsgrids/ui";
+import type { Column, StatusTone, TableSelection } from "@opsgrids/ui";
 
 import { cancelSubscription, changeSubscriptionPlan, listPlans, listProducts, listSubscriptions } from "@/api";
 import type { Product, Subscription } from "@/api/types";
 import { bundlesIncluding, joinNames, productNames } from "@/lib/bundles";
+import { downloadCsv } from "@/lib/csv";
 import { daysUntil, formatDate } from "@/lib/money";
 import { PageHeader } from "@/ui";
 import { shortProductName } from "../lib/productName";
 
 const WRITE_PERMISSION = "core.product.activation.write";
 
-const STATE_TONE: Record<string, TagTone> = {
+/**
+ * `trial` and `cancelled` mean something different here than the shared registry's general sense
+ * of those words (see `opsgrids-ui/src/lib/status.ts`) — this app has always shown a trial as
+ * informational rather than at-risk, and a cancelled subscription as a finished fact rather than a
+ * failure — so they take an explicit tone rather than the registry's. Listed in the sprint report.
+ */
+const STATE_TONE_OVERRIDE: Record<string, StatusTone> = {
   trial: "info",
-  active: "positive",
-  past_due: "warning",
-  suspended: "negative",
   cancelled: "neutral",
 };
 
@@ -70,6 +76,7 @@ export function SubscriptionsPage() {
   const [cancelling, setCancelling] = useState<Row | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   const [changingPlan, setChangingPlan] = useState<Row | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const cancel = useMutation(
     (row: Row) => cancelSubscription(row.subscription.id, cancelReason.trim() || undefined),
@@ -101,95 +108,141 @@ export function SubscriptionsPage() {
     );
   }
 
+  const subscriptionRows = rows.data;
+
+  const columns: Column<Row>[] = [
+    {
+      key: "product",
+      header: "Product",
+      mobile: "title",
+      render: (row) => {
+        const s = row.subscription;
+        const finished = s.state === "cancelled";
+        return (
+          <div className="flex flex-col gap-1">
+            <span className="font-semibold text-ink">{row.name}</span>
+            {row.includes.length > 0 ? (
+              <span className="text-xs text-muted">Includes {joinNames(row.includes)}</span>
+            ) : null}
+            {row.alsoIn.length > 0 && !finished ? (
+              <span className="text-xs text-muted">Also included in {joinNames(row.alsoIn)}</span>
+            ) : null}
+            {s.dunning ? (
+              <p className="text-xs font-medium text-late">
+                Payment overdue — access ends {formatDate(s.dunning.grace_ends_at)}
+                {s.dunning.next_attempt_at ? ` · Next attempt ${formatDate(s.dunning.next_attempt_at)}.` : ""}
+              </p>
+            ) : null}
+          </div>
+        );
+      },
+    },
+    {
+      key: "state",
+      header: "State",
+      mobile: "status",
+      render: (row) => {
+        const state = row.subscription.state;
+        return <StatusBadge tone={STATE_TONE_OVERRIDE[state] ?? statusTone(state) ?? "neutral"} label={state} />;
+      },
+    },
+    {
+      key: "trial",
+      header: "Trial ends",
+      render: (row) => {
+        const s = row.subscription;
+        const days = daysUntil(s.trial_ends_at);
+        return (
+          <span className="text-ink-soft">
+            {s.trial_ends_at ? `${formatDate(s.trial_ends_at)}${days !== null && days >= 0 ? ` (${days} days)` : ""}` : "—"}
+          </span>
+        );
+      },
+    },
+    {
+      key: "period",
+      header: "Current period",
+      render: (row) => {
+        const s = row.subscription;
+        return (
+          <span className="text-ink-soft">
+            {s.current_period_start ? `${formatDate(s.current_period_start)} – ${formatDate(s.current_period_end)}` : "—"}
+          </span>
+        );
+      },
+    },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      mobile: "actions",
+      render: (row) => {
+        const finished = row.subscription.state === "cancelled";
+        return (
+          <RowActions
+            label={row.name}
+            actions={[
+              { label: "Change plan", onSelect: () => setChangingPlan(row), hidden: !canWrite || finished },
+              { label: "Cancel", tone: "danger", onSelect: () => setCancelling(row), hidden: !canWrite || finished },
+            ]}
+          />
+        );
+      },
+    },
+  ];
+
+  const subscriptionSelection: TableSelection<Row> = {
+    selected,
+    onToggle: (key, next) =>
+      setSelected((prev) => {
+        const nextSet = new Set(prev);
+        if (next) nextSet.add(key);
+        else nextSet.delete(key);
+        return nextSet;
+      }),
+    onToggleAll: (next) => setSelected(next ? new Set(subscriptionRows.map((row) => row.subscription.id)) : new Set()),
+    label: (row) => row.name,
+  };
+
+  function exportSelectedSubscriptions() {
+    const chosen = subscriptionRows.filter((row) => selected.has(row.subscription.id));
+    downloadCsv(
+      "subscriptions.csv",
+      ["Product", "State", "Trial ends", "Current period start", "Current period end"],
+      chosen.map((row) => [
+        row.name,
+        row.subscription.state,
+        row.subscription.trial_ends_at ?? "",
+        row.subscription.current_period_start ?? "",
+        row.subscription.current_period_end ?? "",
+      ]),
+    );
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <PageHeader eyebrow="Billing" title="Subscriptions" description="Each product your organisation has started, its state, and when the trial ends." />
 
-      {rows.data.length === 0 ? (
-        <EmptyState
-          title="Nothing started yet"
-          description="Pick a product from the Products page to begin a 14-day trial."
+      <Card className="p-0">
+        <DataTable
+          rows={subscriptionRows}
+          rowKey={(row) => row.subscription.id}
+          columns={columns}
+          mobileCard="auto"
+          selection={subscriptionSelection}
+          bulkActions={
+            <Button variant="outline" size="sm" onClick={exportSelectedSubscriptions}>
+              Export selected
+            </Button>
+          }
+          emptyState={
+            <EmptyState
+              title="Nothing started yet"
+              description="Pick a product from the Products page to begin a 14-day trial."
+            />
+          }
         />
-      ) : (
-        <Card className="overflow-x-auto p-0">
-          <table className="w-full min-w-[46rem] text-left text-sm">
-            <thead>
-              <tr className="text-xs uppercase tracking-wide text-muted">
-                <th className="px-5 py-3 font-semibold">Product</th>
-                <th className="px-5 py-3 font-semibold">State</th>
-                <th className="px-5 py-3 font-semibold">Trial ends</th>
-                <th className="px-5 py-3 font-semibold">Current period</th>
-                <th className="px-5 py-3 text-right font-semibold">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.data.map((row) => {
-                const s = row.subscription;
-                const days = daysUntil(s.trial_ends_at);
-                const finished = s.state === "cancelled";
-                return (
-                  <Fragment key={s.id}>
-                    <tr className="border-t border-line">
-                      <td className="px-5 py-3">
-                        <span className="font-semibold text-ink">{row.name}</span>
-                        {row.includes.length > 0 ? (
-                          <span className="block text-xs text-muted">Includes {joinNames(row.includes)}</span>
-                        ) : null}
-                        {row.alsoIn.length > 0 && !finished ? (
-                          <span className="block text-xs text-muted">Also included in {joinNames(row.alsoIn)}</span>
-                        ) : null}
-                      </td>
-                      <td className="px-5 py-3">
-                        <Tag tone={STATE_TONE[s.state] ?? "neutral"}>{s.state}</Tag>
-                      </td>
-                      <td className="px-5 py-3 text-ink-soft">
-                        {s.trial_ends_at ? `${formatDate(s.trial_ends_at)}${days !== null && days >= 0 ? ` (${days} days)` : ""}` : "—"}
-                      </td>
-                      <td className="px-5 py-3 text-ink-soft">
-                        {s.current_period_start ? `${formatDate(s.current_period_start)} – ${formatDate(s.current_period_end)}` : "—"}
-                      </td>
-                      <td className="px-5 py-3 text-right">
-                        <RowActions
-                          label={row.name}
-                          actions={[
-                            {
-                              label: "Change plan",
-                              onSelect: () => setChangingPlan(row),
-                              hidden: !canWrite || finished,
-                            },
-                            {
-                              label: "Cancel",
-                              tone: "danger",
-                              onSelect: () => setCancelling(row),
-                              hidden: !canWrite || finished,
-                            },
-                          ]}
-                        />
-                      </td>
-                    </tr>
-                    {s.dunning ? (
-                      <tr className="border-t border-line bg-late-soft/40">
-                        <td colSpan={5} className="px-5 py-3">
-                          <InlineAlert
-                            tone="warning"
-                            title={`Payment overdue — access ends ${formatDate(s.dunning.grace_ends_at)}`}
-                          >
-                            {s.dunning.next_attempt_at
-                              ? `Next attempt ${formatDate(s.dunning.next_attempt_at)}.`
-                              : null}
-                          </InlineAlert>
-                        </td>
-                      </tr>
-                    ) : null}
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-        </Card>
-      )}
+      </Card>
 
       <ConfirmDialog
         open={cancelling !== null}

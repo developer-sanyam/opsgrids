@@ -6,7 +6,7 @@ import { HEALTH_LABEL, PHASE_LABEL } from "@/data/labels";
 import { minorToInput, parseMinor } from "@/lib/money";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
 import { maybe } from "@/lib/optional";
-import { FormDialog, Select, TextArea, TextField } from "@opsgrids/ui";
+import { FormDialog, Select, TextArea, TextField, useFormDirty } from "@opsgrids/ui";
 import type { SelectOption } from "@opsgrids/ui";
 
 const CODE_PATTERN = /^[A-Za-z0-9_-]{1,40}$/;
@@ -60,6 +60,26 @@ export function ProjectFormDialog({
   const [currency, setCurrency] = useState(project?.currency ?? "INR");
   const [teamSize, setTeamSize] = useState(String(project?.team_size ?? 0));
   const [summary, setSummary] = useState(project?.summary ?? "");
+
+  const fields = {
+    code,
+    name,
+    client,
+    ownerRef,
+    phase,
+    health,
+    progress,
+    startDate,
+    targetDate,
+    budget,
+    spent,
+    currency,
+    teamSize,
+    summary,
+  };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
+
   const [errors, setErrors] = useState<FormErrors>({});
   const codeRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -145,6 +165,7 @@ export function ProjectFormDialog({
       pending={save.pending}
       initialFocusRef={editing ? nameRef : codeRef}
       size="lg"
+      dirty={dirty}
       {...maybe("error", nonFieldError)}
       {...maybe("reference", (save.error as ApiError | null)?.problem?.request_id)}
     >
@@ -157,6 +178,7 @@ export function ProjectFormDialog({
             onChange={(e) => setCode(e.target.value)}
             placeholder="PRJ-104"
             helper="Immutable once created — milestones and tasks join on it."
+            required
             {...maybe("error", errors.code ?? save.fieldErrors.code)}
         />
         ) : (
@@ -167,6 +189,7 @@ export function ProjectFormDialog({
           label="Name"
           value={name}
           onChange={(e) => setName(e.target.value)}
+          required
           {...maybe("error", errors.name ?? save.fieldErrors.name)}
         />
       </div>
@@ -218,6 +241,7 @@ export function ProjectFormDialog({
           type="date"
           value={startDate}
           onChange={(e) => setStartDate(e.target.value)}
+          required
           {...maybe("error", errors.start_date ?? save.fieldErrors.start_date)}
         />
         <TextField
@@ -225,6 +249,7 @@ export function ProjectFormDialog({
           type="date"
           value={targetDate}
           onChange={(e) => setTargetDate(e.target.value)}
+          required
           {...maybe("error", errors.target_date ?? save.fieldErrors.target_date)}
         />
       </div>

@@ -401,3 +401,126 @@ export interface Domain {
 export interface DomainCreate {
   domain: string;
 }
+
+// ------------------------------------------------------------------ the owner/executive home
+//
+// The Home screen is a cross-product fan-out: every type below mirrors one other product's own
+// OpenAPI contract, field for field, the same way the types above mirror account-service's. Home
+// never duplicates a product's business logic — it only reads what that product's own service
+// already computed.
+
+/**
+ * `MonthlyRevenuePoint` (`services/finance/app/schemas.py`) — one point of finance's real
+ * 12-month history. Never a sample: `revenue_minor`/`received_minor`/`outstanding_minor` are all
+ * derived from this tenant's own invoices, payments and allocations.
+ */
+export interface MonthlyRevenuePoint {
+  month: string;
+  label: string;
+  revenue_minor: number;
+  received_minor: number;
+  outstanding_minor: number;
+}
+
+/**
+ * `CurrencyRevenueHistory` — a real revenue/receivables history, scoped to one currency. A
+ * `*_delta_pct` is `null`, not `0`, when there is no previous month to compare against; the UI
+ * must omit the delta rather than render a manufactured percentage.
+ */
+export interface CurrencyRevenueHistory {
+  currency: string;
+  revenue_current_minor: number;
+  revenue_previous_minor: number;
+  revenue_delta_pct: number | null;
+  received_current_minor: number;
+  received_previous_minor: number;
+  received_delta_pct: number | null;
+  outstanding_current_minor: number;
+  outstanding_previous_minor: number;
+  outstanding_delta_pct: number | null;
+  months: MonthlyRevenuePoint[];
+}
+
+/**
+ * `OverviewSummary` (`GET /finance/overview`) — trimmed to the fields Home actually reads.
+ * `kpis`/`cashflow`/`cashflow_sample` carry finance's own sample deltas and series (the audit's
+ * do-not-render list) and are deliberately not declared here: Home never reads them.
+ */
+export interface FinanceOverview {
+  period_label: string;
+  revenue_history: CurrencyRevenueHistory[];
+}
+
+/** `InvoiceOut`, trimmed to what the Recent Invoices card and the status donut read. */
+export interface FinanceInvoiceSummary {
+  id: string;
+  number: string;
+  customer_id: string;
+  issued_date: string;
+  status: string;
+  currency: string;
+  total_minor: number;
+}
+
+/** `CustomerOut` (`services/finance/app/schemas.py`) — finance's own billed party, trimmed to the
+ * name a Recent Invoices row resolves `customer_id` to. Distinct from the CRM `Company` below:
+ * finance bills its own customer record, never a cross-schema join to CRM's book. */
+export interface FinanceCustomer {
+  id: string;
+  name: string;
+}
+
+/** `CustomerSummary` — one row of `GET /finance/customers`: the party, wrapped with a receivable
+ * position this screen never reads. The party is nested, not flattened, the same shape the wire
+ * carries it in — `product-finance`'s own `getCustomerById` reads it exactly this way. */
+export interface FinanceCustomerSummary {
+  customer: FinanceCustomer;
+}
+
+/** `CompanyOut` (`services/customer/app/schemas.py`), trimmed to the Total Customers count. */
+export interface Company {
+  id: string;
+  name: string;
+  status: string;
+}
+
+/** `TaskOut` (`services/projects/app/schemas.py`) — one board card, trimmed to what the Pending
+ * Tasks KPI and the Tasks card read. */
+export interface ProjectTask {
+  id: string;
+  title: string;
+  stage: "backlog" | "in_progress" | "review" | "done";
+  priority: "low" | "medium" | "high" | "urgent";
+  due_date: string | null;
+  project_code: string;
+}
+
+/** `ActivityOut` (`services/deal/app/schemas.py`) — one CRM timeline entry, trimmed to what
+ * Recent Activity reads. `occurred_at` is a real timestamp, never a sample. */
+export interface DealActivity {
+  id: string;
+  subject: string;
+  occurred_at: string;
+}
+
+// ------------------------------------------------------------------ the employee workspace
+
+/** `AttendanceOut` (`services/attendance/app/schemas.py`), trimmed to what "Attendance Today"
+ * reads. A row exists only once the day has been punched — there is nothing to trim it to a
+ * `null` for. */
+export interface AttendanceRecord {
+  id: string;
+  work_date: string;
+  check_in_at: string;
+  check_out_at: string | null;
+  status: string;
+}
+
+/** `LeaveBalanceOut` (`services/leave/app/schemas.py`) — one leave type's running balance, in
+ * half-days. */
+export interface LeaveBalance {
+  employee_id: string;
+  leave_type_id: string;
+  leave_type_code: string;
+  balance_half_days: number;
+}

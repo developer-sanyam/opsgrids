@@ -4091,12 +4091,24 @@ async def schedule_send(
     return row
 
 
+#: How much a firing may arrive before its own `scheduled_at` and still be trusted, the same
+#: guard ADR-0015 §5 gives finance's own scheduled consumer
+#: (`finance.app.domain.FILING_EARLY_ARRIVAL_TOLERANCE`). This should never happen in normal
+#: operation — the scheduler holds a job until the database's own clock says `due_at` has
+#: passed — so it only ever catches an operator's manual redelivery, a replayed dead letter, or a
+#: scheduler with a badly wrong clock. Unlike finance, nothing here re-arms a fresh wait: the
+#: firing is simply dropped, and the campaign is left `scheduled` for its own still-pending
+#: `platform.schedule.requested` job to fire again, on time.
+_CAMPAIGN_FIRE_SKEW: Final[timedelta] = timedelta(seconds=30)
+
+
 async def activate_scheduled_campaign(
     session: AsyncSession,
     *,
     organization_id: uuid.UUID,
     campaign_id: uuid.UUID,
     scheduled_for: datetime,
+    now: datetime | None = None,
 ) -> bool:
     """Flip a `scheduled` campaign to `sending` when the scheduler's own job for it fires.
     Returns whether it did.
@@ -4107,11 +4119,27 @@ async def activate_scheduled_campaign(
     (`_campaign_send_idempotency_key`'s docstring — ADR-0015 has no cancel primitive), so the
     instant a superseded job eventually fires no longer matches and this drops it rather than
     start a second send. A campaign that was cancelled, or already moved on, is not `scheduled`
-    either by the time this runs, so it is dropped the same way as a matter of course. Called
-    from `app/consumers.py:expand_campaign_send`, in the same transaction as the expansion that
-    follows it — a dropped firing here means `expand_campaign` right after it is a no-op too,
-    since it only ever acts on a campaign that is `sending`.
+    either by the time this runs, so it is dropped the same way as a matter of course. A firing
+    that arrives more than `_CAMPAIGN_FIRE_SKEW` before `scheduled_at` is dropped too — see that
+    constant's own docstring.
+
+    Before flipping to `sending`, this re-runs `_ensure_campaign_sendable` — the same gate
+    `request_send` and `schedule_send` already applied, but now against the campaign's state
+    *at the moment it actually fires* rather than the moment it was scheduled (see that
+    function's own docstring for the gap this closes: a sender that stopped being usable, a
+    domain that fell out of verification, a provider that got disconnected, or an audience that
+    emptied out, in the time between scheduling and firing). A campaign that fails the gate here
+    is moved to `paused` with the failing rule's own message as `pause_reason` and an audit row —
+    the same status and reason column the send driver already uses for a route that breaks
+    mid-send (`_pause_campaign`) — and nothing is sent; an operator resumes it with
+    `resume_campaign` once the problem is fixed, exactly as they would a campaign paused
+    mid-flight.
+
+    Called from `app/consumers.py:expand_campaign_send`, in the same transaction as the expansion
+    that follows it — a dropped or paused firing here means `expand_campaign` right after it is a
+    no-op too, since it only ever acts on a campaign that is `sending`.
     """
+    now = now or datetime.now(UTC)
     row = await selectors.get_campaign(session, organization_id, campaign_id, lock=True)
     if row is None or row.status != "scheduled":
         return False
@@ -4119,8 +4147,46 @@ async def activate_scheduled_campaign(
         UTC
     ):
         return False
+    if row.scheduled_at.astimezone(UTC) - now > _CAMPAIGN_FIRE_SKEW:
+        log.info(
+            "engage.campaign.fired_early",
+            campaign_id=str(campaign_id),
+            scheduled_at=row.scheduled_at.isoformat(),
+            now=now.isoformat(),
+        )
+        return False
+
+    try:
+        await _ensure_campaign_sendable(session, system_ctx(organization_id), row)
+    except BusinessRuleProblem as exc:
+        row.status = "paused"
+        row.pause_reason = exc.detail[:300]
+        row.paused_at = now
+        row.updated_by = CAMPAIGN_ACTOR
+        row.updated_at = now
+        await session.flush()
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=organization_id,
+            actor_id=None,
+            acting_as=CAMPAIGN_ACTOR,
+            action="engage.campaign.scheduled_send_failed",
+            entity="campaign",
+            entity_id=row.id,
+            before={"status": "scheduled"},
+            after={"status": "paused", "pause_reason": row.pause_reason},
+            reason=exc.detail,
+        )
+        log.info(
+            "engage.campaign.scheduled_send_gate_failed",
+            campaign_id=str(campaign_id),
+            reason=exc.detail,
+        )
+        return False
+
     row.status = "sending"
-    row.started_at = datetime.now(UTC)
+    row.started_at = now
     row.updated_by = CAMPAIGN_ACTOR
     row.updated_at = row.started_at
     await session.flush()
@@ -4555,12 +4621,18 @@ async def resume_campaign(
 ) -> Campaign:
     """An operator's explicit "try again now" — bypasses the driver's own backoff
     (`Settings.engage_campaign_pause_retry_seconds`) by clearing `paused_at` immediately, so the
-    very next tick attempts this campaign regardless of when it last failed."""
+    very next tick attempts this campaign regardless of when it last failed.
+
+    Re-runs `_ensure_campaign_sendable` first, the same gate `activate_scheduled_campaign` applies
+    at fire time: a campaign paused because that gate failed must not slip past it just because
+    someone pressed resume. When it still fails the 422 carries the failing rule's own message
+    and the campaign stays `paused` with its `pause_reason` untouched."""
     row = await selectors.get_campaign(session, ctx.organization_id, campaign_id, lock=True)
     if row is None:
         raise NotFoundProblem("No such campaign")
     if row.status != "paused":
         raise ConflictProblem(f"Only a paused campaign can be resumed; this one is {row.status}")
+    await _ensure_campaign_sendable(session, ctx, row)
     row.status = "sending"
     row.pause_reason = ""
     row.paused_at = None
@@ -4652,8 +4724,10 @@ async def claim_campaign_batch(
     - `done` — nothing left `queued` or `sending`; the campaign is now `sent`.
     - `stopped` — the campaign is not `sending`/`paused` any more (cancelled, or already sent).
     - `capped` — the connection's `daily_cap` is used up for today; remaining stay `queued`.
-    - `paused` — no connected provider or usable sender; the campaign was moved to `paused`
-      (or already was), and `Campaign.pause_reason` says why.
+    - `paused` — no connected provider or usable sender (the campaign was moved to `paused`, or
+      already was), or the campaign was already `paused` and never got as far as being expanded
+      (`activate_scheduled_campaign` paused it at fire time). Either way `Campaign.pause_reason`
+      says why, and it waits for `resume_campaign`.
     - `idle` — nothing claimable right now (another worker holds the rest); try again later.
     - `expand` — this campaign is `sending` but `Campaign.expanded_at` is still null: the send
       driver (`app/cron.py`'s `_one_batch`) should call `expand_campaign` itself, in its own
@@ -4673,6 +4747,18 @@ async def claim_campaign_batch(
     campaign = await selectors.get_campaign(session, organization_id, campaign_id)
     if campaign is None or campaign.status not in _DRIVER_ACTIVE:
         return "stopped", None
+    if campaign.status == "paused" and campaign.expanded_at is None:
+        # `paused` with no expansion ever having happened is not the mid-flight pause this
+        # column's invariant otherwise guarantees (a route breaking after `expand_campaign` has
+        # already run) — it is `activate_scheduled_campaign` pausing a scheduled campaign that
+        # failed the send gate the instant it fired, before it was ever `sending`. Left alone
+        # here rather than treated as `expand`: nothing has been claimed yet to lose, and running
+        # the fall-through below would `_resume_if_paused` it and, with `expanded_at` still null
+        # and nothing `queued`, race straight to `done` with nobody ever mailed — the exact
+        # zero-recipient "sent" bug `expanded_at` exists to prevent. Only an operator's explicit
+        # `resume_campaign` moves this back to `sending`; the very next tick then finds it
+        # `sending` with `expanded_at` still null and expands it normally, below.
+        return "paused", None
     if campaign.expanded_at is None:
         return "expand", None
 

@@ -141,11 +141,23 @@ export async function listDeals(params: ListDealsParams = {}): Promise<Page<Deal
   return mapPage(result, dealFromWire);
 }
 
-/** The whole deal book — powers the Overview KPIs, the funnel and the kanban board, none of
- *  which can be usefully paginated: a board needs every column populated at once. */
-export async function getAllDeals(): Promise<Page<Deal>> {
-  if (USE_FIXTURES) return settle(paginateFixture(DEALS, 1, FULL_PAGE));
-  const result = await apiRequest<WirePage<DealOut>>(`/deals?size=${FULL_PAGE}`);
+export interface GetAllDealsParams {
+  /** Narrow to one rep's own deals — the Overview's "My pipeline" toggle. */
+  ownerId?: string;
+}
+
+/** The whole deal book — powers the Overview's "needs attention" scan, "won this month" and the
+ *  kanban board, none of which can be usefully paginated: a board needs every column populated at
+ *  once. The headline pipeline figures (value, open count, win rate) come from `getSummary()`
+ *  instead, the server's own rollup — never a count over this capped page. */
+export async function getAllDeals(params: GetAllDealsParams = {}): Promise<Page<Deal>> {
+  if (USE_FIXTURES) {
+    const filtered = params.ownerId ? DEALS.filter((d) => d.owner_id === params.ownerId) : DEALS;
+    return settle(paginateFixture(filtered, 1, FULL_PAGE));
+  }
+  const query = new URLSearchParams({ size: String(FULL_PAGE) });
+  if (params.ownerId) query.set("owner_id", params.ownerId);
+  const result = await apiRequest<WirePage<DealOut>>(`/deals?${query.toString()}`);
   return mapPage(result, dealFromWire);
 }
 
@@ -261,12 +273,26 @@ export async function moveDealStage(id: string, input: StageMoveIn): Promise<Dea
   return dealFromWire(row);
 }
 
-/** `GET /deals/summary` — the server's own pipeline rollup, scope-aware. */
-export async function getSummary(): Promise<Summary> {
+export interface GetSummaryParams {
+  /** Narrow the rollup to one rep's own pipeline. */
+  ownerId?: string;
+  /** `"me"` narrows to the caller's own pipeline, resolved server-side from the token. */
+  owner?: "me";
+}
+
+/** `GET /deals/summary` — the server's own pipeline rollup, scope-aware. `owner`/`ownerId` power
+ *  the Overview's "My pipeline" toggle without composing an owner filter over `getAllDeals()`'s
+ *  capped page — this is the real total, not a count over 200 rows. */
+export async function getSummary(params: GetSummaryParams = {}): Promise<Summary> {
   if (USE_FIXTURES) {
-    const openDeals = DEALS.filter((d) => d.stage !== "closed_won" && d.stage !== "closed_lost");
-    const won = DEALS.filter((d) => d.stage === "closed_won");
-    const lost = DEALS.filter((d) => d.stage === "closed_lost");
+    // Fixture mode mints no real token, so "me" resolves to the fixture identity's own rep
+    // record — the first owner, Sofia Marchetti — the same stand-in `AuthProvider.tsx` uses.
+    const ownerId = params.owner === "me" ? OWNERS[0]?.id : params.ownerId;
+    const scoped = ownerId ? DEALS.filter((d) => d.owner_id === ownerId) : DEALS;
+    const scopedActivities = ownerId ? ACTIVITIES.filter((a) => a.owner_id === ownerId) : ACTIVITIES;
+    const openDeals = scoped.filter((d) => d.stage !== "closed_won" && d.stage !== "closed_lost");
+    const won = scoped.filter((d) => d.stage === "closed_won");
+    const lost = scoped.filter((d) => d.stage === "closed_lost");
     const decided = won.length + lost.length;
     const weekAgo = Date.now() - 7 * 86_400_000;
     return settle({
@@ -278,13 +304,18 @@ export async function getSummary(): Promise<Summary> {
       open_deals: openDeals.length,
       win_rate_pct: decided === 0 ? 0 : Math.round((won.length / decided) * 100),
       won_value_minor: won.reduce((s, d) => s + d.value_minor, 0),
-      activities_this_week: ACTIVITIES.filter((a) => Date.parse(a.occurred_at) >= weekAgo).length,
-      currency: DEALS[0]?.currency ?? "INR",
-      trend: [],
+      activities_this_week: scopedActivities.filter((a) => Date.parse(a.occurred_at) >= weekAgo)
+        .length,
+      currency: scoped[0]?.currency ?? "INR",
+      trend: null,
       funnel: [],
     });
   }
-  const row = await apiRequest<SummaryOut>("/deals/summary");
+  const query = new URLSearchParams();
+  if (params.owner === "me") query.set("owner", "me");
+  else if (params.ownerId) query.set("owner_id", params.ownerId);
+  const qs = query.toString();
+  const row = await apiRequest<SummaryOut>(`/deals/summary${qs ? `?${qs}` : ""}`);
   return summaryFromWire(row);
 }
 

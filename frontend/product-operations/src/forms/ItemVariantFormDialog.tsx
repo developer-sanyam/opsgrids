@@ -34,6 +34,13 @@ export function ItemVariantFormDialog({
   const [nameError, setNameError] = useState<string | undefined>(undefined);
   const firstFieldRef = useRef<HTMLInputElement>(null);
 
+  // Compared against the same seed the fields above initialised from — this form unmounts on
+  // close (FormDialog's resetting-is-structural note), so `variant` never changes under it.
+  const dirty =
+    sku !== (variant?.sku ?? "") ||
+    name !== (variant?.name ?? "") ||
+    isActive !== (variant?.is_active ?? true);
+
   const save = useMutation(
     (input: ItemVariantIn | ItemVariantPatch) =>
       variant
@@ -75,6 +82,7 @@ export function ItemVariantFormDialog({
       pendingLabel={variant ? "Saving…" : "Adding…"}
       pending={save.pending}
       initialFocusRef={firstFieldRef}
+      dirty={dirty}
       {...formDialogError(save.error, save.fieldErrors)}
     >
       <TextField
@@ -83,6 +91,7 @@ export function ItemVariantFormDialog({
         value={sku}
         onChange={(e) => setSku(e.target.value)}
         disabled={variant !== null}
+        required
         helper={variant ? "A SKU can't change once created." : "Letters, numbers, . - and _."}
         {...((skuError ?? save.fieldErrors.sku) !== undefined ? { error: skuError ?? save.fieldErrors.sku } : {})}
       />
@@ -90,6 +99,7 @@ export function ItemVariantFormDialog({
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
+        required
         {...((nameError ?? save.fieldErrors.name) !== undefined ? { error: nameError ?? save.fieldErrors.name } : {})}
       />
       {variant ? (

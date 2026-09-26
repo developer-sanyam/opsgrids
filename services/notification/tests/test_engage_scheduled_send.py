@@ -14,6 +14,7 @@ Real PostgreSQL as the app role, `RecordingTransport` for the sends, and the hel
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,13 +22,14 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app import consumers, models, services
 from app.config import settings
 from app.transports import RecordingTransport
 from platform_core.auth import Scope
 from platform_core.db import dispose_engine, init_engine
+from platform_core.errors import BusinessRuleProblem
 from platform_core.events import validate_event_schema
 from tests.helpers import ctx_for, envelope_for
 from tests.test_engage_campaigns import (
@@ -125,9 +127,11 @@ async def test_a_scheduled_campaign_is_not_sent_before_its_time_and_is_sent_once
     assert await _recipients(session, campaign_id) == {}
 
     # The current schedule fires: expanded once, sent once, however often it is redelivered.
+    # `now=second` stands in for the scheduler actually waiting until `second` arrives — this
+    # test does not sleep two hours to get there.
     firing = _firing(org_id, replacement)
-    assert await consumers.expand_campaign_send(firing) == "expanded"
-    assert await consumers.expand_campaign_send(firing) == "redelivered"
+    assert await consumers.expand_campaign_send(firing, now=second) == "expanded"
+    assert await consumers.expand_campaign_send(firing, now=second) == "redelivered"
     # The consumer committed on its own connection; refresh this session's cached row (the send
     # driver reads through a session of its own per pass, so production never sees it stale).
     started = await _reload(session, campaign_id)
@@ -155,6 +159,153 @@ async def test_cancelling_a_scheduled_campaign_stops_its_firing(session, org_id,
     assert await consumers.expand_campaign_send(_firing(org_id, requested)) == "not_sending"
     assert (await _reload(session, campaign_id)).status == "cancelled"
     assert await _recipients(session, campaign_id) == {}
+
+
+async def test_a_campaign_that_stops_being_sendable_before_it_fires_is_paused_not_sent(
+    session, org_id, worker_engine
+):
+    """The gate that let this campaign be scheduled is re-run the instant it actually fires
+    (`services.activate_scheduled_campaign`). A route that broke in between — here, the
+    provider disconnecting — must not be allowed to send anyway."""
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "a@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    at = datetime.now(UTC) + timedelta(hours=1)
+    await _schedule(session, org_id, campaign_id, at)
+    (requested,) = await _staged(session, SCHEDULE_REQUESTED)
+
+    async with session.begin():
+        await session.execute(
+            update(models.EmailConnection)
+            .where(models.EmailConnection.organization_id == org_id)
+            .values(status="disconnected")
+        )
+
+    assert await consumers.expand_campaign_send(_firing(org_id, requested), now=at) == "not_sending"
+    failed = await _reload(session, campaign_id)
+    assert failed.status == "paused"
+    assert "provider" in failed.pause_reason
+    assert failed.started_at is None
+    assert await _recipients(session, campaign_id) == {}
+
+    async with session.begin():
+        (audit,) = (
+            await session.execute(
+                select(models.AuditLog).where(
+                    models.AuditLog.action == "engage.campaign.scheduled_send_failed"
+                )
+            )
+        ).scalars()
+    assert audit.entity_id == campaign_id
+    assert audit.reason and "provider" in audit.reason
+    assert audit.actor_id is None and audit.acting_as == services.CAMPAIGN_ACTOR
+
+    # Nothing to send, and resuming without fixing the route is refused the same as any other
+    # paused campaign — an operator has to reconnect a provider first.
+    transport = RecordingTransport()
+    assert await _drain(session, org_id, campaign_id, transport=transport) == "paused"
+    assert transport.sent == []
+
+
+async def test_a_campaign_paused_at_fire_time_cannot_be_resumed_while_the_gate_still_fails(
+    session, org_id, worker_engine
+):
+    """`resume_campaign` re-runs the send gate the firing applied: pressing resume on a campaign
+    that `activate_scheduled_campaign` paused must not skip the rule that paused it. Once the
+    problem is fixed the same call goes through."""
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "a@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    at = datetime.now(UTC) + timedelta(hours=1)
+    await _schedule(session, org_id, campaign_id, at)
+    (requested,) = await _staged(session, SCHEDULE_REQUESTED)
+    async with session.begin():
+        await session.execute(
+            update(models.EmailConnection)
+            .where(models.EmailConnection.organization_id == org_id)
+            .values(status="disconnected")
+        )
+    assert await consumers.expand_campaign_send(_firing(org_id, requested), now=at) == "not_sending"
+    paused = await _reload(session, campaign_id)
+    assert paused.status == "paused" and "provider" in paused.pause_reason
+
+    with pytest.raises(BusinessRuleProblem, match="provider"):
+        async with session.begin():
+            await services.resume_campaign(
+                session, ctx_for(org_id, K_WRITE, Scope.ORG), campaign_id=campaign_id
+            )
+    session.expire_all()
+    refused = await _reload(session, campaign_id)
+    assert refused.status == "paused"
+    assert refused.pause_reason == paused.pause_reason
+    assert refused.paused_at == paused.paused_at
+
+    async with session.begin():
+        await session.execute(
+            update(models.EmailConnection)
+            .where(models.EmailConnection.organization_id == org_id)
+            .values(status="connected")
+        )
+    async with session.begin():
+        resumed = await services.resume_campaign(
+            session, ctx_for(org_id, K_WRITE, Scope.ORG), campaign_id=campaign_id
+        )
+    assert resumed.status == "sending" and resumed.pause_reason == ""
+
+
+async def test_a_scheduled_campaign_fired_early_is_dropped(session, org_id):
+    """Defence in depth (ADR-0015 §5): a firing that arrives well before its own `scheduled_at`
+    — a hand redelivery, a replayed dead letter, a scheduler with a bad clock — is dropped
+    outright rather than trusted, and the campaign is left alone for its real firing later."""
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "a@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    at = datetime.now(UTC) + timedelta(hours=1)
+    await _schedule(session, org_id, campaign_id, at)
+
+    async with session.begin():
+        activated = await services.activate_scheduled_campaign(
+            session,
+            organization_id=org_id,
+            campaign_id=campaign_id,
+            scheduled_for=at,
+            now=at - timedelta(minutes=5),
+        )
+    assert activated is False
+    untouched = await _reload(session, campaign_id)
+    assert untouched.status == "scheduled" and untouched.started_at is None
+    assert untouched.pause_reason == ""
+    assert await _recipients(session, campaign_id) == {}
+
+
+async def test_firing_a_scheduled_campaign_twice_sends_once(session, org_id, worker_engine):
+    """Two distinct firings of the same schedule — not a broker redelivery of one message, but
+    two separate `platform.schedule.requested` deliveries naming the same `scheduled_for` —
+    activate at most once (`activate_scheduled_campaign`'s own status guard) and expand into the
+    same recipient rows (`ON CONFLICT DO NOTHING`), so the send driver still sends each recipient
+    exactly once."""
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "a@example.com", "b@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    at = datetime.now(UTC) + timedelta(hours=1)
+    await _schedule(session, org_id, campaign_id, at)
+    (requested,) = await _staged(session, SCHEDULE_REQUESTED)
+
+    first_firing = _firing(org_id, requested)
+    second_firing = _firing(org_id, requested)
+    second_firing["event_id"] = str(uuid.uuid4())
+    assert first_firing["event_id"] != second_firing["event_id"]
+
+    assert await consumers.expand_campaign_send(first_firing, now=at) == "expanded"
+    assert await consumers.expand_campaign_send(second_firing, now=at) == "expanded"
+    started = await _reload(session, campaign_id)
+    assert started.status == "sending"
+
+    transport = RecordingTransport()
+    assert await _drain(session, org_id, campaign_id, transport=transport) == "done"
+    assert len(transport.sent) == 2
+    done = await _reload(session, campaign_id)
+    assert done.sent_count == 2 and done.status == "sent"
 
 
 async def test_schedule_endpoint_needs_a_future_timezone_aware_time(client, session, org_id):

@@ -3,7 +3,6 @@ import { useSearchParams } from "react-router-dom";
 
 import { DEFAULT_PAGE_SIZE, deleteProject, getPeople, listProjects } from "@/api/client";
 import type { Person, Project, ProjectStatus } from "@/api/types";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
   Avatar,
@@ -11,6 +10,7 @@ import {
   Card,
   ConfirmDialog,
   DataTable,
+  DownloadIcon,
   EmptyState,
   ErrorState,
   LayersIcon,
@@ -23,8 +23,9 @@ import {
   Skeleton,
   useToast,
 } from "@opsgrids/ui";
-import type { Column, SelectOption } from "@opsgrids/ui";
+import type { Column, SelectOption, TableSelection } from "@opsgrids/ui";
 import { formatMoney } from "@/lib/format";
+import { downloadCsv, toCsv } from "@/lib/exportCsv";
 import { ProjectStatusPill } from "@/ui";
 import { ProjectDetailDialog } from "./ProjectDetailDialog";
 import { ProjectFormDialog } from "./ProjectFormDialog";
@@ -69,7 +70,6 @@ export function ProjectsPage() {
   const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
-  const debouncedSearch = useDebouncedValue(search);
   const [status, setStatus] = useState<StatusFilter>("all");
   const [billable, setBillable] = useState<BillableFilter>("all");
   const [sort, setSort] = useState<SortKey>("code");
@@ -79,6 +79,7 @@ export function ProjectsPage() {
   const [editing, setEditing] = useState<Project | null>(null);
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<Project | null>(null);
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
 
   const canWrite = useCan("pulseboard.engagements.project.write");
 
@@ -99,21 +100,21 @@ export function ProjectsPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, status, billable, sort]);
+  }, [search, status, billable, sort]);
 
   const loader = useCallback(
     () =>
       listProjects({
-        q: debouncedSearch,
+        q: search,
         status,
         billable: billable === "all" ? undefined : billable === "billable",
         sort,
         page,
         size,
       }),
-    [debouncedSearch, status, billable, sort, page, size],
+    [search, status, billable, sort, page, size],
   );
-  const projects = useAsync(loader, [debouncedSearch, status, billable, sort, page, size]);
+  const projects = useAsync(loader, [search, status, billable, sort, page, size]);
 
   // The roster doesn't depend on the filters, so it loads once, separately.
   const peopleState = useAsync(useCallback(getPeople, []), []);
@@ -143,6 +144,7 @@ export function ProjectsPage() {
     {
       key: "name",
       header: "Project",
+      mobile: "title",
       render: (p) => (
         <div className="flex flex-col leading-tight">
           <span className="font-semibold text-ink">{p.name}</span>
@@ -157,7 +159,12 @@ export function ProjectsPage() {
       headerClassName: "hidden md:table-cell",
       render: (p) => <span className="text-ink-soft">{p.client || "—"}</span>,
     },
-    { key: "status", header: "Status", render: (p) => <ProjectStatusPill status={p.status} /> },
+    {
+      key: "status",
+      header: "Status",
+      mobile: "status",
+      render: (p) => <ProjectStatusPill status={p.status} />,
+    },
     {
       key: "progress",
       header: "Progress",
@@ -197,6 +204,7 @@ export function ProjectsPage() {
       key: "actions",
       header: "",
       align: "right",
+      mobile: "actions",
       render: (p) => (
         <RowActions
           label={p.name}
@@ -209,6 +217,39 @@ export function ProjectsPage() {
       ),
     },
   ];
+
+  const selection: TableSelection<Project> = {
+    selected: selectedIds,
+    onToggle: (key, next) =>
+      setSelectedIds((prev) => {
+        const nextSet = new Set(prev);
+        if (next) nextSet.add(key);
+        else nextSet.delete(key);
+        return nextSet;
+      }),
+    onToggleAll: (next) =>
+      setSelectedIds(next ? new Set(projects.status === "success" ? projects.data.items.map((p) => p.id) : []) : new Set()),
+    label: (p) => p.name,
+  };
+
+  function exportSelected() {
+    if (projects.status !== "success") return;
+    const rows = projects.data.items.filter((p) => selectedIds.has(p.id));
+    const csv = toCsv(
+      ["Code", "Name", "Client", "Status", "Progress %", "Budget", "Spent", "Owner"],
+      rows.map((p) => [
+        p.code,
+        p.name,
+        p.client || "",
+        p.status,
+        String(p.progress_pct),
+        formatMoney(p.budget_minor, p.currency),
+        formatMoney(p.spent_minor, p.currency),
+        ownerName(p.owner_id),
+      ]),
+    );
+    downloadCsv(`projects-selected-${rows.length}.csv`, csv);
+  }
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -228,7 +269,7 @@ export function ProjectsPage() {
             label="Search projects"
             placeholder="Search by name, client or code…"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onDebouncedChange={setSearch}
             containerClassName="lg:max-w-xs"
           />
           <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
@@ -280,6 +321,18 @@ export function ProjectsPage() {
               rows={projects.data.items}
               rowKey={(p) => p.id}
               onRowClick={setSelected}
+              mobileCard="auto"
+              selection={selection}
+              bulkActions={
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  leadingIcon={<DownloadIcon className="size-4" />}
+                  onClick={exportSelected}
+                >
+                  Export selected
+                </Button>
+              }
               emptyState={
                 <EmptyState
                   icon={<LayersIcon className="size-6" />}

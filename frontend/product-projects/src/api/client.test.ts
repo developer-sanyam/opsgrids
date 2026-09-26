@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  countCompletedProjects,
   createMember,
   createMilestone,
   createProject,
@@ -11,6 +12,7 @@ import {
   deleteTask,
   listMembers,
   listMilestones,
+  listMyTasks,
   listProjects,
   listTasks,
   updateMember,
@@ -210,6 +212,36 @@ describe("listTasks", () => {
     expect(requested(fetchMock).url).toBe(
       "/api/v1/projects-workspace/tasks?stage=review&project_code=PRJ-200&page=1&size=25",
     );
+  });
+
+  it("sends assignee=me straight through", async () => {
+    const fetchMock = stubFetch(ENVELOPE);
+    await listTasks({ assignee: "me", size: 100 });
+    expect(requested(fetchMock).url).toBe(
+      "/api/v1/projects-workspace/tasks?assignee=me&page=1&size=100",
+    );
+  });
+});
+
+describe("listMyTasks", () => {
+  it("is the assignee=me convenience the Overview's My tasks card calls", async () => {
+    const fetchMock = stubFetch(ENVELOPE);
+    await listMyTasks(100);
+    expect(requested(fetchMock).url).toBe(
+      "/api/v1/projects-workspace/tasks?assignee=me&page=1&size=100",
+    );
+  });
+});
+
+describe("countCompletedProjects", () => {
+  it("reads Page.total off a single phase=live,size=1 rollup call, not a scan", async () => {
+    const fetchMock = stubFetch({ items: [], total: 7, page: 1, size: 1, pages: 7 });
+    const total = await countCompletedProjects();
+    expect(total).toBe(7);
+    expect(requested(fetchMock).url).toBe(
+      "/api/v1/projects-workspace/projects?phase=live&page=1&size=1",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

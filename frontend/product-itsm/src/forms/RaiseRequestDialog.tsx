@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 import { createRequest } from "@/api/client";
 import type { CatalogItem, ServiceRequest, ServiceRequestIn } from "@/api/types";
 import { ApiError, problemMessage, useAuth, useMutation } from "@opsgrids/client";
-import { FormDialog, Select, TextField } from "@opsgrids/ui";
+import { FormDialog, Select, TextField, useFormDirty } from "@opsgrids/ui";
 
 interface RaiseRequestDialogProps {
   catalog: CatalogItem[];
@@ -24,6 +24,11 @@ export function RaiseRequestDialog({
   const [catalogItemId, setCatalogItemId] = useState(preselected?.id ?? catalog[0]?.id ?? "");
   const [subject, setSubject] = useState("");
   const [requester, setRequester] = useState(user?.full_name ?? "");
+
+  const fields = { catalogItemId, subject, requester };
+  const [initial] = useState(fields);
+  const dirty = useFormDirty(initial, fields);
+
   const [subjectError, setSubjectError] = useState<string | undefined>(undefined);
   const [requesterError, setRequesterError] = useState<string | undefined>(undefined);
   const subjectRef = useRef<HTMLInputElement>(null);
@@ -66,6 +71,7 @@ export function RaiseRequestDialog({
       pending={save.pending}
       initialFocusRef={subjectRef}
       description={selected ? `SLA target: ${selected.sla_days} working day(s).` : undefined}
+      dirty={dirty}
       error={hasTopLevelError ? problemMessage(save.error) : undefined}
       reference={hasTopLevelError ? (save.error as ApiError).problem?.request_id : undefined}
     >
@@ -74,6 +80,7 @@ export function RaiseRequestDialog({
         value={catalogItemId}
         onChange={(e) => setCatalogItemId(e.target.value)}
         options={catalog.map((c) => ({ value: c.id, label: c.name }))}
+        required
         error={save.fieldErrors.catalog_item_id}
       />
       <TextField
@@ -83,6 +90,7 @@ export function RaiseRequestDialog({
         onChange={(e) => setSubject(e.target.value)}
         maxLength={200}
         placeholder="e.g. the new hire's name and start date"
+        required
         error={subjectError ?? save.fieldErrors.subject}
       />
       <TextField
@@ -90,6 +98,7 @@ export function RaiseRequestDialog({
         value={requester}
         onChange={(e) => setRequester(e.target.value)}
         maxLength={120}
+        required
         error={requesterError ?? save.fieldErrors.requester}
       />
     </FormDialog>

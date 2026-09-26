@@ -1,27 +1,19 @@
+import { StatusBadge } from "@opsgrids/ui";
+
 import type { CampaignStatus } from "@/api/types";
 import { campaignStatusLabel } from "@/lib/format";
-import { cn } from "@opsgrids/ui";
-
-const PILL_BASE =
-  "inline-flex items-center gap-1.5 rounded-full pl-2 pr-2.5 py-1 text-xs font-semibold";
 
 /**
- * Campaign lifecycle status, mapped to the semantic pill families and always backed by a coloured
- * dot so the state never rests on colour alone:
- * Live = green, Paused = amber, Ended = blue, Draft = grey.
+ * Campaign lifecycle status, on `StatusBadge` and the shared tone registry rather than this app's
+ * own colours (see `opsgrids-ui/src/lib/status.ts`).
+ *
+ * `live`, `paused` and `draft` are registered words the registry already tones the way this app
+ * always has. `ended` means something different here than the registry's general sense of the
+ * word — a campaign that has ended is a plain fact, not the failure `ended` reads as elsewhere —
+ * so it keeps its own tone instead of the registry's.
  */
-const TONE: Record<CampaignStatus, string> = {
-  live: "bg-present-soft text-present",
-  paused: "bg-late-soft text-late",
-  ended: "bg-info-soft text-info",
-  draft: "bg-ground text-muted",
-};
-
 export function CampaignStatusPill({ status }: { status: CampaignStatus }) {
-  return (
-    <span className={cn(PILL_BASE, TONE[status])}>
-      <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      {campaignStatusLabel(status)}
-    </span>
-  );
+  const label = campaignStatusLabel(status);
+  if (status === "ended") return <StatusBadge tone="info" label={label} />;
+  return <StatusBadge status={status} label={label} />;
 }
