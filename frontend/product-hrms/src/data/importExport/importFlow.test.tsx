@@ -342,9 +342,20 @@ const FILE_ROWS: Record<string, ExcelJS.CellValue>[] = [
 ];
 
 const MISSING_NUMBER = "Employee number is required";
-// The engine's own sentence for a reference the list does not hold; it may go on to say how to fix it.
-const UNKNOWN_DEPARTMENT = /^'Skunkworks' is not in the list of Departments/;
-const UNKNOWN_LOCATION = /^'Bangalore' is not in the list of Location codes/;
+/** The column's own lookupHint: the engine appends it to its sentence for a reference not in the list. */
+function hintOf(key: string): string {
+  const hint = employeesEntity.columns.find((column) => column.key === key)?.lookupHint;
+  if (hint === undefined) throw new Error(`Column "${key}" has no lookupHint`);
+  return hint;
+}
+
+/** The engine's sentence for a cell the list does not hold, then the column's hint. */
+function notAccepted(text: string, header: string, key: string): string {
+  return `'${text}' is not one of the accepted values for ${header} (see the Lists sheet). ${hintOf(key)}`;
+}
+
+const UNKNOWN_DEPARTMENT = notAccepted("Skunkworks", "Department", "department");
+const UNKNOWN_LOCATION = notAccepted("Bangalore", "Location code", "location_code");
 
 describe("importing employees from Excel", () => {
   it(
@@ -466,8 +477,8 @@ describe("importing employees from Excel", () => {
         `6 |  | Invalid | ${MISSING_NUMBER}`,
       ]);
       expect(lines).toHaveLength(8);
-      expect(lines[6]).toMatch(/^7 \| EMP-3006 \| Invalid \| 'Skunkworks' is not in the list of Departments/);
-      expect(lines[7]).toMatch(/^8 \| EMP-3007 \| Invalid \| 'Bangalore' is not in the list of Location codes/);
+      expect(lines[6]).toBe(`7 | EMP-3006 | Invalid | ${UNKNOWN_DEPARTMENT}`);
+      expect(lines[7]).toBe(`8 | EMP-3007 | Invalid | ${UNKNOWN_LOCATION}`);
     },
     TEST_TIMEOUT,
   );
@@ -563,7 +574,7 @@ describe("importing employees from Excel", () => {
       await screen.findByRole("dialog", { name: "Review your file" });
       expect(figure("Ready to import")).toBe("1");
       expect(figure("Need fixing")).toBe("1");
-      expect(screen.getByText(/^'Engineering'/)).toBeTruthy();
+      expect(screen.getByText(notAccepted("Engineering", "Department", "department"))).toBeTruthy();
 
       await user.click(screen.getByRole("button", { name: "Import 1 row" }));
       await screen.findByRole("dialog", { name: "Import finished" }, { timeout: 10_000 });
@@ -591,7 +602,7 @@ describe("importing employees from Excel", () => {
       await screen.findByRole("dialog", { name: "Review your file" });
       expect(figure("Ready to import")).toBe("1");
       expect(figure("Need fixing")).toBe("1");
-      expect(screen.getByText(/^'BLR-HQ' is not in the list of Location codes/)).toBeTruthy();
+      expect(screen.getByText(notAccepted("BLR-HQ", "Location code", "location_code"))).toBeTruthy();
 
       await user.click(screen.getByRole("button", { name: "Import 1 row" }));
       await screen.findByRole("dialog", { name: "Import finished" }, { timeout: 10_000 });
@@ -618,7 +629,7 @@ describe("importing employees from Excel", () => {
       await screen.findByRole("dialog", { name: "Review your file" });
       expect(figure("Ready to import")).toBe("2");
       expect(figure("Need fixing")).toBe("1");
-      expect(screen.getByText(/^'Bangalore' is not in the list of Location codes/)).toBeTruthy();
+      expect(screen.getByText(UNKNOWN_LOCATION)).toBeTruthy();
 
       await user.click(screen.getByRole("button", { name: "Import 2 rows" }));
       await screen.findByRole("dialog", { name: "Import finished" }, { timeout: 10_000 });

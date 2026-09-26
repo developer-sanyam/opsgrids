@@ -330,9 +330,10 @@ const FILE_ROWS: Record<string, ExcelJS.CellValue>[] = [
 ];
 
 const MISSING_START = "Start date is required";
-// The engine's own sentences for a reference the list does not hold; each may go on to say how to fix it.
-const UNKNOWN_OWNER = /^'Nobody Here' is not in the list of Owners/;
-const AMBIGUOUS_OWNER = /^'Sam Patel' matches more than one of the Owners/;
+/** The owner column's own lookupHint: the engine appends it to its sentence for an owner not in the list. */
+const OWNER_HINT = portfolioEntity.columns.find((column) => column.key === "owner")?.lookupHint ?? "";
+const UNKNOWN_OWNER = `'Nobody Here' is not one of the accepted values for Owner (see the Lists sheet). ${OWNER_HINT}`;
+const AMBIGUOUS_OWNER = `'Sam Patel' matches more than one of the accepted values for Owner, so it cannot be chosen. ${OWNER_HINT}`;
 const BACKWARDS = "The target date cannot be before the start date.";
 
 describe("importing projects from Excel", () => {
@@ -466,8 +467,8 @@ describe("importing projects from Excel", () => {
         `6 | PRJ-206 | Invalid | ${MISSING_START}`,
       ]);
       expect(lines).toHaveLength(9);
-      expect(lines[6]).toMatch(/^7 \| PRJ-207 \| Invalid \| 'Nobody Here' is not in the list of Owners/);
-      expect(lines[7]).toMatch(/^8 \| PRJ-208 \| Invalid \| 'Sam Patel' matches more than one of the Owners/);
+      expect(lines[6]).toBe(`7 | PRJ-207 | Invalid | ${UNKNOWN_OWNER}`);
+      expect(lines[7]).toBe(`8 | PRJ-208 | Invalid | ${AMBIGUOUS_OWNER}`);
       expect(lines[8]).toBe(`9 | PRJ-209 | Invalid | ${BACKWARDS}`);
     },
     TEST_TIMEOUT,
