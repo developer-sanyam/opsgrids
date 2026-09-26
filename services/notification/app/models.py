@@ -1107,4 +1107,6 @@ class ProcessedEvent(Base, ProcessedEventMixin):
 
 class AuditLog(Base, AuditLogMixin):
     """Who changed what, written inside the transaction that changed it."""
+
+
 from app import e1_models  # noqa: E402,F401

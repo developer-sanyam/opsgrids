@@ -35,7 +35,7 @@ pytestmark = pytest.mark.integration
 
 SERVICE_DIR = Path(__file__).resolve().parent.parent
 BEFORE = "c9a2e6f1b4d7"  # the revision right before d5a7c3e91f48  # pragma: allowlist secret
-HEAD = "d5a7c3e91f48"  # pragma: allowlist secret
+HEAD = "e1a4c7d92b58"  # pragma: allowlist secret
 TABLES = (
     "consent_events",
     "campaign_recipients",

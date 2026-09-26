@@ -61,7 +61,10 @@ def upgrade() -> None:
         sa.Column("url", sa.Text(), nullable=False),
         sa.Column("url_hash", sa.String(length=64), nullable=False),
         sa.Column(
-            "created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
         ),
         sa.Column("id", sa.UUID(), nullable=False),
         sa.Column("organization_id", sa.UUID(), nullable=False),
@@ -88,7 +91,10 @@ def upgrade() -> None:
         sa.Column("user_agent_class", sa.String(length=10), nullable=False),
         sa.Column("is_machine", sa.Boolean(), nullable=False),
         sa.Column(
-            "occurred_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
+            "occurred_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
         ),
         sa.Column("id", sa.UUID(), nullable=False),
         sa.Column("organization_id", sa.UUID(), nullable=False),

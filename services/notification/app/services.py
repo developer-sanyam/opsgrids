@@ -4802,7 +4802,7 @@ def campaign_message(
     if campaign.html_body.strip():
         link = html_escape(unsubscribe, quote=True)
         html = (
-            f'{campaign.html_body if html_body is None else html_body}\n'
+            f"{campaign.html_body if html_body is None else html_body}\n"
             '<p style="font-size:12px;color:#666">'
             f'<a href="{link}">Unsubscribe</a></p>'
         )

@@ -306,7 +306,9 @@ class TrackingPlan:
         return html
 
 
-async def prepare_plan(session: AsyncSession, campaign) -> TrackingPlan | None:  # type: ignore[no-untyped-def]
+async def prepare_plan(  # type: ignore[no-untyped-def]
+    session: AsyncSession, campaign
+) -> TrackingPlan | None:
     """The tracking plan for a campaign about to send a batch, or None when tracking is off for
     it (or cannot be done safely). Registers the campaign's link destinations, idempotently, in
     the caller's transaction: two queries per batch, none per recipient."""
@@ -344,7 +346,7 @@ async def prepare_plan(session: AsyncSession, campaign) -> TrackingPlan | None: 
                     )
                 )
             ).all()
-            link_ids = {url: link_id for url, link_id in rows}
+            link_ids = {row.url: row.id for row in rows}
     return TrackingPlan(
         key=key,
         base=settings().engage_public_api_base.rstrip("/"),
@@ -377,12 +379,17 @@ async def record_event(
     user_agent_class: DeviceClass,
     is_machine: bool,
 ) -> bool:
-    """Append one event, unless the same recipient produced the same event moments ago. Returns
-    whether a row was written. Runs in the caller's tenant-bound transaction."""
+    """Append one event, unless the same recipient produced the same event (same kind, link,
+    device class and machine flag) moments ago. Returns whether a row was written. Runs in the
+    caller's tenant-bound transaction."""
     recent = select(EmailEvent.id).where(
         EmailEvent.organization_id == organization_id,
         EmailEvent.recipient_id == recipient_id,
         EmailEvent.kind == kind,
+        # Machine and human fetches, and each device class, are distinct: a scanner arriving
+        # first must never swallow the person's own open that follows it.
+        EmailEvent.is_machine.is_(is_machine),
+        EmailEvent.user_agent_class == user_agent_class,
         EmailEvent.occurred_at > datetime.now(UTC) - DUPLICATE_WINDOW,
     )
     recent = recent.where(

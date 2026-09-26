@@ -120,15 +120,15 @@ async def campaign_analytics(
         EmailEvent.campaign_id == campaign.id,
         EmailEvent.is_machine.is_(False),
     )
-    kind_counts = dict(
-        (
-            await session.execute(
-                select(EmailEvent.kind, func.count(func.distinct(EmailEvent.recipient_id)))
-                .where(human)
-                .group_by(EmailEvent.kind)
-            )
-        ).all()
-    )
+    kind_counts: dict[str, int] = {}
+    for kind, n in (
+        await session.execute(
+            select(EmailEvent.kind, func.count(func.distinct(EmailEvent.recipient_id)))
+            .where(human)
+            .group_by(EmailEvent.kind)
+        )
+    ).all():
+        kind_counts[kind] = int(n)
     opened = int(kind_counts.get("open", 0))
     clicked = int(kind_counts.get("click", 0))
 
@@ -257,15 +257,15 @@ async def email_overview(
         )
     ).all():
         per_day.setdefault(d, {})[kind] = int(n)
-    overall = dict(
-        (
-            await session.execute(
-                select(EmailEvent.kind, func.count(func.distinct(EmailEvent.recipient_id)))
-                .where(*engaged_filter)
-                .group_by(EmailEvent.kind)
-            )
-        ).all()
-    )
+    overall: dict[str, int] = {}
+    for kind, n in (
+        await session.execute(
+            select(EmailEvent.kind, func.count(func.distinct(EmailEvent.recipient_id)))
+            .where(*engaged_filter)
+            .group_by(EmailEvent.kind)
+        )
+    ).all():
+        overall[kind] = int(n)
 
     series: list[dict[str, Any]] = []
     sent = delivered = failed = 0

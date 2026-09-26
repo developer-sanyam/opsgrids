@@ -65,12 +65,23 @@ def test_garbage_never_verifies_and_never_raises(junk: str) -> None:
 @pytest.mark.parametrize(
     ("agent", "klass", "machine"),
     [
-        ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-         "desktop", False),
-        ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
-         "Version/17.0 Mobile/15E148 Safari/604.1", "mobile", False),
-        ("Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 "
-         "Safari/604.1", "tablet", False),
+        (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+            "desktop",
+            False,
+        ),
+        (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
+            "Version/17.0 Mobile/15E148 Safari/604.1",
+            "mobile",
+            False,
+        ),
+        (
+            "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 "
+            "Safari/604.1",
+            "tablet",
+            False,
+        ),
         ("Mozilla/5.0 (Linux; Android 14) Chrome/120 Mobile Safari/537.36", "mobile", False),
         ("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)", "bot", True),
         ("Barracuda Sentinel (EquenceAI)", "bot", True),
@@ -87,11 +98,15 @@ def test_user_agents_are_classified_and_scanners_are_machines(
 
 
 def test_apple_mail_privacy_proxy_is_a_machine_by_address_and_by_agent_shape() -> None:
-    safari = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17 Safari/605"
+    safari = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17 Safari/605"
+    )
     assert t.classify(safari, client_ip="17.58.1.2") == ("desktop", True)
     assert t.classify(safari, client_ip="203.0.113.9") == ("desktop", False)
     assert t.classify(safari, client_ip="17.58.1.2, 10.0.0.1")[1] is True
-    mimic = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"
+    mimic = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"
+    )
     assert t.classify(mimic, client_ip="203.0.113.9")[1] is True
     assert t.classify(safari, client_ip="not-an-ip")[1] is False
 
