@@ -26,7 +26,6 @@ import { areaRoutes, toRouteObjects } from "./routes/appRoutes";
 import { SendersPage } from "./routes/Senders";
 import { SuppressionsPage } from "./routes/Suppressions";
 import { WhatsAppConnectionPage } from "./routes/WhatsAppConnection";
-import { WhatsAppTemplatesPage } from "./routes/WhatsAppTemplates";
 import { LogoMark } from "./ui/LogoMark";
 
 // ADR-0003 addendum: sign-in only ever happens on the dashboard, the one host the refresh
@@ -113,7 +112,6 @@ const router = createBrowserRouter([
           { path: "campaigns/new", element: campaignsGate(<NewCampaignPage />) },
           { path: "campaigns/:campaignId", element: campaignsGate(<CampaignPage />) },
           { path: "whatsapp/connection", element: <WhatsAppConnectionPage /> },
-          { path: "whatsapp/templates", element: <WhatsAppTemplatesPage /> },
           { path: "*", element: <NotFoundPage /> },
         ],
       },
