@@ -3722,7 +3722,8 @@ async def unsubscribe(
     inserted = (await session.execute(stmt)).scalar_one_or_none()
     # In the ledger whether or not a suppression already existed: the recipient's own act is
     # worth recording even over a bounce, and `opt_out` adds nothing to a history that already
-    # ends in a refusal. An unsubscribe opts out of marketing only: it is the link in a marketing mail, and an invoice or receipt is not one.
+    # ends in a refusal. An unsubscribe opts out of marketing only: it is the link in a
+    # marketing mail, and an invoice or receipt is not one.
     await consent.opt_out(
         session,
         organization_id=organization_id,
