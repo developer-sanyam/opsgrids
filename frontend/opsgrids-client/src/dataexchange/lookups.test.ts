@@ -49,8 +49,19 @@ describe("makeLookup", () => {
     expect(lookup.labelOf("nope")).toBeUndefined();
   });
 
-  it("keeps the labels in the order given", () => {
-    expect(lookup.labels).toEqual(["Main Warehouse", "Spare parts", "Dup", "dup"]);
+  it("lists the labels in the order given, leaving out one that resolves to nothing", () => {
+    // "Dup" and "dup" are the same label for two different records: offering either in a Lists
+    // sheet or dropdown would hand the user a value the importer then refuses.
+    expect(lookup.labels).toEqual(["Main Warehouse", "Spare parts"]);
+  });
+
+  it("lists a label once when it is repeated for the same value", () => {
+    const repeated = makeLookup([
+      { label: "pcs", value: "u1" },
+      { label: "PCS", value: "u1" },
+      { label: "kg", value: "u2" },
+    ]);
+    expect(repeated.labels).toEqual(["pcs", "kg"]);
   });
 });
 

@@ -169,7 +169,15 @@ export function CompaniesPage() {
     () => ({ search: debouncedSearch, status }),
     [debouncedSearch, status],
   );
-  const dx = useImportExport(companyImport, { filters: importFilters });
+  // New rows show without a refresh: the list reloads, and so does the directory that names
+  // companies on the other screens, as after a single "New company".
+  const { reload: reloadCompanies } = companies;
+  const { reload: reloadDirectory } = directory;
+  const onImported = useCallback(() => {
+    reloadCompanies();
+    reloadDirectory();
+  }, [reloadCompanies, reloadDirectory]);
+  const dx = useImportExport(companyImport, { filters: importFilters, onImported });
 
   // A ticked row is a row on screen (DataTable's contract for select-all); a new page or filter
   // invalidates it rather than carrying a stale selection across to rows nobody saw ticked.

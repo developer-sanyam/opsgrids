@@ -4,7 +4,7 @@ import { RowProblem, makeLookup } from "@opsgrids/client";
 import type { ImportContext, LookupSet, ParsedRow } from "@opsgrids/client";
 
 import type { InventoryItemOut, UomOut, WarehouseOut } from "@/api/types";
-import { parseRow, pageOf, rowProblems, stubGateway } from "./entityTestKit";
+import { pageOf, stubGateway } from "./entityTestKit";
 import { inventoryImport } from "./inventory";
 
 afterEach(() => {
@@ -84,6 +84,14 @@ describe("inventory columns", () => {
     expect(readOnly).toEqual(["on_hand", "reserved", "available", "updated_at", "id"]);
   });
 
+  it("marks opening stock import-only, because the list never returns it and an export would carry an empty column", () => {
+    const importOnly = inventoryImport.columns.filter((c) => c.importOnly === true).map((c) => c.key);
+    expect(importOnly).toEqual(["opening_stock"]);
+    const openingStock = inventoryImport.columns.find((c) => c.key === "opening_stock");
+    expect(openingStock?.readOnly).not.toBe(true);
+    expect(openingStock?.help).not.toMatch(/export/i);
+  });
+
   it("offers the six procurement categories under the labels the screens use", () => {
     const category = inventoryImport.columns.find((c) => c.key === "category");
     expect(category?.options?.map((o) => o.label)).toEqual([
@@ -124,20 +132,11 @@ describe("inventory columns", () => {
 });
 
 describe("inventory sample rows", () => {
-  it("has two or three rows that obey the entity's own rules and use real lookup values", () => {
+  // Whether they pass the column rules and turn into a payload is `checkEntities.test.ts`'s job.
+  it("has two or three of them, all stocked in the warehouse a new organisation most likely has", () => {
     expect(inventoryImport.sampleRows.length).toBeGreaterThanOrEqual(2);
     expect(inventoryImport.sampleRows.length).toBeLessThanOrEqual(3);
-    for (const row of inventoryImport.sampleRows) {
-      expect(rowProblems(inventoryImport, row, LOOKUPS)).toEqual([]);
-    }
-  });
-
-  it("turns into a payload the API accepts", () => {
-    for (const row of inventoryImport.sampleRows) {
-      const payload = inventoryImport.toPayload(parseRow(inventoryImport, row), context());
-      expect(payload.warehouse).toBe("Main Warehouse");
-      expect(payload.unit_value_minor).toBeGreaterThan(0);
-    }
+    for (const row of inventoryImport.sampleRows) expect(row.warehouse).toBe("Main Warehouse");
   });
 });
 
@@ -473,9 +472,10 @@ describe("inventory export", () => {
     expect(row.item_category).toBeNull();
   });
 
-  it("writes a cell for every column except opening stock, which is only ever an input", () => {
+  it("writes a cell for every column an export carries, and none for the import-only ones", () => {
     const row = exportSource().toRow(ITEM, LOOKUPS);
-    const missing = inventoryImport.columns.map((c) => c.key).filter((key) => !(key in row));
-    expect(missing).toEqual(["opening_stock"]);
+    const carried = inventoryImport.columns.filter((c) => c.importOnly !== true).map((c) => c.key);
+    expect(carried.filter((key) => !(key in row))).toEqual([]);
+    expect(Object.keys(row).sort()).toEqual([...carried].sort());
   });
 });

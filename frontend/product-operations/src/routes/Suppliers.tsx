@@ -6,7 +6,6 @@ import type { Category, SupplierOut, SupplierStatus } from "@/api/types";
 import { CATEGORY_LABEL } from "@/data/derive";
 import { supplierImport } from "@/data/importExport/suppliers";
 import type { SupplierFilters } from "@/data/importExport/suppliers";
-import { useReloadAfterImport } from "@/data/importExport/useReloadAfterImport";
 import {
   Can,
   problemMessage,
@@ -98,8 +97,9 @@ export function SuppliersPage() {
     () => ({ q: debouncedSearch, category, status, sort: sortParam }),
     [debouncedSearch, category, status, sortParam],
   );
-  const dx = useImportExport(supplierImport, { filters });
-  useReloadAfterImport(dx.state.phase, state.reload);
+  // `state.reload` keeps one identity for the life of the screen. The dialog stays open on its
+  // result, so the rows it just created appear behind it as soon as the run ends.
+  const dx = useImportExport(supplierImport, { filters, onImported: state.reload });
 
   // A ticked row is a row on screen; a new page, sort or filter invalidates the selection rather
   // than carrying it to rows nobody saw ticked.

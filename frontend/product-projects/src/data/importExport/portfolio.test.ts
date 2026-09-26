@@ -255,6 +255,14 @@ describe("toPayload", () => {
     });
   });
 
+  it("sends no currency without an amount, even though the engine fills a blank currency cell with INR", () => {
+    const bare = portfolioEntity.toPayload(parsed({ budget: null, spent: null, currency: "INR" }), context);
+    expect(bare).not.toHaveProperty("currency");
+    expect(
+      portfolioEntity.toPayload(parsed({ budget: null, spent: null, currency: "USD" }), context),
+    ).not.toHaveProperty("currency");
+  });
+
   it("keeps a zero progress, spend or team size, which are real values", () => {
     expect(
       portfolioEntity.toPayload(parsed({ progress_pct: 0, spent: 0, team_size: 0 }), context),

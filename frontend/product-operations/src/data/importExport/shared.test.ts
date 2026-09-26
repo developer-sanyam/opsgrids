@@ -6,8 +6,6 @@ import type { ExportPage, LookupSet } from "@opsgrids/client";
 import {
   CATEGORY_OPTIONS,
   collectAll,
-  labelForValue,
-  minorToMajor,
   optionLabel,
   optionalBoolean,
   optionalNumber,
@@ -17,29 +15,6 @@ import {
   requiredText,
   resolveReference,
 } from "./shared";
-
-describe("minorToMajor", () => {
-  it.each([
-    [6240, "INR", "62.40"],
-    [5, "INR", "0.05"],
-    [0, "INR", "0.00"],
-    [100, "usd", "1.00"],
-    [412_000_000, "INR", "4120000.00"],
-    [5000, "JPY", "5000"],
-    [0, "JPY", "0"],
-    [1250, "KWD", "1.250"],
-    [7, "KWD", "0.007"],
-    [-6240, "INR", "-62.40"],
-  ])("writes %i minor units of %s as %s", (minor, currency, expected) => {
-    expect(minorToMajor(minor, currency)).toBe(expected);
-  });
-
-  it("is exact where a float would not be", () => {
-    // 225099 / 100 is 2250.99 as a float, but 225099 * 0.01 is 2250.9900000000002.
-    expect(minorToMajor(225_099, "INR")).toBe("2250.99");
-    expect(minorToMajor(Number.MAX_SAFE_INTEGER, "INR")).toBe("90071992547409.91");
-  });
-});
 
 describe("reading a parsed row", () => {
   it("trims text and treats a blank cell as absent", () => {
@@ -108,39 +83,6 @@ describe("resolveReference", () => {
 
   it("fails the row when the lookup was never loaded", () => {
     expect(() => resolveReference({}, "warehouses", "Main Warehouse", problems)).toThrow(RowProblem);
-  });
-});
-
-describe("labelForValue", () => {
-  const lookup = makeLookup([
-    { label: "METALS", value: "cat-metals" },
-    { label: "STEEL", value: "cat-steel" },
-    { label: "Twin", value: "cat-a" },
-    { label: "TWIN", value: "cat-b" },
-  ]);
-
-  it("gives the label a value resolves from", () => {
-    expect(labelForValue(lookup, "cat-steel")).toBe("STEEL");
-  });
-
-  it("gives null for no value, no lookup, an unknown value or an ambiguous label", () => {
-    expect(labelForValue(lookup, null)).toBeNull();
-    expect(labelForValue(undefined, "cat-steel")).toBeNull();
-    expect(labelForValue(lookup, "cat-gone")).toBeNull();
-    expect(labelForValue(lookup, "cat-a")).toBeNull();
-  });
-
-  it("scans the labels once per lookup, not once per row", () => {
-    let resolves = 0;
-    const counting = {
-      ...lookup,
-      resolve: (label: string) => {
-        resolves += 1;
-        return lookup.resolve(label);
-      },
-    };
-    for (let i = 0; i < 50; i += 1) labelForValue(counting, "cat-steel");
-    expect(resolves).toBe(counting.labels.length);
   });
 });
 

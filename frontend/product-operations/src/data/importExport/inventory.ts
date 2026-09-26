@@ -10,7 +10,7 @@
  *  - `item_category_id` wants the id, while a person knows the code: the sheet carries the code and
  *    the lookup turns it into the id.
  */
-import { defineImportEntity, makeLookup } from "@opsgrids/client";
+import { defineImportEntity, makeLookup, minorToMajor } from "@opsgrids/client";
 import type { LookupSet } from "@opsgrids/client";
 
 import {
@@ -27,8 +27,6 @@ import {
   CURRENCY_HINT,
   CURRENCY_PATTERN,
   collectAll,
-  labelForValue,
-  minorToMajor,
   optionLabel,
   optionalBoolean,
   optionalNumber,
@@ -141,9 +139,10 @@ export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItem
       key: "opening_stock",
       header: "Opening stock",
       kind: "integer",
-      help: "Whole units in stock when the item is created. Blank means 0. An export leaves it blank.",
+      help: "Whole units in stock when the item is created. Blank means 0.",
       min: 0,
       max: 1_000_000_000_000,
+      importOnly: true,
     },
     {
       key: "item_category",
@@ -358,7 +357,8 @@ export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItem
       reorder_point: item.reorder_point,
       unit_value: minorToMajor(item.unit_value_minor, item.currency),
       currency: item.currency,
-      item_category: labelForValue(lookups.itemCategories, item.item_category_id),
+      item_category:
+        item.item_category_id === null ? null : (lookups.itemCategories?.labelOf(item.item_category_id) ?? null),
       hsn_code: item.hsn_code === "" ? null : item.hsn_code,
       track_lot: item.track_lot,
       track_roll: item.track_roll,

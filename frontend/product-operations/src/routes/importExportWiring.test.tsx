@@ -3,22 +3,21 @@
  * Import, what the export is scoped to, and that the list refreshes once an import lands.
  *
  * The spreadsheet engine and the dialog are other packages' business, so both are replaced here by
- * stand-ins that honour their contract: the hook reports a phase the test can move, and the button
- * renders the props it was given. What is under test is the screens' side of that contract.
+ * stand-ins that honour their contract: the hook records the options a screen passes it (and
+ * re-renders on demand), and the button renders the props it was given. What is under test is the
+ * screens' side of that contract. The real hook and dialog run against these screens' entities in
+ * `data/importExport/importFlow.test.tsx`.
  */
 import { useState } from "react";
-import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
 
-import { AuthContext, PermissionProvider } from "@opsgrids/client";
 import type {
-  AuthContextValue,
   DataExchangeState,
   ImportEntity,
   ImportPhase,
+  ImportSummary,
   UseImportExportOptions,
 } from "@opsgrids/client";
 import type { ImportExportButtonProps } from "@opsgrids/ui";
@@ -27,6 +26,7 @@ import { inventoryImport } from "@/data/importExport/inventory";
 import { itemCategoryImport } from "@/data/importExport/itemCategories";
 import { supplierImport } from "@/data/importExport/suppliers";
 import { warehouseImport } from "@/data/importExport/warehouses";
+import { renderScreen } from "@/test-utils/renderScreen";
 import { InventoryPage } from "./Inventory";
 import { ItemCategoriesPage } from "./ItemCategories";
 import { SuppliersPage } from "./Suppliers";
@@ -66,26 +66,6 @@ vi.mock("@opsgrids/ui", async (importOriginal) => {
   };
 });
 
-const AUTH: AuthContextValue = {
-  status: "authenticated",
-  user: {
-    user_id: "user-1",
-    email: "ops@example.com",
-    full_name: "Asha Rao",
-    organization_id: "org-1",
-    membership_id: "mem-1",
-    roles: [],
-    amr: [],
-    must_change_password: false,
-    mfa_enabled: false,
-    organizations: [],
-  },
-  login: vi.fn(),
-  verifyMfa: vi.fn(),
-  selectOrg: vi.fn(),
-  logout: vi.fn(),
-};
-
 const IDLE: DataExchangeState = {
   phase: "menu",
   error: null,
@@ -99,17 +79,24 @@ const IDLE: DataExchangeState = {
 
 const EMPTY_PAGE = { items: [], total: 0, page: 1, size: 25, pages: 0 };
 
-/** Moves the phase the stand-in hook reports, as the engine does while an import runs. */
+/** Moves the phase the stand-in hook reports, which re-renders the screen as a real run would. */
 let setPhase: (phase: ImportPhase) => void = () => undefined;
 
-function renderScreen(page: ReactElement, grants: string[]) {
-  return render(
-    <AuthContext.Provider value={AUTH}>
-      <PermissionProvider grants={grants} entitlements={[]}>
-        <MemoryRouter>{page}</MemoryRouter>
-      </PermissionProvider>
-    </AuthContext.Provider>,
-  );
+/** What the engine hands `onImported` when a run ends having created rows. */
+const IMPORTED: ImportSummary = {
+  created: 2,
+  skipped: 0,
+  failed: 0,
+  invalid: 0,
+  cancelled: false,
+  outcomes: [],
+};
+
+/** The `onImported` the screen gave the hook on its latest render; fails loudly if it gave none. */
+function lastOnImported(): NonNullable<UseImportExportOptions<unknown>["onImported"]> {
+  const onImported = lastOptions()?.onImported;
+  if (onImported === undefined) throw new Error("the screen passed no onImported to useImportExport");
+  return onImported;
 }
 
 function lastOptions(): UseImportExportOptions<unknown> | undefined {
@@ -223,16 +210,35 @@ describe.each(SCREENS)("$name", ({ element, list, entity, write, read }) => {
     expect(button.dataset.canImport).toBe("false");
   });
 
-  it("reloads the list when an import finishes, and not before", async () => {
+  it("passes onImported, which reloads the list, and reloads nothing until the engine calls it", async () => {
     renderScreen(element, [read, write]);
     await screen.findByTestId("import-export");
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
 
+    expect(lastOptions()?.onImported).toBeTypeOf("function");
     act(() => setPhase("importing"));
+    act(() => setPhase("done"));
     expect(list).toHaveBeenCalledTimes(1);
 
-    act(() => setPhase("done"));
+    act(() => lastOnImported()(IMPORTED));
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+
+    act(() => lastOnImported()(IMPORTED));
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(3));
+  });
+
+  it("hands the hook one onImported for the life of the screen, so the hook is never re-armed", async () => {
+    renderScreen(element, [read, write]);
+    await screen.findByTestId("import-export");
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
+    const first = lastOnImported();
+
+    act(() => setPhase("preview"));
+    expect(lastOnImported()).toBe(first);
+
+    act(() => first(IMPORTED));
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    expect(lastOnImported()).toBe(first);
   });
 });
 
@@ -242,8 +248,11 @@ describe("Stock on Hand export scope", () => {
     renderScreen(<InventoryPage />, ["operations.inventory.item.read:ORG"]);
     await screen.findByTestId("import-export");
 
-    expect(lastOptions()).toEqual({
-      filters: { q: "", warehouse: "all", item_category_id: "all", sort: "value" },
+    expect(lastOptions()?.filters).toEqual({
+      q: "",
+      warehouse: "all",
+      item_category_id: "all",
+      sort: "value",
     });
     const before = lastOptions()?.filters;
 
@@ -251,8 +260,12 @@ describe("Stock on Hand export scope", () => {
     expect(lastOptions()?.filters).toBe(before);
 
     await user.click(screen.getByRole("button", { name: "Low stock" }));
-    expect(lastOptions()).toEqual({
-      filters: { q: "", warehouse: "all", item_category_id: "all", sort: "value", low_stock: true },
+    expect(lastOptions()?.filters).toEqual({
+      q: "",
+      warehouse: "all",
+      item_category_id: "all",
+      sort: "value",
+      low_stock: true,
     });
 
     await user.type(screen.getByLabelText("Search inventory"), "steel");
@@ -266,9 +279,7 @@ describe("Suppliers export scope", () => {
     renderScreen(<SuppliersPage />, ["operations.procurement.supplier.read:ORG"]);
     await screen.findByTestId("import-export");
 
-    expect(lastOptions()).toEqual({
-      filters: { q: "", category: "all", status: "all", sort: "spend" },
-    });
+    expect(lastOptions()?.filters).toEqual({ q: "", category: "all", status: "all", sort: "spend" });
     const before = lastOptions()?.filters;
 
     act(() => setPhase("preview"));
@@ -276,8 +287,11 @@ describe("Suppliers export scope", () => {
 
     await user.selectOptions(screen.getByLabelText("Status"), "on_hold");
     await user.click(screen.getByRole("button", { name: "Packaging" }));
-    expect(lastOptions()).toEqual({
-      filters: { q: "", category: "packaging", status: "on_hold", sort: "spend" },
+    expect(lastOptions()?.filters).toEqual({
+      q: "",
+      category: "packaging",
+      status: "on_hold",
+      sort: "spend",
     });
   });
 });

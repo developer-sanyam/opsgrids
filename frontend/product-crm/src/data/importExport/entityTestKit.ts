@@ -1,21 +1,13 @@
 /**
  * Test-only helpers for the entity definitions. The spreadsheet engine lives in `@opsgrids/client`
- * and is not under test here; `parseRow` stands in for its per-column coercion just far enough to
- * turn a sample row (what the sheet shows) into the `ParsedRow` `toPayload` receives, applying the
- * checks a column declares (required, length, pattern, bounds, allowed values). `stubGateway`
- * answers the API calls an entity makes, so `loadLookups`, `create` and the export are exercised
- * through the app's real api client.
+ * and is not under test here: whether a definition holds together is `checkImportEntity`'s call
+ * (`checkEntities.test.ts`), and how cells are coerced is the engine's own. `parsedRow` builds the
+ * row `toPayload` receives, `stubGateway` answers the API calls an entity makes, so `loadLookups`,
+ * `create` and the export are exercised through the app's real api client.
  */
 import { vi } from "vitest";
 
-import type {
-  ImportColumn,
-  ImportContext,
-  LookupSet,
-  ParsedRow,
-  ParsedValue,
-  SheetValue,
-} from "@opsgrids/client";
+import type { ImportColumn, ImportContext, LookupSet, ParsedRow, ParsedValue } from "@opsgrids/client";
 
 export function contextWith(lookups: LookupSet = {}): ImportContext {
   return { lookups, signal: new AbortController().signal };
@@ -27,68 +19,21 @@ export function present<T>(value: T | undefined, what: string): T {
   return value;
 }
 
-function coerce(column: ImportColumn, cell: SheetValue): ParsedValue {
-  const fail = (why: string): never => {
-    throw new Error(`${column.header}: ${why} (${String(cell)})`);
-  };
-  const text = typeof cell === "string" ? cell.trim() : String(cell);
-  switch (column.kind) {
-    case "text":
-    case "email":
-    case "phone":
-    case "date": {
-      if (column.maxLength !== undefined && text.length > column.maxLength) fail("too long");
-      if (column.pattern !== undefined && !column.pattern.test(text)) fail("does not match");
-      if (column.kind === "email") return text.toLowerCase();
-      if (column.kind === "phone") return text.replace(/[^+\d]/g, "");
-      if (column.kind === "date" && !/^\d{4}-\d{2}-\d{2}$/.test(text)) fail("not an ISO date");
-      return text;
-    }
-    case "enum": {
-      const option = column.options?.find(
-        (o) => o.value.toLowerCase() === text.toLowerCase() || o.label.toLowerCase() === text.toLowerCase(),
-      );
-      return option?.value ?? fail("not an allowed value");
-    }
-    case "integer": {
-      const n = Number(text);
-      if (!Number.isInteger(n)) fail("not a whole number");
-      if (column.min !== undefined && n < column.min) fail("below the minimum");
-      if (column.max !== undefined && n > column.max) fail("above the maximum");
-      return n;
-    }
-    case "money": {
-      // Two-decimal currencies only: enough for the sample rows, which are all INR.
-      const [whole = "", fraction = ""] = text.split(".");
-      if (!/^\d+$/.test(whole) || !/^\d{0,2}$/.test(fraction)) fail("not an amount");
-      const minor = Number(`${whole}${fraction.padEnd(2, "0")}`);
-      if (column.min !== undefined && minor < column.min * 100) fail("below the minimum");
-      return minor;
-    }
-    default:
-      return fail("kind not supported by the test kit");
-  }
-}
-
-/** A sheet row (by column key) as `toPayload` receives it. Read-only columns are dropped, blank
- *  optional cells are null, and a blank required cell fails the test. */
-export function parseRow(
+/**
+ * A row as `toPayload` receives it from the engine. The engine has already trimmed, checked and
+ * converted every cell, so `values` holds what a coerced row holds (an enum's `value`, money in
+ * integer minor units, an email in lower case, a phone as `+` and digits), and a cell the sheet
+ * left blank is `null`. A key that is not an importable column of `columns` fails the test.
+ */
+export function parsedRow(
   columns: readonly ImportColumn[],
-  cells: Readonly<Record<string, SheetValue>>,
+  values: Readonly<Record<string, ParsedValue>>,
 ): ParsedRow {
-  const row: Record<string, ParsedValue> = {};
-  for (const column of columns) {
-    if (column.readOnly === true) continue;
-    const cell = cells[column.key];
-    const blank = cell === undefined || cell === null || (typeof cell === "string" && cell.trim() === "");
-    if (blank) {
-      if (column.required === true) throw new Error(`${column.header} is required`);
-      row[column.key] = null;
-      continue;
-    }
-    row[column.key] = coerce(column, cell);
+  const importable = columns.filter((column) => column.readOnly !== true);
+  for (const key of Object.keys(values)) {
+    if (!importable.some((column) => column.key === key)) throw new Error(`"${key}" is not an importable column`);
   }
-  return row;
+  return Object.fromEntries(importable.map((column) => [column.key, values[column.key] ?? null]));
 }
 
 /* ------------------------------- a fake gateway ------------------------------- */
@@ -100,9 +45,15 @@ export interface Recorded {
   signal: AbortSignal | null | undefined;
 }
 
-/** Stubs `fetch` with a handler that answers by request, and records every request. Pair it with
- *  `vi.unstubAllGlobals()` in `afterEach`. */
-export function stubGateway(handler: (request: Recorded) => unknown, status = 200): Recorded[] {
+/** What the fake gateway answers: a body, and the status it comes with (200 unless said). */
+export interface Reply {
+  body: unknown;
+  status?: number;
+}
+
+/** Stubs `fetch` with a handler that answers each request, and records every request. Pair it
+ *  with `vi.unstubAllGlobals()` in `afterEach`. */
+export function stubApi(handler: (request: Recorded) => Reply): Recorded[] {
   const recorded: Recorded[] = [];
   vi.stubGlobal(
     "fetch",
@@ -114,13 +65,19 @@ export function stubGateway(handler: (request: Recorded) => unknown, status = 20
         signal: init.signal,
       };
       recorded.push(request);
-      return new Response(JSON.stringify(handler(request)), {
+      const { body, status = 200 } = handler(request);
+      return new Response(JSON.stringify(body), {
         status,
         headers: { "content-type": "application/json" },
       });
     }),
   );
   return recorded;
+}
+
+/** `stubApi` for the common case of one status for every answer. */
+export function stubGateway(handler: (request: Recorded) => unknown, status = 200): Recorded[] {
+  return stubApi((request) => ({ body: handler(request), status }));
 }
 
 /** A page envelope over `items`, as every list endpoint returns it. */
@@ -164,6 +121,45 @@ export function contactWire(id: string, email: string, companyId: string, extra:
     owner_id: "own-1",
     last_activity_at: null,
     created_at: "2026-01-06T09:00:00Z",
+    ...extra,
+  };
+}
+
+export function dealWire(id: string, name: string, extra: Record<string, unknown> = {}) {
+  return {
+    id,
+    name,
+    company_id: "comp-1",
+    primary_contact_id: null,
+    value_minor: 320000000,
+    currency: "INR",
+    stage: "lead",
+    owner_id: "own-1",
+    probability: 20,
+    close_date: "2026-12-15",
+    created_at: "2026-09-27T09:00:00Z",
+    last_activity_at: null,
+    source: "",
+    ...extra,
+  };
+}
+
+export function leadWire(id: string, fullName: string, extra: Record<string, unknown> = {}) {
+  return {
+    id,
+    full_name: fullName,
+    company: null,
+    email: "m•••@h•••.in",
+    phone: "+•• ••••• ••345",
+    source: "import",
+    status: "new",
+    owner_id: null,
+    notes: "",
+    converted_company_id: null,
+    converted_contact_id: null,
+    converted_deal_id: null,
+    converted_at: null,
+    created_at: "2026-09-20T09:00:00Z",
     ...extra,
   };
 }

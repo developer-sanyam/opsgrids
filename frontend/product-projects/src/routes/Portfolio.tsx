@@ -126,7 +126,9 @@ export function PortfolioPage() {
     () => ({ q: debouncedSearch, health, phase, sort }),
     [debouncedSearch, health, phase, sort],
   );
-  const dx = useImportExport(portfolioEntity, { filters: exportFilters });
+  // The list's own reload (one identity for the life of the screen), so projects an import created
+  // show up without a refresh.
+  const dx = useImportExport(portfolioEntity, { filters: exportFilters, onImported: projects.reload });
 
   const selection: TableSelection<ProjectOut> = {
     selected: selectedIds,

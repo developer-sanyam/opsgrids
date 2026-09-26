@@ -3,7 +3,6 @@ import { useMemo, useState } from "react";
 import { deleteItemCategory, listItemCategories } from "@/api/client";
 import type { ItemCategoryOut } from "@/api/types";
 import { itemCategoryImport } from "@/data/importExport/itemCategories";
-import { useReloadAfterImport } from "@/data/importExport/useReloadAfterImport";
 import {
   Can,
   problemMessage,
@@ -87,8 +86,9 @@ export function ItemCategoriesPage() {
 
   const loader = () => listItemCategories({ size: 200 });
   const state = useAsync(loader, []);
-  const dx = useImportExport(itemCategoryImport);
-  useReloadAfterImport(dx.state.phase, state.reload);
+  // `state.reload` keeps one identity for the life of the screen. The dialog stays open on its
+  // result, so the rows it just created appear behind it as soon as the run ends.
+  const dx = useImportExport(itemCategoryImport, { onImported: state.reload });
   const rows = useMemo(
     () => (state.status === "success" ? orderedWithDepth(state.data.items) : []),
     [state],

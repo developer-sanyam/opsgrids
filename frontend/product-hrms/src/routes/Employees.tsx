@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { listEmployees } from "@/api/client";
@@ -112,14 +112,25 @@ export function EmployeesPage() {
     () => ({ q: search, status, departmentId: departmentId || undefined }),
     [search, status, departmentId],
   );
-  const dx = useImportExport(employeesEntity, { filters: exportFilters });
+  // The window is appended one page at a time, so after an import it starts over from the first
+  // page and asks again: the new employees show up without a refresh.
+  const { reload: reloadList } = query;
+  const reloadAfterImport = useCallback(() => {
+    setPage(1);
+    reloadList();
+  }, [reloadList]);
+  const dx = useImportExport(employeesEntity, { filters: exportFilters, onImported: reloadAfterImport });
   const canImport = useCan("hrms.people.employee.write", "ORG");
 
-  // Server paging, appended — `LoadMore`'s own contract. A filter change resets the window.
+  // Server paging, appended — `LoadMore`'s own contract. A filter change resets the window. Keyed
+  // on the loaded page itself (`useAsync` returns a new object every render, and `page` moves a
+  // render before its data does), so each page is added once, and the page it is added as is the
+  // one the server says it is.
+  const loaded = query.status === "success" ? query.data : null;
   useEffect(() => {
-    if (query.status !== "success") return;
-    setItems((prev) => (page === 1 ? query.data.items : [...prev, ...query.data.items]));
-  }, [query, page]);
+    if (loaded === null) return;
+    setItems((prev) => (loaded.page === 1 ? loaded.items : [...prev, ...loaded.items]));
+  }, [loaded]);
 
   function resetWindow() {
     setPage(1);

@@ -1,4 +1,4 @@
-import { collectPages, defineImportEntity, makeLookup } from "@opsgrids/client";
+import { collectPages, defineImportEntity, makeLookup, minorToMajor } from "@opsgrids/client";
 import type { ImportColumn, LookupSet, SheetValue } from "@opsgrids/client";
 
 import { createProject, listMembers, listProjects } from "@/api/client";
@@ -6,7 +6,6 @@ import type { ListProjectsParams } from "@/api/client";
 import type { ProjectHealth, ProjectIn, ProjectOut, ProjectPhase } from "@/api/types";
 import { HEALTH_LABEL, PHASE_LABEL } from "@/data/labels";
 
-import { minorToMajor } from "./money";
 import {
   labelOfOption,
   numberOf,
@@ -280,13 +279,14 @@ export const portfolioEntity = defineImportEntity<ProjectIn, ProjectOut, Portfol
     if (health !== null) body.health = health;
     const progress = numberOf(row, "progress_pct");
     if (progress !== null) body.progress_pct = progress;
+    // The engine fills a blank currency cell with the default, so the currency column says nothing
+    // about whether one was written: it is sent with an amount, and only then.
     const budget = numberOf(row, "budget");
     if (budget !== null) body.budget_minor = budget;
     const spent = numberOf(row, "spent");
     if (spent !== null) body.spent_minor = spent;
-    const currency = textOf(row, "currency");
-    if (budget !== null || spent !== null || currency !== null) {
-      body.currency = (currency ?? DEFAULT_CURRENCY).toUpperCase();
+    if (budget !== null || spent !== null) {
+      body.currency = (textOf(row, "currency") ?? DEFAULT_CURRENCY).toUpperCase();
     }
     const teamSize = numberOf(row, "team_size");
     if (teamSize !== null) body.team_size = teamSize;

@@ -107,7 +107,9 @@ export function AssetsPage() {
 
   // What an export of this list must respect: the filters on screen, not the page window.
   const exportFilters = useMemo<AssetFilters>(() => ({ search, type, status }), [search, type, status]);
-  const dx = useImportExport(assetsEntity, { filters: exportFilters });
+  // The list's own reload (one identity for the life of the screen), so assets an import created
+  // show up without a refresh.
+  const dx = useImportExport(assetsEntity, { filters: exportFilters, onImported: state.reload });
 
   const items = useMemo(
     () => (state.status === "success" ? state.data.items : NO_ASSETS),

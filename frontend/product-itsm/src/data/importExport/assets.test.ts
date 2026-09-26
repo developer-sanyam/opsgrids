@@ -167,6 +167,17 @@ describe("toPayload", () => {
     });
   });
 
+  it("sends no currency without a cost, even though the engine fills a blank currency cell with INR", () => {
+    expect(assetsEntity.toPayload(parsed({ cost: null, cost_currency: "INR" }), context)).toEqual({
+      tag: "SRV-0042",
+      name: "Rack server",
+      type: "server",
+    });
+    expect(assetsEntity.toPayload(parsed({ cost: null, cost_currency: "USD" }), context)).not.toHaveProperty(
+      "cost_currency",
+    );
+  });
+
   it("keeps a zero cost, which is a real amount", () => {
     expect(assetsEntity.toPayload(parsed({ cost: 0 }), context)).toMatchObject({ cost_minor: 0 });
   });

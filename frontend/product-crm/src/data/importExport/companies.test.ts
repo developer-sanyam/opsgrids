@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError, RowProblem, makeLookup } from "@opsgrids/client";
-import type { LookupSet } from "@opsgrids/client";
+import type { LookupSet, ParsedValue } from "@opsgrids/client";
 
 import type { Company } from "@/api/types";
 import { getMySubjectRef } from "@/lib/subject";
@@ -11,7 +11,7 @@ import {
   companyWire,
   contextWith,
   pageOf,
-  parseRow,
+  parsedRow,
   present,
   stubGateway,
 } from "./entityTestKit";
@@ -38,23 +38,23 @@ afterEach(() => {
 const loadLookups = present(companyImport.loadLookups, "loadLookups");
 const exported = present(companyImport.export, "export");
 
-function payloadFor(cells: Record<string, string | number>) {
-  return companyImport.toPayload(parseRow(companyImport.columns, cells), ctx);
+function payloadFor(cells: Record<string, ParsedValue>) {
+  return companyImport.toPayload(parsedRow(companyImport.columns, cells), ctx);
 }
 
 describe("companies: toPayload", () => {
   it("builds the create body from a full row, with revenue in integer minor units", () => {
     expect(
       payloadFor({
-        name: "  Northwind Logistics ",
+        name: "Northwind Logistics",
         owner: "GRACE@example.com",
         domain: "northwind.co",
         industry: "Logistics",
         sizeBand: "501-1000",
         city: "Mumbai",
         country: "India",
-        status: "Customer",
-        annualRevenue: "84000000.50",
+        status: "customer",
+        annualRevenue: 8400000050,
         currency: "usd",
       }),
     ).toEqual({
@@ -110,7 +110,7 @@ describe("companies: toPayload", () => {
         { label: "Twin@example.com", value: "own-5" },
       ]),
     });
-    const row = parseRow(companyImport.columns, { name: "Solstice Energy", owner: "twin@example.com" });
+    const row = parsedRow(companyImport.columns, { name: "Solstice Energy", owner: "twin@example.com" });
     expect(() => companyImport.toPayload(row, twins)).toThrow(/More than one team member/);
   });
 
