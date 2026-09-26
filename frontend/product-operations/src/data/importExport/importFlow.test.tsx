@@ -17,6 +17,7 @@ import type { ImportSummary, SheetValue } from "@opsgrids/client";
 import type { InventoryItemOut } from "@/api/types";
 import { Harness } from "./DialogHarness";
 import {
+  XLSX_MIME,
   fileWithoutColumn,
   formulaCells,
   headerRow,
@@ -35,6 +36,7 @@ import type { RecordedRequest } from "./entityTestKit";
 import { inventoryImport } from "./inventory";
 import type { InventoryFilters } from "./inventory";
 import { itemCategoryImport } from "./itemCategories";
+import { supplierImport } from "./suppliers";
 
 const downloads = installBrowserGaps();
 
@@ -261,10 +263,17 @@ describe("importing inventory items through the real dialog", () => {
       const preview = within(review).getByRole("table", { name: "Rows found in stock-take.xlsx" });
       const unknownWarehouse = rowContaining(preview, "NOW-0001").textContent ?? "";
       expect(unknownWarehouse).toContain("Needs fixing");
-      expect(unknownWarehouse).toContain("'Atlantis Depot' is not in the list of Warehouses (see the Lists sheet)");
+      // The engine's sentence, then the column's own hint on how to put it right.
+      expect(unknownWarehouse).toContain(
+        "'Atlantis Depot' is not one of the accepted values for Warehouse (see the Lists sheet). " +
+          "Warehouses must exist already and are matched by name, ignoring capitals.",
+      );
       const unknownUnit = rowContaining(preview, "UOM-0001").textContent ?? "";
       expect(unknownUnit).toContain("Needs fixing");
-      expect(unknownUnit).toMatch(/'furlongs' is not in the list of Unit of measures? \(see the Lists sheet\)/);
+      expect(unknownUnit).toContain(
+        "'furlongs' is not one of the accepted values for Unit of measure (see the Lists sheet). " +
+          "Only units that already exist can be used, so a misspelling cannot create a new one. See the Lists sheet.",
+      );
       const tooMany = rowContaining(preview, "BIG-0001").textContent ?? "";
       expect(tooMany).toContain("Needs fixing");
       expect(tooMany).toContain("Reorder point must be between 0 and 2147483");
@@ -510,7 +519,7 @@ describe("exporting inventory items through the real dialog", () => {
         "Reserved",
         "Available",
         "Last updated",
-        "ID",
+        "Record ID",
       ]);
       expect(headerRow(sheet)).not.toContain("Opening stock");
       expect(sheet.rowCount).toBe(3);
@@ -535,7 +544,7 @@ describe("exporting inventory items through the real dialog", () => {
         Reserved: 2.25,
         Available: 80.25,
         "Last updated": "2026-09-25T09:30:00Z",
-        ID: "item-1",
+        "Record ID": "item-1",
       });
       expect(exportedRow(sheet, 3)).toMatchObject({
         SKU: "IMP-KWD-01",
@@ -579,6 +588,38 @@ describe("exporting inventory items through the real dialog", () => {
   );
 
   it(
+    "refuses an export uploaded again untouched, row by row, and sends nothing",
+    async () => {
+      const user = userEvent.setup();
+      const recorded = inventoryGateway({ listPages: EXPORT_PAGES });
+      render(<Harness entity={inventoryImport} filters={SCREEN_FILTERS} />);
+
+      const dialog = await openDialog(user, "inventory items");
+      await user.click(within(dialog).getByRole("button", { name: /Export to Excel/ }));
+      await waitFor(() => expect(downloads).toHaveLength(1), SLOW);
+      const [download] = downloads;
+      if (download === undefined) throw new Error("nothing was downloaded");
+
+      await uploadFile(user, new File([download.blob], download.fileName, { type: XLSX_MIME }));
+      const review = await screen.findByRole("dialog", { name: "Review your file" }, SLOW);
+
+      expect(stat(review, "Rows in file")).toBe("2");
+      expect(stat(review, "Ready to import")).toBe("0");
+      expect(stat(review, "Need fixing")).toBe("2");
+      const preview = within(review).getByRole("table", { name: `Rows found in ${download.fileName}` });
+      for (const sku of ["RM-STL-4501", "IMP-KWD-01"]) {
+        expect(rowContaining(preview, sku).textContent).toContain(
+          "This row has a Record ID, so it came from an export and is already in the system. " +
+            "Clear the Record ID cell to add it as a new record.",
+        );
+      }
+      expect(within(review).getByRole("button", { name: "Import 0 rows" }).hasAttribute("disabled")).toBe(true);
+      expect(requestsTo(recorded, "POST", `${API}/inventory`)).toHaveLength(0);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
     "gives back rows that import again as the same items once their ID is left behind",
     async () => {
       const user = userEvent.setup();
@@ -592,7 +633,7 @@ describe("exporting inventory items through the real dialog", () => {
       if (download === undefined) throw new Error("nothing was downloaded");
 
       // The ID marks a row as one that came out of the system; without it these are new rows.
-      await uploadFile(user, await fileWithoutColumn(download, "Export", "ID"));
+      await uploadFile(user, await fileWithoutColumn(download, "Export", "Record ID"));
       const review = await screen.findByRole("dialog", { name: "Review your file" }, SLOW);
       expect(stat(review, "Rows in file")).toBe("2");
       expect(stat(review, "Ready to import")).toBe("2");
@@ -666,7 +707,7 @@ function categoryGateway(): RecordedRequest[] {
   });
 }
 
-const CATEGORY_HEADERS = ["Category code *", "Category name *", "Parent category code", "ID"];
+const CATEGORY_HEADERS = ["Category code *", "Category name *", "Parent category code", "Record ID"];
 
 describe("importing item categories through the real dialog", () => {
   it(
@@ -698,8 +739,9 @@ describe("importing item categories through the real dialog", () => {
       expect(stat(review, "Sample rows skipped")).toBe("1");
       expect(within(review).queryByText(/These columns are ignored/)).toBeNull();
       const preview = within(review).getByRole("table", { name: "Rows found in categories.xlsx" });
-      expect(rowContaining(preview, "PVC").textContent).toMatch(
-        /'PLASTICS' is not in the list of Parent category codes? \(see the Lists sheet\)/,
+      expect(rowContaining(preview, "PVC").textContent).toContain(
+        "'PLASTICS' is not one of the accepted values for Parent category code (see the Lists sheet). " +
+          "Import the parent first, then run this file again: rows already imported are skipped.",
       );
       // METALS exists; the server would take "metals" beside it and no sheet could name either again.
       expect(rowContaining(preview, "Metals, again").textContent).toContain(
@@ -775,19 +817,112 @@ describe("exporting item categories through the real dialog", () => {
     expect(download.fileName).toMatch(/^item-categories-\d{4}-\d{2}-\d{2}\.xlsx$/);
     const workbook = await readDownload(download);
     const sheet = sheetOf(workbook, "Export");
-    expect(headerRow(sheet)).toEqual(["Category code", "Category name", "Parent category code", "ID"]);
+    expect(headerRow(sheet)).toEqual(["Category code", "Category name", "Parent category code", "Record ID"]);
     expect(exportedRow(sheet, 2)).toEqual({
       "Category code": "METALS",
       "Category name": "METALS",
       "Parent category code": null,
-      ID: "cat-metals",
+      "Record ID": "cat-metals",
     });
     expect(exportedRow(sheet, 3)).toEqual({
       "Category code": "STEEL",
       "Category name": "STEEL",
       "Parent category code": "METALS",
-      ID: "cat-steel",
+      "Record ID": "cat-steel",
     });
     expect(formulaCells(workbook)).toEqual([]);
   }, TEST_TIMEOUT);
+});
+
+/* ------------------------------ suppliers ------------------------------ */
+
+function supplierGateway(): RecordedRequest[] {
+  return stubGateway(({ init, url }) => {
+    if (`${init.method ?? "GET"} ${url.pathname}` !== `POST ${API}/suppliers`) {
+      throw new Error(`The gateway was not expecting ${init.method ?? "GET"} ${url.pathname}`);
+    }
+    const { code } = jsonBody(init);
+    if (code === "SUP-DUP") return conflict(`A supplier coded '${code}' already exists`, "code");
+    // A conflict that is not "this exists already": the row was refused, not skipped.
+    if (code === "SUP-LOCK") return conflict("The supplier directory is closed while month-end runs");
+    return { status: 201, body: { id: `sup-${String(code)}` } };
+  });
+}
+
+describe("importing suppliers through the real dialog", () => {
+  it(
+    "keeps an email's local part as typed, refuses a date where Excel turned a code into one, and tells a duplicate from another conflict",
+    async () => {
+      const user = userEvent.setup();
+      const onImported = vi.fn<(summary: ImportSummary) => void>();
+      const recorded = supplierGateway();
+      render(<Harness entity={supplierImport} onImported={onImported} />);
+
+      await openDialog(user, "suppliers");
+      await uploadFile(
+        user,
+        await workbookFile(
+          "suppliers.xlsx",
+          ["Supplier code *", "Supplier name *", "Category *", "Status", "Lead time (days)", "Contact email", "Supplier since"],
+          [
+            [
+              "SUP-NEW1",
+              "Northern Steel",
+              "Raw materials",
+              "On hold",
+              14,
+              "Rajesh.Pillai@Meridian.Example",
+              new Date(Date.UTC(2024, 2, 4)),
+            ],
+            // A code such as 1-10 typed into a General cell: Excel stores 10 January.
+            [new Date(Date.UTC(2026, 0, 10)), "Ten-one", "MRO", null, null, null, null],
+            ["SUP-DUP", "Already there", "Packaging", null, null, null, null],
+            ["SUP-LOCK", "Refused, not a duplicate", "Logistics", null, null, null, null],
+          ],
+        ),
+      );
+
+      const review = await screen.findByRole("dialog", { name: "Review your file" }, SLOW);
+      expect(stat(review, "Rows in file")).toBe("4");
+      expect(stat(review, "Ready to import")).toBe("3");
+      expect(stat(review, "Need fixing")).toBe("1");
+      const preview = within(review).getByRole("table", { name: "Rows found in suppliers.xlsx" });
+      expect(rowContaining(preview, "Ten-one").textContent).toContain(
+        "Supplier code was turned into a date by Excel (for example 1-10 becomes 10 January). " +
+          "Format the column as Text and type it again.",
+      );
+
+      await user.click(within(review).getByRole("button", { name: "Import 3 rows" }));
+      const finished = await screen.findByRole("dialog", { name: "Import finished" }, SLOW);
+
+      const posts = requestsTo(recorded, "POST", `${API}/suppliers`).map((request) => jsonBody(request.init));
+      expect(posts[0]).toEqual({
+        code: "SUP-NEW1",
+        name: "Northern Steel",
+        category: "raw_materials",
+        status: "on_hold",
+        lead_time_days: 14,
+        // The server dedupes on the address as sent, so the local part keeps its capitals.
+        contact_email: "Rajesh.Pillai@meridian.example",
+        since: "2024-03-04",
+      });
+      expect(posts.map((body) => body.code)).toEqual(["SUP-NEW1", "SUP-DUP", "SUP-LOCK"]);
+
+      expect(stat(finished, "Created")).toBe("1");
+      expect(stat(finished, "Skipped, already exist")).toBe("1");
+      expect(stat(finished, "Failed")).toBe("1");
+      expect(stat(finished, "Invalid")).toBe("1");
+      const problems = within(finished).getByRole("table", { name: "Rows that were not created" });
+      const duplicate = rowContaining(problems, "SUP-DUP").textContent ?? "";
+      expect(duplicate).toMatch(/skipped/i);
+      // The sentence once: the server repeats it as its one field error.
+      expect(duplicate.match(/already exists/g)).toHaveLength(1);
+      const refused = rowContaining(problems, "SUP-LOCK").textContent ?? "";
+      expect(refused).toMatch(/failed/i);
+      expect(refused).not.toMatch(/skipped/i);
+      expect(refused).toContain("The supplier directory is closed while month-end runs");
+      await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
+    },
+    TEST_TIMEOUT,
+  );
 });

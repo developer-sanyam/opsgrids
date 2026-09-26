@@ -54,7 +54,7 @@ export const warehouseImport = defineImportEntity<WarehouseIn, WarehouseOut>({
     },
     {
       key: "id",
-      header: "ID",
+      header: "Record ID",
       kind: "text",
       help: "The warehouse's identifier in OpsGrids.",
       readOnly: true,
@@ -70,7 +70,6 @@ export const warehouseImport = defineImportEntity<WarehouseIn, WarehouseOut>({
     "Only people who are allowed to create warehouses can import them.",
     "A warehouse code or name that already exists is skipped, not changed. A name that only differs from an existing one in capitals or spacing is refused.",
     "Inventory items refer to a warehouse by its name, so import warehouses before importing the items that are stocked in them.",
-    "The ID column is worked out by the app. A row that has an ID came out of OpsGrids in an export, so it is not added again.",
   ],
 
   loadLookups,

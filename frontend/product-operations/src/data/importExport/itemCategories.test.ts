@@ -11,10 +11,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** What `loadLookups` builds for an organisation with these two categories: the codes to ids, and
+ *  the codes exactly as spelled. */
 const LOOKUPS: LookupSet = {
   parents: makeLookup([
     { label: "METALS", value: "cat-metals" },
     { label: "STEEL", value: "cat-steel" },
+  ]),
+  codes: makeLookup([
+    { label: "METALS", value: "METALS" },
+    { label: "STEEL", value: "STEEL" },
   ]),
 };
 
@@ -40,7 +46,7 @@ describe("item category columns", () => {
       "Category code",
       "Category name",
       "Parent category code",
-      "ID",
+      "Record ID",
     ]);
   });
 
@@ -144,6 +150,10 @@ describe("item category toPayload", () => {
         { label: "Steel", value: "cat-a" },
         { label: "STEEL", value: "cat-b" },
       ]),
+      codes: makeLookup([
+        { label: "Steel", value: "Steel" },
+        { label: "STEEL", value: "STEEL" },
+      ]),
     };
     const context = { ...CONTEXT, lookups };
     expect(() => itemCategoryImport.toPayload({ ...ROW, code: "Steel" }, context)).not.toThrow();
@@ -174,6 +184,10 @@ describe("item category loadLookups", () => {
 
     expect(lookups.parents?.labels).toEqual(["METALS", "STEEL", "POLYMERS"]);
     expect(lookups.parents?.resolve("polymers")).toBe("cat-polymers");
+    // The same categories, each code mapped to itself, for telling an exact spelling from a variant.
+    expect(lookups.codes?.labelOf("STEEL")).toBe("STEEL");
+    expect(lookups.codes?.labelOf("steel")).toBeUndefined();
+    expect(lookups.codes?.resolve("steel")).toBe("STEEL");
     expect(recorded).toHaveLength(2);
     for (const request of recorded) expect(request.url.searchParams.get("size")).toBe("200");
   });

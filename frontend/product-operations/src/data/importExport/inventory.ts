@@ -216,7 +216,7 @@ export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItem
     },
     {
       key: "id",
-      header: "ID",
+      header: "Record ID",
       kind: "text",
       help: "The item's identifier in OpsGrids.",
       readOnly: true,
@@ -270,7 +270,7 @@ export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItem
     "An item category must exist before items can use it. Import item categories first, then give each item the category's code.",
     "Category is the fixed procurement category. Item category code places the item in your own catalogue tree.",
     "A SKU that already exists is skipped, not changed. The same SKU cannot be used twice, even as a variant SKU.",
-    "The On hand, Reserved, Available and Last updated columns are worked out by the app and ignored on import. A row that has an ID came out of OpsGrids in an export, so it is not added again.",
+    "The On hand, Reserved, Available and Last updated columns are worked out by the app and ignored on import.",
   ],
 
   loadLookups,
