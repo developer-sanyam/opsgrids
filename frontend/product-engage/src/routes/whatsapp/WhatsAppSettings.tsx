@@ -200,7 +200,7 @@ function PhoneNumbers({
   onMakeDefault: (number: WhatsAppNumber) => void;
 }) {
   return (
-    <Card role="region" aria-label="Phone numbers" className="overflow-hidden">
+    <Card role="region" aria-label="Phone numbers">
       <div className="flex flex-wrap items-center justify-between gap-3 p-6 pb-4">
         <h2 className="text-card-title text-ink">Phone Numbers</h2>
         {canWrite ? (
@@ -216,8 +216,8 @@ function PhoneNumbers({
           description="Numbers appear here once Meta has shared them with OpsGrids."
         />
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-160 border-collapse">
+        <div className="max-md:overflow-x-auto">
+          <table className="w-full min-w-160 border-collapse md:min-w-0">
             <caption className="sr-only">Phone numbers on your WhatsApp Business Account</caption>
             <thead>
               <tr className="text-left text-caption font-semibold text-muted">
