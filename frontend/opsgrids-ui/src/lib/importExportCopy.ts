@@ -138,7 +138,10 @@ function updateSentence(summary: ImportExportSummary): string {
  * already matched says what became of every kind of row instead.
  */
 export function summarySentence(summary: ImportExportSummary, meta: ImportExportMeta): string {
-  if (summary.updated > 0 || summary.unchanged > 0) return updateSentence(summary);
+  // An update run even when every update failed: a row that tried to update carries `changes`, so
+  // the result is not phrased as "No <things> were created".
+  const triedToUpdate = summary.outcomes.some((outcome) => outcome.changes !== undefined);
+  if (summary.updated > 0 || summary.unchanged > 0 || triedToUpdate) return updateSentence(summary);
   const notImported = summary.failed + summary.invalid;
   if (summary.cancelled) {
     const made = summary.created === 0 ? "Nothing was created." : `${createdPhrase(summary.created, meta)} before it stopped.`;

@@ -89,6 +89,21 @@ describe("previewSentence", () => {
   });
 });
 
+describe("summarySentence: an update run where every update failed", () => {
+  it("is phrased as counts, not as 'No companies were created'", () => {
+    const failedUpdate = summary({
+      failed: 2,
+      outcomes: [
+        { row: 2, status: "failed", message: "A company with that name already exists", label: "Acme", changes: ["Name"] },
+        { row: 3, status: "failed", message: "Not permitted", label: "Bolt", changes: ["Owner"] },
+      ],
+    });
+    const sentence = summarySentence(failedUpdate, META);
+    expect(sentence).toBe("2 failed.");
+    expect(sentence).not.toMatch(/created/);
+  });
+});
+
 describe("summarySentence", () => {
   it("says everything imported for a clean run, and mentions rows that already existed", () => {
     expect(summarySentence(SUMMARY_CLEAN, META)).toBe("Everything imported. 6 companies were created.");
