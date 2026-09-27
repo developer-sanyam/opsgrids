@@ -17,23 +17,63 @@
  * for that reason is the server's own answer, and the order of the rows in a file can decide it.
  */
 import { collectPages, defineImportEntity } from "@opsgrids/client";
-import type { LookupSet } from "@opsgrids/client";
+import type { ImportColumn, LookupSet } from "@opsgrids/client";
 
 import { createItemCategory, listItemCategories, updateItemCategory } from "@/api/client";
 import type { ItemCategoryIn, ItemCategoryOut, ItemCategoryPatch } from "@/api/types";
 import { loadItemCategoryLookups } from "./referenceData";
 import {
+  columnOf,
   optionalText,
   refuseNearDuplicate,
   requiredText,
   resolveLookupCell,
   resolveReference,
-  sameCode,
 } from "./shared";
 
 function loadLookups(signal: AbortSignal): Promise<LookupSet> {
   return loadItemCategoryLookups(signal);
 }
+
+const COLUMNS: readonly ImportColumn[] = [
+  {
+    key: "code",
+    header: "Category code",
+    kind: "text",
+    required: true,
+    help: "The category's unique code. Inventory items name their category by this code.",
+    maxLength: 40,
+    pattern: /^[A-Za-z0-9._-]+$/,
+    patternHint: "Letters, digits, . _ -",
+  },
+  {
+    key: "name",
+    header: "Category name",
+    kind: "text",
+    required: true,
+    help: "What the category is called.",
+    maxLength: 120,
+  },
+  {
+    key: "parent",
+    header: "Parent category code",
+    kind: "text",
+    help: "The code of the category this one sits under. Leave blank for a top-level category. To move an existing category to the top level, use [clear].",
+    lookup: "parents",
+    lookupHint: "Import the parent first, then run this file again: rows already imported are skipped.",
+    lookupHintUpdate:
+      "The parent must already exist, so add it in an earlier run. A blank cell keeps the category's parent, and [clear] moves it to the top level.",
+  },
+  {
+    key: "id",
+    header: "Record ID",
+    kind: "text",
+    help: "The category's identifier in OpsGrids.",
+    readOnly: true,
+  },
+];
+
+const PARENT = columnOf(COLUMNS, "parent");
 
 export const itemCategoryImport = defineImportEntity<ItemCategoryIn, ItemCategoryOut>({
   id: "operations.item-categories",
@@ -42,41 +82,7 @@ export const itemCategoryImport = defineImportEntity<ItemCategoryIn, ItemCategor
   fileStem: "item-categories",
   recordIdKey: "id",
 
-  columns: [
-    {
-      key: "code",
-      header: "Category code",
-      kind: "text",
-      required: true,
-      help: "The category's unique code. Inventory items name their category by this code.",
-      maxLength: 40,
-      pattern: /^[A-Za-z0-9._-]+$/,
-      patternHint: "Letters, digits, . _ -",
-    },
-    {
-      key: "name",
-      header: "Category name",
-      kind: "text",
-      required: true,
-      help: "What the category is called.",
-      maxLength: 120,
-    },
-    {
-      key: "parent",
-      header: "Parent category code",
-      kind: "text",
-      help: "The code of the category this one sits under. Leave blank for a top-level category. To move an existing category to the top level, use [clear].",
-      lookup: "parents",
-      lookupHint: "Import the parent first, then run this file again: rows already imported are skipped.",
-    },
-    {
-      key: "id",
-      header: "Record ID",
-      kind: "text",
-      help: "The category's identifier in OpsGrids.",
-      readOnly: true,
-    },
-  ],
+  columns: COLUMNS,
 
   sampleRows: [
     { code: "METALS", name: "Metals" },
@@ -139,13 +145,13 @@ export const itemCategoryImport = defineImportEntity<ItemCategoryIn, ItemCategor
     keyOf: (category) => category.code,
 
     fields: [
-      { column: "code", current: (category) => category.code, same: sameCode, immutable: true },
+      { column: "code", current: (category) => category.code, immutable: true },
       { column: "name", current: (category) => category.name },
       {
         column: "parent",
         field: "parent_id",
         current: (category) => category.parent_id,
-        resolve: resolveLookupCell("parents", "Parent category code"),
+        resolve: resolveLookupCell(PARENT),
         clear: null,
       },
     ],

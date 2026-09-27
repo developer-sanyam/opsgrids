@@ -25,7 +25,7 @@ import {
   optionalText,
   requiredOption,
   requiredText,
-  sameCode,
+  sameCurrency,
   sameEmail,
   textOrNull,
 } from "./shared";
@@ -265,12 +265,12 @@ export const supplierImport = defineImportEntity<SupplierIn, SupplierOut, Suppli
     currencyOf: (supplier) => supplier.currency,
 
     fields: [
-      { column: "code", current: (supplier) => supplier.code, same: sameCode, immutable: true },
+      { column: "code", current: (supplier) => supplier.code, immutable: true },
       { column: "name", current: (supplier) => supplier.name },
       { column: "category", current: (supplier) => supplier.category },
       { column: "status", current: (supplier) => supplier.status },
       { column: "lead_time_days", current: (supplier) => supplier.lead_time_days },
-      { column: "currency", current: (supplier) => supplier.currency, same: sameCode, immutable: true },
+      { column: "currency", current: (supplier) => supplier.currency, same: sameCurrency, immutable: true },
       { column: "contact_name", current: (supplier) => textOrNull(supplier.contact_name), clear: "" },
       {
         column: "contact_email",

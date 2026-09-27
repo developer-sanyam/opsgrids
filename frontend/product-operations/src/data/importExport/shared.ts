@@ -5,8 +5,16 @@
  * here knows an entity; each entity file owns its own columns. The lists themselves are read in
  * `referenceData.ts`.
  */
-import { RowProblem, normaliseKey } from "@opsgrids/client";
-import type { ColumnOption, ImportContext, Lookup, LookupSet, ParsedRow, ParsedValue } from "@opsgrids/client";
+import { RowProblem, normaliseKey, unacceptedLookupValue } from "@opsgrids/client";
+import type {
+  ColumnOption,
+  ImportColumn,
+  ImportContext,
+  Lookup,
+  LookupSet,
+  ParsedRow,
+  ParsedValue,
+} from "@opsgrids/client";
 
 import type { Category } from "@/api/types";
 import { CATEGORY_LABEL } from "@/data/derive";
@@ -123,24 +131,41 @@ export const CURRENCY_HINT = "Three letters, for example INR, USD or EUR.";
 
 /* ------------------------------ updating an existing record ------------------------------ */
 
+/** A column of an entity by key, so a spec cannot name a column it does not have. */
+export function columnOf(columns: readonly ImportColumn[], key: string): ImportColumn {
+  const found = columns.find((column) => column.key === key);
+  if (found === undefined) throw new Error(`The entity has no column "${key}"`);
+  return found;
+}
+
 /**
  * `UpdateField.resolve` for a lookup column: the value `toPayload` sends for the same cell (a
  * warehouse's name, a unit's label, a category's id), so a cell is compared with what the list
  * stores and not with what the person typed.
+ *
+ * The engine does not check a lookup cell against its list on a row that updates a record, so this
+ * is the only guard: a label the list does not accept refuses the row, in the words the engine uses
+ * for a new record and with the column's update hint.
  */
-export function resolveLookupCell(
-  lookupName: string,
-  header: string,
-): (value: ParsedValue, ctx: ImportContext) => ParsedValue {
-  return (value, ctx) => (typeof value === "string" ? resolveReference(ctx.lookups, lookupName, value, header) : value);
+export function resolveLookupCell(column: ImportColumn): (value: ParsedValue, ctx: ImportContext) => ParsedValue {
+  return (value, ctx) => {
+    if (typeof value !== "string") return value;
+    const lookup = column.lookup === undefined ? undefined : ctx.lookups[column.lookup];
+    if (lookup === undefined) {
+      throw new RowProblem(`The accepted values for ${column.header} could not be loaded, so it cannot be checked`);
+    }
+    const resolved = lookup.resolve(value);
+    if (resolved === undefined) throw new RowProblem(unacceptedLookupValue(column, value, lookup, true));
+    return resolved;
+  };
 }
 
 /**
- * `UpdateField.same` for a code that identifies a record (SKU, a supplier, warehouse or category
- * code) and for a currency: equal when they differ only in capitals or spacing. That is how a row
- * finds its record, so a row that found "RM-STL-4501" by typing "rm-stl-4501" is not changing it.
+ * `UpdateField.same` for a currency cell: an ISO code is the same code in any capitals. A currency
+ * beside an amount arrives upper-cased from the engine, but a currency column with no amount (the
+ * supplier's) is plain text, and "inr" is not a change of currency.
  */
-export function sameCode(cell: ParsedValue, stored: ParsedValue): boolean {
+export function sameCurrency(cell: ParsedValue, stored: ParsedValue): boolean {
   return typeof cell === "string" && typeof stored === "string" && normaliseKey(cell) === normaliseKey(stored);
 }
 

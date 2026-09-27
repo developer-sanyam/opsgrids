@@ -10,7 +10,16 @@ import { ApiError, RowProblem, makeLookup } from "@opsgrids/client";
 import type { ImportContext, LookupSet, ParsedRow } from "@opsgrids/client";
 
 import { pageAt, stubGateway, warehouseOut } from "./entityTestKit";
-import { containsNull, expectPlan, matchAmong, planFor, requestsOf, soleRequest, updateSpec } from "./updateTestKit";
+import {
+  containsNull,
+  expectPlan,
+  matchAmong,
+  planFor,
+  requestsOf,
+  soleRequest,
+  stepsAndRequests,
+  updateSpec,
+} from "./updateTestKit";
 import { warehouseImport } from "./warehouses";
 
 afterEach(() => {
@@ -40,8 +49,11 @@ describe("a row that changes nothing", () => {
     expect(await requestsOf(plan(SAME))).toEqual([]);
   });
 
-  it("recognises the code in other capitals as the same", () => {
-    expect(plan({ ...SAME, code: "wh-main" })).toBeNull();
+  it("holds a row found by its Record ID to the code's exact spelling: other capitals is an attempt to change it", () => {
+    // A row found by typing its code is handed the stored spelling by the engine (see updateFlow.test.tsx).
+    expect(() => plan({ ...BLANK, code: "wh-main" })).toThrow(
+      "Warehouse code cannot be changed once the record exists (it is 'WH-MAIN')",
+    );
   });
 
   it("leaves every field alone when every cell is blank", () => {
@@ -67,6 +79,12 @@ describe("a row that changes a field", () => {
   it("changes both in one request, and only the columns the sheet has", async () => {
     const p = plan({ ...BLANK, name: "Central Warehouse", location: "Pune" });
     expect((await soleRequest(p)).body).toEqual({ name: "Central Warehouse", location: "Pune" });
+  });
+
+  it("is one step and one request however many fields change, so a rate-limited request is retried on its own", async () => {
+    const p = plan({ ...BLANK, name: "Central Warehouse", location: "Pune" });
+    expect(p?.changed).toHaveLength(2);
+    expect(await stepsAndRequests(p)).toEqual({ steps: 1, requests: 1 });
   });
 
   it("fills in a location that was empty", async () => {
@@ -106,7 +124,7 @@ describe("what can never change", () => {
   });
 
   it("never puts the code in a body, whatever the row says", async () => {
-    const p = plan({ ...SAME, code: "wh-main", name: "Central Warehouse" });
+    const p = plan({ ...SAME, name: "Central Warehouse" });
     expect(Object.keys((await soleRequest(p)).body as object)).toEqual(["name"]);
   });
 });

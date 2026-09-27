@@ -19,7 +19,7 @@ import type { LookupSet } from "@opsgrids/client";
 import { createWarehouse, listWarehouses, updateWarehouse } from "@/api/client";
 import type { WarehouseIn, WarehouseOut, WarehousePatch } from "@/api/types";
 import { loadWarehouseNames } from "./referenceData";
-import { optionalText, refuseNearDuplicate, requiredText, sameCode, textOrNull } from "./shared";
+import { optionalText, refuseNearDuplicate, requiredText, textOrNull } from "./shared";
 
 function nearDuplicateName(name: string, existing: string | null): string {
   return existing === null
@@ -128,7 +128,7 @@ export const warehouseImport = defineImportEntity<WarehouseIn, WarehouseOut>({
     keyOf: (warehouse) => warehouse.code,
 
     fields: [
-      { column: "code", current: (warehouse) => warehouse.code, same: sameCode, immutable: true },
+      { column: "code", current: (warehouse) => warehouse.code, immutable: true },
       { column: "name", current: (warehouse) => warehouse.name },
       { column: "location", current: (warehouse) => textOrNull(warehouse.location), clear: "" },
     ],

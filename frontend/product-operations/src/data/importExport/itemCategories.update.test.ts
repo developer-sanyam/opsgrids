@@ -11,7 +11,16 @@ import type { ImportContext, LookupSet, ParsedRow } from "@opsgrids/client";
 
 import { itemCategoryOut, pageAt, stubGateway } from "./entityTestKit";
 import { itemCategoryImport } from "./itemCategories";
-import { containsNull, expectPlan, matchAmong, planFor, requestsOf, soleRequest, updateSpec } from "./updateTestKit";
+import {
+  containsNull,
+  expectPlan,
+  matchAmong,
+  planFor,
+  requestsOf,
+  soleRequest,
+  stepsAndRequests,
+  updateSpec,
+} from "./updateTestKit";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -52,8 +61,15 @@ describe("a row that changes nothing", () => {
     expect(await requestsOf(plan(SAME))).toEqual([]);
   });
 
-  it("recognises the code and the parent in other capitals as the same", () => {
-    expect(plan({ code: "steel", name: "Steel", parent: "metals" })).toBeNull();
+  it("recognises the parent in other capitals as the same", () => {
+    expect(plan({ code: "STEEL", name: "Steel", parent: "metals" })).toBeNull();
+  });
+
+  it("holds a row found by its Record ID to the code's exact spelling: other capitals is an attempt to change it", () => {
+    // A row found by typing its code is handed the stored spelling by the engine (see updateFlow.test.tsx).
+    expect(() => plan({ ...BLANK, code: "steel" })).toThrow(
+      "Category code cannot be changed once the record exists (it is 'STEEL')",
+    );
   });
 
   it("leaves every field alone when every cell is blank", () => {
@@ -78,6 +94,12 @@ describe("a row that changes a field", () => {
     const p = plan({ ...SAME, parent: "aluminium" });
     expect(p?.changed).toEqual(["Parent category code"]);
     expect(await soleRequest(p)).toEqual({ method: "PATCH", path: PATH, body: { parent_id: "cat-alu" } });
+  });
+
+  it("is one step and one request however many fields change, so a rate-limited request is retried on its own", async () => {
+    const p = plan({ ...BLANK, name: "Structural steel", parent: "POLYMERS" });
+    expect(p?.changed).toHaveLength(2);
+    expect(await stepsAndRequests(p)).toEqual({ steps: 1, requests: 1 });
   });
 
   it("gives a top-level category its first parent", async () => {
@@ -122,7 +144,7 @@ describe("what can never change", () => {
   });
 
   it("never puts the code in a body, whatever the row says", async () => {
-    const p = plan({ ...SAME, code: "steel", name: "Structural steel" });
+    const p = plan({ ...SAME, name: "Structural steel" });
     expect(Object.keys((await soleRequest(p)).body as object)).toEqual(["name"]);
   });
 });
@@ -131,7 +153,11 @@ describe("the parent", () => {
   it("refuses a parent code that does not exist, telling the user how to fix it", () => {
     const attempt = () => plan({ ...BLANK, parent: "NOPE" });
     expect(attempt).toThrow(RowProblem);
-    expect(attempt).toThrow('Parent category code "NOPE" does not match exactly one entry on the Lists sheet.');
+    expect(attempt).toThrow(
+      "'NOPE' is not one of the accepted values for Parent category code (see the Lists sheet). " +
+        "The parent must already exist, so add it in an earlier run. " +
+        "A blank cell keeps the category's parent, and [clear] moves it to the top level.",
+    );
   });
 
   it("refuses a parent code that two categories share, instead of picking one", () => {

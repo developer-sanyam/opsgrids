@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { RowProblem, makeLookup } from "@opsgrids/client";
-import type { ImportContext, LookupSet } from "@opsgrids/client";
+import type { ImportColumn, ImportContext, LookupSet } from "@opsgrids/client";
 
 import {
   CATEGORY_OPTIONS,
+  columnOf,
   optionLabel,
   optionalBoolean,
   optionalNumber,
@@ -15,7 +16,7 @@ import {
   requiredText,
   resolveLookupCell,
   resolveReference,
-  sameCode,
+  sameCurrency,
   sameEmail,
   textOrNull,
 } from "./shared";
@@ -131,13 +132,13 @@ describe("refuseNearDuplicate", () => {
 });
 
 describe("comparing a cell with a stored record", () => {
-  it("takes a code as the same in other capitals or spacing, and never a blank or a non-text cell as the same", () => {
-    expect(sameCode("rm-stl-4501", "RM-STL-4501")).toBe(true);
-    expect(sameCode(" WH  MAIN ", "wh main")).toBe(true);
-    expect(sameCode("RM-STL-4502", "RM-STL-4501")).toBe(false);
-    expect(sameCode(null, "RM-STL-4501")).toBe(false);
-    expect(sameCode("RM-STL-4501", null)).toBe(false);
-    expect(sameCode(4501, "4501")).toBe(false);
+  it("takes a currency as the same in other capitals, and never a blank or a non-text cell as the same", () => {
+    expect(sameCurrency("inr", "INR")).toBe(true);
+    expect(sameCurrency("INR", "INR")).toBe(true);
+    expect(sameCurrency("USD", "INR")).toBe(false);
+    expect(sameCurrency(null, "INR")).toBe(false);
+    expect(sameCurrency("INR", null)).toBe(false);
+    expect(sameCurrency(4501, "4501")).toBe(false);
   });
 
   it("takes an email as the same when only its domain differs in capitals, since the cell lower-cases the domain", () => {
@@ -157,14 +158,58 @@ describe("comparing a cell with a stored record", () => {
     expect(textOrNull("Pune")).toBe("Pune");
   });
 
-  it("resolves a lookup cell to the value create would send, and passes anything but text through", () => {
-    const ctx: ImportContext = {
-      lookups: { warehouses: makeLookup([{ label: "Main Warehouse", value: "Main Warehouse" }]) },
-      signal: new AbortController().signal,
-    };
-    const resolve = resolveLookupCell("warehouses", "Warehouse");
+  it("finds a column of an entity by key, and fails at load for a key it does not have", () => {
+    const columns: ImportColumn[] = [{ key: "a", header: "A", kind: "text", help: "" }];
+    expect(columnOf(columns, "a").header).toBe("A");
+    expect(() => columnOf(columns, "b")).toThrow('The entity has no column "b"');
+  });
+});
+
+describe("resolveLookupCell", () => {
+  const warehouse: ImportColumn = {
+    key: "warehouse",
+    header: "Warehouse",
+    kind: "text",
+    help: "",
+    lookup: "warehouses",
+    lookupHint: "Add hint.",
+    lookupHintUpdate: "Update hint.",
+  };
+  const ctx: ImportContext = {
+    lookups: {
+      warehouses: makeLookup([
+        { label: "Main Warehouse", value: "Main Warehouse" },
+        { label: "Pune Plant", value: "Pune Plant" },
+        { label: "Pune plant", value: "Pune plant" },
+      ]),
+    },
+    signal: new AbortController().signal,
+  };
+  const resolve = resolveLookupCell(warehouse);
+
+  it("resolves a label to the value create would send, whatever the capitals typed", () => {
     expect(resolve("main WAREHOUSE", ctx)).toBe("Main Warehouse");
-    expect(() => resolve("Nowhere", ctx)).toThrow('Warehouse "Nowhere" does not match exactly one entry');
+  });
+
+  it("refuses a label the list does not hold in the engine's words, ending in the column's update hint", () => {
+    const attempt = () => resolve("Nowhere", ctx);
+    expect(attempt).toThrow(RowProblem);
+    expect(attempt).toThrow("'Nowhere' is not one of the accepted values for Warehouse (see the Lists sheet). Update hint.");
+  });
+
+  it("refuses a label that more than one entry carries rather than picking one", () => {
+    expect(() => resolve("pune plant", ctx)).toThrow(
+      "'pune plant' matches more than one of the accepted values for Warehouse, so it cannot be chosen. Update hint.",
+    );
+  });
+
+  it("refuses when the list was never loaded, instead of comparing the label itself", () => {
+    expect(() => resolve("Main Warehouse", { ...ctx, lookups: {} })).toThrow(
+      "The accepted values for Warehouse could not be loaded, so it cannot be checked",
+    );
+  });
+
+  it("passes anything but text through", () => {
     expect(resolve(null, ctx)).toBeNull();
   });
 });
