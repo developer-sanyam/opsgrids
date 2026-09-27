@@ -139,6 +139,80 @@ export class RowProblem extends Error {
   }
 }
 
+// ------------------------------------------------------------------ update mode (ADR-0022 addendum)
+
+/** `add`: rows create records (today's behaviour). `addAndUpdate`: a row that names an existing
+ *  record (by its exported Record ID, or by the list's unique key) updates it instead. */
+export type ImportMode = "add" | "addAndUpdate";
+
+/** The text a cell holds to empty a field. A blank cell means "leave it alone". */
+export const CLEAR_TOKEN = "[clear]";
+
+/** One column an update may change (or, when `immutable`, must not). */
+export interface UpdateField<Item> {
+  /** The `ImportColumn.key` of the sheet column. */
+  column: string;
+  /** The key sent in the update body. Default: `column`. */
+  field?: string | undefined;
+  /** The stored value, in the parsed cell's own terms (money as minor units, an ISO date, an
+   *  enum's `value`, a lookup's *value*), with an empty stored value as `null`. */
+  current(item: Item, ctx: ImportContext): ParsedValue;
+  /** Turns the parsed cell into the stored terms when they differ (a lookup column's parsed value
+   *  is its label; return the id or code the list stores). May throw `RowProblem`. */
+  resolve?: ((value: ParsedValue, ctx: ImportContext) => ParsedValue) | undefined;
+  /** The value sent in the body for a changed field. Default: the resolved value. */
+  toWire?: ((value: ParsedValue) => unknown) | undefined;
+  /** What to send to EMPTY the field: `""` or `null`, whichever that endpoint accepts. Absent means
+   *  the field cannot be cleared and a `[clear]` cell refuses the row. Never guess `null`:
+   *  several endpoints answer it with a 409 or a 500. */
+  clear?: "" | null | undefined;
+  /** Compares a cell (already resolved) with the stored value. Default: strict equality. */
+  same?: ((cell: ParsedValue, stored: ParsedValue) => boolean) | undefined;
+  /** Identity or otherwise unchangeable (SKU, code, employee number, currency on some lists): never
+   *  sent. A cell that differs from the stored value refuses the row instead of being ignored. */
+  immutable?: boolean | undefined;
+}
+
+/** An update that is not a plain field change (a deal's stage move, a contact's phone). */
+export interface ExtraStep {
+  /** Headers of the columns this step changes, for the preview. */
+  changed: readonly string[];
+  run(): Promise<void>;
+}
+
+/** How an existing list is updated from a sheet. Optional on an entity: absent means the list can
+ *  only be added to. */
+export interface UpdateSpec<Item> {
+  /** Every record of the list (all pages, keyed by id): what rows are matched and diffed against. */
+  loadExisting(ctx: ImportContext): Promise<readonly Item[]>;
+  /** The record's own id: what a Record ID cell carries. */
+  idOf(item: Item): string;
+  /** The `ImportColumn.key` of the sheet column holding the list's unique key (SKU, code, employee
+   *  number, asset tag), for rows that have no Record ID. Absent: rows match by Record ID only. */
+  keyColumn?: string | undefined;
+  /** The unique key of a stored record, or null when it has none. Matching ignores case and spacing. */
+  keyOf?(item: Item): string | null;
+  fields: readonly UpdateField<Item>[];
+  /** Refuses a change the list's own rules forbid, given what would change (a converted lead's
+   *  status, a closed deal's stage): throw `RowProblem`. Runs after the diff. */
+  check?(row: ParsedRow, existing: Item, changed: readonly string[], ctx: ImportContext): void;
+  /** Sends the changed fields (only those) to the list's ordinary update endpoint. */
+  send(existing: Item, body: Readonly<Record<string, unknown>>, ctx: ImportContext): Promise<void>;
+  /** Steps that are not plain field changes, run after `send`. */
+  extras?(
+    row: ParsedRow,
+    cleared: ReadonlySet<string>,
+    existing: Item,
+    ctx: ImportContext,
+  ): readonly ExtraStep[];
+}
+
+/** What one matched row will do: the headers it changes, and the calls that do it. */
+export interface UpdatePlan {
+  changed: readonly string[];
+  run(): Promise<void>;
+}
+
 /**
  * One importable list. Keep it in the app (`src/data/importExport/<entity>.ts`), as a module-level
  * constant so its identity is stable across renders.
@@ -178,6 +252,8 @@ export interface ImportEntity<Payload, Item = unknown, Filters = void> {
   create(payload: Payload, ctx: ImportContext): Promise<{ id?: string } | undefined | void>;
   /** Absent means the list cannot be exported from this dialog. */
   export?: ExportSource<Item, Filters> | undefined;
+  /** Absent means the list can only be added to: the dialog offers no "update existing" mode. */
+  update?: UpdateSpec<Item> | undefined;
 }
 
 // ------------------------------------------------------------------------ session and view state

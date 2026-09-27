@@ -1,7 +1,8 @@
 export { checkImportEntity } from "./checkEntity";
 export { collectPages, makeLookup } from "./lookups";
 export { majorToMinor, minorToMajor } from "./money";
-export { RowProblem, defineImportEntity } from "./types";
+export { CLEAR_TOKEN, RowProblem, defineImportEntity } from "./types";
+export { buildUpdate, indexExisting, isClearToken, matchRow, normaliseKey, planUpdate } from "./update";
 export type {
   ColumnKind,
   ColumnOption,
@@ -11,8 +12,10 @@ export type {
   ExportPage,
   ExportProgress,
   ExportSource,
+  ExtraStep,
   ImportColumn,
   ImportContext,
+  ImportMode,
   ImportEntity,
   ImportPhase,
   ImportPreview,
@@ -26,6 +29,9 @@ export type {
   RowOutcome,
   RowStatus,
   SheetValue,
+  UpdateField,
+  UpdatePlan,
+  UpdateSpec,
   UseImportExportOptions,
   UseImportExportResult,
 } from "./types";

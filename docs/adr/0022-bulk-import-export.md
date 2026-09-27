@@ -109,6 +109,42 @@ other tools, that reads an Excel sheet, and a **downloadable sample sheet**.
 - The hand-rolled CSV "Export selected" buttons stay for now (selection-scoped); they are a separate
   cleanup.
 
+## Addendum (2026-09-27): update mode
+
+The owner asked for bulk *update*. The dialog gains a choice, **Add new records only** (the default,
+unchanged) or **Add new and update existing**, on lists whose entity declares an `update` spec.
+
+- **Matching.** A row that carries a **Record ID** (the id an export writes) updates that record; an
+  ID no record has is refused ("that Record ID is not in this list"). A row without one matches on the
+  list's unique key where it has one (SKU, supplier/warehouse/category/project code, employee number,
+  asset tag), ignoring case and spacing; no match means a new record; two records with that key means
+  the row is refused. Lists with no usable key (leads, whose email is sealed) update by Record ID only.
+- **A blank cell leaves the field alone.** `[clear]` empties a field, only where that field can be
+  emptied and using the value the endpoint accepts (`""` or `null`, which differ per endpoint; the
+  survey found `null` answered with a 409 or a 500 on several). A sheet with only some columns
+  filled in can therefore never wipe data.
+- **Only fields that differ are sent**, from a fresh load of the whole list (all pages, keyed by id,
+  refused beyond 10 000 records like every reference list). A row that changes nothing makes no
+  request, so it writes no audit row and no event (the update endpoints record both even for an
+  unchanged PATCH). The preview shows, per row, whether it will create, update (and which columns) or
+  change nothing.
+- **Immutable fields are never sent** (SKU, codes, employee number, asset tag, a currency the list
+  cannot change): a cell that disagrees with the stored value refuses the row rather than being
+  silently ignored, since two of the services silently drop unknown keys and answer 200.
+- **Special cases run as extra steps:** a deal's stage through its own stage endpoint (which resets
+  the probability), a contact's phone through its write-only endpoint (a non-blank Phone cell is one
+  call, because the sealed number cannot be compared), a lead's status only through legal transitions.
+  Never updatable from a sheet: lead email and phone (no endpoint), employee PII, employee status and
+  exit date, lead source, a lead's conversion.
+- **A 409 is a failure in update mode**, never "skipped": "a company with that name already exists" on
+  a rename is a collision the user must see.
+- **Results** gain `updated` and `unchanged` beside created / skipped / failed / invalid.
+- **What this cannot protect against**, because the endpoints have no version or ETag: a concurrent edit
+  to the same field between the load and the send is overwritten (last writer wins, per field sent).
+  The dialog says so, and loads the records as late as it can. A warehouse or supplier rename also
+  rewrites the name on every item and purchase order that uses it, silently on the server, so an
+  inventory sheet that names a warehouse should be run after, not before, a warehouse rename.
+
 ## Known limits and server follow-ups (found by the pre-release audits)
 
 None blocks this release; each is a pre-existing server behaviour the import can hit sooner than a

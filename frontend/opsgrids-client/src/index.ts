@@ -129,13 +129,20 @@ export type { AssetOut, UploadAssetControls } from "./documents/assets";
 
 // Excel import/export (ADR-0022): the engine behind `@opsgrids/ui`'s ImportExportButton.
 export {
+  CLEAR_TOKEN,
   RowProblem,
+  buildUpdate,
   checkImportEntity,
   collectPages,
   defineImportEntity,
+  indexExisting,
+  isClearToken,
   majorToMinor,
   makeLookup,
+  matchRow,
   minorToMajor,
+  normaliseKey,
+  planUpdate,
   useImportExport,
 } from "./dataexchange";
 export type {
@@ -147,9 +154,11 @@ export type {
   ExportPage,
   ExportProgress,
   ExportSource,
+  ExtraStep,
   ImportColumn,
   ImportContext,
   ImportEntity,
+  ImportMode,
   ImportPhase,
   ImportPreview,
   ImportProgress,
@@ -162,6 +171,9 @@ export type {
   RowOutcome,
   RowStatus,
   SheetValue,
+  UpdateField,
+  UpdatePlan,
+  UpdateSpec,
   UseImportExportOptions,
   UseImportExportResult,
 } from "./dataexchange";
