@@ -5,11 +5,13 @@ entitlement plus Engage's own `engage.setup.whatsapp.read` / `.write` permission
 Every route resolves the actor and the tenant through `require(...)` and the tenant session before
 it reads anything.
 
-**Nothing here returns a credential.** `signup/complete` takes the popup's one-time code, seals it
-on a run row and returns 202; the exchange and every other Meta call happen in the worker
-(`app/w1_setup.py`) after the request has committed. The one route that calls Meta on a request
-(`GET numbers`, when its cache is stale) binds two short transactions of its own around the call,
-the idiom `w2_templates.sync_whatsapp_templates` uses, so a slow Meta never pins a connection.
+**Nothing here returns a credential.** `signup/complete` takes the popup's one-time code and
+exchanges it for a token inside the request (Meta's code lives about thirty seconds, so it cannot
+wait behind the outbox), seals the token on a run row and returns 202; every other Meta call
+happens in the worker (`app/w1_setup.py`) after the request has committed. The two routes that call
+Meta on a request (`signup/complete`, and `GET numbers` when its cache is stale) bind short
+transactions of their own around the call, the idiom `w2_templates.sync_whatsapp_templates` uses,
+so a slow Meta never pins a connection.
 """
 
 from __future__ import annotations
@@ -119,22 +121,34 @@ async def signup_config(ctx: WhatsAppRead) -> SignupConfigOut:
     dependencies=[Entitled],
 )
 async def signup_complete(
-    body: SignupCompleteIn, session: SessionDep, ctx: WhatsAppWrite, request: Request
+    body: SignupCompleteIn,
+    session: RawSessionDep,
+    ctx: WhatsAppWrite,
+    request: Request,
+    transport: GraphTransportDep,
 ) -> SignupCompleteOut:
-    """202: the setup is persisted and queued, not done. Poll `GET signup/{setup_id}`. A repeat of
-    the same `code` returns the setup it already started."""
-    await enforce_rate_limit(
-        f"engage.wa_signup:{ctx.organization_id}", limit=SIGNUP_PER_MINUTE, window_seconds=60
-    )
-    run = await w1_services.start_signup(
+    """202: the code is already exchanged and the rest of the setup is persisted and queued, not
+    done. Poll `GET signup/{setup_id}`. A repeat of the same `code` returns the setup it already
+    started. 409 `code_expired` when Meta refuses the code as expired or already used (start again
+    from Meta's window), 409 `code_exchange_failed` for any other refusal, 503 `meta_unreachable`
+    when Meta could not be asked (the same code may be tried again)."""
+    org = ctx.organization_id
+    await enforce_rate_limit(f"engage.wa_signup:{org}", limit=SIGNUP_PER_MINUTE, window_seconds=60)
+
+    async def _bind() -> None:
+        await _bind_tenant(session, request, org)
+
+    setup_id = await w1_services.start_signup(
         session,
         ctx,
         code=body.code,
         waba_id=body.waba_id,
         phone_number_id=body.phone_number_id,
         request=request,
+        transport=transport,
+        bind=_bind,
     )
-    return SignupCompleteOut(setup_id=run.id, status="running")
+    return SignupCompleteOut(setup_id=setup_id, status="running")
 
 
 @router.get(

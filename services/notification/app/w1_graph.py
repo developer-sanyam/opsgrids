@@ -27,12 +27,77 @@ from platform_core.logging import get_logger
 
 log = get_logger("notification.w1_graph")
 
-__all__ = ["NUMBER_FIELDS", "GraphError", "MetaGraph"]
+__all__ = ["NUMBER_FIELDS", "CodeExpiredError", "GraphError", "MetaError", "MetaGraph"]
 
 #: What is read for each number on a WABA (the contract's numbers list, one field per column).
+#: `code_verification_status`, `platform_type` and `throughput` say whether the number is
+#: registered for the Cloud API and how fast it may send.
 NUMBER_FIELDS: Final = (
-    "id,display_phone_number,verified_name,name_status,quality_rating,messaging_limit_tier,status"
+    "id,display_phone_number,verified_name,name_status,quality_rating,messaging_limit_tier,status,"
+    "code_verification_status,platform_type,throughput"
 )
+
+#: The sentence shown when Meta refuses the popup's code as expired or spent.
+CODE_EXPIRED_MESSAGE: Final = (
+    "That Meta sign-in expired or was already used. Start WhatsApp setup again."
+)
+#: Meta's `error_subcode`s for an authorization code that is spent (36007) or expired (36009).
+#: Unverified against Meta's reference (the docs page for `oauth/access_token` did not load);
+#: the wording check in `_is_code_error` is the second signal.
+_CODE_SUBCODES: Final = frozenset({36007, 36009})
+
+
+class MetaError(GraphError):
+    """A Graph refusal with the two extra fields the setup needs to classify it: Meta's
+    `error_subcode` and its own `message` (developer-facing, so it is used to decide what
+    happened and never shown or logged)."""
+
+    def __init__(self, base: GraphError, *, subcode: int | None, message: str) -> None:
+        super().__init__(
+            status=base.status,
+            code=base.code,
+            public_message=base.public_message,
+            retryable=base.retryable,
+        )
+        self.subcode = subcode
+        self.meta_message = message
+
+
+class CodeExpiredError(GraphError):
+    """The popup's one-time code was refused as expired or already used. Meta's code lives about
+    thirty seconds and works once."""
+
+    def __init__(self, *, status: int | None) -> None:
+        super().__init__(
+            status=status, code=100, public_message=CODE_EXPIRED_MESSAGE, retryable=False
+        )
+
+
+def _error_extras(response: httpx.Response) -> tuple[int | None, str]:
+    try:
+        body = response.json()
+    except ValueError:
+        return None, ""
+    error = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(error, dict):
+        return None, ""
+    subcode = error.get("error_subcode")
+    message = error.get("message")
+    return (
+        subcode if isinstance(subcode, int) else None,
+        message[:300] if isinstance(message, str) else "",
+    )
+
+
+def _is_code_error(error: MetaError) -> bool:
+    if error.subcode in _CODE_SUBCODES:
+        return True
+    if error.code not in (100, 190, None):
+        return False
+    text = error.meta_message.lower()
+    return "authorization code" in text or "verification code" in text
+
+
 _MAX_NUMBERS_PAGES: Final = 10
 _PAGE_SIZE: Final = 100
 
@@ -63,12 +128,13 @@ class MetaGraph:
         *,
         token: str | None = None,
         params: dict[str, str | int] | None = None,
+        json: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         try:
             async with self._client() as client:
                 response = await client.request(
-                    method, f"{self._base}/{path}", headers=headers, params=params
+                    method, f"{self._base}/{path}", headers=headers, params=params, json=json
                 )
         except httpx.HTTPError as exc:
             # The type only: an httpx error's text can echo the URL it tried.
@@ -77,8 +143,9 @@ class MetaGraph:
                 status=None, code=None, public_message=w2_graph._UNREACHABLE, retryable=True
             ) from exc
         if response.status_code >= 400:
-            error = w2_graph._error_from(response)
-            log.warning("w1_graph.refused", status=error.status, code=error.code)
+            subcode, message = _error_extras(response)
+            error = MetaError(w2_graph._error_from(response), subcode=subcode, message=message)
+            log.warning("w1_graph.refused", status=error.status, code=error.code, subcode=subcode)
             raise error
         return w2_graph._json_object(response)
 
@@ -95,11 +162,16 @@ class MetaGraph:
                 public_message="WhatsApp signup is not configured on this platform.",
                 retryable=False,
             )
-        body = await self._call(
-            "GET",
-            "oauth/access_token",
-            params={"client_id": app_id, "client_secret": secret, "code": code},
-        )
+        try:
+            body = await self._call(
+                "GET",
+                "oauth/access_token",
+                params={"client_id": app_id, "client_secret": secret, "code": code},
+            )
+        except MetaError as exc:
+            if _is_code_error(exc):
+                raise CodeExpiredError(status=exc.status) from exc
+            raise
         token = body.get("access_token")
         if not isinstance(token, str) or not token:
             raise GraphError(
@@ -183,6 +255,23 @@ class MetaGraph:
         return await self._call(
             "GET", phone_number_id, token=token, params={"fields": NUMBER_FIELDS}
         )
+
+    async def register_number(self, phone_number_id: str, token: str, pin: str) -> None:
+        """Register the number for the Cloud API (`POST /{phone_number_id}/register`).
+
+        The PIN travels in the JSON body, never the URL. Meta allows ten calls per number per
+        72 hours (error 133016), so the caller never retries this blindly. Success is
+        `{"success": true}`; a `false` is treated as a refusal."""
+        body = await self._call(
+            "POST",
+            f"{phone_number_id}/register",
+            token=token,
+            json={"messaging_product": "whatsapp", "pin": pin},
+        )
+        if body.get("success") is False:
+            raise GraphError(
+                status=200, code=None, public_message=w2_graph._GENERIC, retryable=False
+            )
 
     # ----------------------------------------------------------------- webhooks
 

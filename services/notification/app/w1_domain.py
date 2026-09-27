@@ -9,7 +9,7 @@ render.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Final
+from typing import Final, Literal
 
 QUALITY: Final = frozenset({"green", "yellow", "red", "unknown"})
 LIMITS: Final = frozenset({"TIER_250", "TIER_1K", "TIER_10K", "TIER_100K", "UNLIMITED", "unknown"})
@@ -56,6 +56,57 @@ def status_from_meta(raw: object) -> str:
     if value in ("PENDING", "UNVERIFIED", "ONBOARDING"):
         return "pending_verification"
     return "disconnected"
+
+
+def _upper_token(raw: object, *, limit: int = 24) -> str | None:
+    """Meta's enum-ish string as a short upper-case token, or None. Anything that is not a plain
+    word (a stray sentence, a nested object) is dropped rather than stored."""
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip().upper()
+    if not value or len(value) > limit or not all(ch.isalnum() or ch == "_" for ch in value):
+        return None
+    return value
+
+
+def status_word(raw: object) -> str:
+    """Meta's number status as words for a sentence (`PENDING` -> `pending`, `NOT_VERIFIED` ->
+    `not verified`); `unknown` when it is absent or not a plain token."""
+    token = _upper_token(raw)
+    return token.replace("_", " ").lower() if token else "unknown"
+
+
+def platform_type_from_meta(raw: object) -> str | None:
+    return _upper_token(raw)
+
+
+def code_verification_from_meta(raw: object) -> str | None:
+    return _upper_token(raw)
+
+
+def throughput_from_meta(raw: object) -> str | None:
+    """`throughput` is `{"level": "STANDARD"}` on the number node."""
+    level = raw.get("level") if isinstance(raw, dict) else raw
+    return _upper_token(level)
+
+
+def registration_state(
+    status: str, platform_type: str | None
+) -> Literal["registered", "not_registered", "unknown"]:
+    """`registered` | `not_registered` | `unknown`, for the numbers screen.
+
+    Meta reports `platform_type: CLOUD_API` for a number registered on the Cloud API and
+    `NOT_APPLICABLE` for one that is not. Without that field the number's own status decides: a
+    connected number can send, a pending one cannot yet."""
+    if platform_type == "CLOUD_API":
+        return "registered"
+    if platform_type == "NOT_APPLICABLE":
+        return "not_registered"
+    if status == "connected":
+        return "registered"
+    if status == "pending_verification":
+        return "not_registered"
+    return "unknown"
 
 
 def digits(value: str | None) -> str:

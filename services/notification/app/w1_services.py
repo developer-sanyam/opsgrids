@@ -15,6 +15,7 @@ reader that no other organization already holds it.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -28,7 +29,7 @@ from starlette.requests import Request
 from app import selectors, services, w1_domain, w1_selectors, w2_selectors, whatsapp_provider
 from app.config import Settings, graph_version, meta_app_secret, settings
 from app.models import AuditLog, OutboxEvent, ProviderAccount
-from app.w1_graph import GraphError, MetaGraph
+from app.w1_graph import CodeExpiredError, GraphError, MetaGraph
 from app.w1_models import ConnectionHealth, SetupRun, WhatsAppNumber
 from app.w1_schemas import (
     HealthOut,
@@ -44,7 +45,12 @@ from app.w1_schemas import (
 from platform_core import pii
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
-from platform_core.errors import ConflictProblem, NotFoundProblem, ProblemError
+from platform_core.errors import (
+    ConflictProblem,
+    NotFoundProblem,
+    ProblemError,
+    UpstreamUnavailableProblem,
+)
 from platform_core.events import publish_event
 from platform_core.logging import get_logger
 from platform_core.pii import mask as mask_pii
@@ -56,8 +62,9 @@ EVT_SETUP_REQUESTED: Final = "notification.whatsapp.setup_requested"
 #: The five steps in the order the worker runs them, with the label each shows.
 STEPS: Final = (
     ("token", "Connecting to Meta"),
-    ("number", "Registering your number"),
+    ("number", "Linking your number"),
     ("webhook", "Subscribing to message events"),
+    ("register", "Registering your number"),
     ("templates", "Syncing message templates"),
     ("verify", "Testing the connection"),
 )
@@ -111,6 +118,10 @@ def run_out(run: SetupRun, now: datetime | None = None) -> SignupStatusOut:
     )
 
 
+async def _noop_bind() -> None:
+    return None
+
+
 async def start_signup(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -119,13 +130,33 @@ async def start_signup(
     waba_id: str | None,
     phone_number_id: str | None,
     request: Request | None = None,
-) -> SetupRun:
-    """Persist one setup run and stage the event that starts it, in one transaction.
+    transport: httpx.AsyncBaseTransport | None = None,
+    bind: Callable[[], Awaitable[None]] = _noop_bind,
+) -> uuid.UUID:
+    """Persist one setup run, **exchange the popup's code for a token now**, and stage the event
+    that runs the rest. Returns the run's id.
 
-    The worker only ever sees the run after this commits (the event goes through the outbox), so
-    no Graph call happens inside the request. Idempotent on the code: a client that retries the
-    same `signup/complete` (a dropped response) gets the run it already started, never a second
-    one, and never a second exchange of a single-use code.
+    Meta's code lives about thirty seconds, so the exchange cannot wait behind the outbox and the
+    relay: it happens inside this request, between two short transactions of its own (the same
+    idiom as `GET numbers`, so a slow Meta never pins a pooled connection). `session` therefore
+    must not be inside a transaction when this is called; `bind` re-binds the tenant at the start
+    of each one (the GUC is transaction-local).
+
+    1. *Reserve.* One transaction records the run (`running`, the code never stored, only its
+       blind index). The unique index on `(organization_id, code_hash)` and the one-running-per-
+       organization index arbitrate two requests that race, so a code is exchanged by exactly one
+       of them.
+    2. *Exchange*, outside any transaction. A refused code fails the run with a specific code
+       (`code_expired`, `code_exchange_failed`, `meta_unreachable`) and answers with that code
+       in the problem body; the token, if any, is sealed straight away.
+    3. *Hand over.* One transaction stores the sealed token on the run, marks the token step done
+       and stages `setup_requested`: the worker only ever sees a run that already holds a token,
+       and only after this commits.
+
+    Idempotent on the code: a repeat (a dropped response, a double click) returns the run it
+    already started and never exchanges a spent code again. A Meta outage during the exchange
+    deletes the reservation, so the same code can be tried again; the code may or may not be spent
+    at Meta then, which is Meta's to say on the retry.
     """
     cfg = settings()
     if not signup_enabled(cfg):
@@ -135,9 +166,89 @@ async def start_signup(
     org = ctx.organization_id
     code_hash = pii.blind_index(code, kind="generic", settings=cfg)
 
+    async with session.begin():
+        await bind()
+        reserved = await _reserve_run(
+            session,
+            ctx,
+            code_hash=code_hash,
+            waba_id=waba_id,
+            phone_number_id=phone_number_id,
+            request=request,
+        )
+    run_id, fresh = reserved
+    if not fresh:
+        return run_id
+
+    try:
+        token = await MetaGraph(cfg, transport=transport).exchange_code(code)
+    except GraphError as exc:
+        expired = isinstance(exc, CodeExpiredError)
+        retryable = exc.retryable and not expired
+        failure_code = (
+            "code_expired"
+            if expired
+            else "meta_unreachable"
+            if retryable
+            else "code_exchange_failed"
+        )
+        async with session.begin():
+            await bind()
+            run = await w1_selectors.get_run(session, org, run_id, for_update=True)
+            if run is not None and run.status == "running":
+                if retryable:
+                    await session.delete(run)
+                else:
+                    _fail(run, failure_code, datetime.now(UTC))
+                    _set_step(run, "token", "failed", exc.public_message)
+        raise problem(
+            UpstreamUnavailableProblem if retryable else ConflictProblem,
+            exc.public_message,
+            failure_code,
+        ) from exc
+
+    sealed, _ = pii.seal(token, kind="generic", settings=cfg)
+    async with session.begin():
+        await bind()
+        run = await w1_selectors.get_run(session, org, run_id, for_update=True)
+        if run is None or run.status != "running":
+            # Superseded while Meta was being asked (the stale-run sweep of a newer signup): the
+            # token is dropped with this frame, and the newer run is the one that counts.
+            raise problem(
+                ConflictProblem,
+                "This WhatsApp setup was replaced by a newer one.",
+                "setup_in_progress",
+            )
+        run.token_enc = sealed
+        _set_step(run, "token", "done", "Connected to Meta")
+        publish_event(
+            session,
+            OutboxEvent,
+            organization_id=org,
+            event_type=EVT_SETUP_REQUESTED,
+            aggregate_type="w1_setup_run",
+            aggregate_id=run.id,
+            payload={"organization_id": str(org), "setup_id": str(run.id)},
+            actor=services._actor(ctx),
+        )
+    return run_id
+
+
+async def _reserve_run(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    code_hash: str,
+    waba_id: str | None,
+    phone_number_id: str | None,
+    request: Request | None,
+) -> tuple[uuid.UUID, bool]:
+    """Step 1 of `start_signup`, inside its transaction: `(run id, created)`. `created` is False
+    when this code already started a run."""
+    org = ctx.organization_id
     existing = await w1_selectors.run_by_code_hash(session, org, code_hash)
     if existing is not None:
-        return existing
+        return existing.id, False
 
     now = datetime.now(UTC)
     for other in await w1_selectors.running_runs(session, org):
@@ -149,17 +260,18 @@ async def start_signup(
             )
         _fail(other, "abandoned", now)
 
-    sealed, _ = pii.seal(code, kind="generic", settings=cfg)
+    steps = initial_steps()
     run = SetupRun(
         organization_id=org,
         status="running",
-        steps=initial_steps(),
-        code_enc=sealed,
+        steps=steps,
+        code_enc=None,  # the code is exchanged in this request and never stored
         code_hash=code_hash,
         waba_hint=waba_id,
         phone_number_hint=phone_number_id,
         started_by=str(ctx.principal.sub),
     )
+    _set_step(run, "token", "running", None)
     try:
         async with session.begin_nested():
             session.add(run)
@@ -168,7 +280,7 @@ async def start_signup(
         # A retry that raced this one past the read above: hand back the winner.
         winner = await w1_selectors.run_by_code_hash(session, org, code_hash)
         if winner is not None:
-            return winner
+            return winner.id, False
         # Not the same code, so it is the unique index on running setups: another request got a
         # setup in between the read above and this insert.
         raise problem(
@@ -189,17 +301,14 @@ async def start_signup(
         after={"setup_id": str(run.id)},
         request=request,
     )
-    publish_event(
-        session,
-        OutboxEvent,
-        organization_id=org,
-        event_type=EVT_SETUP_REQUESTED,
-        aggregate_type="w1_setup_run",
-        aggregate_id=run.id,
-        payload={"organization_id": str(org), "setup_id": str(run.id)},
-        actor=services._actor(ctx),
-    )
-    return run
+    return run.id, True
+
+
+def _set_step(run: SetupRun, key: str, state: str, detail: str | None) -> None:
+    # Reassign the list: SQLAlchemy does not see an in-place edit of a JSONB value.
+    run.steps = [
+        {**s, "state": state, "detail": detail} if s["key"] == key else s for s in run.steps
+    ]
 
 
 def _fail(run: SetupRun, code: str, now: datetime) -> None:
@@ -233,6 +342,9 @@ def number_out(row: WhatsAppNumber) -> NumberOut:
         messaging_limit=row.messaging_limit,
         status=row.status,
         is_default=row.is_default,
+        registration=w1_domain.registration_state(row.status, row.platform_type),
+        code_verification_status=row.code_verification_status,
+        throughput_level=row.throughput_level,
     )
 
 
@@ -276,6 +388,11 @@ async def apply_numbers(
         row.quality_rating = w1_domain.quality_from_meta(item.get("quality_rating"))
         row.messaging_limit = w1_domain.limit_from_meta(item.get("messaging_limit_tier"))
         row.status = w1_domain.status_from_meta(item.get("status"))
+        row.code_verification_status = w1_domain.code_verification_from_meta(
+            item.get("code_verification_status")
+        )
+        row.platform_type = w1_domain.platform_type_from_meta(item.get("platform_type"))
+        row.throughput_level = w1_domain.throughput_from_meta(item.get("throughput"))
         row.refreshed_at = now
     for pnid, row in rows.items():
         if pnid in seen:
@@ -549,10 +666,14 @@ class Released:
 async def disconnect(
     session: AsyncSession, ctx: ScopeContext, *, request: Request | None = None
 ) -> Released:
-    """Mark the connection disconnected and wipe the sealed token. History (templates, messages,
-    conversations, the numbers cache) is kept. The row keeps its number, so an inbound message
-    still routes here and is kept, exactly as `ProviderAccount` documents for a disconnected
-    account; nothing is sent from it.
+    """Mark the connection disconnected, wipe the sealed token and **release the routing key**.
+
+    History (templates, messages, conversations, the numbers cache, the audit trail) is kept. The
+    row's `phone_number_id` is the globally unique webhook routing key, and keeping it made the
+    number unclaimable by any other organization forever (`number_claimed`): it is moved to
+    `released_phone_number_id` and the key is nulled, so the number is free to connect elsewhere
+    and a webhook for it no longer resolves to this organization (it is dropped as an unknown
+    number). Reconnecting sets the key again, subject to the same uniqueness check as any claim.
 
     Returns what `release_subscription` needs to stop the old WABA's events after the commit."""
     org = ctx.organization_id
@@ -560,11 +681,15 @@ async def disconnect(
     if account is None or account.organization_id != org or account.status != "connected":
         raise problem(ConflictProblem, "WhatsApp is not connected.", "channel_not_connected")
     released = Released(waba_id=account.waba_id, token=_account_token(account))
+    released_number = account.phone_number_id
     account.status = "disconnected"
     account.access_token_enc = None
+    account.released_phone_number_id = released_number
+    account.phone_number_id = None
     account.updated_by = str(ctx.principal.sub)
     for row in await w1_selectors.numbers(session, org):
         row.status = "disconnected"
+        row.is_default = False
     health = await w1_selectors.get_health(session, org)
     if health is not None:
         health.token_state = "unknown"  # noqa: S105 - a state word, not a credential
@@ -579,7 +704,8 @@ async def disconnect(
         action="engage.whatsapp.disconnected",
         entity="provider_account",
         entity_id=account.id,
-        after={"waba_id": account.waba_id, "phone_number_id": account.phone_number_id},
+        # Ids only. The number is recorded as released, so the history says which one it was.
+        after={"waba_id": account.waba_id, "released_phone_number_id": released_number},
         request=request,
     )
     return released
@@ -770,6 +896,6 @@ async def numbers_refresh_inputs(
     if account is None or account.organization_id != organization_id:
         return None
     token = _account_token(account)
-    if token is None:
+    if token is None or account.phone_number_id is None:
         return None
     return account.waba_id, token, account.phone_number_id

@@ -71,6 +71,22 @@ async def get_number(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def number_by_phone_id(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    phone_number_id: str,
+    *,
+    for_update: bool = False,
+) -> WhatsAppNumber | None:
+    stmt = select(WhatsAppNumber).where(
+        WhatsAppNumber.organization_id == organization_id,
+        WhatsAppNumber.phone_number_id == phone_number_id,
+    )
+    if for_update:
+        stmt = stmt.with_for_update()
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def get_health(session: AsyncSession, organization_id: uuid.UUID) -> ConnectionHealth | None:
     stmt = select(ConnectionHealth).where(ConnectionHealth.organization_id == organization_id)
     return (await session.execute(stmt)).scalar_one_or_none()
