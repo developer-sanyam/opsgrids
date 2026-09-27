@@ -23,6 +23,13 @@ at and a pending factor never expired — it now expires, is counted, and cannot
 working factor (B.8). Risk 5 (the "edge case") and risk 9 (the "weakest link") are rewritten
 accordingly.
 
+**And a third time, after that round's own independent review found no blocker**: the password
+failure count now restarts with the lock, so the lock expiring is a real unlock (Part D.2, risk 9);
+the reveal budget is one atomic Redis step under one timeout (checklist 3); a successful password
+change is audited against the member's organization like its failures (Part D.4); the OpenAPI text
+for the refusals is corrected; and the three unmask routes that still take `otp` alone are now
+named and pinned by tests (risk 5, checklist 9).
+
 ---
 
 ## Context
@@ -111,7 +118,12 @@ membership ids) — an **access token whose `amr` is the session's `amr` plus `o
    set (`amr.issubset(...)`), pinned by test against tokens carrying each half alone. The literal is
    duplicated across the three services rather than shared, because a shared constant lives in
    `platform-core` and changes every service's image; `tests/infra/test_step_up_marker.py` pins the
-   copies equal and pins where the marker may be minted. **Scope: the CRM routes only.** The
+   copies equal and pins, as rules over the source, that the literal appears only at its three
+   definitions, that `STEP_UP_AMR` is named only in `step_up`, `_session_amr` and the two guards,
+   that every token mint and every write to a session's `amr` (the operator flows included) is
+   built from `_session_amr(...)`, and that no session is built or bulk-updated with an `amr` of
+   the caller's choosing — so "no mint path can produce it" is a property of the source and not
+   only of the paths a test thought of. **Scope: the CRM routes only.** The
    employee, storefront and Engage unmask routes still require `otp` alone, because their UIs do
    not run the step-up yet (risk 5).
    Every reveal audit row records the token's `amr` (`after.amr`), so a row shows *how* the
@@ -136,8 +148,10 @@ was written; and the session check never asked whether the session was live. Now
      `mfa_failed_attempts` / `mfa_locked_until` as login MFA and step-up.
    - The password is checked **before** the code, so a wrong password never spends a code.
    - Either lockout tripping **ends the session** the guesses came from (reason
-     `enrolment_failed_attempts`). A locked account is refused (`403 password-locked` /
-     `403 mfa-locked`) without counting.
+     `enrolment_failed_attempts`). The attempt that trips it answers like the ones before it
+     (`422`); the `403 password-locked` / `403 mfa-locked` is what a call from a session that is
+     still live gets while the lock holds, and it is refused without counting. The session that
+     was ended answers `401` from then on.
    - A member with no factor has only the password to offer; for the first factor that *is* the
      trust anchor, and there is nothing more to ask.
    - SSO sessions are refused outright (`403 mfa-unavailable-for-sso`, before the password is
@@ -216,13 +230,22 @@ day). Now, in `services.change_password` (bare session, tenant bound first, like
    same thing whether or not the guess is right, and neither is counted.
 2. **The lockout is checked before the password, and a wrong password is counted** against the same
    `failed_attempts` / `locked_until` as sign-in (`_register_password_failure`) — one allowance
-   across the login form, enrolment and this form. The attempt that trips the lock ends the session
-   the guesses came from (`password_change_failed_attempts`). `current_password` carries no length
-   policy, so a short candidate is counted rather than refused for free.
+   across the login form, enrolment and this form. The attempt that trips the lock is itself a
+   `422` like those before it, and ends the session the guesses came from
+   (`password_change_failed_attempts`). **The count restarts when the lock is set**
+   (`_register_password_failure`, as the second-factor counter always did), so the lock expiring is
+   a real unlock: with the count left at the limit, the first wrong password after
+   `lockout_minutes` locked the account again and — here and in enrol-start, where the tripping
+   attempt also ends the session — one typo by the real member ended their session (second review,
+   m1). `current_password` carries no length policy, so a short candidate is counted rather than
+   refused for free.
 3. **A wrong password is `422 password-incorrect`, field `current_password`** — never 401, which the
    shared client answers by refreshing, re-sending and signing the member out.
 4. **A failure is audited** (`auth.password_change_failed`: session, reason, whether it locked;
-   never either password) and committed before it is raised.
+   never either password) and committed before it is raised. **The success is audited against the
+   same organization** (`auth.password_changed`), so one read of the member's organization finds the
+   guesses and the outcome together; the outbox event for other services stays on the nil
+   organization, because a credential belongs to a person and not to one of their organizations.
 5. **The session must be a live one of this person**, so a revoked session's leftover access token
    can no longer change (or guess at) the password. An operator token is refused.
 
@@ -232,8 +255,8 @@ day). Now, in `services.change_password` (bare session, tenant bound first, like
 |---|---|---|---|
 | 401 | `unauthorized` | all | No/invalid/expired bearer, the session is revoked, expired or not yours, or the membership has ended. Nothing counted. |
 | 403 | `mfa-unavailable-for-sso` | enrol, confirm, step-up | The session came from an identity provider. Needs a password sign-in. |
-| 403 | `password-locked` | enrol, password/change | Sign-in's password lockout. |
-| 403 | `mfa-locked` | enrol, step-up | Too many wrong codes; same message as the login lockout. |
+| 403 | `password-locked` | enrol, password/change | Sign-in's password lockout, for a call from a session that is still live. The attempt that trips it is a 422; it ends that session, which then answers 401. |
+| 403 | `mfa-locked` | enrol, step-up | Too many wrong codes; same message as the login lockout. Like `password-locked`, what a live session gets while the lock holds; the tripping attempt is a 422. |
 | 403 | `mfa-reauthentication-required` | step-up | The authenticator was added after this session began and not through it. Sign in again. |
 | 404 | `not-found` | confirm | No such enrolment: missing, not yours, begun by a different session, older than ten minutes, overtaken by another authenticator being confirmed, or out of attempts. |
 | 409 | `mfa-not-enrolled` | step-up | No confirmed factor. Send the member to the Security page. |
@@ -292,8 +315,9 @@ wrong code with 401, which does exactly that; it is 422 now.)
    real member out of **login** for `lockout_minutes` (default 15) by guessing wrongly, and the
    attempt that trips a lock ends the session they are guessing from. This is the same exposure the
    login form already has and there is deliberately no admin unlock; expiry is the unlock.
-4. **The token's scope is every reveal route, not one record.** It carries `otp`, and every
-   `require(..., amr={"otp"})` route across CRM, HRMS, the storefront and Engage accepts it until it
+4. **The token's scope is every reveal route, not one record.** It carries `otp` and `stepup`, and
+   every reveal route across CRM (which requires both), HRMS, the storefront and Engage (which
+   require `otp` alone) accepts it until it
    lapses. The holder still needs the permission, the scope and (for record-level reveals) the
    object-level check, and every reveal writes its own `entity.sensitive_read` audit row — but one
    code opens all of them for the window, not just the one the member had in mind.
@@ -307,9 +331,16 @@ wrong code with 401, which does exactly that; it is 422 now.)
    routes still require `otp` alone** — employee (`hrms.people.employee.read_sensitive`),
    storefront (`storefront.sales.enquiry.unmask`) and Engage (`engage.inbox.message.unmask`) —
    because their UIs do not run the step-up, so requiring the marker there would break them; for
-   those, a session that gave a code at sign-in reveals with no further code, as before. Extending
-   the marker to them is a one-line change per route (the guard, plus the UI using `useStepUp`) and
-   is the follow-up. **Phase 2 remains:** stamp `otp_at` into the token (and out of `Session.amr`)
+   those, a session that gave a code at sign-in reveals with no further code, as before. **What
+   that means in practice: enrolling an HR administrator, a storefront member or an Engage agent
+   means their ordinary session token can unmask on those three routes** — an authenticator turns
+   MFA on for every later sign-in, so every session they open carries `otp` — **until a follow-up
+   wires `useStepUp` into those UIs and adds the marker to the three guards.** (Before they enrol
+   they cannot unmask at all: no token of theirs carries `otp`.) Enrolment there adds a code at
+   *sign-in*, not one per reveal, and should not be described as the latter. Each of the three routes
+   has a test named for exactly this (`..._still_passes_this_route_risk_5`) which fails, and is to
+   be rewritten as a refusal, when the gap is closed. Extending the marker to them is a one-line
+   change per route (the guard, plus the UI using `useStepUp`) and is the follow-up. **Phase 2 remains:** stamp `otp_at` into the token (and out of `Session.amr`)
    and have `require(..., amr=..., max_age=...)` refuse an old one — a `platform-core` change that
    redeploys every service and needs its own release.
 6. **Single sign-on members cannot reveal.** A federated session is refused (`mfa-unavailable-for-sso`)
@@ -332,10 +363,10 @@ wrong code with 401, which does exactly that; it is 422 now.)
    review, finding 2; Part D). `password/change` used to verify the current password with no
    counter and answer `current=new=candidate` differently for a right and a wrong guess. It is now
    counted, locked and audited like sign-in. What is left of it: the counters are shared, so a
-   bearer holder can lock the real member out of signing in by guessing (risk 3), and
-   `_register_password_failure` never resets `failed_attempts` when it locks, so **one** wrong
-   guess after a lock expires locks the account again (pre-existing, also true of the login form;
-   the reset belongs to a correct password, and there is deliberately no admin unlock).
+   bearer holder can lock the real member out of signing in by guessing (risk 3). The count now
+   restarts when the lock is set (Part D.2), so a lock expiring is a real unlock; before, **one**
+   wrong password after expiry locked the account again — for the login form as well — and in
+   password change and enrol-start that also ended the session it came from.
 10. **Sessions that enrolled before this release need a fresh sign-in to step up.** A factor
     confirmed inside a session that is still open across the deploy carries no
     `enrolled_session_id` and was confirmed after that session began, so it is refused
@@ -373,7 +404,18 @@ wrong code with 401, which does exactly that; it is 422 now.)
     contact's natural key and the CRM UI, and is its own slice.
 14. **Pre-existing, listed and not changed here:** lead create answers `409 A lead with that email
     already exists` (an existence oracle for an email among an organization's leads, to a caller
-    holding `crm.lead.lead.write`), and the unreset counter in risk 9.
+    holding `crm.lead.lead.write`).
+15. **`amr` reaches the services as an unsigned header.** The gateway verifies the access token and
+    forwards `X-Amr` (and `X-Perms`, `X-Roles`, …) beside a signed hop token, but that token vouches
+    only for the user and the organization (`uid`, `org`; `_principal_from_gateway`). So the marker
+    is exactly as trustworthy as the hop: anything that can mint a forwarding token — the gateway,
+    or any process holding the shared internal secret — can assert `otp` and `stepup` for any user
+    it names, and a service reachable without the gateway would accept the header from anyone.
+    True of every claim the services take from those headers, not only this one, and pre-existing;
+    it is why the internal secret and the network boundary matter as much as they do. **Follow-up,
+    out of scope:** carry `amr` (and `perms`) in the forwarding token's signed claims, so a header
+    that disagrees with what the gateway saw is refused, the way `X-User-Id` and `X-Org-Id` already
+    are.
 
 ## Who can reveal, really
 
@@ -440,7 +482,9 @@ separately.** In order:
    head). `make deploy` migrates before it recreates containers (preflight, build, caddy validate,
    **migrate**, recreate, health), so both columns are there before the new auth serves; being
    additive and unused by the old release, the old auth keeps working against them meanwhile. No
-   manual step. lead and customer have no migration. `remote.sh migrate` also ends with the
+   manual step. Both set `lock_timeout = 5s`: if a long transaction holds `auth.mfa_factors`, the
+   migration fails after five seconds (rolled back, nothing half-applied) instead of queueing every
+   sign-in behind its `ALTER TABLE`; run it again once the long transaction is gone. lead and customer have no migration. `remote.sh migrate` also ends with the
    existing MFA reseal (`lib/mfa-reseal.sh`), a no-op unless a legacy plaintext factor is left;
    until such a factor is resealed, enrol and step-up answer 503 `mfa-reseal-pending`.
    **Deploy auth immediately after the migration, and audit the window** (risk 12). Between the
@@ -468,11 +512,20 @@ separately.** In order:
    per-user reveal budget when a value is about to be opened: after the record has been found, shown
    to be in scope (and, for a lead, to have a value on file), and before it is decrypted — so a
    request that was going to be refused spends nothing and a stolen token cannot burn the real
-   person's budget. That spend happens inside the request's database transaction, so it is bounded
-   to two seconds (`_REVEAL_BUDGET_TIMEOUT_SECONDS`): a Redis that neither answers nor refuses is
-   the same outage as one that is down. Redis down: the reveal routes answer 503 (fail closed),
-   `/health/ready` on those two reports `degraded` (still HTTP 200, no restart), and nothing else in
-   either service changes.
+   person's budget. The spend is **one atomic step on the server**: a small script (`EVAL`) that
+   takes both counters (burst and daily) or neither, sets an expiry on any counter that has none,
+   and does not spend when it refuses — so a request refused for the burst does not also burn the
+   day. It is **one round trip under one two-second timeout** (`_REVEAL_BUDGET_TIMEOUT_SECONDS`), so
+   the most a request can hold a pooled database connection for while waiting on Redis is two
+   seconds in total, not per window, and a timeout or a dropped connection cannot land between an
+   increment and its expiry (the server runs a script it has received to the end, and does not run
+   one it has not) — which the previous two-step version could, leaving a counter that never
+   expired. A Redis that neither answers nor refuses is the same outage as one that is down.
+   Redis down: the reveal routes answer 503 (fail closed), `/health/ready` on those two reports
+   `degraded` (still HTTP 200, no restart), and nothing else in either service changes. The
+   script's behaviour on a real server is pinned by `test_reveal_budget_redis.py` in each service
+   (it needs a Redis at `REDIS_URL` and skips, saying so, without one), and
+   `tests/infra/test_reveal_budget_parity.py` keeps the two services' copies identical.
 4. **Permission catalogue: reconcile `crm`, after the deploy is healthy, never as part of it.**
    New dangerous permission `crm.lead.lead.read_sensitive` (default `OWN`, max `ORG`);
    `CRM_LEADS_ADMIN` gains it at `ORG`, `CRM_LEAD_REP` at `OWN`; `CRM_SALES_REP` gains
@@ -509,8 +562,12 @@ separately.** In order:
    dashboard cannot send it twice, but a lost response followed by a manual retry would. A 409
    would be kinder.
 9. **The three unmask routes outside CRM still take `otp` alone** (risk 5): employee, storefront and
-   Engage. Deploying this release does not change them, and a session that gave a code at sign-in
-   still reveals there with no further code. Only the lead and customer routes require the step-up
-   marker; do not tell anyone the whole platform now demands a fresh code.
+   Engage. Deploying this release does not change them. **Enrolling HR administrators, storefront
+   members and Engage agents means their ordinary session tokens can unmask on those routes** — their
+   sessions carry `otp` from sign-in, for up to seven days — **until a follow-up wires `useStepUp`
+   into those UIs and adds the step-up marker to the three guards.** Enrolment there is a code at
+   sign-in, not a code per reveal. Only the lead and customer routes require the step-up marker; do
+   not tell anyone the whole platform now demands a fresh code. Each of the three routes has a test
+   (`..._still_passes_this_route_risk_5`) that fails when the gap is closed.
 10. **A converted lead's email is plaintext in the contact** (risk 13), so the step-up protects a
     lead's email only until it is converted. Pre-existing, accepted, and a follow-up.
