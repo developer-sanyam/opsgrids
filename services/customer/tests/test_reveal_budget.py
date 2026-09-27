@@ -379,19 +379,16 @@ class TestRevealBudget:
         assert "enforce_reveal_budget" not in inspect.getsource(routes._reveal_guard)
 
     async def test_a_redis_that_never_answers_is_the_same_503_and_is_not_waited_for(
-        self, client, session, org_id, data, admin_session, monkeypatch
+        self, client, session, org_id, data, admin_session, monkeypatch, redis: FakeRedis
     ) -> None:
         """The budget is spent inside the request's database transaction, so a Redis that neither
         answers nor refuses must not hold the connection until some socket timeout: it is bounded,
         and over the bound it is an outage — nothing revealed, nothing recorded."""
         import asyncio
 
-        await _seal_a_number(session, org_id, data)
+        from app import services
 
-        async def _hangs(*args, **kwargs):  # type: ignore[no-untyped-def]
-            await asyncio.sleep(30)
-
-        monkeypatch.setattr(services, "enforce_rate_limit", _hangs)
+        redis.hang_on = 1
         monkeypatch.setattr(services, "_REVEAL_BUDGET_TIMEOUT_SECONDS", 0.05)
 
         with as_principal(_revealer(org_id)):
@@ -400,6 +397,119 @@ class TestRevealBudget:
         assert response.status_code == 503
         assert RAW not in response.text
         assert await _committed_reads(admin_session, org_id) == []
+
+    @pytest.mark.parametrize("server_ran_it", [False, True])
+    @pytest.mark.parametrize("hang_on", [1, 2, 3])
+    async def test_a_timeout_at_any_point_never_leaves_a_counter_without_an_expiry(
+        self,
+        client,
+        org_id,
+        data,
+        admin_session,
+        monkeypatch,
+        redis: FakeRedis,
+        hang_on,
+        server_ran_it,
+    ) -> None:
+        """Second review, m2. The check used to be an `INCR` and then an `EXPIRE` per window, so a
+        timeout between the two left a counter that never expired — for the daily window, a person
+        refused for ever. Now there is one round trip, and one that timed out either never reached
+        the server or ran there whole. Whichever round trip hangs, and whether or not the server had
+        already run it, every counter that exists has an expiry."""
+        import asyncio
+
+        from app import services
+
+        redis.hang_on = hang_on
+        redis.hang_after_apply = server_ran_it
+        monkeypatch.setattr(services, "_REVEAL_BUDGET_TIMEOUT_SECONDS", 0.05)
+
+        with as_principal(_revealer(org_id)):
+            response = await asyncio.wait_for(client.post(_path(data["contact_a_id"])), timeout=5)
+
+        assert set(redis.store) <= set(redis.expiries), "a counter was left with no expiry"
+        assert redis.round_trips == 1, "the budget check is one round trip"
+        if hang_on == 1:
+            assert response.status_code == 503
+            assert RAW not in response.text
+            assert await _committed_reads(admin_session, org_id) == []
+        else:
+            assert response.status_code == 200  # the hang was never reached
+
+    async def test_the_check_is_one_round_trip_bounded_by_one_timeout(
+        self, client, org_id, data, monkeypatch, redis: FakeRedis
+    ) -> None:
+        """Both windows are spent in a single step, so the worst case for a request is one timeout,
+        not one per window: a Redis that answers slower than the bound is a 503 after the bound,
+        and a healthy one is asked exactly once."""
+        import asyncio
+        import time
+
+        from app import services
+
+        with as_principal(_revealer(org_id)):
+            ok = await client.post(_path(data["contact_a_id"]))
+            assert ok.status_code == 200
+            assert redis.round_trips == 1
+            assert len(redis.store) == 2  # both windows, spent together
+
+            redis.hang_on = 2
+            monkeypatch.setattr(services, "_REVEAL_BUDGET_TIMEOUT_SECONDS", 0.3)
+            started = time.monotonic()
+            slow = await asyncio.wait_for(client.post(_path(data["contact_a_id"])), timeout=5)
+            elapsed = time.monotonic() - started
+
+        assert slow.status_code == 503
+        assert elapsed < 0.6, f"took {elapsed:.2f}s: more than one timeout was waited"
+
+    async def test_a_request_refused_for_the_burst_does_not_spend_the_daily_budget(
+        self, client, org_id, data, redis: FakeRedis, monkeypatch
+    ) -> None:
+        """A refusal spends nothing. Otherwise a stolen token, having spent the burst, could burn
+        the real person's day by hammering: each refused request would still count against it."""
+        _tighten(monkeypatch, burst=3, daily=1000)
+        with as_principal(_revealer(org_id)):
+            for _ in range(3):
+                assert (await client.post(_path(data["contact_a_id"]))).status_code == 200
+            for _ in range(25):
+                assert (await client.post(_path(data["contact_a_id"]))).status_code == 429
+
+        by_prefix = {key.split(":")[1]: count for key, count in redis.store.items()}
+        assert by_prefix == {"crm.reveal.burst": 3, "crm.reveal.daily": 3}
+
+    async def test_a_request_refused_for_the_day_does_not_spend_the_burst(
+        self, client, org_id, data, redis: FakeRedis, monkeypatch
+    ) -> None:
+        _tighten(monkeypatch, burst=1000, daily=2)
+        with as_principal(_revealer(org_id)):
+            for _ in range(2):
+                await client.post(_path(data["contact_a_id"]))
+            for _ in range(10):
+                refused = await client.post(_path(data["contact_a_id"]))
+                assert refused.status_code == 429
+                assert refused.headers["retry-after"] == "86400"
+
+        by_prefix = {key.split(":")[1]: count for key, count in redis.store.items()}
+        assert by_prefix == {"crm.reveal.burst": 2, "crm.reveal.daily": 2}
+
+    async def test_a_counter_that_somehow_lost_its_expiry_is_given_one_by_the_next_request(
+        self, client, org_id, data, redis: FakeRedis
+    ) -> None:
+        import time
+
+        principal = _revealer(org_id)
+        who = f"{org_id}:{principal.sub}"
+        now = int(time.time())
+        orphan = f"rl:crm.reveal.daily:{who}:{now // 86_400}"
+        redis.store[orphan] = 1  # a counter with no expiry
+        assert orphan not in redis.expiries
+
+        with as_principal(principal):
+            response = await client.post(_path(data["contact_a_id"]))
+
+        assert response.status_code == 200
+        assert redis.expiries[orphan] == 2 * 86_400
+        assert redis.store[orphan] == 2
 
     async def test_the_keys_are_ids_only_and_the_prefix_is_the_one_lead_uses(
         self, client, org_id, data, redis: FakeRedis

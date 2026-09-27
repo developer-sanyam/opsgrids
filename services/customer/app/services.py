@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 import uuid
 from datetime import datetime
 from typing import Any
@@ -37,7 +38,7 @@ from app.models import AuditLog, Company, Contact, OutboxEvent, Owner
 from app.schemas import CompanyPatch, ContactPatch, OwnerPatch
 from platform_core.audit import record_audit, record_sensitive_read
 from platform_core.auth import Principal, Scope, ScopeContext
-from platform_core.cache import enforce_rate_limit
+from platform_core.cache import get_redis
 from platform_core.errors import (
     ConflictProblem,
     ForbiddenProblem,
@@ -56,12 +57,41 @@ log = get_logger("customer.services")
 #: The daily reveal budget's window. Not a setting: "per day" is what the budget is called.
 _REVEAL_DAILY_WINDOW_SECONDS = 86_400
 
-#: The longest the reveal budget's Redis round trip may take. It is spent inside the request's
-#: database transaction (after the contact has been looked up and before it is opened), so an
-#: unreachable-but-not-refusing Redis — a dropped route, a stopped container behind a proxy — must
-#: not pin a pooled connection until some socket timeout nobody set. Over it is the same 503 an
+#: The longest the reveal budget's Redis round trip may take. There is exactly one round trip
+#: (`_REVEAL_BUDGET_SCRIPT`), so this is the whole cost of the check and the most a request can
+#: hold a pooled database connection for while it waits: the budget is spent inside the request's
+#: transaction (after the contact has been looked up and before it is opened). A Redis that neither
+#: answers nor refuses — a dropped route, a stopped container behind a proxy — is the same 503 an
 #: outage is: nothing is revealed.
 _REVEAL_BUDGET_TIMEOUT_SECONDS = 2.0
+
+#: Spend one reveal from **both** windows, or from **neither**, in one atomic step on the server.
+#: `KEYS` are the burst and the daily counter; `ARGV` are their limits and their TTLs.
+#:
+#: * **One round trip and one atomic step**, so a timeout or a dropped connection cannot land
+#:   between an `INCR` and its `EXPIRE` and leave a counter that never expires (which, for a
+#:   daily counter, would refuse its user for ever). The server runs a script to completion once
+#:   it has it whatever the client does next, and does not run one it never received.
+#: * **The expiry is set whenever there is none** (`TTL < 0`), not only when the count is 1, so a
+#:   counter that somehow lost its expiry is healed by the next request.
+#: * **A refused request spends nothing.** A caller who is over the burst limit does not also burn
+#:   the daily budget with the requests that are refused, so a stolen token cannot exhaust the
+#:   real person's day by hammering after the burst is spent. It answers `1` (burst spent) or `2`
+#:   (daily spent) with the current counts, and `0` when it spent.
+#:
+#: Duplicated in lead- and customer-service, which share the counters (the same keys), and pinned
+#: equal by `tests/infra/test_reveal_budget_parity.py`. Keep them identical.
+_REVEAL_BUDGET_SCRIPT = """
+local burst = tonumber(redis.call('GET', KEYS[1]) or '0')
+local daily = tonumber(redis.call('GET', KEYS[2]) or '0')
+if burst >= tonumber(ARGV[1]) then return {1, burst, daily} end
+if daily >= tonumber(ARGV[2]) then return {2, burst, daily} end
+burst = redis.call('INCR', KEYS[1])
+if redis.call('TTL', KEYS[1]) < 0 then redis.call('EXPIRE', KEYS[1], ARGV[3]) end
+daily = redis.call('INCR', KEYS[2])
+if redis.call('TTL', KEYS[2]) < 0 then redis.call('EXPIRE', KEYS[2], ARGV[4]) end
+return {0, burst, daily}
+"""
 
 
 class CompanyDeletedProblem(ConflictProblem):
@@ -962,9 +992,9 @@ async def enforce_reveal_budget(ctx: ScopeContext, *, request: Request | None = 
     Two fixed windows, both keyed on the organization *and* the user, so one person's budget is
     never another's and the same person in two organizations has two (a membership is
     per-organization): `reveal_burst_limit` per `reveal_burst_window_seconds`, and
-    `reveal_daily_limit` per UTC day. The keys are shared with lead-service's lead reveal on
-    purpose — the thing being bounded is how much PII one person can read, and two routes with
-    two budgets would double it. **Keep the key prefix identical to lead's.**
+    `reveal_daily_limit` per UTC day. The keys are shared with lead-service's reveal on purpose
+    — the thing being bounded is how much PII one person can read, and two routes with two budgets
+    would double it. **Keep the key prefix identical to lead-service's.**
 
     **Spent when a contact is about to be opened, not when a request arrives.** It runs after the
     permission, the step-up and the entitlement have passed and after the contact has been shown
@@ -972,37 +1002,51 @@ async def enforce_reveal_budget(ctx: ScopeContext, *, request: Request | None = 
     (`reveal_contact_phone`). A request that was going to be refused spends nothing, so a stolen
     token cannot exhaust the real person's budget with invalid ids or contacts they may not touch,
     and cannot deny them the reveals they are entitled to. What it costs: probing with ids that
-    turn out to be foreign or absent is no longer counted here, only by the gateway's own limits
-    — and it reads nothing, since absent and foreign are the same 404.
+    turn out to be foreign or absent is no longer counted here, only by the gateway's own limits —
+    and it reads nothing, since absent and foreign are the same 404.
 
-    A window is fixed, not sliding: a caller can spend the end of one and the start of the next
-    (`platform_core.cache.enforce_rate_limit`).
+    A window is fixed, not sliding: a caller can spend the end of one and the start of the next.
+    Both windows are spent — or both refused, with nothing spent — in **one** round trip
+    (`_REVEAL_BUDGET_SCRIPT`), bounded by **one** timeout, so the whole check costs the request at
+    most `_REVEAL_BUDGET_TIMEOUT_SECONDS` of a held database connection.
 
-    **Fails closed**, and bounded: `enforce_rate_limit` answers 503 when Redis cannot be reached,
-    and a Redis that neither answers nor refuses is the same 503 after
-    `_REVEAL_BUDGET_TIMEOUT_SECONDS`, so a Redis outage stops reveals rather than lifting their
-    limit or holding a database connection. Nothing else in this service uses Redis.
+    **Fails closed.** Redis unreachable, erroring, not opened in this process, or not answering in
+    `_REVEAL_BUDGET_TIMEOUT_SECONDS` is a 503: a Redis outage stops reveals rather than lifting
+    their limit. Nothing else in this service uses Redis.
     """
     cfg = settings()
     who = f"{ctx.organization_id}:{ctx.principal.sub}"
-    budgets = (
-        ("burst", cfg.reveal_burst_limit, cfg.reveal_burst_window_seconds),
-        ("daily", cfg.reveal_daily_limit, _REVEAL_DAILY_WINDOW_SECONDS),
-    )
-    for name, limit, window_seconds in budgets:
-        try:
-            async with asyncio.timeout(_REVEAL_BUDGET_TIMEOUT_SECONDS):
-                await enforce_rate_limit(
-                    f"crm.reveal.{name}:{who}", limit=limit, window_seconds=window_seconds
-                )
-        except RateLimitedProblem:
-            log_reveal_refused(ctx.principal, reason=f"rate_limited_{name}", request=request)
-            raise
-        except TimeoutError as exc:
-            log.error("contact.reveal.budget_timeout", window=name)
-            raise UpstreamUnavailableProblem(
-                "Cannot verify request limits right now. Please retry shortly."
-            ) from exc
+    now = int(time.time())
+    burst_window = cfg.reveal_burst_window_seconds
+    daily_window = _REVEAL_DAILY_WINDOW_SECONDS
+    # The keys `platform_core.cache.enforce_rate_limit` would have used for the same windows.
+    burst_key = f"rl:crm.reveal.burst:{who}:{now // burst_window}"
+    daily_key = f"rl:crm.reveal.daily:{who}:{now // daily_window}"
+    try:
+        async with asyncio.timeout(_REVEAL_BUDGET_TIMEOUT_SECONDS):
+            verdict, _burst, _daily = await get_redis().eval(
+                _REVEAL_BUDGET_SCRIPT,
+                2,
+                burst_key,
+                daily_key,
+                cfg.reveal_burst_limit,
+                cfg.reveal_daily_limit,
+                # Two windows of slack, so a clock skew cannot orphan the key.
+                burst_window * 2,
+                daily_window * 2,
+            )
+    except Exception as exc:
+        log.error("contact.reveal.budget_unavailable", error=str(exc)[:120])
+        raise UpstreamUnavailableProblem(
+            "Cannot verify request limits right now. Please retry shortly."
+        ) from exc
+
+    if verdict != 0:
+        window, name = (burst_window, "burst") if verdict == 1 else (daily_window, "daily")
+        log_reveal_refused(ctx.principal, reason=f"rate_limited_{name}", request=request)
+        problem = RateLimitedProblem("Too many requests. Please slow down.")
+        problem.headers = {"Retry-After": str(window)}
+        raise problem
 
 
 async def reveal_contact_phone(
