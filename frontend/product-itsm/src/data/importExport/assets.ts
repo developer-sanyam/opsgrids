@@ -10,7 +10,6 @@ import {
   numberOf,
   optionOf,
   requiredTextOf,
-  sameKey,
   storedText,
   textOf,
   upperCased,
@@ -180,9 +179,27 @@ const notes = [
   `Cost is written in whole currency units, for example 84500 or 84500.50, with the currency in the next column. On a new asset, a blank currency means ${DEFAULT_CURRENCY}.`,
   "Owner is free text, such as a person's name or a team. It is not matched against your users.",
   "Dates can be Excel dates or written as YYYY-MM-DD, for example 2026-04-01.",
-  "Updating: a blank Cost currency keeps the asset's own currency, so a cost is read in that currency and not in INR. Changing the currency does not convert the cost: a row that changes it must also give Cost in the new currency, or it is refused.",
+  "Updating: an asset is found by its tag exactly as it is stored, and capitals count: LT-2041 and lt-2041 are two different tags. A row whose tag differs from an asset's only in capitals is refused with the tag as it is stored. Assets have no Record ID, so the tag written exactly is the only way to name one.",
+  "Updating: a blank Cost currency keeps the asset's own currency, so a cost is read in that currency and not in INR. Changing the currency does not convert the cost: a row that changes it must also give Cost in the new currency (0 is fine for an asset that has none), or it is refused.",
   "Updating: changing Owner changes only the name shown, not whose asset it is for permissions. A person who can see only their own assets cannot see, and so cannot update, anyone else's.",
 ];
+
+/**
+ * The key of `AssetUpdate` each updatable column is sent under, so a key the schema does not have
+ * is a type error and not a request the server answers with a 422.
+ */
+const WIRE = {
+  name: "name",
+  type: "type",
+  status: "status",
+  owner: "owner",
+  location: "location",
+  serial: "serial",
+  purchased_at: "purchased_at",
+  warranty_expires_at: "warranty_expires_at",
+  cost: "cost_minor",
+  cost_currency: "cost_currency",
+} as const satisfies Record<string, keyof AssetUpdate>;
 
 /**
  * How an existing asset is updated from a sheet. `PATCH /itsm/assets/{tag}` takes the tag in the
@@ -191,11 +208,15 @@ const notes = [
  * `immutable`, only the three columns the survey found nullable are cleared with `null`, Location
  * and Serial with `""` (their columns are never null), and cost and its currency are never
  * cleared. A currency change also needs the cost: the server relabels an amount and does not
- * convert it.
+ * convert it, and a stored cost of 0 is no exception, so the rule is the same whatever is on file
+ * (the Projects update follows it too).
+ *
+ * The tag is matched exactly (the engine's default): the server keeps `LT-2041` and `lt-2041` as
+ * two assets, and an asset has no Record ID to tell them apart with.
  */
 const assetUpdate: UpdateSpec<Asset> = {
   loadExisting: (ctx) =>
-    collectPages((page, size) => listAssets({ page, size }), {
+    collectPages((page, size) => listAssets({ page, size, signal: ctx.signal }), {
       signal: ctx.signal,
       key: (asset) => asset.tag,
     }),
@@ -203,19 +224,30 @@ const assetUpdate: UpdateSpec<Asset> = {
   idOf: (asset) => asset.tag,
   keyColumn: "tag",
   keyOf: (asset) => asset.tag,
+  recordLabel: (asset) => `${asset.tag} · ${asset.name}`,
   currencyOf: (asset) => asset.cost_currency,
   fields: [
-    { column: "tag", current: (a) => a.tag, immutable: true, same: sameKey },
-    { column: "name", current: (a) => a.name },
-    { column: "type", current: (a) => a.type },
-    { column: "status", current: (a) => a.status },
-    { column: "owner", current: (a) => storedText(a.owner), clear: null },
-    { column: "location", current: (a) => storedText(a.location), clear: "" },
-    { column: "serial", current: (a) => storedText(a.serial), clear: "" },
-    { column: "purchased_at", current: (a) => a.purchased_at, clear: null },
-    { column: "warranty_expires_at", current: (a) => a.warranty_expires_at, clear: null },
-    { column: "cost", field: "cost_minor" satisfies keyof AssetUpdate, current: (a) => a.cost_minor },
-    { column: "cost_currency", current: (a) => a.cost_currency.toUpperCase(), resolve: upperCased },
+    { column: "tag", current: (a) => a.tag, immutable: true },
+    { column: "name", field: WIRE.name, current: (a) => a.name },
+    { column: "type", field: WIRE.type, current: (a) => a.type },
+    { column: "status", field: WIRE.status, current: (a) => a.status },
+    { column: "owner", field: WIRE.owner, current: (a) => storedText(a.owner), clear: null },
+    { column: "location", field: WIRE.location, current: (a) => storedText(a.location), clear: "" },
+    { column: "serial", field: WIRE.serial, current: (a) => storedText(a.serial), clear: "" },
+    { column: "purchased_at", field: WIRE.purchased_at, current: (a) => a.purchased_at, clear: null },
+    {
+      column: "warranty_expires_at",
+      field: WIRE.warranty_expires_at,
+      current: (a) => a.warranty_expires_at,
+      clear: null,
+    },
+    { column: "cost", field: WIRE.cost, current: (a) => a.cost_minor },
+    {
+      column: "cost_currency",
+      field: WIRE.cost_currency,
+      current: (a) => a.cost_currency.toUpperCase(),
+      resolve: upperCased,
+    },
   ],
   check(row, asset) {
     const named = textOf(row, "cost_currency")?.toUpperCase();
@@ -227,8 +259,8 @@ const assetUpdate: UpdateSpec<Asset> = {
     }
   },
   async send(asset, body) {
-    // The tag is the URL's, never the body's. The body holds only the keys this spec's fields
-    // name, all of them keys of `AssetUpdate`.
+    // The tag is the URL's, never the body's. The body holds only the keys of `WIRE`, all of them
+    // keys of `AssetUpdate`, and each value is what its own column parsed to.
     await updateAsset(asset.tag, body as AssetUpdate);
   },
 };
@@ -276,13 +308,14 @@ export const assetsEntity = defineImportEntity<AssetIn, Asset, AssetFilters>({
     return { id: asset.tag };
   },
   export: {
-    fetchPage: ({ page, size, filters }) =>
+    fetchPage: ({ page, size, filters, signal }) =>
       listAssets({
         search: filters.search,
         type: filters.type,
         status: filters.status,
         page,
         size,
+        signal,
       }),
     toRow: (asset) => ({
       tag: asset.tag,

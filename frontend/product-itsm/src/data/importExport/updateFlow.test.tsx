@@ -326,8 +326,8 @@ describe("updating assets from Excel", () => {
 
       await reviewFor(
         await importFile([
-          // 2: found by its tag in any case; two fields differ.
-          { tag: "lt-0001", status: "In repair", location: "Pune office" },
+          // 2: found by its tag; two fields differ.
+          { tag: "LT-0001", status: "In repair", location: "Pune office" },
           // 3: every cell agrees with the record, the cost in the record's own currency, kwd in lower case.
           {
             tag: "MN-0002",
@@ -453,7 +453,7 @@ describe("updating assets from Excel", () => {
           // 7: fine.
           { tag: "LT-0001", status: "Retired" },
           // 8: the same asset as row 7.
-          { tag: "lt-0001", owner: "Someone else" },
+          { tag: "LT-0001", owner: "Someone else" },
           // 9: a fraction of a yen: read in the record's own currency, which has no decimals.
           { tag: "SW-0003", cost: "1.5" },
         ]),
@@ -657,6 +657,40 @@ describe("updating assets from Excel", () => {
       expect(figure("Updates")).toBe("0");
       expect(figure("Need fixing")).toBe("1");
       expect(gateway.writes()).toEqual([]);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "aborts the request in flight when the screen is left, instead of reading the register on",
+    async () => {
+      const listSignals: AbortSignal[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((input: string, init?: RequestInit) => {
+          const url = new URL(input, "http://gateway.test");
+          const given = init?.signal;
+          if (url.pathname === "/api/v1/itsm/assets" && given instanceof AbortSignal) {
+            listSignals.push(given);
+            return new Promise<Response>((_, reject) => {
+              given.addEventListener("abort", () => reject(given.reason as Error), { once: true });
+            });
+          }
+          throw new Error(`Unexpected request: ${input}`);
+        }),
+      );
+      const user = userEvent.setup();
+      const view = render(<Harness />);
+      await user.click(screen.getByRole("button", { name: "Import / Export" }));
+      await screen.findByRole("dialog", { name: "Import / Export assets" });
+      await user.click(screen.getByRole("radio", { name: UPDATE_MODE }));
+      await user.upload(fileInput(), await importFile([{ tag: "LT-0001", status: "In repair" }]));
+
+      await waitFor(() => expect(listSignals.length).toBeGreaterThan(0));
+      expect(listSignals.some((given) => given.aborted)).toBe(false);
+
+      view.unmount();
+      expect(listSignals.every((given) => given.aborted)).toBe(true);
     },
     TEST_TIMEOUT,
   );

@@ -556,6 +556,8 @@ export interface ListAssetsParams {
   status?: AssetStatus | "all";
   page?: number;
   size?: number;
+  /** Aborts the request: the import/export dialog cancels a load or an export with it. */
+  signal?: AbortSignal | undefined;
 }
 
 export async function listAssets(params: ListAssetsParams = {}): Promise<Page<Asset>> {
@@ -584,7 +586,7 @@ export async function listAssets(params: ListAssetsParams = {}): Promise<Page<As
   if (params.search?.trim()) query.set("q", params.search.trim());
   if (params.type && params.type !== "all") query.set("type", params.type);
   if (params.status && params.status !== "all") query.set("status", params.status);
-  return apiRequest<Page<Asset>>(`/itsm/assets?${query.toString()}`);
+  return apiRequest<Page<Asset>>(`/itsm/assets?${query.toString()}`, { signal: params.signal });
 }
 
 export async function getAsset(tag: string): Promise<Asset> {
