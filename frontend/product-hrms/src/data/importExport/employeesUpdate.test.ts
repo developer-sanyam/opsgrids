@@ -366,7 +366,7 @@ describe("what a row changes", () => {
       status: "exited",
       date_of_exit: "2026-02-01",
       pii: "x",
-      pan: "ABCDE1234F",
+      pan: "ABCDE1234F", // pragma: allowlist secret
     });
     expect(Object.keys(body)).toEqual(["full_name"]);
   });
