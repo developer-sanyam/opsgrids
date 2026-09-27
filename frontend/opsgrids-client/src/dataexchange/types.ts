@@ -155,8 +155,10 @@ export interface UpdateField<Item> {
   /** The key sent in the update body. Default: `column`. */
   field?: string | undefined;
   /** The stored value, in the parsed cell's own terms (money as minor units, an ISO date, an
-   *  enum's `value`, a lookup's *value*), with an empty stored value as `null`. */
-  current(item: Item, ctx: ImportContext): ParsedValue;
+   *  enum's `value`, a lookup's *value*), with an empty stored value as `null`. `undefined` means
+   *  the list never returns it (opening stock): an immutable field then refuses any filled cell
+   *  without claiming what is stored, and an updatable one is always sent. */
+  current(item: Item, ctx: ImportContext): ParsedValue | undefined;
   /** Turns the parsed cell into the stored terms when they differ (a lookup column's parsed value
    *  is its label; return the id or code the list stores). May throw `RowProblem`. */
   resolve?: ((value: ParsedValue, ctx: ImportContext) => ParsedValue) | undefined;

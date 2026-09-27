@@ -148,6 +148,29 @@ describe("what a row changes", () => {
     expect(() => plan({ sku: "AB-2" })).toThrow("SKU cannot be changed once the record exists (it is 'AB-1')");
   });
 
+  it("refuses any value for an immutable field the list never returns, without claiming what is stored", () => {
+    const unknowable: UpdateSpec<Stored> = {
+      ...spec,
+      fields: [{ column: "price", current: () => undefined, immutable: true }],
+    };
+    const attempt = () => planUpdate(columns, unknowable, { price: 0 }, new Set(), stored, ctx);
+    expect(attempt).toThrow("Price cannot be changed once the record exists. Leave the cell blank.");
+    expect(attempt).not.toThrow(/it is/);
+    expect(planUpdate(columns, unknowable, { price: null }, new Set(), stored, ctx)).toBeNull();
+  });
+
+  it("always sends an updatable field whose stored value the list never returns", async () => {
+    send.mockClear();
+    const unknowable: UpdateSpec<Stored> = {
+      ...spec,
+      fields: [{ column: "price", field: "price_minor", current: () => undefined }],
+    };
+    const p = planUpdate(columns, unknowable, { price: 5 }, new Set(), stored, ctx);
+    expect(p?.changed).toEqual(["Price"]);
+    await p?.run();
+    expect(send.mock.calls[0]?.[1]).toEqual({ price_minor: 5 });
+  });
+
   it("refuses to clear an immutable field", () => {
     expect(() => plan({ sku: null }, ["sku"])).toThrow("SKU cannot be cleared");
   });

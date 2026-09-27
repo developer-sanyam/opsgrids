@@ -120,6 +120,10 @@ export function buildUpdate<Item>(
     if (field.immutable === true) {
       if (wantsClear) throw new RowProblem(`${header} cannot be cleared: it cannot be changed once the record exists`);
       const value = resolved(field, cell as ParsedValue, ctx);
+      if (stored === undefined) {
+        // The list never returns it (opening stock), so we cannot say it is unchanged: refuse any value.
+        throw new RowProblem(`${header} cannot be changed once the record exists. Leave the cell blank.`);
+      }
       if (!sameValue(field, value, stored)) {
         throw new RowProblem(
           `${header} cannot be changed once the record exists (it is ${shown(stored)}). Leave the cell as it is, or blank.`,
@@ -137,7 +141,8 @@ export function buildUpdate<Item>(
     }
 
     const value = resolved(field, cell as ParsedValue, ctx);
-    if (sameValue(field, value, stored)) continue;
+    // A value the list never returns cannot be compared, so it counts as different and is sent.
+    if (sameValue(field, value, stored ?? null)) continue;
     body[field.field ?? field.column] = field.toWire === undefined ? value : field.toWire(value);
     changed.push(header);
   }

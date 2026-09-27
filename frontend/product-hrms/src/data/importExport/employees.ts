@@ -1,13 +1,29 @@
-import { collectPages, defineImportEntity, makeLookup } from "@opsgrids/client";
-import type { ImportColumn, Lookup, LookupSet, SheetValue } from "@opsgrids/client";
+import { RowProblem, collectPages, defineImportEntity, makeLookup } from "@opsgrids/client";
+import type { ImportColumn, Lookup, LookupSet, SheetValue, UpdateSpec } from "@opsgrids/client";
 
-import { createEmployee, listEmployees } from "@/api/client";
-import type { EmployeeIn, EmployeeOut, EmployeeStatus, EmploymentType, WorkMode } from "@/api/types";
+import { createEmployee, listEmployees, updateEmployee } from "@/api/client";
+import type {
+  EmployeeIn,
+  EmployeeOut,
+  EmployeePatch,
+  EmployeeStatus,
+  EmploymentType,
+  WorkMode,
+} from "@/api/types";
 import { employeeStatusLabel } from "@/lib/format";
 
 import { departmentEntries, loadOrgUnitTree } from "./departments";
 import { loadLocations, locationEntries } from "./locations";
-import { labelOfOption, optionOf, requiredTextOf, resolveReference, textOf } from "./rowValues";
+import {
+  labelOfOption,
+  optionOf,
+  requiredTextOf,
+  resolveLookup,
+  resolveReference,
+  sameKey,
+  storedText,
+  textOf,
+} from "./rowValues";
 
 /** What the Employees screen tracks, and so what an export of it must respect. */
 export interface EmployeeFilters {
@@ -203,13 +219,16 @@ const sampleRows: readonly Record<string, SheetValue>[] = [
 ];
 
 const notes = [
-  "Employee numbers must be unique. A row whose number already exists is skipped, never updated.",
+  "Employee numbers must be unique. With \"Add new records only\", a row whose number already exists is skipped, never updated.",
   "A manager is found by employee number and must already be an employee. A manager created in this same file is not found and the row is refused: import the managers first, then run this file again.",
   "A department is found by its name or by its code. Where two departments share a name, write it as Parent / Child, or use the code; the Lists sheet shows both.",
   "A location is found by its code or its name, and is saved as its code. An employee whose location is not one of your organisation's locations is not seen by location-based roles, so a location that is not on the Lists sheet is refused.",
   "Everyone imported starts on Probation. Status cannot be set from a sheet.",
-  "A row with a Record ID came out of the system and is already there, so it is refused. To use an exported file as a starting point, delete its Record ID column first.",
+  "A row with a Record ID came out of the system and is already there, so \"Add new records only\" refuses it. To use an exported file as a starting point, delete its Record ID column first. With \"Add new and update existing\", the Record ID says which employee to update.",
   "Personal and sensitive details (date of birth, personal email and phone, PAN, Aadhaar, UAN, ESI, bank account) cannot be imported. They are added one employee at a time and stay masked.",
+  "Updating: the employee number cannot be changed, so a row that names an employee by Record ID must carry that employee's own number or leave it blank. Status and date of exit cannot be changed from a sheet, and neither can the personal and sensitive details above. Employees who have exited can still be updated.",
+  "Updating: [clear] empties Designation, Job title, Department, Location code, Date of joining, Manager employee number and Dotted-line manager employee number. Full name, Employment type and Work mode cannot be emptied: leave them blank to keep them.",
+  "Updating: a manager is sent only when it differs from the employee's current one. An employee cannot be their own manager, and a reporting line that would become circular is refused by the server. The server lets only someone with organisation-wide access update employees; for anyone else every updated row is refused.",
 ];
 
 /** The sheet text for a department or manager id: blank when there is none or the caller cannot name it. */
@@ -235,6 +254,76 @@ async function loadLookups(signal: AbortSignal): Promise<LookupSet> {
   };
 }
 
+/**
+ * How an existing employee is updated from a sheet. Every field here is a key of `PATCH
+ * /employees/{id}`, whose schema silently ignores keys it does not know (employee number, status)
+ * and answers 200 with nothing changed, so an identity column is `immutable` and refused rather
+ * than sent. The endpoint has no null guard either: only the fields the survey found nullable
+ * carry a `clear`, and it is `null`, never `""` (an empty location code would break
+ * location-scoped roles). Department and location code are not validated by the server, so
+ * `resolve` through the lookups is the only guard against an id or code that does not exist.
+ */
+const employeeUpdate: UpdateSpec<EmployeeOut> = {
+  loadExisting: (ctx) =>
+    collectPages((page, size) => listEmployees({ page, size }), {
+      signal: ctx.signal,
+      key: (employee) => employee.id,
+    }),
+  idOf: (employee) => employee.id,
+  keyColumn: "employee_no",
+  keyOf: (employee) => employee.employee_no,
+  fields: [
+    { column: "employee_no", current: (e) => e.employee_no, immutable: true, same: sameKey },
+    { column: "full_name", current: (e) => e.full_name },
+    { column: "designation", current: (e) => storedText(e.designation), clear: null },
+    { column: "job_title", current: (e) => storedText(e.job_title), clear: null },
+    {
+      column: "department",
+      field: "department_id" satisfies keyof EmployeePatch,
+      current: (e) => e.department_id,
+      resolve: resolveLookup(DEPARTMENTS),
+      clear: null,
+    },
+    {
+      column: "location_code",
+      current: (e) => storedText(e.location_code),
+      resolve: resolveLookup(LOCATIONS),
+      clear: null,
+    },
+    { column: "employment_type", current: (e) => e.employment_type },
+    { column: "work_mode", current: (e) => e.work_mode },
+    { column: "date_of_joining", current: (e) => e.date_of_joining, clear: null },
+    {
+      column: "reporting_manager",
+      field: "reporting_manager_id" satisfies keyof EmployeePatch,
+      current: (e) => e.reporting_manager_id,
+      resolve: resolveLookup(MANAGERS),
+      clear: null,
+    },
+    {
+      column: "dotted_line_manager",
+      field: "dotted_line_manager_id" satisfies keyof EmployeePatch,
+      current: (e) => e.dotted_line_manager_id,
+      resolve: resolveLookup(MANAGERS),
+      clear: null,
+    },
+  ],
+  check(row, employee, _changed, { lookups }) {
+    const namesThemselves = (key: string): boolean => {
+      const label = textOf(row, key);
+      return label !== null && lookups[MANAGERS]?.resolve(label) === employee.id;
+    };
+    if (namesThemselves("reporting_manager")) throw new RowProblem("An employee cannot report to themselves.");
+    if (namesThemselves("dotted_line_manager")) {
+      throw new RowProblem("An employee cannot be their own dotted-line manager.");
+    }
+  },
+  async send(employee, body) {
+    // The body holds only the keys this spec's fields name, all of them keys of `EmployeePatch`.
+    await updateEmployee(employee.id, body as EmployeePatch);
+  },
+};
+
 export const employeesEntity = defineImportEntity<EmployeeIn, EmployeeOut, EmployeeFilters>({
   id: "hrms.employees",
   noun: "employees",
@@ -245,6 +334,7 @@ export const employeesEntity = defineImportEntity<EmployeeIn, EmployeeOut, Emplo
   notes,
   recordIdKey: "id",
   loadLookups,
+  update: employeeUpdate,
   toPayload(row, { lookups }) {
     const body: EmployeeIn = {
       employee_no: requiredTextOf(row, "employee_no", "Employee number"),

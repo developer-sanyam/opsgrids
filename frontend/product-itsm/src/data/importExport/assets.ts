@@ -1,11 +1,20 @@
-import { RowProblem, defineImportEntity, minorToMajor } from "@opsgrids/client";
-import type { ImportColumn, SheetValue } from "@opsgrids/client";
+import { RowProblem, collectPages, defineImportEntity, minorToMajor } from "@opsgrids/client";
+import type { ImportColumn, SheetValue, UpdateSpec } from "@opsgrids/client";
 
-import { createAsset, listAssets } from "@/api/client";
-import type { Asset, AssetIn, AssetStatus, AssetType } from "@/api/types";
+import { createAsset, listAssets, updateAsset } from "@/api/client";
+import type { Asset, AssetIn, AssetStatus, AssetType, AssetUpdate } from "@/api/types";
 import { assetStatusLabel, assetTypeLabel } from "@/lib/format";
 
-import { labelOfOption, numberOf, optionOf, requiredTextOf, textOf } from "./rowValues";
+import {
+  labelOfOption,
+  numberOf,
+  optionOf,
+  requiredTextOf,
+  sameKey,
+  storedText,
+  textOf,
+  upperCased,
+} from "./rowValues";
 
 /** What the Assets screen tracks, and so what an export of it must respect. */
 export interface AssetFilters {
@@ -165,13 +174,66 @@ const sampleRows: readonly Record<string, SheetValue>[] = [
 ];
 
 const notes = [
-  "Asset tags must be unique. A row whose tag already exists is skipped, never updated.",
+  "Asset tags must be unique. With \"Add new records only\", a row whose tag already exists is skipped, never updated.",
   "A tag that once belonged to an asset that was later deleted still cannot be used again. The server reports it as a conflict without saying why, so a row that is refused as already existing may be a deleted asset's tag: choose another tag.",
   "Every imported asset is recorded as belonging to the person who runs the import, whatever the Owner column says: Owner is only the name shown. A person who can see only their own assets sees exactly the ones they imported.",
   `Cost is written in whole currency units, for example 84500 or 84500.50, with the currency in the next column. A blank currency means ${DEFAULT_CURRENCY}.`,
   "Owner is free text, such as a person's name or a team. It is not matched against your users.",
   "Dates can be Excel dates or written as YYYY-MM-DD, for example 2026-04-01.",
+  "Updating: the asset tag says which asset a row is about and cannot be changed. An export has no Record ID for assets, so the tag is the only way to name one.",
+  "Updating: [clear] empties Owner, Location, Serial number, Purchase date and Warranty expires. Name, Type, Status, Cost and Cost currency cannot be emptied: leave them blank to keep them.",
+  "Updating: a blank Cost currency keeps the asset's own currency, so a cost is read in that currency and not in INR. Changing the currency does not convert the cost: a row that changes it must also give Cost in the new currency, or it is refused.",
+  "Updating: changing Owner changes only the name shown, not whose asset it is for permissions. A person who can see only their own assets cannot see, and so cannot update, anyone else's.",
 ];
+
+/**
+ * How an existing asset is updated from a sheet. `PATCH /itsm/assets/{tag}` takes the tag in the
+ * URL and refuses it in the body, refuses an empty body, forbids unknown keys and has no null
+ * guard (a null on a required column is a 409, and on `cost_currency` a 500). So the tag is
+ * `immutable`, only the three columns the survey found nullable are cleared with `null`, Location
+ * and Serial with `""` (their columns are never null), and cost and its currency are never
+ * cleared. A currency change also needs the cost: the server relabels an amount and does not
+ * convert it.
+ */
+const assetUpdate: UpdateSpec<Asset> = {
+  loadExisting: (ctx) =>
+    collectPages((page, size) => listAssets({ page, size }), {
+      signal: ctx.signal,
+      key: (asset) => asset.tag,
+    }),
+  // An asset has no id column: its tag is both the natural key and what the URL carries.
+  idOf: (asset) => asset.tag,
+  keyColumn: "tag",
+  keyOf: (asset) => asset.tag,
+  currencyOf: (asset) => asset.cost_currency,
+  fields: [
+    { column: "tag", current: (a) => a.tag, immutable: true, same: sameKey },
+    { column: "name", current: (a) => a.name },
+    { column: "type", current: (a) => a.type },
+    { column: "status", current: (a) => a.status },
+    { column: "owner", current: (a) => storedText(a.owner), clear: null },
+    { column: "location", current: (a) => storedText(a.location), clear: "" },
+    { column: "serial", current: (a) => storedText(a.serial), clear: "" },
+    { column: "purchased_at", current: (a) => a.purchased_at, clear: null },
+    { column: "warranty_expires_at", current: (a) => a.warranty_expires_at, clear: null },
+    { column: "cost", field: "cost_minor" satisfies keyof AssetUpdate, current: (a) => a.cost_minor },
+    { column: "cost_currency", current: (a) => a.cost_currency.toUpperCase(), resolve: upperCased },
+  ],
+  check(row, asset) {
+    const named = textOf(row, "cost_currency")?.toUpperCase();
+    if (named === undefined || named === asset.cost_currency.toUpperCase()) return;
+    if (numberOf(row, "cost") === null) {
+      throw new RowProblem(
+        `Cost currency would change from ${asset.cost_currency} to ${named}, but changing it does not convert the cost. Give Cost in ${named} too, or leave Cost currency blank.`,
+      );
+    }
+  },
+  async send(asset, body) {
+    // The tag is the URL's, never the body's. The body holds only the keys this spec's fields
+    // name, all of them keys of `AssetUpdate`.
+    await updateAsset(asset.tag, body as AssetUpdate);
+  },
+};
 
 export const assetsEntity = defineImportEntity<AssetIn, Asset, AssetFilters>({
   id: "itsm.assets",
@@ -181,6 +243,7 @@ export const assetsEntity = defineImportEntity<AssetIn, Asset, AssetFilters>({
   columns,
   sampleRows,
   notes,
+  update: assetUpdate,
   toPayload(row) {
     const type = optionOf(row, "type", TYPE_OPTIONS);
     if (type === null) throw new RowProblem("Type is required.");
