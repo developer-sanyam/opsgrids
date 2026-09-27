@@ -139,6 +139,18 @@ unchanged) or **Add new and update existing**, on lists whose entity declares an
 - **A 409 is a failure in update mode**, never "skipped": "a company with that name already exists" on
   a rename is a collision the user must see.
 - **Results** gain `updated` and `unchanged` beside created / skipped / failed / invalid.
+- **One row per record.** A second row that resolves to a record an earlier row already updates is
+  refused ("This row updates the same record as row N"), so the outcome never depends on row order.
+- **A row found by its key names the record by that cell.** Its key cell is taken as the stored
+  key, so a difference in capitals or spacing is not read as a rename or as a "different" immutable
+  code. A rename needs the Record ID, which is what makes the row unambiguous.
+- **A partial sheet is valid in update mode.** Required columns are enforced only for rows that
+  create; a file with just Record ID and one column updates that column and nothing else. Add mode
+  still requires every required column.
+- **Every request is its own step.** A row that changes fields and then a stage or a phone is two
+  requests, each spaced by the runner and each retried on its own after a 429. If a later step
+  fails, the row is reported failed with "The earlier changes to this row were saved.", never as if
+  nothing had happened.
 - **What this cannot protect against**, because the endpoints have no version or ETag: a concurrent edit
   to the same field between the load and the send is overwritten (last writer wins, per field sent).
   The dialog says so, and loads the records as late as it can. A warehouse or supplier rename also
