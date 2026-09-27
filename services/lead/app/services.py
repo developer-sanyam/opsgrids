@@ -46,21 +46,23 @@ from starlette.requests import Request
 from app import clients, domain, selectors
 from app.config import settings
 from app.models import AssignmentRule, AuditLog, Lead, OutboxEvent
-from app.schemas import LeadPatch
+from app.schemas import LeadPatch, RevealField
 from platform_core.audit import record_audit, record_sensitive_read
-from platform_core.auth import Scope, ScopeContext
+from platform_core.auth import Principal, Scope, ScopeContext
+from platform_core.cache import enforce_rate_limit
 from platform_core.db import assert_tenant, set_tenant
 from platform_core.errors import (
     ConflictProblem,
     ForbiddenProblem,
     NotFoundProblem,
+    RateLimitedProblem,
     UpstreamUnavailableProblem,
     ValidationProblem,
 )
 from platform_core.events import publish_event
 from platform_core.logging import get_logger
 from platform_core.models import utcnow
-from platform_core.pii import blind_index, open_sealed, seal
+from platform_core.pii import PiiError, blind_index, open_sealed, seal
 
 log = get_logger("lead.services")
 
@@ -649,6 +651,182 @@ async def update_lead(
         actor=_actor(ctx),
     )
     return lead
+
+
+# ------------------------------------------------------------------ revealing a sealed detail
+
+#: What the 404 says when the requested detail was never captured. Names only the field the
+#: caller asked about — it says nothing about the *other* one.
+_NOTHING_ON_FILE: dict[str, str] = {
+    "phone": "No phone number is on file for this lead",
+    "email": "No email address is on file for this lead",
+}
+
+#: The daily budget's window. Not a setting: "per day" is what the budget is called.
+_REVEAL_DAILY_WINDOW_SECONDS = 86_400
+
+
+def log_reveal_refused(
+    principal: Principal,
+    *,
+    reason: str,
+    lead_id: uuid.UUID | None = None,
+    field: str | None = None,
+    request: Request | None = None,
+) -> None:
+    """One structured WARNING per refused reveal: who, where, which lead, and why.
+
+    A log line, deliberately not an audit row. A refusal changes nothing, so it is not an
+    `entity.sensitive_read` (that action means a value was opened), and an audit table a prober
+    can grow one 403 at a time is a cost rather than a control. What a refusal *does* need is to
+    be visible — somebody walking lead ids, or a session without the step-up trying every field,
+    is exactly the pattern worth grepping for.
+
+    Never a value: the ids, the field's *name* and a reason code, nothing read from the lead.
+    `request_id` correlates the line with the request's other logs; it is whatever the client
+    sent as `X-Request-ID` when it sent one, so it locates a line and proves nothing about who
+    made the call — `actor_id` is the identity.
+    """
+    log.warning(
+        "lead.reveal.refused",
+        reason=reason,
+        organization_id=str(principal.organization_id),
+        actor_id=str(principal.sub),
+        lead_id=str(lead_id) if lead_id is not None else None,
+        field=field,
+        request_id=getattr(request.state, "request_id", None) if request is not None else None,
+    )
+
+
+async def enforce_reveal_budget(ctx: ScopeContext, *, request: Request | None = None) -> None:
+    """Spend one reveal from this user's budget in this organization, or raise 429.
+
+    Two fixed windows, both keyed on the organization *and* the user, so one person's budget is
+    never another's and the same person in two organizations has two (a membership is
+    per-organization): `reveal_burst_limit` per `reveal_burst_window_seconds`, and
+    `reveal_daily_limit` per UTC day. The keys are shared with customer-service's contact reveal
+    on purpose — the thing being bounded is how much PII one person can read, and two routes
+    with two budgets would double it.
+
+    Counted when the request arrives, after the permission and the step-up have passed and
+    before anything is looked up, so probing with ids that turn out to be foreign or absent
+    spends budget too. A window is fixed, not sliding: a caller can spend the end of one and the
+    start of the next (`platform_core.cache.enforce_rate_limit`).
+
+    **Fails closed.** `enforce_rate_limit` answers 503 when Redis cannot be reached, so a Redis
+    outage stops reveals rather than lifting their limit. Nothing else in this service uses
+    Redis.
+    """
+    cfg = settings()
+    who = f"{ctx.organization_id}:{ctx.principal.sub}"
+    budgets = (
+        ("burst", cfg.reveal_burst_limit, cfg.reveal_burst_window_seconds),
+        ("daily", cfg.reveal_daily_limit, _REVEAL_DAILY_WINDOW_SECONDS),
+    )
+    for name, limit, window_seconds in budgets:
+        try:
+            await enforce_rate_limit(
+                f"crm.reveal.{name}:{who}", limit=limit, window_seconds=window_seconds
+            )
+        except RateLimitedProblem:
+            log_reveal_refused(ctx.principal, reason=f"rate_limited_{name}", request=request)
+            raise
+
+
+async def reveal_lead_field(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    lead_id: uuid.UUID,
+    field: RevealField,
+    *,
+    request: Request | None = None,
+) -> str:
+    """Reveal a lead's real phone number or email to a human — the audited, stepped-up path.
+
+    Reaching here means the caller held `crm.lead.lead.read_sensitive` and stepped up
+    (`amr={"otp"}`). Everything else is decided here, in one function, so no caller can reach
+    the decrypt having skipped a check:
+
+    1. The lead is fetched inside the caller's organization. An id that is not there — or is
+       another organization's — is the same 404, so this route confirms nothing about lead ids
+       it should not.
+    2. The caller's scope is re-applied to this one lead (`assert_can_touch`, a 403): filtering
+       a list and forgetting the detail is the named vulnerability. Checked *before* whether a
+       value exists, so an out-of-scope caller cannot learn whether a lead has a phone.
+    3. Nothing sealed for the requested field is a 404 (`_NOTHING_ON_FILE`), never a 200 with a
+       null. No audit row is kept for it — nothing was disclosed, and the request's
+       transaction rolls back on the error.
+    4. The sealed value is opened with the same key context `create_lead` sealed it under.
+    5. An `entity.sensitive_read` audit row naming the **field only** is staged in the
+       caller's transaction, which commits before the response is sent
+       (`get_tenant_session`'s function-scoped exit): a revealed value never leaves without a
+       record that it was revealed. The value itself is never written anywhere, here or in a
+       log line.
+
+    Every refusal in 1-3 also logs one WARNING (`log_reveal_refused`) — not an audit row.
+
+    A converted lead still reveals — it keeps its own sealed copy, independent of the contact
+    conversion created on customer-service's side.
+    """
+    lead = await selectors.get_lead(session, ctx.organization_id, lead_id)
+    if lead is None:
+        log_reveal_refused(
+            ctx.principal, reason="lead_not_found", lead_id=lead_id, field=field, request=request
+        )
+        raise NotFoundProblem("That lead is not part of this organization")
+    try:
+        ctx.assert_can_touch(owner_id=lead.owner_id)
+    except ForbiddenProblem:
+        log_reveal_refused(
+            ctx.principal, reason="out_of_scope", lead_id=lead.id, field=field, request=request
+        )
+        raise
+
+    sealed = lead.phone_enc if field == "phone" else lead.email_enc
+    if sealed is None:
+        log_reveal_refused(
+            ctx.principal, reason="nothing_on_file", lead_id=lead.id, field=field, request=request
+        )
+        raise NotFoundProblem(_NOTHING_ON_FILE[field])
+
+    try:
+        plaintext = open_sealed(sealed, settings=settings())
+    except PiiError:
+        # An unopenable envelope is a server fault (a key rotated out from under a row, a
+        # damaged column), not something to describe to a client — it surfaces as a plain 500.
+        # The log names the row and the field so someone can find it, and never the value.
+        log.error(
+            "lead.reveal.unopenable",
+            organization_id=str(ctx.organization_id),
+            lead_id=str(lead.id),
+            field=field,
+        )
+        raise
+
+    # The same action and shape `record_sensitive_read` writes (`{"fields": [...]}`), plus the
+    # session that did it. `record_sensitive_read` cannot carry it, so this is `record_audit`
+    # directly. The row's own `request_id` comes from `X-Request-ID` when the client sent one,
+    # so it is a correlation aid and not evidence of anything; `session_id` — the token's `sid`
+    # claim, forwarded by the gateway — is what ties a reveal to the sign-in (and so the MFA
+    # step-up) that authorised it. The field's *name* only, never its value.
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="entity.sensitive_read",
+        entity="lead",
+        entity_id=lead.id,
+        after={"fields": [field], "session_id": ctx.principal.session_id},
+        request=request,
+    )
+    log.info(
+        "lead.field_revealed",
+        organization_id=str(ctx.organization_id),
+        lead_id=str(lead.id),
+        field=field,
+    )
+    return plaintext
 
 
 # ------------------------------------------------------------------ conversion: claim, call, record

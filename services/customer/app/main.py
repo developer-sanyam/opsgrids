@@ -66,6 +66,10 @@ app = create_app(
     routers=[router, c1_customer360_router],
     on_startup=_start_background_worker,
     on_shutdown=_stop_background_worker,
+    # Only the reveal budget (`services.enforce_reveal_budget`) uses Redis. Declared here so the
+    # lifespan opens the client and `/health/ready` reports it (`create_app` explains why a
+    # service that uses Redis without declaring it is a crash waiting for its first request).
+    redis=True,
 )
 
 # The internal API is mounted at the root, outside `/api/v1` and outside the OpenAPI

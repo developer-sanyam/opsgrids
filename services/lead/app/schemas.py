@@ -26,6 +26,8 @@ from app import domain
 LeadSource = Literal["form", "import", "manual"]
 LeadStatus = Literal["new", "working", "qualified", "disqualified", "converted"]
 AssignmentMode = Literal["round_robin", "manual"]
+#: The two sealed contact details a lead carries, and the only two `:reveal` can open.
+RevealField = Literal["phone", "email"]
 
 
 def _reject_explicit_null(instance: BaseModel, fields: tuple[str, ...]) -> None:
@@ -128,6 +130,30 @@ class LeadConvertOut(BaseModel):
     company_id: str
     contact_id: str | None
     deal_id: str
+
+
+class LeadRevealIn(BaseModel):
+    """Which sealed detail to reveal. One route serves both, so the client has a single call
+    and the audit row names exactly the field that was opened. Anything but `phone` or
+    `email` is a 422 — there is no way to ask this route for some other column."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    field: RevealField
+
+
+class LeadRevealOut(BaseModel):
+    """A lead's real phone number or email, revealed to a human who stepped up.
+
+    Returned only by `POST /leads/{id}:reveal`, which requires the dangerous
+    `crm.lead.lead.read_sensitive` permission and a second factor, and which writes an audit
+    row every time. `value` is always present: a lead with nothing sealed for the requested
+    field is a 404, never a 200 with a null. The response is sent `Cache-Control: no-store`.
+    """
+
+    lead_id: str
+    field: RevealField
+    value: str
 
 
 # ------------------------------------------------------------------ assignment rule
