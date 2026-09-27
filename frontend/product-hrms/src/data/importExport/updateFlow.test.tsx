@@ -724,7 +724,7 @@ describe("updating employees from Excel", () => {
         ),
       ).toBeTruthy();
 
-      await finishImport(user, "Import 1 row");
+      await finishImport(user, "Update 1");
       expect(gateway.writes()).toEqual([
         { method: "PATCH", path: "/api/v1/employees/e-12", body: { designation: "Staff Engineer" } },
       ]);
@@ -754,7 +754,7 @@ describe("updating employees from Excel", () => {
       expect(figure("Need fixing")).toBe("1");
       expect(screen.getByText("Date of joining cannot be after the date of exit, which is 2026-01-31.")).toBeTruthy();
 
-      await finishImport(user, "Import 2 rows");
+      await finishImport(user, "Update 2");
       expect(gateway.writes()).toEqual([
         { method: "PATCH", path: "/api/v1/employees/e-31", body: { date_of_joining: "2026-02-15" } },
         { method: "PATCH", path: "/api/v1/employees/e-7", body: { date_of_joining: "2024-03-01" } },
