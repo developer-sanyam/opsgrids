@@ -69,7 +69,8 @@ const ENTITIES = [
     // LeadPatch, without `status`, which is a read-only column
     accepted: ["full_name", "company", "owner_id", "notes"],
     clear: { company: null, notes: "" },
-    immutable: ["email", "phone"],
+    // Email and phone are `notUpdatable`, which the engine refuses itself: not update fields at all.
+    immutable: [],
     extraColumns: [],
     notUpdatable: ["email", "phone"],
     key: undefined,

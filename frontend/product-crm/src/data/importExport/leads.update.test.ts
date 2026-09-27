@@ -170,28 +170,31 @@ describe("leads: [clear]", () => {
 });
 
 describe("leads: email and phone have no update route", () => {
-  it("refuses a filled Email cell rather than ignoring it, naming what is on file as the list shows it", () => {
+  it("refuses a filled Email cell rather than ignoring it", () => {
     expect(() => plan({ email: "meera@halcyontextiles.in" })).toThrow(RowProblem);
     expect(() => plan({ email: "meera@halcyontextiles.in" })).toThrow(
-      "Email cannot be changed once the record exists (it is 'm•••@h•••.in'). Leave the cell as it is, or blank.",
+      "Email cannot be changed by an update: leave the cell blank.",
     );
   });
 
   it("refuses a filled Phone cell", () => {
     expect(() => plan({ phone: "+919000012345" })).toThrow(
-      "Phone cannot be changed once the record exists (it is '+•• ••••• ••345'). Leave the cell as it is, or blank.",
+      "Phone cannot be changed by an update: leave the cell blank.",
     );
   });
 
   it("refuses them for a lead that has none on file too: there is no way to add one either", () => {
     expect(() => plan({ email: "meera@halcyontextiles.in" }, [], { ...OPEN, email: null })).toThrow(
-      "Email cannot be changed once the record exists (it is empty).",
+      "Email cannot be changed by an update: leave the cell blank.",
     );
   });
 
-  it("refuses [clear] in either", () => {
-    expect(() => plan({}, ["email"])).toThrow("Email cannot be cleared");
-    expect(() => plan({}, ["phone"])).toThrow("Phone cannot be cleared");
+  it("refuses [clear] in either, and names both when both are filled", () => {
+    expect(() => plan({}, ["email"])).toThrow("Email cannot be changed by an update");
+    expect(() => plan({}, ["phone"])).toThrow("Phone cannot be changed by an update");
+    expect(() => plan({ email: "a@b.co", phone: "+911234567890" })).toThrow(
+      "Email, Phone cannot be changed by an update: leave the cell blank.",
+    );
   });
 
   it("sends no request for a row the refusal stopped, even one that changes another field", () => {

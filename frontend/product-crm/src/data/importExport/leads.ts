@@ -221,13 +221,10 @@ export const leadImport = defineImportEntity<LeadIn, Lead, LeadFilters>({
         resolve: resolveByLookup(OWNER, LOOKUP_ALL_OWNERS),
       },
       { column: "notes", current: (lead) => orNull(lead.notes), clear: "", same: sameMultiline },
-      // Sealed on the server and never returned but as a mask: no cell can equal the stored value,
-      // so any filled cell is refused (and `[clear]` with it), never sent and never ignored.
-      { column: "email", current: (lead) => lead.email, immutable: true },
-      { column: "phone", current: (lead) => lead.phone, immutable: true },
     ],
-    // No endpoint updates either. Declared so the engine refuses a filled cell too, and so the
-    // definition check knows they are left out on purpose.
+    // Sealed on the server and never returned but as a mask, and no endpoint updates either: the
+    // engine refuses a filled cell (and `[clear]` with it) in these columns, never sending or
+    // ignoring it, and the definition check knows they are left out on purpose.
     notUpdatable: ["email", "phone"],
     check: (row, lead, changed, ctx) => {
       refuseInactiveOwner(OWNER, row, changed, ctx);

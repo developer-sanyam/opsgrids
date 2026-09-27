@@ -171,6 +171,19 @@ describe("what a row changes", () => {
     expect(send.mock.calls[0]?.[1]).toEqual({ price_minor: 5 });
   });
 
+  it("refuses a filled cell, or [clear], in a column the list cannot update, instead of ignoring it", () => {
+    const sealed: UpdateSpec<Stored> = { ...spec, notUpdatable: ["industry", "price"] };
+    const attempt = (row: Record<string, string | number | boolean | null>, cleared: string[] = []) => () =>
+      planUpdate(columns, sealed, row, new Set(cleared), stored, ctx);
+    expect(attempt({ industry: "Steel" })).toThrow("Industry cannot be changed by an update: leave the cell blank.");
+    expect(attempt({ industry: null }, ["industry"])).toThrow("Industry cannot be changed by an update");
+    expect(attempt({ industry: "x", price: 9 })).toThrow(
+      "Industry, Price cannot be changed by an update: leave the cell blank.",
+    );
+    // A blank cell is fine, and other columns still update.
+    expect(planUpdate(columns, sealed, { industry: null, name: "Plate" }, new Set(), stored, ctx)?.changed).toEqual(["Name"]);
+  });
+
   it("refuses to clear an immutable field", () => {
     expect(() => plan({ sku: null }, ["sku"])).toThrow("SKU cannot be cleared");
   });

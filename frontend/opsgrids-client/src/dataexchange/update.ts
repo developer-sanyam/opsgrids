@@ -110,6 +110,14 @@ export function buildUpdate<Item>(
 ): FieldDiff {
   const changed: string[] = [];
   const body: Record<string, unknown> = {};
+  // A column the list cannot update from a sheet: a filled cell (or `[clear]`) is refused, never
+  // silently ignored. The preview refuses it earlier too, before coercion; this keeps the pure rules
+  // complete for anything that plans an update directly.
+  const untouchable = (spec.notUpdatable ?? []).filter((column) => cleared.has(column) || !isEmpty(row[column]));
+  if (untouchable.length > 0) {
+    const headers = untouchable.map((column) => columns.find((c) => c.key === column)?.header ?? column);
+    throw new RowProblem(`${headers.join(", ")} cannot be changed by an update: leave the cell blank.`);
+  }
   for (const field of spec.fields) {
     const header = columns.find((c) => c.key === field.column)?.header ?? field.column;
     const wantsClear = cleared.has(field.column);

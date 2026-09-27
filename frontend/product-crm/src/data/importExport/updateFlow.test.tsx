@@ -483,7 +483,7 @@ describe("the sample sheet's update rules", () => {
     const lines = await instructionLines(leadImport, { status: "all" });
     expect(lines).toContain("Can be emptied with [clear]: Company, Notes.");
     expect(lines).toContain(
-      "Cannot be changed once created: Email, Phone. A row whose cell differs from the record is refused.",
+      "Not changed by an update, leave blank: Email, Phone. A row with a value there is refused.",
     );
     expect(lines).toContain(
       "A row is matched to an existing record by its Record ID (the column an export writes). A row without one is added as a new record.",
