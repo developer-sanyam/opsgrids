@@ -101,6 +101,8 @@ export interface ListProjectsParams {
   health?: ProjectHealth | "all";
   phase?: ProjectPhase | "all";
   sort?: "code" | "progress" | "target" | "name" | "health";
+  /** Aborts the request: the import/export dialog cancels a load or an export with it. */
+  signal?: AbortSignal | undefined;
 }
 
 const HEALTH_RANK: Record<ProjectHealth, number> = { delayed: 0, at_risk: 1, on_track: 2 };
@@ -150,7 +152,7 @@ export async function listProjects(params: ListProjectsParams = {}): Promise<Pag
     page,
     size,
   });
-  return apiRequest<Page<ProjectOut>>(`/projects-workspace/projects${query}`);
+  return apiRequest<Page<ProjectOut>>(`/projects-workspace/projects${query}`, { signal: params.signal });
 }
 
 /** Every project, across every page — for the widgets that need the whole portfolio to add up a
@@ -478,6 +480,8 @@ export interface ListMembersParams {
   page?: number;
   size?: number;
   q?: string;
+  /** Aborts the request: the import dialog cancels the owner lookup with it. */
+  signal?: AbortSignal | undefined;
 }
 
 export async function listMembers(params: ListMembersParams = {}): Promise<Page<MemberOut>> {
@@ -491,7 +495,7 @@ export async function listMembers(params: ListMembersParams = {}): Promise<Page<
     return settle(pageOf(filtered, page, size));
   }
   const query = qs({ q: params.q?.trim() || undefined, page, size });
-  return apiRequest<Page<MemberOut>>(`/projects-workspace/members${query}`);
+  return apiRequest<Page<MemberOut>>(`/projects-workspace/members${query}`, { signal: params.signal });
 }
 
 /** The whole roster, one flattened call — the source for every owner/assignee picker. */

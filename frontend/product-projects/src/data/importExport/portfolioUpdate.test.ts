@@ -13,7 +13,7 @@ import { RowProblem, indexExisting, makeLookup, matchRow, planUpdate } from "@op
 import type { ImportContext, LookupSet, ParsedRow, UpdateSpec } from "@opsgrids/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ProjectOut } from "@/api/types";
+import type { ProjectOut, ProjectUpdate } from "@/api/types";
 
 import { portfolioEntity } from "./portfolio";
 
@@ -174,6 +174,33 @@ describe("the update spec", () => {
     });
   });
 
+  it("sends only keys the update schema has, each named outright, and never the code or the system's figures", () => {
+    const schemaKeys = [
+      "name",
+      "client",
+      "owner_ref",
+      "phase",
+      "health",
+      "progress_pct",
+      "start_date",
+      "target_date",
+      "budget_minor",
+      "spent_minor",
+      "currency",
+      "team_size",
+      "summary",
+    ] as const satisfies readonly (keyof ProjectUpdate)[];
+    const sendable = spec().fields.filter((f) => f.immutable !== true);
+    expect(sendable.every((f) => f.field !== undefined)).toBe(true);
+    expect(sendable.map((f) => f.field).sort()).toEqual([...schemaKeys].sort());
+  });
+
+  it("calls a project by its code and name", () => {
+    expect(spec().recordLabel?.(project({ code: "PRJ-104", name: "Customer portal redesign" }))).toBe(
+      "PRJ-104 · Customer portal redesign",
+    );
+  });
+
   it("keeps the import's own bound on team size, because a larger number is a server error", () => {
     const column = portfolioEntity.columns.find((c) => c.key === "team_size");
     expect(column).toMatchObject({ min: 0, max: 2_147_483_647 });
@@ -193,8 +220,13 @@ describe("matching a row to a stored project", () => {
     expect(matchRow(index, "proj-404", "PRJ-104")).toEqual({ kind: "unknown-id" });
   });
 
-  it("finds the project by code, ignoring case and spacing", () => {
-    expect(matchRow(index, null, " prj-105 ")).toMatchObject({ kind: "found", by: "key", item: other });
+  it("finds the project by the code as it is stored, whatever spaces surround it", () => {
+    expect(matchRow(index, null, "PRJ-105")).toMatchObject({ kind: "found", by: "key", item: other });
+    expect(matchRow(index, null, " PRJ-105 ")).toMatchObject({ kind: "found", by: "key", item: other });
+  });
+
+  it("leaves the match rule at the engine's default, exact: the server keeps PRJ-104 and prj-104 as two projects", () => {
+    expect(spec().keyMatch).toBeUndefined();
   });
 
   it("treats a code nobody has as a new project", () => {
@@ -202,7 +234,7 @@ describe("matching a row to a stored project", () => {
   });
 
   it("refuses a code two projects share instead of guessing", () => {
-    const twins = indexExisting(spec(), [STORED, project({ id: "proj-3", code: "prj-104" })]);
+    const twins = indexExisting(spec(), [STORED, project({ id: "proj-3", code: "PRJ-104" })]);
     expect(matchRow(twins, null, "PRJ-104")).toEqual({ kind: "ambiguous" });
   });
 });
@@ -228,6 +260,51 @@ describe("loading the projects to compare with", () => {
         json(200, { items: [project()], total: 4, page: 1, size: 200, pages: 1 }),
     });
     await expect(spec().loadExisting(context)).rejects.toThrow(/changed while it was being read/);
+  });
+
+  it("hands the dialog's signal to every page request, so leaving the screen aborts the one in flight", async () => {
+    const controller = new AbortController();
+    const seen: (AbortSignal | null | undefined)[] = [];
+    stubApi({
+      "GET /api/v1/projects-workspace/projects": (url, init) => {
+        seen.push(init?.signal);
+        return url.searchParams.get("page") === "1"
+          ? json(200, { items: [project({ id: "a" })], total: 2, page: 1, size: 200, pages: 2 })
+          : json(200, { items: [project({ id: "b" })], total: 2, page: 2, size: 200, pages: 2 });
+      },
+    });
+    await spec().loadExisting({ lookups: LOOKUPS, signal: controller.signal });
+    expect(seen).toHaveLength(2);
+    expect(seen.every((given) => given === controller.signal)).toBe(true);
+  });
+
+  it("stops asking for pages once cancelled", async () => {
+    const controller = new AbortController();
+    let asked = 0;
+    stubApi({
+      "GET /api/v1/projects-workspace/projects": () => {
+        asked += 1;
+        controller.abort();
+        return json(200, { items: [project({ id: "a" })], total: 5, page: 1, size: 200, pages: 3 });
+      },
+    });
+    await expect(spec().loadExisting({ lookups: LOOKUPS, signal: controller.signal })).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(asked).toBe(1);
+  });
+
+  it("hands the signal to the owner lookup's page requests too", async () => {
+    const controller = new AbortController();
+    const seen: (AbortSignal | null | undefined)[] = [];
+    stubApi({
+      "GET /api/v1/projects-workspace/members": (_url, init) => {
+        seen.push(init?.signal);
+        return json(200, { items: [{ id: "p-01", name: "Meera Iyer", role: "", directory_id: null }], total: 1, page: 1, size: 200, pages: 1 });
+      },
+    });
+    await portfolioEntity.loadLookups?.(controller.signal);
+    expect(seen).toEqual([controller.signal]);
   });
 });
 
@@ -276,7 +353,7 @@ describe("what a row changes", () => {
   });
 
   it("updates by the code in the URL and never puts the code in the body", async () => {
-    const { url, body } = await sent({ ...UNTOUCHED, code: "prj-104", name: "Renamed" });
+    const { url, body } = await sent({ ...UNTOUCHED, code: "PRJ-104", name: "Renamed" });
     expect(url).toBe("/api/v1/projects-workspace/projects/PRJ-104");
     expect(body).not.toHaveProperty("code");
   });
@@ -295,6 +372,17 @@ describe("what a row changes", () => {
     const multi = project({ summary: "Line one\nLine two" });
     expect(plan({ summary: "Line one\r\nLine two" }, [], multi)).toBeNull();
     expect(plan({ summary: "Line one\nLine 2" }, [], multi)?.changed).toEqual(["Summary"]);
+  });
+
+  it("compares a summary with its ends trimmed, as a sheet hands it back: an untouched exported cell is no change", () => {
+    const padded = project({ summary: "  Rebuild the portal.\n\n" });
+    expect(plan({ summary: "Rebuild the portal." }, [], padded)).toBeNull();
+    expect(plan({ summary: "Rebuild the portal now." }, [], padded)?.changed).toEqual(["Summary"]);
+  });
+
+  it("keeps a difference inside the summary: only the ends are trimmed", () => {
+    const multi = project({ summary: "Line one\n\nLine two" });
+    expect(plan({ summary: "Line one\nLine two" }, [], multi)?.changed).toEqual(["Summary"]);
   });
 });
 
@@ -332,9 +420,44 @@ describe("the owner", () => {
 
   it("says a team list that failed to load could not be checked, instead of calling every name unknown", () => {
     const none: ImportContext = { lookups: {}, signal };
-    expect(() => planUpdate(portfolioEntity.columns, spec(), { owner: "Meera Iyer" }, new Set(), STORED, none)).toThrow(
+    expect(() => planUpdate(portfolioEntity.columns, spec(), { owner: "Arjun Rao" }, new Set(), STORED, none)).toThrow(
       "The accepted values for Owner could not be loaded, so it cannot be checked",
     );
+  });
+
+  describe("when the sheet repeats the owner the project already has", () => {
+    const planIn = (lookups: LookupSet, row: ParsedRow, existing: ProjectOut) =>
+      planUpdate(portfolioEntity.columns, spec(), row, new Set(), existing, { lookups, signal });
+    const sharedName = project({ owner: { id: "p-03", name: "Sam Lee", role: "" } });
+    const leftTheTeam = project({ owner: { id: "p-99", name: "Priya Nair", role: "" } });
+
+    it("is no change when two members share that name: the export wrote it, so it is what the record has", () => {
+      expect(planIn(LOOKUPS, { ...UNTOUCHED, owner: "Sam Lee" }, sharedName)).toBeNull();
+    });
+
+    it("does not hold the rest of the row back", () => {
+      expect(planIn(LOOKUPS, { owner: "Sam Lee", health: "on_track" }, sharedName)?.changed).toEqual(["Health"]);
+    });
+
+    it("is still refused when it is a change: it could be either member", () => {
+      expect(() => planIn(LOOKUPS, { owner: "Sam Lee" }, STORED)).toThrow("matches more than one of the accepted values");
+    });
+
+    it("is no change when the member has left the team list", () => {
+      expect(planIn(LOOKUPS, { ...UNTOUCHED, owner: "Priya Nair" }, leftTheTeam)).toBeNull();
+    });
+
+    it("is no change when the team list could not be loaded", () => {
+      expect(planIn({}, { ...UNTOUCHED, owner: "Meera Iyer" }, STORED)).toBeNull();
+    });
+
+    it("still moves a project whose member left to one who is on the list", () => {
+      expect(planIn(LOOKUPS, { owner: "Arjun Rao" }, leftTheTeam)?.changed).toEqual(["Owner"]);
+    });
+
+    it("still refuses a change to a name that is not on the list", () => {
+      expect(() => planIn(LOOKUPS, { owner: "Nobody Here" }, leftTheTeam)).toThrow("is not one of the accepted values");
+    });
   });
 
   it("is cleared with an explicit null", async () => {
@@ -429,12 +552,16 @@ describe("the currency and the amounts", () => {
     expect(() => plan({ currency: "USD" })).toThrow("Give Budget and Spent in USD too");
   });
 
-  it("does not refuse a blank amount that is 0 today, since a zero has no unit to lose", async () => {
+  it("refuses a blank amount that is 0 today too, so the rule does not depend on what is on file", () => {
     const fresh = project({ budget_minor: 0, spent_minor: 0 });
-    const { body } = await sent({ currency: "EUR", budget: 500000 }, [], fresh);
-    expect(body).toEqual({ budget_minor: 500000, currency: "EUR" });
-    const relabel = await sent({ currency: "EUR" }, [], fresh);
-    expect(relabel.body).toEqual({ currency: "EUR" });
+    expect(() => plan({ currency: "EUR", budget: 500000 }, [], fresh)).toThrow("Give Spent in EUR too");
+    expect(() => plan({ currency: "EUR" }, [], fresh)).toThrow("Give Budget and Spent in EUR too");
+  });
+
+  it("lets stated amounts of 0 change the currency of a project that has none", async () => {
+    const fresh = project({ budget_minor: 0, spent_minor: 0 });
+    const { body } = await sent({ currency: "EUR", budget: 0, spent: 0 }, [], fresh);
+    expect(body).toEqual({ currency: "EUR" });
   });
 
   it.each([
@@ -484,9 +611,14 @@ describe("clearing with [clear]", () => {
 });
 
 describe("the code is immutable", () => {
-  it("accepts a cell that agrees with the stored code, in any case", () => {
-    expect(plan({ code: "prj-104" })).toBeNull();
-    expect(plan({ code: "  PRJ-104 " })).toBeNull();
+  it("accepts a cell that agrees with the stored code", () => {
+    expect(plan({ code: "PRJ-104" })).toBeNull();
+  });
+
+  it("refuses a cell that differs from the stored code only in capitals: the server counts them as two codes", () => {
+    expect(() => plan({ code: "prj-104" })).toThrow(
+      "Project code cannot be changed once the record exists (it is 'PRJ-104')",
+    );
   });
 
   it("refuses a different code, saying what is stored: the server would drop it and answer 200", () => {
