@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent, DragEvent, ReactNode, RefObject } from "react";
 
 import { RefreshIcon } from "../icons";
-import { liveMessage, phaseTitle } from "../lib/importExportCopy";
+import { liveMessage, phaseTitle, readingSentence } from "../lib/importExportCopy";
 import type {
   ImportExportMeta,
+  ImportExportMode,
   ImportExportViewActions,
   ImportExportViewState,
 } from "../lib/importExportView";
@@ -13,6 +14,7 @@ import { Button } from "./Button";
 import { Dialog } from "./Dialog";
 import { ImportExportLeaveGuard } from "./ImportExportLeaveGuard";
 import { ImportExportMenu } from "./ImportExportMenu";
+import { ImportExportModeChoice } from "./ImportExportModeChoice";
 import { ImportExportResult, ImportExportResultActions } from "./ImportExportResult";
 import { ImportExportReview, ImportExportReviewActions } from "./ImportExportReview";
 import { ImportExportRunning, ImportExportRunningActions } from "./ImportExportRunning";
@@ -72,12 +74,12 @@ function useRefuseStrayFileDrops(zoneRef: RefObject<HTMLElement | null>) {
   }, [zoneRef]);
 }
 
-function Reading() {
+function Reading({ mode }: { mode: ImportExportMode }) {
   return (
     <div aria-busy="true" className="flex flex-col gap-4">
       <div className="flex items-center gap-3 text-ink-soft">
         <RefreshIcon aria-hidden className="spin size-5 shrink-0" />
-        <p className="text-body">Checking the columns and every row. A large file takes a few seconds.</p>
+        <p className="text-body">{readingSentence(mode)}</p>
       </div>
       <div className="flex flex-col gap-3">
         <Skeleton className="h-4 w-1/3" />
@@ -113,6 +115,10 @@ interface ImportExportDialogProps {
  * the user unsure whether it is still writing. The browser's own leave-the-page prompt covers the
  * tab being closed, and `ImportExportLeaveGuard` asks before Back or a link takes the page away.
  *
+ * **Update mode.** Where the list can be updated and the person may import, the choice between adding
+ * only and adding and updating sits in the menu and on the preview. Choosing on the preview checks
+ * the same file again; the engine keeps the cells it read.
+ *
  * **Files.** One hidden input serves "Import from Excel" and "Choose another file", and dropping a
  * file works in the menu and the preview. The engine decides whether the file is acceptable, so
  * this passes on whatever it is given. Anywhere else, on the page or on the dialog's own header,
@@ -129,6 +135,11 @@ export function ImportExportDialog({ onClose, meta, state, actions, canImport, c
   const phase = state.phase;
   const importing = phase === "importing";
   const takesFiles = (phase === "menu" && canImport) || phase === "preview";
+  // Updating records needs the same permission as creating them: it is the same write endpoint.
+  const modeChoice =
+    meta.canUpdate && canImport ? (
+      <ImportExportModeChoice mode={state.mode} onChange={(mode) => void actions.setMode(mode)} />
+    ) : null;
 
   useUnsavedChangesWarning(importing);
   useRefuseStrayFileDrops(bodyRef);
@@ -202,6 +213,7 @@ export function ImportExportDialog({ onClose, meta, state, actions, canImport, c
           actions={actions}
           canImport={canImport}
           canExport={canExport}
+          modeChoice={modeChoice}
           dragging={dragging}
           onChooseFile={chooseFile}
           firstActionRef={firstActionRef}
@@ -214,10 +226,15 @@ export function ImportExportDialog({ onClose, meta, state, actions, canImport, c
       );
       break;
     case "reading":
-      content = <Reading />;
+      content = <Reading mode={state.mode} />;
       break;
     case "preview":
-      content = state.preview === null ? <Reading /> : <ImportExportReview preview={state.preview} />;
+      content =
+        state.preview === null ? (
+          <Reading mode={state.mode} />
+        ) : (
+          <ImportExportReview preview={state.preview} modeChoice={modeChoice} />
+        );
       footer =
         state.preview === null ? undefined : (
           <ImportExportReviewActions
@@ -228,11 +245,11 @@ export function ImportExportDialog({ onClose, meta, state, actions, canImport, c
         );
       break;
     case "importing":
-      content = <ImportExportRunning progress={state.progress} closeBlocked={blocked} />;
+      content = <ImportExportRunning progress={state.progress} mode={state.mode} closeBlocked={blocked} />;
       footer = <ImportExportRunningActions onCancel={() => actions.cancelImport()} />;
       break;
     case "done":
-      content = <ImportExportResult summary={state.summary} meta={meta} notice={state.notice} />;
+      content = <ImportExportResult summary={state.summary} meta={meta} mode={state.mode} notice={state.notice} />;
       footer = <ImportExportResultActions onDownload={() => actions.downloadReport()} onDone={requestClose} />;
       break;
     case "error":

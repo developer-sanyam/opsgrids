@@ -51,8 +51,10 @@ export { ImportExportButton } from "./components/ImportExportButton";
 export type {
   ImportExportButtonProps,
   ImportExportMeta,
+  ImportExportMode,
   ImportExportPhase,
   ImportExportPreview,
+  ImportExportPreviewAction,
   ImportExportPreviewRow,
   ImportExportProgress,
   ImportExportRowOutcome,

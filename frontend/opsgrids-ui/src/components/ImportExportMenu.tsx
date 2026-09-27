@@ -6,6 +6,7 @@ import { cn } from "../lib/cn";
 import { formatCount } from "../lib/importExportCopy";
 import type {
   ImportExportMeta,
+  ImportExportMode,
   ImportExportViewActions,
   ImportExportViewState,
 } from "../lib/importExportView";
@@ -91,6 +92,9 @@ interface MenuPhaseProps {
   actions: ImportExportViewActions;
   canImport: boolean;
   canExport: boolean;
+  /** The choice between adding only and updating too, or null where the list cannot be updated or the
+   *  person may not import. It sits between the sample sheet and Import, the action it changes. */
+  modeChoice: ReactNode;
   /** A file is being dragged over the dialog. */
   dragging: boolean;
   onChooseFile: () => void;
@@ -99,14 +103,13 @@ interface MenuPhaseProps {
 }
 
 /** The rules, in plain words, for the actions this person has. */
-function rulesFor(meta: ImportExportMeta, canImport: boolean, canExport: boolean): string[] {
+function rulesFor(meta: ImportExportMeta, canImport: boolean, canExport: boolean, mode: ImportExportMode): string[] {
   const rules: string[] = [];
   if (canImport) {
-    rules.push(
-      `Up to ${formatCount(meta.maxRows)} rows per file.`,
-      "Rows that already exist are skipped, never overwritten.",
-      "The file is read in your browser. It is never uploaded.",
-    );
+    rules.push(`Up to ${formatCount(meta.maxRows)} rows per file.`);
+    // The rules of updating are under the choice; "never overwritten" would contradict them.
+    if (mode === "add") rules.push("Rows that already exist are skipped, never overwritten.");
+    rules.push("The file is read in your browser. It is never uploaded.");
     if (meta.requiredHeaders.length > 0) {
       rules.push(`Required columns: ${meta.requiredHeaders.join(", ")}.`);
     }
@@ -127,6 +130,7 @@ export function ImportExportMenu({
   actions,
   canImport,
   canExport,
+  modeChoice,
   dragging,
   onChooseFile,
   firstActionRef,
@@ -168,6 +172,7 @@ export function ImportExportMenu({
               busy={state.downloadingTemplate}
               onSelect={() => void actions.downloadTemplate()}
             />
+            {modeChoice}
             <ActionRow
               primary
               dragging={dragging}
@@ -176,7 +181,7 @@ export function ImportExportMenu({
               description={
                 dragging
                   ? "Drop the file to read it."
-                  : `Add ${meta.noun} from an .xlsx file. Choose a file or drop it here.`
+                  : `${state.mode === "addAndUpdate" ? "Add and update" : "Add"} ${meta.noun} from an .xlsx file. Choose a file or drop it here.`
               }
               onSelect={onChooseFile}
             />
@@ -213,7 +218,7 @@ export function ImportExportMenu({
       </div>
 
       <ul aria-label="How importing and exporting work" className="flex list-disc flex-col gap-1 pl-4 text-body-sm text-muted">
-        {rulesFor(meta, canImport, canExport).map((rule) => (
+        {rulesFor(meta, canImport, canExport, state.mode).map((rule) => (
           <li key={rule}>{rule}</li>
         ))}
       </ul>
