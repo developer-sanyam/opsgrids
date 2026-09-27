@@ -130,11 +130,23 @@ export function openSignupPopup(
   return { blocked: refused };
 }
 
+/**
+ * Why Meta stopped the flow, when it says. Meta reports a failure inside the popup as a `CANCEL`
+ * event that carries `error_message`, `error_code` and `session_id` (its "error reports"), so a
+ * `cancel` is not always the customer closing the window: check `message`/`code` before saying so.
+ * `sessionId` is what Meta support asks for.
+ */
+export interface EmbeddedSignupFault {
+  message: string | null;
+  code: string | null;
+  sessionId: string | null;
+}
+
 /** What Meta's `WA_EMBEDDED_SIGNUP` message says happened inside the popup. */
 export type EmbeddedSignupEvent =
   | { kind: "finish"; wabaId: string | null; phoneNumberId: string | null }
-  | { kind: "cancel"; step: string | null }
-  | { kind: "error"; message: string | null };
+  | ({ kind: "cancel"; step: string | null } & EmbeddedSignupFault)
+  | ({ kind: "error" } & EmbeddedSignupFault);
 
 function isMetaOrigin(origin: string): boolean {
   try {
@@ -151,6 +163,23 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function text(value: unknown): string | null {
   return typeof value === "string" && value !== "" ? value : null;
+}
+
+/** An id Meta sends as a string or a number, as a string. */
+function idText(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return text(value)?.slice(0, 80) ?? null;
+}
+
+/** What Meta reported went wrong, from a message's `data`. A sentence is capped: it is shown to
+ *  the customer, and it came from a window this page does not control. */
+function faultOf(data: Record<string, unknown> | null): EmbeddedSignupFault {
+  const message = text(data?.error_message);
+  return {
+    message: message === null ? null : message.slice(0, 300),
+    code: idText(data?.error_code),
+    sessionId: idText(data?.session_id),
+  };
 }
 
 /**
@@ -173,12 +202,14 @@ export function parseEmbeddedSignupMessage(event: MessageEvent): EmbeddedSignupE
   if (message === null || message.type !== "WA_EMBEDDED_SIGNUP") return null;
   const data = asRecord(message.data);
   const name = text(message.event);
-  if (name === "CANCEL") return { kind: "cancel", step: text(data?.current_step) };
+  // The fault is read before the event is called a plain cancellation: Meta documents
+  // `error_message`, `error_code` and `session_id` on CANCEL events.
+  if (name === "CANCEL") return { kind: "cancel", step: text(data?.current_step), ...faultOf(data) };
   if (name !== null && name.startsWith("FINISH")) {
     return { kind: "finish", wabaId: text(data?.waba_id), phoneNumberId: text(data?.phone_number_id) };
   }
   if (data !== null && text(data.error_message) !== null) {
-    return { kind: "error", message: text(data.error_message) };
+    return { kind: "error", ...faultOf(data) };
   }
   return null;
 }
