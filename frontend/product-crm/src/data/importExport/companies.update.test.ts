@@ -73,9 +73,17 @@ describe("companies: which record a row names", () => {
     expect(matchRow(index, "comp-404", null)).toEqual({ kind: "unknown-id" });
   });
 
-  it("matches by name, ignoring capitals and spacing, and treats an unknown name as a new company", () => {
-    expect(matchRow(index, null, "  NORTHWIND   logistics ")).toMatchObject({ kind: "found", by: "key" });
+  it("matches by name, ignoring capitals and surrounding spaces, and treats an unknown name as a new company", () => {
+    expect(matchRow(index, null, "  NORTHWIND logistics ")).toMatchObject({ kind: "found", by: "key" });
     expect(matchRow(index, null, "Solstice Energy")).toEqual({ kind: "new" });
+  });
+
+  it("declares that match as caseless: it is the server's own rule for company names, which it compares trimmed and case-folded", () => {
+    expect(spec.keyMatch).toBe("caseless");
+  });
+
+  it("names a company in the preview and the report by its name", () => {
+    expect(spec.recordLabel?.(STORED)).toBe("Northwind Logistics");
   });
 
   it("refuses a name two stored companies share (they differ only in capitals) instead of choosing one", () => {
@@ -191,8 +199,18 @@ describe("companies: the owner", () => {
     expect(() => plan({ owner: "nobody@example.com" })).toThrow(notAnAcceptedOwner("nobody@example.com"));
   });
 
-  it("refuses an owner that two reps share, instead of choosing one", () => {
-    expect(() => plan({ owner: "twin@example.com" })).toThrow(ambiguousOwner("twin@example.com"));
+  it("refuses an owner that two reps share ignoring capitals, in a spelling neither has, instead of choosing one", () => {
+    expect(() => plan({ owner: "TWIN@example.com" })).toThrow(ambiguousOwner("TWIN@example.com"));
+  });
+
+  it("takes the exact spelling of one of two such reps as naming that rep, which is how an export writes them", async () => {
+    const calls = stubGateway(() => companyWire("comp-1", "x"));
+    const result = plan({ ...SAME_AS_STORED, owner: "twin@example.com" });
+    expect(result?.changed).toEqual(["Owner email"]);
+    await runPlan(result);
+    expect(calls[0]?.body).toStrictEqual({ owner_id: "own-7" });
+    // A company held by the other twin, exported as "Twin@example.com", repeats itself.
+    expect(plan({ ...SAME_AS_STORED, owner: "Twin@example.com" }, [], { ...STORED, owner_id: "own-8" })).toBeNull();
   });
 
   it("keeps a company with the rep who has left when the row repeats them, and changes what else it says", async () => {

@@ -16,6 +16,7 @@ import {
   stubApi,
   stubGateway,
 } from "./entityTestKit";
+import { makeSpellingLookup } from "./shared";
 import {
   OWNER_LOOKUPS,
   notAnAcceptedOwner,
@@ -28,11 +29,11 @@ import {
 
 const LOOKUPS: LookupSet = {
   ...OWNER_LOOKUPS,
-  companies: makeLookup([
+  companies: makeSpellingLookup([
     { label: "Northwind Logistics", value: "comp-1" },
     { label: "Cobalt Financial", value: "comp-2" },
   ]),
-  contacts: makeLookup([
+  contacts: makeSpellingLookup([
     { label: "asha@northwind.co", value: "cont-1" },
     { label: "priya@northwind.co", value: "cont-3" },
     { label: "daniel@cobaltfin.com", value: "cont-2" },
@@ -89,6 +90,8 @@ const plan = (cells: Record<string, ParsedValue>, cleared: string[] = [], existi
   planFor(dealImport, existing, cells, ctx, cleared);
 
 const PATCH = "PATCH /api/v1/deals/deal-1";
+/** What `services.update_deal` answers a rename onto another deal's name with: it names the deal. */
+const RENAME_CONFLICT = "A deal named 'Cobalt treasury platform' already exists";
 const STAGE = "POST /api/v1/deals/deal-1/stage";
 const answer = () => dealWire("deal-1", "Northwind fleet renewal");
 
@@ -100,6 +103,14 @@ describe("deals: which record a row names", () => {
     expect(spec.idOf(STORED)).toBe("deal-1");
     expect(spec.keyColumn).toBe("name");
     expect(spec.keyOf?.(STORED)).toBe("Northwind fleet renewal");
+  });
+
+  it("matches the name exactly, as the server does: 'Q4 Renewal' and 'Q4 renewal' are two deals", () => {
+    expect(spec.keyMatch ?? "exact").toBe("exact");
+  });
+
+  it("names a deal in the preview and the report by its name", () => {
+    expect(spec.recordLabel?.(STORED)).toBe("Northwind fleet renewal");
   });
 
   it("matches by Deal ID first, and refuses an ID no deal has", () => {
@@ -166,6 +177,24 @@ describe("deals: what a row changes", () => {
     expect(requestLines(calls)).toEqual([PATCH]);
     expect(calls[0]?.body).toStrictEqual({ probability: 0 });
   });
+
+  it("saves a probability that changes beside other fields as a PATCH of its own after theirs, since it is never a key of the field PATCH", async () => {
+    const calls = stubGateway(answer);
+    const result = plan({ ...SAME_AS_STORED, value: 450000000, probability: 70, source: "Outbound" });
+    expect(result?.changed).toEqual(["Deal value", "Source", "Probability (%)"]);
+    await runPlan(result);
+    expect(requestLines(calls)).toEqual([PATCH, PATCH]);
+    expect(calls[0]?.body).toStrictEqual({ value_minor: 450000000, source: "Outbound" });
+    expect(calls[1]?.body).toStrictEqual({ probability: 70 });
+  });
+
+  it("changes the probability of a closed deal too, which its stage never blocked", async () => {
+    const calls = stubGateway(answer);
+    const won: Deal = { ...STORED, stage: "closed_won", probability: 100 };
+    await runPlan(plan({ stage: "closed_won", probability: 90 }, [], won));
+    expect(requestLines(calls)).toEqual([PATCH]);
+    expect(calls[0]?.body).toStrictEqual({ probability: 90 });
+  });
 });
 
 describe("deals: [clear]", () => {
@@ -204,46 +233,116 @@ describe("deals: [clear]", () => {
 });
 
 describe("deals: the stage", () => {
-  it("moves the stage through its own endpoint, with no PATCH when nothing else changed and no probability the row did not change", async () => {
+  it("moves the stage through its own endpoint, with no PATCH when nothing else changed", async () => {
     const calls = stubGateway(answer);
     const result = plan({ ...SAME_AS_STORED, stage: "negotiation" });
-    expect(result?.changed).toEqual(["Stage"]);
     await runPlan(result);
     expect(requestLines(calls)).toEqual([STAGE]);
     expect(calls[0]?.body).toStrictEqual({ stage: "negotiation" });
   });
 
-  it("sends the PATCH first and the stage move after it, the PATCH holding neither stage nor probability", async () => {
+  it("says a stage move resets the probability to the new stage's usual figure, and to which figure", () => {
+    // 55 on file, and Negotiation's usual figure is 70: the server resets it, so the preview says so.
+    expect(plan({ ...SAME_AS_STORED, stage: "negotiation" })?.changed).toEqual(["Stage", "Probability (reset to 70%)"]);
+    expect(plan({ ...SAME_AS_STORED, stage: "lead" })?.changed).toEqual(["Stage", "Probability (reset to 20%)"]);
+  });
+
+  it("treats a probability cell that repeats the one on file as no choice, and names the reset even though the cell was filled", () => {
+    // The export writes 55 in the cell; the row only changes the stage.
+    expect(plan({ ...SAME_AS_STORED, stage: "qualified", probability: 55 })?.changed).toEqual([
+      "Stage",
+      "Probability (reset to 40%)",
+    ]);
+  });
+
+  it("does not claim a reset when the deal's probability already is the stage's usual figure", async () => {
+    const calls = stubGateway(answer);
+    const atUsual: Deal = { ...STORED, probability: 70 };
+    const result = plan({ ...SAME_AS_STORED, probability: 70, stage: "negotiation" }, [], atUsual);
+    expect(result?.changed).toEqual(["Stage"]);
+    await runPlan(result);
+    expect(calls[0]?.body).toStrictEqual({ stage: "negotiation" });
+  });
+
+  it("sends the PATCH first and the stage move after it, the PATCH holding no stage", async () => {
     const calls = stubGateway(answer);
     const result = plan({ ...SAME_AS_STORED, stage: "negotiation", value: 450000000, source: "Outbound" });
-    expect(result?.changed).toEqual(["Deal value", "Source", "Stage"]);
+    expect(result?.changed).toEqual(["Deal value", "Source", "Stage", "Probability (reset to 70%)"]);
     await runPlan(result);
     expect(requestLines(calls)).toEqual([PATCH, STAGE]);
     expect(calls[0]?.body).toStrictEqual({ value_minor: 450000000, source: "Outbound" });
     expect(calls[1]?.body).toStrictEqual({ stage: "negotiation" });
   });
 
-  it("carries a probability the row changes on the stage move, not in the PATCH, so the stage does not reset it", async () => {
+  it("carries a probability the row changes on the stage move, not in the PATCH, so the move does not reset it", async () => {
     const calls = stubGateway(answer);
-    const result = plan({ ...SAME_AS_STORED, stage: "negotiation", probability: 70, value: 450000000 });
+    const result = plan({ ...SAME_AS_STORED, stage: "negotiation", probability: 60, value: 450000000 });
+    // The figure is the row's own choice, so there is no "reset" to announce.
     expect(result?.changed).toEqual(["Deal value", "Stage", "Probability (%)"]);
     await runPlan(result);
     expect(requestLines(calls)).toEqual([PATCH, STAGE]);
     expect(calls[0]?.body).toStrictEqual({ value_minor: 450000000 });
-    expect(calls[1]?.body).toStrictEqual({ stage: "negotiation", probability: 70 });
+    expect(calls[1]?.body).toStrictEqual({ stage: "negotiation", probability: 60 });
   });
 
-  it("makes no PATCH at all for a row that changes only the stage and the probability", async () => {
+  it("makes no PATCH at all for a row that changes only the stage and a probability of its own: one request", async () => {
     const calls = stubGateway(answer);
-    await runPlan(plan({ ...SAME_AS_STORED, stage: "closed_won", probability: 100 }));
+    await runPlan(plan({ ...SAME_AS_STORED, stage: "qualified", probability: 45 }));
     expect(requestLines(calls)).toEqual([STAGE]);
-    expect(calls[0]?.body).toStrictEqual({ stage: "closed_won", probability: 100 });
+    expect(calls[0]?.body).toStrictEqual({ stage: "qualified", probability: 45 });
   });
 
-  it("lets the stage set its usual probability when the row repeats the one on file, as a move on the board does", async () => {
+  it("sends a chosen figure on the move even when it is the new stage's usual one, so it is the row's word and not a default", async () => {
     const calls = stubGateway(answer);
-    await runPlan(plan({ ...SAME_AS_STORED, stage: "closed_won" }));
+    const result = plan({ ...SAME_AS_STORED, stage: "negotiation", probability: 70 });
+    expect(result?.changed).toEqual(["Stage", "Probability (%)"]);
+    await runPlan(result);
+    expect(requestLines(calls)).toEqual([STAGE]);
+    expect(calls[0]?.body).toStrictEqual({ stage: "negotiation", probability: 70 });
+  });
+
+  it("never sends the probability on file with the move to keep it: the server's reset is what the row gets", async () => {
+    const calls = stubGateway(answer);
+    await runPlan(plan({ ...SAME_AS_STORED, stage: "qualified", probability: 55 }));
+    expect(requestLines(calls)).toEqual([STAGE]);
+    expect(calls[0]?.body).toStrictEqual({ stage: "qualified" });
+  });
+
+  it.each([
+    ["Closed Won", "closed_won", 100],
+    ["Closed Lost", "closed_lost", 0],
+  ] as const)("marks a move to %s as closing the deal, and says the probability it ends at", async (_label, stage, usual) => {
+    const calls = stubGateway(answer);
+    const result = plan({ ...SAME_AS_STORED, stage });
+    expect(result?.changed).toEqual(["Stage (closes the deal)", `Probability (reset to ${usual}%)`]);
+    await runPlan(result);
+    expect(requestLines(calls)).toEqual([STAGE]);
+    expect(calls[0]?.body).toStrictEqual({ stage });
+  });
+
+  it("does not add a reset to a closing move when the deal is at the closed stage's figure already", () => {
+    expect(plan({ ...SAME_AS_STORED, stage: "closed_lost", probability: 0 }, [], { ...STORED, probability: 0 })?.changed).toEqual([
+      "Stage (closes the deal)",
+    ]);
+  });
+
+  it("accepts the closed stage's own figure beside a closing move, and sends the move without one for the server to pin", async () => {
+    const calls = stubGateway(answer);
+    const result = plan({ ...SAME_AS_STORED, stage: "closed_won", probability: 100 });
+    expect(result?.changed).toEqual(["Stage (closes the deal)", "Probability (reset to 100%)"]);
+    await runPlan(result);
+    expect(requestLines(calls)).toEqual([STAGE]);
     expect(calls[0]?.body).toStrictEqual({ stage: "closed_won" });
+  });
+
+  it.each([
+    ["closed_won", 30, "Closed Won always sets Probability (%) to 100, so it cannot be 30 in the same row. Leave the cell as it is, or type 100."],
+    ["closed_lost", 10, "Closed Lost always sets Probability (%) to 0, so it cannot be 10 in the same row. Leave the cell as it is, or type 0."],
+  ] as const)("refuses a row that closes a deal and asks for another probability, before anything is sent", (stage, asked, message) => {
+    const calls = stubGateway(answer);
+    expect(() => plan({ ...SAME_AS_STORED, stage, probability: asked })).toThrow(RowProblem);
+    expect(() => plan({ ...SAME_AS_STORED, stage, probability: asked })).toThrow(message);
+    expect(calls).toHaveLength(0);
   });
 
   it("does not move a deal to the stage it is already in", () => {
@@ -276,10 +375,10 @@ describe("deals: the stage", () => {
   });
 
   it("does not move the stage when the PATCH before it was refused", async () => {
-    const calls = stubGateway(() => ({ title: "Conflict", detail: "A deal with that name already exists", status: 409 }), 409);
+    const calls = stubGateway(() => ({ title: "Conflict", detail: RENAME_CONFLICT, status: 409 }), 409);
     await expect(runPlan(plan({ name: "Cobalt treasury platform", stage: "negotiation" }))).rejects.toMatchObject({
       status: 409,
-      message: "A deal with that name already exists",
+      message: RENAME_CONFLICT,
     });
     expect(requestLines(calls)).toEqual([PATCH]);
   });
@@ -365,10 +464,37 @@ describe("deals: owner, company and primary contact are checked here, because th
     expect(calls[0]?.body).toStrictEqual({ value_minor: 450000000 });
   });
 
-  it("cannot judge a stored contact the lists do not hold, so it leaves the company move to the server", async () => {
-    const calls = stubGateway(answer);
-    await runPlan(plan({ company: "Cobalt Financial" }, [], { ...STORED, primary_contact_id: "cont-gone" }));
-    expect(calls[0]?.body).toStrictEqual({ company_id: "comp-2" });
+  // A rep who may only see their own contacts does not have a colleague's in the lists, and a
+  // deleted contact is in none: the stored contact then cannot be judged, and the server checks nothing.
+  describe("a stored contact the lists do not hold", () => {
+    const OUT_OF_SIGHT: Deal = { ...STORED, primary_contact_id: "cont-gone" };
+
+    it("refuses a move to another company that would leave that contact on the deal, saying how to go on", () => {
+      const calls = stubGateway(answer);
+      expect(() => plan({ company: "Cobalt Financial" }, [], OUT_OF_SIGHT)).toThrow(RowProblem);
+      expect(() => plan({ company: "Cobalt Financial" }, [], OUT_OF_SIGHT)).toThrow(
+        "The deal's primary contact is not among the contacts you can see, so it cannot be checked against Cobalt Financial. Name one of that company's contacts in Primary contact email, or type [clear] to remove the primary contact.",
+      );
+      expect(calls).toHaveLength(0);
+    });
+
+    it("lets the move through when the row names one of the new company's contacts", async () => {
+      const calls = stubGateway(answer);
+      await runPlan(plan({ company: "Cobalt Financial", contact: "daniel@cobaltfin.com" }, [], OUT_OF_SIGHT));
+      expect(calls[0]?.body).toStrictEqual({ company_id: "comp-2", primary_contact_id: "cont-2" });
+    });
+
+    it("lets the move through when the row removes the contact with [clear]", async () => {
+      const calls = stubGateway(answer);
+      await runPlan(plan({ company: "Cobalt Financial" }, ["contact"], OUT_OF_SIGHT));
+      expect(calls[0]?.body).toStrictEqual({ company_id: "comp-2", primary_contact_id: null });
+    });
+
+    it("does not judge a row that leaves the company alone", async () => {
+      const calls = stubGateway(answer);
+      await runPlan(plan({ value: 450000000 }, [], OUT_OF_SIGHT));
+      expect(calls[0]?.body).toStrictEqual({ value_minor: 450000000 });
+    });
   });
 
   it("does not pre-empt the server for a caller who may only assign to themselves", async () => {
@@ -377,6 +503,52 @@ describe("deals: owner, company and primary contact are checked here, because th
       status: 403,
       message: "You can only assign deals you own to yourself",
     });
+  });
+});
+
+// The server keeps two contacts whose emails differ only in capitals apart, so the deal's contact
+// label is ambiguous to the engine's ignoring-capitals match. What a deal is exported with is the
+// stored contact's own spelling.
+describe("deals: a primary contact whose email has a twin in other capitals", () => {
+  const TWINS: LookupSet = {
+    ...LOOKUPS,
+    contacts: makeSpellingLookup([
+      { label: "Asha@northwind.co", value: "cont-1" },
+      { label: "asha@northwind.co", value: "cont-9" },
+    ]),
+    companyOfContact: makeLookup([
+      { label: "cont-1", value: "comp-1" },
+      { label: "cont-9", value: "comp-1" },
+    ]),
+  };
+  const planTwins = (cells: Record<string, ParsedValue>) =>
+    planFor(dealImport, STORED, cells, contextWith(TWINS));
+
+  it("does not refuse a row for a contact cell that repeats the stored contact's own spelling", async () => {
+    const calls = stubGateway(answer);
+    const result = planTwins({ ...SAME_AS_STORED, contact: "Asha@northwind.co", value: 450000000 });
+    expect(result?.changed).toEqual(["Deal value"]);
+    await runPlan(result);
+    expect(calls[0]?.body).toStrictEqual({ value_minor: 450000000 });
+  });
+
+  it("changes nothing for a row that repeats it and nothing else", () => {
+    expect(planTwins({ ...SAME_AS_STORED, contact: "Asha@northwind.co" })).toBeNull();
+  });
+
+  it("takes the other twin's exact spelling as naming that contact", async () => {
+    const calls = stubGateway(answer);
+    const result = planTwins({ ...SAME_AS_STORED, contact: "asha@northwind.co" });
+    expect(result?.changed).toEqual(["Primary contact email"]);
+    await runPlan(result);
+    expect(calls[0]?.body).toStrictEqual({ primary_contact_id: "cont-9" });
+  });
+
+  it("still refuses a spelling of the shared address that neither contact has, as ambiguous", () => {
+    expect(() => planTwins({ ...SAME_AS_STORED, contact: "ASHA@northwind.co" })).toThrow(RowProblem);
+    expect(() => planTwins({ ...SAME_AS_STORED, contact: "ASHA@northwind.co" })).toThrow(
+      "'ASHA@northwind.co' matches more than one of the accepted values for Primary contact email, so it cannot be chosen.",
+    );
   });
 });
 
@@ -422,10 +594,10 @@ describe("deals: money and currency", () => {
 
 describe("deals: what the server says", () => {
   it("reports a rename onto another deal's name as a failure, never as skipped", async () => {
-    stubGateway(() => ({ title: "Conflict", detail: "A deal with that name already exists", status: 409 }), 409);
+    stubGateway(() => ({ title: "Conflict", detail: RENAME_CONFLICT, status: 409 }), 409);
     const failure = await runPlan(plan({ name: "Cobalt treasury platform" })).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(ApiError);
-    expect(failure).toMatchObject({ status: 409, message: "A deal with that name already exists" });
+    expect(failure).toMatchObject({ status: 409, message: RENAME_CONFLICT });
   });
 });
 

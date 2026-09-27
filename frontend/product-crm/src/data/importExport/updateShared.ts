@@ -6,7 +6,9 @@
  * The specs describe a change; `planUpdate` in `@opsgrids/client` decides what actually differs.
  */
 import { RowProblem, collectPages, unacceptedLookupValue } from "@opsgrids/client";
-import type { ExportPage, ImportColumn, ImportContext, ParsedRow, ParsedValue } from "@opsgrids/client";
+import type { ExportPage, ImportColumn, ImportContext, Lookup, ParsedRow, ParsedValue } from "@opsgrids/client";
+
+import type { SpellingLookup } from "./shared";
 
 /**
  * Every record of a list, all pages, each once: what a sheet row is matched and diffed against.
@@ -45,6 +47,25 @@ export function patchOf<Patch>(body: Readonly<Record<string, unknown>>): Patch {
   return body as Patch;
 }
 
+function knowsSpelling(lookup: Lookup): lookup is SpellingLookup {
+  return "resolveSpelling" in lookup;
+}
+
+/**
+ * The value a lookup's label names, for a cell that updates a record. Labels match ignoring
+ * capitals, and a label that two entries share that way is ambiguous. Where the one spelling the
+ * cell holds belongs to exactly one entry, though, it names that entry: an export writes each
+ * stored value in its own spelling, so a cell that repeats what is on file always finds it, even
+ * beside a twin the server keeps apart (contact emails differing only in capitals), and a person
+ * who types the exact spelling of one of two twins has said which. Any other spelling of a shared
+ * label is still refused, never guessed.
+ */
+export function resolveLabel(lookup: Lookup, label: string): string | undefined {
+  const value = lookup.resolve(label);
+  if (value !== undefined || !lookup.isAmbiguous(label)) return value;
+  return knowsSpelling(lookup) ? lookup.resolveSpelling(label) : undefined;
+}
+
 /**
  * The id the list stores for the label a lookup column's cell names. The engine does not check a
  * lookup cell on a row that updates a record (a record may hold a value the column no longer offers),
@@ -62,7 +83,7 @@ export function lookupId(
   if (lookup === undefined) {
     throw new RowProblem(`The accepted values for ${column.header} could not be loaded, so it cannot be checked`);
   }
-  const id = lookup.resolve(label);
+  const id = resolveLabel(lookup, label);
   if (id === undefined) throw new RowProblem(unacceptedLookupValue(column, label, lookup, true));
   return id;
 }
@@ -90,7 +111,7 @@ export function refuseInactiveOwner(
   if (!changed.includes(owner.header)) return;
   const label = row[owner.key];
   const active = owner.lookup === undefined ? undefined : ctx.lookups[owner.lookup];
-  if (typeof label !== "string" || active === undefined || active.resolve(label) !== undefined) return;
+  if (typeof label !== "string" || active === undefined || resolveLabel(active, label) !== undefined) return;
   throw new RowProblem(unacceptedLookupValue(owner, label, active, true));
 }
 

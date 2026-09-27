@@ -4,10 +4,12 @@
  * skipped), and a caller limited to their own book may only assign companies to themselves.
  *
  * Update calls `PATCH /customers/{id}` with only the fields that differ. The name is the list's
- * unique key (ignoring capitals), so a row with no Company ID finds its company by name; a rename
- * therefore needs the Company ID, or the new name would look like a new company. Every importable
- * column can change, five can be emptied with `[clear]` (the endpoint takes `""` there and refuses
- * `null` everywhere), and the amount is never converted when the currency changes.
+ * unique key, and the server compares it ignoring capitals and surrounding spaces (never spaces
+ * inside it), so a row with no Company ID finds its company that way (`keyMatch: "caseless"`, the
+ * one list where that is the server's own rule); a rename therefore needs the Company ID, or the new
+ * name would look like a new company. Every importable column can change, five can be emptied with
+ * `[clear]` (the endpoint takes `""` there and refuses `null` everywhere), and the amount is never
+ * converted when the currency changes.
  */
 import { defineImportEntity, minorToMajor } from "@opsgrids/client";
 import type { ColumnOption, ImportColumn } from "@opsgrids/client";
@@ -188,10 +190,11 @@ export const companyImport = defineImportEntity<CompanyIn, Company, CompanyFilte
     "If your role limits you to your own companies, you can only assign companies to yourself. A row naming another owner is refused and reported.",
     "Annual revenue is in whole currency units and uses the currency in the next column. When adding, leave Currency blank for INR.",
     "With Add new records only, a file exported from the Companies list cannot be imported again as it is: its rows carry a Company ID and are refused, because those companies already exist.",
-    "When updating, a row with a Company ID changes that company. Without one, the company is found by its name, ignoring capitals and spacing. To rename a company keep its Company ID in the row: a row with a changed name and no Company ID is a new company.",
+    "When updating, a row with a Company ID changes that company. Without one, the company is found by its name, ignoring capitals and surrounding spaces (spaces inside the name count). To rename a company keep its Company ID in the row: a row with a changed name and no Company ID is a new company.",
     "A rename onto the name of another company (ignoring capitals) is refused by the server and reported. A change of capitals alone is a rename and is applied.",
     "When updating, type [clear] in Domain, Industry, Headcount, City or Country to empty it. Company name, Owner email, Status, Annual revenue and Currency cannot be emptied, only changed.",
-    "When updating, Annual revenue is not converted if the currency changes: change Currency only together with Annual revenue, in the new currency. Leave Currency blank to keep the company's own currency; Annual revenue is then read in it, not in INR.",  ],
+    "When updating, Annual revenue is not converted if the currency changes: change Currency only together with Annual revenue, in the new currency. Leave Currency blank to keep the company's own currency; Annual revenue is then read in it, not in INR.",
+  ],
   recordIdKey: "id",
   loadLookups: loadOwnerLookups,
   toPayload: (row, ctx) => ({
@@ -212,6 +215,10 @@ export const companyImport = defineImportEntity<CompanyIn, Company, CompanyFilte
     idOf: (company) => company.id,
     keyColumn: "name",
     keyOf: (company) => company.name,
+    // The server folds capitals and trims when it compares company names, so a name in other
+    // capitals is the same company (the other three lists compare exactly).
+    keyMatch: "caseless",
+    recordLabel: (company) => company.name,
     currencyOf: (company) => company.currency,
     fields: [
       { column: "name", current: (company) => company.name },

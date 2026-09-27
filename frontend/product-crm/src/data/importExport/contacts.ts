@@ -12,8 +12,9 @@
  * mask in a read-only column, and the importable Phone column is left blank on export.
  *
  * Update calls `PATCH /contacts/{id}` with only the fields that differ, and finds a contact with no
- * Contact ID by its email (the server's unique key, exactly as stored; the matcher ignores capitals,
- * which can only make it refuse a row, never pick the wrong contact). The PATCH does not take the
+ * Contact ID by its email, the server's unique key, compared exactly as stored (the default
+ * `keyMatch`): an address that differs from a stored one only in capitals is another contact to the
+ * server, so the engine refuses the row rather than pick one. The PATCH does not take the
  * phone: a non-blank Phone cell is one write-only `PUT /contacts/{id}/phone`, because the stored
  * number is only a mask and cannot be compared. The server does not stop a PATCH from changing an
  * email to another contact's address in other capitals, so `check` does, as it does when adding.
@@ -208,10 +209,11 @@ export const contactImport = defineImportEntity<ContactIn, Contact, ContactFilte
     "Exports show phone numbers masked, as the app does.",
     "With Add new records only, a file exported from the Contacts list cannot be imported again as it is: its rows carry a Contact ID and are refused, because those contacts already exist.",
     "An organisation with more than 20,000 contacts cannot import contacts in this release: the addresses already on file cannot all be checked, so nothing is imported.",
-    "When updating, a row with a Contact ID changes that contact. Without one, the contact is found by its Email, ignoring capitals. To change a contact's email keep its Contact ID in the row: a row with a new address and no Contact ID is a new contact.",
-    "When updating, an Email that differs from the one on file only in capitals is treated as unchanged and the address stays as it is. Changing it to another contact's address in other capitals is refused; to another contact's exact address, the server refuses it and it is reported.",
+    "When updating, a row with a Contact ID changes that contact. Without one, the contact is found by its exact Email, capitals included, and an Email that differs from a contact's on file only in capitals is refused, so a row never changes a contact it only resembles. To change a contact's email keep its Contact ID in the row: a row with a new address and no Contact ID is a new contact.",
+    "When updating a row that has a Contact ID, an Email that differs from the one on file only in capitals is treated as unchanged and the address stays as it is. Changing it to another contact's address in other capitals is refused; to another contact's exact address, the server refuses it and it is reported.",
     "When updating, type [clear] in Title to empty it. Full name, Email, Company, Owner email and Status cannot be emptied, only changed.",
-    "When updating, a Phone in the row is always saved to the contact, even if it is the number already on file: the stored number is hidden, so it cannot be compared. Leave Phone blank to keep the number. A phone number cannot be removed, only replaced.",  ],
+    "When updating, a Phone in the row is always saved to the contact, even if it is the number already on file: the stored number is hidden, so it cannot be compared. Leave Phone blank to keep the number. A phone number cannot be removed, only replaced.",
+  ],
   recordIdKey: "id",
   loadLookups: async (signal) => {
     const [owners, companies, emails] = await Promise.all([
@@ -242,6 +244,7 @@ export const contactImport = defineImportEntity<ContactIn, Contact, ContactFilte
     idOf: (contact) => contact.id,
     keyColumn: "email",
     keyOf: (contact) => contact.email,
+    recordLabel: (contact) => contact.full_name,
     fields: [
       { column: "fullName", field: "full_name", current: (contact) => contact.full_name },
       { column: "email", current: (contact) => contact.email, same: sameAddress },

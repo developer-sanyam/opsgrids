@@ -13,7 +13,8 @@
  * when adding. Email and phone have no update route at all, so a cell in either refuses the row
  * instead of being ignored, and the status is a read-only column (moving it needs legal hops, and
  * `converted` is reachable only through conversion). A converted lead keeps its owner: the server
- * refuses any owner key on it, so `check` refuses the change before anything is sent.
+ * refuses any owner key on it (a lead is converted when its status says so or when it points at the
+ * company it became), so `check` refuses the change before anything is sent.
  */
 import { RowProblem, defineImportEntity } from "@opsgrids/client";
 import type { ColumnOption, ImportColumn } from "@opsgrids/client";
@@ -158,6 +159,12 @@ const COLUMNS: readonly ImportColumn[] = [
 
 const OWNER = columnOf(COLUMNS, "owner");
 
+/** The server refuses to reassign a lead that says it is converted or that points at the company it
+ *  became, and the two are meant to agree, so either one is enough. */
+function isConverted(lead: Lead): boolean {
+  return lead.status === "converted" || lead.converted_company_id !== null;
+}
+
 export const leadImport = defineImportEntity<LeadIn, Lead, LeadFilters>({
   id: "crm.leads",
   noun: "leads",
@@ -211,6 +218,12 @@ export const leadImport = defineImportEntity<LeadIn, Lead, LeadFilters>({
   update: {
     loadExisting: (ctx) => loadEvery(listLeads, ctx),
     idOf: (lead) => lead.id,
+    // Never the email or phone: the wire holds only masks of them, and a preview or report may be
+    // shared. The name and the company as the lead gave it are what a person recognises.
+    recordLabel: (lead) => {
+      const company = orNull(lead.company);
+      return company === null ? lead.full_name : `${lead.full_name} (${company})`;
+    },
     fields: [
       { column: "fullName", field: "full_name", current: (lead) => lead.full_name },
       { column: "company", current: (lead) => orNull(lead.company), clear: null },
@@ -228,7 +241,7 @@ export const leadImport = defineImportEntity<LeadIn, Lead, LeadFilters>({
     notUpdatable: ["email", "phone"],
     check: (row, lead, changed, ctx) => {
       refuseInactiveOwner(OWNER, row, changed, ctx);
-      if (lead.status === "converted" && changed.includes(OWNER.header)) {
+      if (isConverted(lead) && changed.includes(OWNER.header)) {
         throw new RowProblem(
           "A converted lead cannot be reassigned. Its Full name, Company and Notes can still be changed.",
         );

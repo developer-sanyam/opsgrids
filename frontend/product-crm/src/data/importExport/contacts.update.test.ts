@@ -86,21 +86,22 @@ describe("contacts: which record a row names", () => {
     expect(matchRow(index, "cont-404", null)).toEqual({ kind: "unknown-id" });
   });
 
-  it("finds a contact by its address even when the sheet spells the capitals differently, and never the wrong one", () => {
+  it("finds a contact by its address exactly as stored, capitals included, and never the wrong one", () => {
     expect(matchRow(index, null, "asha.rao@northwind.co")).toMatchObject({ kind: "found", by: "key", item: STORED });
-    expect(matchRow(index, null, "priya.nair@northwind.co")).toMatchObject({ kind: "found", by: "key", item: other });
+    expect(matchRow(index, null, "Priya.Nair@northwind.co")).toMatchObject({ kind: "found", by: "key", item: other });
+  });
+
+  it("matches the address exactly, as the server does: an address in other capitals is another contact to it", () => {
+    expect(spec.keyMatch ?? "exact").toBe("exact");
+  });
+
+  it("names a contact in the preview and the report by their full name, never their phone", () => {
+    expect(spec.recordLabel?.(STORED)).toBe("Asha Rao");
+    expect(spec.recordLabel?.({ ...STORED, phone: "+919876543210" })).not.toMatch(/\d{5}|•/);
   });
 
   it("treats an address no contact has as a new contact", () => {
     expect(matchRow(index, null, "new.person@northwind.co")).toEqual({ kind: "new" });
-  });
-
-  it("refuses an address two contacts hold in other capitals (the server allows it), instead of choosing", () => {
-    const twins = indexExisting(spec, [
-      { ...STORED, id: "cont-8", email: "Twin@x.co" },
-      { ...STORED, id: "cont-9", email: "twin@x.co" },
-    ]);
-    expect(matchRow(twins, null, "Twin@x.co")).toEqual({ kind: "ambiguous" });
   });
 });
 

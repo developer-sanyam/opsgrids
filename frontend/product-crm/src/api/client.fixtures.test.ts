@@ -126,7 +126,8 @@ describe("fixture mode: updates are refused like the server refuses them", () =>
     const { updateDeal, problemMessage, refusal } = await fixtureClient();
     const clash = await refusal(updateDeal("deal-2", { name: "Fleet telematics rollout" }));
     expect(clash.status).toBe(409);
-    expect(problemMessage(clash)).toBe("A deal with that name already exists");
+    // The server names the deal on an update (`services.update_deal`), unlike on a create.
+    expect(problemMessage(clash)).toBe("A deal named 'Fleet telematics rollout' already exists");
     await expect(updateDeal("deal-2", { name: "FLEET telematics rollout" })).resolves.toMatchObject({
       name: "FLEET telematics rollout",
     });
