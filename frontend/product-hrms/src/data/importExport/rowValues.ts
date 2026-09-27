@@ -1,5 +1,5 @@
-import { RowProblem } from "@opsgrids/client";
-import type { Lookup, ParsedRow } from "@opsgrids/client";
+import { RowProblem, normaliseKey } from "@opsgrids/client";
+import type { ImportContext, Lookup, ParsedRow, ParsedValue } from "@opsgrids/client";
 
 /** A text cell, or null when it was left blank. */
 export function textOf(row: ParsedRow, key: string): string | null {
@@ -45,4 +45,26 @@ export function resolveReference(lookup: Lookup | undefined, label: string): str
   const value = lookup?.resolve(label);
   if (value === undefined) throw new RowProblem(`"${label}" is not in the list.`);
   return value;
+}
+
+/** A stored text as an update reads it: an empty string is "nothing there", the same as null. */
+export function storedText(value: string | null): string | null {
+  return value === null || value === "" ? null : value;
+}
+
+/**
+ * Compares a cell with a stored key the way the engine matched the row to its record: ignoring
+ * case and runs of spaces. An update that found `emp-0007` on the record `EMP-0007` must not then
+ * refuse the row for "changing" its number.
+ */
+export function sameKey(cell: ParsedValue, stored: ParsedValue): boolean {
+  return typeof cell === "string" && typeof stored === "string" && normaliseKey(cell) === normaliseKey(stored);
+}
+
+/**
+ * `UpdateField.resolve` for a lookup column: the cell's label as the id or code the record stores,
+ * refused as a row problem when the list does not hold it.
+ */
+export function resolveLookup(name: string): (value: ParsedValue, ctx: ImportContext) => ParsedValue {
+  return (value, { lookups }) => (typeof value === "string" ? resolveReference(lookups[name], value) : value);
 }
