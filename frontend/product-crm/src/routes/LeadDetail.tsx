@@ -1,18 +1,18 @@
 import { useCallback, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { convertLead, getLead, updateLead } from "@/api/client";
+import { convertLead, getLead, revealLeadField, updateLead } from "@/api/client";
 import type { LeadStatus } from "@/api/types";
 import { useDirectory } from "@/data/directoryContext";
 import { ownerById } from "@/data/lookups";
 import { formatDate } from "@/lib/format";
-import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
+import { RevealableField } from "@/reveal/RevealableField";
+import { Can, problemMessage, useAsync, useCan, useMutation, useStepUp } from "@opsgrids/client";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
   BuildingIcon,
-  MailIcon,
-  PhoneIcon,
+  StepUpDialog,
   useToast,
 } from "@opsgrids/ui";
 import {
@@ -64,7 +64,8 @@ export function LeadDetailPage() {
   const lead = useAsync(useCallback(() => getLead(id), [id]), [id]);
   const directory = useDirectory();
   const { owners } = directory;
-  const canWrite = useCan("crm.lead.lead.write", "OWN");
+  const canRevealDetails = useCan("crm.lead.lead.read_sensitive", "OWN");
+  const stepUp = useStepUp();
   const [confirmingConvert, setConfirmingConvert] = useState(false);
 
   const setStatus = useMutation((status: LeadStatus) => updateLead(id, { status }), {
@@ -193,19 +194,34 @@ export function LeadDetailPage() {
                   <Card className="flex flex-col gap-3 p-6">
                     <SectionHeader title="Contact" />
                     <div className="flex flex-col gap-1.5 text-sm">
-                      <span className="inline-flex items-center gap-2 text-ink-soft">
-                        <MailIcon className="size-4 text-faint" />
-                        {l.email ?? "—"}
-                      </span>
-                      <span className="inline-flex items-center gap-2 text-ink-soft">
-                        <PhoneIcon className="size-4 text-faint" />
-                        <span className="tnum">{l.phone ?? "—"}</span>
-                      </span>
+                      <RevealableField
+                        kind="email"
+                        masked={l.email}
+                        subject="lead"
+                        canReveal={canRevealDetails}
+                        stepUp={stepUp}
+                        resetKey={l.id}
+                        load={(headers) => revealLeadField(l.id, "email", headers)}
+                      />
+                      <RevealableField
+                        kind="phone"
+                        masked={l.phone}
+                        subject="lead"
+                        canReveal={canRevealDetails}
+                        stepUp={stepUp}
+                        resetKey={l.id}
+                        load={(headers) => revealLeadField(l.id, "phone", headers)}
+                      />
                     </div>
-                    {!converted && canWrite ? (
+                    {l.email !== null || l.phone !== null ? (
                       <p className="text-xs text-faint">
-                        Email and phone are masked here — the real values are sealed and never
-                        shown outside a service-to-service conversion.
+                        Email and phone are masked.
+                        {canRevealDetails
+                          ? " A reveal needs a one-time code and is recorded."
+                          : " Ask an administrator if you need the real values."}
+                        {converted && l.converted_contact_id
+                          ? " This lead has been converted; the contact created from it is under Contacts."
+                          : ""}
                       </p>
                     ) : null}
                   </Card>
@@ -229,6 +245,8 @@ export function LeadDetailPage() {
             );
           })()
         : null}
+
+      <StepUpDialog {...stepUp.dialogProps} />
     </div>
   );
 }

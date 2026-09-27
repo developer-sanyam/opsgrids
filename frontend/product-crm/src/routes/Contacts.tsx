@@ -1,15 +1,17 @@
 import { Fragment, useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { deleteContact, listContacts } from "@/api/client";
+import { deleteContact, listContacts, revealContactPhone } from "@/api/client";
 import type { Contact, ContactStatus } from "@/api/types";
 import { useDirectory } from "@/data/directoryContext";
 import { contactImport } from "@/data/importExport/contacts";
 import type { ContactFilters } from "@/data/importExport/contacts";
 import { companyName, ownerName } from "@/data/lookups";
-import { ArrowRightIcon, ChevronDown, cn, ImportExportButton, MailIcon, PhoneIcon, PlusIcon, useDebouncedValue, UsersIcon, useToast } from "@opsgrids/ui";
+import { ArrowRightIcon, ChevronDown, cn, ImportExportButton, MailIcon, PlusIcon, StepUpDialog, useDebouncedValue, UsersIcon, useToast } from "@opsgrids/ui";
 import { formatDate, formatRelative } from "@/lib/format";
-import { Can, problemMessage, useAsync, useCan, useImportExport, useMutation } from "@opsgrids/client";
+import { RevealableField } from "@/reveal/RevealableField";
+import type { UseStepUpResult } from "@opsgrids/client";
+import { Can, problemMessage, useAsync, useCan, useImportExport, useMutation, useStepUp } from "@opsgrids/client";
 import {
   Avatar,
   Button,
@@ -43,11 +45,15 @@ const NO_CONTACTS: Contact[] = [];
 function ContactDetail({
   contact,
   canWrite,
+  canReveal,
+  stepUp,
   onEdit,
   onDelete,
 }: {
   contact: Contact;
   canWrite: boolean;
+  canReveal: boolean;
+  stepUp: UseStepUpResult;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -62,10 +68,15 @@ function ContactDetail({
           <MailIcon className="size-4 text-faint" />
           {contact.email}
         </a>
-        <span className="inline-flex items-center gap-2 text-ink-soft">
-          <PhoneIcon className="size-4 text-faint" />
-          <span className="tnum">{contact.phone}</span>
-        </span>
+        <RevealableField
+          kind="phone"
+          masked={contact.phone}
+          subject="contact"
+          canReveal={canReveal}
+          stepUp={stepUp}
+          resetKey={contact.id}
+          load={(headers) => revealContactPhone(contact.id, headers)}
+        />
       </div>
       <div className="flex flex-col gap-2 text-sm sm:items-end">
         <span className="text-muted">
@@ -108,6 +119,8 @@ export function ContactsPage() {
   const directory = useDirectory();
   const { owners, companies } = directory;
   const canWrite = useCan("crm.book.contact.write", "OWN");
+  const canReveal = useCan("crm.book.contact.read_sensitive", "OWN");
+  const stepUp = useStepUp();
 
   const loader = useCallback(
     () => listContacts({ search: debouncedSearch, status, page, size }),
@@ -336,6 +349,8 @@ export function ContactsPage() {
                                 <ContactDetail
                                   contact={contact}
                                   canWrite={canWrite}
+                                  canReveal={canReveal}
+                                  stepUp={stepUp}
                                   onEdit={() => setEditing(contact)}
                                   onDelete={() => setDeleting(contact)}
                                 />
@@ -411,6 +426,8 @@ export function ContactsPage() {
         pending={remove.pending}
         {...(remove.error ? { error: problemMessage(remove.error) } : {})}
       />
+
+      <StepUpDialog {...stepUp.dialogProps} />
     </div>
   );
 }
