@@ -45,13 +45,16 @@ interface StepUpCodeFormProps {
  * `123 456` lands as `123456`.
  *
  * **The sixth digit submits.** A code lasts thirty seconds; making the person reach for a button
- * spends some of it. Enter and the Verify button submit too, for a code that is still in the
- * field (a dropped connection keeps it, since the code may still be good).
+ * spends some of it. Enter and the Verify button submit too, as a form is expected to, and say
+ * "Enter all 6 digits." when the field holds fewer.
  *
- * **A refused code is emptied and the field re-focused.** A code is single-use, so the digits that
- * were just refused are the one thing that can never work — leaving them there invites Enter,
- * which sends them again and counts a second failure toward the lockout. (`unavailable` says
- * nothing about the code, so that one keeps it.)
+ * **A code that was answered with an error is emptied, and the field re-focused.** A code is
+ * single-use, so digits that were refused can never work — leaving them there invites Enter, which
+ * sends them again and counts a second failure toward the lockout. The same goes for `unavailable`
+ * (a timeout, a dropped connection, a 5xx): the request may have reached the server and spent the
+ * code for its thirty-second step, in which case the same digits are a replay, and a replay is a
+ * counted failure. A fresh code costs the person a few seconds; a second attempt with the old one
+ * can cost them the session.
  */
 export function StepUpCodeForm({ formId, inputRef, busy, error, onSubmit }: StepUpCodeFormProps) {
   const [code, setCode] = useState("");
@@ -62,7 +65,7 @@ export function StepUpCodeForm({ formId, inputRef, busy, error, onSubmit }: Step
   // never painted with the refused digits in it).
   if (busy !== wasBusy) {
     setWasBusy(busy);
-    if (wasBusy && (error === "wrong-code" || error === "locked")) setCode("");
+    if (wasBusy && error !== undefined) setCode("");
   }
 
   // The field was read-only while the request was out, and a focused Verify button was disabled

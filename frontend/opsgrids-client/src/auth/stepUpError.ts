@@ -9,28 +9,54 @@
  * - `locked`: too many failed attempts. Nothing to fix by retyping; say so and let them wait.
  * - `not-enrolled`: 409 `mfa-not-enrolled` — the member has no second factor at all. No code can
  *   work; the way forward is the dashboard's Security page.
- * - `sso`: 409 for a single sign-on session, which has no second factor of ours to check.
+ * - `sso`: 403 `mfa-unavailable-for-sso` — the session came from single sign-on, which has no
+ *   second factor of ours to check. Not a lock: nothing the person does with a code changes it.
+ * - `reauthenticate`: 403 `mfa-reauthentication-required` — the authenticator was added after
+ *   this session began (and not through it). No code can work until they sign in again.
  * - `unavailable`: everything else — a dropped connection, a timeout, a 5xx, an answer that is
- *   not a token. Says nothing about the code, so the field keeps it.
+ *   not a token. Says nothing about the code.
  *
- * The mapping is the only place these are told apart, so a change on the auth service is a change
- * to `classifyStepUpFailure` and its test, and nothing else.
+ * The problem `type` slug decides first and the status only when the slug is one this file does
+ * not know: a 403 is a lockout for `mfa-locked` and a refusal to even try for
+ * `mfa-unavailable-for-sso`, and only the slug tells them apart. The slugs are the auth service's
+ * contract (ADR-0023, "Error contract"). The mapping is the only place these are told apart, so a
+ * change on the auth service is a change to `classifyStepUpFailure` and its test, and nothing else.
  */
 
 import { ApiError } from "../http";
 import type { ProblemJson } from "../http";
+import { problemSlug } from "../problem";
 
-export type StepUpFailure = "wrong-code" | "locked" | "not-enrolled" | "sso" | "unavailable";
+export type StepUpFailure =
+  | "wrong-code"
+  | "locked"
+  | "not-enrolled"
+  | "sso"
+  | "reauthenticate"
+  | "unavailable";
 
-/** The problem `type` slug for "this member has no second factor enrolled". */
-const NOT_ENROLLED_SLUG = "mfa-not-enrolled";
-
-/** The last segment of the problem's `type` URI (`https://errors.opsgrids.dev/mfa-not-enrolled`). */
-function slugOf(problem: ProblemJson | null): string {
-  const type = problem?.type;
-  if (!type) return "";
-  return type.split("/").filter(Boolean).pop()?.toLowerCase() ?? "";
-}
+/**
+ * What each slug the auth service raises around a second factor means to a person at the code
+ * prompt.
+ *
+ * `mfa-current-code-required` and `password-incorrect` belong to *adding* an authenticator
+ * (`POST /auth/mfa/enrol`), which this prompt never calls. Were one to arrive here it would be a
+ * contract violation rather than a wrong code, so it is typed `unavailable` — both are 422, which
+ * would otherwise read as "retype the digits" when the digits were never the problem.
+ * `password-locked` is sign-in's own lockout, which the same counters feed.
+ */
+const SLUG_FAILURES: Readonly<Record<string, StepUpFailure>> = {
+  "mfa-not-enrolled": "not-enrolled",
+  "mfa-unavailable-for-sso": "sso",
+  "mfa-reauthentication-required": "reauthenticate",
+  "mfa-locked": "locked",
+  "password-locked": "locked",
+  "mfa-code-invalid": "wrong-code",
+  "mfa-code-replayed": "wrong-code",
+  "mfa-current-code-required": "unavailable",
+  "password-incorrect": "unavailable",
+  "mfa-reseal-pending": "unavailable",
+};
 
 /**
  * A lockout may arrive as 403 (how sign-in's own MFA lockout answers), 423 or 429, or as any
@@ -39,12 +65,10 @@ function slugOf(problem: ProblemJson | null): string {
 const LOCKED_STATUSES: ReadonlySet<number> = new Set([403, 423, 429]);
 
 export function classifyStepUpFailure(status: number, problem: ProblemJson | null): StepUpFailure {
-  const slug = slugOf(problem);
-  if (status === 409) {
-    if (slug === NOT_ENROLLED_SLUG) return "not-enrolled";
-    if (slug.includes("sso")) return "sso";
-    return "unavailable";
-  }
+  const slug = problemSlug(problem);
+  const known = SLUG_FAILURES[slug];
+  if (known !== undefined) return known;
+  if (status === 409) return "unavailable";
   if (LOCKED_STATUSES.has(status) || slug.includes("lock")) return "locked";
   if (status === 401 || status === 422) return "wrong-code";
   return "unavailable";

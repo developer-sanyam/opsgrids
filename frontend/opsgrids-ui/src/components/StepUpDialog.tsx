@@ -9,10 +9,11 @@ import type { StepUpDialogError } from "./StepUpDialogCodeForm";
 export type { StepUpDialogError } from "./StepUpDialogCodeForm";
 
 /**
- * Whether a code can help at all. `ready` asks for one; the other two are the server saying no
- * code ever will, and why: no second factor is enrolled, or the session is a single sign-on one.
+ * Whether a code can help at all. `ready` asks for one; the others are the server saying no code
+ * ever will, and why: no second factor is enrolled, the session is a single sign-on one, or the
+ * authenticator was added after this session began and the person has to sign in again.
  */
-export type StepUpMfaState = "ready" | "not-enrolled" | "sso";
+export type StepUpMfaState = "ready" | "not-enrolled" | "sso" | "reauthenticate";
 
 export interface StepUpDialogProps {
   open: boolean;
@@ -38,6 +39,8 @@ const COPY = {
   verifying: "Verifying…",
   close: "Close",
   sso: "Revealing this is unavailable for single sign-on accounts.",
+  reauthenticate:
+    "Your authenticator was set up after you signed in. Sign out and sign in again, then try once more.",
   notEnrolled: {
     before: "Two-factor authentication is required to reveal this, and it isn't set up on your account yet. Set it up on the ",
     link: "Security page",
@@ -51,10 +54,10 @@ const COPY = {
  * number, unmasking an ID. Presentational: `useStepUp()` in `@opsgrids/client` owns the request
  * and hands over exactly these props (`<StepUpDialog {...stepUp.dialogProps} />`).
  *
- * **Three ways in, one dialog.** `ready` is the code field. `not-enrolled` and `sso` replace it
- * with the reason no code can work, rather than letting someone type into a field that will
- * refuse everything; when the answer arrives with the dialog already open, focus moves to the
- * one thing to do next (the link, or Close) and the new sentence is read aloud.
+ * **Four ways in, one dialog.** `ready` is the code field. `not-enrolled`, `sso` and
+ * `reauthenticate` replace it with the reason no code can work, rather than letting someone type
+ * into a field that will refuse everything; when the answer arrives with the dialog already open,
+ * focus moves to the one thing to do next (the link, or Close) and the new sentence is read aloud.
  *
  * **Not dismissable mid-request.** Escape, Cancel and the close control are inert while `busy`,
  * the same rule `ConfirmDialog` keeps — the code is already gone, and a dialog that vanishes
@@ -94,6 +97,7 @@ export function StepUpDialog({
 
   let explanation: ReactNode = COPY.prompt;
   if (mfaState === "sso") explanation = COPY.sso;
+  if (mfaState === "reauthenticate") explanation = COPY.reauthenticate;
   if (mfaState === "not-enrolled") {
     explanation = (
       <>

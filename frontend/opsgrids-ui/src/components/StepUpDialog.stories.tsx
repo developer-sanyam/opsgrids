@@ -66,7 +66,7 @@ export const WrongCode: Story = { args: { error: "wrong-code" } };
 
 export const LockedOut: Story = { args: { error: "locked" } };
 
-/** A dropped connection says nothing about the code, so the person is told to retry, not to retype. */
+/** A timeout or dropped connection may already have spent the code: the field is empty, ready for the next one. */
 export const Unavailable: Story = { args: { error: "unavailable" } };
 
 /** No second factor on the account: no field, and the Security page is one link away. */

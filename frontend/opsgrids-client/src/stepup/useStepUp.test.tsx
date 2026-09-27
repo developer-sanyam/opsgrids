@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { configureAuthOrigin } from "../auth/origin";
 import { ApiError, apiRequest } from "../http";
 import { getAccessToken, setAccessToken, setUnauthorizedHandler } from "../session";
 import { isStepUpCancelled, StepUpCancelledError } from "./cancelled";
@@ -186,6 +187,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  configureAuthOrigin(null);
   setUnauthorizedHandler(null);
   setAccessToken(null);
   clearStepUpToken();
@@ -462,20 +464,54 @@ describe("useStepUp: refusals of the code", () => {
 
     await waitFor(() => expect(screen.getByTestId("mfa-state").textContent).toBe("not-enrolled"));
     expect(screen.getByTestId("dialog-error").textContent).toBe("");
-    expect(screen.getByRole("link", { name: "Security page" }).getAttribute("href")).toBe("/account/security");
+    // A product app has no Security page of its own: the link is on the dashboard's host.
+    expect(screen.getByRole("link", { name: "Security page" }).getAttribute("href")).toBe(
+      "https://app.opsgrids.com/account/security",
+    );
     expect(unauthorized).not.toHaveBeenCalled();
     expect(callsTo(PHONE_URL)).toHaveLength(0);
   });
 
-  it("turns the dialog into the single-sign-on state", async () => {
+  it("points the Security page link at the configured auth origin, the dashboard's host", async () => {
     const user = userEvent.setup();
-    routes[STEP_UP_URL] = () => problem(409, "step-up-sso-session", "Not for SSO sessions");
+    configureAuthOrigin("https://dashboard.staging.example/");
+    routes[STEP_UP_URL] = () => problem(409, "mfa-not-enrolled", "No second factor");
+    render(<Screen />);
+
+    await user.click(screen.getByRole("button", { name: "Reveal phone" }));
+    await enterCode(user, "123456");
+
+    await waitFor(() => expect(screen.getByTestId("mfa-state").textContent).toBe("not-enrolled"));
+    expect(screen.getByRole("link", { name: "Security page" }).getAttribute("href")).toBe(
+      "https://dashboard.staging.example/account/security",
+    );
+  });
+
+  it("turns the dialog into the single-sign-on state, and not into a lockout", async () => {
+    const user = userEvent.setup();
+    routes[STEP_UP_URL] = () => problem(403, "mfa-unavailable-for-sso", "Not for SSO sessions");
     render(<Screen />);
 
     await user.click(screen.getByRole("button", { name: "Reveal phone" }));
     await enterCode(user, "123456");
 
     await waitFor(() => expect(screen.getByTestId("mfa-state").textContent).toBe("sso"));
+    expect(screen.getByTestId("dialog-error").textContent).toBe("");
+    expect(unauthorized).not.toHaveBeenCalled();
+    expect(callsTo(PHONE_URL)).toHaveLength(0);
+  });
+
+  it("turns the dialog into the sign-in-again state when the authenticator postdates the session", async () => {
+    const user = userEvent.setup();
+    routes[STEP_UP_URL] = () => problem(403, "mfa-reauthentication-required", "Sign in again");
+    render(<Screen />);
+
+    await user.click(screen.getByRole("button", { name: "Reveal phone" }));
+    await enterCode(user, "123456");
+
+    await waitFor(() => expect(screen.getByTestId("mfa-state").textContent).toBe("reauthenticate"));
+    expect(screen.getByTestId("dialog-error").textContent).toBe("");
+    expect(unauthorized).not.toHaveBeenCalled();
     expect(callsTo(PHONE_URL)).toHaveLength(0);
   });
 

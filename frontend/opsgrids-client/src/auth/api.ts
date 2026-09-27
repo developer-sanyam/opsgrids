@@ -93,8 +93,8 @@ function isStepUpToken(value: unknown): value is StepUpToken {
  * its own few minutes, and presented as the bearer of the one call that needs it.
  *
  * Every failure is a `StepUpError` with a `failure` kind (`wrong-code`, `locked`, `not-enrolled`,
- * `sso`, `unavailable`) so a screen never reads a status code or the server's sentence to decide
- * what to show.
+ * `sso`, `reauthenticate`, `unavailable`) so a screen never reads a status code or the server's
+ * sentence to decide what to show.
  */
 export async function stepUp(code: string): Promise<StepUpToken> {
   const controller = new AbortController();

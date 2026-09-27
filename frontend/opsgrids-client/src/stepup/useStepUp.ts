@@ -26,7 +26,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { getAuthOrigin } from "../auth/origin";
+import { getDashboardOrigin } from "../auth/origin";
 import { StepUpError } from "../auth/stepUpError";
 import type { StepUpFailure } from "../auth/stepUpError";
 import type { StepUpToken } from "../auth/types";
@@ -37,8 +37,8 @@ import type { RevealHeaders } from "./reveal";
 import { withStepUp } from "./withStepUp";
 import type { StepUpRunOptions } from "./withStepUp";
 
-/** Whether a code can help at all: `ready` asks for one; the other two say why none can. */
-export type StepUpMfaState = "ready" | "not-enrolled" | "sso";
+/** Whether a code can help at all: `ready` asks for one; the others say why none can. */
+export type StepUpMfaState = "ready" | "not-enrolled" | "sso" | "reauthenticate";
 
 /** What the last attempt at the code said, for the dialog to word. */
 export type StepUpPromptError = "wrong-code" | "locked" | "unavailable";
@@ -62,7 +62,11 @@ export interface StepUpPromptProps {
   mfaState: StepUpMfaState;
   onSubmit: (code: string) => void;
   onCancel: () => void;
-  /** Where the dashboard's Security page is — where someone with no second factor goes. */
+  /**
+   * Where the dashboard's Security page is — where someone with no second factor goes. An absolute
+   * URL on the dashboard's host (the configured auth origin, or the production dashboard when the
+   * app runs same-origin): a product app has no `/account/security` of its own.
+   */
   securityHref: string;
 }
 
@@ -99,6 +103,8 @@ function promptAfter(failure: StepUpFailure): Prompt {
       return { mfaState: "not-enrolled", error: undefined, busy: false };
     case "sso":
       return { mfaState: "sso", error: undefined, busy: false };
+    case "reauthenticate":
+      return { mfaState: "reauthenticate", error: undefined, busy: false };
     default:
       return { mfaState: "ready", error: failure, busy: false };
   }
@@ -197,7 +203,7 @@ export function useStepUp(): UseStepUpResult {
     [askForToken],
   );
 
-  const securityHref = `${getAuthOrigin() ?? ""}${SECURITY_PATH}`;
+  const securityHref = `${getDashboardOrigin()}${SECURITY_PATH}`;
 
   const dialogProps = useMemo<StepUpPromptProps>(
     () => ({

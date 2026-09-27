@@ -182,19 +182,15 @@ describe("StepUpDialog: entering the code", () => {
     expect(screen.queryByText("Enter all 6 digits.")).toBeNull();
   });
 
-  it("submits a code that is still in the field when Enter or Verify is used", async () => {
+  it("submits a full code that is still in the field when Enter or Verify is used", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
-    render(<Host answer={{ error: "unavailable" }} onSubmit={onSubmit} />);
-    await user.click(screen.getByRole("button", { name: "Reveal phone" }));
+    render(<StepUpDialog {...props({ onSubmit })} />);
     await user.type(codeField(), "482913");
-    await screen.findByText(/We couldn't check that code/);
 
     await user.keyboard("{Enter}");
-    await screen.findByText(/We couldn't check that code/);
     await user.click(screen.getByRole("button", { name: "Verify" }));
 
-    await screen.findByText(/We couldn't check that code/);
     expect(onSubmit.mock.calls).toEqual([["482913"], ["482913"], ["482913"]]);
   });
 });
@@ -278,27 +274,35 @@ describe("StepUpDialog: a code that was refused", () => {
     expect(codeField()).toHaveProperty("value", "");
   });
 
-  it("keeps the digits after a dropped connection, since the code may still be good", async () => {
+  it("empties the field after a timeout or a dropped connection too, since the code may already be spent", async () => {
     const user = userEvent.setup();
-    render(<Host answer={{ error: "unavailable" }} />);
+    const onSubmit = vi.fn();
+    render(<Host answer={{ error: "unavailable" }} onSubmit={onSubmit} />);
     await user.click(screen.getByRole("button", { name: "Reveal phone" }));
 
     await user.type(codeField(), "482913");
 
     await screen.findByText(/We couldn't check that code/);
-    expect(codeField()).toHaveProperty("value", "482913");
+    expect(codeField()).toHaveProperty("value", "");
+    expect(document.activeElement).toBe(codeField());
+
+    // Enter on the emptied field sends nothing: the same digits cannot go out a second time.
+    await user.keyboard("{Enter}");
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Enter all 6 digits.")).toBeTruthy();
   });
 
-  it("returns focus to the field when the button was what the person pressed", async () => {
+  it("returns focus to the field when the button that held it was disabled by the request", async () => {
     const user = userEvent.setup();
-    render(<Host answer={{ error: "unavailable" }} />);
-    await user.click(screen.getByRole("button", { name: "Reveal phone" }));
+    const onSubmit = vi.fn();
+    const { rerender } = render(<StepUpDialog {...props({ onSubmit })} />);
     await user.type(codeField(), "482913");
-    await screen.findByText(/We couldn't check that code/);
-
     await user.click(screen.getByRole("button", { name: "Verify" }));
+    expect(onSubmit).toHaveBeenCalledTimes(2);
 
-    await screen.findByText(/We couldn't check that code/);
+    rerender(<StepUpDialog {...props({ onSubmit, busy: true })} />);
+    rerender(<StepUpDialog {...props({ onSubmit, busy: false, error: "unavailable" })} />);
+
     expect(document.activeElement).toBe(codeField());
   });
 });
@@ -356,6 +360,29 @@ describe("StepUpDialog: when no code can work", () => {
     expect(document.activeElement).toBe(link);
     // And it is said, not just shown.
     expect(link.closest("[aria-live]")).not.toBeNull();
+  });
+
+  it("explains that the authenticator was set up after this session began, with nowhere to type", () => {
+    render(<StepUpDialog {...props({ mfaState: "reauthenticate" })} />);
+
+    expect(
+      screen.getByText("Your authenticator was set up after you signed in. Sign out and sign in again, then try once more."),
+    ).toBeTruthy();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Verify" })).toBeNull();
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
+  });
+
+  it("moves focus to Close when the answer is to sign in again", async () => {
+    const user = userEvent.setup();
+    render(<Host answer={{ mfaState: "reauthenticate" }} />);
+    await user.click(screen.getByRole("button", { name: "Reveal phone" }));
+
+    await user.type(codeField(), "482913");
+
+    const close = await screen.findByRole("button", { name: "Close" });
+    expect(document.activeElement).toBe(close);
   });
 
   it("moves focus to Close when the answer is that this is a single sign-on account", async () => {

@@ -65,7 +65,7 @@ export { PLATFORM_APP_HOSTS, isAllowedRedirectTarget } from "./sso/platformHosts
 export { API_BASE, ApiError, apiRequest } from "./http";
 export type { ProblemJson, RequestOptions } from "./http";
 
-export { fieldError, fieldErrorMap, fieldErrors, problemMessage } from "./problem";
+export { fieldError, fieldErrorMap, fieldErrors, problemMessage, problemSlug } from "./problem";
 export type { FieldError } from "./problem";
 
 export { PermissionProvider } from "./permissions/PermissionProvider";

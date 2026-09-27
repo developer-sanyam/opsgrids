@@ -38,3 +38,17 @@ export function configureAuthOrigin(origin: string | null): void {
 export function getAuthOrigin(): string | null {
   return authOrigin;
 }
+
+/** The production dashboard: where a same-origin (local dev) build sends someone who has to go
+ *  there. The same literal every product app already falls back to for its admin links. */
+const DASHBOARD_ORIGIN_FALLBACK = "https://app.opsgrids.com";
+
+/**
+ * The dashboard's origin, for a link from a product app to one of the dashboard's own pages: the
+ * configured auth origin (the dashboard is the host the refresh cookie lives on), or the
+ * production dashboard when the app runs same-origin. Read at call time, never at import —
+ * `configureAuthOrigin` runs in each app's entry module after this one has loaded.
+ */
+export function getDashboardOrigin(): string {
+  return authOrigin ?? DASHBOARD_ORIGIN_FALLBACK;
+}

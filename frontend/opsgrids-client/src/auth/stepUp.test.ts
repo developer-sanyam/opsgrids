@@ -100,7 +100,13 @@ describe("authApi.stepUp", () => {
 
   it("types the second-factor refusals by problem type, not by wording", async () => {
     expect(await failureOf(problem(409, "mfa-not-enrolled", "Anything at all"))).toBe("not-enrolled");
-    expect(await failureOf(problem(409, "step-up-sso-session", "Anything at all"))).toBe("sso");
+    expect(await failureOf(problem(403, "mfa-unavailable-for-sso", "Anything at all"))).toBe("sso");
+    expect(await failureOf(problem(403, "mfa-reauthentication-required", "Anything at all"))).toBe("reauthenticate");
+  });
+
+  it("does not mistake a single sign-on session for a lockout, though both are a 403", async () => {
+    expect(await failureOf(problem(403, "mfa-unavailable-for-sso", "Locked, it says, in the wording"))).toBe("sso");
+    expect(await failureOf(problem(403, "mfa-locked", "Too many wrong codes"))).toBe("locked");
   });
 
   it("types a lockout however the service chooses to signal it", async () => {
@@ -108,11 +114,24 @@ describe("authApi.stepUp", () => {
     expect(await failureOf(problem(403, "forbidden", "Locked for now"))).toBe("locked");
     expect(await failureOf(problem(423, "locked", "Locked for now"))).toBe("locked");
     expect(await failureOf(problem(401, "mfa-locked", "Locked for now"))).toBe("locked");
+    expect(await failureOf(problem(403, "password-locked", "Too many wrong passwords"))).toBe("locked");
+  });
+
+  it("types a code the server refused as wrong, whichever status carries it", async () => {
+    expect(await failureOf(problem(422, "mfa-code-invalid", "That code is not valid"))).toBe("wrong-code");
+    expect(await failureOf(problem(422, "mfa-code-replayed", "Wait for the next code"))).toBe("wrong-code");
+  });
+
+  it("does not call an enrolment refusal a wrong code: those are not the prompt's to fix", async () => {
+    // Both are 422, which alone would read as "retype the digits".
+    expect(await failureOf(problem(422, "mfa-current-code-required", "Enter a current code"))).toBe("unavailable");
+    expect(await failureOf(problem(422, "password-incorrect", "That password is not right"))).toBe("unavailable");
   });
 
   it("types everything else as unavailable, and says nothing about the code", async () => {
     expect(await failureOf(problem(500, "internal", "Boom"))).toBe("unavailable");
     expect(await failureOf(problem(503, "unavailable", "Down"))).toBe("unavailable");
+    expect(await failureOf(problem(503, "mfa-reseal-pending", "Being migrated"))).toBe("unavailable");
     expect(await failureOf(problem(409, "conflict", "Something else conflicts"))).toBe("unavailable");
     expect(await failureOf(problem(404, "not-found", "Gone"))).toBe("unavailable");
   });
