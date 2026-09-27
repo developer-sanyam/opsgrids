@@ -52,6 +52,7 @@ export const MENU_STATE: ImportExportViewState = {
   downloadingTemplate: false,
   exporting: null,
   notice: null,
+  cooldownSecondsLeft: null,
 };
 
 const COLUMNS = [

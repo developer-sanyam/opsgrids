@@ -21,7 +21,14 @@ import { inspectArchive } from "./zipGuard";
 
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 export const MAX_COLUMNS = 60;
-export const DEFAULT_MAX_ROWS = 1000;
+/** Rows accepted per file. The runner sends one row at a time at the gateway-safe pace of 350 ms
+ *  (about 170 requests a minute, comfortably under the 300/minute per-user limit), so this is the
+ *  whole run's worst-case length: roughly 30 minutes at 5000 rows. A run that sends enough
+ *  requests to matter also opens a cooldown before another one this size can start (`exchange.ts`,
+ *  `COOLDOWN_REQUEST_THRESHOLD`), which is what protects the shared budget — this cap exists for
+ *  the browser's sake (memory, main-thread parsing, a tab left open for the whole run), not the
+ *  gateway's. The 5 MB file cap binds first on a very wide sheet. */
+export const DEFAULT_MAX_ROWS = 5000;
 /** Rows an export writes at most: also the most records a baseline may hold, since the file that
  *  comes back may have had most of its rows deleted but keeps the record of them all. */
 export const DEFAULT_EXPORT_MAX_ROWS = 10_000;

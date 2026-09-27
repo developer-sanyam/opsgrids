@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   baselineNotice,
+  cooldownButtonLabel,
+  cooldownNotice,
   importButtonLabel,
   liveMessage,
   percentOf,
@@ -231,6 +233,22 @@ describe("importButtonLabel", () => {
   it("says there is nothing to change in update mode with nothing to send, and keeps its old words when adding", () => {
     expect(importButtonLabel(PREVIEW_UPDATE_ALL_UNCHANGED)).toBe("Nothing to change");
     expect(importButtonLabel(PREVIEW_MISSING_COLUMNS)).toBe("Import 0 rows");
+  });
+});
+
+describe("cooldownButtonLabel and cooldownNotice", () => {
+  it("counts down as minutes and seconds, padding the seconds under ten", () => {
+    expect(cooldownButtonLabel(60)).toBe("Wait 1:00");
+    expect(cooldownButtonLabel(65)).toBe("Wait 1:05");
+    expect(cooldownButtonLabel(9)).toBe("Wait 0:09");
+    expect(cooldownButtonLabel(0)).toBe("Wait 0:00");
+  });
+
+  it("says why, not only how long, and carries the same countdown", () => {
+    const notice = cooldownNotice(65);
+    expect(notice).toContain("1:05");
+    expect(notice).toMatch(/large batch/);
+    expect(notice).toMatch(/shared rate limit/);
   });
 });
 

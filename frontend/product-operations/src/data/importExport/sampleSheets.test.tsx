@@ -186,7 +186,7 @@ describe.each(CASES)("the $name sample sheet", ({ entity, page, hasLists, updati
     const lines = instructions.flat();
     for (const note of entity.notes ?? []) expect(lines).toContain(note);
     expect(lines).toContain("Columns marked * are required.");
-    expect(lines).toContain("Up to 1000 rows per file.");
+    expect(lines).toContain("Up to 5000 rows per file.");
     // The engine explains the Record ID twice: how an update finds its record, and in the general
     // rules why an exported row is not added. The entity's notes do not say it again: they mention
     // it once, to say what to do about a key typed in other capitals, which the server tells apart.

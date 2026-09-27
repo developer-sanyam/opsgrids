@@ -123,7 +123,7 @@ describe("useImportExport: meta and identity", () => {
     expect(result.current.meta).toEqual({
       noun: "products",
       nounSingular: "product",
-      maxRows: 1000,
+      maxRows: 5000,
       exportMaxRows: 10_000,
       requiredHeaders: ["SKU", "Name"],
       canExport: true,

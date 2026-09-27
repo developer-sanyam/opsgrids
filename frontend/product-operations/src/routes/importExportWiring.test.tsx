@@ -76,6 +76,7 @@ const IDLE: DataExchangeState = {
   downloadingTemplate: false,
   exporting: null,
   notice: null,
+  cooldownSecondsLeft: null,
 };
 
 const EMPTY_PAGE = { items: [], total: 0, page: 1, size: 25, pages: 0 };

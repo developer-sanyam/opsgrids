@@ -115,10 +115,10 @@ describe("the sample workbook", () => {
 
   it("formats text, phone, enum and email columns as text over the whole data range, so Excel keeps 0012 and +91", async () => {
     const sheet = sheetOf(await buildAndLoad(), "Import");
-    for (const address of ["A2", "A500", "A1001", "B2", "C2", "D2", "F2", "K2", "L2", "L1001"]) {
+    for (const address of ["A2", "A500", "A5001", "B2", "C2", "D2", "F2", "K2", "L2", "L5001"]) {
       expect(sheet.getCell(address).numFmt, address).toBe("@");
     }
-    expect(sheet.getCell("A1002").numFmt).not.toBe("@");
+    expect(sheet.getCell("A5002").numFmt).not.toBe("@");
     expect(sheet.getCell("G2").numFmt).not.toBe("@");
     expect(sheet.getCell("I2").numFmt).toBe("yyyy-mm-dd");
   });
@@ -180,8 +180,8 @@ describe("dropdowns", () => {
     const { model } = validationsOf(sheet);
     for (const letter of ["C", "D", "F", "J"]) {
       expect(model[`${letter}2`], letter).toBeDefined();
-      expect(model[`${letter}1001`], letter).toBeDefined();
-      expect(model[`${letter}1002`], letter).toBeUndefined();
+      expect(model[`${letter}5001`], letter).toBeDefined();
+      expect(model[`${letter}5002`], letter).toBeUndefined();
       expect(model[`${letter}1`], letter).toBeUndefined();
     }
     expect(validationFor(sheet, "C")).toMatchObject({ allowBlank: true, showErrorMessage: true });
@@ -267,7 +267,7 @@ describe("the Instructions sheet", () => {
     expect(lines).toContain("Notes");
     expect(lines).toContain("A SKU that already exists is skipped.");
     expect(lines).toContain("General rules");
-    expect(lines).toContain("Up to 1000 rows per file.");
+    expect(lines).toContain("Up to 5000 rows per file.");
     expect(lines).toContain("Existing products are skipped, never overwritten. Importing the same file again is safe.");
     expect(lines).toContain(
       "The example rows on the Import sheet are ignored while they are unchanged. Delete them or replace them with your own.",

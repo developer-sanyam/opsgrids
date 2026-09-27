@@ -38,9 +38,18 @@ other tools, that reads an Excel sheet, and a **downloadable sample sheet**.
    interval of 350 ms (about 170 per minute), waits out a 429 (the window is 60 s) and retries that
    row up to three times, and can be cancelled. 429 is the only 4xx ever retried (the frontend rule
    is "never retry a 4xx" because a 403 or 422 does not fix itself; a 429 says *wait*, not *no*).
-   Every other 4xx, and every 5xx, fails that row once with the server's sentence. The limit per file is **1000 rows** (about six minutes). A server-side
-   bulk endpoint is the follow-up if that is too slow; it would replace only the entity's `create`
-   step, not the dialog or the engine.
+   Every other 4xx, and every 5xx, fails that row once with the server's sentence. The limit per
+   file is **5000 rows** (about 30 minutes at that pace); it is there for the browser's sake
+   (memory, main-thread parsing, a tab left open for the whole run), not the gateway's, since the
+   pacing above already keeps one run comfortably under the per-user budget on its own. **A run
+   that sends 300 requests or more — created, updated, skipped or failed; `unchanged` and
+   `invalid` never reach the server — opens a 60-second cooldown** before another one can start,
+   so a run after a run after a run does not spend every one of the account's shared requests a
+   minute leaving nothing for anything else the person or a teammate does meanwhile. Reviewing a
+   different file, downloading the sample sheet or the previous run's report, and closing the
+   dialog are never blocked by it; only sending another run is. A server-side bulk endpoint is the
+   follow-up if that is too slow; it would replace only the entity's `create` step, not the dialog
+   or the engine.
 5. **Per-row result, never all-or-nothing.** The outcome of every row is `created`, `skipped`,
    `failed` (the server refused it, with the server's own sentence) or `invalid` (caught before
    sending). The result can be downloaded as a workbook.
@@ -75,7 +84,7 @@ other tools, that reads an Excel sheet, and a **downloadable sample sheet**.
   inventory apps are not used.
 - **Dates** are ISO `YYYY-MM-DD` after reading; an Excel date serial is converted, never trusted as
   text.
-- **Limits are enforced before anything is sent:** file up to 5 MB, `.xlsx` only, up to 1000 data
+- **Limits are enforced before anything is sent:** file up to 5 MB, `.xlsx` only, up to 5000 data
   rows, up to 60 columns. The workbook's ZIP directory is read *before* the spreadsheet library is
   even loaded and the file is refused if it would unpack to more than 40 MB, holds an entry over
   25 MB or one expanding more than 100:1, has more than 2000 entries, or uses ZIP64: a small file

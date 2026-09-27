@@ -188,9 +188,9 @@ describe("readWorkbook: rows", () => {
     expect(parsed.rows).toHaveLength(3);
   });
 
-  it("uses 1000 rows when the entity names no limit", async () => {
-    const rows = Array.from({ length: 1001 }, (_, i) => [`A-${i}`]);
-    expect(await readFailure(await fileWithRows(["SKU"], rows))).toContain("The file has 1001 rows");
+  it("uses 5000 rows when the entity names no limit", async () => {
+    const rows = Array.from({ length: 5001 }, (_, i) => [`A-${i}`]);
+    expect(await readFailure(await fileWithRows(["SKU"], rows))).toContain("The file has 5001 rows");
   });
 
   it("refuses a sheet with a header and nothing under it", async () => {
