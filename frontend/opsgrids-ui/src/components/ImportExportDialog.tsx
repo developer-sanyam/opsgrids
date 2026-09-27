@@ -248,7 +248,12 @@ export function ImportExportDialog({ onClose, meta, state, actions, canImport, c
         state.preview === null ? (
           <Reading mode={state.mode} />
         ) : (
-          <ImportExportReview preview={state.preview} notice={state.notice} modeChoice={modeChoice(true)} />
+          <ImportExportReview
+            preview={state.preview}
+            notice={state.notice}
+            modeChoice={modeChoice(true)}
+            cooldownSecondsLeft={state.cooldownSecondsLeft}
+          />
         );
       footer =
         state.preview === null ? undefined : (
@@ -256,6 +261,7 @@ export function ImportExportDialog({ onClose, meta, state, actions, canImport, c
             preview={state.preview}
             onChooseAnother={chooseFile}
             onImport={() => actions.startImport()}
+            cooldownSecondsLeft={state.cooldownSecondsLeft}
           />
         );
       break;

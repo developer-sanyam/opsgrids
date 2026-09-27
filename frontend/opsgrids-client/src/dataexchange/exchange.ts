@@ -41,6 +41,7 @@ export const IDLE_STATE: DataExchangeState = {
   downloadingTemplate: false,
   exporting: null,
   notice: null,
+  cooldownSecondsLeft: null,
 };
 
 const EXPORT_PAGE_SIZE = 200;
@@ -54,7 +55,23 @@ export interface ExchangeHost {
   imported(summary: ImportSummary): void;
   /** The clock, in milliseconds. Default `Date.now`; a test moves it. */
   now?: (() => number) | undefined;
+  /** The cooldown's own countdown tick. Default a real `setTimeout`; a test resolves at once. */
+  sleep?: ((ms: number) => Promise<void>) | undefined;
 }
+
+/**
+ * A run that sent this many requests or more (created + updated + skipped + failed: every row
+ * that actually reached the server, never `unchanged` or `invalid`) opens a cooldown before
+ * another one can start. The row cap (`workbook.ts`, `DEFAULT_MAX_ROWS`) exists for the browser's
+ * sake; this is what keeps a large file from taking every one of the account's shared 300
+ * requests a minute back to back, run after run, leaving nothing for anything else the person or
+ * a teammate does meanwhile. It never blocks reviewing a file, only sending one.
+ */
+export const COOLDOWN_REQUEST_THRESHOLD = 300;
+/** A full minute of the gateway's per-user budget: enough for whatever this run used to clear. */
+export const COOLDOWN_MS = 60_000;
+
+const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * How old the stored records an update was previewed against may be when Import is pressed. Past
@@ -169,6 +186,27 @@ export function createExchange(host: ExchangeHost): Exchange {
   /** Set while Import reads the records again before sending, so a second press cannot start a second read. */
   let revalidating = false;
   const now = (): number => (host.now ?? Date.now)();
+  const sleep = host.sleep ?? realSleep;
+  /** Bumped every time a cooldown starts, so a stale tick loop from an earlier one (or from before
+   *  a reset) knows to stop publishing rather than fight a newer one, or one that no longer applies. */
+  let cooldownEpoch = 0;
+
+  /** Counts a run's `cooldownSecondsLeft` down to zero, one publish a second, then clears it.
+   *  Not awaited by its caller: it outlives `startImport`, the way `waitOutRateLimit` outlives one
+   *  request inside a run. */
+  const runCooldown = async (durationMs: number): Promise<void> => {
+    cooldownEpoch += 1;
+    const mine = cooldownEpoch;
+    let remaining = durationMs;
+    while (remaining > 0) {
+      publish({ cooldownSecondsLeft: Math.ceil(remaining / 1000) });
+      const step = Math.min(1000, remaining);
+      await sleep(step);
+      if (mine !== cooldownEpoch || !attached) return;
+      remaining -= step;
+    }
+    publish({ cooldownSecondsLeft: null });
+  };
   /**
    * The stored records an update-mode preview matches rows against: one load in flight shared by
    * everyone who asks, a failed load not kept. A mode change is answered from a load that has
@@ -363,6 +401,7 @@ export function createExchange(host: ExchangeHost): Exchange {
     const first = current.preview;
     if (importing || revalidating || current.phase !== "preview" || first === null || prepared === null) return;
     if (first.missingRequired.length > 0) return;
+    if (current.cooldownSecondsLeft !== null) return;
     const entity = host.entity();
     // Only a stale snapshot is worth a wait; the guard below is synchronous otherwise, so a second
     // press cannot slip in before `importing` is set.
@@ -393,9 +432,13 @@ export function createExchange(host: ExchangeHost): Exchange {
         ctx: { lookups: run.lookups, signal },
         onProgress: (progress) => publish({ progress }),
         isCancelled: () => cancelRequested || signal.aborted,
+        now: host.now,
+        sleep: host.sleep,
       });
       finished = summarise(run, result);
       publish({ phase: "done", progress: null, summary: finished });
+      const sent = finished.created + finished.updated + finished.skipped + finished.failed;
+      if (sent >= COOLDOWN_REQUEST_THRESHOLD) void runCooldown(COOLDOWN_MS);
     } catch {
       publish({
         phase: "error",

@@ -39,6 +39,7 @@ const RESULT: UseImportExportResult = {
     downloadingTemplate: false,
     exporting: null,
     notice: null,
+    cooldownSecondsLeft: null,
   },
   actions: {
     setMode: async () => undefined,

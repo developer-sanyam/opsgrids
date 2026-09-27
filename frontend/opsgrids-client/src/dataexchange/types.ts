@@ -439,6 +439,11 @@ export interface DataExchangeState {
   exporting: ExportProgress | null;
   /** A sentence when the last template download or export failed; cleared by the next action. */
   notice: string | null;
+  /** Counting down after a run that sent enough requests to matter (`exchange.ts`,
+   *  `COOLDOWN_REQUEST_THRESHOLD`): Import stays disabled until this reaches zero and the engine
+   *  clears it to `null`. Reviewing a different file, downloading the sample sheet, downloading
+   *  the previous run's report and closing the dialog are never blocked by it. */
+  cooldownSecondsLeft: number | null;
 }
 
 export interface DataExchangeActions {

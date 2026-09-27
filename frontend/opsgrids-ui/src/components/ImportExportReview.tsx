@@ -2,7 +2,7 @@ import { useRef } from "react";
 import type { ReactNode } from "react";
 
 import { FileTextIcon } from "../icons";
-import { baselineNotice, formatCount, importButtonLabel } from "../lib/importExportCopy";
+import { baselineNotice, cooldownButtonLabel, cooldownNotice, formatCount, importButtonLabel } from "../lib/importExportCopy";
 import type { ImportExportPreview, ImportExportPreviewRow } from "../lib/importExportView";
 import { Button } from "./Button";
 import { ImportExportStats } from "./ImportExportStats";
@@ -147,6 +147,8 @@ interface ReviewProps {
   /** The choice between adding only and updating too, or null where the list has no update. Changing it
    *  checks this same file again, so it stays in reach while the rows are being read. */
   modeChoice: ReactNode;
+  /** Counting down after an earlier run that sent enough requests to matter. Null otherwise. */
+  cooldownSecondsLeft: number | null;
 }
 
 /** How an update's cells are compared with the records: what the export baseline did, in a notice. */
@@ -161,12 +163,15 @@ function BaselineAlert({ baseline }: { baseline: ImportExportPreview["baseline"]
 }
 
 /** The preview phase: what was found in the file, what is wrong with it, and every row it will send. */
-export function ImportExportReview({ preview, notice, modeChoice }: ReviewProps) {
+export function ImportExportReview({ preview, notice, modeChoice, cooldownSecondsLeft }: ReviewProps) {
   const note = tableNote(preview);
   const { stats, columns } = statsFor(preview);
   return (
     <div className="flex flex-col gap-4">
       {notice !== null ? <InlineAlert tone="warning" title={notice} /> : null}
+      {cooldownSecondsLeft !== null ? (
+        <InlineAlert tone="info" live="off" title={cooldownNotice(cooldownSecondsLeft)} />
+      ) : null}
 
       <p className="flex min-w-0 items-center gap-2">
         <FileTextIcon aria-hidden className="size-4 shrink-0 text-muted" />
@@ -213,12 +218,14 @@ interface ReviewActionsProps {
   preview: ImportExportPreview;
   onChooseAnother: () => void;
   onImport: () => Promise<void>;
+  /** Counting down after an earlier run that sent enough requests to matter. Null otherwise. */
+  cooldownSecondsLeft: number | null;
 }
 
 /** The preview's footer: pick a different file, or send the rows that passed. */
-export function ImportExportReviewActions({ preview, onChooseAnother, onImport }: ReviewActionsProps) {
+export function ImportExportReviewActions({ preview, onChooseAnother, onImport, cooldownSecondsLeft }: ReviewActionsProps) {
   const started = useRef(false);
-  const blocked = preview.valid === 0 || preview.missingRequired.length > 0;
+  const blocked = preview.valid === 0 || preview.missingRequired.length > 0 || cooldownSecondsLeft !== null;
 
   function start() {
     // Latched synchronously: the phase moves on a render later, and a second click before then
@@ -236,7 +243,7 @@ export function ImportExportReviewActions({ preview, onChooseAnother, onImport }
         Choose another file
       </Button>
       <Button variant="primary" disabled={blocked} onClick={start}>
-        {importButtonLabel(preview)}
+        {cooldownSecondsLeft !== null ? cooldownButtonLabel(cooldownSecondsLeft) : importButtonLabel(preview)}
       </Button>
     </>
   );

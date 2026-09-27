@@ -109,6 +109,26 @@ export function importButtonLabel(preview: ImportExportPreview): string {
   return parts.length === 0 ? "Nothing to change" : parts.join(", ");
 }
 
+/** "0:07", "1:03": a countdown small enough that minutes:seconds reads better than a bare count. */
+function countdown(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${minutes}:${rest < 10 ? "0" : ""}${rest}`;
+}
+
+/** The Import button's words while a cooldown is counting down, in place of its usual label. */
+export function cooldownButtonLabel(secondsLeft: number): string {
+  return `Wait ${countdown(secondsLeft)}`;
+}
+
+/** Above the button while the cooldown is active: why, not just how long. */
+export function cooldownNotice(secondsLeft: number): string {
+  return (
+    "That was a large batch. To leave room on the account's shared rate limit for anything else " +
+    `you or a teammate does, you can start another import in ${countdown(secondsLeft)}.`
+  );
+}
+
 function createdPhrase(created: number, meta: ImportExportMeta): string {
   if (created === 0) return `No ${meta.noun} were created`;
   if (created === 1) return `1 ${meta.nounSingular} was created`;

@@ -96,6 +96,10 @@ export interface ImportExportViewState {
   downloadingTemplate: boolean;
   exporting: { fetched: number; total: number } | null;
   notice: string | null;
+  /** Counting down after a run that sent enough requests to matter: Import stays disabled until
+   *  this reaches zero. Reviewing a different file, downloading the sample sheet, downloading
+   *  the previous run's report and closing the dialog are never blocked by it. */
+  cooldownSecondsLeft: number | null;
 }
 
 export interface ImportExportViewActions {

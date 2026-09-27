@@ -504,6 +504,25 @@ describe("ImportExportButton: the preview", () => {
     expect((screen.getByRole("button", { name: "Import 5 rows" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("disables Import and says why while an earlier run's cooldown is still counting down", async () => {
+    const { user, actions, show } = await openWith({
+      state: stateFor({ phase: "preview", preview: PREVIEW_WITH_ERRORS, cooldownSecondsLeft: 65 }),
+    });
+    expect(screen.getByText(/That was a large batch\..*you can start another import in 1:05\./)).toBeTruthy();
+    const waiting = screen.getByRole("button", { name: "Wait 1:05" }) as HTMLButtonElement;
+    expect(waiting.disabled).toBe(true);
+    await user.click(waiting);
+    expect(actions.startImport).not.toHaveBeenCalled();
+
+    // Once the engine clears it, the usual label and count come back and Import works again.
+    show(stateFor({ phase: "preview", preview: PREVIEW_WITH_ERRORS, cooldownSecondsLeft: null }));
+    expect(screen.queryByText(/large batch/)).toBeNull();
+    const ready = screen.getByRole("button", { name: "Import 5 rows" }) as HTMLButtonElement;
+    expect(ready.disabled).toBe(false);
+    await user.click(ready);
+    expect(actions.startImport).toHaveBeenCalledTimes(1);
+  });
+
   it("blocks the import, and says why, when a required column is missing", async () => {
     await openWith({ state: stateFor({ phase: "preview", preview: PREVIEW_MISSING_COLUMNS }) });
     expect(screen.getByText("Your file is missing required columns: Name.")).toBeTruthy();
