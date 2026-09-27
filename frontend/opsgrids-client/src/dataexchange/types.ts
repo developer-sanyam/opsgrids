@@ -203,6 +203,14 @@ export interface UpdateSpec<Item> {
    *  (unchanged) instead of defaulting to INR, which would silently re-price a yen or dinar record. */
   currencyOf?(item: Item): string | null;
   fields: readonly UpdateField<Item>[];
+  /**
+   * Importable columns an update deliberately does not handle (lead email and phone, which have no
+   * update endpoint, a column only a create sets). A filled cell in one is REFUSED ("<Header> cannot
+   * be changed by an update: leave the cell blank"), never silently ignored, so nobody believes a
+   * field changed when it did not. `checkImportEntity` fails an update spec in which an importable
+   * column is neither a `fields[].column` (nor the key or Record ID column) nor listed here.
+   */
+  notUpdatable?: readonly string[];
   /** Refuses a change the list's own rules forbid, given what would change (a converted lead's
    *  status, a closed deal's stage): throw `RowProblem`. Runs after the diff. */
   check?(row: ParsedRow, existing: Item, changed: readonly string[], ctx: ImportContext): void;
