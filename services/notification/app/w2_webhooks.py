@@ -27,7 +27,7 @@ from typing import Any, Final
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import services, w1_services, w2_selectors, w2_services, webhooks
+from app import selectors, services, w1_services, w2_selectors, w2_services, webhooks
 from app.models import ProcessedEvent
 from platform_core.db import session_scope
 from platform_core.logging import get_logger
@@ -266,6 +266,37 @@ async def _dead_letter(
     return True
 
 
+async def _user_preference_owner(directory: AsyncSession, change: WabaChange) -> uuid.UUID | None:
+    """The single organization a `user_preferences` change is about: the connected WhatsApp
+    account that owns the number the customer messaged (`value.metadata.phone_number_id`).
+
+    None — and a structured warning, no PII — when the number is missing, unknown, registered
+    under another WABA, on another channel, or its account is no longer connected. Nothing is
+    written then: guessing an owner from the WABA alone would apply one customer's opt-out to
+    every organization on it."""
+    metadata = change.value.get("metadata")
+    raw = metadata.get("phone_number_id") if isinstance(metadata, dict) else None
+    phone_number_id = str(raw) if raw else ""
+    if not phone_number_id:
+        log.warning("webhook.user_preference_no_phone_number_id")
+        return None
+    account = await selectors.account_for_phone_number(directory, phone_number_id)
+    if account is None:
+        log.warning("webhook.user_preference_unknown_phone_number_id")
+        return None
+    if (
+        account.waba_id != change.waba_id
+        or account.channel != w2_selectors.CHANNEL
+        or account.status != "connected"
+    ):
+        log.warning(
+            "webhook.user_preference_unroutable",
+            organization_id=str(account.organization_id),
+        )
+        return None
+    return account.organization_id
+
+
 async def handle_changes(directory: AsyncSession, payload: dict[str, Any]) -> bool:
     """Fold every account-level change in an already signature-verified body.
 
@@ -280,11 +311,19 @@ async def handle_changes(directory: AsyncSession, payload: dict[str, Any]) -> bo
     had_transient = False
 
     for change in changes:
-        if change.waba_id not in organizations:
-            organizations[change.waba_id] = await w2_selectors.organizations_for_waba(
-                directory, change.waba_id
-            )
-        targets = organizations[change.waba_id]
+        if change.field == USER_PREFERENCES:
+            # A customer's opt-out belongs to the one business they messaged, never to every
+            # organization that happens to name the same WABA.
+            owner = await _user_preference_owner(directory, change)
+            if owner is None:
+                continue
+            targets = [owner]
+        else:
+            if change.waba_id not in organizations:
+                organizations[change.waba_id] = await w2_selectors.organizations_for_waba(
+                    directory, change.waba_id
+                )
+            targets = organizations[change.waba_id]
         if not targets:
             # Genuine and signed, but a WABA nobody here has connected: not ours to act on.
             log.warning("webhook.unknown_waba", field=change.field)

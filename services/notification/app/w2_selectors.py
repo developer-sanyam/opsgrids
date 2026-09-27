@@ -118,14 +118,19 @@ async def find_for_change(
 
 
 async def organizations_for_waba(directory: AsyncSession, waba_id: str) -> list[uuid.UUID]:
-    """Every organization whose WhatsApp account names this WABA — on the cross-tenant,
+    """Every organization with a *connected* WhatsApp account on this WABA — on the cross-tenant,
     SELECT-only directory reader, because a webhook must be routed to a tenant *before* one is
-    known. An unknown WABA is an empty list, and nothing is touched."""
+    known. An unknown WABA is an empty list, and nothing is touched.
+
+    A disconnected account keeps its `waba_id` (for the record) but is no longer this
+    organization's connection, so WABA-level events (template status, quality, account updates)
+    are not fanned out to it."""
     stmt = (
         select(ProviderAccount.organization_id)
         .where(
             ProviderAccount.waba_id == waba_id,
             ProviderAccount.channel == CHANNEL,
+            ProviderAccount.status == "connected",
             ProviderAccount.deleted_at.is_(None),
         )
         .distinct()
