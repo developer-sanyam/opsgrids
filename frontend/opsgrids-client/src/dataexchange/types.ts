@@ -198,6 +198,11 @@ export interface UpdateSpec<Item> {
   keyColumn?: string | undefined;
   /** The unique key of a stored record, or null when it has none. Matching ignores case and spacing. */
   keyOf?(item: Item): string | null;
+  /** Which stored record a row updates, in words a person recognises (a company's name, a deal's
+   *  name, a lead's name, an item's SKU and name). Shown beside every update row in the preview and
+   *  in the result report, so a shifted Record ID column is seen before anything is written. Never
+   *  a sealed value (a lead's email or phone, a contact's phone, employee personal data). */
+  recordLabel?(item: Item): string;
   /** The stored record's ISO currency, for lists whose amounts carry one. On an update, a money cell
    *  is converted with THIS currency when the row names none, and a blank Currency cell stays blank
    *  (unchanged) instead of defaulting to INR, which would silently re-price a yen or dinar record. */
