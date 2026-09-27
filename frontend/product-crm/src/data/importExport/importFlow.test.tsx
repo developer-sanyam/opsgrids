@@ -279,7 +279,8 @@ const NO_CONTACT =
   "The contact must already exist and work at that company.";
 /** A conflict that is not a duplicate: no "already", no `duplicate` code. */
 const OVER_THE_LIMIT = "The organisation is over its plan limit for companies";
-/** What the engine says about a row that came out of an export, on a list that can be updated. */
+/** What the engine says about a row that came out of an export, on a list that can be updated: it
+ *  names the list's own ID column ("Company ID"). */
 const recordIdRefused = (header: string): string =>
   `This row has a ${header}, so it came from an export and is already in the system. ` +
   `Clear the ${header} cell to add it as a new record. Switch to Add new and update existing to update it.`;
