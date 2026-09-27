@@ -630,7 +630,11 @@ export async function updateAsset(tag: string, payload: AssetUpdate): Promise<As
     const fx = await fixtures();
     const asset = fx.ASSETS.find((a) => a.tag === tag);
     if (!asset) throw fixtureProblem(404, `Asset ${tag} not found.`);
+    if (Object.keys(payload).length === 0) {
+      throw fixtureProblem(422, "Provide at least one field to update");
+    }
     Object.assign(asset, payload);
+    asset.cost_currency = asset.cost_currency.toUpperCase();
     return settle(asset);
   }
   return apiRequest<Asset>(`/itsm/assets/${encodeURIComponent(tag)}`, {
