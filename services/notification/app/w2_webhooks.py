@@ -27,7 +27,7 @@ from typing import Any, Final
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import services, w2_selectors, w2_services, webhooks
+from app import services, w1_services, w2_selectors, w2_services, webhooks
 from app.models import ProcessedEvent
 from platform_core.db import session_scope
 from platform_core.logging import get_logger
@@ -38,7 +38,32 @@ TEMPLATE_STATUS: Final = "message_template_status_update"
 TEMPLATE_QUALITY: Final = "message_template_quality_update"
 NUMBER_QUALITY: Final = "phone_number_quality_update"
 ACCOUNT_UPDATE: Final = "account_update"
-FIELDS: Final = frozenset({TEMPLATE_STATUS, TEMPLATE_QUALITY, NUMBER_QUALITY, ACCOUNT_UPDATE})
+TEMPLATE_CATEGORY: Final = "template_category_update"
+USER_PREFERENCES: Final = "user_preferences"
+FIELDS: Final = frozenset(
+    {
+        TEMPLATE_STATUS,
+        TEMPLATE_QUALITY,
+        NUMBER_QUALITY,
+        ACCOUNT_UPDATE,
+        TEMPLATE_CATEGORY,
+        USER_PREFERENCES,
+    }
+)
+
+#: `user_preferences` items carry `category: "marketing_messages"` and `value: "stop" | "resume"`
+#: (user_preferences webhook reference). Any other category or value is acknowledged and ignored.
+_MARKETING_PREFERENCE_CATEGORY: Final = "marketing_messages"
+
+#: `account_update` events after which the connection this platform holds for the WABA is no
+#: longer usable: the business deauthenticated our app / unshared the WABA from us. Both names
+#: appear in Meta's account_update event list (PARTNER_APP_UNINSTALLED: "business customer
+#: deauthenticated the app"; PARTNER_REMOVED: "WABA unshared with a Solution Partner"). That either
+#: one *always* invalidates the token we hold — rather than only the sharing — is **unverified**,
+#: so the effect is deliberately the mildest one available: the connection-health card flips to
+#: `invalid` and asks the tenant to reconnect, and nothing is deleted. A reconnect (signup) resets
+#: it.
+DISCONNECT_EVENTS: Final = frozenset({"PARTNER_APP_UNINSTALLED", "PARTNER_REMOVED"})
 
 #: `update_number_quality(session, *, organization_id, waba_id, display_phone_number, event,
 #: current_limit)`: how a `phone_number_quality_update` reaches the numbers cache, which another
@@ -136,11 +161,70 @@ async def _fold(organization_id: uuid.UUID, change: WabaChange) -> None:
             )
             if not found:
                 log.info("webhook.template_not_held", field=change.field)
+        elif change.field == TEMPLATE_CATEGORY:
+            found = await w2_services.apply_category_change(
+                session, organization_id, value=change.value
+            )
+            if not found:
+                log.info("webhook.template_not_held", field=change.field)
         elif change.field == NUMBER_QUALITY:
             await _number_quality(session, organization_id, change)
+        elif change.field == USER_PREFERENCES:
+            await _user_preferences(session, organization_id, change)
+        elif change.field == ACCOUNT_UPDATE:
+            await _account_update(session, organization_id, change)
         # Marked processed even when nothing matched: the event has been handled, and re-running
         # it would reach the same conclusion. A template that appears later arrives by sync.
         session.add(ProcessedEvent(event_id=did, event_type=f"whatsapp.{change.field}"))
+
+
+async def _user_preferences(
+    session: AsyncSession, organization_id: uuid.UUID, change: WabaChange
+) -> None:
+    """A customer stopped / resumed marketing messages from the business, in WhatsApp itself.
+
+    Each item is folded through `services.apply_meta_marketing_preference` — the consent ledger and
+    the legacy preference, audited, idempotent by state — so a redelivered webhook writes nothing
+    twice. The number is never logged."""
+    items = change.value.get("user_preferences")
+    if not isinstance(items, list):
+        return
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("category") != _MARKETING_PREFERENCE_CATEGORY:
+            log.info("webhook.user_preference_ignored", reason="category")
+            continue
+        action = item.get("value")
+        if action not in ("stop", "resume") or not item.get("wa_id"):
+            log.info("webhook.user_preference_ignored", reason="value")
+            continue
+        await services.apply_meta_marketing_preference(
+            session,
+            organization_id=organization_id,
+            recipient=str(item["wa_id"]),
+            opted_out=action == "stop",
+            signal="user_preferences",
+        )
+
+
+async def _account_update(
+    session: AsyncSession, organization_id: uuid.UUID, change: WabaChange
+) -> None:
+    """React to the few `account_update` events that mean the tenant's connection is gone.
+
+    Every other event is only logged (by `handle_changes`). For `DISCONNECT_EVENTS` the tenant's
+    connection health is set to `invalid` through the existing W1 function that records a token
+    check, so the health screen shows a reconnect prompt.
+    """
+    event = str(change.value.get("event") or "")
+    if event in DISCONNECT_EVENTS:
+        await w1_services.record_token_check(session, organization_id, state="invalid")
+        log.warning(
+            "webhook.connection_invalidated",
+            organization_id=str(organization_id),
+            account_event=event,
+        )
 
 
 async def _number_quality(
@@ -206,8 +290,9 @@ async def handle_changes(directory: AsyncSession, payload: dict[str, Any]) -> bo
             log.warning("webhook.unknown_waba", field=change.field)
             continue
         if change.field == ACCOUNT_UPDATE:
+            # Structured, no PII: the event name is Meta's own vocabulary. Acted on per tenant in
+            # `_fold` -> `_account_update`.
             log.info("webhook.account_update", account_event=str(change.value.get("event") or ""))
-            continue
 
         for organization_id in targets:
             try:

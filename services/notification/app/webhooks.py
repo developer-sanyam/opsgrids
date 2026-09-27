@@ -51,6 +51,10 @@ PROVIDER_STATUSES: Final[tuple[str, ...]] = (
     STATUS_FAILED,
 )
 
+#: Error 131050 on a failed status: "Unable to deliver the message. This recipient has chosen to
+#: stop receiving marketing messages on WhatsApp from your business." (Cloud API error-codes page.)
+ERROR_RECIPIENT_STOPPED_MARKETING: Final = "131050"
+
 #: A fixed namespace so the same provider event always derives the same idempotency id. It is a
 #: constant rather than generated, because a namespace that changed between deploys would make
 #: every redelivery look new.
@@ -279,18 +283,38 @@ def _timestamp(value: Any) -> datetime:
 # What a customer sends us. The envelope is the same as a status webhook; the payload carries
 # `messages` instead of `statuses`.
 #
-# Only `text` is interpreted. Meta publishes the text shape — `{"type": "text", "text":
-# {"body": "..."}}` — and every message object carries `from`, `id`, `timestamp` and `type`.
-# The *inner* shapes of an interactive reply (`button_reply`, `list_reply`) and of media are
-# not published on any page consulted, so they are stored whole and left uninterpreted rather
-# than parsed on a guess. That is the rule that caught the `sub_type` bug: a field name comes
-# from Meta's pages or it does not get written.
+# Interpreted: `text`, `button` (a template quick-reply), `interactive` (`button_reply` /
+# `list_reply`) and the media types (`image`, `audio`, `video`, `document`, `sticker`). Every
+# message object carries `from`, `id`, `timestamp` and `type`. The inner shapes below were read
+# off Meta's webhook reference pages (developers.facebook.com/docs/whatsapp/cloud-api/webhooks/
+# reference/messages/{image,document,button,interactive}); where a page could not be loaded the
+# field is marked *unverified*:
 #
-# Storing the raw object means nothing is lost. When the shapes are confirmed, the parser gains
-# a branch and the history is already there to backfill from.
+#   text         {"text": {"body": "..."}}
+#   button       {"button": {"payload": "...", "text": "..."}}
+#   interactive  {"interactive": {"type": "button_reply", "button_reply": {"id", "title"}}}
+#                {"interactive": {"type": "list_reply", "list_reply": {"id", "title",
+#                 "description"}}}
+#   media        {"<type>": {"id", "mime_type", "sha256", "caption"?, "filename"?}}
+#                `caption` is published for image and document, `filename` for document only.
+#                audio, video and sticker pages were not loaded: they are *unverified* to carry
+#                the same id/mime_type/sha256, and any extra field they add is simply not read.
+#
+# Every message's raw object is still stored whole (sealed), so a field this parser does not read
+# is never lost.
+#
+# **Media is recorded, not fetched.** Meta's media ids received through a webhook expire after 7
+# days and the download URL after ~5 minutes (media reference page), so a fetch job has a hard
+# deadline and is a follow-up; this only records id/mime/sha256 with `fetch_state: "not_fetched"`.
 
 #: The message types Meta documents. Anything else is stored with `type` as given.
 TYPE_TEXT: Final = "text"
+TYPE_BUTTON: Final = "button"
+TYPE_INTERACTIVE: Final = "interactive"
+#: The media types, all shaped `{"<type>": {"id", "mime_type", "sha256", ...}}`.
+MEDIA_TYPES: Final[frozenset[str]] = frozenset({"image", "audio", "video", "document", "sticker"})
+#: What a recorded-but-not-downloaded media reference says about itself.
+FETCH_NOT_FETCHED: Final = "not_fetched"
 
 #: How long after a customer's last message free-form replies are allowed. Meta's customer
 #: service window. A constant here because the rule is Meta's, not a tenant's preference.
@@ -305,14 +329,37 @@ class InboundMessage:
     from_address: str
     message_type: str
     occurred_at: datetime
-    #: The text, for `type: "text"`. None for every other type, because the body is somewhere
-    #: inside a shape this service does not claim to understand yet.
+    #: The customer's words: the text body, a quick-reply's label, an interactive reply's title or
+    #: a media caption. None when the message carries none (a caption-less image).
     body: str | None
-    #: The provider's own message object, stored whole. The record of what arrived, and what a
-    #: later parser will read when the interactive and media shapes are confirmed.
+    #: The provider's own message object, stored whole. The record of what arrived.
     raw: dict[str, Any]
     #: The sender's profile name, when Meta includes one. Display only.
     profile_name: str | None = None
+    #: A quick-reply's `payload` or an interactive reply's `id` -- what the *business* attached to
+    #: the button, as opposed to the label the customer read. Matched against STOP/START too.
+    reply_id: str | None = None
+    #: For a media message: `{kind, id, mime_type, sha256, caption?, filename?, fetch_state}`.
+    #: A reference only -- nothing has been downloaded (`FETCH_NOT_FETCHED`).
+    media: dict[str, Any] | None = None
+
+    @property
+    def intent_texts(self) -> tuple[str | None, ...]:
+        """Every string on this message a STOP/START match may be made against: the words and the
+        button payload / reply id. A media caption is not a command, so media matches nothing."""
+        if self.media is not None:
+            return ()
+        return (self.body, self.reply_id)
+
+    @property
+    def parsed_metadata(self) -> dict[str, Any] | None:
+        """What this parser extracted beyond `body`, for the sealed record. None for plain text."""
+        meta: dict[str, Any] = {}
+        if self.reply_id is not None:
+            meta["reply_id"] = self.reply_id
+        if self.media is not None:
+            meta["media"] = self.media
+        return meta or None
 
     @property
     def dedupe_id(self) -> uuid.UUID:
@@ -377,9 +424,7 @@ def _inbound_from(raw: dict[str, Any], names: dict[str, str | None]) -> InboundM
         return None
 
     message_type = str(raw.get("type") or "unknown")[:_TYPE_MAX_LENGTH]
-    body: str | None = None
-    if message_type == TYPE_TEXT:
-        body = ((raw.get("text") or {}).get("body")) or None
+    body, reply_id, media = _interpret(raw, message_type)
 
     return InboundMessage(
         provider_message_id=str(provider_message_id),
@@ -389,7 +434,43 @@ def _inbound_from(raw: dict[str, Any], names: dict[str, str | None]) -> InboundM
         body=body,
         raw=raw,
         profile_name=names.get(str(sender)),
+        reply_id=reply_id,
+        media=media,
     )
+
+
+def _text(value: Any) -> str | None:
+    """`value` as a non-empty string, or None. Meta's shapes are trusted only as far as the type."""
+    if value is None or isinstance(value, dict | list):
+        return None
+    return str(value) or None
+
+
+def _interpret(
+    raw: dict[str, Any], message_type: str
+) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    """`(body, reply_id, media)` for one message object. Never raises: a shape that is not what
+    Meta documented yields None for the part it cannot read, and the raw object keeps the rest."""
+    inner = raw.get(message_type)
+    if not isinstance(inner, dict):
+        return None, None, None
+    if message_type == TYPE_TEXT:
+        return _text(inner.get("body")), None, None
+    if message_type == TYPE_BUTTON:
+        return _text(inner.get("text")), _text(inner.get("payload")), None
+    if message_type == TYPE_INTERACTIVE:
+        reply = inner.get(str(inner.get("type") or ""))
+        if not isinstance(reply, dict):
+            return None, None, None
+        return _text(reply.get("title")), _text(reply.get("id")), None
+    if message_type in MEDIA_TYPES:
+        media: dict[str, Any] = {"kind": message_type, "fetch_state": FETCH_NOT_FETCHED}
+        for key in ("id", "mime_type", "sha256", "caption", "filename"):
+            value = _text(inner.get(key))
+            if value is not None:
+                media[key] = value
+        return media.get("caption"), None, media
+    return None, None, None
 
 
 def inbound_from_raw(
@@ -425,9 +506,11 @@ def within_service_window(
 
 #: How long a transient fold failure is left to raise into a 503 (so Meta redelivers the body)
 #: before the item is parked instead. A dropped connection or a deadlock that is still happening
-#: six hours after the event occurred is not "about to clear on the next redelivery" — Meta's own
-#: retry schedule tapers off well before this — and asking for a 503 forever over one stuck item is
-#: exactly the loop `record_dead_letter` exists to end.
+#: six hours after the event occurred is not "about to clear on the next redelivery" — and asking
+#: for a 503 forever over one stuck item is exactly the loop `record_dead_letter` exists to end.
+#: This cap is **our** choice, not Meta's limit: Meta retries a non-200 with decreasing frequency
+#: for up to 7 days (Cloud API "set up webhooks" guide), so a longer cap would still be redelivered
+#: into; six hours is simply where we stop asking.
 TRANSIENT_RETRY_CAP: Final = timedelta(hours=6)
 
 
@@ -459,10 +542,26 @@ def sender_e164(raw: str) -> str | None:
         return None
 
 
-#: Keywords Meta and the carriers treat as an opt-out request, upper-cased for a case-insensitive
-#: exact match. Not a substring match: a customer asking "how do I stop my subscription" must not
-#: be silently unsubscribed for using the word in a sentence.
-STOP_KEYWORDS: Final[frozenset[str]] = frozenset({"STOP", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"})
+#: What a customer types or taps to stop **marketing**, upper-cased and space-normalised (see
+#: `_keyword`), matched exactly — not as a substring: a customer asking "how do I stop my
+#: subscription" must not be silently unsubscribed for using the word in a sentence.
+#:
+#: STOP and UNSUBSCRIBE are the conventional words. CANCEL, END and QUIT are deliberately **not**
+#: here: a customer answering an order reminder with "Cancel" means the order, and treating it as
+#: an opt-out silently killed their transactional messages too. The other entries are the labels a
+#: "Stop promotions" quick-reply button carries as its text or payload; which label a tenant's
+#: template uses is theirs to choose, and this set is the one place to add another.
+STOP_KEYWORDS: Final[frozenset[str]] = frozenset(
+    {
+        "STOP",
+        "UNSUBSCRIBE",
+        "STOP PROMOTIONS",
+        "STOP PROMOTIONAL MESSAGES",
+        "STOP MARKETING",
+        "STOP MARKETING MESSAGES",
+        "UNSUBSCRIBE FROM PROMOTIONS",
+    }
+)
 
 #: The re-subscribe half of the same convention. A customer who typed STOP by habit and now wants
 #: messages again should not have to contact support to say so.
@@ -472,20 +571,24 @@ START_KEYWORDS: Final[frozenset[str]] = frozenset({"START", "UNSTOP", "SUBSCRIBE
 #: noticing — "Stop." and "STOP!" mean the same thing "STOP" does, and a strict exact match would
 #: silently keep messaging someone who typed it as an ordinary sentence.
 _TRAILING_PUNCTUATION = re.compile(r"[.!?,;:]+$")
+#: A button id like `stop_promotions` is the same words as the label "Stop promotions".
+_WORD_SEPARATORS = re.compile(r"[_\-\s]+")
 
 
 def _keyword(body: str | None) -> str | None:
-    """`body`, trimmed, trailing punctuation dropped, upper-cased — or `None` if there is
-    nothing to match a keyword against. The one normalisation both `is_stop_keyword` and
-    `is_start_keyword` share, so the two can never drift on what counts as "the same word"."""
+    """`body`, trimmed, trailing punctuation dropped, `_`/`-` read as spaces, upper-cased — or
+    `None` if there is nothing to match a keyword against. The one normalisation both
+    `is_stop_keyword` and `is_start_keyword` share, so the two can never drift on what counts as
+    "the same word"."""
     if body is None:
         return None
     stripped = _TRAILING_PUNCTUATION.sub("", body.strip()).strip()
+    stripped = _WORD_SEPARATORS.sub(" ", stripped).strip()
     return stripped.upper() if stripped else None
 
 
 def is_stop_keyword(body: str | None) -> bool:
-    """Is this inbound text an opt-out request?
+    """Is this inbound text an opt-out-of-marketing request?
 
     Exact match against the normalised body — the same convention every SMS/WhatsApp provider's
     own STOP handling uses, so a customer who has opted out of another business's messages this
@@ -500,3 +603,13 @@ def is_start_keyword(body: str | None) -> bool:
     """Is this inbound text a re-subscribe request? See `is_stop_keyword` for the same rules."""
     keyword = _keyword(body)
     return keyword is not None and keyword in START_KEYWORDS
+
+
+def is_stop_request(inbound: InboundMessage) -> bool:
+    """A STOP in the message's words **or** in the payload/id of the button the customer tapped."""
+    return any(is_stop_keyword(text) for text in inbound.intent_texts)
+
+
+def is_start_request(inbound: InboundMessage) -> bool:
+    """A START in the message's words or in the tapped button's payload/id."""
+    return any(is_start_keyword(text) for text in inbound.intent_texts)

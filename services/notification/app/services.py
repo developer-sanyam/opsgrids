@@ -1247,8 +1247,16 @@ async def fold_inbound_message(
         profile_name_enc, _ = pii.seal(inbound.profile_name, kind="generic", settings=cfg)
         profile_name_masked = _mask_profile_name(inbound.profile_name)
 
+    # The provider's object whole, plus what the parser read out of it (a button payload, a media
+    # reference and its `not_fetched` state) under a key Meta does not use, so a later reader
+    # (or a media-fetch job) does not have to re-derive it. Sealed together: a caption, a filename
+    # and a media id are all customer data.
+    stored_raw: dict[str, Any] = dict(inbound.raw)
+    parsed = inbound.parsed_metadata
+    if parsed is not None:
+        stored_raw["_opsgrids"] = parsed
     raw_enc, _ = pii.seal(
-        json.dumps(inbound.raw, separators=(",", ":")), kind="generic", settings=cfg
+        json.dumps(stored_raw, separators=(",", ":")), kind="generic", settings=cfg
     )
 
     row = InboundMessageRow(
@@ -1267,14 +1275,14 @@ async def fold_inbound_message(
     session.add(row)
     await session.flush()
 
-    if webhooks.is_stop_keyword(inbound.body):
+    if webhooks.is_stop_request(inbound):
         await _record_stop_request(
             session,
             organization_id=organization_id,
             phone=sender,
             reference=inbound.provider_message_id,
         )
-    elif webhooks.is_start_keyword(inbound.body):
+    elif webhooks.is_start_request(inbound):
         await _record_start_request(
             session,
             organization_id=organization_id,
@@ -1576,10 +1584,13 @@ async def _set_whatsapp_preference(
     phone: str,
     suppressed: bool,
     reason: str,
+    category: str = consent.MARKETING_CATEGORY,
 ) -> None:
-    """The write both STOP and START are: one `Preference` row per number, covering every
-    WhatsApp category — the same row `services.set_preference` writes for a human operator, so a
-    later send checks one table regardless of who recorded the refusal or its reversal.
+    """The write STOP, START and Meta's marketing-preference signals all are: one `Preference` row
+    per number and category (**marketing** unless told otherwise — a customer's STOP is a request
+    to stop promotions, not to stop hearing about their order) — the same row `services.
+    set_preference` writes for a human operator, so a later send checks one table regardless of
+    who recorded the refusal or its reversal.
     `stage_message` re-checks it at render **and** dispatch, so a reply already queued when a
     customer says STOP still does not go out.
 
@@ -1600,7 +1611,7 @@ async def _set_whatsapp_preference(
                 Preference.organization_id == organization_id,
                 Preference.recipient == phone,
                 Preference.channel == "whatsapp",
-                Preference.category == domain.CATEGORY_ALL,
+                Preference.category == category,
             )
             .with_for_update()
         )
@@ -1615,7 +1626,7 @@ async def _set_whatsapp_preference(
             updated_by=SYSTEM_ACTOR,
             recipient=phone,
             channel="whatsapp",
-            category=domain.CATEGORY_ALL,
+            category=category,
             suppressed=suppressed,
             reason=reason,
         )
@@ -1637,7 +1648,12 @@ async def _set_whatsapp_preference(
         entity="preference",
         entity_id=pref_id,
         before={"suppressed": before},
-        after={"channel": "whatsapp", "suppressed": suppressed, "reason": reason},
+        after={
+            "channel": "whatsapp",
+            "category": category,
+            "suppressed": suppressed,
+            "reason": reason,
+        },
     )
 
 
@@ -1656,21 +1672,27 @@ async def _record_stop_request(
     phone: str,
     reference: str | None = None,
 ) -> None:
-    """STOP, UNSUBSCRIBE and the rest (`webhooks.STOP_KEYWORDS`). Opts the number out of **both**
-    purposes on WhatsApp in the consent ledger, as well as writing the `Preference` every send
-    path already checks."""
+    """STOP, UNSUBSCRIBE and the "Stop promotions" labels (`webhooks.STOP_KEYWORDS`), typed or
+    tapped. Opts the number out of **marketing** on WhatsApp — in the consent ledger and in the
+    `Preference` every send path already checks — and nothing else.
+
+    It used to refuse both purposes, and to treat CANCEL/END/QUIT the same way. A customer who
+    answered an order reminder with "Cancel" then lost every notification about that order, which
+    is the opposite of what they meant. Meta's own model agrees with the narrower reading: the
+    `user_preferences` control a customer has in WhatsApp is for *marketing* messages only.
+    """
     await _set_whatsapp_preference(
         session,
         organization_id=organization_id,
         phone=phone,
         suppressed=True,
-        reason="customer_stop",
+        reason=_CUSTOMER_STOP_REASON,
     )
     await consent.opt_out(
         session,
         organization_id=organization_id,
         subject=consent.subject_for("whatsapp", phone),
-        purposes=consent.BOTH_PURPOSES,
+        purposes=(consent.MARKETING,),
         source=consent.SOURCE_INBOUND_KEYWORD,
         evidence=_keyword_evidence("STOP", reference),
     )
@@ -1681,6 +1703,13 @@ async def _record_stop_request(
 #: by hand, a legal hold, anything `services.set_preference` writes for a human) was never put
 #: there by this convention, and a customer's stray "START" must not be the thing that lifts it.
 _CUSTOMER_STOP_REASON: Final = "customer_stop"
+
+#: What a marketing refusal that came from **Meta** (`user_preferences` stop, or a 131050 delivery
+#: failure) is recorded under. Reversible by Meta's own `resume`, and by START like a customer STOP.
+_META_STOP_REASON: Final = "meta_marketing_stop"
+
+#: The reasons a START / `resume` may lift.
+_CUSTOMER_REVERSIBLE_REASONS: Final = frozenset({_CUSTOMER_STOP_REASON, _META_STOP_REASON})
 
 
 async def _record_start_request(
@@ -1696,35 +1725,134 @@ async def _record_start_request(
     Only un-suppresses a row this same convention suppressed. No preference row at all, or one
     suppressed for any other reason, is left exactly as it is — see `_CUSTOMER_STOP_REASON`.
 
+    A pre-change STOP wrote a `*` row (every category) and opted out of both ledger purposes; that
+    row is lifted here too, and only then are **both** purposes restored. A current STOP wrote a
+    `marketing` row and only a marketing ledger event, so only marketing is restored.
+
     In the consent ledger a START **restores, never creates** (`consent.restore`): transactional
     is re-opened, and marketing only if the customer had opted in to it before their STOP. A bare
     keyword is not the affirmative, specific marketing opt-in Meta requires.
     """
-    pref = await selectors.get_preference(
-        session, organization_id, phone, "whatsapp", domain.CATEGORY_ALL
-    )
-    if pref is None or pref.reason != _CUSTOMER_STOP_REASON:
-        log.info(
-            "notification.whatsapp.start_ignored",
-            had_preference=pref is not None,
+    lifted_legacy_all = False
+    lifted_any = False
+    for category in (consent.MARKETING_CATEGORY, domain.CATEGORY_ALL):
+        pref = await selectors.get_preference(session, organization_id, phone, "whatsapp", category)
+        if pref is None or not pref.suppressed or pref.reason != _CUSTOMER_STOP_REASON:
+            continue
+        await _set_whatsapp_preference(
+            session,
+            organization_id=organization_id,
+            phone=phone,
+            suppressed=False,
+            reason="customer_start",
+            category=category,
         )
+        lifted_any = True
+        lifted_legacy_all = lifted_legacy_all or category == domain.CATEGORY_ALL
+    if not lifted_any:
+        log.info("notification.whatsapp.start_ignored")
         return
-    await _set_whatsapp_preference(
-        session,
-        organization_id=organization_id,
-        phone=phone,
-        suppressed=False,
-        reason="customer_start",
-    )
     await consent.restore(
         session,
         organization_id=organization_id,
         subject=consent.subject_for("whatsapp", phone),
-        purposes=consent.BOTH_PURPOSES,
+        purposes=consent.BOTH_PURPOSES if lifted_legacy_all else (consent.MARKETING,),
         source=consent.SOURCE_INBOUND_KEYWORD,
         evidence=_keyword_evidence("START", reference),
     )
     log.info("notification.whatsapp.start_received")
+
+
+async def apply_meta_marketing_preference(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    recipient: str,
+    opted_out: bool,
+    signal: str,
+) -> bool:
+    """Fold a marketing-preference signal **from Meta** into the same two stores STOP writes.
+
+    Two sources reach here: the `user_preferences` webhook (`value: "stop"` / `"resume"` for
+    `category: "marketing_messages"`) and a `failed` status carrying error 131050 ("recipient has
+    chosen to stop receiving marketing messages"). `recipient` is Meta's bare-digit `wa_id` /
+    `recipient_id`; `signal` is a short machine label (`user_preferences`, `error_131050`) that
+    goes into the ledger's evidence — never the number, never free text from the payload.
+
+    * **stop** — `Preference(marketing)` suppressed and a marketing `opted_out` ledger event
+      (`consent.opt_out`, source `meta_user_preference`), audited by `_set_whatsapp_preference`.
+    * **resume** — the reverse, but only through `consent.restore`: consent that existed is
+      reinstated, consent that never did is not invented. Whether Meta's `resume` is itself
+      an affirmative marketing opt-in in the sense Meta's policy requires is *unverified*, so it
+      is deliberately not treated as one. A refusal an operator recorded (a different `reason`)
+      is left alone, exactly as START leaves it.
+
+    Idempotent: `consent.opt_out`/`restore` write only on a state change, and the preference
+    upsert is a no-op rewrite of the same values. Returns whether the recipient was a usable
+    number (False → nothing written).
+    """
+    phone = webhooks.sender_e164(recipient)
+    if phone is None:
+        log.warning("notification.whatsapp.marketing_preference_bad_recipient", signal=signal)
+        return False
+    evidence = (
+        f"Meta reported the recipient {'stopped' if opted_out else 'resumed'} marketing ({signal})."
+    )
+    subject = consent.subject_for("whatsapp", phone)
+    if opted_out:
+        existing = await selectors.get_preference(
+            session, organization_id, phone, "whatsapp", consent.MARKETING_CATEGORY
+        )
+        # An operator's own suppression keeps its reason; only a fresh or Meta/customer-made one
+        # is (re)written under Meta's.
+        if (
+            existing is None
+            or existing.reason in _CUSTOMER_REVERSIBLE_REASONS
+            or not existing.suppressed
+        ):
+            await _set_whatsapp_preference(
+                session,
+                organization_id=organization_id,
+                phone=phone,
+                suppressed=True,
+                reason=_META_STOP_REASON,
+            )
+        await consent.opt_out(
+            session,
+            organization_id=organization_id,
+            subject=subject,
+            purposes=(consent.MARKETING,),
+            source=consent.SOURCE_META_PREFERENCE,
+            evidence=evidence,
+        )
+        log.info("notification.whatsapp.marketing_stop_from_meta", signal=signal)
+        return True
+
+    existing = await selectors.get_preference(
+        session, organization_id, phone, "whatsapp", consent.MARKETING_CATEGORY
+    )
+    if existing is not None and existing.suppressed:
+        if existing.reason not in _CUSTOMER_REVERSIBLE_REASONS:
+            # An operator's suppression: Meta's `resume` is not the thing that lifts it.
+            log.info("notification.whatsapp.marketing_resume_ignored")
+            return True
+        await _set_whatsapp_preference(
+            session,
+            organization_id=organization_id,
+            phone=phone,
+            suppressed=False,
+            reason="meta_marketing_resume",
+        )
+    await consent.restore(
+        session,
+        organization_id=organization_id,
+        subject=subject,
+        purposes=(consent.MARKETING,),
+        source=consent.SOURCE_META_PREFERENCE,
+        evidence=evidence,
+    )
+    log.info("notification.whatsapp.marketing_resume_from_meta", signal=signal)
+    return True
 
 
 async def resolve_conversation_contact(
@@ -1806,8 +1934,10 @@ async def reply_to_conversation(
         channel="whatsapp",
         # Not `operational`, `marketing` or any rule-authored bucket: this is a human answering
         # a human, one conversation at a time, and it is checked against `Preference` exactly
-        # like any other category — a `*` row from `_record_stop_request` refuses it same as
-        # every other bucket, which is the whole of how STOP reaches a reply already in flight.
+        # like any other category. STOP now records a **marketing** refusal only
+        # (`_record_stop_request`), so it does not silence a human answering the customer's own
+        # message inside the service window; a `*` row an operator (or a pre-change STOP) wrote
+        # still does.
         category="conversational",
         to_address=phone,
         subject=None,

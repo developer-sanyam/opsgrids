@@ -31,8 +31,26 @@ STATUS_FROM_META: Final[dict[str, str | None]] = {
     "PAUSED": "paused",
     "DISABLED": "disabled",
     "PENDING_DELETION": "disabled",
+    # Archived (inactive; Meta deletes it after 28 days unless unarchived) and deleted templates
+    # cannot be sent, so locally they are `disabled` — the one state `template_is_sendable` and
+    # every editor already refuse. The webhook's own reason is kept in `status_reason`.
+    "ARCHIVED": "disabled",
+    "DELETED": "disabled",
     "FLAGGED": None,
+    # `LOCKED` (template can no longer be edited) and `LIMIT_EXCEEDED` (the *WABA* is at its
+    # template limit, not a state of one template) do not, per Meta's event descriptions, stop a
+    # template being sent, so they change no status; they are named here so the webhook recognises
+    # them and logs the event rather than treating them as unknown.
+    "LOCKED": None,
+    "LIMIT_EXCEEDED": None,
 }
+
+#: Events that put a template into a state Meta may later reverse with `UNARCHIVED`, which
+#: "restores the template to its previous status" — see `w2_services.apply_status_change`.
+ARCHIVE_EVENT: Final = "ARCHIVED"
+UNARCHIVE_EVENT: Final = "UNARCHIVED"
+#: Recorded as a history entry's `source` so `UNARCHIVED` can find what the template was before.
+ARCHIVE_SOURCE: Final = "meta_webhook_archived"
 
 CATEGORY_FROM_META: Final[dict[str, str]] = {
     "MARKETING": "marketing",
@@ -80,6 +98,27 @@ def status_from_meta(value: object) -> str | None:
 
 def category_from_meta(value: object) -> str | None:
     return CATEGORY_FROM_META.get(str(value or "").upper())
+
+
+def category_after_update(value: dict[str, Any]) -> str | None:
+    """The category a `template_category_update` says the template now bills as, or None for one
+    that changes nothing yet.
+
+    Meta sends two shapes (template_category_update reference):
+
+    * **completed** — `previous_category` and `new_category`: the change has happened, so
+      `new_category` is the category.
+    * **impending** — `correct_category` and `category_update_timestamp`, with `new_category`
+      naming the template's *current* category: in 24 hours Meta will recategorise it to
+      `correct_category`. Only a move **to marketing** is applied early: marketing is the category
+      that carries the opt-in obligation, so treating a template as marketing a day before Meta
+      bills it as one is the safe direction; a move away from marketing waits for the completed
+      event, because acting on it early would drop the obligation while it still applies.
+    """
+    correct = category_from_meta(value.get("correct_category"))
+    if correct is not None:
+        return correct if correct == "marketing" else None
+    return category_from_meta(value.get("new_category"))
 
 
 def quality_from_meta(value: object) -> str:
