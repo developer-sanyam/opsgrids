@@ -42,9 +42,9 @@ from app.schemas import (
     OwnerPatch,
     ServiceInfo,
 )
-from platform_core.auth import Scope, ScopeContext, require, require_product
+from platform_core.auth import CurrentPrincipal, Scope, ScopeContext, require, require_product
 from platform_core.db import get_tenant_session
-from platform_core.errors import NotFoundProblem
+from platform_core.errors import ForbiddenProblem, NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
 # Registering the CRM scope resolver at import of the api module ties it to the product it
@@ -69,13 +69,50 @@ OwnerWrite = Annotated[ScopeContext, Depends(require("crm.book.owner.write", min
 ContactRead = Annotated[ScopeContext, Depends(require("crm.book.contact.read"))]
 ContactWrite = Annotated[ScopeContext, Depends(require("crm.book.contact.write"))]
 ContactDelete = Annotated[ScopeContext, Depends(require("crm.book.contact.delete"))]
-#: Revealing a real phone number. The dangerous permission **and** a second factor, the
-#: same pairing employee-service requires to unmask an employee's personal details — an
-#: ordinary CRM session must not be a route to a customer's phone book.
-ContactUnmask = Annotated[
-    ScopeContext,
-    Depends(require("crm.book.contact.read_sensitive", amr={"otp"})),
-]
+REVEAL_PERMISSION = "crm.book.contact.read_sensitive"
+_require_reveal = require(REVEAL_PERMISSION, amr={"otp"})
+
+
+async def _reveal_guard(principal: CurrentPrincipal, request: Request) -> ScopeContext:
+    """The reveal route's authorization: the dangerous permission **and** a second factor (the
+    same pairing employee-service requires to unmask an employee's personal details) — an
+    ordinary CRM session must not be a route to a customer's phone book — then the per-user
+    reveal budget.
+
+    It is `require(...)` itself, wrapped, so the rules are the platform's; the wrapper adds two
+    things `require` cannot. A refusal is logged (`services.log_reveal_refused`) — the
+    permission and step-up checks happen here, before the route body exists, so this is the only
+    place that can see them. And the budget is spent here rather than in the body: the route
+    declares this dependency ahead of its database session, so a caller who is over budget is
+    refused before a transaction or a pool connection is taken, and a Redis round trip never
+    sits inside one.
+    """
+    try:
+        ctx: ScopeContext = _require_reveal(principal)
+    except ForbiddenProblem:
+        # `require` refuses for exactly two reasons when no scope floor is set.
+        held = principal.scope_for(REVEAL_PERMISSION) is not None
+        services.log_reveal_refused(
+            principal,
+            reason="step_up_required" if held else "missing_permission",
+            contact_id=_path_uuid(request, "contact_id"),
+            request=request,
+        )
+        raise
+    await services.enforce_reveal_budget(ctx, request=request)
+    return ctx
+
+
+def _path_uuid(request: Request, name: str) -> uuid.UUID | None:
+    """The path parameter as a UUID for a log line, or None when it is not one — the
+    parameter is client-supplied text and is only ever logged after it parses."""
+    try:
+        return uuid.UUID(str(request.path_params.get(name)))
+    except ValueError:
+        return None
+
+
+ContactUnmask = Annotated[ScopeContext, Depends(_reveal_guard)]
 
 
 @router.get("/customer/info", response_model=ServiceInfo, summary="What this service is")
@@ -382,26 +419,43 @@ async def set_contact_phone(
     status_code=status.HTTP_200_OK,
     summary="Reveal a contact's real phone number (audited)",
     dependencies=[Entitled],
+    responses={
+        429: {
+            "description": (
+                "This user has spent their reveal budget in this organization: 30 per 10 "
+                "minutes or 200 per day, shared with the lead reveal. `Retry-After` is the "
+                "length of the window that was spent, in seconds."
+            )
+        },
+        503: {
+            "description": (
+                "The budget could not be checked (Redis is unreachable), so nothing is "
+                "revealed. Retry shortly."
+            )
+        },
+    },
 )
 async def reveal_contact_phone(
     contact_id: uuid.UUID,
-    session: SessionDep,
+    # Ahead of `session` on purpose: the guard spends the reveal budget (a Redis round trip), and
+    # dependencies resolve in declaration order — see `_reveal_guard`.
     ctx: ContactUnmask,
+    session: SessionDep,
     request: Request,
+    response: Response,
 ) -> ContactPhoneRevealed:
     """The only public route that returns a real number.
 
     A POST rather than a GET on purpose: this has a side effect — it writes an
     `entity.sensitive_read` audit row — and it must never be cached, pre-fetched, logged in a
-    query string or replayed from browser history the way a GET can be.
+    query string or replayed from browser history the way a GET can be. The response says so
+    itself (`Cache-Control: no-store`).
 
-    Guarded by the dangerous `read_sensitive` permission and a second factor, then re-scoped
-    to this one contact. Filtering a list and forgetting the detail route is the named
-    vulnerability this shape exists to avoid.
+    Guarded by the dangerous `read_sensitive` permission, a second factor and a per-user reveal
+    budget (`_reveal_guard`), then re-scoped to this one contact inside
+    `services.reveal_contact_phone`. Filtering a list and forgetting the detail route is the
+    named vulnerability this shape exists to avoid.
     """
-    contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
-    if contact is None:
-        raise NotFoundProblem("That contact is not part of this organization")
-    ctx.assert_can_touch(owner_id=contact.owner_id)
-    phone = await services.unmask_contact_phone(session, ctx, contact, request=request)
+    contact, phone = await services.reveal_contact_phone(session, ctx, contact_id, request=request)
+    response.headers["Cache-Control"] = "no-store"
     return ContactPhoneRevealed(contact_id=str(contact.id), phone=phone)

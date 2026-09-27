@@ -37,9 +37,9 @@ from app.schemas import (
     LeadRevealOut,
     ServiceInfo,
 )
-from platform_core.auth import ScopeContext, require, require_product
+from platform_core.auth import CurrentPrincipal, ScopeContext, require, require_product
 from platform_core.db import get_session, get_tenant_session
-from platform_core.errors import NotFoundProblem
+from platform_core.errors import ForbiddenProblem, NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
 # Registering the crm scope resolver at import of the api module ties it to the product it
@@ -67,14 +67,50 @@ Entitled = Depends(require_product("crm"))
 LeadRead = Annotated[ScopeContext, Depends(require("crm.lead.lead.read"))]
 LeadWrite = Annotated[ScopeContext, Depends(require("crm.lead.lead.write"))]
 LeadConvert = Annotated[ScopeContext, Depends(require("crm.lead.lead.convert"))]
-#: Revealing a real phone number or email. The dangerous permission **and** a second factor, the
-#: same pairing customer-service requires to reveal a contact's phone
-#: (`crm.book.contact.read_sensitive`) and employee-service to unmask an employee's personal
-#: details — an ordinary CRM session must not be a route to a prospect's contact details.
-LeadReveal = Annotated[
-    ScopeContext,
-    Depends(require("crm.lead.lead.read_sensitive", amr={"otp"})),
-]
+REVEAL_PERMISSION = "crm.lead.lead.read_sensitive"
+_require_reveal = require(REVEAL_PERMISSION, amr={"otp"})
+
+
+async def _reveal_guard(principal: CurrentPrincipal, request: Request) -> ScopeContext:
+    """The reveal route's authorization: the dangerous permission **and** a second factor (the
+    same pairing customer-service requires to reveal a contact's phone, and employee-service to
+    unmask an employee's personal details) — an ordinary CRM session must not be a route to a
+    prospect's contact details — then the per-user reveal budget.
+
+    It is `require(...)` itself, wrapped, so the rules are the platform's; the wrapper adds two
+    things `require` cannot. A refusal is logged (`services.log_reveal_refused`) — the
+    permission and step-up checks happen here, before the route body exists, so this is the only
+    place that can see them. And the budget is spent here rather than in the body: the route
+    declares this dependency ahead of its database session, so a caller who is over budget is
+    refused before a transaction or a pool connection is taken, and a Redis round trip never
+    sits inside one.
+    """
+    try:
+        ctx: ScopeContext = _require_reveal(principal)
+    except ForbiddenProblem:
+        # `require` refuses for exactly two reasons when no scope floor is set.
+        held = principal.scope_for(REVEAL_PERMISSION) is not None
+        services.log_reveal_refused(
+            principal,
+            reason="step_up_required" if held else "missing_permission",
+            lead_id=_path_uuid(request, "lead_id"),
+            request=request,
+        )
+        raise
+    await services.enforce_reveal_budget(ctx, request=request)
+    return ctx
+
+
+def _path_uuid(request: Request, name: str) -> uuid.UUID | None:
+    """The path parameter as a UUID for a log line, or None when it is not one — the
+    parameter is client-supplied text and is only ever logged after it parses."""
+    try:
+        return uuid.UUID(str(request.path_params.get(name)))
+    except ValueError:
+        return None
+
+
+LeadReveal = Annotated[ScopeContext, Depends(_reveal_guard)]
 
 
 @router.get("/lead/info", response_model=ServiceInfo, summary="What this service is")
@@ -247,13 +283,28 @@ async def convert_lead(
                 "the requested field."
             )
         },
+        429: {
+            "description": (
+                "This user has spent their reveal budget in this organization: 30 per 10 "
+                "minutes or 200 per day, shared with the contact reveal. `Retry-After` is the "
+                "length of the window that was spent, in seconds."
+            )
+        },
+        503: {
+            "description": (
+                "The budget could not be checked (Redis is unreachable), so nothing is "
+                "revealed. Retry shortly."
+            )
+        },
     },
 )
 async def reveal_lead_field(
     lead_id: uuid.UUID,
     payload: LeadRevealIn,
-    session: SessionDep,
+    # Ahead of `session` on purpose: the guard spends the reveal budget (a Redis round trip), and
+    # dependencies resolve in declaration order — see `_reveal_guard`.
     ctx: LeadReveal,
+    session: SessionDep,
     request: Request,
     response: Response,
 ) -> LeadRevealOut:
@@ -264,10 +315,11 @@ async def reveal_lead_field(
     pre-fetched, logged in a query string or replayed from browser history the way a GET can
     be. The response says so itself (`Cache-Control: no-store`).
 
-    Guarded by the dangerous `read_sensitive` permission and a second factor, then re-scoped to
-    this one lead inside `services.reveal_lead_field`, which also owns the not-found, the
-    nothing-on-file and the audit steps. This route takes the ordinary tenant session, so the
-    audit row commits before the response is sent.
+    Guarded by the dangerous `read_sensitive` permission, a second factor and a per-user reveal
+    budget (`_reveal_guard`), then re-scoped to this one lead inside
+    `services.reveal_lead_field`, which also owns the not-found, the nothing-on-file and the
+    audit steps. This route takes the ordinary tenant session, so the audit row commits before
+    the response is sent.
     """
     value = await services.reveal_lead_field(session, ctx, lead_id, payload.field, request=request)
     response.headers["Cache-Control"] = "no-store"

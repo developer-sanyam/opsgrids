@@ -15,6 +15,38 @@ import uuid
 from platform_core.auth import Principal, Scope, ScopeContext
 
 
+class FakeRedis:
+    """Enough Redis for `enforce_rate_limit` (`incr` + `expire`) and the readiness ping.
+
+    `poisoned` makes every call raise, which is how a test simulates the outage the limiter is
+    required to fail closed on rather than swallow."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, int] = {}
+        self.expiries: dict[str, int] = {}
+        self.poisoned = False
+
+    def _check(self) -> None:
+        if self.poisoned:
+            raise ConnectionError("simulated redis outage")
+
+    async def incr(self, key: str) -> int:
+        self._check()
+        self.store[key] = self.store.get(key, 0) + 1
+        return self.store[key]
+
+    async def expire(self, key: str, seconds: int) -> None:
+        self._check()
+        self.expiries[key] = seconds
+
+    async def ping(self) -> bool:
+        self._check()
+        return True
+
+    async def aclose(self) -> None:
+        return None
+
+
 def principal_for(
     org_id: uuid.UUID,
     perms: list[str],
@@ -23,10 +55,13 @@ def principal_for(
     entitlements: list[str] | None = None,
     locations: list[str] | None = None,
     amr: list[str] | None = None,
+    sub: uuid.UUID | None = None,
+    session_id: str | None = None,
 ) -> Principal:
-    """The principal the gateway would have forwarded for a CRM caller."""
+    """The principal the gateway would have forwarded for a CRM caller. `sub` pins the user
+    (a fresh one per call otherwise) and `session_id` is the token's `sid`."""
     return Principal(
-        sub=uuid.uuid4(),
+        sub=sub or uuid.uuid4(),
         organization_id=org_id,
         membership_id=uuid.uuid4(),
         subject_ref=subject_ref,
@@ -34,6 +69,7 @@ def principal_for(
         entitlements=entitlements if entitlements is not None else ["crm"],
         locations=locations or [],
         amr=amr or [],
+        session_id=session_id,
     )
 
 

@@ -36,15 +36,23 @@ from app.models import AuditLog, Company, Contact, OutboxEvent, Owner
 from app.schemas import CompanyPatch, ContactPatch, OwnerPatch
 from platform_core.audit import record_audit, record_sensitive_read
 from platform_core.auth import Principal, Scope, ScopeContext
+from platform_core.cache import enforce_rate_limit
 from platform_core.errors import (
     ConflictProblem,
     ForbiddenProblem,
     NotFoundProblem,
+    RateLimitedProblem,
     ValidationProblem,
 )
 from platform_core.events import publish_event
+from platform_core.logging import get_logger
 from platform_core.models import utcnow
 from platform_core.pii import blind_index, open_sealed, seal
+
+log = get_logger("customer.services")
+
+#: The daily reveal budget's window. Not a setting: "per day" is what the budget is called.
+_REVEAL_DAILY_WINDOW_SECONDS = 86_400
 
 
 class CompanyDeletedProblem(ConflictProblem):
@@ -882,17 +890,117 @@ async def unmask_contact_phone(
     if contact.phone_enc is not None:
         plaintext = open_sealed(contact.phone_enc, settings=settings())
 
-    record_sensitive_read(
+    # The same action and shape `record_sensitive_read` writes (`{"fields": [...]}`), plus the
+    # session that did it. `record_sensitive_read` cannot carry it, so this is `record_audit`
+    # directly. The row's own `request_id` comes from `X-Request-ID` when the client sent one,
+    # so it is a correlation aid and not evidence of anything; `session_id` — the token's `sid`
+    # claim, forwarded by the gateway — is what ties a reveal to the sign-in (and so the MFA
+    # step-up) that authorised it. The field's *name* only, never its value.
+    record_audit(
         session,
         AuditLog,
         organization_id=ctx.organization_id,
         actor_id=ctx.principal.sub,
+        action="entity.sensitive_read",
         entity="contact",
         entity_id=contact.id,
-        fields=["phone"],
+        after={"fields": ["phone"], "session_id": ctx.principal.session_id},
         request=request,
     )
     return plaintext
+
+
+def log_reveal_refused(
+    principal: Principal,
+    *,
+    reason: str,
+    contact_id: uuid.UUID | None = None,
+    request: Request | None = None,
+) -> None:
+    """One structured WARNING per refused reveal: who, where, which contact, and why.
+
+    A log line, deliberately not an audit row. A refusal changes nothing, so it is not an
+    `entity.sensitive_read` (that action means a value was opened), and an audit table a prober
+    can grow one 403 at a time is a cost rather than a control. What a refusal *does* need is to
+    be visible — somebody walking contact ids, or a session without the step-up trying every
+    contact, is exactly the pattern worth grepping for.
+
+    Never a value: the ids and a reason code, nothing read from the contact. `request_id`
+    correlates the line with the request's other logs; it is whatever the client sent as
+    `X-Request-ID` when it sent one, so it locates a line and proves nothing about who made the
+    call — `actor_id` is the identity.
+    """
+    log.warning(
+        "contact.reveal.refused",
+        reason=reason,
+        organization_id=str(principal.organization_id),
+        actor_id=str(principal.sub),
+        contact_id=str(contact_id) if contact_id is not None else None,
+        request_id=getattr(request.state, "request_id", None) if request is not None else None,
+    )
+
+
+async def enforce_reveal_budget(ctx: ScopeContext, *, request: Request | None = None) -> None:
+    """Spend one reveal from this user's budget in this organization, or raise 429.
+
+    Two fixed windows, both keyed on the organization *and* the user, so one person's budget is
+    never another's and the same person in two organizations has two (a membership is
+    per-organization): `reveal_burst_limit` per `reveal_burst_window_seconds`, and
+    `reveal_daily_limit` per UTC day. The keys are shared with lead-service's lead reveal on
+    purpose — the thing being bounded is how much PII one person can read, and two routes with
+    two budgets would double it. **Keep the key prefix identical to lead's.**
+
+    Counted when the request arrives, after the permission and the step-up have passed and
+    before anything is looked up, so probing with ids that turn out to be foreign or absent
+    spends budget too. A window is fixed, not sliding: a caller can spend the end of one and the
+    start of the next (`platform_core.cache.enforce_rate_limit`).
+
+    **Fails closed.** `enforce_rate_limit` answers 503 when Redis cannot be reached, so a Redis
+    outage stops reveals rather than lifting their limit. Nothing else in this service uses
+    Redis.
+    """
+    cfg = settings()
+    who = f"{ctx.organization_id}:{ctx.principal.sub}"
+    budgets = (
+        ("burst", cfg.reveal_burst_limit, cfg.reveal_burst_window_seconds),
+        ("daily", cfg.reveal_daily_limit, _REVEAL_DAILY_WINDOW_SECONDS),
+    )
+    for name, limit, window_seconds in budgets:
+        try:
+            await enforce_rate_limit(
+                f"crm.reveal.{name}:{who}", limit=limit, window_seconds=window_seconds
+            )
+        except RateLimitedProblem:
+            log_reveal_refused(ctx.principal, reason=f"rate_limited_{name}", request=request)
+            raise
+
+
+async def reveal_contact_phone(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    contact_id: uuid.UUID,
+    *,
+    request: Request | None = None,
+) -> tuple[Contact, str | None]:
+    """The reveal route's whole decision, in one function: fetch the contact inside the
+    caller's organization (404 for an id that is absent or another organization's — the same
+    answer, so nothing is confirmed about ids outside it), re-apply the caller's scope to this
+    one contact (403), then `unmask_contact_phone`. Every refusal logs one WARNING
+    (`log_reveal_refused`) — not an audit row."""
+    contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
+    if contact is None:
+        log_reveal_refused(
+            ctx.principal, reason="contact_not_found", contact_id=contact_id, request=request
+        )
+        raise NotFoundProblem("That contact is not part of this organization")
+    try:
+        ctx.assert_can_touch(owner_id=contact.owner_id)
+    except ForbiddenProblem:
+        log_reveal_refused(
+            ctx.principal, reason="out_of_scope", contact_id=contact.id, request=request
+        )
+        raise
+    return contact, await unmask_contact_phone(session, ctx, contact, request=request)
 
 
 async def invalid_owner_ids(

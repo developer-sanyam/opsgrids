@@ -182,8 +182,13 @@ def _reveal_path(lead_id: uuid.UUID) -> str:
     return f"/api/v1/leads/{lead_id}:reveal"
 
 
+SESSION_ID = "b5d3c1e2-session-of-the-stepped-up-sign-in"
+
+
 def _stepped_up(org_id: uuid.UUID, *, scope: str = "ORG") -> Principal:
-    return principal_for(org_id, [f"{REVEAL}:{scope}"], subject_ref=None, amr=["otp"])
+    return principal_for(
+        org_id, [f"{REVEAL}:{scope}"], subject_ref=None, amr=["otp"], session_id=SESSION_ID
+    )
 
 
 async def _sensitive_reads(admin_session, org_id: uuid.UUID) -> list[AuditLog]:
@@ -266,21 +271,53 @@ class TestReveal:
                 # exactly one more row than the reveals that came before this one.
                 committed = await _sensitive_reads(admin_session, org_id)
                 assert len(committed) == position
-                assert committed[-1].after == {"fields": [field]}
+                assert committed[-1].after == {"fields": [field], "session_id": SESSION_ID}
 
         rows = await _sensitive_reads(admin_session, org_id)
-        assert [row.after for row in rows] == [
-            {"fields": ["phone"]},
-            {"fields": ["phone"]},
-            {"fields": ["email"]},
-        ]
+        assert [row.after["fields"] for row in rows] == [["phone"], ["phone"], ["email"]]
         for row in rows:
             assert row.entity == "lead"
             assert row.entity_id == data["lead_a_id"]
             assert row.actor_id == principal.sub
             assert row.organization_id == org_id
             assert row.before is None
-            assert row.request_id  # ties the row to the request, and so to a log line
+            # A correlation aid only: the middleware adopts a client-supplied `X-Request-ID`,
+            # so this is not evidence of anything. The session id below is.
+            assert row.request_id
+
+    async def test_the_audit_row_carries_the_session_that_did_it_and_no_value(
+        self, client, org_id, data, admin_session
+    ) -> None:
+        """The row can be tied to the sign-in (and so the MFA step-up) that authorised the
+        reveal — `session_id`, the token's `sid` — and is still exactly the field's name, the
+        session id and nothing else: no value, no masked form, no lead detail."""
+        with as_principal(_stepped_up(org_id)):
+            for field in ("phone", "email"):
+                await client.post(_reveal_path(data["lead_a_id"]), json={"field": field})
+
+        rows = await _sensitive_reads(admin_session, org_id)
+        assert [row.after for row in rows] == [
+            {"fields": ["phone"], "session_id": SESSION_ID},
+            {"fields": ["email"], "session_id": SESSION_ID},
+        ]
+        for row in rows:
+            blob = json.dumps([row.before, row.after, row.reason], default=str)
+            assert RAW_PHONE.removeprefix("+") not in blob
+            assert RAW_EMAIL not in blob
+            assert "stellar" not in blob.lower()
+
+    async def test_a_reveal_with_no_session_id_still_writes_the_row(
+        self, client, org_id, data, admin_session
+    ) -> None:
+        """A principal that carries no `sid` (a directly presented token) is not refused — the
+        key is there, null, so a row without provenance is visibly a row without provenance."""
+        principal = principal_for(org_id, [f"{REVEAL}:ORG"], amr=["otp"])
+        with as_principal(principal):
+            response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
+        assert response.status_code == 200
+
+        (row,) = await _sensitive_reads(admin_session, org_id)
+        assert row.after == {"fields": ["phone"], "session_id": None}
 
     async def test_no_audit_row_and_no_event_carries_the_value(
         self, client, org_id, data, admin_session
@@ -383,7 +420,7 @@ class TestReveal:
         assert response.json()["value"] == RAW_PHONE
         after = await _sensitive_reads(admin_session, org_id)
         assert len(after) == len(before) + 1
-        assert after[-1].after == {"fields": ["phone"]}
+        assert after[-1].after == {"fields": ["phone"], "session_id": SESSION_ID}
 
     async def test_an_envelope_that_will_not_open_reveals_nothing_and_records_nothing(
         self, client, session, org_id, data, admin_session

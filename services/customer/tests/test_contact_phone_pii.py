@@ -130,7 +130,8 @@ async def test_unmasking_writes_a_sensitive_read_audit_row(session, org_id, data
     )
     assert len(rows) == 1
     assert rows[0].entity == "contact"
-    assert rows[0].after == {"fields": ["phone"]}
+    # `ctx_for`'s principal carries no `sid`, so the key is there and null.
+    assert rows[0].after == {"fields": ["phone"], "session_id": None}
 
 
 async def test_the_audit_row_is_written_even_when_nothing_was_sealed(session, org_id, data) -> None:
@@ -280,7 +281,13 @@ async def test_an_own_grant_reveals_only_the_contacts_the_caller_owns(
         await services.set_contact_phone(session, write, data["contact_a"], RAW)
         await services.set_contact_phone(session, write, data["contact_b"], "+919812345771")
 
-    rep = principal_for(org_id, [f"{SENSITIVE}:OWN"], subject_ref=data["subject_a"], amr=["otp"])
+    rep = principal_for(
+        org_id,
+        [f"{SENSITIVE}:OWN"],
+        subject_ref=data["subject_a"],
+        amr=["otp"],
+        session_id="rep-session",
+    )
     with as_principal(rep):
         own = await client.post(f"/api/v1/contacts/{data['contact_a_id']}/phone:reveal")
         colleague = await client.post(f"/api/v1/contacts/{data['contact_b_id']}/phone:reveal")
@@ -296,7 +303,7 @@ async def test_an_own_grant_reveals_only_the_contacts_the_caller_owns(
         .all()
     )
     assert [(r.entity_id, r.after) for r in reads] == [
-        (data["contact_a_id"], {"fields": ["phone"]})
+        (data["contact_a_id"], {"fields": ["phone"], "session_id": "rep-session"})
     ]
 
 

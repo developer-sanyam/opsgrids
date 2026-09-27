@@ -31,6 +31,17 @@ class Settings(ServiceSettings):
     #: concurrently. Short on purpose: a card with a hole beats a card that hangs.
     customer360_upstream_timeout_seconds: float = 2.0
 
+    #: How many real phone numbers / emails one user may reveal in one organization
+    #: (`services.enforce_reveal_budget`): `reveal_burst_limit` per `reveal_burst_window_seconds`
+    #: and `reveal_daily_limit` per UTC day. One step-up token lives about three minutes, so
+    #: without this a single stepped-up session could open every contact the gateway's own 300
+    #: requests a minute allowed. The budget is shared with lead-service's lead reveal (same
+    #: Redis keys): it bounds how much PII one person can read, not how often one route is
+    #: called. Raise it only with a reason.
+    reveal_burst_limit: int = 30
+    reveal_burst_window_seconds: int = 600
+    reveal_daily_limit: int = 200
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]
