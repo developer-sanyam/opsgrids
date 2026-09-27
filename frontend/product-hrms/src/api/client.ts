@@ -89,12 +89,14 @@ export interface ListEmployeesParams {
   status?: EmployeeStatus | "all" | undefined;
   page?: number | undefined;
   size?: number | undefined;
+  /** Aborts the request: the import/export dialog cancels a lookup, a load or an export with it. */
+  signal?: AbortSignal | undefined;
 }
 
 /** `GET /employees` — server search, status and department filter, real paging. There is no
  *  `sort` param on this endpoint; order is fixed server-side by `full_name`. */
 export async function listEmployees(params: ListEmployeesParams = {}): Promise<Paged<EmployeeOut>> {
-  const { q, departmentId, status, page = 1, size = 25 } = params;
+  const { q, departmentId, status, page = 1, size = 25, signal } = params;
   if (USE_FIXTURES) {
     const needle = q?.trim().toLowerCase() ?? "";
     const filtered = __listFixtureEmployees().filter((e) => {
@@ -124,7 +126,7 @@ export async function listEmployees(params: ListEmployeesParams = {}): Promise<P
     page,
     size,
   });
-  return apiRequest<Paged<EmployeeOut>>(`/employees${query}`);
+  return apiRequest<Paged<EmployeeOut>>(`/employees${query}`, { signal });
 }
 
 /** One employee, for the employee detail page (`/employees/:employeeId`). */

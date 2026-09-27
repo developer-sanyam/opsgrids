@@ -13,7 +13,7 @@ import type { ImportContext, LookupSet, ParsedRow, UpdateSpec } from "@opsgrids/
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { OrgUnitNode } from "@/api/orgUnits";
-import type { EmployeeOut, LocationOut } from "@/api/types";
+import type { EmployeeOut, EmployeePatch, LocationOut } from "@/api/types";
 
 import { departmentEntries } from "./departments";
 import { employeesEntity } from "./employees";
@@ -181,6 +181,26 @@ describe("the update spec", () => {
     });
   });
 
+  it("sends only keys the patch schema has, each named outright: the endpoint drops any other and answers 200", () => {
+    const schemaKeys = [
+      "full_name",
+      "designation",
+      "job_title",
+      "department_id",
+      "location_code",
+      "employment_type",
+      "work_mode",
+      "date_of_joining",
+      "date_of_exit",
+      "reporting_manager_id",
+      "dotted_line_manager_id",
+      "pii",
+    ] as const satisfies readonly (keyof EmployeePatch)[];
+    const sendable = spec().fields.filter((f) => f.immutable !== true);
+    expect(sendable.every((f) => f.field !== undefined)).toBe(true);
+    for (const field of sendable) expect(schemaKeys as readonly (string | undefined)[], field.column).toContain(field.field);
+  });
+
   it("sends each column under the key the endpoint reads it from", () => {
     const keys = Object.fromEntries(spec().fields.map((f) => [f.column, f.field ?? f.column]));
     expect(keys).toEqual({
@@ -211,8 +231,13 @@ describe("matching a row to a stored employee", () => {
     expect(matchRow(index, "emp-404", "EMP-0001")).toEqual({ kind: "unknown-id" });
   });
 
-  it("finds the employee by number, ignoring case and spacing", () => {
-    expect(matchRow(index, null, " emp-0002 ")).toMatchObject({ kind: "found", by: "key", item: other });
+  it("finds the employee by the number as it is stored, whatever spaces surround it", () => {
+    expect(matchRow(index, null, "EMP-0002")).toMatchObject({ kind: "found", by: "key", item: other });
+    expect(matchRow(index, null, " EMP-0002 ")).toMatchObject({ kind: "found", by: "key", item: other });
+  });
+
+  it("leaves the match rule at the engine's default, exact: the server keeps EMP-0002 and emp-0002 as two employees", () => {
+    expect(spec().keyMatch).toBeUndefined();
   });
 
   it("treats a number nobody has as a new employee", () => {
@@ -220,7 +245,7 @@ describe("matching a row to a stored employee", () => {
   });
 
   it("refuses a number two employees share instead of guessing", () => {
-    const twins = indexExisting(spec(), [STORED, employee({ id: "emp-3", employee_no: "emp-0001" })]);
+    const twins = indexExisting(spec(), [STORED, employee({ id: "emp-3", employee_no: "EMP-0001" })]);
     expect(matchRow(twins, null, "EMP-0001")).toEqual({ kind: "ambiguous" });
   });
 });
@@ -336,7 +361,7 @@ describe("what a row changes", () => {
   it("never sends the employee number, the status, the exit date or sealed details", async () => {
     const { body } = await sent({
       ...UNTOUCHED,
-      employee_no: "emp-0001",
+      employee_no: "EMP-0001",
       full_name: "Asha Iyer",
       status: "exited",
       date_of_exit: "2026-02-01",
@@ -408,9 +433,14 @@ describe("clearing with [clear]", () => {
 });
 
 describe("the employee number is immutable", () => {
-  it("accepts a cell that agrees with the stored number, in any case", () => {
-    expect(plan({ employee_no: "emp-0001" })).toBeNull();
-    expect(plan({ employee_no: "  EMP-0001 " })).toBeNull();
+  it("accepts a cell that agrees with the stored number", () => {
+    expect(plan({ employee_no: "EMP-0001" })).toBeNull();
+  });
+
+  it("refuses a Record ID row whose number is another employee's in different capitals: the server counts them as two numbers", () => {
+    expect(() => plan({ employee_no: "emp-0001" })).toThrow(
+      "Employee number cannot be changed once the record exists (it is 'EMP-0001')",
+    );
   });
 
   it("refuses a row that names an employee by Record ID and a different number, saying what is stored", () => {
@@ -476,10 +506,10 @@ describe("references that do not resolve", () => {
     );
   });
 
-  it("refuses a location when the caller cannot read the organisation's locations", () => {
+  it("refuses a location that is a change when the caller cannot read the organisation's locations", () => {
     const none: ImportContext = { lookups: { ...LOOKUPS, locations: makeLookup([]) }, signal };
-    expect(() => planUpdate(employeesEntity.columns, spec(), { location_code: "BLR-HQ" }, new Set(), STORED, none)).toThrow(
-      RowProblem,
+    expect(() => planUpdate(employeesEntity.columns, spec(), { location_code: "MUM-01" }, new Set(), STORED, none)).toThrow(
+      `'MUM-01' is not one of the accepted values for Location code (see the Lists sheet). ${column("location_code").lookupHintUpdate ?? ""}`,
     );
   });
 
@@ -488,6 +518,175 @@ describe("references that do not resolve", () => {
     expect(planUpdate(employeesEntity.columns, spec(), { full_name: "Asha Iyer" }, new Set(), STORED, none)?.changed).toEqual([
       "Full name",
     ]);
+  });
+});
+
+describe("a reference cell the row did not change", () => {
+  const inContext = (lookups: LookupSet): ImportContext => ({ lookups, signal });
+  const planIn = (lookups: LookupSet, row: ParsedRow, existing: EmployeeOut = STORED) =>
+    planUpdate(employeesEntity.columns, spec(), row, new Set(), existing, inContext(lookups));
+
+  it("is no change when the caller cannot read the locations and the cell is the stored code", () => {
+    const blind = { ...LOOKUPS, locations: makeLookup([]) };
+    expect(planIn(blind, { ...UNTOUCHED, location_code: "BLR-HQ" })).toBeNull();
+  });
+
+  it("does not hold the rest of that row back: the other changed cell is still sent", async () => {
+    const blind = { ...LOOKUPS, locations: makeLookup([]) };
+    const fetchMock = stubApi({ "PATCH /api/v1/employees/emp-1": () => json(200, STORED) });
+    const p = planIn(blind, { location_code: "BLR-HQ", designation: "Staff Engineer" });
+    expect(p?.changed).toEqual(["Designation"]);
+    await p?.run();
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ designation: "Staff Engineer" });
+  });
+
+  it("is no change when the stored location was deleted from the list", () => {
+    const gone = employee({ location_code: "OLD-9" });
+    expect(planIn(LOOKUPS, { ...UNTOUCHED, location_code: "OLD-9" }, gone)).toBeNull();
+  });
+
+  it("still refuses a location that is a change and is not in the list", () => {
+    const gone = employee({ location_code: "OLD-9" });
+    expect(() => planIn(LOOKUPS, { location_code: "Bangalore" }, gone)).toThrow("is not one of the accepted values");
+  });
+
+  it("still moves a deleted location to a listed one", () => {
+    const gone = employee({ location_code: "OLD-9" });
+    expect(planIn(LOOKUPS, { location_code: "mumbai" }, gone)?.changed).toEqual(["Location code"]);
+  });
+
+  describe("whose label two entries share", () => {
+    // Two employees whose numbers differ only in capitals: the manager list cannot tell them apart by label.
+    const lookups = {
+      ...LOOKUPS,
+      managers: makeLookup([
+        { label: "EMP-0007", value: "mgr-7" },
+        { label: "emp-0007", value: "mgr-70" },
+        { label: "EMP-0020", value: "mgr-20" },
+      ]),
+    };
+
+    it("is no change when the cell is exactly the label the record's own manager is exported under", () => {
+      expect(planIn(lookups, { reporting_manager: "EMP-0007" })).toBeNull();
+    });
+
+    it("is refused when it is a change: it could be either manager", () => {
+      expect(() => planIn(lookups, { reporting_manager: "emp-0007" })).toThrow(
+        "'emp-0007' matches more than one of the accepted values for Manager employee number, so it cannot be chosen.",
+      );
+    });
+
+    it("still moves the employee to a manager whose label is unique", () => {
+      expect(planIn(lookups, { reporting_manager: "EMP-0020" })?.changed).toEqual(["Manager employee number"]);
+    });
+  });
+
+  describe("whose department name is another department's code", () => {
+    const tree = [unit("a", "ENG"), { ...unit("b", "Other"), code: "ENG" }];
+    const lookups = { ...LOOKUPS, departments: makeLookup(departmentEntries(tree)) };
+    const inEng = employee({ department_id: "a" });
+
+    it("is no change when the cell is the label the export wrote", () => {
+      expect(planIn(lookups, { department: "ENG" }, inEng)).toBeNull();
+    });
+
+    it("is refused when a different record's row names that label: it could be either department", () => {
+      expect(() => planIn(lookups, { department: "ENG" }, employee({ department_id: "d-hr" }))).toThrow(
+        "'ENG' matches more than one of the accepted values for Department, so it cannot be chosen.",
+      );
+    });
+
+    it("moves the employee when the cell names the other department by its unique name", () => {
+      expect(planIn(lookups, { department: "Other" }, inEng)?.changed).toEqual(["Department"]);
+    });
+  });
+});
+
+describe("the joining date", () => {
+  const exited = employee({ id: "emp-9", employee_no: "EMP-0009", status: "exited", date_of_exit: "2026-01-31" });
+
+  it("refuses a date of joining after the date of exit: the server would only compare them if the exit date were sent too", () => {
+    expect(() => plan({ date_of_joining: "2026-02-15" }, [], exited)).toThrow(RowProblem);
+    expect(() => plan({ date_of_joining: "2026-02-15" }, [], exited)).toThrow(
+      "Date of joining cannot be after the date of exit, which is 2026-01-31.",
+    );
+  });
+
+  it("accepts a date of joining on or before the date of exit", () => {
+    expect(plan({ date_of_joining: "2026-01-31" }, [], exited)?.changed).toEqual(["Date of joining"]);
+    expect(plan({ date_of_joining: "2024-03-01" }, [], exited)?.changed).toEqual(["Date of joining"]);
+  });
+
+  it("does not judge an employee who has not exited, whatever date is given", () => {
+    expect(plan({ date_of_joining: "2031-01-01" })?.changed).toEqual(["Date of joining"]);
+  });
+
+  it("leaves an exited employee's untouched joining date alone, even one already after the exit", () => {
+    const odd = employee({ date_of_joining: "2026-03-01", date_of_exit: "2026-01-31", status: "exited" });
+    expect(plan({ date_of_joining: "2026-03-01", designation: "Lead" }, [], odd)?.changed).toEqual(["Designation"]);
+  });
+
+  it("does not stop a joining date being emptied", () => {
+    expect(plan({ date_of_joining: null }, ["date_of_joining"], exited)?.changed).toEqual(["Date of joining"]);
+  });
+});
+
+describe("what a row calls the employee it updates", () => {
+  it("is the employee number and the name, and nothing personal", () => {
+    const label = spec().recordLabel?.(employee({ employee_no: "EMP-0012", full_name: "Sameer Joshi" }));
+    expect(label).toBe("EMP-0012 · Sameer Joshi");
+  });
+
+  it("never carries a sealed or masked detail", () => {
+    const withPii = employee({
+      pii: {
+        date_of_birth: "••••-••-15",
+        personal_email: "s•••@example.com",
+        personal_phone: "•••• 3210",
+        pan: "•••••1234F",
+        aadhaar: "•••• •••• 9012",
+        uan: null,
+        esi: null,
+        bank_account: "•••• 6789",
+        bank_ifsc: "HDFC0001234",
+      },
+    });
+    expect(spec().recordLabel?.(withPii)).toBe("EMP-0001 · Asha Rao");
+  });
+});
+
+describe("cancelling the load", () => {
+  it("hands the dialog's signal to every page request, so closing the dialog aborts the one in flight", async () => {
+    const controller = new AbortController();
+    const seen: (AbortSignal | null | undefined)[] = [];
+    stubApi({
+      "GET /api/v1/employees": (url, init) => {
+        seen.push(init?.signal);
+        return url.searchParams.get("page") === "1"
+          ? json(200, { items: [employee({ id: "e-1" })], total: 2, page: 1, size: 200, pages: 2 })
+          : json(200, { items: [employee({ id: "e-2" })], total: 2, page: 2, size: 200, pages: 2 });
+      },
+    });
+    await spec().loadExisting({ lookups: LOOKUPS, signal: controller.signal });
+    expect(seen).toHaveLength(2);
+    expect(seen.every((given) => given === controller.signal)).toBe(true);
+  });
+
+  it("stops asking for pages once cancelled", async () => {
+    const controller = new AbortController();
+    let asked = 0;
+    stubApi({
+      "GET /api/v1/employees": () => {
+        asked += 1;
+        controller.abort();
+        return json(200, { items: [employee({ id: "e-1" })], total: 5, page: 1, size: 200, pages: 3 });
+      },
+    });
+    await expect(spec().loadExisting({ lookups: LOOKUPS, signal: controller.signal })).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(asked).toBe(1);
   });
 });
 

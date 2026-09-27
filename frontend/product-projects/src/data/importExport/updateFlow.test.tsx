@@ -186,10 +186,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function patched(code: string, body: Record<string, unknown>, refuse: Readonly<Record<string, Refusal>>): Response {
+function patched(
+  code: string,
+  body: Record<string, unknown>,
+  refuse: Readonly<Record<string, Refusal>>,
+  portfolio: readonly ProjectOut[],
+): Response {
   const refusal = refuse[code];
   if (refusal !== undefined) return problem(refusal.status, refusal.detail);
-  const found = PORTFOLIO.find((candidate) => candidate.code === code);
+  const found = portfolio.find((candidate) => candidate.code === code);
   if (found === undefined) return problem(404, "That project is not part of this organization");
   const dropped = Object.keys(body).find((key) => !PATCHABLE.has(key));
   if (dropped !== undefined) return problem(422, `The service would drop "${dropped}" and answer 200`);
@@ -213,7 +218,7 @@ function patched(code: string, body: Record<string, unknown>, refuse: Readonly<R
  * A gateway with the team, the portfolio, `PATCH /projects-workspace/projects/{code}` and
  * `POST /projects-workspace/projects`. A code in `refuse` answers with that refusal instead of saving.
  */
-function stubGateway(refuse: Readonly<Record<string, Refusal>> = {}) {
+function stubGateway(refuse: Readonly<Record<string, Refusal>> = {}, portfolio: readonly ProjectOut[] = PORTFOLIO) {
   const requests: Recorded[] = [];
   vi.stubGlobal(
     "fetch",
@@ -229,11 +234,13 @@ function stubGateway(refuse: Readonly<Record<string, Refusal>> = {}) {
         return ok(200, { items, total: TEAM.length, page, size: PER_PAGE, pages: Math.ceil(TEAM.length / PER_PAGE) });
       }
       if (method === "GET" && url.pathname === "/api/v1/projects-workspace/projects") {
-        const items = PORTFOLIO.slice((page - 1) * PER_PAGE, page * PER_PAGE);
-        return ok(200, { items, total: PORTFOLIO.length, page, size: PER_PAGE, pages: Math.ceil(PORTFOLIO.length / PER_PAGE) });
+        const items = portfolio.slice((page - 1) * PER_PAGE, page * PER_PAGE);
+        return ok(200, { items, total: portfolio.length, page, size: PER_PAGE, pages: Math.ceil(portfolio.length / PER_PAGE) });
       }
       const target = /^\/api\/v1\/projects-workspace\/projects\/([^/]+)$/.exec(url.pathname)?.[1];
-      if (method === "PATCH" && target !== undefined && isRecord(body)) return patched(decodeURIComponent(target), body, refuse);
+      if (method === "PATCH" && target !== undefined && isRecord(body)) {
+        return patched(decodeURIComponent(target), body, refuse, portfolio);
+      }
       if (method === "POST" && url.pathname === "/api/v1/projects-workspace/projects" && isRecord(body)) {
         return ok(201, project({ id: `new-${String(body.code)}`, code: String(body.code), name: String(body.name) }));
       }
@@ -370,8 +377,8 @@ describe("updating projects from Excel", () => {
 
       await reviewFor(
         await importFile([
-          // 2: found by its code in any case; the team size is what it already is.
-          { code: "prj-104", health: "On track", progress_pct: 50, team_size: 6 },
+          // 2: found by its code; the team size is what it already is.
+          { code: "PRJ-104", health: "On track", progress_pct: 50, team_size: 6 },
           // 3: found by Record ID; every cell agrees, the budget read in dinars with the currency blank.
           { id: "proj-2", name: "Kiosk pilot", budget: 12.345 },
           // 4: a budget with no currency is read in yen, the project's own, not in rupees; the owner by name.
@@ -494,7 +501,7 @@ describe("updating projects from Excel", () => {
           // 13: a team size past what the column holds.
           { code: "PRJ-104", team_size: 3000000000 },
           // 14: the same project as row 12.
-          { code: "prj-107", progress_pct: 10 },
+          { code: "PRJ-107", progress_pct: 10 },
         ]),
         user,
       );
@@ -573,8 +580,8 @@ describe("updating projects from Excel", () => {
           { code: "PRJ-106", budget: 1600000, spent: 300000 },
           // 4: a currency change that restates both amounts: all three are sent together.
           { code: "PRJ-104", currency: "usd", budget: 3000000, spent: 1350000 },
-          // 5: a currency change on a project with nothing entered: a zero has no unit to lose.
-          { code: "PRJ-107", currency: "eur", budget: 500 },
+          // 5: a currency change on a project with nothing entered: both amounts are still stated, the spend as 0.
+          { code: "PRJ-107", currency: "eur", budget: 500, spent: 0 },
         ]),
         user,
       );
@@ -717,6 +724,111 @@ describe("updating projects from Excel", () => {
       expect(figure("Updates")).toBe("0");
       expect(figure("Need fixing")).toBe("1");
       expect(gateway.writes()).toEqual([]);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "does not refuse a row for an owner it did not change, when two members share the name or the member has left",
+    async () => {
+      const gateway = stubGateway({}, [
+        project({ id: "proj-8", code: "PRJ-108", name: "Shared name", owner: { id: "p-04", name: "Sam Patel", role: "" } }),
+        project({ id: "proj-9", code: "PRJ-109", name: "Left the team", owner: { id: "p-99", name: "Priya Nair", role: "" } }),
+        project({ id: "proj-10", code: "PRJ-110", name: "Someone else's", owner: { id: "p-01", name: "Meera Iyer", role: "" } }),
+      ]);
+      const user = await openUpdateDialog();
+
+      await reviewFor(
+        await importFile([
+          // 2: an export sent back with one cell edited; two members are called Sam Patel.
+          { code: "PRJ-108", owner: "Sam Patel", health: "At risk" },
+          // 3: the owner has since left the team list.
+          { code: "PRJ-109", owner: "Priya Nair", health: "Delayed" },
+          // 4: the same name typed for a project owned by someone else: it could be either member.
+          { code: "PRJ-110", owner: "Sam Patel" },
+        ]),
+        user,
+      );
+
+      expect(figure("Updates")).toBe("2");
+      expect(figure("Need fixing")).toBe("1");
+      expect(within(previewRow(2)).getByText("Changes: Health")).toBeTruthy();
+      expect(within(previewRow(3)).getByText("Changes: Health")).toBeTruthy();
+      expect(
+        screen.getByText(
+          `'Sam Patel' matches more than one of the accepted values for Owner, so it cannot be chosen. ${ownerHintUpdate()}`,
+        ),
+      ).toBeTruthy();
+
+      await finishImport(user, "Import 2 rows");
+      expect(gateway.writes()).toEqual([
+        { method: "PATCH", path: `${PATCH}/PRJ-108`, body: { health: "at_risk" } },
+        { method: "PATCH", path: `${PATCH}/PRJ-109`, body: { health: "delayed" } },
+      ]);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "refuses a currency change that leaves an amount unstated even when that amount is 0, and accepts it stated",
+    async () => {
+      const gateway = stubGateway();
+      const user = await openUpdateDialog();
+
+      await reviewFor(
+        await importFile([
+          // 2: nothing entered on this project, and the sheet names a new currency with no amounts.
+          { code: "PRJ-107", currency: "EUR" },
+          // 3: the same change with both amounts stated: 12,345 minor units and nothing spent.
+          { code: "PRJ-105", currency: "USD", budget: 123.45, spent: 0 },
+        ]),
+        user,
+      );
+
+      expect(figure("Updates")).toBe("1");
+      expect(figure("Need fixing")).toBe("1");
+      expect(
+        screen.getByText(
+          "Currency would change from INR to EUR, but changing it does not convert amounts. Give Budget and Spent in EUR too, or leave Currency blank.",
+        ),
+      ).toBeTruthy();
+
+      await finishImport(user, "Import 1 row");
+      expect(gateway.writes()).toEqual([{ method: "PATCH", path: `${PATCH}/PRJ-105`, body: { currency: "USD" } }]);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "aborts the request in flight when the screen is left, instead of reading the team on",
+    async () => {
+      const listSignals: AbortSignal[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((input: string, init?: RequestInit) => {
+          const url = new URL(input, "http://gateway.test");
+          const given = init?.signal;
+          if (url.pathname.startsWith("/api/v1/projects-workspace/") && given instanceof AbortSignal) {
+            listSignals.push(given);
+            return new Promise<Response>((_, reject) => {
+              given.addEventListener("abort", () => reject(given.reason as Error), { once: true });
+            });
+          }
+          throw new Error(`Unexpected request: ${input}`);
+        }),
+      );
+      const user = userEvent.setup();
+      const view = render(<Harness />);
+      await user.click(screen.getByRole("button", { name: "Import / Export" }));
+      await screen.findByRole("dialog", { name: "Import / Export projects" });
+      await user.click(screen.getByRole("radio", { name: UPDATE_MODE }));
+      await user.upload(fileInput(), await importFile([{ code: "PRJ-104", health: "Delayed" }]));
+
+      await waitFor(() => expect(listSignals.length).toBeGreaterThan(0));
+      expect(listSignals.some((given) => given.aborted)).toBe(false);
+
+      view.unmount();
+      expect(listSignals.every((given) => given.aborted)).toBe(true);
     },
     TEST_TIMEOUT,
   );

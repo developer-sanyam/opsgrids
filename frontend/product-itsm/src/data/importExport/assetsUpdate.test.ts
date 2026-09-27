@@ -12,7 +12,7 @@ import { RowProblem, indexExisting, matchRow, planUpdate } from "@opsgrids/clien
 import type { ImportContext, ParsedRow, UpdateSpec } from "@opsgrids/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { Asset } from "@/api/types";
+import type { Asset, AssetUpdate } from "@/api/types";
 
 import { assetsEntity } from "./assets";
 
@@ -144,14 +144,42 @@ describe("the update spec", () => {
     expect(keys).toMatchObject({ cost: "cost_minor", cost_currency: "cost_currency", owner: "owner" });
     expect(keys).not.toHaveProperty("open_incidents");
   });
+
+  it("sends only keys the update schema has, each named outright, and never the tag", () => {
+    const schemaKeys = [
+      "name",
+      "type",
+      "status",
+      "owner",
+      "location",
+      "serial",
+      "purchased_at",
+      "warranty_expires_at",
+      "cost_minor",
+      "cost_currency",
+    ] as const satisfies readonly (keyof AssetUpdate)[];
+    const sendable = spec().fields.filter((f) => f.immutable !== true);
+    expect(sendable.every((f) => f.field !== undefined)).toBe(true);
+    expect(sendable.map((f) => f.field).sort()).toEqual([...schemaKeys].sort());
+  });
+
+  it("calls an asset by its tag and name", () => {
+    expect(spec().recordLabel?.(asset({ tag: "LT-2041", name: "Dell Latitude 7440" }))).toBe(
+      "LT-2041 · Dell Latitude 7440",
+    );
+  });
 });
 
 describe("matching a row to a stored asset", () => {
   const index = indexExisting(spec(), [STORED, asset({ tag: "SRV-0042" })]);
 
-  it("finds the asset by tag, ignoring case and spacing", () => {
-    expect(matchRow(index, null, "lt-2041")).toMatchObject({ kind: "found", by: "key", item: STORED });
+  it("finds the asset by the tag as it is stored, whatever spaces surround it", () => {
+    expect(matchRow(index, null, "LT-2041")).toMatchObject({ kind: "found", by: "key", item: STORED });
     expect(matchRow(index, null, " LT-2041 ")).toMatchObject({ kind: "found", by: "key" });
+  });
+
+  it("leaves the match rule at the engine's default, exact: the server keeps LT-2041 and lt-2041 as two assets", () => {
+    expect(spec().keyMatch).toBeUndefined();
   });
 
   it("treats a tag nobody has as a new asset", () => {
@@ -159,7 +187,7 @@ describe("matching a row to a stored asset", () => {
   });
 
   it("refuses a tag two assets share instead of guessing", () => {
-    const twins = indexExisting(spec(), [STORED, asset({ tag: "lt-2041" })]);
+    const twins = indexExisting(spec(), [STORED, asset({ name: "Another asset with the same tag" })]);
     expect(matchRow(twins, null, "LT-2041")).toEqual({ kind: "ambiguous" });
   });
 });
@@ -184,6 +212,38 @@ describe("loading the assets to compare with", () => {
       "GET /api/v1/itsm/assets": () => json(200, { items: [asset()], total: 4, page: 1, size: 200, pages: 1 }),
     });
     await expect(spec().loadExisting(context)).rejects.toThrow(/changed while it was being read/);
+  });
+
+  it("hands the dialog's signal to every page request, so leaving the screen aborts the one in flight", async () => {
+    const controller = new AbortController();
+    const seen: (AbortSignal | null | undefined)[] = [];
+    stubApi({
+      "GET /api/v1/itsm/assets": (url, init) => {
+        seen.push(init?.signal);
+        return url.searchParams.get("page") === "1"
+          ? json(200, { items: [asset({ tag: "A-1" })], total: 2, page: 1, size: 200, pages: 2 })
+          : json(200, { items: [asset({ tag: "A-2" })], total: 2, page: 2, size: 200, pages: 2 });
+      },
+    });
+    await spec().loadExisting({ lookups: {}, signal: controller.signal });
+    expect(seen).toHaveLength(2);
+    expect(seen.every((given) => given === controller.signal)).toBe(true);
+  });
+
+  it("stops asking for pages once cancelled", async () => {
+    const controller = new AbortController();
+    let asked = 0;
+    stubApi({
+      "GET /api/v1/itsm/assets": () => {
+        asked += 1;
+        controller.abort();
+        return json(200, { items: [asset({ tag: "A-1" })], total: 5, page: 1, size: 200, pages: 3 });
+      },
+    });
+    await expect(spec().loadExisting({ lookups: {}, signal: controller.signal })).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(asked).toBe(1);
   });
 });
 
@@ -229,14 +289,14 @@ describe("what a row changes", () => {
   });
 
   it("updates by the tag in the URL and never puts the tag in the body", async () => {
-    const { url, body } = await sent({ ...UNTOUCHED, tag: "lt-2041", name: "Renamed" });
+    const { url, body } = await sent({ ...UNTOUCHED, tag: "LT-2041", name: "Renamed" });
     expect(url).toBe("/api/v1/itsm/assets/LT-2041");
     expect(body).not.toHaveProperty("tag");
   });
 
-  it("addresses the asset by the tag it is stored under, whatever case the sheet wrote", async () => {
+  it("addresses the asset by the tag it is stored under", async () => {
     const stored = asset({ tag: "SRV-0042" });
-    const { url } = await sent({ tag: "srv-0042", name: "Rack server" }, [], stored);
+    const { url } = await sent({ tag: "SRV-0042", name: "Rack server" }, [], stored);
     expect(url).toBe("/api/v1/itsm/assets/SRV-0042");
   });
 
@@ -275,6 +335,17 @@ describe("the cost and its currency", () => {
 
   it("refuses the same change when it is the only cell on the row", () => {
     expect(() => plan({ tag: "LT-2041", cost_currency: "EUR" })).toThrow("Give Cost in EUR too");
+  });
+
+  it("refuses it for an asset whose stored cost is 0 too, so the rule does not depend on what is on file", () => {
+    const free = asset({ cost_minor: 0 });
+    expect(() => plan({ cost: null, cost_currency: "USD" }, [], free)).toThrow("Give Cost in USD too");
+  });
+
+  it("lets a stated cost of 0 change the currency of an asset that has none", async () => {
+    const free = asset({ cost_minor: 0 });
+    const { body } = await sent({ cost: 0, cost_currency: "USD" }, [], free);
+    expect(body).toEqual({ cost_currency: "USD" });
   });
 
   it("compares minor units as stored, whatever the exponent of the asset's currency", () => {
@@ -326,9 +397,14 @@ describe("clearing with [clear]", () => {
 });
 
 describe("the tag is immutable", () => {
-  it("accepts a cell that agrees with the stored tag, in any case", () => {
-    expect(plan({ tag: "lt-2041" })).toBeNull();
-    expect(plan({ tag: "  LT-2041 " })).toBeNull();
+  it("accepts a cell that agrees with the stored tag", () => {
+    expect(plan({ tag: "LT-2041" })).toBeNull();
+  });
+
+  it("refuses a cell that differs from the stored tag only in capitals: the server counts them as two tags", () => {
+    expect(() => plan({ tag: "lt-2041" })).toThrow(
+      "Asset tag cannot be changed once the record exists (it is 'LT-2041')",
+    );
   });
 
   it("refuses a different tag, saying what is stored", () => {

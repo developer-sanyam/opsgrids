@@ -1,4 +1,4 @@
-import { RowProblem, normaliseKey } from "@opsgrids/client";
+import { RowProblem } from "@opsgrids/client";
 import type { ParsedRow, ParsedValue } from "@opsgrids/client";
 
 /** A text cell, or null when it was left blank. */
@@ -44,15 +44,6 @@ export function labelOfOption(
 /** A stored text as an update reads it: an empty string is "nothing there", the same as null. */
 export function storedText(value: string | null): string | null {
   return value === null || value === "" ? null : value;
-}
-
-/**
- * Compares a cell with a stored key the way the engine matched the row to its record: ignoring
- * case and runs of spaces. An update that found `lt-2041` on the asset `LT-2041` must not then
- * refuse the row for "changing" its tag.
- */
-export function sameKey(cell: ParsedValue, stored: ParsedValue): boolean {
-  return typeof cell === "string" && typeof stored === "string" && normaliseKey(cell) === normaliseKey(stored);
 }
 
 /** A currency code as the API stores it: upper case. */
