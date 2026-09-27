@@ -1,4 +1,5 @@
 export { checkImportEntity } from "./checkEntity";
+export { unacceptedLookupValue } from "./coerce";
 export { collectPages, makeLookup } from "./lookups";
 export { majorToMinor, minorToMajor } from "./money";
 export { CLEAR_TOKEN, RowProblem, defineImportEntity } from "./types";
@@ -25,10 +26,12 @@ export type {
   LookupSet,
   ParsedRow,
   ParsedValue,
+  PreviewAction,
   PreviewRow,
   RowOutcome,
   RowStatus,
   SheetValue,
+  StepRunner,
   UpdateField,
   UpdatePlan,
   UpdateSpec,

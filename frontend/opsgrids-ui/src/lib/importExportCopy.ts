@@ -7,6 +7,7 @@
 
 import type {
   ImportExportMeta,
+  ImportExportMode,
   ImportExportPreview,
   ImportExportProgress,
   ImportExportSummary,
@@ -68,8 +69,35 @@ export function previewSentence(preview: ImportExportPreview): string {
     return "Your file is missing required columns, so nothing can be imported.";
   }
   if (preview.total === 0) return "No rows were found in this file.";
+  if (preview.mode === "addAndUpdate" && (preview.valid > 0 || preview.unchanged > 0)) {
+    return updatePreviewSentence(preview);
+  }
   const problems = preview.invalid === 0 ? "" : `, ${needsFixing(preview.invalid)}`;
   return `${rowsLabel(preview.valid)} ready to import${problems}.`;
+}
+
+/** The same breath for update mode, where a row may change a record, add one, or change nothing. */
+function updatePreviewSentence(preview: ImportExportPreview): string {
+  const rest = [
+    preview.unchanged > 0 ? `${formatCount(preview.unchanged)} unchanged` : null,
+    preview.invalid > 0 ? needsFixing(preview.invalid) : null,
+  ].filter((part) => part !== null);
+  if (preview.valid > 0) {
+    const kinds = [
+      preview.update > 0 ? `${formatCount(preview.update)} to update` : null,
+      preview.create > 0 ? `${formatCount(preview.create)} new` : null,
+    ].filter((part) => part !== null);
+    const tail = rest.length === 0 ? "" : `, ${rest.join(", ")}`;
+    return `${rowsLabel(preview.valid)} ready to import (${kinds.join(", ")})${tail}.`;
+  }
+  if (preview.invalid === 0) return "Nothing to change: every row already matches its record.";
+  return `No rows to send: ${rest.join(", ")}.`;
+}
+
+/** The import button's words: the rows it will send, or, in update mode with none, that there is nothing to change. */
+export function importButtonLabel(preview: ImportExportPreview): string {
+  if (preview.mode === "addAndUpdate" && preview.valid === 0) return "Nothing to change";
+  return `Import ${rowsLabel(preview.valid)}`;
 }
 
 function createdPhrase(created: number, meta: ImportExportMeta): string {
@@ -78,11 +106,39 @@ function createdPhrase(created: number, meta: ImportExportMeta): string {
   return `${formatCount(created)} ${meta.noun} were created`;
 }
 
+/** "3 updated, 2 created, 5 unchanged, 1 failed": what became of the rows of an update run, leaving out what none had. */
+function updateCounts(summary: ImportExportSummary, includeFailed: boolean): string {
+  return [
+    summary.updated > 0 ? `${formatCount(summary.updated)} updated` : null,
+    summary.created > 0 ? `${formatCount(summary.created)} created` : null,
+    summary.unchanged > 0 ? `${formatCount(summary.unchanged)} unchanged` : null,
+    includeFailed && summary.failed + summary.invalid > 0
+      ? `${formatCount(summary.failed + summary.invalid)} failed`
+      : null,
+  ]
+    .filter((part) => part !== null)
+    .join(", ");
+}
+
+/** A run that updated records, or found some that already matched: said in counts, not as "created". */
+function updateSentence(summary: ImportExportSummary): string {
+  const notImported = summary.failed + summary.invalid;
+  if (summary.cancelled) {
+    const saved = updateCounts({ ...summary, unchanged: 0 }, false);
+    return `${saved === "" ? "Nothing was changed." : `${saved} before it stopped.`} The remaining rows were not sent.`;
+  }
+  if (notImported > 0) return `${updateCounts(summary, true)}.`;
+  if (summary.updated + summary.created > 0) return `Everything imported. ${updateCounts(summary, false)}.`;
+  return "Nothing to change. Every row already matches its record, so nothing was sent.";
+}
+
 /**
  * The first thing the result says, under a heading that already says finished or cancelled. The
- * clean run says everything imported, and only then.
+ * clean run says everything imported, and only then. A run that updated records or found some that
+ * already matched says what became of every kind of row instead.
  */
 export function summarySentence(summary: ImportExportSummary, meta: ImportExportMeta): string {
+  if (summary.updated > 0 || summary.unchanged > 0) return updateSentence(summary);
   const notImported = summary.failed + summary.invalid;
   if (summary.cancelled) {
     const made = summary.created === 0 ? "Nothing was created." : `${createdPhrase(summary.created, meta)} before it stopped.`;
@@ -110,13 +166,37 @@ export function summarySentence(summary: ImportExportSummary, meta: ImportExport
  * not repeated here: a screen reader would read the same words twice, once as the announcement and
  * again as it reads the page. The heading the focus lands on already says finished or cancelled.
  */
-function resultAnnouncement(summary: ImportExportSummary): string {
-  return [
-    `${formatCount(summary.created)} created`,
-    `${formatCount(summary.skipped)} already existed`,
-    `${formatCount(summary.failed)} failed`,
-    `${formatCount(summary.invalid)} invalid`,
-  ].join(", ") + ".";
+function resultAnnouncement(summary: ImportExportSummary, mode: ImportExportMode): string {
+  // Updating never skips a row that exists (a 409 is a failure there), so it has no "already existed".
+  const counts =
+    mode === "addAndUpdate"
+      ? [
+          `${formatCount(summary.created)} created`,
+          `${formatCount(summary.updated)} updated`,
+          `${formatCount(summary.unchanged)} unchanged`,
+        ]
+      : [`${formatCount(summary.created)} created`, `${formatCount(summary.skipped)} already existed`];
+  return `${[...counts, `${formatCount(summary.failed)} failed`, `${formatCount(summary.invalid)} invalid`].join(", ")}.`;
+}
+
+/**
+ * What "Add new and update existing" does, in plain words: how a row finds its record, what a blank
+ * cell and `[clear]` mean, and what the update cannot protect against. Shown under the choice.
+ */
+export const UPDATE_RULES: readonly string[] = [
+  "Start from an export of the list. A row is matched to a record by its Record ID or by the list's unique key, such as a SKU or a code. A row that matches nothing is added as a new record.",
+  "A blank cell leaves the field as it is. Only the cells you fill in are compared with the record.",
+  "Type [clear] in a cell to empty a field. Not every field can be emptied.",
+  "Only fields that changed are sent. A row that changes nothing sends nothing.",
+  "The update cannot detect edits made by someone else after your file is read. Their changes to the same field would be overwritten.",
+  "Records you cannot see are not matched and will be added as new; adding one that already exists will fail as a duplicate.",
+];
+
+/** What the reading phase is doing: in update mode it also loads and compares against every stored record. */
+export function readingSentence(mode: ImportExportMode): string {
+  return mode === "addAndUpdate"
+    ? "Loading the current records and comparing every row with them. A large list takes a few seconds."
+    : "Checking the columns and every row. A large file takes a few seconds.";
 }
 
 function importingMessage(progress: ImportExportProgress | null): string {
@@ -149,7 +229,7 @@ export function liveMessage(state: ImportExportViewState): string {
     case "importing":
       return importingMessage(state.progress);
     case "done":
-      return state.summary === null ? "" : resultAnnouncement(state.summary);
+      return state.summary === null ? "" : resultAnnouncement(state.summary, state.mode);
     // The error is an alert and announces itself; saying it here too would read it twice.
     case "error":
       return "";

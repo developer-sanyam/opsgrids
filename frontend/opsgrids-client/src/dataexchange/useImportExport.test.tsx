@@ -6,7 +6,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../http";
 import { resetPageBudgetForTests } from "./lookups";
 import { buildSampleWorkbook } from "./template";
-import { fileOf, fileWithRows, loadBlob, makeProductEntity, productColumns, productLookups } from "./testkit";
+import {
+  fileOf,
+  fileWithRows,
+  loadBlob,
+  makeProductEntity,
+  makeProductUpdate,
+  productColumns,
+  productLookups,
+  storedProduct,
+} from "./testkit";
 import type { ProductFilters, ProductItem, ProductPayload } from "./testkit";
 import type { ExportPage, ImportSummary } from "./types";
 import { useImportExport } from "./useImportExport";
@@ -118,8 +127,9 @@ describe("useImportExport: meta and identity", () => {
       exportMaxRows: 10_000,
       requiredHeaders: ["SKU", "Name"],
       canExport: true,
+      canUpdate: false,
     });
-    expect(result.current.state).toMatchObject({ phase: "menu", error: null, preview: null, summary: null });
+    expect(result.current.state).toMatchObject({ phase: "menu", mode: "add", error: null, preview: null, summary: null });
   });
 
   it("uses the entity's own limits and reports when it cannot export", () => {
@@ -988,5 +998,45 @@ describe("useImportExport: React strict mode", () => {
       await result.current.actions.downloadTemplate();
     });
     expect(downloads).toHaveLength(1);
+  });
+});
+
+describe("useImportExport: update mode", () => {
+  const updatable = (send: () => Promise<void> = () => Promise.resolve()) =>
+    makeProductEntity({ recordIdKey: "id", update: makeProductUpdate({ items: [storedProduct(1)], send }) });
+  const updateRows = [["p-1", "SKU-1", "Bracket"]];
+
+  it("offers the mode only for a list that has an update spec, and starts in add", () => {
+    const { result } = renderHook(() => useImportExport(updatable()));
+    expect(result.current.meta.canUpdate).toBe(true);
+    expect(result.current.state.mode).toBe("add");
+    expect(renderHook(() => useImportExport(makeProductEntity())).result.current.meta.canUpdate).toBe(false);
+  });
+
+  it("switches the mode, checks the file that is open again, and reports what an import updated", async () => {
+    const onImported = vi.fn<(summary: ImportSummary) => void>();
+    const { result } = renderHook(() => useImportExport(updatable(), { onImported }));
+    await open(result, await fileWithRows(["Id", "SKU *", "Name *"], updateRows));
+    expect(result.current.state.preview).toMatchObject({ mode: "add", valid: 0, invalid: 1 });
+
+    await act(async () => {
+      await result.current.actions.setMode("addAndUpdate");
+    });
+    expect(result.current.state.mode).toBe("addAndUpdate");
+    expect(result.current.state.preview).toMatchObject({ mode: "addAndUpdate", update: 1, valid: 1 });
+
+    await settle(result.current.actions.startImport());
+    expect(result.current.state.summary).toMatchObject({ updated: 1, created: 0 });
+    expect(onImported).toHaveBeenCalledTimes(1);
+    expect(onImported.mock.calls[0]?.[0]).toMatchObject({ updated: 1 });
+  });
+
+  it("gives the actions one identity across the mode change", async () => {
+    const { result } = renderHook(() => useImportExport(updatable()));
+    const before = result.current.actions;
+    await act(async () => {
+      await result.current.actions.setMode("addAndUpdate");
+    });
+    expect(result.current.actions).toBe(before);
   });
 });

@@ -19,8 +19,10 @@ import { ImportExportDialog } from "./ImportExportDialog";
 export type {
   ImportExportButtonProps,
   ImportExportMeta,
+  ImportExportMode,
   ImportExportPhase,
   ImportExportPreview,
+  ImportExportPreviewAction,
   ImportExportPreviewRow,
   ImportExportProgress,
   ImportExportRowOutcome,

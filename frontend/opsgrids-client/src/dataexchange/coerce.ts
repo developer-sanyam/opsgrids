@@ -19,8 +19,9 @@ import {
 import type { AnyEntity, CellInput } from "./cells";
 import { EMAIL_MAX, normaliseEmail } from "./email";
 import { compareDecimals, parseMajorUnits, plainNumberString, describeMoneyProblem } from "./money";
-import type { ImportColumn, ImportContext, LookupSet, ParsedRow, ParsedValue } from "./types";
+import type { ImportColumn, ImportContext, Lookup, LookupSet, ParsedRow, ParsedValue } from "./types";
 import { RowProblem } from "./types";
+import { isClearToken } from "./update";
 
 export type Coerced = { ok: true; value: ParsedValue } | { ok: false; error: string };
 
@@ -29,6 +30,11 @@ export interface CoerceEnv {
   lookups: LookupSet;
   /** money: the currency the row's amount is in. Defaults to the column's `defaultCurrency`, then INR. */
   currency?: string | undefined;
+  /** Said after "<Header> is required" when a cell is missing: which rows need it, in update mode. */
+  requiredNote?: string | undefined;
+  /** A lookup column's cell is plain text, not checked against the lookup: the row updates a record,
+   *  and the update field's own `resolve` judges the label (it may accept what the record already has). */
+  plainLookups?: boolean | undefined;
 }
 
 const DEFAULT_CURRENCY = "INR";
@@ -39,6 +45,8 @@ const FALSE_WORDS = new Set(["no", "n", "false", "0"]);
 
 const ok = (value: ParsedValue): Coerced => ({ ok: true, value });
 const fail = (error: string): Coerced => ({ ok: false, error });
+const required = (column: ImportColumn, env: CoerceEnv): Coerced =>
+  fail(`${column.header} is required${env.requiredNote ?? ""}`);
 
 function quote(text: string): string {
   return `'${text.length > 40 ? `${text.slice(0, 37)}…` : text}'`;
@@ -123,8 +131,25 @@ function coerceText(column: ImportColumn, cell: CellInput, env: CoerceEnv): Coer
       return fail(`${header} is not in the expected format${hint}`);
     }
   }
-  if (column.lookup !== undefined) return coerceLookup(column, column.lookup, text, env);
+  if (column.lookup !== undefined && env.plainLookups !== true) return coerceLookup(column, column.lookup, text, env);
   return ok(text);
+}
+
+/**
+ * The sentence for a lookup label the list does not accept (unknown, or naming more than one entry),
+ * ending in the column's hint for putting it right. `updating` picks `lookupHintUpdate` where the
+ * column has one: on a row that updates a record, leaving a cell blank means leaving the field alone,
+ * which the add-mode hint ("leave it blank to assign it to yourself") may contradict.
+ *
+ * An update field's `resolve` is where a matched row's lookup label is judged, so it uses this too.
+ */
+export function unacceptedLookupValue(column: ImportColumn, text: string, lookup: Lookup, updating: boolean): string {
+  const written = updating ? (column.lookupHintUpdate ?? column.lookupHint) : column.lookupHint;
+  const hint = written === undefined ? "" : ` ${written}`;
+  if (lookup.isAmbiguous(text)) {
+    return `${quote(text)} matches more than one of the accepted values for ${column.header}, so it cannot be chosen.${hint}`;
+  }
+  return `${quote(text)} is not one of the accepted values for ${column.header} (see the Lists sheet).${hint}`;
 }
 
 function coerceLookup(column: ImportColumn, name: string, text: string, env: CoerceEnv): Coerced {
@@ -133,13 +158,7 @@ function coerceLookup(column: ImportColumn, name: string, text: string, env: Coe
     return fail(`The accepted values for ${column.header} could not be loaded, so it cannot be checked`);
   }
   if (lookup.resolve(text) !== undefined) return ok(text);
-  const hint = column.lookupHint === undefined ? "" : ` ${column.lookupHint}`;
-  if (lookup.isAmbiguous(text)) {
-    return fail(
-      `${quote(text)} matches more than one of the accepted values for ${column.header}, so it cannot be chosen.${hint}`,
-    );
-  }
-  return fail(`${quote(text)} is not one of the accepted values for ${column.header} (see the Lists sheet).${hint}`);
+  return fail(unacceptedLookupValue(column, text, lookup, false));
 }
 
 function coerceInteger(column: ImportColumn, cell: CellInput): Coerced {
@@ -256,7 +275,7 @@ function coercePhone(column: ImportColumn, cell: CellInput): Coerced {
 export function coerceValue(column: ImportColumn, cell: CellInput | undefined, env: CoerceEnv): Coerced {
   if (cell instanceof InvalidCell) return fail(`${column.header} ${cell.reason}`);
   if (cell === undefined || cell === null || isBlank(cell)) {
-    return column.required === true ? fail(`${column.header} is required`) : ok(null);
+    return column.required === true ? required(column, env) : ok(null);
   }
   switch (column.kind) {
     case "text":
@@ -286,14 +305,19 @@ function fallbackCurrency(entity: Pick<AnyEntity, "columns">, money: ImportColum
   return (money.defaultCurrency ?? holder?.defaultCurrency ?? DEFAULT_CURRENCY).toUpperCase();
 }
 
-/** The currency named by one row: its own cell, else the fallback. An error sentence when the cell is unusable. */
+/**
+ * The currency named by one row: its own cell, else the fallback. An error sentence when the cell
+ * is unusable. A row that updates a record may leave the currency blank even where the column is
+ * required (blank leaves the field alone), so `allowBlank` skips that check.
+ */
 function resolveCurrency(
   holder: ImportColumn,
   cell: CellInput | undefined,
   fallback: string,
   env: CoerceEnv,
+  allowBlank: boolean,
 ): Coerced {
-  if (isBlank(cell)) return holder.required === true ? fail(`${holder.header} is required`) : ok(fallback);
+  if (isBlank(cell)) return holder.required === true && !allowBlank ? required(holder, env) : ok(fallback);
   const coerced = coerceValue(holder, cell, env);
   if (!coerced.ok) return coerced;
   const code = String(coerced.value).toUpperCase();
@@ -303,20 +327,65 @@ function resolveCurrency(
   return ok(code);
 }
 
+
+/** What a row is for. A row that names an existing record is coerced differently from one that creates a record. */
+export type RowIntent =
+  | {
+      kind: "create";
+      /** The dialog is in update mode and this row matched no record: a missing required cell is
+       *  then said to be needed "to add a new record", since a row that updates one needs none. */
+      whileUpdating?: boolean;
+    }
+  | {
+      kind: "update";
+      /** The stored record's currency (`UpdateSpec.currencyOf`), used for a money cell when the row names none. */
+      storedCurrency: string | null;
+    };
+
+export const CLEAR_REFUSED_MESSAGE = "[clear] only works when updating existing records";
+
+export interface CoercedRow {
+  row: ParsedRow;
+  errors: string[];
+  /** Update rows: the columns whose cell said `[clear]`. They are `null` in `row`, like a blank cell,
+   *  but a blank cell leaves the field alone and these empty it. */
+  cleared: ReadonlySet<string>;
+}
+
 /**
  * Coerces every importable column of one sheet row, collecting every column's error rather than
- * stopping at the first, then runs the entity's cross-column `validateRow` when the columns are
- * clean (a rule over half-parsed values would only repeat the errors already listed).
+ * stopping at the first, then (for a row that creates a record) runs the entity's cross-column
+ * `validateRow` when the columns are clean (a rule over half-parsed values would only repeat the
+ * errors already listed).
+ *
+ * A row that updates a record differs in four ways: `[clear]` is read before the cell's own type
+ * (and empties the field), a blank cell is `null` and never "required" (blank leaves the field
+ * alone), a blank currency cell stays `null` instead of becoming the default currency, and a money
+ * cell with no currency is converted in the stored record's currency.
  */
 export function coerceRow(
   entity: AnyEntity,
   cells: Readonly<Record<string, CellInput>>,
   ctx: ImportContext,
-): { row: ParsedRow; errors: string[] } {
+  intent: RowIntent = { kind: "create" },
+): CoercedRow {
   const columns = importableColumns(entity);
-  const env: CoerceEnv = { lookups: ctx.lookups };
+  const updating = intent.kind === "update";
+  const env: CoerceEnv = {
+    lookups: ctx.lookups,
+    ...(intent.kind === "create" && intent.whileUpdating === true ? { requiredNote: " to add a new record" } : {}),
+    ...(updating ? { plainLookups: true } : {}),
+  };
   const errors: string[] = [];
   const row: Record<string, ParsedValue> = {};
+  const cleared = new Set<string>();
+
+  /** The cell as a value is read from it: `[clear]` is not a value. */
+  const valueCell = (key: string): CellInput | undefined => (isClearToken(cells[key]) ? null : cells[key]);
+  const currencyFor = (money: ImportColumn): string => {
+    const stored = intent.kind === "update" ? intent.storedCurrency : null;
+    return stored !== null && stored.trim() !== "" ? stored.trim().toUpperCase() : fallbackCurrency(entity, money);
+  };
 
   // Currency columns first: every money column needs its row's currency before it can convert.
   const currencies = new Map<string, Coerced>();
@@ -324,12 +393,23 @@ export function coerceRow(
     const key = money.currencyKey ?? "currency";
     const holder = columns.find((column) => column.key === key);
     if (holder !== undefined && !currencies.has(key)) {
-      currencies.set(key, resolveCurrency(holder, cells[key], fallbackCurrency(entity, money), env));
+      currencies.set(key, resolveCurrency(holder, valueCell(key), currencyFor(money), env, updating));
     }
   }
 
+  let clearRefused = false;
   for (const column of columns) {
     const cell = cells[column.key];
+    if (isClearToken(cell)) {
+      row[column.key] = null;
+      if (updating) cleared.add(column.key);
+      else clearRefused = true;
+      continue;
+    }
+    if (updating && isBlank(cell)) {
+      row[column.key] = null;
+      continue;
+    }
     let result: Coerced;
     const held = currencies.get(column.key);
     if (held !== undefined) {
@@ -341,7 +421,7 @@ export function coerceRow(
         row[column.key] = null;
         continue;
       }
-      const currency = named !== undefined && named.ok ? String(named.value) : fallbackCurrency(entity, column);
+      const currency = named !== undefined && named.ok ? String(named.value) : currencyFor(column);
       result = coerceValue(column, cell, { ...env, currency });
     } else {
       result = coerceValue(column, cell, env);
@@ -353,8 +433,9 @@ export function coerceRow(
       errors.push(result.error);
     }
   }
+  if (clearRefused) errors.push(CLEAR_REFUSED_MESSAGE);
 
-  if (errors.length === 0 && entity.validateRow !== undefined) {
+  if (errors.length === 0 && !updating && entity.validateRow !== undefined) {
     try {
       const problem = entity.validateRow(row, ctx);
       if (problem !== null) errors.push(problem);
@@ -362,5 +443,5 @@ export function coerceRow(
       errors.push(error instanceof RowProblem ? error.message : "This row could not be checked");
     }
   }
-  return { row, errors };
+  return { row, errors, cleared };
 }

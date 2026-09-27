@@ -1,12 +1,14 @@
 /**
  * Data for the Import / Export button's stories and tests: one plausible session per phase, all
- * about companies, shaped exactly like the state the data-exchange hook reports. No network and no
- * spreadsheet, so the same pixels and the same assertions on every run.
+ * about companies (and, for the update-mode stories, inventory items), shaped exactly like the state
+ * the data-exchange hook reports. No network and no spreadsheet, so the same pixels and the same
+ * assertions on every run.
  */
 
 import type {
   ImportExportMeta,
   ImportExportPreview,
+  ImportExportPreviewAction,
   ImportExportPreviewRow,
   ImportExportProgress,
   ImportExportRowOutcome,
@@ -23,11 +25,24 @@ export const META: ImportExportMeta = {
   exportMaxRows: 10_000,
   requiredHeaders: ["Name"],
   canExport: true,
+  canUpdate: false,
+};
+
+/** A list that can be updated from a sheet, so the dialog offers "Add new and update existing". */
+export const UPDATE_META: ImportExportMeta = {
+  noun: "items",
+  nounSingular: "item",
+  maxRows: 1000,
+  exportMaxRows: 10_000,
+  requiredHeaders: ["SKU", "Name"],
+  canExport: true,
+  canUpdate: true,
 };
 
 /** The dialog as it opens: nothing chosen, nothing running. */
 export const MENU_STATE: ImportExportViewState = {
   phase: "menu",
+  mode: "add",
   error: null,
   preview: null,
   progress: null,
@@ -51,21 +66,29 @@ function previewRow(
   extra: { error?: string; sample?: boolean } = {},
 ): ImportExportPreviewRow {
   const [name, industry, city, website, employees] = values;
+  const action: ImportExportPreviewAction =
+    extra.error !== undefined ? "invalid" : extra.sample === true ? "sample" : "create";
   return {
     row,
     values: { name, industry, city, website, employees },
     error: extra.error ?? null,
     sample: extra.sample ?? false,
+    action,
+    changes: [],
   };
 }
 
 /** Three rows that cannot be sent (listed first, as the engine lists them), two sample rows, five good ones. */
 export const PREVIEW_WITH_ERRORS: ImportExportPreview = {
   fileName: "companies-september.xlsx",
+  mode: "add",
   total: 10,
   valid: 5,
   invalid: 3,
   sample: 2,
+  create: 5,
+  update: 0,
+  unchanged: 0,
   columns: COLUMNS,
   rows: [
     previewRow(6, ["", "Freight", "Mumbai", "https://bluefin.example", "48"], { error: "Name is required." }),
@@ -85,15 +108,20 @@ export const PREVIEW_WITH_ERRORS: ImportExportPreview = {
   ],
   unknownHeaders: ["Nickname"],
   missingRequired: [],
+  matchWarning: null,
 };
 
 /** The file has no Name column, so no row can be sent, whatever else is in it. */
 export const PREVIEW_MISSING_COLUMNS: ImportExportPreview = {
   fileName: "customer-list.xlsx",
+  mode: "add",
   total: 4,
   valid: 0,
   invalid: 4,
   sample: 0,
+  create: 0,
+  update: 0,
+  unchanged: 0,
   columns: COLUMNS.filter((column) => column.key !== "name"),
   rows: [
     previewRow(2, ["", "Manufacturing", "Pune", "https://acme.example", "240"], { error: "Name is required." }),
@@ -103,12 +131,143 @@ export const PREVIEW_MISSING_COLUMNS: ImportExportPreview = {
   ],
   unknownHeaders: ["Nickname", "Account manager"],
   missingRequired: ["Name"],
+  matchWarning: null,
+};
+
+const ITEM_COLUMNS = [
+  { key: "sku", header: "SKU" },
+  { key: "name", header: "Name" },
+  { key: "price", header: "Price" },
+  { key: "quantity", header: "Quantity" },
+] as const;
+
+function itemRow(
+  row: number,
+  values: [sku: string, name: string, price: string, quantity: string],
+  action: ImportExportPreviewAction,
+  extra: { error?: string; changes?: readonly string[] } = {},
+): ImportExportPreviewRow {
+  const [sku, name, price, quantity] = values;
+  return {
+    row,
+    values: { sku, name, price, quantity },
+    error: extra.error ?? null,
+    sample: action === "sample",
+    action,
+    changes: extra.changes ?? [],
+  };
+}
+
+/** Update mode on a real file: three rows change a record, two add one, two already match, one is refused. */
+export const PREVIEW_UPDATE_MIXED: ImportExportPreview = {
+  fileName: "items-september.xlsx",
+  mode: "addAndUpdate",
+  total: 8,
+  valid: 5,
+  invalid: 1,
+  sample: 0,
+  create: 2,
+  update: 3,
+  unchanged: 2,
+  columns: ITEM_COLUMNS,
+  rows: [
+    itemRow(6, ["BRK-200", "Bracket, galvanised", "980", ""], "invalid", {
+      error: "More than one record has that SKU, so the row cannot say which to update.",
+    }),
+    itemRow(2, ["BRK-100", "Steel bracket", "1499.50", ""], "update", { changes: ["Price"] }),
+    itemRow(3, ["BRK-110", "Steel bracket, white", "", "40"], "update", { changes: ["Quantity"] }),
+    itemRow(4, ["BRK-120", "Bracket, zinc", "12", ""], "update", { changes: ["Name", "Price"] }),
+    itemRow(5, ["NUT-500", "Hex nut M8", "2.50", "5000"], "create"),
+    itemRow(7, ["NUT-510", "Hex nut M10", "3", "2500"], "create"),
+    itemRow(8, ["BRK-130", "Bracket, black", "", ""], "unchanged"),
+    itemRow(9, ["BRK-140", "Bracket, brass", "", ""], "unchanged"),
+  ],
+  unknownHeaders: [],
+  missingRequired: [],
+  matchWarning: null,
+};
+
+/** Every row already matches its record: there is nothing to send, and the button says so. */
+export const PREVIEW_UPDATE_ALL_UNCHANGED: ImportExportPreview = {
+  fileName: "items-checked.xlsx",
+  mode: "addAndUpdate",
+  total: 4,
+  valid: 0,
+  invalid: 0,
+  sample: 0,
+  create: 0,
+  update: 0,
+  unchanged: 4,
+  columns: ITEM_COLUMNS,
+  rows: [
+    itemRow(2, ["BRK-100", "Steel bracket", "1499.50", "120"], "unchanged"),
+    itemRow(3, ["BRK-110", "Steel bracket, white", "18", "40"], "unchanged"),
+    itemRow(4, ["BRK-120", "Bracket, zinc", "12", "300"], "unchanged"),
+    itemRow(5, ["BRK-130", "Bracket, black", "", ""], "unchanged"),
+  ],
+  unknownHeaders: [],
+  missingRequired: [],
+  matchWarning: null,
+};
+
+/** The ways an update row is refused before anything is sent, each with its reason. */
+export const PREVIEW_UPDATE_REFUSALS: ImportExportPreview = {
+  fileName: "items-from-export.xlsx",
+  mode: "addAndUpdate",
+  total: 5,
+  valid: 1,
+  invalid: 4,
+  sample: 0,
+  create: 0,
+  update: 1,
+  unchanged: 0,
+  columns: ITEM_COLUMNS,
+  rows: [
+    itemRow(3, ["BRK-110", "[clear]", "", ""], "invalid", { error: "Name cannot be cleared" }),
+    itemRow(4, ["BRK-999", "Steel bracket", "1499.50", ""], "invalid", {
+      error: "That Record ID is not in this list: the record may have been deleted, or the file came from another organisation.",
+    }),
+    itemRow(6, ["BRK-101", "Steel bracket", "", ""], "invalid", {
+      error: "SKU cannot be changed once the record exists (it is 'BRK-100'). Leave the cell as it is, or blank.",
+    }),
+    itemRow(7, ["BRK-100", "Steel bracket", "1400", ""], "invalid", {
+      error: "This row updates the same record as row 2. Keep only one of the two rows.",
+    }),
+    itemRow(2, ["BRK-100", "Steel bracket", "1499.50", ""], "update", { changes: ["Price"] }),
+  ],
+  unknownHeaders: [],
+  missingRequired: [],
+  matchWarning: null,
+};
+
+/** Update mode was chosen but the file has nothing that names a record: every row would be added as new. */
+export const PREVIEW_UPDATE_CANNOT_MATCH: ImportExportPreview = {
+  fileName: "prices.xlsx",
+  mode: "addAndUpdate",
+  total: 3,
+  valid: 0,
+  invalid: 3,
+  sample: 0,
+  create: 0,
+  update: 0,
+  unchanged: 0,
+  columns: ITEM_COLUMNS.filter((column) => column.key === "name" || column.key === "price"),
+  rows: [
+    itemRow(2, ["", "Steel bracket", "1499.50", ""], "invalid", { error: "SKU is required to add a new record" }),
+    itemRow(3, ["", "Steel bracket, white", "18", ""], "invalid", { error: "SKU is required to add a new record" }),
+    itemRow(4, ["", "Bracket, zinc", "12", ""], "invalid", { error: "SKU is required to add a new record" }),
+  ],
+  unknownHeaders: [],
+  missingRequired: [],
+  matchWarning:
+    "This file has no Record ID or SKU column, so it cannot update existing records; every row would be added as new.",
 };
 
 export const PROGRESS_RUNNING: ImportExportProgress = {
   done: 46,
   total: 120,
   created: 40,
+  updated: 0,
   skipped: 4,
   failed: 2,
   waiting: null,
@@ -117,6 +276,17 @@ export const PROGRESS_RUNNING: ImportExportProgress = {
 export const PROGRESS_WAITING: ImportExportProgress = {
   ...PROGRESS_RUNNING,
   waiting: { reason: "rate-limit", seconds: 42 },
+};
+
+/** An update run part way: new records and changed ones both count, and nothing is ever skipped. */
+export const PROGRESS_UPDATING: ImportExportProgress = {
+  done: 46,
+  total: 120,
+  created: 6,
+  updated: 38,
+  skipped: 0,
+  failed: 2,
+  waiting: null,
 };
 
 const NAMES = [
@@ -141,6 +311,8 @@ function created(count: number): ImportExportRowOutcome[] {
 /** Every row went in: no problem rows to list, so the result says everything imported. */
 export const SUMMARY_CLEAN: ImportExportSummary = {
   created: 6,
+  updated: 0,
+  unchanged: 0,
   skipped: 0,
   failed: 0,
   invalid: 0,
@@ -150,6 +322,8 @@ export const SUMMARY_CLEAN: ImportExportSummary = {
 
 export const SUMMARY_WITH_PROBLEMS: ImportExportSummary = {
   created: 4,
+  updated: 0,
+  unchanged: 0,
   skipped: 2,
   failed: 2,
   invalid: 1,
@@ -187,11 +361,55 @@ export const SUMMARY_WITH_PROBLEMS: ImportExportSummary = {
 /** Stopped by the user after two rows; the rows after the last one sent are not in the list. */
 export const SUMMARY_CANCELLED: ImportExportSummary = {
   created: 2,
+  updated: 0,
+  unchanged: 0,
   skipped: 0,
   failed: 0,
   invalid: 0,
   cancelled: true,
   outcomes: created(2),
+};
+
+/** An update run that went through: three rows changed, two were added, five already matched. */
+export const SUMMARY_UPDATE_CLEAN: ImportExportSummary = {
+  created: 2,
+  updated: 3,
+  unchanged: 5,
+  skipped: 0,
+  failed: 0,
+  invalid: 0,
+  cancelled: false,
+  outcomes: [
+    { row: 2, status: "updated", message: null, label: "BRK-100", changes: ["Price"] },
+    { row: 3, status: "updated", message: null, label: "BRK-110", changes: ["Quantity"] },
+    { row: 4, status: "updated", message: null, label: "BRK-120", changes: ["Name", "Price"] },
+    { row: 5, status: "created", message: null, id: "item-501", label: "NUT-500" },
+    { row: 6, status: "created", message: null, id: "item-502", label: "NUT-510" },
+    ...[7, 8, 9, 10, 11].map(
+      (row): ImportExportRowOutcome => ({
+        row,
+        status: "unchanged",
+        message: "Every cell already matches the record, so nothing was sent.",
+        label: `BRK-${row + 120}`,
+      }),
+    ),
+  ],
+};
+
+/** Three updated, two created, five unchanged, and one the server refused with a collision. */
+export const SUMMARY_UPDATE_WITH_FAILURES: ImportExportSummary = {
+  ...SUMMARY_UPDATE_CLEAN,
+  failed: 1,
+  outcomes: [
+    ...SUMMARY_UPDATE_CLEAN.outcomes,
+    {
+      row: 12,
+      status: "failed",
+      message: "An item named 'Steel bracket, white' already exists.",
+      label: "BRK-150",
+      changes: ["Name"],
+    },
+  ],
 };
 
 export function stateFor(overrides: Partial<ImportExportViewState>): ImportExportViewState {

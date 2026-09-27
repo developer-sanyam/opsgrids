@@ -143,6 +143,7 @@ export {
   minorToMajor,
   normaliseKey,
   planUpdate,
+  unacceptedLookupValue,
   useImportExport,
 } from "./dataexchange";
 export type {
@@ -167,10 +168,12 @@ export type {
   LookupSet,
   ParsedRow,
   ParsedValue,
+  PreviewAction,
   PreviewRow,
   RowOutcome,
   RowStatus,
   SheetValue,
+  StepRunner,
   UpdateField,
   UpdatePlan,
   UpdateSpec,
