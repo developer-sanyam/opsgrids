@@ -22,14 +22,18 @@ import { buildSampleWorkbook, sampleFileName } from "./template";
 import type {
   DataExchangeActions,
   DataExchangeState,
+  ImportMode,
   ImportProgress,
   ImportSummary,
   LookupSet,
+  UpdateSpec,
 } from "./types";
-import { WorkbookReadError, readWorkbook } from "./workbook";
+import { DEFAULT_EXPORT_MAX_ROWS, WorkbookReadError, readWorkbook } from "./workbook";
+import type { ParsedSheet } from "./workbook";
 
 export const IDLE_STATE: DataExchangeState = {
   phase: "menu",
+  mode: "add",
   error: null,
   preview: null,
   progress: null,
@@ -40,16 +44,27 @@ export const IDLE_STATE: DataExchangeState = {
 };
 
 const EXPORT_PAGE_SIZE = 200;
-export const DEFAULT_EXPORT_MAX_ROWS = 10_000;
 
 export interface ExchangeHost {
   entity(): AnyEntity;
   /** The screen's current list filters, read when an export starts. */
   filters(): unknown;
   publish(state: DataExchangeState): void;
-  /** An import run ended having created at least one record; the screen may reload its list. */
+  /** An import run ended having created or updated at least one record; the screen may reload its list. */
   imported(summary: ImportSummary): void;
+  /** The clock, in milliseconds. Default `Date.now`; a test moves it. */
+  now?: (() => number) | undefined;
 }
+
+/**
+ * How old the stored records an update was previewed against may be when Import is pressed. Past
+ * this the records are read again and the file planned again: someone may have changed them while
+ * the preview was open, and an update sends what the preview said it would.
+ */
+export const SNAPSHOT_MAX_AGE_MS = 2 * 60_000;
+
+export const RECORDS_CHANGED_NOTICE =
+  "The records changed while you were reviewing this file, so the preview has been refreshed and nothing was imported. Check it, then choose Import again.";
 
 export interface Exchange {
   actions: DataExchangeActions;
@@ -98,11 +113,13 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 function summarise(prepared: PreparedImport, result: RunResult): ImportSummary {
   return {
     created: result.created,
+    updated: result.updated,
+    unchanged: prepared.unchanged.length + result.unchanged,
     skipped: result.skipped,
     failed: result.failed,
     invalid: prepared.invalid.length + result.invalid,
     cancelled: result.cancelled,
-    outcomes: [...prepared.invalid, ...result.outcomes].sort((a, b) => a.row - b.row),
+    outcomes: [...prepared.invalid, ...prepared.unchanged, ...result.outcomes].sort((a, b) => a.row - b.row),
   };
 }
 
@@ -135,6 +152,8 @@ export function createExchange(host: ExchangeHost): Exchange {
   /** Bumped by every `openFile` and `reset`; a read that finds it changed drops its result. */
   let session = 0;
   let prepared: PreparedImport | null = null;
+  /** The cells of the file being reviewed, kept so that a change of mode checks them again without reading the file again. */
+  let sheetRead: { sheet: ParsedSheet; fileName: string } | null = null;
   let importing = false;
   let cancelRequested = false;
   let exportRun: AbortController | null = null;
@@ -147,6 +166,23 @@ export function createExchange(host: ExchangeHost): Exchange {
    * after an import that created records (the lists have changed); a failed load is not kept.
    */
   let lookupLoad: { loader: unknown; loading: Promise<LookupSet> } | null = null;
+  /** Set while Import reads the records again before sending, so a second press cannot start a second read. */
+  let revalidating = false;
+  const now = (): number => (host.now ?? Date.now)();
+  /**
+   * The stored records an update-mode preview matches rows against: one load in flight shared by
+   * everyone who asks, a failed load not kept. A mode change is answered from a load that has
+   * settled (`settledAt`) without a wait, but a file opened after that is compared
+   * with a fresh read, since the records may have changed while the last file was being edited, and
+   * Import reads again once the records are older than `SNAPSHOT_MAX_AGE_MS`. Dropped when the dialog
+   * is reset or disposed and after an import that created or changed records.
+   */
+  let existingLoad: {
+    loader: unknown;
+    loading: Promise<readonly unknown[]>;
+    /** When the load finished, or null while it is still in flight. */
+    settledAt: number | null;
+  } | null = null;
 
   const lookupsFor = (entity: AnyEntity, signal: AbortSignal): Promise<LookupSet> => {
     const loader = entity.loadLookups;
@@ -163,6 +199,40 @@ export function createExchange(host: ExchangeHost): Exchange {
     return untilAborted(lookupLoad.loading, signal);
   };
 
+  const existingFor = (spec: UpdateSpec<unknown>, lookups: LookupSet, signal: AbortSignal): Promise<readonly unknown[]> => {
+    if (existingLoad === null || existingLoad.loader !== spec.loadExisting) {
+      const entry: NonNullable<typeof existingLoad> = {
+        loader: spec.loadExisting,
+        loading: spec.loadExisting({ lookups, signal: life.signal }),
+        settledAt: null,
+      };
+      existingLoad = entry;
+      entry.loading.then(
+        () => {
+          entry.settledAt = now();
+        },
+        () => {
+          if (existingLoad === entry) existingLoad = null;
+        },
+      );
+    }
+    return untilAborted(existingLoad.loading, signal);
+  };
+
+  /** Whether the records to update are already here, so that a change of mode needs no wait. */
+  const existingIsHere = (spec: UpdateSpec<unknown>): boolean =>
+    existingLoad !== null && existingLoad.loader === spec.loadExisting && existingLoad.settledAt !== null;
+
+  /** Checks a read sheet in the current mode: against the stored records in update mode, else on its own. */
+  const previewOf = async (entity: AnyEntity, read: { sheet: ParsedSheet; fileName: string }, signal: AbortSignal) => {
+    const lookups = await lookupsFor(entity, signal);
+    // Read now and not before the wait: a change of mode while the lists load is honoured.
+    const mode = current.mode;
+    const spec = mode === "addAndUpdate" ? entity.update : undefined;
+    const existing = spec === undefined ? null : await existingFor(spec, lookups, signal);
+    return prepareImport(entity, read.sheet, { lookups, signal }, read.fileName, mode, existing);
+  };
+
   const publish = (patch: Partial<DataExchangeState>): void => {
     current = { ...current, ...patch };
     if (attached) host.publish(current);
@@ -175,12 +245,17 @@ export function createExchange(host: ExchangeHost): Exchange {
     const signal = life.signal;
     const entity = host.entity();
     prepared = null;
+    sheetRead = null;
+    // A file chosen now is compared with the records as they are now, not as they were when an
+    // earlier file was opened: that one may have been edited in Excel for an hour since. A load still
+    // in flight began after the dialog opened, so it is as fresh as a new one and is shared.
+    if (existingLoad !== null && existingLoad.settledAt !== null) existingLoad = null;
     publish({ phase: "reading", error: null, preview: null, progress: null, summary: null, notice: null });
     try {
-      const sheet = await readWorkbook(file, entity);
-      const lookups = await lookupsFor(entity, signal);
+      const read = { sheet: await readWorkbook(file, entity), fileName: file.name };
+      const built = await previewOf(entity, read, signal);
       if (mine !== session || signal.aborted) return;
-      const built = prepareImport(entity, sheet, { lookups, signal }, file.name);
+      sheetRead = read;
       prepared = built.prepared;
       publish({ phase: "preview", preview: built.preview });
     } catch (error) {
@@ -189,12 +264,113 @@ export function createExchange(host: ExchangeHost): Exchange {
     }
   };
 
-  const startImport = async (): Promise<void> => {
-    const { preview } = current;
-    if (importing || current.phase !== "preview" || preview === null || prepared === null) return;
-    if (preview.missingRequired.length > 0) return;
-    const run = prepared;
+  const setMode = async (mode: ImportMode): Promise<void> => {
+    if (importing || mode === current.mode) return;
+    // A list that has no update spec has nothing to switch to.
+    if (mode === "addAndUpdate" && host.entity().update === undefined) return;
+    if (current.phase === "menu") {
+      publish({ mode });
+      return;
+    }
+    // While a file is being read the mode it is read in is already fixed; after the result there is nothing to redo.
+    const read = sheetRead;
+    if (current.phase !== "preview" || read === null) return;
     const entity = host.entity();
+    const signal = life.signal;
+    session += 1;
+    const mine = session;
+    const spec = mode === "addAndUpdate" ? entity.update : undefined;
+    // What was previewed is for the other mode: it must not be sent while the new one is worked out.
+    prepared = null;
+    // Only a wait that is really a wait hides the preview; a mode whose records are already loaded
+    // answers at once and leaves whatever has focus where it is.
+    publish(
+      spec !== undefined && !existingIsHere(spec)
+        ? { mode, phase: "reading", preview: null, notice: null }
+        : { mode, notice: null },
+    );
+    try {
+      const built = await previewOf(entity, read, signal);
+      if (mine !== session || signal.aborted) return;
+      prepared = built.prepared;
+      publish({ phase: "preview", preview: built.preview });
+    } catch (error) {
+      if (mine !== session || signal.aborted) return;
+      publish({ phase: "error", error: readFailure(error) });
+    }
+  };
+
+  /** Whether an update was previewed against stored records older than `SNAPSHOT_MAX_AGE_MS`. */
+  const snapshotIsStale = (entity: AnyEntity): boolean => {
+    const settledAt = existingLoad?.settledAt;
+    return (
+      current.mode === "addAndUpdate" &&
+      entity.update !== undefined &&
+      sheetRead !== null &&
+      settledAt !== undefined &&
+      settledAt !== null &&
+      now() - settledAt > SNAPSHOT_MAX_AGE_MS
+    );
+  };
+
+  /**
+   * Before an update is sent on records that have gone stale: reads them again and plans the same
+   * file again. When every row would still do what the user reviewed, the fresh plan is the one to
+   * send (true). When any row's action or changes differ, the new preview replaces the old one with
+   * a notice and nothing is sent (false): what would be written is no longer what was approved. A
+   * read that fails leaves the review as it was, with the reason, and sends nothing.
+   */
+  const stillAsReviewed = async (entity: AnyEntity, reviewed: PreparedImport): Promise<boolean> => {
+    const read = sheetRead;
+    if (read === null) return false;
+    const shown = current.preview;
+    const stale = existingLoad;
+    const signal = life.signal;
+    session += 1;
+    const mine = session;
+    revalidating = true;
+    // Nothing may be sent from the old plan while the new one is worked out.
+    prepared = null;
+    existingLoad = null;
+    publish({ phase: "reading", preview: null, notice: null });
+    try {
+      const built = await previewOf(entity, read, signal);
+      if (mine !== session || signal.aborted) return false;
+      prepared = built.prepared;
+      if (built.prepared.review === reviewed.review) {
+        publish({ phase: "preview", preview: built.preview });
+        return true;
+      }
+      publish({ phase: "preview", preview: built.preview, notice: RECORDS_CHANGED_NOTICE });
+      return false;
+    } catch (error) {
+      if (mine !== session || signal.aborted) return false;
+      // The review stands, still marked as stale, so pressing Import again tries the read again.
+      prepared = reviewed;
+      existingLoad = stale;
+      publish({
+        phase: "preview",
+        preview: shown,
+        notice: `Nothing was imported, because the current records could not be checked. ${readFailure(error)}`,
+      });
+      return false;
+    } finally {
+      revalidating = false;
+    }
+  };
+
+  const startImport = async (): Promise<void> => {
+    const first = current.preview;
+    if (importing || revalidating || current.phase !== "preview" || first === null || prepared === null) return;
+    if (first.missingRequired.length > 0) return;
+    const entity = host.entity();
+    // Only a stale snapshot is worth a wait; the guard below is synchronous otherwise, so a second
+    // press cannot slip in before `importing` is set.
+    if (snapshotIsStale(entity) && !(await stillAsReviewed(entity, prepared))) return;
+    // The plan and the preview it belongs to, as they are after the check: the fresh ones when it read again.
+    const { preview } = current;
+    const run = prepared;
+    if (current.phase !== "preview" || preview === null || run === null) return;
     const signal = life.signal;
     importing = true;
     cancelRequested = false;
@@ -202,6 +378,7 @@ export function createExchange(host: ExchangeHost): Exchange {
       done: 0,
       total: run.valid.length,
       created: 0,
+      updated: 0,
       skipped: 0,
       failed: 0,
       waiting: null,
@@ -212,6 +389,7 @@ export function createExchange(host: ExchangeHost): Exchange {
       const result = await runImport({
         entity,
         rows: run.valid,
+        mode: preview.mode,
         ctx: { lookups: run.lookups, signal },
         onProgress: (progress) => publish({ progress }),
         isCancelled: () => cancelRequested || signal.aborted,
@@ -227,9 +405,11 @@ export function createExchange(host: ExchangeHost): Exchange {
     } finally {
       importing = false;
     }
-    if (finished !== null && finished.created > 0) {
-      // Rows now exist that the lists did not know about (a manager, a company): ask again next time.
+    if (finished !== null && finished.created + finished.updated > 0) {
+      // Rows now exist, or read differently, that the lists did not know about (a manager, a
+      // company, a renamed record): ask again next time.
       lookupLoad = null;
+      existingLoad = null;
       // Outside the try: a screen's reload that throws is its own bug, not a failed import.
       if (attached) host.imported(finished);
     }
@@ -248,8 +428,11 @@ export function createExchange(host: ExchangeHost): Exchange {
     }
     session += 1;
     prepared = null;
+    sheetRead = null;
     lookupLoad = null;
-    publish({ phase: "menu", error: null, preview: null, progress: null, summary: null, notice: null });
+    existingLoad = null;
+    // Back to adding: a mode that overwrites records is chosen each time, never inherited.
+    publish({ phase: "menu", mode: "add", error: null, preview: null, progress: null, summary: null, notice: null });
   };
 
   const downloadTemplate = async (): Promise<void> => {
@@ -351,7 +534,17 @@ export function createExchange(host: ExchangeHost): Exchange {
   };
 
   return {
-    actions: { openFile, startImport, cancelImport, reset, downloadTemplate, exportAll, cancelExport, downloadReport },
+    actions: {
+      setMode,
+      openFile,
+      startImport,
+      cancelImport,
+      reset,
+      downloadTemplate,
+      exportAll,
+      cancelExport,
+      downloadReport,
+    },
     attach() {
       if (attached) return;
       attached = true;
@@ -362,6 +555,7 @@ export function createExchange(host: ExchangeHost): Exchange {
     dispose() {
       attached = false;
       lookupLoad = null;
+      existingLoad = null;
       life.abort();
       cancelRequested = true;
       exportRun?.abort();

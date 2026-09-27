@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { recordIdHeader } from "./cells";
 import type { AnyEntity } from "./cells";
-import { DEFAULT_EXPORT_MAX_ROWS, IDLE_STATE, createExchange } from "./exchange";
+import { IDLE_STATE, createExchange } from "./exchange";
 import type { Exchange } from "./exchange";
 import type {
   DataExchangeMeta,
@@ -10,12 +11,17 @@ import type {
   UseImportExportOptions,
   UseImportExportResult,
 } from "./types";
-import { DEFAULT_MAX_ROWS } from "./workbook";
+import { DEFAULT_EXPORT_MAX_ROWS, DEFAULT_MAX_ROWS } from "./workbook";
 
 /**
  * The Import / Export dialog's brain (ADR-0022): read a workbook, preview it, send the valid rows
  * one at a time, report the result, and download the sample sheet or the whole filtered list.
  * `@opsgrids/ui`'s `ImportExportButton` renders what it returns.
+ *
+ * A list whose entity declares an `update` spec (`meta.canUpdate`) can also be updated from a sheet:
+ * `actions.setMode("addAndUpdate")` makes a row that names an existing record change it, and on a
+ * preview it checks the same file again in the new mode. `state.mode` is `add` until chosen and
+ * goes back to `add` whenever the dialog is reset.
  *
  * The entity and the filters are read through a ref, so `actions` keeps one identity for the
  * life of the component and an entity that is redefined per render does not restart anything.
@@ -80,6 +86,8 @@ export function useImportExport<Payload, Item = unknown, Filters = void>(
         .filter((column) => column.required === true && column.readOnly !== true)
         .map((column) => column.header),
       canExport: entity.export !== undefined,
+      canUpdate: entity.update !== undefined,
+      recordIdHeader: recordIdHeader(entity),
     }),
     [entity],
   );

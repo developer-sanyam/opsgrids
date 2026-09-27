@@ -2,18 +2,27 @@
  * Companies from and to a spreadsheet (ADR-0022). Import calls `POST /customers` once per row, so
  * the server keeps every rule: the name is unique per organisation (a repeat is a 409 and is
  * skipped), and a caller limited to their own book may only assign companies to themselves.
+ *
+ * Update calls `PATCH /customers/{id}` with only the fields that differ. The name is the list's
+ * unique key, and the server compares it ignoring capitals and surrounding spaces (never spaces
+ * inside it), so a row with no Company ID finds its company that way (`keyMatch: "caseless"`, the
+ * one list where that is the server's own rule); a rename therefore needs the Company ID, or the new
+ * name would look like a new company. Every importable column can change, five can be emptied with
+ * `[clear]` (the endpoint takes `""` there and refuses `null` everywhere), and the amount is never
+ * converted when the currency changes.
  */
 import { defineImportEntity, minorToMajor } from "@opsgrids/client";
 import type { ColumnOption, ImportColumn } from "@opsgrids/client";
 
-import { createCompany, listCompanies } from "@/api/client";
+import { createCompany, listCompanies, updateCompany } from "@/api/client";
 import type { Company, CompanyStatus } from "@/api/types";
-import type { CompanyIn } from "@/api/wire";
+import type { CompanyIn, CompanyPatch } from "@/api/wire";
 
 import {
   LOOKUP_ALL_OWNERS,
   LOOKUP_OWNERS,
   OWNER_HINT,
+  OWNER_HINT_UPDATE,
   currencyOf,
   labelFor,
   loadOwnerLookups,
@@ -24,6 +33,16 @@ import {
   requiredTextOf,
   textOf,
 } from "./shared";
+import {
+  columnOf,
+  loadEvery,
+  orNull,
+  patchOf,
+  refuseCurrencyChangeWithoutAmount,
+  refuseInactiveOwner,
+  resolveByLookup,
+  upperCased,
+} from "./updateShared";
 
 /** What the Companies screen filters its list by; the export writes exactly that list. */
 export interface CompanyFilters {
@@ -45,7 +64,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "text",
     required: true,
     maxLength: 200,
-    help: "The company's name. It must be new: a company with the same name (ignoring capitals) is skipped.",
+    help: "The company's name. When adding, it must be new: a company with the same name (ignoring capitals) is skipped. When updating, a row with no Company ID finds its company by this name.",
   },
   {
     key: "owner",
@@ -53,7 +72,8 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "text",
     lookup: LOOKUP_OWNERS,
     lookupHint: OWNER_HINT,
-    help: "Email of the team member who owns the company, from the Lists sheet. Leave blank to own it yourself.",
+    lookupHintUpdate: OWNER_HINT_UPDATE,
+    help: "Email of the team member who owns the company, from the Lists sheet. Leave blank to own it yourself, or, when updating, to keep the current owner.",
   },
   {
     key: "domain",
@@ -95,7 +115,7 @@ const COLUMNS: readonly ImportColumn[] = [
     header: "Status",
     kind: "enum",
     options: STATUS_OPTIONS,
-    help: "Where the company stands with you. Leave blank for Prospect.",
+    help: "Where the company stands with you. Leave blank for Prospect, or, when updating, to keep the current status.",
   },
   {
     key: "annualRevenue",
@@ -103,7 +123,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "money",
     min: 0,
     currencyKey: "currency",
-    help: "Yearly revenue in whole currency units, like 84000000 or 84000000.50. Leave blank if unknown.",
+    help: "Yearly revenue in whole currency units, like 84000000 or 84000000.50. Leave blank if unknown, or, when updating, to keep the current figure.",
   },
   {
     key: "currency",
@@ -112,14 +132,14 @@ const COLUMNS: readonly ImportColumn[] = [
     maxLength: 3,
     pattern: /^[A-Za-z]{3}$/,
     patternHint: "Three letters, like INR or USD.",
-    help: "Currency of the annual revenue, as a three-letter code. Leave blank for INR.",
+    help: "Currency of the annual revenue, as a three-letter code. Leave blank for INR, or, when updating, to keep the company's own currency.",
   },
   {
     key: "id",
     header: "Company ID",
     kind: "text",
     readOnly: true,
-    help: "The record's id. Filled in on export. A row that carries one is refused on import: it is already in the system.",
+    help: "The record's id. Filled in on export. With Add new records only, a row that carries one is refused on import: it is already in the system. With Add new and update existing, it names the company to update.",
   },
   {
     key: "createdAt",
@@ -129,6 +149,10 @@ const COLUMNS: readonly ImportColumn[] = [
     help: "When the company was added. Filled in on export and ignored on import.",
   },
 ];
+
+const OWNER = columnOf(COLUMNS, "owner");
+const AMOUNT = columnOf(COLUMNS, "annualRevenue");
+const CURRENCY = columnOf(COLUMNS, "currency");
 
 export const companyImport = defineImportEntity<CompanyIn, Company, CompanyFilters>({
   id: "crm.companies",
@@ -161,11 +185,15 @@ export const companyImport = defineImportEntity<CompanyIn, Company, CompanyFilte
     },
   ],
   notes: [
-    "Import only adds companies. A company whose name already exists (ignoring capitals) is skipped, not updated.",
-    "Leave Owner email blank to own the company yourself.",
+    "With Add new records only, a company whose name already exists (ignoring capitals) is skipped, not updated.",
+    "When adding, leave Owner email blank to own the company yourself.",
     "If your role limits you to your own companies, you can only assign companies to yourself. A row naming another owner is refused and reported.",
-    "Annual revenue is in whole currency units and uses the currency in the next column. Leave Currency blank for INR.",
-    "A file exported from the Companies list cannot be imported again as it is: its rows carry a Company ID and are refused, because those companies already exist.",
+    "Annual revenue is in whole currency units and uses the currency in the next column. When adding, leave Currency blank for INR.",
+    "With Add new records only, a file exported from the Companies list cannot be imported again as it is: its rows carry a Company ID and are refused, because those companies already exist.",
+    "When updating, a row with a Company ID changes that company. Without one, the company is found by its name, ignoring capitals and surrounding spaces (spaces inside the name count). To rename a company keep its Company ID in the row: a row with a changed name and no Company ID is a new company.",
+    "A rename onto the name of another company (ignoring capitals) is refused by the server and reported. A change of capitals alone is a rename and is applied.",
+    "When updating, type [clear] in Domain, Industry, Headcount, City or Country to empty it. Company name, Owner email, Status, Annual revenue and Currency cannot be emptied, only changed.",
+    "When updating, Annual revenue is not converted if the currency changes: change Currency only together with Annual revenue, in the new currency. Leave Currency blank to keep the company's own currency; Annual revenue is then read in it, not in INR.",
   ],
   recordIdKey: "id",
   loadLookups: loadOwnerLookups,
@@ -182,6 +210,46 @@ export const companyImport = defineImportEntity<CompanyIn, Company, CompanyFilte
     currency: currencyOf(row),
   }),
   create: (payload) => createCompany(payload),
+  update: {
+    loadExisting: (ctx) => loadEvery(listCompanies, ctx),
+    idOf: (company) => company.id,
+    keyColumn: "name",
+    keyOf: (company) => company.name,
+    // The server folds capitals and trims when it compares company names, so a name in other
+    // capitals is the same company (the other three lists compare exactly).
+    keyMatch: "caseless",
+    recordLabel: (company) => company.name,
+    currencyOf: (company) => company.currency,
+    fields: [
+      { column: "name", current: (company) => company.name },
+      {
+        column: "owner",
+        field: "owner_id",
+        current: (company) => company.owner_id,
+        resolve: resolveByLookup(OWNER, LOOKUP_ALL_OWNERS),
+      },
+      { column: "domain", current: (company) => orNull(company.domain), clear: "" },
+      { column: "industry", current: (company) => orNull(company.industry), clear: "" },
+      { column: "sizeBand", field: "size_band", current: (company) => orNull(company.size_band), clear: "" },
+      { column: "city", current: (company) => orNull(company.city), clear: "" },
+      { column: "country", current: (company) => orNull(company.country), clear: "" },
+      { column: "status", current: (company) => company.status },
+      { column: "annualRevenue", field: "annual_revenue_minor", current: (company) => company.annual_revenue_minor },
+      { column: "currency", current: (company) => company.currency, resolve: upperCased },
+    ],
+    check: (row, company, changed, ctx) => {
+      refuseInactiveOwner(OWNER, row, changed, ctx);
+      refuseCurrencyChangeWithoutAmount(
+        { amount: AMOUNT, currency: CURRENCY },
+        row,
+        changed,
+        company.annual_revenue_minor,
+      );
+    },
+    send: async (company, body) => {
+      await updateCompany(company.id, patchOf<CompanyPatch>(body));
+    },
+  },
   export: {
     fetchPage: ({ page, size, filters, signal }) =>
       listCompanies({ search: filters.search, status: filters.status, page, size, signal }),

@@ -8,7 +8,9 @@
  * text it is. Masked values stay masked: this module writes what `toRow` returns and nothing else.
  */
 
-import { isValidDate, isoDate } from "./cells";
+import { addBaselineSheet, baselineColumns, canWriteBaseline } from "./baseline";
+import type { ExportedRecord } from "./baseline";
+import { displayValue, isValidDate, isoDate } from "./cells";
 import type { AnyEntity } from "./cells";
 import { clipCell, loadExcel, moneyNumberFormat, styleHeaderRow, widthFor, workbookToBlob } from "./excel";
 import { currencyExponent, plainNumberString } from "./money";
@@ -64,11 +66,17 @@ function columnFormat(column: ImportColumn): string | null {
 /**
  * The export as a downloadable .xlsx: one sheet, "Export", with the import columns and the
  * read-only ones. `items` are the list endpoint's rows; the entity's `toRow` shapes each one.
+ *
+ * A list that can be updated also gets a very hidden baseline sheet recording what was written in
+ * every editable cell, so that an update can tell what the user changed from what they still have
+ * (`baseline.ts`). It holds salted digests of the cells and never a value: deleting a column or its
+ * rows from the visible sheet leaves nothing of them behind, and it adds nothing the user cannot see.
  */
 export async function buildExportWorkbook(
   entity: AnyEntity,
   items: readonly unknown[],
   lookups: LookupSet,
+  exportedAt: Date = new Date(),
 ): Promise<Blob> {
   const source = entity.export;
   if (source === undefined) throw new Error(`${entity.noun} cannot be exported`);
@@ -88,6 +96,10 @@ export async function buildExportWorkbook(
 
   styleHeaderRow(sheet.addRow(columns.map((column) => column.header)));
 
+  const baselined = canWriteBaseline(entity);
+  const tracked = baselineColumns(entity).map((column) => columns.indexOf(column));
+  const recorded: ExportedRecord[] = [];
+
   for (const item of items) {
     const shaped = source.toRow(item, lookups);
     const values = columns.map((column, index) => {
@@ -95,6 +107,12 @@ export async function buildExportWorkbook(
       widest[index] = Math.max(widest[index] ?? 0, typeof value === "string" ? value.length : String(value ?? "").length);
       return value;
     });
+    if (baselined && entity.recordIdKey !== undefined) {
+      const id = displayValue(shaped[entity.recordIdKey]);
+      // The values as written, after the clipping and typing above: what the file holds is what a
+      // returning file is compared with.
+      if (id !== "") recorded.push({ id, cells: tracked.map((index) => values[index] ?? null) });
+    }
     const row = sheet.addRow(values);
     columns.forEach((column, index) => {
       if (column.kind !== "money" || typeof values[index] !== "number") return;
@@ -110,5 +128,6 @@ export async function buildExportWorkbook(
   if (columns.length > 0) {
     sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: columns.length } };
   }
+  if (baselined) await addBaselineSheet(workbook, entity, recorded, exportedAt);
   return workbookToBlob(workbook);
 }

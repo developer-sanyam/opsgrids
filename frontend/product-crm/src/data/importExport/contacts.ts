@@ -10,21 +10,31 @@
  *
  * A contact's phone number is masked on the wire and never revealed here: the export writes the
  * mask in a read-only column, and the importable Phone column is left blank on export.
+ *
+ * Update calls `PATCH /contacts/{id}` with only the fields that differ, and finds a contact with no
+ * Contact ID by its email, the server's unique key, compared exactly as stored (the default
+ * `keyMatch`): an address that differs from a stored one only in capitals is another contact to the
+ * server, so the engine refuses the row rather than pick one. The PATCH does not take the
+ * phone: a non-blank Phone cell is one write-only `PUT /contacts/{id}/phone`, because the stored
+ * number is only a mask and cannot be compared. The server does not stop a PATCH from changing an
+ * email to another contact's address in other capitals, so `check` does, as it does when adding.
  */
 import { RowProblem, defineImportEntity } from "@opsgrids/client";
-import type { ColumnOption, ImportColumn, Lookup } from "@opsgrids/client";
+import type { ColumnOption, ImportColumn, Lookup, ParsedValue } from "@opsgrids/client";
 
-import { createContact, listContacts } from "@/api/client";
+import { createContact, listContacts, setContactPhone, updateContact } from "@/api/client";
 import type { Contact, ContactStatus } from "@/api/types";
-import type { ContactIn } from "@/api/wire";
+import type { ContactIn, ContactPatch } from "@/api/wire";
 
 import {
   COMPANY_HINT,
+  COMPANY_HINT_UPDATE,
   LOOKUP_ALL_OWNERS,
   LOOKUP_COMPANIES,
   LOOKUP_CONTACT_EMAILS,
   LOOKUP_OWNERS,
   OWNER_HINT,
+  OWNER_HINT_UPDATE,
   companyIdByName,
   labelFor,
   loadCompanyLookup,
@@ -36,6 +46,7 @@ import {
   requiredTextOf,
   textOf,
 } from "./shared";
+import { columnOf, loadEvery, orNull, patchOf, refuseInactiveOwner, resolveByLookup } from "./updateShared";
 
 /** What the Contacts screen filters its list by; the export writes exactly that list. */
 export interface ContactFilters {
@@ -65,7 +76,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "email",
     required: true,
     maxLength: 254,
-    help: "Their email address. A contact whose exact address is already on file is skipped; one that differs only in capitals is refused.",
+    help: "Their email address. When adding, a contact whose exact address is already on file is skipped and one that differs only in capitals is refused. When updating, a row with no Contact ID finds its contact by this address.",
   },
   {
     key: "company",
@@ -74,6 +85,7 @@ const COLUMNS: readonly ImportColumn[] = [
     required: true,
     lookup: LOOKUP_COMPANIES,
     lookupHint: COMPANY_HINT,
+    lookupHintUpdate: COMPANY_HINT_UPDATE,
     help: "The name of a company that already exists, spelled as on the Companies screen. See the Lists sheet.",
   },
   {
@@ -82,7 +94,8 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "text",
     lookup: LOOKUP_OWNERS,
     lookupHint: OWNER_HINT,
-    help: "Email of the team member who owns the contact, from the Lists sheet. Leave blank to own it yourself.",
+    lookupHintUpdate: OWNER_HINT_UPDATE,
+    help: "Email of the team member who owns the contact, from the Lists sheet. Leave blank to own it yourself, or, when updating, to keep the current owner.",
   },
   {
     key: "title",
@@ -96,13 +109,13 @@ const COLUMNS: readonly ImportColumn[] = [
     header: "Status",
     kind: "enum",
     options: STATUS_OPTIONS,
-    help: "Where the contact sits in your funnel. Leave blank for Lead.",
+    help: "Where the contact sits in your funnel. Leave blank for Lead, or, when updating, to keep the current status.",
   },
   {
     key: "phone",
     header: "Phone",
     kind: "phone",
-    help: "With the country code, like +91 98765 43210. A number without one is refused. Left blank on export: the number is never shown.",
+    help: "With the country code, like +91 98765 43210. A number without one is refused. Left blank on export: the number is never shown. When updating, a number here replaces the one on file, and a blank leaves it as it is.",
   },
   {
     key: "phoneMasked",
@@ -123,7 +136,7 @@ const COLUMNS: readonly ImportColumn[] = [
     header: "Contact ID",
     kind: "text",
     readOnly: true,
-    help: "The record's id. Filled in on export. A row that carries one is refused on import: it is already in the system.",
+    help: "The record's id. Filled in on export. With Add new records only, a row that carries one is refused on import: it is already in the system. With Add new and update existing, it names the contact to update.",
   },
   {
     key: "createdAt",
@@ -133,6 +146,18 @@ const COLUMNS: readonly ImportColumn[] = [
     help: "When the contact was added. Filled in on export and ignored on import.",
   },
 ];
+
+const EMAIL = columnOf(COLUMNS, "email");
+const COMPANY = columnOf(COLUMNS, "company");
+const OWNER = columnOf(COLUMNS, "owner");
+const PHONE = columnOf(COLUMNS, "phone");
+
+/** Two addresses that differ only in capitals are one person to the app (`capitalsProblem` says
+ *  so), so an email cell that is a different spelling of the stored address changes nothing and
+ *  the address stays exactly as it is on file. */
+function sameAddress(cell: ParsedValue, stored: ParsedValue): boolean {
+  return typeof cell === "string" && typeof stored === "string" && cell.toLowerCase() === stored.toLowerCase();
+}
 
 /**
  * Why this address cannot be sent, or null when it can. An address that is on file exactly as
@@ -177,13 +202,17 @@ export const contactImport = defineImportEntity<ContactIn, Contact, ContactFilte
   ],
   notes: [
     "The company must already exist. If it is new, import it on the Companies screen first.",
-    "Import only adds contacts. A contact whose exact email is already on file is skipped, not updated.",
+    "With Add new records only, a contact whose exact email is already on file is skipped, not updated.",
     "Emails are matched exactly, as the server matches them. An address that differs from one on file only in capitals is refused, so the same person is not added twice.",
     "Phone numbers need a country code, like +91 98765 43210. A number without one is refused and reported.",
-    "Leave Owner email blank to own the contact yourself. If your role limits you to your own contacts, you can only assign contacts to yourself.",
+    "When adding, leave Owner email blank to own the contact yourself. If your role limits you to your own contacts, you can only assign contacts to yourself.",
     "Exports show phone numbers masked, as the app does.",
-    "A file exported from the Contacts list cannot be imported again as it is: its rows carry a Contact ID and are refused, because those contacts already exist.",
+    "With Add new records only, a file exported from the Contacts list cannot be imported again as it is: its rows carry a Contact ID and are refused, because those contacts already exist.",
     "An organisation with more than 20,000 contacts cannot import contacts in this release: the addresses already on file cannot all be checked, so nothing is imported.",
+    "When updating, a row with a Contact ID changes that contact. Without one, the contact is found by its exact Email, capitals included, and an Email that differs from a contact's on file only in capitals is refused, so a row never changes a contact it only resembles. To change a contact's email keep its Contact ID in the row: a row with a new address and no Contact ID is a new contact.",
+    "When updating a row that has a Contact ID, an Email that differs from the one on file only in capitals is treated as unchanged and the address stays as it is. Changing it to another contact's address in other capitals is refused; to another contact's exact address, the server refuses it and it is reported.",
+    "When updating, type [clear] in Title to empty it. Full name, Email, Company, Owner email and Status cannot be emptied, only changed.",
+    "When updating, a Phone in the row is always saved to the contact, even if it is the number already on file: the stored number is hidden, so it cannot be compared. Leave Phone blank to keep the number. A phone number cannot be removed, only replaced.",
   ],
   recordIdKey: "id",
   loadLookups: async (signal) => {
@@ -210,6 +239,59 @@ export const contactImport = defineImportEntity<ContactIn, Contact, ContactFilte
     };
   },
   create: (payload) => createContact(payload),
+  update: {
+    loadExisting: (ctx) => loadEvery(listContacts, ctx),
+    idOf: (contact) => contact.id,
+    keyColumn: "email",
+    keyOf: (contact) => contact.email,
+    recordLabel: (contact) => contact.full_name,
+    fields: [
+      { column: "fullName", field: "full_name", current: (contact) => contact.full_name },
+      { column: "email", current: (contact) => contact.email, same: sameAddress },
+      {
+        column: "company",
+        field: "company_id",
+        current: (contact) => contact.company_id,
+        resolve: resolveByLookup(COMPANY),
+      },
+      {
+        column: "owner",
+        field: "owner_id",
+        current: (contact) => contact.owner_id,
+        resolve: resolveByLookup(OWNER, LOOKUP_ALL_OWNERS),
+      },
+      { column: "title", current: (contact) => orNull(contact.title), clear: "" },
+      { column: "status", current: (contact) => contact.status },
+    ],
+    check: (row, _contact, changed, ctx) => {
+      refuseInactiveOwner(OWNER, row, changed, ctx);
+      const email = textOf(row, "email");
+      if (email === undefined || !changed.includes(EMAIL.header)) return;
+      const problem = capitalsProblem(email, ctx.lookups[LOOKUP_CONTACT_EMAILS]);
+      if (problem !== null) throw new RowProblem(problem);
+    },
+    send: async (contact, body) => {
+      await updateContact(contact.id, patchOf<ContactPatch>(body));
+    },
+    extraColumns: ["phone"],
+    // The number is write-only: the stored one is a mask, so a filled Phone cell always differs
+    // and is always written, and there is no route that removes a number.
+    extras: (row, cleared, contact) => {
+      if (cleared.has(PHONE.key)) {
+        throw new RowProblem(`${PHONE.header} cannot be cleared: a saved number can be replaced, not removed`);
+      }
+      const phone = textOf(row, "phone");
+      if (phone === undefined) return [];
+      return [
+        {
+          changed: [PHONE.header],
+          run: async () => {
+            await setContactPhone(contact.id, { raw_phone: phone });
+          },
+        },
+      ];
+    },
+  },
   export: {
     fetchPage: ({ page, size, filters, signal }) =>
       listContacts({ search: filters.search, status: filters.status, page, size, signal }),

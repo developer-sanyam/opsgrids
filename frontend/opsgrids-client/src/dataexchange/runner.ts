@@ -1,25 +1,41 @@
 /**
- * Sends the valid rows, one at a time, through the entity's ordinary create call (ADR-0022 §4).
+ * Sends the valid rows, one at a time, through the entity's ordinary create call (ADR-0022 §4), or,
+ * for a row that updates a stored record (update mode, ADR-0022 addendum), through its update plan:
+ * one PATCH with only the changed fields, then any extra steps (a deal's stage, a contact's phone).
  *
  * Strictly sequential and throttled: the gateway allows 300 requests per user per minute, shared
- * with everything else the user does. A 429 is the only status ever retried (it says "wait",
- * where a 403 or 422 says "no" and does not fix itself); every other 4xx and every 5xx fails that
- * row once, with the server's own sentence. A 409 that says the record already exists is not a
- * failure: the row is skipped, which is what makes re-uploading the same file safe.
+ * with everything else the user does, so every REQUEST starts at least `minIntervalMs` after the
+ * one before (a row with extra steps sends several). A 429 is the only status ever retried (it says
+ * "wait", where a 403 or 422 says "no" and does not fix itself). A 429 request never executed, so
+ * only that request is tried again: the steps of an update row that already went are not repeated.
+ * Every other 4xx and every 5xx fails that row once, with the server's own sentence.
+ *
+ * A 409 that says the record already exists is a skip when adding, which is what makes re-uploading
+ * the same file safe. When updating it is always a failure: "a company with that name already
+ * exists" on a rename is a collision the user must see, and a new record that meets an existing one
+ * means the sheet's values were not applied.
  *
  * The clock and the sleep are injectable so the tests spend no real time.
  */
 
 import { ApiError } from "../http";
 import { fieldErrors } from "../problem";
-import { isAbortError, prepareMessage, rowMessage } from "./errors";
+import { UNCHANGED_MESSAGE, isAbortError, prepareMessage, rowMessage } from "./errors";
 import type { AnyEntity } from "./cells";
-import type { ImportContext, ImportProgress, ParsedRow, RowOutcome, RowStatus } from "./types";
+import type { ImportContext, ImportMode, ImportProgress, ParsedRow, RowOutcome, RowStatus, UpdatePlan } from "./types";
 import { RowProblem } from "./types";
 
 export const DEFAULT_MIN_INTERVAL_MS = 350;
 export const DEFAULT_BACKOFF_MS = 60_000;
 export const DEFAULT_MAX_RETRIES = 3;
+
+/** Said of an update row that failed after an earlier request of the same row had been accepted: which
+ *  columns are on the record now and which are not, so nobody has to open the record to find out. */
+export function partlySavedMessage(saved: readonly string[], notSaved: readonly string[]): string {
+  return `Saved: ${saved.join(", ")}. Not saved: ${notSaved.join(", ")}.`;
+}
+
+export const STOPPED_PARTWAY_MESSAGE = "The import was stopped part-way through this row.";
 
 /** One row that passed validation and is ready to be sent. */
 export interface RunnerRow {
@@ -28,6 +44,11 @@ export interface RunnerRow {
   values: ParsedRow;
   /** The first required cell, so a report row is recognisable without the sheet open. */
   label: string;
+  /** An update row: which stored record it names, for the result report. */
+  record?: string | undefined;
+  /** Present on a row that updates a stored record instead of creating one: its plan for this run,
+   *  or null when it turns out to change nothing. */
+  update?: { plan(ctx: ImportContext): UpdatePlan | null } | undefined;
 }
 
 export interface RunImportArgs {
@@ -36,11 +57,13 @@ export interface RunImportArgs {
   ctx: ImportContext;
   onProgress: (progress: ImportProgress) => void;
   isCancelled: () => boolean;
+  /** `addAndUpdate` makes every 409 a failure. Default `add`. */
+  mode?: ImportMode | undefined;
   sleep?: ((ms: number) => Promise<void>) | undefined;
   now?: (() => number) | undefined;
   /** Minimum time between the starts of two requests. */
   minIntervalMs?: number | undefined;
-  /** How long a 429 makes the run wait before the same row is tried again. */
+  /** How long a 429 makes the run wait before the same request is tried again. */
   backoffMs?: number | undefined;
   maxRetries?: number | undefined;
 }
@@ -49,9 +72,12 @@ export interface RunResult {
   /** In the order sent. Rows never reached because of a cancel are not here. */
   outcomes: RowOutcome[];
   created: number;
+  updated: number;
+  /** Update rows that turned out to change nothing when their turn came. */
+  unchanged: number;
   skipped: number;
   failed: number;
-  /** Rows the entity's `toPayload` refused when their turn came. */
+  /** Rows the entity's `toPayload` (or the update plan) refused when their turn came. */
   invalid: number;
   cancelled: boolean;
 }
@@ -75,6 +101,9 @@ const realSleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
+/** Thrown out of an update plan when the run was cancelled before one of its requests could start. */
+class Stopped extends Error {}
+
 export async function runImport(args: RunImportArgs): Promise<RunResult> {
   const { entity, rows, ctx, onProgress, isCancelled } = args;
   const sleep = args.sleep ?? realSleep;
@@ -82,9 +111,10 @@ export async function runImport(args: RunImportArgs): Promise<RunResult> {
   const minIntervalMs = args.minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS;
   const backoffMs = args.backoffMs ?? DEFAULT_BACKOFF_MS;
   const maxRetries = args.maxRetries ?? DEFAULT_MAX_RETRIES;
+  const updating = args.mode === "addAndUpdate";
 
   const outcomes: RowOutcome[] = [];
-  const tally: Record<RowStatus, number> = { created: 0, skipped: 0, failed: 0, invalid: 0 };
+  const tally: Record<RowStatus, number> = { created: 0, updated: 0, unchanged: 0, skipped: 0, failed: 0, invalid: 0 };
   let lastStart: number | null = null;
 
   const report = (waiting: ImportProgress["waiting"] = null): void => {
@@ -92,6 +122,7 @@ export async function runImport(args: RunImportArgs): Promise<RunResult> {
       done: outcomes.length,
       total: rows.length,
       created: tally.created,
+      updated: tally.updated,
       skipped: tally.skipped,
       // A row refused while being prepared did not go through either; the live count folds it in
       // here, and the summary keeps it apart as `invalid`.
@@ -104,10 +135,18 @@ export async function runImport(args: RunImportArgs): Promise<RunResult> {
     item: RunnerRow,
     status: RowStatus,
     message: string | null,
-    id?: string | undefined,
+    extra: { id?: string | undefined; changes?: readonly string[] | undefined } = {},
   ): void => {
     tally[status] += 1;
-    outcomes.push({ row: item.row, status, message, id, label: item.label });
+    outcomes.push({
+      row: item.row,
+      status,
+      message,
+      id: extra.id,
+      changes: extra.changes,
+      record: item.record,
+      label: item.label,
+    });
     report();
   };
 
@@ -124,33 +163,88 @@ export async function runImport(args: RunImportArgs): Promise<RunResult> {
     return !isCancelled();
   };
 
-  /** Sends one row, retrying only a 429. False when the run was cancelled before it concluded. */
-  const send = async (item: RunnerRow, payload: unknown): Promise<boolean> => {
-    for (let attempt = 0; ; attempt += 1) {
+  /**
+   * One request, in its turn: waits for the spacing since the last request started, then sends it,
+   * waiting out a 429 and sending the same request again (up to `maxRetries` times). Any other
+   * error is the caller's. `undefined` when the run was cancelled before the request concluded.
+   */
+  const attempt = async <T>(request: () => Promise<T>): Promise<{ value: T } | undefined> => {
+    for (let tries = 0; ; tries += 1) {
       if (lastStart !== null) {
         const wait = minIntervalMs - (now() - lastStart);
         if (wait > 0) await sleep(wait);
       }
-      if (isCancelled()) return false;
+      if (isCancelled()) return undefined;
       lastStart = now();
       try {
-        const created = await entity.create(payload, ctx);
-        conclude(item, "created", null, typeof created === "object" && created !== null ? created.id : undefined);
-        return true;
+        return { value: await request() };
       } catch (error) {
-        if (isCancelled() && isAbortError(error)) return false;
-        if (error instanceof ApiError && error.status === 409 && isDuplicate(error)) {
-          conclude(item, "skipped", rowMessage(error));
-          return true;
-        }
-        if (error instanceof ApiError && error.status === 429 && attempt < maxRetries) {
-          if (!(await waitOutRateLimit())) return false;
+        if (isCancelled() && isAbortError(error)) return undefined;
+        if (error instanceof ApiError && error.status === 429 && tries < maxRetries) {
+          if (!(await waitOutRateLimit())) return undefined;
           continue;
         }
-        conclude(item, error instanceof RowProblem ? "invalid" : "failed", rowMessage(error));
-        return true;
+        throw error;
       }
     }
+  };
+
+  /** Creates one record. False when the run was cancelled before it concluded. */
+  const create = async (item: RunnerRow, payload: unknown): Promise<boolean> => {
+    let sent: { value: { id?: string } | undefined | void } | undefined;
+    try {
+      sent = await attempt(() => entity.create(payload, ctx));
+    } catch (error) {
+      if (!updating && error instanceof ApiError && error.status === 409 && isDuplicate(error)) {
+        conclude(item, "skipped", rowMessage(error));
+      } else {
+        conclude(item, error instanceof RowProblem ? "invalid" : "failed", rowMessage(error));
+      }
+      return true;
+    }
+    if (sent === undefined) return false;
+    const { value } = sent;
+    conclude(item, "created", null, { id: typeof value === "object" && value !== null ? value.id : undefined });
+    return true;
+  };
+
+  /** Updates one record through its plan. False when the run was cancelled before it concluded. */
+  const update = async (item: RunnerRow, planOf: (ctx: ImportContext) => UpdatePlan | null): Promise<boolean> => {
+    let plan: UpdatePlan | null;
+    try {
+      plan = planOf(ctx);
+    } catch (error) {
+      conclude(item, "invalid", prepareMessage(error));
+      return true;
+    }
+    if (plan === null) {
+      conclude(item, "unchanged", UNCHANGED_MESSAGE);
+      return true;
+    }
+    const { changed } = plan;
+    /** The columns whose request the server accepted, in order. */
+    const saved: string[] = [];
+    const partly = (): string =>
+      partlySavedMessage(saved, changed.filter((header) => !saved.includes(header)));
+    try {
+      await plan.run(async (step, done) => {
+        if ((await attempt(step)) === undefined) throw new Stopped();
+        saved.push(...done);
+      });
+    } catch (error) {
+      if (error instanceof Stopped) {
+        // Nothing to say about a row that never started; a row half done must not vanish from the report.
+        if (saved.length > 0) conclude(item, "failed", `${STOPPED_PARTWAY_MESSAGE} ${partly()}`, { changes: changed });
+        return false;
+      }
+      const reason = rowMessage(error);
+      conclude(item, error instanceof RowProblem ? "invalid" : "failed", saved.length > 0 ? `${reason} ${partly()}` : reason, {
+        changes: changed,
+      });
+      return true;
+    }
+    conclude(item, "updated", null, { changes: changed });
+    return true;
   };
 
   let cancelled = false;
@@ -160,14 +254,20 @@ export async function runImport(args: RunImportArgs): Promise<RunResult> {
       cancelled = true;
       break;
     }
-    let payload: unknown;
-    try {
-      payload = entity.toPayload(item.values, ctx);
-    } catch (error) {
-      conclude(item, "invalid", prepareMessage(error));
-      continue;
+    let concluded: boolean;
+    if (item.update !== undefined) {
+      concluded = await update(item, item.update.plan);
+    } else {
+      let payload: unknown;
+      try {
+        payload = entity.toPayload(item.values, ctx);
+      } catch (error) {
+        conclude(item, "invalid", prepareMessage(error));
+        continue;
+      }
+      concluded = await create(item, payload);
     }
-    if (!(await send(item, payload))) {
+    if (!concluded) {
       cancelled = true;
       break;
     }

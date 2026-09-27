@@ -49,10 +49,13 @@ export { Drawer } from "./components/Drawer";
 export { FileUpload } from "./components/FileUpload";
 export { ImportExportButton } from "./components/ImportExportButton";
 export type {
+  ImportExportBaselineUse,
   ImportExportButtonProps,
   ImportExportMeta,
+  ImportExportMode,
   ImportExportPhase,
   ImportExportPreview,
+  ImportExportPreviewAction,
   ImportExportPreviewRow,
   ImportExportProgress,
   ImportExportRowOutcome,

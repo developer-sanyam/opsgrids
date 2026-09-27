@@ -140,14 +140,23 @@ describe("runImport: the ordinary run", () => {
       return Promise.resolve({ id: payload.sku });
     }, rowsOf(3));
     await h.run();
-    expect(h.progress[0]).toEqual({ done: 0, total: 3, created: 0, skipped: 0, failed: 0, waiting: null });
-    expect(h.progress.at(-1)).toEqual({ done: 3, total: 3, created: 1, skipped: 1, failed: 1, waiting: null });
+    expect(h.progress[0]).toEqual({ done: 0, total: 3, created: 0, updated: 0, skipped: 0, failed: 0, waiting: null });
+    expect(h.progress.at(-1)).toEqual({ done: 3, total: 3, created: 1, updated: 0, skipped: 1, failed: 1, waiting: null });
     expect(h.progress.map((p) => p.done)).toEqual([0, 1, 2, 3]);
   });
 
   it("is an empty result for no rows", async () => {
     const h = harness(() => Promise.resolve(undefined), []);
-    expect(await h.run()).toEqual({ outcomes: [], created: 0, skipped: 0, failed: 0, invalid: 0, cancelled: false });
+    expect(await h.run()).toEqual({
+      outcomes: [],
+      created: 0,
+      updated: 0,
+      unchanged: 0,
+      skipped: 0,
+      failed: 0,
+      invalid: 0,
+      cancelled: false,
+    });
   });
 });
 

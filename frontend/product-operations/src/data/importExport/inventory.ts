@@ -10,25 +10,44 @@
  *    the spellings the server folds onto them ("Nos" is `pcs`), which is what a Tally sheet says.
  *  - `item_category_id` wants the id, while a person knows the code: the sheet carries the code and
  *    the lookup turns it into the id.
+ *
+ * An update is one `PATCH /operations/inventory/{id}` carrying only the fields that differ. The
+ * endpoint refuses `sku`, `currency` and stock (a 422), so those are immutable fields that only
+ * ever compare. Two of its behaviours are traps the fields below are written around:
+ *  - `uom` is stored as the raw string sent, even when it names the unit the item already has
+ *    ("Nos" for "pcs"), so it is compared as the unit it resolves to and sent only when that
+ *    differs, as the organisation's own spelling of the unit.
+ *  - `unit_value_minor` is in the item's own currency, which cannot change, so the engine
+ *    converts the cell with `currencyOf` and a Currency cell naming another currency refuses the row.
+ *
+ * A row finds its item by Record ID or by SKU, an exact key on the server (`keyMatch` is left at the
+ * engine's default, `exact`), so a SKU that differs only in capitals is never taken for the same item.
  */
-import { defineImportEntity, minorToMajor } from "@opsgrids/client";
-import type { LookupSet } from "@opsgrids/client";
+import { collectPages, defineImportEntity, minorToMajor } from "@opsgrids/client";
+import type { ImportColumn, LookupSet } from "@opsgrids/client";
 
-import { createInventoryItem, listInventory } from "@/api/client";
+import { createInventoryItem, listInventory, updateInventoryItem } from "@/api/client";
 import type { ListInventoryParams } from "@/api/client";
-import type { InventoryItemIn, InventoryItemOut } from "@/api/types";
+import type { InventoryItemIn, InventoryItemOut, InventoryItemPatch } from "@/api/types";
 import { loadItemCategoryCodes, loadUnits, loadWarehouseNames } from "./referenceData";
 import {
   CATEGORY_OPTIONS,
   CURRENCY_HINT,
   CURRENCY_PATTERN,
+  columnOf,
   optionLabel,
   optionalBoolean,
   optionalNumber,
   optionalText,
+  patchOf,
+  refuseAmbiguousChanges,
   requiredOption,
   requiredText,
+  resolveLookupCell,
   resolveReference,
+  sameCurrency,
+  storedReference,
+  textOrNull,
 } from "./shared";
 import { canonicalUnitLabel } from "./units";
 
@@ -51,6 +70,181 @@ async function loadLookups(signal: AbortSignal): Promise<LookupSet> {
   return { warehouses, units, itemCategories };
 }
 
+const COLUMNS: readonly ImportColumn[] = [
+  {
+    key: "sku",
+    header: "SKU",
+    kind: "text",
+    required: true,
+    help: "The item's unique code. It cannot be changed once the item exists.",
+    maxLength: 60,
+    pattern: /^[A-Za-z0-9._-]+$/,
+    patternHint: "Letters, digits, . _ -",
+  },
+  {
+    key: "name",
+    header: "Item name",
+    kind: "text",
+    required: true,
+    help: "What the item is called.",
+    maxLength: 200,
+  },
+  {
+    key: "category",
+    header: "Category",
+    kind: "enum",
+    required: true,
+    help: "The procurement category the item's spend rolls up to.",
+    options: CATEGORY_OPTIONS,
+  },
+  {
+    key: "warehouse",
+    header: "Warehouse",
+    kind: "text",
+    required: true,
+    help: "Where the item is stocked. The name of an existing warehouse, as on the Lists sheet. Changing it on an existing item moves the item's stock to the new warehouse.",
+    maxLength: 120,
+    lookup: "warehouses",
+    lookupHint: "Warehouses must exist already and are matched by name, ignoring capitals.",
+    lookupHintUpdate:
+      "Use a warehouse from the Lists sheet, matched by name ignoring capitals, or leave the cell blank to keep the item where it is.",
+  },
+  {
+    key: "uom",
+    header: "Unit of measure",
+    kind: "text",
+    required: true,
+    help: "How the item is counted, such as pcs, kg or l. Must be a unit on the Lists sheet, or a common spelling of one such as Nos, Kgs or Ltr. An existing item cannot change its unit once any stock has moved.",
+    maxLength: 20,
+    lookup: "units",
+    lookupHint:
+      "Only units that already exist can be used, so a misspelling cannot create a new one. See the Lists sheet.",
+    lookupHintUpdate:
+      "Use a unit from the Lists sheet, or a common spelling of one such as Nos, or leave the cell blank to keep the item's unit. A misspelling is refused so that it cannot create a new unit.",
+  },
+  {
+    key: "reorder_point",
+    header: "Reorder point",
+    kind: "integer",
+    help: "Stock at or below this many whole units counts as low stock, from 0 to 2,147,483. Blank means 0.",
+    min: 0,
+    max: MAX_REORDER_POINT,
+  },
+  {
+    key: "unit_value",
+    header: "Unit value",
+    kind: "money",
+    help: "Cost of one unit of measure, in the currency below, for example 62.40. Blank means 0 on a new item. An existing item's value is in its own currency.",
+    min: 0,
+    currencyKey: "currency",
+  },
+  {
+    key: "currency",
+    header: "Currency",
+    kind: "text",
+    help: "The currency of the unit value. Blank means INR on a new item. An existing item keeps its own currency, which cannot be changed.",
+    maxLength: 3,
+    pattern: CURRENCY_PATTERN,
+    patternHint: CURRENCY_HINT,
+  },
+  {
+    key: "opening_stock",
+    header: "Opening stock",
+    kind: "integer",
+    help: "Whole units in stock when the item is created. Blank means 0. Leave it blank on an existing item.",
+    min: 0,
+    max: 1_000_000_000_000,
+    importOnly: true,
+  },
+  {
+    key: "item_category",
+    header: "Item category code",
+    kind: "text",
+    help: "The code of the item's category in your catalogue tree. That category must already exist.",
+    lookup: "itemCategories",
+    lookupHint: "Item categories must exist already and are matched by code, ignoring capitals.",
+    lookupHintUpdate:
+      "Use a code from the Lists sheet, matched ignoring capitals. A blank cell keeps the item's category, and [clear] removes it.",
+  },
+  {
+    key: "hsn_code",
+    header: "HSN code",
+    kind: "text",
+    help: "Tax classification code. Keep the cell as text so leading zeros survive.",
+    pattern: HSN_PATTERN,
+    patternHint: "4, 6 or 8 digits",
+  },
+  {
+    key: "track_lot",
+    header: "Track lots",
+    kind: "boolean",
+    help: "Whether stock of this item is tracked by lot. Blank means no.",
+  },
+  {
+    key: "track_roll",
+    header: "Track rolls",
+    kind: "boolean",
+    help: "Whether stock of this item is tracked by roll. Blank means no.",
+  },
+  {
+    key: "track_expiry",
+    header: "Track expiry",
+    kind: "boolean",
+    help: "Whether stock of this item carries an expiry date. Blank means no.",
+  },
+  {
+    key: "track_quality",
+    header: "Track quality",
+    kind: "boolean",
+    help: "Whether stock of this item carries a quality status. Blank means no.",
+  },
+  {
+    key: "is_active",
+    header: "Active",
+    kind: "boolean",
+    help: "Whether the item appears in pickers and new transactions. Blank means active.",
+  },
+  {
+    key: "on_hand",
+    header: "On hand",
+    kind: "decimal",
+    help: "Stock on hand, worked out by the app from stock movements.",
+    readOnly: true,
+  },
+  {
+    key: "reserved",
+    header: "Reserved",
+    kind: "decimal",
+    help: "Stock set aside for reservations, worked out by the app.",
+    readOnly: true,
+  },
+  {
+    key: "available",
+    header: "Available",
+    kind: "decimal",
+    help: "Stock on hand less what is reserved, worked out by the app.",
+    readOnly: true,
+  },
+  {
+    key: "updated_at",
+    header: "Last updated",
+    kind: "text",
+    help: "When the item was last changed.",
+    readOnly: true,
+  },
+  {
+    key: "id",
+    header: "Record ID",
+    kind: "text",
+    help: "The item's identifier in OpsGrids.",
+    readOnly: true,
+  },
+];
+
+const WAREHOUSE = columnOf(COLUMNS, "warehouse");
+const UNIT = columnOf(COLUMNS, "uom");
+const ITEM_CATEGORY = columnOf(COLUMNS, "item_category");
+
 export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItemOut, InventoryFilters>({
   id: "operations.inventory",
   noun: "inventory items",
@@ -58,170 +252,7 @@ export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItem
   fileStem: "inventory-items",
   recordIdKey: "id",
 
-  columns: [
-    {
-      key: "sku",
-      header: "SKU",
-      kind: "text",
-      required: true,
-      help: "The item's unique code. It cannot be changed once the item exists.",
-      maxLength: 60,
-      pattern: /^[A-Za-z0-9._-]+$/,
-      patternHint: "Letters, digits, . _ -",
-    },
-    {
-      key: "name",
-      header: "Item name",
-      kind: "text",
-      required: true,
-      help: "What the item is called.",
-      maxLength: 200,
-    },
-    {
-      key: "category",
-      header: "Category",
-      kind: "enum",
-      required: true,
-      help: "The procurement category the item's spend rolls up to.",
-      options: CATEGORY_OPTIONS,
-    },
-    {
-      key: "warehouse",
-      header: "Warehouse",
-      kind: "text",
-      required: true,
-      help: "Where the item is stocked. The name of an existing warehouse, as on the Lists sheet.",
-      maxLength: 120,
-      lookup: "warehouses",
-      lookupHint: "Warehouses must exist already and are matched by name, ignoring capitals.",
-    },
-    {
-      key: "uom",
-      header: "Unit of measure",
-      kind: "text",
-      required: true,
-      help: "How the item is counted, such as pcs, kg or l. Must be a unit on the Lists sheet, or a common spelling of one such as Nos, Kgs or Ltr.",
-      maxLength: 20,
-      lookup: "units",
-      lookupHint:
-        "Only units that already exist can be used, so a misspelling cannot create a new one. See the Lists sheet.",
-    },
-    {
-      key: "reorder_point",
-      header: "Reorder point",
-      kind: "integer",
-      help: "Stock at or below this many whole units counts as low stock, from 0 to 2,147,483. Blank means 0.",
-      min: 0,
-      max: MAX_REORDER_POINT,
-    },
-    {
-      key: "unit_value",
-      header: "Unit value",
-      kind: "money",
-      help: "Cost of one unit of measure, in the currency below, for example 62.40. Blank means 0.",
-      min: 0,
-      currencyKey: "currency",
-    },
-    {
-      key: "currency",
-      header: "Currency",
-      kind: "text",
-      help: "The currency of the unit value. Blank means INR.",
-      maxLength: 3,
-      pattern: CURRENCY_PATTERN,
-      patternHint: CURRENCY_HINT,
-    },
-    {
-      key: "opening_stock",
-      header: "Opening stock",
-      kind: "integer",
-      help: "Whole units in stock when the item is created. Blank means 0.",
-      min: 0,
-      max: 1_000_000_000_000,
-      importOnly: true,
-    },
-    {
-      key: "item_category",
-      header: "Item category code",
-      kind: "text",
-      help: "The code of the item's category in your catalogue tree. That category must already exist.",
-      lookup: "itemCategories",
-      lookupHint: "Item categories must exist already and are matched by code, ignoring capitals.",
-    },
-    {
-      key: "hsn_code",
-      header: "HSN code",
-      kind: "text",
-      help: "Tax classification code. Keep the cell as text so leading zeros survive.",
-      pattern: HSN_PATTERN,
-      patternHint: "4, 6 or 8 digits",
-    },
-    {
-      key: "track_lot",
-      header: "Track lots",
-      kind: "boolean",
-      help: "Whether stock of this item is tracked by lot. Blank means no.",
-    },
-    {
-      key: "track_roll",
-      header: "Track rolls",
-      kind: "boolean",
-      help: "Whether stock of this item is tracked by roll. Blank means no.",
-    },
-    {
-      key: "track_expiry",
-      header: "Track expiry",
-      kind: "boolean",
-      help: "Whether stock of this item carries an expiry date. Blank means no.",
-    },
-    {
-      key: "track_quality",
-      header: "Track quality",
-      kind: "boolean",
-      help: "Whether stock of this item carries a quality status. Blank means no.",
-    },
-    {
-      key: "is_active",
-      header: "Active",
-      kind: "boolean",
-      help: "Whether the item appears in pickers and new transactions. Blank means active.",
-    },
-    {
-      key: "on_hand",
-      header: "On hand",
-      kind: "decimal",
-      help: "Stock on hand, worked out by the app from stock movements.",
-      readOnly: true,
-    },
-    {
-      key: "reserved",
-      header: "Reserved",
-      kind: "decimal",
-      help: "Stock set aside for reservations, worked out by the app.",
-      readOnly: true,
-    },
-    {
-      key: "available",
-      header: "Available",
-      kind: "decimal",
-      help: "Stock on hand less what is reserved, worked out by the app.",
-      readOnly: true,
-    },
-    {
-      key: "updated_at",
-      header: "Last updated",
-      kind: "text",
-      help: "When the item was last changed.",
-      readOnly: true,
-    },
-    {
-      key: "id",
-      header: "Record ID",
-      kind: "text",
-      help: "The item's identifier in OpsGrids.",
-      readOnly: true,
-    },
-  ],
+  columns: COLUMNS,
 
   sampleRows: [
     {
@@ -269,8 +300,14 @@ export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItem
     "Opening stock is set only when the item is created. To change the stock of an item later, use Adjust stock in the app.",
     "An item category must exist before items can use it. Import item categories first, then give each item the category's code.",
     "Category is the fixed procurement category. Item category code places the item in your own catalogue tree.",
-    "A SKU that already exists is skipped, not changed. The same SKU cannot be used twice, even as a variant SKU.",
+    "A SKU that already exists is skipped, not changed, unless you choose Add new and update existing. The same SKU cannot be used twice, even as a variant SKU.",
     "The On hand, Reserved, Available and Last updated columns are worked out by the app and ignored on import.",
+    "Updating: a row finds its item by its Record ID, or by its SKU spelled exactly as it is stored. A SKU that differs only in capitals is refused, naming the stored spelling: use that spelling, or the Record ID.",
+    "Updating: SKU, Currency and Opening stock cannot be changed, and a cell that disagrees with the item is refused. Stock changes only through Adjust stock.",
+    "Updating: Item category code and HSN code can be emptied with [clear]. No other column can.",
+    "Updating: Unit value is in the item's own currency. Leave Currency blank or give the item's currency; naming another currency refuses the row.",
+    "Updating: a unit that means the unit the item already has (Nos for pcs) is no change. A different unit is refused once any stock has moved.",
+    "Updating: a different Warehouse moves the item's stock there, recorded as a stock movement, and is refused while any of that stock is reserved.",
   ],
 
   loadLookups,
@@ -350,5 +387,65 @@ export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItem
       updated_at: item.updated_at,
       id: item.id,
     }),
+  },
+
+  update: {
+    loadExisting: (ctx) =>
+      collectPages((page, size) => listInventory({ page, size, signal: ctx.signal }), {
+        signal: ctx.signal,
+        key: (item) => item.id,
+      }),
+    idOf: (item) => item.id,
+    keyColumn: "sku",
+    keyOf: (item) => item.sku,
+    recordLabel: (item) => `${item.sku} · ${item.name}`,
+    currencyOf: (item) => item.currency,
+
+    fields: [
+      { column: "sku", current: (item) => item.sku, immutable: true },
+      { column: "name", current: (item) => item.name },
+      { column: "category", current: (item) => item.category },
+      {
+        column: "warehouse",
+        current: (item) => item.warehouse,
+        resolve: resolveLookupCell(WAREHOUSE),
+      },
+      {
+        // Compared as the unit both sides resolve to, and sent as the organisation's own spelling of
+        // it: the API keeps whatever string it is sent, so "pcs" for an item stored as "Nos" would
+        // rewrite the spelling for no change of unit.
+        column: "uom",
+        current: (item, ctx) => ctx.lookups.units?.resolve(item.uom) ?? item.uom,
+        resolve: resolveLookupCell(UNIT),
+      },
+      { column: "reorder_point", current: (item) => item.reorder_point },
+      { column: "unit_value", field: "unit_value_minor", current: (item) => item.unit_value_minor },
+      { column: "currency", current: (item) => item.currency, same: sameCurrency, immutable: true },
+      // The list never returns an opening stock and stock moves only by adjustment, so any filled
+      // cell is refused without claiming what is stored.
+      { column: "opening_stock", current: () => undefined, immutable: true },
+      {
+        column: "item_category",
+        field: "item_category_id",
+        current: (item, ctx) =>
+          item.item_category_id === null ? null : storedReference(ctx.lookups.itemCategories, item.item_category_id),
+        resolve: resolveLookupCell(ITEM_CATEGORY),
+        clear: null,
+      },
+      { column: "hsn_code", current: (item) => textOrNull(item.hsn_code), clear: "" },
+      { column: "track_lot", current: (item) => item.track_lot },
+      { column: "track_roll", current: (item) => item.track_roll },
+      { column: "track_expiry", current: (item) => item.track_expiry },
+      { column: "track_quality", current: (item) => item.track_quality },
+      { column: "is_active", current: (item) => item.is_active },
+    ],
+
+    check(row, _item, changed, ctx) {
+      refuseAmbiguousChanges([WAREHOUSE, UNIT, ITEM_CATEGORY], row, changed, ctx);
+    },
+
+    async send(item, body) {
+      await updateInventoryItem(item.id, patchOf<InventoryItemPatch>(body));
+    },
   },
 });

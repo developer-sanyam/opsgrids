@@ -1,18 +1,24 @@
-import { collectPages, defineImportEntity, makeLookup, minorToMajor } from "@opsgrids/client";
-import type { ImportColumn, SheetValue } from "@opsgrids/client";
+import { RowProblem, collectPages, defineImportEntity, makeLookup, minorToMajor } from "@opsgrids/client";
+import type { ImportColumn, SheetValue, UpdateSpec } from "@opsgrids/client";
 
-import { createProject, listMembers, listProjects } from "@/api/client";
+import { createProject, listMembers, listProjects, updateProject } from "@/api/client";
 import type { ListProjectsParams } from "@/api/client";
-import type { ProjectHealth, ProjectIn, ProjectOut, ProjectPhase } from "@/api/types";
+import type { ProjectHealth, ProjectIn, ProjectOut, ProjectPhase, ProjectUpdate } from "@/api/types";
 import { HEALTH_LABEL, PHASE_LABEL } from "@/data/labels";
 
 import {
+  columnOf,
   labelOfOption,
+  lookupField,
   numberOf,
   optionOf,
+  refuseUnlistedReferences,
   requiredTextOf,
   resolveReference,
+  sameLines,
+  storedText,
   textOf,
+  upperCased,
 } from "./rowValues";
 
 /** What the Portfolio screen tracks, and so what an export of it must respect. */
@@ -68,7 +74,7 @@ const columns: readonly ImportColumn[] = [
     header: "Client",
     kind: "text",
     maxLength: 200,
-    help: "Who the project is for. Leave blank for an internal project.",
+    help: "Who the project is for. On a new project, leave blank for an internal project.",
   },
   {
     key: "owner",
@@ -77,21 +83,23 @@ const columns: readonly ImportColumn[] = [
     lookup: OWNERS,
     lookupHint:
       "Use the team member's name exactly as on the Team screen. If two members share a name, rename one first.",
-    help: "The delivery lead, by name as listed on the Team screen. Leave blank for an unassigned project.",
+    lookupHintUpdate:
+      "Use the team member's name exactly as on the Team screen. If two members share a name, rename one first. To remove the owner, write [clear]; a blank cell keeps it.",
+    help: "The delivery lead, by name as listed on the Team screen. On a new project, leave blank for an unassigned project.",
   },
   {
     key: "phase",
     header: "Phase",
     kind: "enum",
     options: PHASE_OPTIONS,
-    help: "Where the project is. Leave blank for Discovery.",
+    help: "Where the project is. On a new project, leave blank for Discovery.",
   },
   {
     key: "health",
     header: "Health",
     kind: "enum",
     options: HEALTH_OPTIONS,
-    help: "How delivery is going. Leave blank for On track.",
+    help: "How delivery is going. On a new project, leave blank for On track.",
   },
   {
     key: "progress_pct",
@@ -141,7 +149,7 @@ const columns: readonly ImportColumn[] = [
     pattern: /^[A-Za-z]{3}$/,
     patternHint: "A three-letter currency code such as INR or USD.",
     defaultCurrency: DEFAULT_CURRENCY,
-    help: `The currency of the budget and the spend. Leave blank for ${DEFAULT_CURRENCY}.`,
+    help: `The currency of the budget and the spend. On a new project, leave blank for ${DEFAULT_CURRENCY}.`,
   },
   {
     key: "team_size",
@@ -234,14 +242,119 @@ const sampleRows: readonly Record<string, SheetValue>[] = [
 ];
 
 const notes = [
-  "Project codes must be unique. A code that already exists, even one held by a deleted project, is skipped and never updated.",
-  "Owner is found by the member's name as listed on the Team screen. If two members share a name, the row is refused until one of them is renamed. Leave Owner blank for an unassigned project.",
-  "Start date and target date are both required, and the target date cannot be before the start date.",
-  `Budget and spent are written in whole currency units, for example 2500000 or 2500000.50, with the currency in the Currency column. A blank currency means ${DEFAULT_CURRENCY}.`,
+  "Project codes must be unique. With \"Add new records only\", a code that already exists, even one held by a deleted project, is skipped and never updated.",
+  "Owner is found by the member's name as listed on the Team screen. If two members share a name, the row is refused until one of them is renamed. On a new project, leave Owner blank for an unassigned project.",
+  "To add a project, start date and target date are both required, and the target date cannot be before the start date.",
+  `Budget and spent are written in whole currency units, for example 2500000 or 2500000.50, with the currency in the Currency column. On a new project, a blank currency means ${DEFAULT_CURRENCY}.`,
   "Phase and health can be left blank: a new project starts in Discovery and On track.",
   "Milestones are counted from the project's milestones. Open tasks is a stored figure, not counted from tasks. Neither can be imported, and an imported project starts with 0 open tasks.",
-  "A row with a Record ID came out of the system and is already there, so it is refused. To use an exported file as a starting point, delete its Record ID column first.",
+  "A row with a Record ID came out of the system and is already there, so \"Add new records only\" refuses it. To use an exported file as a starting point, delete its Record ID column first. With \"Add new and update existing\", the Record ID says which project to update.",
+  "Updating: a project is found by its code exactly as it is stored, and capitals count: PRJ-104 and prj-104 are two different codes. A row whose code differs from a project's only in capitals is refused with the code as it is stored: use that spelling, or the Record ID.",
+  "Updating: the start and target dates are checked together with the project's stored dates, so a Start date after the stored target, or a Target date before the stored start, is refused.",
+  "Updating: a blank Currency keeps the project's own currency, so its amounts are read in that currency and not in INR. Changing the currency does not convert the budget or the spend: a row that changes it must also give Budget and Spent in the new currency (write 0 for an amount that is 0), or it is refused.",
 ];
+
+/**
+ * The key of `ProjectUpdate` each updatable column is sent under. `PATCH
+ * /projects-workspace/projects/{code}` drops a key it does not know and still answers 200, so a
+ * key that is not on the schema would look like a saved change: naming them here makes that a
+ * type error instead.
+ */
+const WIRE = {
+  name: "name",
+  client: "client",
+  owner: "owner_ref",
+  phase: "phase",
+  health: "health",
+  progress_pct: "progress_pct",
+  start_date: "start_date",
+  target_date: "target_date",
+  budget: "budget_minor",
+  spent: "spent_minor",
+  currency: "currency",
+  team_size: "team_size",
+  summary: "summary",
+} as const satisfies Record<string, keyof ProjectUpdate>;
+
+/**
+ * How an existing project is updated from a sheet. `PATCH /projects-workspace/projects/{code}`
+ * takes the code in the URL, has no null guard (a null on a required column is a 409, and on
+ * either date a 500) and, unlike most endpoints, silently drops keys it does not know while
+ * answering 200. So the code is `immutable` and refused when it differs, only the owner is cleared
+ * with `null` and Client and Summary with `""` (their columns are never null), and no other column
+ * can be cleared. The owner is found by member name and sent as the member's ref: `check` refuses
+ * a changed owner the list cannot find, and an unchanged one is left alone whatever the list holds
+ * (a member who has left, two members who share a name). The server checks the dates after
+ * merging them with the stored ones and relabels a budget when the currency changes instead of
+ * converting it; `check` does both before anything is sent.
+ *
+ * The code is matched exactly (the engine's default): the server keeps `PRJ-104` and `prj-104` as
+ * two projects.
+ */
+const projectUpdate: UpdateSpec<ProjectOut> = {
+  loadExisting: (ctx) =>
+    collectPages((page, size) => listProjects({ page, size, signal: ctx.signal }), {
+      signal: ctx.signal,
+      key: (project) => project.id,
+    }),
+  idOf: (project) => project.id,
+  keyColumn: "code",
+  keyOf: (project) => project.code,
+  recordLabel: (project) => `${project.code} · ${project.name}`,
+  currencyOf: (project) => project.currency,
+  fields: [
+    { column: "code", current: (p) => p.code, immutable: true },
+    { column: "name", field: WIRE.name, current: (p) => p.name },
+    { column: "client", field: WIRE.client, current: (p) => storedText(p.client), clear: "" },
+    // An unowned project comes back as "Unassigned" with no id; an export writes the owner's own
+    // name, which is the cell a sheet sent back holds.
+    lookupField(columnOf(columns, "owner"), (p) => storedText(p.owner.id), {
+      field: WIRE.owner,
+      written: (p) => p.owner.name,
+    }),
+    { column: "phase", field: WIRE.phase, current: (p) => p.phase },
+    { column: "health", field: WIRE.health, current: (p) => p.health },
+    { column: "progress_pct", field: WIRE.progress_pct, current: (p) => p.progress_pct },
+    { column: "start_date", field: WIRE.start_date, current: (p) => p.start_date },
+    { column: "target_date", field: WIRE.target_date, current: (p) => p.target_date },
+    { column: "budget", field: WIRE.budget, current: (p) => p.budget_minor },
+    { column: "spent", field: WIRE.spent, current: (p) => p.spent_minor },
+    { column: "currency", field: WIRE.currency, current: (p) => p.currency.toUpperCase(), resolve: upperCased },
+    { column: "team_size", field: WIRE.team_size, current: (p) => p.team_size },
+    { column: "summary", field: WIRE.summary, current: (p) => storedText(p.summary), clear: "", same: sameLines },
+  ],
+  check(row, project, changed, ctx) {
+    refuseUnlistedReferences(columns, row, changed, ctx);
+
+    const start = textOf(row, "start_date") ?? project.start_date;
+    const target = textOf(row, "target_date") ?? project.target_date;
+    if (target < start) {
+      throw new RowProblem(
+        `The target date cannot be before the start date. With this row the project would start on ${start} and be due on ${target}.`,
+      );
+    }
+
+    const named = textOf(row, "currency")?.toUpperCase();
+    if (named === undefined || named === project.currency.toUpperCase()) return;
+    // The amounts are stored in the old currency and the server relabels them: an amount the row
+    // does not restate would silently become a sum in the new currency. The rule holds whatever is
+    // on file, a stored 0 included, as it does for an asset's cost.
+    const unstated = [
+      { header: "Budget", blank: numberOf(row, "budget") === null },
+      { header: "Spent", blank: numberOf(row, "spent") === null },
+    ].filter(({ blank }) => blank);
+    if (unstated.length > 0) {
+      throw new RowProblem(
+        `Currency would change from ${project.currency} to ${named}, but changing it does not convert amounts. Give ${unstated.map(({ header }) => header).join(" and ")} in ${named} too, or leave Currency blank.`,
+      );
+    }
+  },
+  async send(project, body) {
+    // The code is the URL's, never the body's. The body holds only the keys of `WIRE`, all of them
+    // keys of `ProjectUpdate`, and each value is what its own column parsed to.
+    await updateProject(project.code, body as ProjectUpdate);
+  },
+};
 
 export const portfolioEntity = defineImportEntity<ProjectIn, ProjectOut, PortfolioFilters>({
   id: "projects.portfolio",
@@ -252,8 +365,9 @@ export const portfolioEntity = defineImportEntity<ProjectIn, ProjectOut, Portfol
   sampleRows,
   notes,
   recordIdKey: "id",
+  update: projectUpdate,
   async loadLookups(signal) {
-    const members = await collectPages((page, size) => listMembers({ page, size }), {
+    const members = await collectPages((page, size) => listMembers({ page, size, signal }), {
       signal,
       key: (member) => member.id,
     });
@@ -305,7 +419,7 @@ export const portfolioEntity = defineImportEntity<ProjectIn, ProjectOut, Portfol
     return { id: project.id };
   },
   export: {
-    fetchPage: ({ page, size, filters }) =>
+    fetchPage: ({ page, size, filters, signal }) =>
       listProjects({
         q: filters.q,
         health: filters.health,
@@ -313,6 +427,7 @@ export const portfolioEntity = defineImportEntity<ProjectIn, ProjectOut, Portfol
         sort: filters.sort,
         page,
         size,
+        signal,
       }),
     toRow: (project) => ({
       code: project.code,

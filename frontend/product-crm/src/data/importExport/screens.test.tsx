@@ -31,6 +31,7 @@ const recorded = vi.hoisted(() => ({
 const RESULT: UseImportExportResult = {
   state: {
     phase: "menu",
+    mode: "add",
     error: null,
     preview: null,
     progress: null,
@@ -40,6 +41,7 @@ const RESULT: UseImportExportResult = {
     notice: null,
   },
   actions: {
+    setMode: async () => undefined,
     openFile: async () => undefined,
     startImport: async () => undefined,
     cancelImport: () => undefined,
@@ -55,7 +57,9 @@ const RESULT: UseImportExportResult = {
     maxRows: 1000,
     exportMaxRows: 10_000,
     requiredHeaders: [],
+    recordIdHeader: "Record ID",
     canExport: true,
+    canUpdate: false,
   },
 };
 
@@ -134,7 +138,7 @@ function listRequests(path: string): number {
 }
 
 function importedSummary(): ImportSummary {
-  return { created: 2, skipped: 0, failed: 0, invalid: 0, cancelled: false, outcomes: [] };
+  return { created: 2, updated: 0, unchanged: 0, skipped: 0, failed: 0, invalid: 0, cancelled: false, outcomes: [] };
 }
 
 interface Case {

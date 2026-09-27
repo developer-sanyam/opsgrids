@@ -85,6 +85,10 @@ export interface ImportColumn {
   /** `lookup` columns: a sentence added to the "is not in the list" error saying how to fix it
    *  ("Import the manager first, then run this file again: rows already imported are skipped."). */
   lookupHint?: string | undefined;
+  /** `lookup` columns: the hint for a row that updates an existing record, used instead of
+   *  `lookupHint` where the add-mode advice is wrong ("Leave blank to assign it to yourself": when
+   *  updating, blank leaves the field alone). Absent: `lookupHint` applies to both. */
+  lookupHintUpdate?: string | undefined;
 }
 
 /** A named set of reference data, loaded once per dialog open from the full list (all pages). */
@@ -139,6 +143,124 @@ export class RowProblem extends Error {
   }
 }
 
+// ------------------------------------------------------------------ update mode (ADR-0022 addendum)
+
+/** `add`: rows create records (today's behaviour). `addAndUpdate`: a row that names an existing
+ *  record (by its exported Record ID, or by the list's unique key) updates it instead. */
+export type ImportMode = "add" | "addAndUpdate";
+
+/** The text a cell holds to empty a field. A blank cell means "leave it alone". */
+export const CLEAR_TOKEN = "[clear]";
+
+/** One column an update may change (or, when `immutable`, must not). */
+export interface UpdateField<Item> {
+  /** The `ImportColumn.key` of the sheet column. */
+  column: string;
+  /** The key sent in the update body. Default: `column`. */
+  field?: string | undefined;
+  /** The stored value, in the parsed cell's own terms (money as minor units, an ISO date, an
+   *  enum's `value`, a lookup's *value*), with an empty stored value as `null`. `undefined` means
+   *  the list never returns it (opening stock): an immutable field then refuses any filled cell
+   *  without claiming what is stored, and an updatable one is always sent. */
+  current(item: Item, ctx: ImportContext): ParsedValue | undefined;
+  /** Turns the parsed cell into the stored terms when they differ (a lookup column's parsed value
+   *  is its label; return the id or code the list stores). May throw `RowProblem`. */
+  resolve?: ((value: ParsedValue, ctx: ImportContext) => ParsedValue) | undefined;
+  /** The value sent in the body for a changed field. Default: the resolved value. */
+  toWire?: ((value: ParsedValue) => unknown) | undefined;
+  /** What to send to EMPTY the field: `""` or `null`, whichever that endpoint accepts. Absent means
+   *  the field cannot be cleared and a `[clear]` cell refuses the row. Never guess `null`:
+   *  several endpoints answer it with a 409 or a 500. */
+  clear?: "" | null | undefined;
+  /** Compares a cell (already resolved) with the stored value. Default: strict equality. */
+  same?: ((cell: ParsedValue, stored: ParsedValue) => boolean) | undefined;
+  /** Identity or otherwise unchangeable (SKU, code, employee number, currency on some lists): never
+   *  sent. A cell that differs from the stored value refuses the row instead of being ignored. */
+  immutable?: boolean | undefined;
+}
+
+/** An update that is not a plain field change (a deal's stage move, a contact's phone). */
+export interface ExtraStep {
+  /** Headers of the columns this step changes, at least one: the preview lists them, and a run that
+   *  fails part-way names them as saved or not saved. */
+  changed: readonly string[];
+  run(): Promise<void>;
+}
+
+/** How an existing list is updated from a sheet. Optional on an entity: absent means the list can
+ *  only be added to. */
+export interface UpdateSpec<Item> {
+  /** Every record of the list (all pages, keyed by id): what rows are matched and diffed against. */
+  loadExisting(ctx: ImportContext): Promise<readonly Item[]>;
+  /** The record's own id: what a Record ID cell carries. */
+  idOf(item: Item): string;
+  /** The `ImportColumn.key` of the sheet column holding the list's unique key (SKU, code, employee
+   *  number, asset tag), for rows that have no Record ID. Absent: rows match by Record ID only. */
+  keyColumn?: string | undefined;
+  /** The unique key of a stored record, or null when it has none. */
+  keyOf?(item: Item): string | null;
+  /**
+   * How a row's key cell finds its record, and it MUST follow the server's uniqueness rule for that
+   * key: `exact` (the default: trim only) for every key the server compares exactly (deal names,
+   * SKUs, codes, employee numbers, asset tags), `caseless` (trim, ignore capitals, keep inner
+   * spaces) only where the server itself treats capitals as the same (company names). A key that
+   * differs from a stored one only in capitals, where the server counts them as two, is REFUSED
+   * with the stored spelling named, never matched: it could be a different record.
+   */
+  keyMatch?: "exact" | "caseless" | undefined;
+  /** Which stored record a row updates, in words a person recognises (a company's name, a deal's
+   *  name, a lead's name, an item's SKU and name). Shown beside every update row in the preview and
+   *  in the result report, so a shifted Record ID column is seen before anything is written. Never
+   *  a sealed value (a lead's email or phone, a contact's phone, employee personal data). */
+  recordLabel?(item: Item): string;
+  /** The stored record's ISO currency, for lists whose amounts carry one. On an update, a money cell
+   *  is converted with THIS currency when the row names none, and a blank Currency cell stays blank
+   *  (unchanged) instead of defaulting to INR, which would silently re-price a yen or dinar record. */
+  currencyOf?(item: Item): string | null;
+  fields: readonly UpdateField<Item>[];
+  /**
+   * Importable columns an update deliberately does not handle (lead email and phone, which have no
+   * update endpoint, a column only a create sets). A filled cell in one is REFUSED ("<Header> cannot
+   * be changed by an update: leave the cell blank"), never silently ignored, so nobody believes a
+   * field changed when it did not. `checkImportEntity` fails an update spec in which an importable
+   * column is neither a `fields[].column` (nor the key or Record ID column) nor listed here.
+   */
+  notUpdatable?: readonly string[];
+  /** Columns handled by an `extras` step rather than a field (a contact's phone): they count as
+   *  covered for the `notUpdatable` completeness check. */
+  extraColumns?: readonly string[];
+  /** Refuses a change the list's own rules forbid, given what would change (a converted lead's
+   *  status, a closed deal's stage): throw `RowProblem`. Runs after the diff. */
+  check?(row: ParsedRow, existing: Item, changed: readonly string[], ctx: ImportContext): void;
+  /** Sends the changed fields (only those) to the list's ordinary update endpoint. */
+  send(existing: Item, body: Readonly<Record<string, unknown>>, ctx: ImportContext): Promise<void>;
+  /** Steps that are not plain field changes, run after `send`. */
+  extras?(
+    row: ParsedRow,
+    cleared: ReadonlySet<string>,
+    existing: Item,
+    ctx: ImportContext,
+  ): readonly ExtraStep[];
+}
+
+/**
+ * How the runner sends one request of a plan: it waits for its turn (throttling), waits out a 429
+ * and tries that request again, and gives up when the run is cancelled. A plan hands each of its
+ * requests (the field update, then every extra step) to it, so a 429 retries only the request that
+ * received it: a 429 request never executed, but the ones before it did and must not be repeated.
+ * `changed` is the headers of the columns that request changes, so a run that fails part-way can say
+ * which were saved and which were not.
+ */
+export type StepRunner = (step: () => Promise<void>, changed: readonly string[]) => Promise<void>;
+
+/** What one matched row will do: the headers it changes, and the calls that do it. */
+export interface UpdatePlan {
+  changed: readonly string[];
+  /** Sends the changed fields, then each extra step. Every request goes through `around` when given,
+   *  which is how the runner paces it; each `send` and each extra step must be ONE request. */
+  run(around?: StepRunner): Promise<void>;
+}
+
 /**
  * One importable list. Keep it in the app (`src/data/importExport/<entity>.ts`), as a module-level
  * constant so its identity is stable across renders.
@@ -168,7 +290,9 @@ export interface ImportEntity<Payload, Item = unknown, Filters = void> {
   recordIdKey?: string | undefined;
   /** Reference data (owners, warehouses, categories) from the full lists. Called once per open. */
   loadLookups?: ((signal: AbortSignal) => Promise<LookupSet>) | undefined;
-  /** Cross-column rules the per-column checks cannot express. Return a sentence, or null when fine. */
+  /** Cross-column rules the per-column checks cannot express. Return a sentence, or null when fine.
+   *  Judges rows that create a record: a row that updates one is left to `update.check`, since a
+   *  partial row (blank cells leave fields alone) would fail rules written for a complete one. */
   validateRow?: ((row: ParsedRow, ctx: ImportContext) => string | null) | undefined;
   /** The body the existing create endpoint takes. Resolve lookups here; throw `RowProblem` when a
    *  name does not resolve or a rule is broken. */
@@ -178,25 +302,36 @@ export interface ImportEntity<Payload, Item = unknown, Filters = void> {
   create(payload: Payload, ctx: ImportContext): Promise<{ id?: string } | undefined | void>;
   /** Absent means the list cannot be exported from this dialog. */
   export?: ExportSource<Item, Filters> | undefined;
+  /** Absent means the list can only be added to: the dialog offers no "update existing" mode. */
+  update?: UpdateSpec<Item> | undefined;
 }
 
 // ------------------------------------------------------------------------ session and view state
 
-export type RowStatus = "created" | "skipped" | "failed" | "invalid";
+export type RowStatus = "created" | "updated" | "unchanged" | "skipped" | "failed" | "invalid";
 
 export interface RowOutcome {
   /** The row's number in the sheet (header is row 1, so data starts at 2). */
   row: number;
   status: RowStatus;
-  /** The reason for anything but `created`: the server's own sentence, or the local check's. */
+  /** The reason for anything but `created` and `updated`: the server's own sentence, or the local check's. */
   message: string | null;
   /** The new record's id, when the create returned one. */
   id?: string | undefined;
+  /** An update row: the headers of the columns it changes (or tried to change, when it failed). */
+  changes?: readonly string[] | undefined;
+  /** An update row: which stored record it names, in words a person recognises (`UpdateSpec.recordLabel`),
+   *  so a Record ID column that slipped by a row is seen in the report. */
+  record?: string | undefined;
   /** The first required cell, so a report row is recognisable without the sheet open. */
   label: string;
 }
 
 export type ImportPhase = "menu" | "reading" | "preview" | "importing" | "done" | "error";
+
+/** What the import will do with one row. `unchanged` is an update row that already matches its
+ *  record: no request. `sample` is an unchanged example row: skipped without a message. */
+export type PreviewAction = "create" | "update" | "unchanged" | "invalid" | "sample";
 
 export interface PreviewRow {
   row: number;
@@ -206,22 +341,58 @@ export interface PreviewRow {
   error: string | null;
   /** An unchanged sample row: skipped without a message. */
   sample: boolean;
+  action: PreviewAction;
+  /** `update` rows: the headers of the columns that change. Empty otherwise. */
+  changes: readonly string[];
+  /** A row that names a stored record (an update, a row that changes nothing, or one refused after it
+   *  found its record): who it is, in words a person recognises. Null when it names none. */
+  record: string | null;
+  /** Something to say about a row that is not refused but does not do what it looks like: a row found
+   *  by its name whose only difference is capitals. Null otherwise. */
+  note: string | null;
 }
+
+/**
+ * How an update-mode preview treated the export baseline (ADR-0022 addendum): `used`, so a cell the
+ * user did not change since the export was left alone; `none`, the file has no baseline, so every
+ * filled cell is compared with the record as it is now; `unusable`, it has one that is damaged,
+ * too big or another list's, which was ignored (and behaves as `none`).
+ */
+export type BaselineUse = "used" | "none" | "unusable";
 
 export interface ImportPreview {
   fileName: string;
-  /** Data rows found (blank rows excluded). */
+  /** The mode this preview was computed for. */
+  mode: ImportMode;
+  /** Data rows found (blank rows excluded): `create + update + unchanged + invalid + sample`. */
   total: number;
+  /** Rows that will be sent: `create + update`. */
   valid: number;
   invalid: number;
   sample: number;
+  /** Rows that will add a record. In `add` mode this is `valid`. */
+  create: number;
+  /** Rows that will change a record (update mode only). */
+  update: number;
+  /** Rows that match a record and change nothing: no request is made for them (update mode only). */
+  unchanged: number;
   columns: readonly { key: string; header: string }[];
   /** At most the first 200 rows, invalid ones first. */
   rows: readonly PreviewRow[];
   /** Headers in the file that match no column (ignored). */
   unknownHeaders: readonly string[];
-  /** Required columns absent from the header row: the import cannot start until the file has them. */
+  /** Required columns absent from the header row: the import cannot start until the file has them.
+   *  Always empty in `addAndUpdate` mode: a row that updates a record needs none of them (a blank cell
+   *  leaves the field alone), and a row that adds one says what it lacks. */
   missingRequired: readonly string[];
+  /** A sentence when update mode will not match rows the way the user expects: the file has no column
+   *  that can name a record (no Record ID and no key column), so every row would be added as new, or
+   *  the list can only be matched by Record ID and some rows have none, so those are added. Null
+   *  otherwise, and in `add` mode. */
+  matchWarning: string | null;
+  /** Update mode when at least one row names a stored record: what became of the export baseline.
+   *  Null in `add` mode and when no row names a record (nothing there to be stale). */
+  baseline: BaselineUse | null;
 }
 
 export interface ImportProgress {
@@ -230,6 +401,7 @@ export interface ImportProgress {
   /** Rows that will be sent. */
   total: number;
   created: number;
+  updated: number;
   skipped: number;
   failed: number;
   /** Set while the runner waits out the rate limit. */
@@ -238,6 +410,9 @@ export interface ImportProgress {
 
 export interface ImportSummary {
   created: number;
+  updated: number;
+  /** Update rows that matched a record and changed nothing: nothing was sent for them. */
+  unchanged: number;
   skipped: number;
   failed: number;
   invalid: number;
@@ -253,6 +428,8 @@ export interface ExportProgress {
 
 export interface DataExchangeState {
   phase: ImportPhase;
+  /** What an import does with a row that names an existing record. `add` until the user chooses. */
+  mode: ImportMode;
   /** A sentence for `phase: "error"` (wrong file type, too large, unreadable, too many rows). */
   error: string | null;
   preview: ImportPreview | null;
@@ -265,6 +442,10 @@ export interface DataExchangeState {
 }
 
 export interface DataExchangeActions {
+  /** Chooses what an import does with rows that name an existing record. On a preview it checks the
+   *  file again in the new mode, from the cells already read (the file is not read twice). Ignored
+   *  while rows are being sent. */
+  setMode(mode: ImportMode): Promise<void>;
   /** Reads and validates a chosen file; moves to `reading`, then `preview` or `error`. */
   openFile(file: File): Promise<void>;
   /** Sends the valid rows; moves to `importing`, then `done`. */
@@ -290,13 +471,18 @@ export interface DataExchangeMeta {
   requiredHeaders: readonly string[];
   /** False when the entity has no `export`. */
   canExport: boolean;
+  /** True when the entity has an `update` spec: the dialog offers "Add new and update existing". */
+  canUpdate: boolean;
+  /** The header of the column an export writes each record's id in ("Company ID"), for the sentences
+   *  that tell someone to fill it in or leave it alone. "Record ID" for a list that has none. */
+  recordIdHeader: string;
 }
 
 export interface UseImportExportOptions<Filters> {
   /** The screen's current list filters, passed to `export.fetchPage`. */
   filters?: Filters | undefined;
-  /** Called once when an import run ends (finished or cancelled) having created at least one
-   *  record: the screen reloads its list here so the new rows appear without a refresh. */
+  /** Called once when an import run ends (finished or cancelled) having created or updated at least
+   *  one record: the screen reloads its list here so the new and changed rows appear without a refresh. */
   onImported?: ((summary: ImportSummary) => void) | undefined;
 }
 

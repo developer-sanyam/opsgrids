@@ -1494,6 +1494,17 @@ export function __createFixtureEmployee(body: EmployeeIn): EmployeeOut {
 export function __updateFixtureEmployee(id: string, patch: EmployeePatch): EmployeeOut {
   const existing = employeeStore.find((e) => e.id === id);
   if (!existing) throw problemErrorFor(404, "That employee isn't available any more");
+  if (patch.reporting_manager_id === id) {
+    throw problemErrorFor(422, "An employee cannot report to themselves");
+  }
+  if (patch.dotted_line_manager_id === id) {
+    throw problemErrorFor(422, "An employee cannot be their own dotted-line manager");
+  }
+  for (const managerId of [patch.reporting_manager_id, patch.dotted_line_manager_id]) {
+    if (managerId != null && !employeeStore.some((e) => e.id === managerId)) {
+      throw problemErrorFor(404, "That manager isn't part of this organization");
+    }
+  }
   const updated: EmployeeOut = {
     ...existing,
     ...("full_name" in patch ? { full_name: patch.full_name as string } : {}),

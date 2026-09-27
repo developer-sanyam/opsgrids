@@ -52,7 +52,7 @@ describe("the export workbook", () => {
     const sheet = await exported([item()]);
     const headers = (sheet.getRow(1).values as ExcelJS.CellValue[]).slice(1);
     expect(headers).toEqual([
-      "Id",
+      "Record ID",
       "SKU",
       "Name",
       "Status",
@@ -154,7 +154,7 @@ describe("the export workbook", () => {
     const sheet = await exported([item()], withOpening);
     const headers = (sheet.getRow(1).values as ExcelJS.CellValue[]).slice(1);
     expect(headers).not.toContain("Opening stock");
-    expect(headers).toContain("Id");
+    expect(headers).toContain("Record ID");
     expect(headers).toContain("Created");
     expect(headers).toHaveLength(14);
     // The values still line up under their headers.

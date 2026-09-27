@@ -556,6 +556,8 @@ export interface ListAssetsParams {
   status?: AssetStatus | "all";
   page?: number;
   size?: number;
+  /** Aborts the request: the import/export dialog cancels a load or an export with it. */
+  signal?: AbortSignal | undefined;
 }
 
 export async function listAssets(params: ListAssetsParams = {}): Promise<Page<Asset>> {
@@ -584,7 +586,7 @@ export async function listAssets(params: ListAssetsParams = {}): Promise<Page<As
   if (params.search?.trim()) query.set("q", params.search.trim());
   if (params.type && params.type !== "all") query.set("type", params.type);
   if (params.status && params.status !== "all") query.set("status", params.status);
-  return apiRequest<Page<Asset>>(`/itsm/assets?${query.toString()}`);
+  return apiRequest<Page<Asset>>(`/itsm/assets?${query.toString()}`, { signal: params.signal });
 }
 
 export async function getAsset(tag: string): Promise<Asset> {
@@ -630,7 +632,11 @@ export async function updateAsset(tag: string, payload: AssetUpdate): Promise<As
     const fx = await fixtures();
     const asset = fx.ASSETS.find((a) => a.tag === tag);
     if (!asset) throw fixtureProblem(404, `Asset ${tag} not found.`);
+    if (Object.keys(payload).length === 0) {
+      throw fixtureProblem(422, "Provide at least one field to update");
+    }
     Object.assign(asset, payload);
+    asset.cost_currency = asset.cost_currency.toUpperCase();
     return settle(asset);
   }
   return apiRequest<Asset>(`/itsm/assets/${encodeURIComponent(tag)}`, {
