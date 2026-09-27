@@ -12,7 +12,7 @@
  * typechecking here, not three components away.
  */
 
-import { apiRequest, settle } from "@opsgrids/client";
+import { ApiError, apiRequest, settle } from "@opsgrids/client";
 import { MEMBERS, MILESTONES, PROJECTS, TASKS } from "./fixtures";
 import type {
   MemberIn,
@@ -195,14 +195,27 @@ export async function createProject(input: ProjectIn): Promise<ProjectOut> {
   return apiRequest<ProjectOut>("/projects-workspace/projects", { method: "POST", body: input });
 }
 
+/** A fixture-mode failure shaped like the server's problem document, so a caller reading
+ *  `ApiError.status` behaves the same in both modes. */
+function fixtureProblem(status: number, detail: string): ApiError {
+  return new ApiError(status, detail, { status, detail });
+}
+
 export async function updateProject(code: string, input: ProjectUpdate): Promise<ProjectOut> {
   if (USE_FIXTURES) {
     const found = PROJECTS.find((p) => p.code === code);
-    if (!found) throw new Error("That project is not part of this organization");
+    if (!found) throw fixtureProblem(404, "That project is not part of this organization");
+    const owner = input.owner_ref ? MEMBERS.find((m) => m.id === input.owner_ref) : undefined;
+    if (input.owner_ref && !owner) {
+      throw fixtureProblem(404, `No member with ref '${input.owner_ref}' in this organization`);
+    }
+    // The server checks the order after merging with the stored dates, so one date alone can break it.
+    if ((input.target_date ?? found.target_date) < (input.start_date ?? found.start_date)) {
+      throw fixtureProblem(422, "target_date must be on or after start_date");
+    }
     if (input.name !== undefined) found.name = input.name;
     if (input.client !== undefined) found.client = input.client;
     if ("owner_ref" in input) {
-      const owner = MEMBERS.find((m) => m.id === input.owner_ref);
       found.owner = owner ? { id: owner.id, name: owner.name, role: owner.role } : { id: "", name: "Unassigned", role: "" };
     }
     if (input.phase !== undefined) found.phase = input.phase;
