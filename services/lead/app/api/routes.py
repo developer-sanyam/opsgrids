@@ -20,7 +20,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import scope, selectors, services
@@ -33,6 +33,8 @@ from app.schemas import (
     LeadIn,
     LeadOut,
     LeadPatch,
+    LeadRevealIn,
+    LeadRevealOut,
     ServiceInfo,
 )
 from platform_core.auth import ScopeContext, require, require_product
@@ -65,6 +67,14 @@ Entitled = Depends(require_product("crm"))
 LeadRead = Annotated[ScopeContext, Depends(require("crm.lead.lead.read"))]
 LeadWrite = Annotated[ScopeContext, Depends(require("crm.lead.lead.write"))]
 LeadConvert = Annotated[ScopeContext, Depends(require("crm.lead.lead.convert"))]
+#: Revealing a real phone number or email. The dangerous permission **and** a second factor, the
+#: same pairing customer-service requires to reveal a contact's phone
+#: (`crm.book.contact.read_sensitive`) and employee-service to unmask an employee's personal
+#: details — an ordinary CRM session must not be a route to a prospect's contact details.
+LeadReveal = Annotated[
+    ScopeContext,
+    Depends(require("crm.lead.lead.read_sensitive", amr={"otp"})),
+]
 
 
 @router.get("/lead/info", response_model=ServiceInfo, summary="What this service is")
@@ -215,3 +225,50 @@ async def convert_lead(
         contact_id=str(contact_id) if contact_id else None,
         deal_id=str(deal_id),
     )
+
+
+@router.post(
+    "/leads/{lead_id}:reveal",
+    response_model=LeadRevealOut,
+    status_code=status.HTTP_200_OK,
+    summary="Reveal a lead's real phone number or email (audited)",
+    dependencies=[Entitled],
+    responses={
+        403: {
+            "description": (
+                "Missing `crm.lead.lead.read_sensitive`, the second factor "
+                "(`Additional authentication required: otp`), or the lead is outside the "
+                "caller's scope."
+            )
+        },
+        404: {
+            "description": (
+                "The lead is not part of this organization, or it has no value on file for "
+                "the requested field."
+            )
+        },
+    },
+)
+async def reveal_lead_field(
+    lead_id: uuid.UUID,
+    payload: LeadRevealIn,
+    session: SessionDep,
+    ctx: LeadReveal,
+    request: Request,
+    response: Response,
+) -> LeadRevealOut:
+    """The only public route that returns a lead's real phone number or email.
+
+    A POST rather than a GET on purpose: it has a side effect — it writes an
+    `entity.sensitive_read` audit row naming the field — and it must never be cached,
+    pre-fetched, logged in a query string or replayed from browser history the way a GET can
+    be. The response says so itself (`Cache-Control: no-store`).
+
+    Guarded by the dangerous `read_sensitive` permission and a second factor, then re-scoped to
+    this one lead inside `services.reveal_lead_field`, which also owns the not-found, the
+    nothing-on-file and the audit steps. This route takes the ordinary tenant session, so the
+    audit row commits before the response is sent.
+    """
+    value = await services.reveal_lead_field(session, ctx, lead_id, payload.field, request=request)
+    response.headers["Cache-Control"] = "no-store"
+    return LeadRevealOut(lead_id=str(lead_id), field=payload.field, value=value)

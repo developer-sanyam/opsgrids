@@ -269,6 +269,58 @@ async def test_revealing_works_with_the_permission_and_the_step_up(
     assert response.json()["phone"] == RAW
 
 
+async def test_an_own_grant_reveals_only_the_contacts_the_caller_owns(
+    client, session, org_id, data
+) -> None:
+    """`CRM_SALES_REP` holds the reveal at OWN. A rep opens the phone of a contact they own and
+    is refused a colleague's — the scope is re-applied to the one contact, not only to the
+    list a rep can browse at ORG."""
+    write = ctx_for(org_id, WRITE, Scope.ORG)
+    async with session.begin():
+        await services.set_contact_phone(session, write, data["contact_a"], RAW)
+        await services.set_contact_phone(session, write, data["contact_b"], "+919812345771")
+
+    rep = principal_for(org_id, [f"{SENSITIVE}:OWN"], subject_ref=data["subject_a"], amr=["otp"])
+    with as_principal(rep):
+        own = await client.post(f"/api/v1/contacts/{data['contact_a_id']}/phone:reveal")
+        colleague = await client.post(f"/api/v1/contacts/{data['contact_b_id']}/phone:reveal")
+
+    assert own.status_code == 200
+    assert own.json()["phone"] == RAW
+    assert colleague.status_code == 403
+    assert "919812345771" not in colleague.text
+
+    reads = (
+        (await session.execute(select(AuditLog).where(AuditLog.action == "entity.sensitive_read")))
+        .scalars()
+        .all()
+    )
+    assert [(r.entity_id, r.after) for r in reads] == [
+        (data["contact_a_id"], {"fields": ["phone"]})
+    ]
+
+
+async def test_an_own_grant_with_no_subject_ref_reveals_nothing(
+    client, session, org_id, data
+) -> None:
+    """What OWN means today: `owner_id` compared with `subject_ref`, which is the membership's
+    employee link (ADR-0008). A principal with no link has nothing to compare, so the reveal is
+    refused even for a contact whose `owner_id` is a rep that person *is* — CRM's owner ids are
+    directory ids generated in this service, and nothing gives them the value of an employee
+    link. ADR-0008 Q5 moves CRM's OWN onto the membership; this test changes with it."""
+    write = ctx_for(org_id, WRITE, Scope.ORG)
+    async with session.begin():
+        await services.set_contact_phone(session, write, data["contact_a"], RAW)
+
+    unlinked = principal_for(org_id, [f"{SENSITIVE}:OWN"], subject_ref=None, amr=["otp"])
+    with as_principal(unlinked):
+        response = await client.post(f"/api/v1/contacts/{data['contact_a_id']}/phone:reveal")
+
+    assert response.status_code == 403
+    assert RAW not in response.text
+    assert RAW.removeprefix("+") not in response.text
+
+
 async def test_the_write_surface_does_not_read_the_number_back(client, org_id, data) -> None:
     """Setting a number returns the masked contact, so the write route cannot be used as a
     read-back oracle by a caller who lacks `read_sensitive`."""

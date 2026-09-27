@@ -92,6 +92,15 @@
       "resource": "lead"
     },
     {
+      "action": "read_sensitive",
+      "default_scope": "OWN",
+      "description": "Reveal a lead's real phone number or email, audited",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "lead",
+      "resource": "lead"
+    },
+    {
       "action": "write",
       "default_scope": "OWN",
       "description": "Create and update leads",
@@ -193,7 +202,7 @@
     {
       "code": "CRM_SALES_REP",
       "cross_product": false,
-      "description": "Every person with a CRM seat. Reads the whole book \u2014 sales works from one shared book \u2014 and maintains the companies and contacts they own.",
+      "description": "Every person with a CRM seat. Reads the whole book \u2014 sales works from one shared book \u2014 and maintains the companies and contacts they own, including revealing the real phone number of a contact they own (stepped up and audited).",
       "grants": [
         {
           "code": "crm.book.company.read",
@@ -206,6 +215,10 @@
         {
           "code": "crm.book.contact.read",
           "scope": "ORG"
+        },
+        {
+          "code": "crm.book.contact.read_sensitive",
+          "scope": "OWN"
         },
         {
           "code": "crm.book.contact.write",
@@ -286,6 +299,10 @@
           "scope": "ORG"
         },
         {
+          "code": "crm.lead.lead.read_sensitive",
+          "scope": "ORG"
+        },
+        {
           "code": "crm.lead.lead.write",
           "scope": "ORG"
         }
@@ -297,7 +314,7 @@
     {
       "code": "CRM_LEAD_REP",
       "cross_product": false,
-      "description": "Every person with a CRM seat. Reads the whole intake list \u2014 sales works from one shared book \u2014 works and converts the leads they own.",
+      "description": "Every person with a CRM seat. Reads the whole intake list \u2014 sales works from one shared book \u2014 works and converts the leads they own, and may reveal the real phone number or email of a lead they own (stepped up and audited).",
       "grants": [
         {
           "code": "crm.lead.lead.convert",
@@ -306,6 +323,10 @@
         {
           "code": "crm.lead.lead.read",
           "scope": "ORG"
+        },
+        {
+          "code": "crm.lead.lead.read_sensitive",
+          "scope": "OWN"
         },
         {
           "code": "crm.lead.lead.write",

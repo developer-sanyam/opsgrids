@@ -46,7 +46,7 @@ from starlette.requests import Request
 from app import clients, domain, selectors
 from app.config import settings
 from app.models import AssignmentRule, AuditLog, Lead, OutboxEvent
-from app.schemas import LeadPatch
+from app.schemas import LeadPatch, RevealField
 from platform_core.audit import record_audit, record_sensitive_read
 from platform_core.auth import Scope, ScopeContext
 from platform_core.db import assert_tenant, set_tenant
@@ -60,7 +60,7 @@ from platform_core.errors import (
 from platform_core.events import publish_event
 from platform_core.logging import get_logger
 from platform_core.models import utcnow
-from platform_core.pii import blind_index, open_sealed, seal
+from platform_core.pii import PiiError, blind_index, open_sealed, seal
 
 log = get_logger("lead.services")
 
@@ -649,6 +649,91 @@ async def update_lead(
         actor=_actor(ctx),
     )
     return lead
+
+
+# ------------------------------------------------------------------ revealing a sealed detail
+
+#: What the 404 says when the requested detail was never captured. Names only the field the
+#: caller asked about — it says nothing about the *other* one.
+_NOTHING_ON_FILE: dict[str, str] = {
+    "phone": "No phone number is on file for this lead",
+    "email": "No email address is on file for this lead",
+}
+
+
+async def reveal_lead_field(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    lead_id: uuid.UUID,
+    field: RevealField,
+    *,
+    request: Request | None = None,
+) -> str:
+    """Reveal a lead's real phone number or email to a human — the audited, stepped-up path.
+
+    Reaching here means the caller held `crm.lead.lead.read_sensitive` and stepped up
+    (`amr={"otp"}`). Everything else is decided here, in one function, so no caller can reach
+    the decrypt having skipped a check:
+
+    1. The lead is fetched inside the caller's organization. An id that is not there — or is
+       another organization's — is the same 404, so this route confirms nothing about lead ids
+       it should not.
+    2. The caller's scope is re-applied to this one lead (`assert_can_touch`, a 403): filtering
+       a list and forgetting the detail is the named vulnerability. Checked *before* whether a
+       value exists, so an out-of-scope caller cannot learn whether a lead has a phone.
+    3. Nothing sealed for the requested field is a 404 (`_NOTHING_ON_FILE`), never a 200 with a
+       null. No audit row is kept for it — nothing was disclosed, and the request's
+       transaction rolls back on the error.
+    4. The sealed value is opened with the same key context `create_lead` sealed it under.
+    5. An `entity.sensitive_read` audit row naming the **field only** is staged in the
+       caller's transaction, which commits before the response is sent
+       (`get_tenant_session`'s function-scoped exit): a revealed value never leaves without a
+       record that it was revealed. The value itself is never written anywhere, here or in a
+       log line.
+
+    A converted lead still reveals — it keeps its own sealed copy, independent of the contact
+    conversion created on customer-service's side.
+    """
+    lead = await selectors.get_lead(session, ctx.organization_id, lead_id)
+    if lead is None:
+        raise NotFoundProblem("That lead is not part of this organization")
+    ctx.assert_can_touch(owner_id=lead.owner_id)
+
+    sealed = lead.phone_enc if field == "phone" else lead.email_enc
+    if sealed is None:
+        raise NotFoundProblem(_NOTHING_ON_FILE[field])
+
+    try:
+        plaintext = open_sealed(sealed, settings=settings())
+    except PiiError:
+        # An unopenable envelope is a server fault (a key rotated out from under a row, a
+        # damaged column), not something to describe to a client — it surfaces as a plain 500.
+        # The log names the row and the field so someone can find it, and never the value.
+        log.error(
+            "lead.reveal.unopenable",
+            organization_id=str(ctx.organization_id),
+            lead_id=str(lead.id),
+            field=field,
+        )
+        raise
+
+    record_sensitive_read(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        entity="lead",
+        entity_id=lead.id,
+        fields=[field],
+        request=request,
+    )
+    log.info(
+        "lead.field_revealed",
+        organization_id=str(ctx.organization_id),
+        lead_id=str(lead.id),
+        field=field,
+    )
+    return plaintext
 
 
 # ------------------------------------------------------------------ conversion: claim, call, record

@@ -161,7 +161,8 @@ CRM_BOOK_ROLE_TEMPLATES: list[RoleTemplate] = [
         product=PRODUCT,
         description=(
             "Every person with a CRM seat. Reads the whole book — sales works from one shared "
-            "book — and maintains the companies and contacts they own."
+            "book — and maintains the companies and contacts they own, including revealing "
+            "the real phone number of a contact they own (stepped up and audited)."
         ),
         is_default=True,
         grants=CRM_BOOK.pick(
@@ -169,6 +170,7 @@ CRM_BOOK_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("crm.book.company.write", "OWN"),
             ("crm.book.contact.read", "ORG"),
             ("crm.book.contact.write", "OWN"),
+            ("crm.book.contact.read_sensitive", "OWN"),
         ),
     ),
 ]
