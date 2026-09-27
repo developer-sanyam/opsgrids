@@ -8,20 +8,29 @@
  *
  * Deal names are unique across the whole organisation, not per company, and the server compares
  * them exactly, capitals included; a repeat is a 409 and is skipped.
+ *
+ * Update calls `PATCH /deals/{id}` with only the fields that differ, and finds a deal with no Deal
+ * ID by its name (exact, but only app-level unique: two deals with one name make the row ambiguous
+ * and it is refused). The PATCH takes no stage, so a changed stage goes to `POST /deals/{id}/stage`
+ * after it, and that call resets the probability to the new stage's usual figure unless it is given
+ * one: a probability the row changes therefore travels with the stage move and not in the PATCH.
+ * The server checks none of owner, company and primary contact, so the row's are resolved from the
+ * lists, and a contact must work at the deal's company, as when adding.
  */
-import { RowProblem, defineImportEntity, minorToMajor } from "@opsgrids/client";
-import type { ColumnOption, ImportColumn } from "@opsgrids/client";
+import { CLEAR_TOKEN, RowProblem, defineImportEntity, minorToMajor } from "@opsgrids/client";
+import type { ColumnOption, ImportColumn, ImportContext, ParsedRow } from "@opsgrids/client";
 
-import { createDeal, listDeals } from "@/api/client";
+import { createDeal, listDeals, moveDealStage, updateDeal } from "@/api/client";
 import type { Deal, DealStage } from "@/api/types";
-import type { DealIn } from "@/api/wire";
-import { STAGES } from "@/data/stages";
+import type { DealIn, DealPatch } from "@/api/wire";
+import { STAGES, isOpen, stageLabel } from "@/data/stages";
 
 import {
   COMPANY_HINT,
   CONTACT_HINT,
   LOOKUP_ALL_OWNERS,
   LOOKUP_COMPANIES,
+  LOOKUP_COMPANY_OF_CONTACT,
   LOOKUP_CONTACTS,
   LOOKUP_OWNERS,
   OWNER_HINT,
@@ -40,6 +49,16 @@ import {
   requiredTextOf,
   textOf,
 } from "./shared";
+import {
+  columnOf,
+  loadEvery,
+  lookupId,
+  orNull,
+  patchOf,
+  refuseCurrencyChangeWithoutAmount,
+  resolveByLookup,
+  upperCased,
+} from "./updateShared";
 
 /** What the Deals screen filters its list by; the export writes exactly that list, not the page
  *  or the board column on screen. */
@@ -61,7 +80,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "text",
     required: true,
     maxLength: 200,
-    help: "The deal's name. Names are unique across the whole organisation and matched exactly, capitals included: a deal with the same exact name is skipped, while 'Q4 Renewal' and 'Q4 renewal' are different deals to the server.",
+    help: "The deal's name. Names are unique across the whole organisation and matched exactly, capitals included: a deal with the same exact name is skipped when adding, or found and updated when updating a row that has no Deal ID, while 'Q4 Renewal' and 'Q4 renewal' are different deals to the server.",
   },
   {
     key: "company",
@@ -78,7 +97,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "text",
     lookup: LOOKUP_CONTACTS,
     lookupHint: CONTACT_HINT,
-    help: "Email of the deal's main contact, from the Lists sheet. They must be a contact of the company. Leave blank for none.",
+    help: "Email of the deal's main contact, from the Lists sheet. They must be a contact of the company. Leave blank for none, or, when updating, to keep the current one.",
   },
   {
     key: "owner",
@@ -86,7 +105,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "text",
     lookup: LOOKUP_OWNERS,
     lookupHint: OWNER_HINT,
-    help: "Email of the team member who owns the deal, from the Lists sheet. Leave blank to own it yourself.",
+    help: "Email of the team member who owns the deal, from the Lists sheet. Leave blank to own it yourself, or, when updating, to keep the current owner.",
   },
   {
     key: "value",
@@ -104,7 +123,7 @@ const COLUMNS: readonly ImportColumn[] = [
     maxLength: 3,
     pattern: /^[A-Za-z]{3}$/,
     patternHint: "Three letters, like INR or USD.",
-    help: "Currency of the deal value, as a three-letter code. Leave blank for INR.",
+    help: "Currency of the deal value, as a three-letter code. Leave blank for INR, or, when updating, to keep the deal's own currency.",
   },
   {
     key: "closeDate",
@@ -118,7 +137,7 @@ const COLUMNS: readonly ImportColumn[] = [
     header: "Stage",
     kind: "enum",
     options: STAGE_OPTIONS,
-    help: "The pipeline stage the deal is in. Leave blank for Lead.",
+    help: "The pipeline stage the deal is in. Leave blank for Lead, or, when updating, to keep the current stage.",
   },
   {
     key: "probability",
@@ -126,7 +145,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "integer",
     min: 0,
     max: 100,
-    help: "Chance of winning, as a whole number from 0 to 100. Leave blank to use the stage's usual figure.",
+    help: "Chance of winning, as a whole number from 0 to 100. Leave blank to use the stage's usual figure, or, when updating, to keep the current one.",
   },
   {
     key: "source",
@@ -147,7 +166,7 @@ const COLUMNS: readonly ImportColumn[] = [
     header: "Deal ID",
     kind: "text",
     readOnly: true,
-    help: "The record's id. Filled in on export. A row that carries one is refused on import: it is already in the system.",
+    help: "The record's id. Filled in on export. With Add new records only, a row that carries one is refused on import: it is already in the system. With Add new and update existing, it names the deal to update.",
   },
   {
     key: "createdAt",
@@ -157,6 +176,55 @@ const COLUMNS: readonly ImportColumn[] = [
     help: "When the deal was opened. Filled in on export and ignored on import.",
   },
 ];
+
+const COMPANY = columnOf(COLUMNS, "company");
+const CONTACT = columnOf(COLUMNS, "contact");
+const OWNER = columnOf(COLUMNS, "owner");
+const VALUE = columnOf(COLUMNS, "value");
+const CURRENCY = columnOf(COLUMNS, "currency");
+const STAGE = columnOf(COLUMNS, "stage");
+
+const A_COMPANY = "a company on file";
+const A_CONTACT = "a contact on file";
+
+/**
+ * The server does not check that a deal's primary contact works at its company, so an update that
+ * changes either one is checked here, against what the deal will hold afterwards: the company the
+ * row names (or the one on file), and the contact the row names (or, when it does not touch the
+ * column, the one on file). A row that changes neither is not judged on what was already stored.
+ * A contact the lists do not know (out of the caller's scope, or deleted) cannot be judged and stays.
+ */
+function contactMustWorkAtCompany(
+  row: ParsedRow,
+  deal: Deal,
+  changed: readonly string[],
+  ctx: ImportContext,
+): void {
+  const companyChanged = changed.includes(COMPANY.header);
+  const contactChanged = changed.includes(CONTACT.header);
+  if (!companyChanged && !contactChanged) return;
+
+  const companyCell = textOf(row, "company");
+  const contactCell = textOf(row, "contact");
+  const companyId =
+    companyChanged && companyCell !== undefined ? lookupId(COMPANY, A_COMPANY, companyCell, ctx) : deal.company_id;
+  let contactId: string | null;
+  if (contactCell !== undefined) contactId = lookupId(CONTACT, A_CONTACT, contactCell, ctx);
+  else contactId = contactChanged ? null : deal.primary_contact_id; // a changed, blank cell was [clear]
+  if (contactId === null) return;
+
+  const worksAt = ctx.lookups[LOOKUP_COMPANY_OF_CONTACT]?.resolve(contactId);
+  if (worksAt === undefined || worksAt === companyId) return;
+
+  const company = companyCell ?? ctx.lookups[LOOKUP_COMPANIES]?.labelOf(deal.company_id) ?? "that company";
+  if (contactCell !== undefined) {
+    throw new RowProblem(`${contactCell} is not a contact of ${company}. Pick one of that company's contacts.`);
+  }
+  const email = ctx.lookups[LOOKUP_CONTACTS]?.labelOf(contactId) ?? "The primary contact";
+  throw new RowProblem(
+    `${email} is the deal's primary contact but is not a contact of ${company}. Name one of that company's contacts in ${CONTACT.header}, or type ${CLEAR_TOKEN} to remove the primary contact.`,
+  );
+}
 
 export const dealImport = defineImportEntity<DealIn, Deal, DealFilters>({
   id: "crm.deals",
@@ -189,13 +257,18 @@ export const dealImport = defineImportEntity<DealIn, Deal, DealFilters>({
     },
   ],
   notes: [
-    "Deal names must be unique across the whole organisation, not just within a company. Names are matched exactly, capitals included: a deal whose exact name already exists is skipped, not updated, while 'Q4 Renewal' and 'Q4 renewal' are different deals to the server.",
+    "Deal names must be unique across the whole organisation, not just within a company. Names are matched exactly, capitals included: with Add new records only, a deal whose exact name already exists is skipped, not updated, while 'Q4 Renewal' and 'Q4 renewal' are different deals to the server.",
     "The company must already exist. If it is new, import it on the Companies screen first.",
     "A primary contact must be a contact of that company. Leave the column blank for none.",
-    "Leave Owner email blank to own the deal yourself. Assigning a deal to someone else needs organisation-wide access; otherwise that row is refused and reported.",
-    "Deal value is in whole currency units and uses the currency in the next column. Leave Currency blank for INR.",
-    "Leave Stage blank for Lead, and Probability blank to use the stage's usual figure.",
-    "A file exported from the Deals list cannot be imported again as it is: its rows carry a Deal ID and are refused, because those deals already exist.",
+    "When adding, leave Owner email blank to own the deal yourself. Assigning a deal to someone else needs organisation-wide access; otherwise that row is refused and reported.",
+    "Deal value is in whole currency units and uses the currency in the next column. When adding, leave Currency blank for INR.",
+    "When adding, leave Stage blank for Lead, and Probability blank to use the stage's usual figure.",
+    "With Add new records only, a file exported from the Deals list cannot be imported again as it is: its rows carry a Deal ID and are refused, because those deals already exist.",
+    "When updating, a row with a Deal ID changes that deal. Without one, the deal is found by its exact name, capitals included. To rename a deal keep its Deal ID in the row: a row with a changed name and no Deal ID is a new deal. A rename onto another deal's exact name is refused by the server and reported. If two deals share a name, a row that names it without a Deal ID is refused.",
+    "When updating, type [clear] in Primary contact email or Source to empty it. The other columns cannot be emptied, only changed.",
+    "When updating, a changed Stage moves the deal through the pipeline and sets Probability to the new stage's usual figure, as dragging it on the board does. To set a different figure, change Probability in the same row. A deal that is Closed Won or Closed Lost cannot change stage; its other columns can still change.",
+    "When updating, a Primary contact must be a contact of the deal's company. Changing Company keeps the deal's contact only if they work at the new company; otherwise name one of its contacts or type [clear].",
+    "When updating, Deal value is not converted if the currency changes: change Currency only together with Deal value, in the new currency. Leave Currency blank to keep the deal's own currency; Deal value is then read in it, not in INR.",
   ],
   recordIdKey: "id",
   loadLookups: async (signal) => {
@@ -235,6 +308,65 @@ export const dealImport = defineImportEntity<DealIn, Deal, DealFilters>({
     };
   },
   create: (payload) => createDeal(payload),
+  update: {
+    loadExisting: (ctx) => loadEvery(listDeals, ctx),
+    idOf: (deal) => deal.id,
+    keyColumn: "name",
+    keyOf: (deal) => deal.name,
+    currencyOf: (deal) => deal.currency,
+    fields: [
+      { column: "name", current: (deal) => deal.name },
+      {
+        column: "company",
+        field: "company_id",
+        current: (deal) => deal.company_id,
+        resolve: resolveByLookup(COMPANY, A_COMPANY),
+      },
+      {
+        column: "contact",
+        field: "primary_contact_id",
+        current: (deal) => deal.primary_contact_id,
+        resolve: resolveByLookup(CONTACT, A_CONTACT),
+        clear: null,
+      },
+      {
+        column: "owner",
+        field: "owner_id",
+        current: (deal) => deal.owner_id,
+        resolve: resolveByLookup(OWNER, "an active sales rep"),
+      },
+      { column: "value", field: "value_minor", current: (deal) => deal.value_minor },
+      { column: "currency", current: (deal) => deal.currency, resolve: upperCased },
+      { column: "closeDate", field: "close_date", current: (deal) => deal.close_date },
+      // Not a PATCH field: `send` takes it, and the probability with it, to the stage endpoint.
+      { column: "stage", current: (deal) => deal.stage },
+      { column: "probability", current: (deal) => deal.probability },
+      { column: "source", current: (deal) => orNull(deal.source), clear: "" },
+    ],
+    check: (row, deal, changed, ctx) => {
+      if (changed.includes(STAGE.header) && !isOpen(deal.stage)) {
+        throw new RowProblem(
+          `This deal is ${stageLabel(deal.stage)}, and a closed deal cannot be moved to another stage.`,
+        );
+      }
+      refuseCurrencyChangeWithoutAmount({ amount: VALUE, currency: CURRENCY }, row, changed, deal.value_minor);
+      contactMustWorkAtCompany(row, deal, changed, ctx);
+    },
+    // The PATCH first, then the stage move: a rename onto a taken name or an owner the caller may
+    // not assign is refused by the PATCH before the deal has moved. The stage endpoint resets the
+    // probability to the new stage's usual figure unless it is given one, so a probability the row
+    // changes goes there (the PATCH gets none), and a row that leaves it alone lets the stage reset it.
+    send: async (deal, body) => {
+      const { stage: to, probability, ...patch } = body;
+      const stage = STAGE_OPTIONS.find((option) => option.value === to)?.value;
+      if (stage === undefined) {
+        await updateDeal(deal.id, patchOf<DealPatch>(body));
+        return;
+      }
+      if (Object.keys(patch).length > 0) await updateDeal(deal.id, patchOf<DealPatch>(patch));
+      await moveDealStage(deal.id, { stage, ...(typeof probability === "number" ? { probability } : {}) });
+    },
+  },
   export: {
     fetchPage: ({ page, size, filters, signal }) =>
       listDeals({
