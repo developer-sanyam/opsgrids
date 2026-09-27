@@ -915,8 +915,12 @@ async def claim_for_send(
     queued-event a no-op instead of a dead letter. Only `pending` is claimable, which is what
     makes the retry sweep safe: it may queue a second event for a message whose first is still
     in flight, and whichever event loses finds nothing to claim.
+
+    The read takes the row lock (`FOR UPDATE`): two consumers holding two events for one message
+    would otherwise both read `pending` and both send. The second one waits here until the first
+    commits, then sees `sending` (or later) and returns None.
     """
-    message = await selectors.get_message(session, organization_id, message_id)
+    message = await selectors.get_message(session, organization_id, message_id, for_update=True)
     if message is None:
         return None
     if message.state != domain.STATE_PENDING:
@@ -1149,33 +1153,150 @@ async def template_block(session: AsyncSession, message: Message) -> tuple[str, 
     )
 
 
+def retry_max_age() -> timedelta:
+    """How long after staging a failed message may still be retried (`Settings.
+    dispatch_retry_max_age_seconds`)."""
+    return timedelta(seconds=settings().dispatch_retry_max_age_seconds)
+
+
+#: A message already waiting on the retry event a sweep queued for it is not queued again for at
+#: least this long, however short its own backoff is: the dispatcher can be backed up well past a
+#: minute, and a second event per tick would only pile duplicates into the broker.
+REQUEUE_MIN_WAIT: Final = timedelta(minutes=5)
+
+#: How many messages past their retry window one tick fails. Bounded so the first tick after a
+#: deploy, which meets every old stuck row at once, drains them over several ticks rather than in
+#: one long pass.
+EXPIRE_BATCH: Final = 100
+
+
 async def due_message_retries(
-    session: AsyncSession, *, now: datetime, limit: int
+    session: AsyncSession, *, now: datetime, limit: int, max_age: timedelta | None = None
 ) -> list[tuple[uuid.UUID, uuid.UUID]]:
-    """`(organization_id, message_id)` for every `pending` message that has failed at least once
-    and whose backoff has elapsed.
+    """`(organization_id, message_id)` for every `pending` message that has failed at least once,
+    is still inside its retry window, and whose backoff has elapsed.
 
     Cross-tenant, so it runs on the BYPASSRLS outbox role, which holds column-level `SELECT` on
     exactly the columns named here (`migrations/env.py`, `grant_message_retry_reader`) - never a
     message's address or body. Discovery only: every write the sweep makes off the back of it
     is tenant-bound. The due test is repeated there, under the tenant, against the row itself.
+
+    The window is measured from `created_at` (when the message was staged): a row older than
+    `max_age` is never returned here - `expired_message_retries` finds it to be failed instead.
     """
     delay = func.least(
         float(RETRY_CAP_SECONDS), float(RETRY_BASE_SECONDS) * func.power(2, Message.attempts - 1)
     )
     due_at = Message.updated_at + func.make_interval(0, 0, 0, 0, 0, 0, delay)
+    conditions = [
+        Message.state == domain.STATE_PENDING,
+        Message.attempts > 0,
+        Message.deleted_at.is_(None),
+        due_at <= now,
+    ]
+    if max_age is not None:
+        conditions.append(Message.created_at > now - max_age)
+    stmt = (
+        select(Message.organization_id, Message.id)
+        .where(*conditions)
+        .order_by(Message.updated_at.asc(), Message.id.asc())
+        .limit(limit)
+    )
+    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+
+
+async def expired_message_retries(
+    session: AsyncSession, *, now: datetime, limit: int, max_age: timedelta
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """`(organization_id, message_id)` for `pending` messages that have failed before and are now
+    older than the retry window - the ones nothing may send any more. Same role and column grant
+    as `due_message_retries`; oldest first, at most `limit`."""
     stmt = (
         select(Message.organization_id, Message.id)
         .where(
             Message.state == domain.STATE_PENDING,
             Message.attempts > 0,
             Message.deleted_at.is_(None),
-            due_at <= now,
+            Message.created_at <= now - max_age,
         )
-        .order_by(Message.updated_at.asc(), Message.id.asc())
+        .order_by(Message.created_at.asc(), Message.id.asc())
         .limit(limit)
     )
     return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+
+
+def _publish_message_failed(session: AsyncSession, message: Message) -> None:
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=message.organization_id,
+        event_type=EVT_MESSAGE_FAILED,
+        aggregate_type="message",
+        aggregate_id=message.id,
+        payload={
+            "organization_id": str(message.organization_id),
+            "message_id": str(message.id),
+            "channel": message.channel,
+            "attempts": message.attempts,
+            "last_error": message.last_error,
+        },
+        actor={"type": "system", "id": SYSTEM_ACTOR},
+    )
+
+
+async def expire_stale_retry(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    message_id: uuid.UUID,
+    now: datetime,
+    max_age: timedelta,
+) -> str:
+    """Fail permanently a `pending`, previously-failed message that is past its retry window.
+    Tenant-bound. Returns `expired`, or `skipped` when the row is no longer such a message (sent,
+    claimed, retried in the meantime, or still inside the window).
+
+    Without this a message stranded `pending` by a transient failure - including one from before
+    the retry sweep existed - would sit in that state forever or, worse, be sent hours or days
+    after the fact. The reason string starts with `retry_window_expired`, and the usual
+    `message.failed` event goes out.
+    """
+    message = await selectors.get_message(session, organization_id, message_id, for_update=True)
+    if (
+        message is None
+        or message.state != domain.STATE_PENDING
+        or message.attempts < 1
+        or message.created_at + max_age > now
+    ):
+        return "skipped"
+    previous = message.last_error or "unknown"
+    message.state = domain.STATE_FAILED
+    message.last_error = f"retry_window_expired after {message.attempts} attempts: {previous}"[
+        :2000
+    ]
+    message.updated_by = SYSTEM_ACTOR
+    message.updated_at = now
+    await session.flush()
+    _publish_message_failed(session, message)
+    return "expired"
+
+
+async def _awaiting_retry_event(session: AsyncSession, message: Message) -> bool:
+    """Has the sweep already queued a retry event for this message's latest failure?
+
+    A failure stamps `updated_at` and its ledger row with the same instant; a re-queue moves
+    `updated_at` on and leaves the ledger alone. So `updated_at` later than the newest failed
+    attempt means the bump is a re-queue, whose event may still be waiting in the broker."""
+    last_failure = (
+        await session.execute(
+            select(func.max(Delivery.at)).where(
+                Delivery.organization_id == message.organization_id,
+                Delivery.message_id == message.id,
+                Delivery.outcome == "failed",
+            )
+        )
+    ).scalar_one_or_none()
+    return last_failure is not None and message.updated_at - last_failure > timedelta(seconds=1)
 
 
 async def requeue_for_retry(
@@ -1185,26 +1306,35 @@ async def requeue_for_retry(
     message_id: uuid.UUID,
     max_attempts: int,
     now: datetime,
+    max_age: timedelta | None = None,
 ) -> str:
     """Queue one fresh dispatch event for a message whose backoff has elapsed. Tenant-bound.
 
     Returns `requeued`, `exhausted` (out of attempts - failed terminally instead), or `skipped`
-    (no longer pending, not yet due, or gone: another dispatcher or an earlier tick got there).
+    (no longer pending, not yet due, past its retry window, or gone: another dispatcher or an
+    earlier tick got there).
 
     Why a *new* event: the original was marked processed in the claim transaction, so
     redelivering it would be swallowed by `already_processed`. This one has its own id, so the
-    dispatcher's dedupe lets it through, and `claim_for_send` (pending only) is what still
-    guarantees one copy - if the message was sent, suppressed or claimed since, the claim finds
-    nothing to do. The event goes through the outbox in this transaction, so it exists only if
-    the stamp below does.
+    dispatcher's dedupe lets it through, and `claim_for_send` (pending only, under a row lock) is
+    what still guarantees one copy - if the message was sent, suppressed or claimed since, the
+    claim finds nothing to do. The event goes through the outbox in this transaction, so it
+    exists only if the stamp below does.
 
-    The `updated_at` bump is the sweep's own dedupe: it restarts the message's backoff clock, so
-    the next tick does not queue the same message again while this event waits in the broker.
+    The `updated_at` bump is the sweep's own dedupe: it restarts the message's clock, so the next
+    tick does not queue the same message again while this event waits in the broker. After a
+    re-queue that clock is the longer of the backoff and `REQUEUE_MIN_WAIT`, because a dispatcher
+    can be backed up for much longer than a first-attempt backoff of a minute.
     """
-    message = await selectors.get_message(session, organization_id, message_id)
+    message = await selectors.get_message(session, organization_id, message_id, for_update=True)
     if message is None or message.state != domain.STATE_PENDING or message.attempts < 1:
         return "skipped"
-    if message.updated_at + retry_delay(message.attempts) > now:
+    if max_age is not None and message.created_at + max_age <= now:
+        return "skipped"
+    wait = retry_delay(message.attempts)
+    if await _awaiting_retry_event(session, message):
+        wait = max(wait, REQUEUE_MIN_WAIT)
+    if message.updated_at + wait > now:
         return "skipped"
 
     if not domain.should_retry(message.attempts, max_attempts=max_attempts):
@@ -1218,22 +1348,7 @@ async def requeue_for_retry(
         message.updated_by = SYSTEM_ACTOR
         message.updated_at = now
         await session.flush()
-        publish_event(
-            session,
-            OutboxEvent,
-            organization_id=organization_id,
-            event_type=EVT_MESSAGE_FAILED,
-            aggregate_type="message",
-            aggregate_id=message.id,
-            payload={
-                "organization_id": str(organization_id),
-                "message_id": str(message.id),
-                "channel": message.channel,
-                "attempts": message.attempts,
-                "last_error": message.last_error,
-            },
-            actor={"type": "system", "id": SYSTEM_ACTOR},
-        )
+        _publish_message_failed(session, message)
         return "exhausted"
 
     message.updated_at = now
@@ -1265,6 +1380,7 @@ async def sweep_message_retries(
     max_attempts: int,
     now: datetime | None = None,
     limit: int = 100,
+    max_age: timedelta | None = None,
 ) -> int:
     """Re-queue every due retry, across organizations. Returns how many were queued.
 
@@ -1272,10 +1388,37 @@ async def sweep_message_retries(
     organizations have a message due* runs on the outbox role (no tenant to bind while asking),
     and every write runs under that organization's own binding via `work_scope`, one
     transaction per message so one bad row cannot roll back another's re-queue.
+
+    Only messages inside the retry window (`max_age`, default `retry_max_age()`) are re-queued.
+    Ones past it that are still `pending` are failed permanently first (`expire_stale_retry`),
+    at most `EXPIRE_BATCH` per tick, so they can neither be sent late nor sit pending forever.
     """
     at = now or datetime.now(UTC)
+    window = max_age if max_age is not None else retry_max_age()
     async with discovery_factory() as session, session.begin():
-        due = await due_message_retries(session, now=at, limit=limit)
+        expired = await expired_message_retries(session, now=at, limit=EXPIRE_BATCH, max_age=window)
+        due = await due_message_retries(session, now=at, limit=limit, max_age=window)
+    failed = 0
+    for organization_id, message_id in expired:
+        try:
+            async with work_scope(organization_id) as session:
+                outcome = await expire_stale_retry(
+                    session,
+                    organization_id=organization_id,
+                    message_id=message_id,
+                    now=at,
+                    max_age=window,
+                )
+        except Exception:
+            log.exception(
+                "notification.retry_sweep.expire_failed",
+                organization_id=str(organization_id),
+                message_id=str(message_id),
+            )
+            continue
+        failed += outcome == "expired"
+    if failed:
+        log.warning("notification.retry_sweep.window_expired", count=failed)
     queued = 0
     for organization_id, message_id in due:
         try:
@@ -1286,6 +1429,7 @@ async def sweep_message_retries(
                     message_id=message_id,
                     max_attempts=max_attempts,
                     now=at,
+                    max_age=window,
                 )
         except Exception:
             log.exception(

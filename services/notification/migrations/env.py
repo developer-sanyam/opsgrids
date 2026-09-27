@@ -70,11 +70,12 @@ def grant_message_retry_reader(connection: Connection) -> None:
     """Column-level `SELECT` on `messages` for the outbox role — the failed-send retry sweep's own
     cross-tenant discovery (`app/cron.py`, `services.due_message_retries`).
 
-    Same shape and reasons as `grant_campaign_sweep_reader`: six columns, named exactly
-    (`organization_id`, `id`, `state`, `attempts`, `updated_at`, `deleted_at`), never `to_address`,
-    `subject` or `body`. Discovery only asks *which message in which organization is due for
-    another attempt*; every write the sweep makes runs tenant-bound. Without this grant the sweep's
-    query fails on the outbox role and no failed send is ever retried.
+    Same shape and reasons as `grant_campaign_sweep_reader`: seven columns, named exactly
+    (`organization_id`, `id`, `state`, `attempts`, `created_at`, `updated_at`, `deleted_at`;
+    `created_at` is the retry window's clock), never `to_address`, `subject` or `body`. Discovery
+    only asks *which message in which organization is due for another attempt*; every write the
+    sweep makes runs tenant-bound. Without this grant the sweep's query fails on the
+    outbox role and no failed send is ever retried.
 
     Idempotent and re-applied after every alembic run: `REVOKE` first, `GRANT` again only if the
     table exists.
@@ -92,7 +93,8 @@ def grant_message_retry_reader(connection: Connection) -> None:
         connection.execute(text(f'REVOKE ALL ON "{SCHEMA}"."messages" FROM "{reader}"'))
         connection.execute(
             text(
-                "GRANT SELECT (organization_id, id, state, attempts, updated_at, deleted_at) "
+                "GRANT SELECT (organization_id, id, state, attempts, created_at, updated_at, "
+                "deleted_at) "
                 f'ON "{SCHEMA}"."messages" TO "{reader}"'
             )
         )

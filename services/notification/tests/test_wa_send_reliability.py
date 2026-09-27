@@ -10,6 +10,7 @@ security live), with discovery on the real outbox role — so the column grant i
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -20,7 +21,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from pydantic import SecretStr
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app import dispatcher, models, selectors, services, transports, w1_selectors, w1_services
@@ -82,11 +83,31 @@ def test_per_message_refusals_are_terminal_with_a_reason(code: int, reason: str)
     assert exc.reason == reason
 
 
-@pytest.mark.parametrize("code", [190, 463, 467, 0, 368, 10, 200, 250, 299])
-def test_token_and_account_errors_are_credential_rejections(code: int) -> None:
+@pytest.mark.parametrize("code", [190, 463, 467, 0])
+def test_dead_token_errors_are_credential_rejections(code: int) -> None:
     exc = _err(code)
     assert isinstance(exc, transports.CredentialsRejected)
     assert isinstance(exc, transports.TransportRefused)  # terminal for the message too
+
+
+@pytest.mark.parametrize(
+    ("code", "reason"),
+    [
+        (368, "account_temporarily_blocked"),
+        (3, "permission_denied"),
+        (10, "permission_denied"),
+        (200, "permission_denied"),
+        (250, "permission_denied"),
+        (299, "permission_denied"),
+    ],
+)
+def test_policy_blocks_and_permission_errors_are_terminal_for_the_message_only(
+    code: int, reason: str
+) -> None:
+    exc = _err(code, "no way")
+    assert type(exc) is transports.TransportRefused  # not CredentialsRejected
+    assert (exc.code, exc.reason) == (str(code), reason)
+    assert str(exc) == f"{code}: no way"
 
 
 def test_a_token_subcode_marks_the_credential_even_under_another_code() -> None:
@@ -841,7 +862,7 @@ async def test_replacing_the_token_clears_the_fast_fail_even_without_a_health_wr
     assert (await _message(org_id, again)).state == STATE_SENT
 
 
-@pytest.mark.parametrize("code", [463, 467, 0, 368, 10, 200])
+@pytest.mark.parametrize("code", [463, 467, 0])
 async def test_every_credential_code_flips_health(
     code: int, org_id, worker_engine, wire, cfg, platform
 ) -> None:
@@ -851,6 +872,29 @@ async def test_every_credential_code_flips_health(
     await _dispatch(org_id, message_id, platform, cfg)
     assert (await _message(org_id, message_id)).state == STATE_FAILED
     assert await _health_state(org_id) == "invalid"
+
+
+@pytest.mark.parametrize("code", [368, 3, 10, 200, 250])
+async def test_a_policy_block_or_permission_error_fails_only_that_message(
+    code: int, org_id, worker_engine, wire, cfg, platform
+) -> None:
+    """The connection stays usable: health is untouched and the next message is still sent."""
+    await _connect(org_id)
+    wire.fail(code, message="blocked for this call")
+    first = await _stage(org_id)
+    await _dispatch(org_id, first, platform, cfg)
+
+    message = await _message(org_id, first)
+    assert message.state == STATE_FAILED
+    assert message.provider_error_code == str(code)
+    assert message.last_error == f"{code}: blocked for this call"
+    assert await _health_state(org_id) is None
+
+    wire.succeed()
+    second = await _stage(org_id)
+    await _dispatch(org_id, second, platform, cfg)
+    assert (await _message(org_id, second)).state == STATE_SENT
+    assert len(wire.requests) == 2
 
 
 async def test_a_message_level_refusal_does_not_touch_health(
@@ -962,3 +1006,271 @@ async def test_a_retry_after_the_template_was_paused_fails_instead_of_sending(
     assert message.state == STATE_FAILED
     assert message.provider_error_code == "132015"
     assert len(wire.requests) == 1  # only the first, failed, attempt ever reached Meta
+
+
+# --------------------------------------------------------------------- retry window
+
+
+async def _set_created_at(s: AsyncSession, message_id: uuid.UUID, at: datetime) -> None:
+    # `updated_at` is pinned to itself: it is the retry clock and `onupdate` would move it.
+    await s.execute(
+        update(Message)
+        .where(Message.id == message_id)
+        .values(created_at=at, updated_at=Message.updated_at)
+    )
+
+
+async def _age(org: uuid.UUID, message_id: uuid.UUID, *, created_ago: timedelta) -> None:
+    """Make a staged-and-failed message look `created_ago` old, as a row left by an earlier
+    release would."""
+    async with _scope(org) as s:
+        await _set_created_at(s, message_id, datetime.now(UTC) - created_ago)
+
+
+async def test_a_stale_pending_message_is_failed_and_never_sent(
+    org_id, worker_engine, wire, cfg, platform, sweep_scopes
+) -> None:
+    discovery, work_scope = sweep_scopes
+    await _connect(org_id)
+    message_id = await _stage(org_id)
+    wire.fail(130429, status=429)
+    await _dispatch(org_id, message_id, platform, cfg)
+    await _age(org_id, message_id, created_ago=timedelta(days=9))
+    sent_before = len(wire.requests)
+
+    queued = await services.sweep_message_retries(
+        discovery_factory=discovery,
+        work_scope=work_scope,
+        max_attempts=6,
+        now=datetime.now(UTC) + timedelta(hours=1),
+        max_age=timedelta(hours=6),
+    )
+
+    assert queued == 0
+    message = await _message(org_id, message_id)
+    assert message.state == STATE_FAILED
+    assert message.last_error is not None
+    assert message.last_error.startswith("retry_window_expired after 1 attempts")
+    assert len(await _queued_events(org_id, message_id)) == 1  # nothing was re-queued
+    assert len(wire.requests) == sent_before
+    async with _scope(org_id) as s:
+        failed_events = (
+            (
+                await s.execute(
+                    select(OutboxEvent).where(OutboxEvent.event_type == services.EVT_MESSAGE_FAILED)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(failed_events) == 1
+
+
+async def test_a_fresh_pending_message_is_still_retried(
+    org_id, worker_engine, wire, cfg, platform, sweep_scopes
+) -> None:
+    discovery, work_scope = sweep_scopes
+    await _connect(org_id)
+    message_id = await _stage(org_id)
+    wire.fail(130429, status=429)
+    await _dispatch(org_id, message_id, platform, cfg)
+    await _age(org_id, message_id, created_ago=timedelta(hours=2))
+
+    queued = await services.sweep_message_retries(
+        discovery_factory=discovery,
+        work_scope=work_scope,
+        max_attempts=6,
+        now=datetime.now(UTC) + timedelta(minutes=5),
+        max_age=timedelta(hours=6),
+    )
+    assert queued == 1
+    assert (await _message(org_id, message_id)).state == STATE_PENDING
+
+
+async def test_the_retry_window_boundary(
+    org_id, worker_engine, wire, cfg, platform, sweep_scopes
+) -> None:
+    """Exactly at the window the message is expired; a second inside it, it is retried."""
+    discovery, work_scope = sweep_scopes
+    await _connect(org_id)
+    wire.fail(130429, status=429)
+    inside, edge = await _stage(org_id), await _stage(org_id)
+    await _dispatch(org_id, inside, platform, cfg)
+    await _dispatch(org_id, edge, platform, cfg)
+
+    window = timedelta(hours=6)
+    now = datetime.now(UTC) + timedelta(hours=1)
+    async with _scope(org_id) as s:
+        for message_id, created in (
+            (inside, now - window + timedelta(seconds=1)),
+            (edge, now - window),
+        ):
+            await _set_created_at(s, message_id, created)
+
+    queued = await services.sweep_message_retries(
+        discovery_factory=discovery,
+        work_scope=work_scope,
+        max_attempts=6,
+        now=now,
+        max_age=window,
+    )
+    assert queued == 1
+    assert (await _message(org_id, inside)).state == STATE_PENDING
+    assert len(await _queued_events(org_id, inside)) == 2
+    assert (await _message(org_id, edge)).state == STATE_FAILED
+
+
+async def test_expiry_is_bounded_per_tick(
+    org_id, worker_engine, wire, cfg, platform, sweep_scopes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    discovery, work_scope = sweep_scopes
+    monkeypatch.setattr(services, "EXPIRE_BATCH", 2)
+    await _connect(org_id)
+    wire.fail(130429, status=429)
+    ids = [await _stage(org_id) for _ in range(3)]
+    for message_id in ids:
+        await _dispatch(org_id, message_id, platform, cfg)
+        await _age(org_id, message_id, created_ago=timedelta(days=3))
+
+    async def tick() -> None:
+        await services.sweep_message_retries(
+            discovery_factory=discovery,
+            work_scope=work_scope,
+            max_attempts=6,
+            now=datetime.now(UTC) + timedelta(hours=1),
+            max_age=timedelta(hours=6),
+        )
+
+    await tick()
+    states = [(await _message(org_id, m)).state for m in ids]
+    assert states.count(STATE_FAILED) == 2
+    await tick()
+    assert [(await _message(org_id, m)).state for m in ids] == [STATE_FAILED] * 3
+
+
+async def test_the_expiry_write_is_tenant_bound(org_id, worker_engine, wire, cfg, platform) -> None:
+    await _connect(org_id)
+    message_id = await _stage(org_id)
+    wire.fail(130429, status=429)
+    await _dispatch(org_id, message_id, platform, cfg)
+    await _age(org_id, message_id, created_ago=timedelta(days=3))
+
+    other = uuid.uuid4()
+    async with _scope(other) as s:
+        outcome = await services.expire_stale_retry(
+            s,
+            organization_id=other,
+            message_id=message_id,
+            now=datetime.now(UTC),
+            max_age=timedelta(hours=6),
+        )
+    assert outcome == "skipped"
+    assert (await _message(org_id, message_id)).state == STATE_PENDING
+
+
+async def test_the_drivers_tick_expires_stale_retries_with_the_configured_window(
+    org_id, worker_engine, wire, cfg, platform, sweep_scopes
+) -> None:
+    discovery, work_scope = sweep_scopes
+    await _connect(org_id)
+    message_id = await _stage(org_id)
+    wire.fail(130429, status=429)
+    await _dispatch(org_id, message_id, platform, cfg)
+    await _age(org_id, message_id, created_ago=timedelta(minutes=30))
+
+    driver = CampaignDriver(
+        discovery_factory=discovery,
+        work_scope=work_scope,
+        dispatch_max_attempts=6,
+        dispatch_retry_max_age_seconds=600,
+    )
+    report = await driver.tick(now=datetime.now(UTC) + timedelta(hours=1))
+    assert report.retries_queued == 0
+    assert (await _message(org_id, message_id)).state == STATE_FAILED
+
+
+def test_the_retry_window_defaults_to_six_hours() -> None:
+    assert Settings.model_fields["dispatch_retry_max_age_seconds"].default == 6 * 3600
+
+
+# --------------------------------------------------------------------- claim and re-queue races
+
+
+async def test_a_second_claim_of_the_same_message_returns_none(
+    org_id, worker_engine, wire, cfg, platform
+) -> None:
+    await _connect(org_id)
+    message_id = await _stage(org_id)
+    async with _scope(org_id) as s:
+        first = await services.claim_for_send(s, organization_id=org_id, message_id=message_id)
+    assert first is not None and first.attempts == 1
+    async with _scope(org_id) as s:
+        second = await services.claim_for_send(s, organization_id=org_id, message_id=message_id)
+    assert second is None
+    assert (await _message(org_id, message_id)).attempts == 1
+
+
+async def test_two_concurrent_claims_let_exactly_one_through(
+    org_id, worker_engine, wire, cfg, platform
+) -> None:
+    """The claim read takes the row lock, so the second transaction waits for the first to commit
+    and then sees `sending`."""
+    await _connect(org_id)
+    message_id = await _stage(org_id)
+    first_claimed = asyncio.Event()
+    release = asyncio.Event()
+
+    async def first() -> Message | None:
+        async with _scope(org_id) as s:
+            message = await services.claim_for_send(
+                s, organization_id=org_id, message_id=message_id
+            )
+            first_claimed.set()
+            await release.wait()  # hold the transaction (and the lock) open
+            return message
+
+    async def second() -> Message | None:
+        await first_claimed.wait()
+        async with _scope(org_id) as s:
+            return await services.claim_for_send(s, organization_id=org_id, message_id=message_id)
+
+    t1 = asyncio.create_task(first())
+    t2 = asyncio.create_task(second())
+    await first_claimed.wait()
+    await asyncio.sleep(0.3)
+    assert not t2.done()  # blocked on the lock, not racing past it
+    release.set()
+    won, lost = await asyncio.gather(t1, t2)
+    assert won is not None and lost is None
+    assert (await _message(org_id, message_id)).attempts == 1
+
+
+async def test_a_message_awaiting_its_retry_event_is_not_queued_again_for_five_minutes(
+    org_id, worker_engine, wire, cfg, platform, sweep_scopes
+) -> None:
+    discovery, work_scope = sweep_scopes
+    await _connect(org_id)
+    message_id = await _stage(org_id)
+    wire.fail(130429, status=429)
+    await _dispatch(org_id, message_id, platform, cfg)
+    failed_at = (await _message(org_id, message_id)).updated_at
+
+    async def tick(after: timedelta) -> int:
+        return await services.sweep_message_retries(
+            discovery_factory=discovery,
+            work_scope=work_scope,
+            max_attempts=6,
+            now=failed_at + after,
+            max_age=timedelta(hours=6),
+        )
+
+    first_at = services.retry_delay(1) + timedelta(seconds=1)
+    assert await tick(first_at) == 1
+    # The event is still in the broker: nothing more for 5 minutes after the re-queue,
+    # although the backoff itself is only a minute.
+    assert await tick(first_at + timedelta(minutes=2)) == 0
+    assert await tick(first_at + timedelta(minutes=4, seconds=59)) == 0
+    assert len(await _queued_events(org_id, message_id)) == 2
+    # Past it, a message still pending (the event was lost) is queued again.
+    assert await tick(first_at + timedelta(minutes=5, seconds=1)) == 1
+    assert len(await _queued_events(org_id, message_id)) == 3

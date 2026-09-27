@@ -430,11 +430,15 @@ _RETRYABLE_CODES: frozenset[int] = frozenset(
     {130429, 80007, 131056, 131000, 131016, 133004, 2, 1, 4, 131057}
 )
 
-#: The credential or the account is the problem, not the message. Terminal for the message, and
-#: the connection is marked invalid. 0/190 token invalid or expired; 463/467 are token
-#: `error_subcode`s that can also arrive as `code`; 3, 10 and 200-299 permissions; 368 account
-#: restricted for policy violations.
-_CREDENTIAL_CODES: frozenset[int] = frozenset({0, 3, 10, 190, 368, 463, 467, *range(200, 300)})
+#: The token itself is dead, so every send on the connection will fail: terminal for the message
+#: and the connection is marked invalid. Per Meta's error-codes page (read 2026-09-27): 0
+#: "unable to authenticate the app user" (expired or invalidated token), 190 "access token has
+#: expired"; 463/467 are token `error_subcode`s that can also arrive as `code`.
+#:
+#: Deliberately **not** here, because one call's refusal must not take the whole connection
+#: down: 368 (the WABA is temporarily restricted for a policy violation) and 3, 10 and 200-299
+#: (a permission this call lacked) - see `_TERMINAL_REASONS`.
+_CREDENTIAL_CODES: frozenset[int] = frozenset({0, 190, 463, 467})
 _CREDENTIAL_SUBCODES: frozenset[int] = frozenset({458, 459, 460, 463, 467})
 
 #: Terminal, with a reason a UI can map to wording. 131049 (per-user marketing limit) is terminal
@@ -463,6 +467,13 @@ _TERMINAL_REASONS: dict[int, str] = {
     131009: "invalid_parameter",
     131021: "same_sender_and_recipient",
     100: "invalid_parameter",
+    # Terminal for this message only; the connection's health is left alone (see
+    # `_CREDENTIAL_CODES`). 368 is a temporary policy block on the account; the rest are
+    # permission errors that can be specific to one call.
+    368: "account_temporarily_blocked",
+    3: "permission_denied",
+    10: "permission_denied",
+    **dict.fromkeys(range(200, 300), "permission_denied"),
 }
 
 _MESSAGE_LIMIT = 300

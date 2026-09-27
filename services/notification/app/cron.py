@@ -144,6 +144,7 @@ class CampaignDriver(GuardedSweep):
         discovery_limit: int = 100,
         resolve_target: TargetResolver | None = None,
         dispatch_max_attempts: int | None = None,
+        dispatch_retry_max_age_seconds: int | None = None,
     ) -> None:
         super().__init__(poll_interval=poll_interval, max_backoff=max_backoff_seconds)
         self._discovery_factory = discovery_factory
@@ -157,6 +158,13 @@ class CampaignDriver(GuardedSweep):
             dispatch_max_attempts
             if dispatch_max_attempts is not None
             else settings().dispatch_max_attempts
+        )
+        #: How long after staging a failed message may still be retried; past it the sweep fails
+        #: it instead (`services.expire_stale_retry`).
+        self._retry_max_age = timedelta(
+            seconds=dispatch_retry_max_age_seconds
+            if dispatch_retry_max_age_seconds is not None
+            else settings().dispatch_retry_max_age_seconds
         )
         self._batch_size = batch_size
         self._lease_seconds = lease_seconds
@@ -225,6 +233,7 @@ class CampaignDriver(GuardedSweep):
                 work_scope=self._work_scope,
                 max_attempts=self._dispatch_max_attempts,
                 now=at,
+                max_age=self._retry_max_age,
             )
         except Exception:
             log.exception("notification.retry_sweep.discovery_failed")
@@ -387,6 +396,7 @@ async def main() -> None:
         pause_retry_seconds=cfg.engage_campaign_pause_retry_seconds,
         poll_interval=cfg.engage_campaign_poll_interval_seconds,
         dispatch_max_attempts=cfg.dispatch_max_attempts,
+        dispatch_retry_max_age_seconds=cfg.dispatch_retry_max_age_seconds,
     )
     await driver.run()
 

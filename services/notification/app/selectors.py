@@ -135,13 +135,18 @@ def messages_stmt(
 
 
 async def get_message(
-    session: AsyncSession, org_id: uuid.UUID, message_id: uuid.UUID
+    session: AsyncSession, org_id: uuid.UUID, message_id: uuid.UUID, *, for_update: bool = False
 ) -> Message | None:
+    """One message. `for_update` takes the row lock (and refreshes an already-loaded copy), so
+    a writer that decides on the row's state - the send claim, the retry re-queue - cannot decide
+    on a state another transaction is changing at the same moment."""
     stmt = select(Message).where(
         Message.id == message_id,
         Message.organization_id == org_id,
         Message.deleted_at.is_(None),
     )
+    if for_update:
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 

@@ -141,6 +141,11 @@ class Settings(ServiceSettings):
     dispatch_poll_interval: float = 1.0
     #: A message that has failed this many times stops being claimed and waits for an operator.
     dispatch_max_attempts: int = 6
+    #: A failed send is only retried while the message is younger than this (measured from when it
+    #: was staged). Past it, a still-`pending` message that has failed before is failed
+    #: permanently as `retry_window_expired` instead of being sent hours or days late. Optional:
+    #: `DISPATCH_RETRY_MAX_AGE_SECONDS`, default 6 hours.
+    dispatch_retry_max_age_seconds: int = 21600
 
     #: Runs this service's worker loops — the two event consumers and the campaign send driver
     #: (`app/worker.py`) — as supervised background tasks inside the API process instead of the

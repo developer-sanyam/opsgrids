@@ -140,7 +140,9 @@ async def _template_status(admin_session, org: uuid.UUID) -> str:
         ).scalar_one()
 
 
-async def test_a_stop_is_applied_only_to_the_org_that_owns_the_number(client, admin_session) -> None:
+async def test_a_stop_is_applied_only_to_the_org_that_owns_the_number(
+    client, admin_session
+) -> None:
     org_a, org_b = uuid.uuid4(), uuid.uuid4()
     await _account(admin_session, org_a, phone=PHONE_A)
     await _account(admin_session, org_b, phone=PHONE_B)
