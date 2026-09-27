@@ -37,10 +37,10 @@ const COPY = {
     intro:
       "Adding an authenticator changes how your account is reached, so we need to check it's you: your password, and a code from an authenticator you already use.",
   },
-  passwordLabel: "Password",
+  passwordLabel: "Password", // pragma: allowlist secret — a field label
   codeLabel: "Current authenticator code",
   codeHelper: "A 6-digit code from an authenticator you already use, or one of your recovery codes.",
-  needPassword: "Enter your password.",
+  needPassword: "Enter your password.", // pragma: allowlist secret — a validation message
   needCode: "Enter a code from your current authenticator.",
   submit: "Continue",
   submitting: "Checking…",

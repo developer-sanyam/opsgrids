@@ -56,7 +56,7 @@ function problem(status: number, slug: string, detail: string, field?: string): 
 
 const ENROLMENT = {
   factor_id: FACTOR_ID,
-  secret: "JBSWY3DPEHPK3PXP",
+  secret: "JBSWY3DPEHPK3PXP", // pragma: allowlist secret — the well-known documentation TOTP seed
   otpauth_uri: "otpauth://totp/OpsGrids:priya@acme.example.com?secret=JBSWY3DPEHPK3PXP&issuer=OpsGrids",
 };
 

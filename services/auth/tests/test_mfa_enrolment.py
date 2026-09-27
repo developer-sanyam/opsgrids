@@ -78,6 +78,12 @@ CONFIRM = "/api/v1/auth/mfa/enrol/confirm"
 SWITCH = "/api/v1/auth/switch-org"
 ROUTES = Path(__file__).resolve().parent.parent / "app" / "api" / "routes.py"
 
+# Passwords that are meant to be wrong.
+ATTACKER_GUESS = "attacker-guess-1"  # pragma: allowlist secret
+NOT_THE_PASSWORD = "not-the-password"  # pragma: allowlist secret
+WRONG_PASSWORD_X = "wrong-password-x"  # pragma: allowlist secret
+WRONG_PASSWORD_Y = "wrong-password-y"  # pragma: allowlist secret
+
 
 # ---------------------------------------------------------------------------- helpers
 
@@ -188,7 +194,7 @@ class TestABearerAloneCannotStartAnEnrolment:
         take next is refused, and no factor exists at the end for step-up to accept."""
         stolen = await _sign_in(session, cfg, pair, directory)
 
-        started = await _begin(http, stolen.access_token, password="attacker-guess-1")
+        started = await _begin(http, stolen.access_token, password=ATTACKER_GUESS)
         assert started.status_code == 422
         assert _problem_type(started) == "password-incorrect"
         assert "secret" not in started.text and "factor_id" not in started.text
@@ -232,7 +238,7 @@ class TestABearerAloneCannotStartAnEnrolment:
     ) -> None:
         issued = await _sign_in(session, cfg, pair, directory)
 
-        response = await _begin(http, issued.access_token, password="not-the-password")
+        response = await _begin(http, issued.access_token, password=NOT_THE_PASSWORD)
 
         # 422 and not 401: the shared client would refresh and re-send the same wrong password.
         assert response.status_code == 422
@@ -251,7 +257,7 @@ class TestABearerAloneCannotStartAnEnrolment:
         }
         assert failed.request_id == "step-up-test-request"
         assert failed.ip is not None and failed.user_agent == "step-up-test/1"
-        assert "not-the-password" not in response.text
+        assert NOT_THE_PASSWORD not in response.text
 
     async def test_the_password_count_is_the_one_sign_in_uses(
         self, http: AsyncClient, session, cfg, pair, directory, registered
@@ -260,7 +266,7 @@ class TestABearerAloneCannotStartAnEnrolment:
         the account: it is one allowance, not one per door."""
         issued = await _sign_in(session, cfg, pair, directory)
         for _ in range(cfg.max_failed_attempts - 1):
-            await _begin(http, issued.access_token, password="wrong-password-x")
+            await _begin(http, issued.access_token, password=WRONG_PASSWORD_X)
         assert (await _password_failures(session))[0] == cfg.max_failed_attempts - 1
 
         with pytest.raises(UnauthorizedProblem):
@@ -271,7 +277,7 @@ class TestABearerAloneCannotStartAnEnrolment:
                 directory=directory,
                 entitlements=FakeEntitlements(),
                 email="sam@example.com",
-                password="wrong-password-y",
+                password=WRONG_PASSWORD_Y,
             )
         _, locked_until = await _password_failures(session)
         assert locked_until is not None and locked_until > datetime.now(UTC)
@@ -281,7 +287,7 @@ class TestABearerAloneCannotStartAnEnrolment:
     ) -> None:
         attacker = await _sign_in(session, cfg, pair, directory)
         for attempt in range(cfg.max_failed_attempts):
-            response = await _begin(http, attacker.access_token, password="wrong-password-x")
+            response = await _begin(http, attacker.access_token, password=WRONG_PASSWORD_X)
             # The attempt that trips the lock still answers "incorrect", like sign-in does.
             assert response.status_code == 422, attempt
 
@@ -343,7 +349,7 @@ class TestABearerAloneCannotStartAnEnrolment:
     ) -> None:
         issued = await _sign_in(session, cfg, pair, directory)
         for _ in range(2):
-            await _begin(http, issued.access_token, password="wrong-password-x")
+            await _begin(http, issued.access_token, password=WRONG_PASSWORD_X)
         assert (await _password_failures(session))[0] == 2
 
         ok = await _begin(http, issued.access_token, password=PASSWORD)
@@ -387,7 +393,7 @@ class TestAnExistingAuthenticatorMustBeProved:
         response = await _begin(
             http,
             issued.access_token,
-            password="wrong-password-x",
+            password=WRONG_PASSWORD_X,
             current_code=_code(secret),
         )
 
@@ -570,7 +576,7 @@ class TestOnlyALiveMemberSessionMayEnrol:
         await services._revoke_session(session, issued.session_id, reason="test")
         await session.commit()
 
-        response = await _begin(http, issued.access_token, password="wrong-password-x")
+        response = await _begin(http, issued.access_token, password=WRONG_PASSWORD_X)
 
         assert response.status_code == 401
         assert await _password_failures(session) == (0, None)
@@ -621,7 +627,7 @@ class TestOnlyALiveMemberSessionMayEnrol:
     ) -> None:
         token, _sid = await _sso_bearer(session, cfg, pair, directory)
 
-        begun = await _begin(http, token, password="wrong-password-x")
+        begun = await _begin(http, token, password=WRONG_PASSWORD_X)
         assert begun.status_code == 403
         assert _problem_type(begun) == "mfa-unavailable-for-sso"
         assert "password sign-in" in begun.json()["detail"]
@@ -1119,7 +1125,7 @@ class TestTheStepUpTokenIsNotABackdoorToTheSameThings:
 
         # The account has an authenticator, so a code is asked for too; the password is what is
         # checked first, and the step-up token does not stand in for it.
-        response = await _begin(http, token, password="wrong-password-x", current_code="123456")
+        response = await _begin(http, token, password=WRONG_PASSWORD_X, current_code="123456")
 
         assert response.status_code == 422
         assert _problem_type(response) == "password-incorrect"
