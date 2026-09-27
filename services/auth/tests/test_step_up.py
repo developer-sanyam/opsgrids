@@ -145,9 +145,16 @@ async def _sign_in(
 
 
 async def _enrol(session: AsyncSession, cfg: Settings) -> tuple[str, list[str]]:
-    """A confirmed authenticator, handed over with no step spent. Enrolment itself consumes the
-    current step (`confirm_mfa_enrolment`), which would make the first step-up in every test a
-    replay; the reset is the test's own, on the row, not something the service does."""
+    """A confirmed authenticator that **predates** every session the test has already opened,
+    handed over with no step spent.
+
+    Two things the test does to the row, neither of which the service does. Enrolment consumes
+    the current step (`confirm_mfa_enrolment`), which would make the first step-up in every test
+    a replay, so `last_used_step` is reset. And `confirmed_at` is moved an hour back: step-up only
+    spends a factor that predates the session or was enrolled through it
+    (`_factor_usable_in_session`), and these tests sign in *before* they enrol — the
+    "factor added after this session began" case has its own tests in `test_mfa_enrolment.py`.
+    """
     factor, secret, _uri = await services.begin_mfa_enrolment(
         session, USER, account_email="sam@example.com", cfg=cfg
     )
@@ -155,6 +162,7 @@ async def _enrol(session: AsyncSession, cfg: Settings) -> tuple[str, list[str]]:
         session, factor_id=factor.id, user_id=USER, code=_code(secret), cfg=cfg
     )
     factor.last_used_step = None
+    factor.confirmed_at = datetime.now(UTC) - timedelta(hours=1)
     await session.commit()
     return secret, recovery
 
@@ -206,11 +214,16 @@ async def _credential(session: AsyncSession) -> tuple[int, datetime | None]:
             )
         )
     ).one()
+    # Ends the read transaction: a route that opens its own (`get_tenant_session`) refuses a
+    # session that is already in one.
+    await session.rollback()
     return row[0], row[1]
 
 
 async def _factor_step(session: AsyncSession) -> int | None:
-    return (await session.execute(select(MfaFactor.last_used_step))).scalar_one()
+    step = (await session.execute(select(MfaFactor.last_used_step))).scalar_one()
+    await session.rollback()
+    return step
 
 
 async def _session_row(session: AsyncSession, session_id: uuid.UUID) -> Session:
@@ -234,15 +247,52 @@ async def _audit(session: AsyncSession, action: str) -> list[SimpleNamespace]:
         .all()
     )
     columns = [c.name for c in AuditLog.__table__.columns]
-    return [SimpleNamespace(**{name: getattr(row, name) for name in columns}) for row in rows]
+    snapshot = [SimpleNamespace(**{name: getattr(row, name) for name in columns}) for row in rows]
+    await session.rollback()  # a route that opens its own transaction refuses one already open
+    return snapshot
 
 
-async def _all_audit_text(session: AsyncSession) -> str:
-    """Every column of every audit row, flattened — for asserting what is *not* in there."""
+def _leaves(value: Any) -> list[str]:
+    """Every key and every scalar in a JSON-ish value, as strings."""
+    if isinstance(value, dict):
+        return [*map(str, value), *(leaf for v in value.values() for leaf in _leaves(v))]
+    if isinstance(value, list):
+        return [leaf for v in value for leaf in _leaves(v)]
+    return [str(value)]
+
+
+async def _audit_values(session: AsyncSession) -> tuple[list[str], list[str]]:
+    """Every value of every audit row, for asserting what is *not* in there: `(leaves,
+    free_text)`. `leaves` is every column and JSON leaf; `free_text` is the subset that could
+    carry an arbitrary string (not an id, a timestamp or a number). Compared two ways because a
+    six-digit code is a plausible *substring* of a UUID or a microsecond field — a substring test
+    over everything is a flaky test, an exact-value test over everything misses a code buried in
+    a sentence."""
     await session.rollback()
     rows = (await session.execute(select(AuditLog))).scalars().all()
     columns = [c.name for c in AuditLog.__table__.columns]
-    return "\n".join(str(getattr(row, name)) for row in rows for name in columns)
+    leaves: list[str] = []
+    free_text: list[str] = []
+    for row in rows:
+        for name in columns:
+            value = getattr(row, name)
+            if isinstance(value, dict):
+                found = _leaves(value)
+                leaves.extend(found)
+                free_text.extend(x for x in found if not _looks_like_an_id(x))
+            else:
+                leaves.append(str(value))
+                if name in ("action", "entity", "reason", "user_agent", "request_id"):
+                    free_text.append(str(value))
+    return leaves, free_text
+
+
+def _looks_like_an_id(value: str) -> bool:
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return value.replace(".", "").isdigit()
+    return True
 
 
 def _problem_type(response: Any) -> str:
@@ -1112,9 +1162,10 @@ class TestTheAuditTrail:
             ),
         ]
 
-        text = await _all_audit_text(session)
+        leaves, free_text = await _audit_values(session)
         for secret_value in (wrong, good, recovery[0]):
-            assert secret_value not in text
+            assert secret_value not in leaves
+            assert not any(secret_value in text for text in free_text)
             for response in responses:
                 assert secret_value not in response.text
         # `record_audit` redacts by key name and `code` is not on that list (it lives in

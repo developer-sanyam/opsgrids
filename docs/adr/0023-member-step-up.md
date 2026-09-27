@@ -7,6 +7,12 @@ token carries no permission list) and the 2026-09-17 note under §5 (`is_dangero
 a control); [ADR-0003](0003-surfaces-and-authorization-topology.md) (the gateways verify, the
 services authorize). The guard it feeds is `platform_core.auth.require(perm, amr={"otp"})`.
 
+**Amended 2026-09-27 after the independent security review** (finding B1 and its follow-ups): the
+first version of this ADR added the step-up endpoint and left enrolment as it was, which let a
+stolen bearer token enrol its own authenticator and pass the step-up with it. The enrolment gate,
+the session binding and the step-up factor rule below close that; "Risks accepted" records the
+attack, and two claims the first version overstated are corrected in place.
+
 ---
 
 ## Context
@@ -35,10 +41,11 @@ recency, only presence of the claim.
 
 ## Decision
 
-**`POST /api/v1/auth/mfa/step-up`**, body `{code}`, bearer-authenticated. It verifies a TOTP code
-for the signed-in member and returns the existing `TokenOut` (`access_token`, `token_type`,
-`expires_in`, plus the organization and membership ids) — an **access token whose `amr` is the
-session's `amr` plus `otp`**.
+### A. `POST /api/v1/auth/mfa/step-up`
+
+Body `{code}`, bearer-authenticated. It verifies a TOTP code for the signed-in member and returns
+the existing `TokenOut` (`access_token`, `token_type`, `expires_in`, plus the organization and
+membership ids) — an **access token whose `amr` is the session's `amr` plus `otp`**.
 
 1. **Identity comes from the verified bearer token, never the body.** The session is the one the
    token's `sid` names and must belong to its `sub`; the organization is the token's `act_org`, and
@@ -66,28 +73,109 @@ session's `amr` plus `otp`**.
 6. **Bare session with explicit commits, tenant bound first.** A wrong code has to be counted and
    the lockout it trips has to stick even though the request answers an error; the tenant
    chokepoint (`get_tenant_session`) rolls back on an exception. So the route takes a bare session
-   like `mfa_verify`, and `services.step_up` sets the tenant GUC itself as the first statement. The
-   route audit in `tests/test_tenancy.py` carries an explicit, reasoned exemption for it and a
-   behavioural test that the binding happens first even when the request is refused.
+   like `mfa_verify`, and the service binds the tenant GUC itself (`_bind_tenant`: `set_config`,
+   then the read-back probe outside production) as the first statement it runs. The directory and
+   entitlement calls come **before** that, so a slow upstream never holds a pooled connection or
+   the credential row lock. The route audit in `tests/test_tenancy.py` carries an explicit,
+   reasoned exemption for it and a behavioural test that the binding happens first even when the
+   request is refused.
+7. **A factor must predate the session, or have been enrolled through it.** `step_up` only checks
+   a code against a confirmed factor that satisfies one of two comparisons
+   (`_factor_usable_in_session`): `confirmed_at <= session.auth_time` — every sign-in that could
+   have required it happened with it in place — or `enrolled_session_id == session.id` — it was
+   enrolled through this very session by the password-gated `begin` below. A member whose only
+   factors fail both gets `403 mfa-reauthentication-required` (uncounted, code not compared) and
+   is asked to sign in again. In a mixed account the code of an unusable factor is just a wrong
+   code for the usable ones.
+
+### B. Enrolment is gated on the password (B1)
+
+`POST /api/v1/auth/mfa/enrol` and `/enrol/confirm` used to need only a bearer token: no password, no
+proof of an existing factor; a second factor could be added while one was confirmed; confirming
+deleted the member's recovery codes and handed a fresh set to the caller; no organization audit row
+was written; and the session check never asked whether the session was live. Now:
+
+1. **`begin` re-proves who is asking.** Body `{password, current_code?}` (unknown fields refused).
+   - The **current password** is always required, verified with the sign-in verifier and counted
+     against the **same** `failed_attempts` / `locked_until` as sign-in (`_register_password_failure`,
+     now shared by both). A wrong one is `422 password-incorrect`, never 401 (see the error table).
+   - When the account **already has a confirmed factor**, `current_code` is required too: a TOTP
+     code from it, or a recovery code (which is then spent, and audited as
+     `auth.mfa_recovery_code_used`). A missing one is `422 mfa-current-code-required` before the
+     password is even hashed and counts nothing; a wrong one counts against the same
+     `mfa_failed_attempts` / `mfa_locked_until` as login MFA and step-up.
+   - The password is checked **before** the code, so a wrong password never spends a code.
+   - Either lockout tripping **ends the session** the guesses came from (reason
+     `enrolment_failed_attempts`). A locked account is refused (`403 password-locked` /
+     `403 mfa-locked`) without counting.
+   - A member with no factor has only the password to offer; for the first factor that *is* the
+     trust anchor, and there is nothing more to ask.
+   - SSO sessions are refused outright (`403 mfa-unavailable-for-sso`, before the password is
+     looked at), as is any session that is not live (`401`).
+2. **`confirm` is bound to the session that began.** `begin` records `MfaFactor.enrolled_session_id`
+   (migration `5d2f8a1c7e94`, nullable, no foreign key). `confirm` requires a live password session
+   of the same person **and** `enrolled_session_id == that session`; anything else — another
+   session of the same member, a pending factor created without a session, another person's factor,
+   a missing one — is the same `404 No such enrolment`. Before, `confirm` was bound only to the
+   user and to an unguessable factor id.
+3. **Only the first factor mints recovery codes.** Confirming a second factor leaves the existing
+   codes exactly as they were and returns `recovery_codes: []`. The one exception is replacing a
+   legacy plaintext factor this deployment cannot read: with nothing usable left the new factor is
+   the first, and the old codes are replaced with it. There is no regenerate endpoint; if one is
+   ever added it must be an explicit, re-authenticated operation of its own.
+4. **Every step is audited against the organization** (actor, session id, IP, user agent, request
+   id; never a password, code, secret or recovery code): `auth.mfa_enrolment_started`,
+   `auth.mfa_enrolment_failed` (with `reason` and `locked`), `auth.mfa_enrolment_confirmed`,
+   `auth.mfa_recovery_codes_issued` (a count and `replaced_previous`, not the codes) and
+   `auth.mfa_recovery_code_used`.
+5. **The notification hook that exists is `core.user.mfa_enrolled`.** It is published to the outbox
+   on every confirmation (payload now also `first_factor` and `recovery_codes_issued`; the nil
+   organization is unchanged, a credential belongs to a person). It is on notification's
+   `SUBSCRIBABLE_EVENTS`, so a rule *can* email the member, but **no rule or template is bound to
+   it** — the only platform-tenant rule today is the password reset. So no email is sent when an
+   authenticator is added. Adding one (a `platform-mfa-enrolled` rule and template, modelled on
+   migration `b8c1d2e3f4a5`) is a notification-service change and is not part of this ADR.
+6. **`enrol` and `confirm` responses are `Cache-Control: no-store`**: they carry a TOTP seed and
+   recovery codes.
+7. **Bare session for `begin`, tenant chokepoint for `confirm`.** `begin` counts failures, so it
+   takes a bare session, commits for itself and binds the tenant first (a second reasoned entry in
+   the tenancy route audit). `confirm` counts nothing — a wrong code is checked against the pending
+   factor's own secret, which only the enrolling session has seen — so it stays on the chokepoint.
+
+### C. `switch-org` to the organization you are already in is refused
+
+`POST /auth/switch-org` is the one route that exchanges a bearer access token for a refresh token
+(a cookie), so it is the cheapest way for anyone holding an access token to outlive it. Switching to
+the organization the presenting token is already for changes nothing and has no legitimate caller
+(the dashboard's switcher offers only the other organizations and shows "Current" for this one), so
+it is `409 already-in-organization`, checked after the federated-session re-validation so a dead
+SSO session is still ended rather than merely refused. See risk 8 for what this does not close.
 
 ### Error contract (RFC 7807 `type` is `https://errors.opsgrids.dev/<slug>`)
 
-| Status | Slug | Meaning |
-|---|---|---|
-| 401 | `unauthorized` | No/invalid/expired bearer, the session is revoked or expired, or the membership has ended. |
-| 403 | `mfa-unavailable-for-sso` | The session came from an identity provider. Needs a password sign-in. |
-| 403 | `mfa-locked` | Too many wrong codes; same message as the login lockout. |
-| 409 | `mfa-not-enrolled` | No confirmed factor. Send the member to the Security page. |
-| 422 | `mfa-code-invalid` | Wrong code. Counted. |
-| 422 | `mfa-code-replayed` | A valid code for a step already spent (typically the one that just signed them in). Counted. Says to wait for the next code. |
-| 422 | `validation` | Not six digits (including a recovery code), unknown field. Not counted. |
-| 503 | `mfa-reseal-pending` | A legacy factor awaiting `bin/reseal-mfa-factors`. Not counted. |
+| Status | Slug | Where | Meaning |
+|---|---|---|---|
+| 401 | `unauthorized` | all | No/invalid/expired bearer, the session is revoked, expired or not yours, or the membership has ended. Nothing counted. |
+| 403 | `mfa-unavailable-for-sso` | enrol, confirm, step-up | The session came from an identity provider. Needs a password sign-in. |
+| 403 | `password-locked` | enrol | Sign-in's password lockout. |
+| 403 | `mfa-locked` | enrol, step-up | Too many wrong codes; same message as the login lockout. |
+| 403 | `mfa-reauthentication-required` | step-up | The authenticator was added after this session began and not through it. Sign in again. |
+| 404 | `not-found` | confirm | No such enrolment: missing, not yours, or begun by a different session. |
+| 409 | `mfa-not-enrolled` | step-up | No confirmed factor. Send the member to the Security page. |
+| 409 | `already-in-organization` | switch-org | The token is already for that organization. |
+| 422 | `password-incorrect` | enrol | Wrong password. Counted. `errors[0].field` is `password`. |
+| 422 | `mfa-current-code-required` | enrol | The account has an authenticator: send `current_code`. Not counted. `errors[0].field` is `current_code`. |
+| 422 | `mfa-code-invalid` | enrol, confirm, step-up | Wrong code. Counted at enrol and step-up, not at confirm. `errors[0].field` is `code` (`current_code` at enrol). |
+| 422 | `mfa-code-replayed` | enrol, step-up | A valid code for a step already spent (typically the one that just signed them in). Counted. Says to wait for the next code. |
+| 422 | `validation` | all | Malformed body, unknown field, or (step-up) not six digits, including a recovery code. Not counted. |
+| 503 | `mfa-reseal-pending` | enrol, step-up | A legacy factor awaiting `bin/reseal-mfa-factors`. Not counted. |
 
-A wrong code is **422, not 401**, on purpose. The shared client answers a 401 on a bearer-authenticated
-call by refreshing the token and re-sending the same request, then signing the user out if that
-fails: a mistyped digit would be counted twice and end the session. With 401 reserved for a bearer or
-session that is actually bad (nothing has been counted when it is raised), the client's default
-refresh-and-retry is the right behaviour for it and the step-up call needs no special options.
+A wrong password or code is **422, not 401**, on purpose. The shared client answers a 401 on a
+bearer-authenticated call by refreshing the token and re-sending the same request, then signing the
+user out if that fails: a mistyped value would be counted twice and end the session. With 401
+reserved for a bearer or session that is actually bad (nothing has been counted when it is raised),
+the client's default refresh-and-retry is the right behaviour for it. (`confirm` used to answer a
+wrong code with 401, which does exactly that; it is 422 now.)
 
 ## Alternatives rejected
 
@@ -96,56 +184,137 @@ refresh-and-retry is the right behaviour for it and the step-up call needs no sp
   days, on every device sharing the session. The whole point of a step-up is that it ends.
 - **Also mint a refresh token so the step-up can be renewed.** A second long-lived credential whose
   only purpose is to keep a privilege alive; the reveal is a moment, not a mode.
-- **Accept recovery codes.** They are finite and irreplaceable until re-enrolment.
+- **Accept recovery codes at step-up.** They are finite and irreplaceable until re-enrolment.
+  (They *are* accepted as the "current code" when adding a factor, where spending one is the
+  member's explicit choice and the alternative is being unable to enrol at all.)
 - **A separate lock counter for step-up.** Two counters against one secret double the attacker's
   guesses, and a tidy-looking separation is not a defence.
+- **Bind confirm to the begin with a cache entry rather than a column.** Redis is not durable, and
+  the step-up rule needs the binding for the session's whole life, not for ten minutes.
 - **Add a `require(... amr=...)` freshness check (`otp_at`) in `platform-core`.** Right in the long
   run (below) but it redeploys every service; this slice changes only `auth`.
 
 ## Risks accepted
 
-1. **The token cannot be revoked inside its TTL.** Access tokens are verified by signature at the
-   gateway; only `pv` (a permission change) and the session's refresh ending act on them. A stolen
-   step-up token opens the reveal routes for up to `step_up_token_ttl_seconds` (default 3 minutes),
-   for the permissions its holder already had. It cannot be renewed, and it grants nothing the
-   session did not already permit apart from the `otp` claim. Keep the TTL short; the setting is
-   bounded at 600 for exactly this reason.
-2. **Lockout is coupled to login MFA.** Step-up shares `Credential.mfa_failed_attempts` and
-   `mfa_locked_until` with `verify_mfa`, by design. Someone holding a stolen bearer token can
-   therefore lock the real member out of their **login** second factor for `lockout_minutes`
-   (default 15) by guessing wrongly, and the attempt that trips the lock ends the session they are
-   guessing from. This is the same exposure the login step already has (with a password, rather
-   than a bearer, as the entry ticket) and there is deliberately no admin unlock; expiry is the
-   unlock.
-3. **The token's scope is every reveal route, not one record.** It carries `otp`, and every
+1. **A step-up token cannot be ended early.** Access tokens are verified by signature at the
+   gateway, which checks the route, the token, the permission version and the entitlement — and
+   **never the session** (`platform_core.gateway`, the documented order of checks). So logout, a
+   lockout, a password change, a session revoked by any means and a deactivated account do **not**
+   stop a step-up token that has already been issued; only a permission-version bump (any change to
+   the organization's grants) makes it stale. It lives for at most `step_up_token_ttl_seconds`
+   (default 3 minutes; bounded at 600 for exactly this reason). *The first version of this ADR
+   said the session's ending "acts on" it. It does not.*
+2. **A step-up token can be chained with a fresh code, using itself as the bearer.** It is a valid
+   access token with a `sid`, so `POST /auth/mfa/step-up` accepts it and a fresh code (one for a
+   step not yet spent) yields another. It has no refresh token, but it is renewable **for as long
+   as the session is live and someone can produce a code** — which is the point of the check, and
+   is bounded by the session ending, since `step_up` reads the session. The first version said it
+   "cannot be renewed"; that was wrong.
+3. **Lockout is coupled across the doors.** Step-up, enrolment and login MFA share one
+   `mfa_failed_attempts` / `mfa_locked_until`; enrolment and sign-in share one
+   `failed_attempts` / `locked_until`. Someone holding a stolen bearer token can therefore lock the
+   real member out of **login** for `lockout_minutes` (default 15) by guessing wrongly, and the
+   attempt that trips a lock ends the session they are guessing from. This is the same exposure the
+   login form already has and there is deliberately no admin unlock; expiry is the unlock.
+4. **The token's scope is every reveal route, not one record.** It carries `otp`, and every
    `require(..., amr={"otp"})` route across CRM, HRMS, the storefront and Engage accepts it until it
    lapses. The holder still needs the permission, the scope and (for record-level reveals) the
    object-level check, and every reveal writes its own `entity.sensitive_read` audit row — but one
    code opens all of them for the window, not just the one the member had in mind.
-4. **No freshness for sessions that already carry `otp`.** A session that presented a code at login
+5. **No freshness for sessions that already carry `otp`.** A session that presented a code at login
    has `otp` in `Session.amr` and so in every token it ever mints. The guard checks presence, not
    age, so for those sessions "step-up" is satisfied for the session's whole life. This slice does
    not change that. **Phase 2:** stamp `otp_at` into the token (and out of `Session.amr`), and have
    `require(..., amr=..., max_age=...)` refuse a token whose `otp_at` is older than the route
    allows. That is a `platform-core` change and redeploys every service; it needs its own release.
-5. **Single sign-on members cannot reveal.** A federated session is refused (`mfa-unavailable-for-sso`)
+6. **Single sign-on members cannot reveal.** A federated session is refused (`mfa-unavailable-for-sso`)
    and an SSO-only account has no password to sign in with instead. Making that reachable needs a
    decision about whether an external issuer's own MFA claim (`amr`/`acr` in the ID token) may
    satisfy `otp`, which is a policy question this ADR does not settle.
-6. **Entitlements degrade to empty.** As at login and refresh, an unreachable product-service
+7. **Entitlements degrade to empty.** As at login and refresh, an unreachable product-service
    yields a token with no `ent`, and the entitlement check on the reveal route then refuses (402)
    while the code has already been spent for its step. The member retries with the next code.
-7. **The `code` audit-redaction key is not on the shared list.** `platform_core.audit.REDACTED_KEYS`
-   has no `code`. It is not needed here — the step-up never puts the code in an audit payload and a
-   test pins the payload's field set — but a future caller that passes a `code` field to
-   `record_audit` would not be protected. Add it the next time `platform-core` is released for
-   another reason.
+8. **A bearer token can still become a refresh token for a member of two or more organizations.**
+   `switch-org` now refuses the organization the token is already in, which closes it for a member
+   of one organization (the large majority). A member of two can still be moved to the other and
+   back, and each move sets a fresh refresh cookie. Closing it properly means `switch-org` must
+   present the refresh cookie the session already holds (the cookie's path, `/api/v1/auth`, already
+   covers the route) and the CSRF header, so a bearer alone gets nothing; that changes the
+   dashboard's call and is a follow-up. No other route mints a refresh token from a bearer:
+   `login`, `select-org` and `mfa/verify` need a password or pre-auth token, `refresh` needs the
+   cookie, SSO needs the identity provider, and operator sign-in has its own gates.
+9. **The password is now the trust anchor for adding a factor, and `password/change` does not
+   count wrong guesses.** `POST /auth/password/change` verifies the current password with no
+   counter and no lockout check, so a bearer holder can test candidate passwords through it at
+   whatever rate the gateway allows, and enrolment's password gate is only as strong as that.
+   Pre-existing and not changed here (it runs on the tenant chokepoint, which would need the same
+   bare-session treatment as `enrol`); the fix is to call `_register_password_failure` there.
+   Recorded as a follow-up, not a mitigation. (Its wrong-password answer is also a 401, so the
+   shared client refreshes, re-sends and signs the member out — the reason enrolment answers 422.)
+10. **Sessions that enrolled before this release need a fresh sign-in to step up.** A factor
+    confirmed inside a session that is still open across the deploy carries no
+    `enrolled_session_id` and was confirmed after that session began, so it is refused
+    (`mfa-reauthentication-required`) until the member signs in again. Sessions last at most
+    seven days and the answer is one sign-in; a pending enrolment begun before the deploy has to be
+    started again. Both fail closed.
+11. **The attack this amendment closes (B1), for the record.** *A stolen bearer token could enrol
+    its own authenticator and then pass step-up.* Steps: take a member's access token (an XSS
+    payload, a leaked log line, a shared machine); `POST /auth/mfa/enrol` — which needed no
+    password — and scan the seed into an app the attacker holds; `POST /auth/mfa/enrol/confirm`
+    with the code, which deleted the member's recovery codes and returned new ones; wait one 30 s
+    step; `POST /auth/mfa/step-up` with the attacker's code, which accepted *any* confirmed factor;
+    reveal every masked field the token's permissions reach; repeat. `amr={"otp"}` protected
+    nothing against bearer theft. **Fix:** part B (password, plus a code from any existing factor;
+    confirm bound to the beginning session; live session; recovery codes preserved; audited) and
+    part A.7 (step-up only spends a factor that predates the session or was enrolled through it).
+    **Residual:** an attacker who has the token *and the password* (and, for an account with a
+    factor, a code from it) can still enrol — but then holds the credentials that make the token
+    unnecessary. A member with no factor and a phished password is exactly as exposed as their
+    password: for the first factor the password is all there is.
+
+## Who can reveal, really
+
+The step-up decides whether a token *may* reveal; the grants decide who *holds* the permission.
+Read together, so nobody assumes the second is narrower than it is:
+
+Read from the role catalogues (`services/*/app/catalogue.py`) and the route guards:
+
+| Permission | Route guard | Scope floor | Roles that hold it |
+|---|---|---|---|
+| `crm.book.contact.read_sensitive` | `require(..., amr={"otp"})` | none | `CRM_BOOK_ADMIN` at `ORG` (built from `.all("ORG")`). `CRM_SALES_REP` holds none. |
+| `crm.lead.lead.read_sensitive` | same | none | `CRM_LEADS_ADMIN` at `ORG` (built from `.all("ORG")`); `CRM_LEAD_REP` (the default role) at `OWN`. *As of the lead-reveal slice (reviewed at `f81ff9a8`), not on this ADR's base.* |
+| `hrms.people.employee.read_sensitive` | same | none | `HR_ADMIN` at `ORG`; `EMPLOYEE` at `OWN` (their own record) |
+| `storefront.sales.enquiry.unmask` | same | `ORG` | `STOREFRONT_ADMIN` only; `STOREFRONT_STAFF` holds no enquiry permission |
+| `engage.inbox.message.unmask` | same | `ORG` | `ENGAGE_ADMIN` only; `ENGAGE_INBOX_AGENT` is explicitly without it |
+
+- **`CRM_LEADS_ADMIN` is built from `CRM_LEADS.all("ORG")`, so it now includes
+  `crm.lead.lead.read_sensitive:ORG`.** Every CRM owner and administrator can therefore reveal
+  **any** lead's email and phone in the organization. That is intended — it is the same as
+  `CRM_BOOK_ADMIN` for contacts — but it means the step-up is the *only* thing between an admin
+  account and every lead's contact details, and the audit row is the only trace.
+- **`CRM_LEAD_REP`'s `OWN` grant matches nothing today.** `OWN` scope resolves to "records whose owner
+  is my `subject_ref`", and `subject_ref` (the `sref` claim) comes from the membership's employee
+  link, which does not exist until ADR-0008's link is built and populated. With `subject_ref`
+  unset, `ScopeContext.apply` matches no rows and `assert_can_touch` refuses, so those reps reveal
+  nothing until then. Do not read "reps hold `read_sensitive:OWN`" as "reps can reveal their own
+  leads".
+- **Two corrections to the first version of this ADR** (both are in "Risks accepted" above): no
+  step-up token can be ended early — logout, lockout, password change and deactivation do not,
+  because the gateway never checks the session — and it can be chained with a fresh code using the
+  step-up token itself as the bearer.
+- `is_dangerous` on these permissions is metadata, not a control (ADR-0000 §5 note). What stops a
+  reveal is the scope floor on the route, the grant, the `otp` requirement and the audit row.
 
 ## Revisit when
 
-- `otp_at` and a `max_age` on `require()` ship (Phase 2 above): the TTL setting then becomes the
+- `otp_at` and a `max_age` on `require()` ship (Phase 2, risk 5): the TTL setting then becomes the
   ceiling on a token, and a per-route maximum age becomes the real control.
 - An organization gains the ability to enforce MFA for its members: the login step then carries
   `otp` for every session and this endpoint becomes the exception path.
-- Federated members need to reveal (risk 5).
-- Revocation of individual access tokens is built: risk 1 goes away.
+- Federated members need to reveal (risk 6).
+- Revocation of individual access tokens is built (the gateway learns to check the session): risks
+  1 and 2 go away.
+- `switch-org` is moved onto the refresh cookie (risk 8), and `password/change` counts failures
+  (risk 9).
+- A notification rule for `core.user.mfa_enrolled` is added, so a member is told when an
+  authenticator is added to their account.

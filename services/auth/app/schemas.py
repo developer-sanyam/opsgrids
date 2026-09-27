@@ -99,6 +99,25 @@ class MfaStepUpIn(BaseModel):
     code: str = Field(min_length=6, max_length=32)
 
 
+class MfaEnrolStartIn(BaseModel):
+    """`POST /auth/mfa/enrol`. Adding an authenticator changes how the account is reached, so a
+    bearer token alone is not enough: the caller re-proves who they are (ADR-0023, B1).
+
+    Unknown fields are refused, like every write.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The member's current password — always required. Wrong ones are counted against the same
+    #: lockout as sign-in. Deliberately not `Password`: a too-short value must reach the
+    #: "incorrect" answer (and be counted) rather than a validation error that reveals the policy.
+    password: str = Field(min_length=1, max_length=200)
+    #: A code from an authenticator **already** on the account — required exactly when the account
+    #: has one (the answer is `mfa-current-code-required` otherwise), ignored when it has none.
+    #: A TOTP code, or a recovery code (which is then spent).
+    current_code: str | None = Field(default=None, min_length=6, max_length=32)
+
+
 class MfaEnrolStart(BaseModel):
     factor_id: uuid.UUID
     secret: str
@@ -112,7 +131,12 @@ class MfaEnrolConfirmIn(BaseModel):
 
 
 class MfaEnrolled(BaseModel):
-    """Recovery codes are shown **once**. They are stored hashed and never retrievable."""
+    """Recovery codes are shown **once**. They are stored hashed and never retrievable.
+
+    **Empty when the account already had a working authenticator**: only the first factor mints
+    recovery codes, and adding another leaves the existing set exactly as it was — so a client
+    must not render an empty "save these" panel for it.
+    """
 
     recovery_codes: list[str]
 
