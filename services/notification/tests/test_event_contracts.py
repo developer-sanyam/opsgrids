@@ -95,12 +95,17 @@ async def test_whatsapp_created_and_replaced_match_their_schemas(
     session, org_id, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # This test is about the event payload, not about proving a token against Meta's Graph API
-    # (`test_whatsapp_provider.py` owns that) or the cross-tenant uniqueness check (which needs
-    # the directory role's own DSN, not the tenant session this test already has bound).
+    # (`test_whatsapp_provider.py` owns that), the webhook-subscribe call that follows (`w1_graph`'s
+    # own tests own that), or the cross-tenant uniqueness check (which needs the directory role's
+    # own DSN, not the tenant session this test already has bound).
     async def _pass(*args: object, **kwargs: object) -> None:
         return None
 
+    async def _subscribed(*args: object, **kwargs: object) -> bool:
+        return True
+
     monkeypatch.setattr(services.whatsapp_provider, "verify_ownership", _pass)
+    monkeypatch.setattr(services.w1_services, "subscribe_waba", _subscribed)
 
     async with session.begin():
         await services.create_whatsapp_connection(
