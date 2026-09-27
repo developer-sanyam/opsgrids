@@ -17,11 +17,11 @@ import { loadLocations, locationEntries } from "./locations";
 import {
   columnOf,
   labelOfOption,
+  lookupField,
   optionOf,
+  refuseUnlistedReferences,
   requiredTextOf,
-  resolveLookup,
   resolveReference,
-  sameKey,
   storedText,
   textOf,
 } from "./rowValues";
@@ -239,7 +239,8 @@ const notes = [
   "Everyone imported starts on Probation. Status cannot be set from a sheet.",
   "A row with a Record ID came out of the system and is already there, so \"Add new records only\" refuses it. To use an exported file as a starting point, delete its Record ID column first. With \"Add new and update existing\", the Record ID says which employee to update.",
   "Personal and sensitive details (date of birth, personal email and phone, PAN, Aadhaar, UAN, ESI, bank account) cannot be imported. They are added one employee at a time and stay masked.",
-  "Updating: status and date of exit cannot be changed from a sheet, and neither can the personal and sensitive details above. Employees who have exited can still be updated.",
+  "Updating: status and date of exit cannot be changed from a sheet, and neither can the personal and sensitive details above. Employees who have exited can still be updated, but their date of joining cannot be moved to after their date of exit.",
+  "Updating: capitals count in an employee number, so EMP-0012 and emp-0012 are two different numbers. A row whose number differs from an employee's only in capitals is refused with the number as it is stored: use that spelling, or the Record ID.",
   "Updating: a manager is sent only when it differs from the employee's current one. An employee cannot be their own manager, and a reporting line that would become circular is refused by the server. The server lets only someone with organisation-wide access update employees; for anyone else every updated row is refused.",
 ];
 
@@ -252,7 +253,7 @@ async function loadLookups(signal: AbortSignal): Promise<LookupSet> {
   const [tree, locations, employees] = await Promise.all([
     loadOrgUnitTree(),
     loadLocations(),
-    collectPages((page, size) => listEmployees({ page, size }), {
+    collectPages((page, size) => listEmployees({ page, size, signal }), {
       signal,
       key: (employee) => employee.id,
     }),
@@ -267,63 +268,80 @@ async function loadLookups(signal: AbortSignal): Promise<LookupSet> {
 }
 
 /**
+ * The key of `EmployeePatch` each updatable column is sent under. `PATCH /employees/{id}` drops a
+ * key it does not know and still answers 200, so a key that is not on the schema would look like a
+ * saved change: naming them here makes that a type error instead.
+ */
+const WIRE = {
+  full_name: "full_name",
+  designation: "designation",
+  job_title: "job_title",
+  department: "department_id",
+  location_code: "location_code",
+  employment_type: "employment_type",
+  work_mode: "work_mode",
+  date_of_joining: "date_of_joining",
+  reporting_manager: "reporting_manager_id",
+  dotted_line_manager: "dotted_line_manager_id",
+} as const satisfies Record<string, keyof EmployeePatch>;
+
+/**
  * How an existing employee is updated from a sheet. Every field here is a key of `PATCH
  * /employees/{id}`, whose schema silently ignores keys it does not know (employee number, status)
  * and answers 200 with nothing changed, so an identity column is `immutable` and refused rather
  * than sent. The endpoint has no null guard either: only the fields the survey found nullable
  * carry a `clear`, and it is `null`, never `""` (an empty location code would break
- * location-scoped roles). Department and location code are not validated by the server, so
- * `resolve` through the lookups is the only guard against an id or code that does not exist.
+ * location-scoped roles). Department and location code are not validated by the server, so the
+ * lookups are the only guard against an id or code that does not exist: `check` refuses a changed
+ * cell they cannot find, and leaves an unchanged one alone whatever the lists hold.
  */
 const employeeUpdate: UpdateSpec<EmployeeOut> = {
   loadExisting: (ctx) =>
-    collectPages((page, size) => listEmployees({ page, size }), {
+    collectPages((page, size) => listEmployees({ page, size, signal: ctx.signal }), {
       signal: ctx.signal,
       key: (employee) => employee.id,
     }),
   idOf: (employee) => employee.id,
   keyColumn: "employee_no",
   keyOf: (employee) => employee.employee_no,
+  recordLabel: (employee) => `${employee.employee_no} · ${employee.full_name}`,
   fields: [
-    { column: "employee_no", current: (e) => e.employee_no, immutable: true, same: sameKey },
-    { column: "full_name", current: (e) => e.full_name },
-    { column: "designation", current: (e) => storedText(e.designation), clear: null },
-    { column: "job_title", current: (e) => storedText(e.job_title), clear: null },
-    {
-      column: "department",
-      field: "department_id" satisfies keyof EmployeePatch,
-      current: (e) => e.department_id,
-      resolve: resolveLookup(columnOf(columns, "department")),
-      clear: null,
-    },
-    {
-      column: "location_code",
-      current: (e) => storedText(e.location_code),
-      resolve: resolveLookup(columnOf(columns, "location_code")),
-      clear: null,
-    },
-    { column: "employment_type", current: (e) => e.employment_type },
-    { column: "work_mode", current: (e) => e.work_mode },
-    { column: "date_of_joining", current: (e) => e.date_of_joining, clear: null },
-    {
-      column: "reporting_manager",
-      field: "reporting_manager_id" satisfies keyof EmployeePatch,
-      current: (e) => e.reporting_manager_id,
-      resolve: resolveLookup(columnOf(columns, "reporting_manager")),
-      clear: null,
-    },
-    {
-      column: "dotted_line_manager",
-      field: "dotted_line_manager_id" satisfies keyof EmployeePatch,
-      current: (e) => e.dotted_line_manager_id,
-      resolve: resolveLookup(columnOf(columns, "dotted_line_manager")),
-      clear: null,
-    },
+    { column: "employee_no", current: (e) => e.employee_no, immutable: true },
+    { column: "full_name", field: WIRE.full_name, current: (e) => e.full_name },
+    { column: "designation", field: WIRE.designation, current: (e) => storedText(e.designation), clear: null },
+    { column: "job_title", field: WIRE.job_title, current: (e) => storedText(e.job_title), clear: null },
+    lookupField(columnOf(columns, "department"), (e) => e.department_id, { field: WIRE.department }),
+    lookupField(columnOf(columns, "location_code"), (e) => storedText(e.location_code), {
+      field: WIRE.location_code,
+    }),
+    { column: "employment_type", field: WIRE.employment_type, current: (e) => e.employment_type },
+    { column: "work_mode", field: WIRE.work_mode, current: (e) => e.work_mode },
+    { column: "date_of_joining", field: WIRE.date_of_joining, current: (e) => e.date_of_joining, clear: null },
+    lookupField(columnOf(columns, "reporting_manager"), (e) => e.reporting_manager_id, {
+      field: WIRE.reporting_manager,
+    }),
+    lookupField(columnOf(columns, "dotted_line_manager"), (e) => e.dotted_line_manager_id, {
+      field: WIRE.dotted_line_manager,
+    }),
   ],
-  check(row, employee, _changed, { lookups }) {
+  check(row, employee, changed, ctx) {
+    refuseUnlistedReferences(columns, row, changed, ctx);
+
+    // The server compares the two dates only when a date of exit is in the same request, and a
+    // sheet cannot send one: a later joining date would be saved for someone who had already left.
+    const joining = textOf(row, "date_of_joining");
+    if (
+      joining !== null &&
+      employee.date_of_exit !== null &&
+      changed.includes(columnOf(columns, "date_of_joining").header) &&
+      joining > employee.date_of_exit
+    ) {
+      throw new RowProblem(`Date of joining cannot be after the date of exit, which is ${employee.date_of_exit}.`);
+    }
+
     const namesThemselves = (key: string): boolean => {
       const label = textOf(row, key);
-      return label !== null && lookups[MANAGERS]?.resolve(label) === employee.id;
+      return label !== null && ctx.lookups[MANAGERS]?.resolve(label) === employee.id;
     };
     if (namesThemselves("reporting_manager")) throw new RowProblem("An employee cannot report to themselves.");
     if (namesThemselves("dotted_line_manager")) {
@@ -331,7 +349,8 @@ const employeeUpdate: UpdateSpec<EmployeeOut> = {
     }
   },
   async send(employee, body) {
-    // The body holds only the keys this spec's fields name, all of them keys of `EmployeePatch`.
+    // The body holds only the keys of `WIRE`, all of them keys of `EmployeePatch`, and each value is
+    // what its own column parsed to.
     await updateEmployee(employee.id, body as EmployeePatch);
   },
 };
@@ -377,13 +396,14 @@ export const employeesEntity = defineImportEntity<EmployeeIn, EmployeeOut, Emplo
     return { id: employee.id };
   },
   export: {
-    fetchPage: ({ page, size, filters }) =>
+    fetchPage: ({ page, size, filters, signal }) =>
       listEmployees({
         q: filters.q,
         status: filters.status,
         departmentId: filters.departmentId,
         page,
         size,
+        signal,
       }),
     toRow: (employee, lookups) => ({
       employee_no: employee.employee_no,

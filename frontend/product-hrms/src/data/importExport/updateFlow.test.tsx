@@ -182,11 +182,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+/** What differs from the usual organisation: its employees, and whether the caller may read the locations. */
+interface World {
+  employees?: readonly EmployeeOut[];
+  locationsForbidden?: boolean;
+}
+
 /**
  * A gateway with the department tree, the locations, the employee list, `PATCH /employees/{id}` and
  * `POST /employees`. An id in `refuse` answers with that refusal instead of saving.
  */
-function stubGateway(refuse: Readonly<Record<string, Refusal>> = {}) {
+function stubGateway(refuse: Readonly<Record<string, Refusal>> = {}, world: World = {}) {
+  const employees = world.employees ?? EMPLOYEES;
   const requests: Recorded[] = [];
   vi.stubGlobal(
     "fetch",
@@ -197,17 +204,19 @@ function stubGateway(refuse: Readonly<Record<string, Refusal>> = {}) {
       requests.push({ method, path: url.pathname, params: url.searchParams, body });
 
       if (method === "GET" && url.pathname === "/api/v1/org-units") return ok(200, TREE);
-      if (method === "GET" && url.pathname === "/api/v1/locations") return ok(200, SITES);
+      if (method === "GET" && url.pathname === "/api/v1/locations") {
+        return world.locationsForbidden === true ? problem(403, "Missing permission: core.org.location.read") : ok(200, SITES);
+      }
       if (method === "GET" && url.pathname === "/api/v1/employees") {
         const page = Number(url.searchParams.get("page") ?? "1");
-        const items = EMPLOYEES.slice((page - 1) * PER_PAGE, page * PER_PAGE);
-        return ok(200, { items, total: EMPLOYEES.length, page, size: PER_PAGE, pages: Math.ceil(EMPLOYEES.length / PER_PAGE) });
+        const items = employees.slice((page - 1) * PER_PAGE, page * PER_PAGE);
+        return ok(200, { items, total: employees.length, page, size: PER_PAGE, pages: Math.ceil(employees.length / PER_PAGE) });
       }
       const target = /^\/api\/v1\/employees\/([^/]+)$/.exec(url.pathname)?.[1];
       if (method === "PATCH" && target !== undefined && isRecord(body)) {
         const refusal = refuse[target];
         if (refusal !== undefined) return problem(refusal.status, refusal.detail);
-        const found = EMPLOYEES.find((candidate) => candidate.id === target);
+        const found = employees.find((candidate) => candidate.id === target);
         if (found === undefined) return problem(404, "That employee is not part of this organization");
         return ok(200, { ...found, ...body });
       }
@@ -344,8 +353,8 @@ describe("updating employees from Excel", () => {
 
       await reviewFor(
         await importFile([
-          // 2: found by its number in any case; the manager is the one it already has.
-          { employee_no: "emp-0012", designation: "Staff Engineer", work_mode: "Hybrid", reporting_manager: "EMP-0007" },
+          // 2: found by its number; the manager is the one it already has.
+          { employee_no: "EMP-0012", designation: "Staff Engineer", work_mode: "Hybrid", reporting_manager: "EMP-0007" },
           // 3: every cell agrees with the record, including a joining date that is a real Excel date.
           {
             employee_no: "EMP-0007",
@@ -488,7 +497,7 @@ describe("updating employees from Excel", () => {
           // 8: fine.
           { employee_no: "EMP-0007", designation: "Lead" },
           // 9: the same employee as row 8.
-          { employee_no: "emp-0007", job_title: "Ops" },
+          { employee_no: "EMP-0007", job_title: "Ops" },
           // 10: a location that is neither a code nor a name.
           { employee_no: "EMP-0012", location_code: "Bangalore" },
         ]),
@@ -663,6 +672,129 @@ describe("updating employees from Excel", () => {
       expect(figure("New records")).toBe("0");
       expect(screen.getByText("Employee number is required to add a new record")).toBeTruthy();
       expect(gateway.writes()).toEqual([]);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "does not refuse a row for a reference cell it did not change, whatever the lists can no longer say",
+    async () => {
+      // The caller cannot read the locations, and two employees have numbers that differ only in capitals.
+      const gateway = stubGateway(
+        {},
+        {
+          locationsForbidden: true,
+          employees: [
+            employee({ id: "e-7", employee_no: "EMP-0007", full_name: "Rhea Kapoor" }),
+            employee({ id: "e-70", employee_no: "emp-0007", full_name: "Rhea Kapoor Jr" }),
+            employee({
+              id: "e-12",
+              employee_no: "EMP-0012",
+              full_name: "Sameer Joshi",
+              location_code: "BLR-HQ",
+              reporting_manager_id: "e-7",
+            }),
+            employee({ id: "e-31", employee_no: "EMP-0031", full_name: "Tara Menon" }),
+          ],
+        },
+      );
+      const user = await openUpdateDialog();
+
+      await reviewFor(
+        await importFile([
+          // 2: an export sent back with one cell edited: the location and the manager are what it already has.
+          {
+            employee_no: "EMP-0012",
+            location_code: "BLR-HQ",
+            reporting_manager: "EMP-0007",
+            designation: "Staff Engineer",
+          },
+          // 3: the same label, typed for an employee with no manager: it could be either of the two.
+          { employee_no: "EMP-0031", reporting_manager: "emp-0007" },
+        ]),
+        user,
+      );
+
+      expect(figure("Updates")).toBe("1");
+      expect(figure("Need fixing")).toBe("1");
+      expect(within(previewRow(2)).getByText("Changes: Designation")).toBeTruthy();
+      expect(
+        screen.getByText(
+          `'emp-0007' matches more than one of the accepted values for Manager employee number, so it cannot be chosen. ${hintUpdateOf("reporting_manager")}`,
+        ),
+      ).toBeTruthy();
+
+      await finishImport(user, "Import 1 row");
+      expect(gateway.writes()).toEqual([
+        { method: "PATCH", path: "/api/v1/employees/e-12", body: { designation: "Staff Engineer" } },
+      ]);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "refuses a joining date after the date of exit, and accepts one before it",
+    async () => {
+      const gateway = stubGateway();
+      const user = await openUpdateDialog();
+
+      await reviewFor(
+        await importFile([
+          // 2: Vikram Rao left on 2026-01-31.
+          { employee_no: "EMP-0041", date_of_joining: "2026-02-15" },
+          // 3: the same date for an employee who has not left.
+          { employee_no: "EMP-0031", date_of_joining: "2026-02-15" },
+          // 4: a joining date before the exit date.
+          { employee_no: "EMP-0007", date_of_joining: "2024-03-01" },
+        ]),
+        user,
+      );
+
+      expect(figure("Updates")).toBe("2");
+      expect(figure("Need fixing")).toBe("1");
+      expect(screen.getByText("Date of joining cannot be after the date of exit, which is 2026-01-31.")).toBeTruthy();
+
+      await finishImport(user, "Import 2 rows");
+      expect(gateway.writes()).toEqual([
+        { method: "PATCH", path: "/api/v1/employees/e-31", body: { date_of_joining: "2026-02-15" } },
+        { method: "PATCH", path: "/api/v1/employees/e-7", body: { date_of_joining: "2024-03-01" } },
+      ]);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "aborts the request in flight when the screen is left, instead of reading on",
+    async () => {
+      const listSignals: AbortSignal[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((input: string, init?: RequestInit) => {
+          const url = new URL(input, "http://gateway.test");
+          if (url.pathname === "/api/v1/org-units") return Promise.resolve(ok(200, TREE));
+          if (url.pathname === "/api/v1/locations") return Promise.resolve(ok(200, SITES));
+          const given = init?.signal;
+          if (url.pathname === "/api/v1/employees" && given instanceof AbortSignal) {
+            listSignals.push(given);
+            return new Promise<Response>((_, reject) => {
+              given.addEventListener("abort", () => reject(given.reason as Error), { once: true });
+            });
+          }
+          throw new Error(`Unexpected request: ${input}`);
+        }),
+      );
+      const user = userEvent.setup();
+      const view = render(<Harness />);
+      await user.click(screen.getByRole("button", { name: "Import / Export" }));
+      await screen.findByRole("dialog", { name: "Import / Export employees" });
+      await user.click(screen.getByRole("radio", { name: UPDATE_MODE }));
+      await user.upload(fileInput(), await importFile([{ employee_no: "EMP-0012", designation: "Lead" }]));
+
+      await waitFor(() => expect(listSignals.length).toBeGreaterThan(0));
+      expect(listSignals.some((given) => given.aborted)).toBe(false);
+
+      view.unmount();
+      expect(listSignals.every((given) => given.aborted)).toBe(true);
     },
     TEST_TIMEOUT,
   );
