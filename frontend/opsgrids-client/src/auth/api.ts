@@ -6,7 +6,8 @@
 
 import { apiRequest } from "../http";
 import { getAuthOrigin } from "./origin";
-import type { LoginResult, MeOut } from "./types";
+import { StepUpError, toStepUpError } from "./stepUpError";
+import type { LoginResult, MeOut, StepUpToken } from "./types";
 
 /** `POST /auth/login`. Returns a discriminated result on `status`. */
 export function login(email: string, password: string): Promise<LoginResult> {
@@ -58,6 +59,62 @@ export function mfaVerify(
 /** `GET /auth/me`. Who the current token belongs to, plus their org memberships. */
 export function me(): Promise<MeOut> {
   return apiRequest<MeOut>("/auth/me");
+}
+
+/**
+ * How long a step-up request may run before it is abandoned. The dialog that asked for the code
+ * cannot be dismissed while the request is out, so a request that never answers must end on its
+ * own — otherwise a dead connection leaves the person in front of a dialog they cannot close.
+ */
+const STEP_UP_TIMEOUT_MS = 10_000;
+
+function isStepUpToken(value: unknown): value is StepUpToken {
+  if (typeof value !== "object" || value === null) return false;
+  const token = value as Record<string, unknown>;
+  return (
+    typeof token.access_token === "string" &&
+    token.access_token !== "" &&
+    typeof token.expires_in === "number" &&
+    Number.isFinite(token.expires_in) &&
+    token.expires_in > 0
+  );
+}
+
+/**
+ * `POST /auth/mfa/step-up`. Trades a fresh authenticator code for a short-lived token whose `amr`
+ * includes `otp` — the proof a "reveal" call needs on top of its permission.
+ *
+ * Bearer-authenticated with the **session** token, and `signalUnauthorized: false`: a wrong code
+ * is a 401, and the default handling would refresh the session, retry, and then sign the person
+ * out for mistyping six digits. Here a 401 is only ever a rejected code (or a session the caller
+ * checks separately — see `stepup/requestToken.ts`).
+ *
+ * The result must never reach `setAccessToken`. It is held by `stepup/holder.ts`, in memory, for
+ * its own few minutes, and presented as the bearer of the one call that needs it.
+ *
+ * Every failure is a `StepUpError` with a `failure` kind (`wrong-code`, `locked`, `not-enrolled`,
+ * `sso`, `unavailable`) so a screen never reads a status code or the server's sentence to decide
+ * what to show.
+ */
+export async function stepUp(code: string): Promise<StepUpToken> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), STEP_UP_TIMEOUT_MS);
+  try {
+    const token = await apiRequest<unknown>("/auth/mfa/step-up", {
+      method: "POST",
+      body: { code },
+      signalUnauthorized: false,
+      signal: controller.signal,
+    });
+    if (!isStepUpToken(token)) {
+      throw new StepUpError("unavailable", "The server did not answer with a step-up token.", null, null);
+    }
+    return token;
+  } catch (error) {
+    throw toStepUpError(error);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
