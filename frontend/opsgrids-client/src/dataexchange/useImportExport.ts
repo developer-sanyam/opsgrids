@@ -17,6 +17,11 @@ import { DEFAULT_MAX_ROWS } from "./workbook";
  * one at a time, report the result, and download the sample sheet or the whole filtered list.
  * `@opsgrids/ui`'s `ImportExportButton` renders what it returns.
  *
+ * A list whose entity declares an `update` spec (`meta.canUpdate`) can also be updated from a sheet:
+ * `actions.setMode("addAndUpdate")` makes a row that names an existing record change it, and on a
+ * preview it checks the same file again in the new mode. `state.mode` is `add` until chosen and
+ * goes back to `add` whenever the dialog is reset.
+ *
  * The entity and the filters are read through a ref, so `actions` keeps one identity for the
  * life of the component and an entity that is redefined per render does not restart anything.
  * Everything in flight is aborted on unmount. Failures arrive as `state.error` (a file that
