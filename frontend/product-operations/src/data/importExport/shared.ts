@@ -1,11 +1,12 @@
 /**
  * What the four Operations import definitions have in common (ADR-0022): reading a parsed row,
  * resolving a name against a lookup, refusing a name that only differs in case from one that
- * exists, and the currency cell. Nothing here knows an entity; each entity file owns its own
- * columns. The lists themselves are read in `referenceData.ts`.
+ * exists, the currency cell, and the comparisons an update makes against a stored record. Nothing
+ * here knows an entity; each entity file owns its own columns. The lists themselves are read in
+ * `referenceData.ts`.
  */
-import { RowProblem } from "@opsgrids/client";
-import type { ColumnOption, Lookup, LookupSet, ParsedRow } from "@opsgrids/client";
+import { RowProblem, normaliseKey } from "@opsgrids/client";
+import type { ColumnOption, ImportContext, Lookup, LookupSet, ParsedRow, ParsedValue } from "@opsgrids/client";
 
 import type { Category } from "@/api/types";
 import { CATEGORY_LABEL } from "@/data/derive";
@@ -119,3 +120,45 @@ export function optionLabel(options: readonly ColumnOption[], value: string): st
 /** The three-letter code a currency cell carries, upper-cased as the API stores it. */
 export const CURRENCY_PATTERN = /^[A-Za-z]{3}$/;
 export const CURRENCY_HINT = "Three letters, for example INR, USD or EUR.";
+
+/* ------------------------------ updating an existing record ------------------------------ */
+
+/**
+ * `UpdateField.resolve` for a lookup column: the value `toPayload` sends for the same cell (a
+ * warehouse's name, a unit's label, a category's id), so a cell is compared with what the list
+ * stores and not with what the person typed.
+ */
+export function resolveLookupCell(
+  lookupName: string,
+  header: string,
+): (value: ParsedValue, ctx: ImportContext) => ParsedValue {
+  return (value, ctx) => (typeof value === "string" ? resolveReference(ctx.lookups, lookupName, value, header) : value);
+}
+
+/**
+ * `UpdateField.same` for a code that identifies a record (SKU, a supplier, warehouse or category
+ * code) and for a currency: equal when they differ only in capitals or spacing. That is how a row
+ * finds its record, so a row that found "RM-STL-4501" by typing "rm-stl-4501" is not changing it.
+ */
+export function sameCode(cell: ParsedValue, stored: ParsedValue): boolean {
+  return typeof cell === "string" && typeof stored === "string" && normaliseKey(cell) === normaliseKey(stored);
+}
+
+function withLowerDomain(email: string): string {
+  const at = email.lastIndexOf("@");
+  return at < 0 ? email : email.slice(0, at + 1) + email.slice(at + 1).toLowerCase();
+}
+
+/**
+ * `UpdateField.same` for an email. A cell has its domain lower-cased but keeps its local part as
+ * typed, while the server keeps a stored address exactly as it was first typed, so an address
+ * stored as "Sales@Apex.example" would otherwise look changed by its own export.
+ */
+export function sameEmail(cell: ParsedValue, stored: ParsedValue): boolean {
+  return typeof cell === "string" && typeof stored === "string" && withLowerDomain(cell) === withLowerDomain(stored);
+}
+
+/** A stored text the API returns as `""` when there is none, as the `null` a blank cell parses to. */
+export function textOrNull(stored: string): string | null {
+  return stored === "" ? null : stored;
+}

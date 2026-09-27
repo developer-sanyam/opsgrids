@@ -715,7 +715,8 @@ export async function createInventoryItem(input: InventoryItemIn): Promise<Inven
   return apiRequest<InventoryItemOut>("/operations/inventory", { method: "POST", body: input });
 }
 
-/** `PATCH /operations/inventory/{id}` — `on_hand`, `sku` and `currency` are never accepted. */
+/** `PATCH /operations/inventory/{id}` — `on_hand`, `sku` and `currency` are never accepted; 422 a
+ *  warehouse that does not exist. */
 export async function updateInventoryItem(
   id: string,
   patch: InventoryItemPatch,
@@ -726,7 +727,7 @@ export async function updateInventoryItem(
     const current = INVENTORY[index];
     if (!current) throw new NotFoundError("That inventory item could not be found.");
     if (patch.warehouse !== undefined && !WAREHOUSES.some((w) => w.name === patch.warehouse)) {
-      throw new Error(`${patch.warehouse} does not match an existing warehouse.`);
+      throw refusal(422, `'${patch.warehouse}' does not match an existing warehouse`);
     }
     const updated: InventoryItemOut = {
       ...current,
@@ -894,7 +895,23 @@ export async function createItemCategory(input: ItemCategoryIn): Promise<ItemCat
   });
 }
 
-/** `PATCH /operations/inventory/categories/{id}` — `operations.inventory.item.write`. */
+/** What the service checks when a category is given a parent, in its order: not itself, one that
+ *  exists, and not one of its own descendants (which would close the tree into a loop). */
+function refuseFixtureParent(id: string, parentId: string): void {
+  if (parentId === id) throw refusal(422, "A category cannot be its own parent");
+  if (!ITEM_CATEGORIES.some((c) => c.id === parentId)) {
+    throw refusal(422, "parent_id does not match an existing category");
+  }
+  let ancestor: string | null = parentId;
+  while (ancestor !== null) {
+    if (ancestor === id) throw refusal(422, "That would make the category tree circular");
+    const above: string | null = ITEM_CATEGORIES.find((c) => c.id === ancestor)?.parent_id ?? null;
+    ancestor = above;
+  }
+}
+
+/** `PATCH /operations/inventory/categories/{id}` — `operations.inventory.item.write`. 422 a parent
+ *  that is missing, is the category itself, or would make the tree circular. */
 export async function updateItemCategory(
   id: string,
   patch: ItemCategoryPatch,
@@ -904,6 +921,7 @@ export async function updateItemCategory(
     if (index === -1) throw new NotFoundError("That category could not be found.");
     const current = ITEM_CATEGORIES[index];
     if (!current) throw new NotFoundError("That category could not be found.");
+    if (patch.parent_id != null) refuseFixtureParent(id, patch.parent_id);
     const updated: ItemCategoryOut = {
       ...current,
       ...(patch.name !== undefined ? { name: patch.name } : {}),
@@ -1115,7 +1133,7 @@ export async function createWarehouse(input: WarehouseIn): Promise<WarehouseOut>
 }
 
 /** `PATCH /operations/warehouses/{id}` — `code` is immutable. A rename cascades to POs and
- *  inventory items that carry the name. */
+ *  inventory items that carry the name; 409 when another warehouse already has the new name. */
 export async function updateWarehouse(id: string, patch: WarehousePatch): Promise<WarehouseOut> {
   if (USE_FIXTURES) {
     const index = WAREHOUSES.findIndex((w) => w.id === id);
@@ -1126,7 +1144,7 @@ export async function updateWarehouse(id: string, patch: WarehousePatch): Promis
       patch.name !== undefined &&
       WAREHOUSES.some((w) => w.id !== id && w.name.toLowerCase() === patch.name?.toLowerCase())
     ) {
-      throw new Error("A warehouse with that name already exists.");
+      throw refusal(409, `A warehouse named '${patch.name}' already exists`, "name");
     }
     const updated: WarehouseOut = {
       ...current,

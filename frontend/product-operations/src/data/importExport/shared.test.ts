@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { RowProblem, makeLookup } from "@opsgrids/client";
-import type { LookupSet } from "@opsgrids/client";
+import type { ImportContext, LookupSet } from "@opsgrids/client";
 
 import {
   CATEGORY_OPTIONS,
@@ -13,7 +13,11 @@ import {
   requiredOption,
   refuseNearDuplicate,
   requiredText,
+  resolveLookupCell,
   resolveReference,
+  sameCode,
+  sameEmail,
+  textOrNull,
 } from "./shared";
 
 describe("reading a parsed row", () => {
@@ -123,5 +127,44 @@ describe("refuseNearDuplicate", () => {
 
   it("does nothing without a lookup, as when a definition is exercised on its own", () => {
     expect(() => refuseNearDuplicate(undefined, "main warehouse", sentence)).not.toThrow();
+  });
+});
+
+describe("comparing a cell with a stored record", () => {
+  it("takes a code as the same in other capitals or spacing, and never a blank or a non-text cell as the same", () => {
+    expect(sameCode("rm-stl-4501", "RM-STL-4501")).toBe(true);
+    expect(sameCode(" WH  MAIN ", "wh main")).toBe(true);
+    expect(sameCode("RM-STL-4502", "RM-STL-4501")).toBe(false);
+    expect(sameCode(null, "RM-STL-4501")).toBe(false);
+    expect(sameCode("RM-STL-4501", null)).toBe(false);
+    expect(sameCode(4501, "4501")).toBe(false);
+  });
+
+  it("takes an email as the same when only its domain differs in capitals, since the cell lower-cases the domain", () => {
+    expect(sameEmail("Sales@apex.example", "Sales@Apex.Example")).toBe(true);
+    expect(sameEmail("sales@apex.example", "sales@apex.example")).toBe(true);
+  });
+
+  it("takes an email as changed when its local part differs in any way, since the server keeps that as typed", () => {
+    expect(sameEmail("sales@apex.example", "Sales@apex.example")).toBe(false);
+    expect(sameEmail("sales@apex.example", "orders@apex.example")).toBe(false);
+    expect(sameEmail("sales@apex.example", "sales@apex.example.in")).toBe(false);
+    expect(sameEmail("sales@apex.example", null)).toBe(false);
+  });
+
+  it("reads an empty stored text as the null a blank cell parses to", () => {
+    expect(textOrNull("")).toBeNull();
+    expect(textOrNull("Pune")).toBe("Pune");
+  });
+
+  it("resolves a lookup cell to the value create would send, and passes anything but text through", () => {
+    const ctx: ImportContext = {
+      lookups: { warehouses: makeLookup([{ label: "Main Warehouse", value: "Main Warehouse" }]) },
+      signal: new AbortController().signal,
+    };
+    const resolve = resolveLookupCell("warehouses", "Warehouse");
+    expect(resolve("main WAREHOUSE", ctx)).toBe("Main Warehouse");
+    expect(() => resolve("Nowhere", ctx)).toThrow('Warehouse "Nowhere" does not match exactly one entry');
+    expect(resolve(null, ctx)).toBeNull();
   });
 });

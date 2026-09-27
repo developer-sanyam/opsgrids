@@ -7,7 +7,7 @@
  */
 import { vi } from "vitest";
 
-import type { ItemCategoryOut, UomOut, WarehouseOut } from "@/api/types";
+import type { InventoryItemOut, ItemCategoryOut, SupplierOut, UomOut, WarehouseOut } from "@/api/types";
 
 export interface RecordedRequest {
   url: URL;
@@ -75,4 +75,55 @@ export function uomOut(code: string, name: string, isSystem: boolean): UomOut {
 
 export function itemCategoryOut(code: string, id: string, parentId: string | null = null): ItemCategoryOut {
   return { id, code, name: code, parent_id: parentId };
+}
+
+/** A stored inventory item, as the list returns it: steel coil in the main warehouse, no stock
+ *  moved, every flag off. A test overrides only what it is about. */
+export function inventoryItemOut(overrides: Partial<InventoryItemOut> = {}): InventoryItemOut {
+  return {
+    id: "inv-1",
+    sku: "RM-STL-4501",
+    name: "Cold-rolled steel coil",
+    category: "raw_materials",
+    warehouse: "Main Warehouse",
+    on_hand: 8200,
+    on_hand_qty: "8200",
+    reserved_qty: "0",
+    available_qty: "8200",
+    reorder_point: 4000,
+    uom: "kg",
+    unit_value_minor: 6240,
+    currency: "INR",
+    updated_at: "2026-09-01T00:00:00Z",
+    item_category_id: "cat-steel",
+    secondary_uom_id: null,
+    hsn_code: "7209",
+    track_lot: false,
+    track_roll: false,
+    track_expiry: false,
+    track_quality: false,
+    is_active: true,
+    ...overrides,
+  };
+}
+
+/** A stored supplier, as the list returns it. */
+export function supplierOut(overrides: Partial<SupplierOut> = {}): SupplierOut {
+  return {
+    id: "sup-1",
+    code: "SUP-MER",
+    name: "Meridian Metals",
+    category: "raw_materials",
+    status: "active",
+    lead_time_days: 12,
+    on_time_pct: 96,
+    spend_minor: 0,
+    currency: "INR",
+    open_pos: 0,
+    contact_name: "Rajesh Pillai",
+    contact_email: "rajesh@meridianmetals.example",
+    location: "Jamshedpur",
+    since: "2019-04-02",
+    ...overrides,
+  };
 }
