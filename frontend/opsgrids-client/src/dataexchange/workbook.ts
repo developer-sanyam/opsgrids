@@ -52,7 +52,8 @@ export interface ParsedSheet {
   unknownHeaders: readonly string[];
   /** Headers of required columns the file lacks. */
   missingRequired: readonly string[];
-  /** What the export this file came from wrote in every editable cell, when the file still has it. */
+  /** Which cells of each row are still what the export this file came from wrote, when the file still
+   *  carries that export's baseline (`baseline.ts`). */
   baseline: Baseline;
 }
 
@@ -214,7 +215,7 @@ export async function readWorkbook(file: File, entity: AnyEntity): Promise<Parse
     missingRequired: importableColumns(entity)
       .filter((column) => column.required === true && !present.has(column.key))
       .map((column) => column.header),
-    baseline: readBaseline(workbook, entity, {
+    baseline: await readBaseline(workbook, entity, rows, {
       maxRecords: entity.export?.maxRows ?? DEFAULT_EXPORT_MAX_ROWS,
       maxColumns: MAX_COLUMNS,
     }),

@@ -145,20 +145,40 @@ unchanged) or **Add new and update existing**, on lists whose entity declares an
   fills every cell, so a cell the user never touched still holds the value of the export; if a
   colleague changed that field afterwards, comparing it with the record as it is *now* reads it as an
   edit and sends it. An export of a list that can be updated by id therefore also writes a very hidden
-  sheet (`OpsGrids baseline`: a marker, format 1, the list's id, the export time, the column keys, and
-  one row per exported record with its id and the exact value written under each editable column).
-  In update mode a row's cell that still equals its baseline (read and written the same way: dates,
-  money, yes/no, text with leading zeros, line breaks, control characters stripped) is untouched and
-  is treated as blank *before anything else is judged*, so it is never sent, never looked up and
-  never refused (an owner or warehouse label that has since become ambiguous does not refuse a row
-  that did not change it). A cell that was edited behaves as before; `[clear]` never equals a
-  baseline. The reader takes the sheet behind the ZIP and size guards and ignores it, with a notice,
-  when it is not this list's, has another format, a repeated or empty key, a record without an id, or
-  more records than an export writes. A file with no usable baseline (a sample sheet, a round trip
-  through an app that drops the sheet, rows matched by key alone) is compared as it always was, and the
-  preview says so. The baseline is **security-neutral**: it can only make the import ignore a cell the
-  user sees in their own sheet; it can never add a value, name a record, or widen what may be written.
-  Every write is still authorised by the server.
+  sheet (`OpsGrids baseline`: a marker, **format 2**, the list's id, the export time, a random
+  per-file salt, the column keys, and per exported record its id in the clear and one cell of hashes,
+  one per editable column). **The sheet holds no cell value**: a user who deletes a sensitive column,
+  or its rows, before sharing the file leaves nothing of them behind in it. The import only ever asks
+  whether a cell equals what was exported, which equality of hashes answers. A hash is SHA-256 (the
+  browser's WebCrypto, no dependency) of the JSON `[salt, column key, record id, cell]`, cut to 80
+  bits and written as 14 characters of base64. The column key and the record id are inside the hashed
+  text, so equal values in different columns or records have different hashes, and the salt makes a
+  hash from one file mean nothing in another. The cell is read the same way when written and when it
+  comes back (dates, money, yes/no, text with leading zeros, line breaks, control characters
+  stripped). Eighty bits because a baseline is a hash for *every* cell of *every* exported record and
+  a file over 5 MB is refused: 10 000 records of 20 columns add about 2.3 MB to an export.
+  In update mode a row's cell whose hash matches is untouched and is treated as blank *before
+  anything else is judged*, so it is never sent, never looked up and never refused (an owner or
+  warehouse label that has since become ambiguous does not refuse a row that did not change it). A
+  cell that was edited behaves as before; `[clear]` never equals a baseline; a hash that was altered
+  or a salt that was changed only makes cells count as edited. The reader takes the sheet behind the
+  ZIP and size guards, hashes only the cells the file's rows hold (at most the import's row and column
+  limits), and ignores the sheet, with a notice, when it is not this list's, is of another format
+  (**a format-1 file, whose baseline held the values themselves, is not used**), has no salt, a column
+  list that is not distinct names, a record without an id, or more records than an export writes. A
+  record whose hashes are missing or malformed simply offers none. A file with no usable baseline (a
+  sample sheet, a round trip through an app that drops the sheet, rows matched by key alone) is
+  compared as it always was, and the preview says so. Hashing 10 000 x 20 cells takes about 1.2 s and
+  runs in groups that yield to the page every 8 ms, so it never freezes it; `crypto.subtle` exists only
+  over HTTPS or on localhost, and anywhere else an export is written without a baseline and a
+  baseline in a file is ignored.
+  The baseline is **security-neutral**: it can only make the import ignore a cell the user sees in
+  their own sheet; it can never add a value, name a record, or widen what may be written. Every write
+  is still authorised by the server. What it reveals beyond the record ids is that a guessed value
+  can be confirmed: a salted hash cannot be reversed, but someone holding the file can test
+  candidates, which is practical for a cell with few possible values (yes/no, a status, a small
+  number) and not for free text. It shows no pattern (equal values hash differently) and no more
+  than the cell would if the column had been kept.
 - **The data is read again where it matters.** A file opened again is compared with a fresh read of
   the records, not the one an earlier file used (it may have been edited in Excel for an hour). When
   Import is pressed on records older than two minutes they are read again and the same file planned

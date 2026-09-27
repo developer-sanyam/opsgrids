@@ -105,3 +105,48 @@ export function buildZip(entries: readonly ZipEntry[], options: ZipOptions = {})
 
   return join([...local, central, gap, locator, end, comment]);
 }
+
+function streamOf(bytes: Uint8Array<ArrayBuffer>): ReadableStream<Uint8Array<ArrayBuffer>> {
+  return new ReadableStream<Uint8Array<ArrayBuffer>>({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
+async function inflateRaw(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
+  const inflated = streamOf(bytes).pipeThrough(new DecompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(inflated).arrayBuffer());
+}
+
+/**
+ * Every file of a real ZIP (an .xlsx a library wrote), by name, as UTF-8 text, so a test can look at
+ * the XML a program would see. Reads the central directory, which a writer that streams its entries
+ * fills in correctly even where the local headers defer their sizes.
+ */
+export async function readZipText(bytes: Uint8Array<ArrayBuffer>): Promise<Map<string, string>> {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let end = bytes.length - 22;
+  while (end >= 0 && view.getUint32(end, true) !== 0x06054b50) end -= 1;
+  if (end < 0) throw new Error("Not a ZIP: no end record");
+  const count = view.getUint16(end + 10, true);
+  let at = view.getUint32(end + 16, true);
+  const decoder = new TextDecoder();
+  const files = new Map<string, string>();
+  for (let entry = 0; entry < count; entry += 1) {
+    if (view.getUint32(at, true) !== 0x02014b50) throw new Error("Not a ZIP: bad directory entry");
+    const method = view.getUint16(at + 10, true);
+    const packedSize = view.getUint32(at + 20, true);
+    const nameLength = view.getUint16(at + 28, true);
+    const extraLength = view.getUint16(at + 30, true);
+    const commentLength = view.getUint16(at + 32, true);
+    const localOffset = view.getUint32(at + 42, true);
+    const name = decoder.decode(bytes.subarray(at + 46, at + 46 + nameLength));
+    const start = localOffset + 30 + view.getUint16(localOffset + 26, true) + view.getUint16(localOffset + 28, true);
+    const packed = bytes.slice(start, start + packedSize);
+    files.set(name, decoder.decode(method === 0 ? packed : await inflateRaw(packed)));
+    at += 46 + nameLength + extraLength + commentLength;
+  }
+  return files;
+}

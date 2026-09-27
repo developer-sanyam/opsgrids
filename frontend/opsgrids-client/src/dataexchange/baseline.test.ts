@@ -8,8 +8,10 @@ import type * as ExcelJS from "exceljs";
 import { describe, expect, it, vi } from "vitest";
 
 import { BASELINE_MARKER, BASELINE_SHEET, cellToken } from "./baseline";
+import { DIGEST_LENGTH, DIGEST_PATTERN, SALT_PATTERN } from "./baselineHash";
 import { InvalidCell } from "./cells";
 import type { AnyEntity } from "./cells";
+import { readBytes } from "./excel";
 import { buildExportWorkbook } from "./exporter";
 import { makeLookup } from "./lookups";
 import { minorToMajor } from "./money";
@@ -19,9 +21,53 @@ import type { ProductItem } from "./testkit";
 import { RowProblem, defineImportEntity } from "./types";
 import type { ImportColumn, LookupSet, UpdateSpec } from "./types";
 import { readWorkbook } from "./workbook";
+import type { ParsedSheet } from "./workbook";
+import { readZipText } from "./zipTestKit";
 
 const ctx = { lookups: productLookups, signal: new AbortController().signal };
 const EXPORTED_AT = new Date("2026-09-27T10:00:00Z");
+
+/**
+ * The digest the format describes, worked out here from the description alone: SHA-256 of the JSON
+ * of [salt, column, record, cell], the first 16 bytes, in base64 without padding. A second
+ * implementation, so a change to the module's encoding breaks the test instead of both agreeing.
+ */
+async function independentDigest(salt: string, key: string, recordId: string, token: string | null): Promise<string> {
+  const message = new TextEncoder().encode(JSON.stringify([salt, key, recordId, token]));
+  const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", message)).slice(0, 10);
+  return btoa(String.fromCharCode(...hash)).replace(/=+$/, "");
+}
+
+/**
+ * A baseline sheet as its layout says: the column keys (a JSON list in the header row) and, per record
+ * id, one cell of hashes joined in that order, cut back into the hash of each column.
+ */
+function layoutOf(sheet: ExcelJS.Worksheet): { keys: string[]; hashes: Map<string, Map<string, string>> } {
+  const parsed: unknown = JSON.parse(String(sheet.getCell("B2").value));
+  const keys = Array.isArray(parsed) ? parsed.map(String) : [];
+  const hashes = new Map<string, Map<string, string>>();
+  sheet.eachRow((row, at) => {
+    if (at <= 2) return;
+    const packed = String(row.getCell(2).value);
+    hashes.set(
+      String(row.getCell(1).value),
+      new Map(keys.map((key, index) => [key, packed.slice(index * DIGEST_LENGTH, (index + 1) * DIGEST_LENGTH)])),
+    );
+  });
+  return { keys, hashes };
+}
+
+/** Puts `hash` where the baseline keeps record `id`'s hash for column `key`. */
+function setHash(workbook: ExcelJS.Workbook, id: string, key: string, hash: string): void {
+  const sheet = sheetOf(workbook, BASELINE_SHEET);
+  const { keys } = layoutOf(sheet);
+  sheet.eachRow((row, at) => {
+    if (at <= 2 || String(row.getCell(1).value) !== id) return;
+    const packed = String(row.getCell(2).value);
+    const from = keys.indexOf(key) * DIGEST_LENGTH;
+    row.getCell(2).value = `${packed.slice(0, from)}${hash}${packed.slice(from + DIGEST_LENGTH)}`;
+  });
+}
 
 /** Exports `items` with `entity`, and hands back the workbook to edit as a person would. */
 async function exportedBook(entity: AnyEntity, items: readonly unknown[], lookups: LookupSet = productLookups) {
@@ -58,45 +104,84 @@ describe("the export writes a baseline only where an update can use it", () => {
     ]);
   });
 
-  it("holds the marker, the format, the list and the export time, then the column keys, then a record per row", async () => {
+  it("holds the marker, the format, the list, the export time and the file's salt, then the column keys, then a record per row", async () => {
     const entity = makeProductEntity({ recordIdKey: "id", update: makeProductUpdate({ items }) });
     const sheet = sheetOf(await exportedBook(entity, items), BASELINE_SHEET);
-    expect((sheet.getRow(1).values as ExcelJS.CellValue[]).slice(1)).toEqual([
-      BASELINE_MARKER,
-      1,
-      "test.products",
-      "2026-09-27T10:00:00.000Z",
-    ]);
+    const marker = (sheet.getRow(1).values as ExcelJS.CellValue[]).slice(1);
+    expect(marker.slice(0, 4)).toEqual([BASELINE_MARKER, 2, "test.products", "2026-09-27T10:00:00.000Z"]);
+    expect(marker).toHaveLength(5);
+    expect(String(marker[4])).toMatch(SALT_PATTERN);
     expect((sheet.getRow(2).values as ExcelJS.CellValue[]).slice(1)).toEqual([
       "recordId",
-      "sku",
-      "name",
-      "status",
-      "category",
-      "price",
-      "currency",
-      "quantity",
-      "weight",
-      "launched",
-      "active",
-      "email",
-      "phone",
+      '["sku","name","status","category","price","currency","quantity","weight","launched","active","email","phone"]',
     ]);
-    // What the export wrote in the data sheet, cell for cell: a number stays a number.
-    expect(sheet.getCell("A3").value).toBe("p-1");
-    expect(sheet.getCell("B3").value).toBe("SKU-1");
-    expect(sheet.getCell("F3").value).toBe(10);
-    expect(sheet.getCell("H3").value).toBe(1);
-    expect(sheet.getCell("K3").value).toBe("Yes");
-    expect(sheet.getCell("I3").value).toBeNull();
-    expect(sheet.getCell("A4").value).toBe("p-2");
+    // The record ids are in the clear (they are opaque). After each comes a single cell: one hash per column, joined.
     expect(sheet.rowCount).toBe(4);
+    for (const [row, id] of [
+      [3, "p-1"],
+      [4, "p-2"],
+    ] as const) {
+      expect(sheet.getCell(row, 1).value).toBe(id);
+      const packed = String(sheet.getCell(row, 2).value);
+      expect(packed).toHaveLength(12 * DIGEST_LENGTH);
+      for (let at = 0; at < 12; at += 1) {
+        expect(packed.slice(at * DIGEST_LENGTH, (at + 1) * DIGEST_LENGTH)).toMatch(DIGEST_PATTERN);
+      }
+      expect(sheet.getCell(row, 3).value).toBeNull();
+    }
+  });
+
+  it("makes each digest SHA-256 of the salt, the column, the record and the cell, cut to 80 bits: pinned against a second implementation", async () => {
+    const entity = makeProductEntity({ recordIdKey: "id", update: makeProductUpdate({ items }) });
+    const sheet = sheetOf(await exportedBook(entity, items), BASELINE_SHEET);
+    const salt = String(sheet.getCell("E1").value);
+    const { hashes } = layoutOf(sheet);
+    // What the export wrote for record p-1: a number by its digits, yes/no for a boolean, null for blank.
+    const written: Record<string, string | null> = {
+      sku: "SKU-1",
+      name: "Product 1",
+      status: "in_stock",
+      category: "Hardware",
+      price: "10",
+      currency: "INR",
+      quantity: "1",
+      weight: null,
+      launched: null,
+      active: "Yes",
+      email: "orders@example.com",
+      phone: null,
+    };
+    for (const [key, token] of Object.entries(written)) {
+      expect(hashes.get("p-1")?.get(key), key).toBe(await independentDigest(salt, key, "p-1", token));
+    }
+  });
+
+  it("gives equal values different hashes when they sit in different columns or different records", async () => {
+    const twins = [storedProduct(1, { name: "5", quantity: 5 }), storedProduct(2, { name: "5", quantity: 5 })];
+    const entity = makeProductEntity({ recordIdKey: "id", update: makeProductUpdate({ items: twins }) });
+    const { hashes } = layoutOf(sheetOf(await exportedBook(entity, twins), BASELINE_SHEET));
+    const hash = (id: string, key: string) => hashes.get(id)?.get(key);
+    // The same "5" twice in one record, and the same record twice in the file.
+    expect(hash("p-1", "name")).not.toBe(hash("p-1", "quantity"));
+    expect(hash("p-1", "name")).not.toBe(hash("p-2", "name"));
+    expect(hash("p-1", "status")).not.toBe(hash("p-2", "status"));
+    // Blank cells are hashed too, so a column of blanks does not stand out as a run of nothing.
+    expect(hash("p-1", "weight")).toMatch(DIGEST_PATTERN);
+    expect(hash("p-1", "weight")).not.toBe(hash("p-2", "weight"));
+  });
+
+  it("gives every export its own salt, so the same list exported twice shares no hash", async () => {
+    const entity = makeProductEntity({ recordIdKey: "id", update: makeProductUpdate({ items }) });
+    const first = sheetOf(await exportedBook(entity, items), BASELINE_SHEET);
+    const second = sheetOf(await exportedBook(entity, items), BASELINE_SHEET);
+    expect(first.getCell("E1").value).not.toBe(second.getCell("E1").value);
+    const [a, b] = [layoutOf(first), layoutOf(second)];
+    for (const key of a.keys) expect(a.hashes.get("p-1")?.get(key), key).not.toBe(b.hashes.get("p-1")?.get(key));
   });
 
   it("leaves out the read-only columns: an import never reads them", async () => {
     const entity = makeProductEntity({ recordIdKey: "id", update: makeProductUpdate({ items }) });
-    const sheet = sheetOf(await exportedBook(entity, items), BASELINE_SHEET);
-    const keys = (sheet.getRow(2).values as ExcelJS.CellValue[]).slice(1);
+    const { keys } = layoutOf(sheetOf(await exportedBook(entity, items), BASELINE_SHEET));
     expect(keys).not.toContain("created");
     expect(keys).not.toContain("id");
   });
@@ -650,14 +735,32 @@ describe("a baseline that is not this list's, or is damaged, is ignored and neve
     return readWorkbook(await fileOf(workbook), target);
   }
 
-  it("uses an intact one", async () => {
+  /** The columns of row `row` that the reader found untouched, or undefined when the baseline names no such row. */
+  const untouchedOf = (sheet: ParsedSheet, row: number): string[] | undefined => {
+    if (sheet.baseline.kind !== "found") throw new Error(`The baseline is ${sheet.baseline.kind}`);
+    const columns = sheet.baseline.untouched.get(row);
+    return columns === undefined ? undefined : [...columns].sort();
+  };
+  const ALL_COLUMNS = [
+    "active",
+    "category",
+    "currency",
+    "email",
+    "launched",
+    "name",
+    "phone",
+    "price",
+    "quantity",
+    "sku",
+    "status",
+    "weight",
+  ];
+
+  it("uses an intact one: every cell of every row is still what the export wrote, blank cells included", async () => {
     const sheet = await readWith(() => undefined);
     expect(sheet.baseline.kind).toBe("found");
-    if (sheet.baseline.kind === "found") {
-      expect([...sheet.baseline.records.keys()]).toEqual(["p-1", "p-2", "p-3"]);
-      expect(sheet.baseline.records.get("p-1")?.get("name")).toBe("Product 1");
-      expect(sheet.baseline.records.get("p-1")?.get("weight")).toBeNull();
-    }
+    if (sheet.baseline.kind === "found") expect([...sheet.baseline.untouched.keys()]).toEqual([2, 3, 4]);
+    for (const row of [2, 3, 4]) expect(untouchedOf(sheet, row)).toEqual(ALL_COLUMNS);
   });
 
   it("ignores a baseline written for another list, and says so", async () => {
@@ -670,12 +773,20 @@ describe("a baseline that is not this list's, or is damaged, is ignored and neve
 
   const damages: readonly [name: string, cell: string, value: ExcelJS.CellValue][] = [
     ["a different marker", "A1", "not-a-baseline"],
-    ["an unknown format", "B1", 2],
-    ["a format that is text", "B1", "1"],
+    ["the old format, which held the values themselves", "B1", 1],
+    ["a format from the future", "B1", 3],
+    ["a format that is text", "B1", "2"],
     ["no list named", "C1", null],
+    ["no salt", "E1", null],
+    ["a salt that is not one", "E1", "short"],
+    ["a salt that is a number", "E1", 12345],
     ["a missing record header", "A2", "id"],
-    ["a repeated column key", "C2", "sku"],
-    ["a column key that is a number", "C2", 7],
+    ["no list of columns", "B2", null],
+    ["a list of columns that is not a list", "B2", "sku,name"],
+    ["a list of columns that is an object", "B2", '{"sku":1}'],
+    ["a repeated column key", "B2", '["sku","sku"]'],
+    ["an empty column key", "B2", '["sku",""]'],
+    ["a column key that is a number", "B2", '["sku",7]'],
     ["a record with no id", "A4", null],
     ["a record id that is an error", "A4", { error: "#N/A" }],
     ["two records with one id", "A5", "p-1"],
@@ -700,31 +811,40 @@ describe("a baseline that is not this list's, or is damaged, is ignored and neve
 
   it("ignores a baseline with more columns than a sheet may have", async () => {
     const sheet = await readWith((baseline) => {
-      for (let col = 20; col < 80; col += 1) baseline.getCell(2, col).value = `extra${col}`;
+      baseline.getCell("B2").value = JSON.stringify(Array.from({ length: 80 }, (_, index) => `column${index}`));
     });
     expect(sheet.baseline).toEqual({ kind: "unusable" });
   });
 
   it("skips a column key this version of the list no longer has, and uses the rest", async () => {
     const sheet = await readWith((baseline) => {
-      baseline.getCell("C2").value = "retired_column";
+      baseline.getCell("B2").value = JSON.stringify(layoutOf(baseline).keys.map((key) => (key === "name" ? "retired_column" : key)));
     });
-    expect(sheet.baseline.kind).toBe("found");
-    if (sheet.baseline.kind === "found") {
-      expect(sheet.baseline.records.get("p-1")?.has("retired_column")).toBe(false);
-      expect(sheet.baseline.records.get("p-1")?.has("name")).toBe(false);
-      expect(sheet.baseline.records.get("p-1")?.get("sku")).toBe("SKU-1");
-    }
+    // The hashes under the renamed key belong to a column that is not there, so name counts as edited.
+    expect(untouchedOf(sheet, 2)).toEqual(ALL_COLUMNS.filter((key) => key !== "name"));
+    expect(untouchedOf(sheet, 3)).toEqual(ALL_COLUMNS.filter((key) => key !== "name"));
   });
 
-  it("leaves a cell with an error in it out of the record: it can never equal anything", async () => {
-    const sheet = await readWith((baseline) => {
-      baseline.getCell("C3").value = { error: "#DIV/0!" };
+  it("counts a cell whose hash is not a hash, or is another's, as edited, and only that cell", async () => {
+    const sheet = await readWith((_baseline, workbook) => {
+      setHash(workbook, "p-1", "name", "!!!!!!!!!!!!!!");
+      setHash(workbook, "p-1", "status", "12345678901234");
+      setHash(workbook, "p-1", "price", "AAAAAAAAAAAAAA");
     });
     expect(sheet.baseline.kind).toBe("found");
-    if (sheet.baseline.kind === "found") {
-      expect(sheet.baseline.records.get("p-1")?.has("name")).toBe(false);
-      expect(sheet.baseline.records.get("p-1")?.get("sku")).toBe("SKU-1");
+    expect(untouchedOf(sheet, 2)).toEqual(ALL_COLUMNS.filter((key) => !["name", "status", "price"].includes(key)));
+    expect(untouchedOf(sheet, 3)).toEqual(ALL_COLUMNS);
+  });
+
+  it("gives a record whose hashes are missing, the wrong length, a number or an error none to offer, and touches no other record", async () => {
+    const mangles: ExcelJS.CellValue[] = [null, "short", `${"A".repeat(12 * DIGEST_LENGTH)}A`, 1234567890, { error: "#N/A" }];
+    for (const mangled of mangles) {
+      const sheet = await readWith((baseline) => {
+        baseline.getCell("B3").value = mangled;
+      });
+      expect(sheet.baseline.kind, String(mangled)).toBe("found");
+      expect(untouchedOf(sheet, 2), String(mangled)).toEqual([]);
+      expect(untouchedOf(sheet, 3), String(mangled)).toEqual(ALL_COLUMNS);
     }
   });
 
@@ -761,6 +881,254 @@ describe("a baseline that is not this list's, or is damaged, is ignored and neve
     expect(sheet.rows[0]?.cells.name).toBeNull();
     const { preview } = prepareImport(entity, sheet, ctx, "f.xlsx", "addAndUpdate", items);
     expect(preview.rows.find((row) => row.row === 2)?.action).toBe("unchanged");
+  });
+});
+
+// ------------------------------------------------------------------ the baseline keeps no value
+
+/** A sheet's file inside an .xlsx: found the way a program finds it, by its name in workbook.xml and that entry's relationship. */
+function sheetPart(files: ReadonlyMap<string, string>, sheetName: string): string {
+  const book = files.get("xl/workbook.xml") ?? "";
+  const tag = [...book.matchAll(/<sheet\b[^>]*>/g)].map(([text]) => text).find((text) => text.includes(`name="${sheetName}"`));
+  const relationship = /\br:id="([^"]*)"/.exec(tag ?? "")?.[1];
+  const relations = files.get("xl/_rels/workbook.xml.rels") ?? "";
+  const entry = [...relations.matchAll(/<Relationship\b[^>]*>/g)]
+    .map(([text]) => text)
+    .find((text) => text.includes(`Id="${relationship}"`));
+  const target = /\bTarget="([^"]*)"/.exec(entry ?? "")?.[1];
+  const part = files.get(`xl/${target}`);
+  if (part === undefined) throw new Error(`No file for the sheet ${sheetName}`);
+  return part;
+}
+
+const unescapeXml = (text: string): string =>
+  text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+
+/** What each cell of a sheet's XML says, shared strings resolved, numbers as written: what a program reading the sheet sees. */
+function cellTexts(files: ReadonlyMap<string, string>, sheetXml: string): string[] {
+  const shared = [...(files.get("xl/sharedStrings.xml") ?? "").matchAll(/<si>([\s\S]*?)<\/si>/g)].map(([, body]) =>
+    unescapeXml([...(body ?? "").matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map(([, text]) => text ?? "").join("")),
+  );
+  const texts: string[] = [];
+  for (const [, attributes, inner] of sheetXml.matchAll(/<c\b([^>]*?)>([\s\S]*?)<\/c>/g)) {
+    const value = /<v>([\s\S]*?)<\/v>/.exec(inner ?? "")?.[1];
+    const inline = /<is>[\s\S]*?<t\b[^>]*>([\s\S]*?)<\/t>/.exec(inner ?? "")?.[1];
+    if (/\bt="s"/.test(attributes ?? "") && value !== undefined) texts.push(shared[Number(value)] ?? "");
+    else if (inline !== undefined) texts.push(unescapeXml(inline));
+    else if (value !== undefined) texts.push(unescapeXml(value));
+  }
+  return texts;
+}
+
+async function zipped(workbook: ExcelJS.Workbook): Promise<Map<string, string>> {
+  return readZipText(new Uint8Array(await workbook.xlsx.writeBuffer()));
+}
+
+describe("the baseline holds no value of any exported cell", () => {
+  const secrets = [
+    storedProduct(1, {
+      sku: "SKU-ZX-4471",
+      name: "Confidential Renewal Terms",
+      email: "secret.person@example.com",
+      quantity: 7331,
+      priceMinor: 987654,
+    }),
+    storedProduct(2, {
+      sku: "SKU-QW-9982",
+      name: "Second Confidential Name",
+      email: "another.secret@example.org",
+      quantity: 8442,
+      priceMinor: 123456,
+    }),
+  ];
+  const entity = makeProductEntity({ recordIdKey: "id", update: makeProductUpdate({ items: secrets }) });
+  const TEXT_SECRETS = [
+    "SKU-ZX-4471",
+    "Confidential Renewal Terms",
+    "secret.person@example.com",
+    "SKU-QW-9982",
+    "Second Confidential Name",
+    "another.secret@example.org",
+  ];
+  const NUMBER_SECRETS = ["7331", "8442", "9876.54", "1234.56"];
+
+  it("has every value in the sheet the user sees and none in the baseline sheet, in the XML of the .xlsx itself", async () => {
+    const files = await zipped(await exportedBook(entity, secrets));
+    const exportTexts = cellTexts(files, sheetPart(files, "Export"));
+    const baselineXml = sheetPart(files, BASELINE_SHEET);
+    const baselineTexts = cellTexts(files, baselineXml);
+
+    // The control: the same reading finds every value where the user can see it.
+    for (const secret of [...TEXT_SECRETS, ...NUMBER_SECRETS]) expect(exportTexts, `export sheet: ${secret}`).toContain(secret);
+    // The baseline has the marker, the format, the list and the export time, the salt, the column keys, the ids and the hashes, and no value.
+    for (const secret of [...TEXT_SECRETS, ...NUMBER_SECRETS]) expect(baselineTexts, `baseline sheet: ${secret}`).not.toContain(secret);
+    for (const secret of TEXT_SECRETS) expect(baselineXml, `baseline XML: ${secret}`).not.toContain(secret);
+    const hashed = baselineTexts.filter((text) => /^[A-Za-z0-9+/]+$/.test(text) && text.length === 12 * DIGEST_LENGTH);
+    expect(hashed).toHaveLength(secrets.length);
+    expect(baselineTexts).toContain("p-1");
+  });
+
+  it("leaves nothing of a column, or of a row, that the user deletes before sharing the file", async () => {
+    const workbook = await exportedBook(entity, secrets);
+    const sheet = sheetOf(workbook, "Export");
+    sheet.spliceColumns(columnOf(sheet, "Supplier email"), 1);
+    sheet.spliceRows(3, 1);
+    const everything = [...(await zipped(workbook)).values()].join("\n");
+
+    for (const gone of ["secret.person@example.com", "another.secret@example.org", "Second Confidential Name", "SKU-QW-9982"]) {
+      expect(everything, gone).not.toContain(gone);
+    }
+    // What was not deleted is still there, so this looked at the right file.
+    expect(everything).toContain("Confidential Renewal Terms");
+    expect(everything).toContain("SKU-ZX-4471");
+  });
+});
+
+// ------------------------------------------------------------------ a baseline someone altered
+
+describe("a baseline that was altered only ever makes cells count as edited", () => {
+  const monday = [storedProduct(1), storedProduct(2)];
+  // On Tuesday a colleague renamed product 1 and moved its stock.
+  const tuesday = [storedProduct(1, { name: "Renamed by Ravi", quantity: 77 }), storedProduct(2)];
+
+  it("sends nothing for a file nobody altered, whatever changed underneath: the control", async () => {
+    const { preview, sent, run } = await returning({ exportedItems: monday, live: tuesday });
+    expect(preview).toMatchObject({ unchanged: 2, update: 0, baseline: "used" });
+    await run();
+    expect(sent).toEqual([]);
+  });
+
+  it("counts a cell whose hash was altered as edited: only that cell, and it is then judged as any edit is", async () => {
+    const { preview, sent, run } = await returning({
+      exportedItems: monday,
+      live: tuesday,
+      edit: (_sheet, workbook) => {
+        setHash(workbook, "p-1", "name", "AAAAAAAAAAAAAA");
+      },
+    });
+    // The stale name is now an edit and goes back; the stale stock, whose hash is intact, still does not.
+    expect(preview.rows.find((row) => row.row === 2)).toMatchObject({ action: "update", changes: ["Name"] });
+    expect(preview.rows.find((row) => row.row === 3)).toMatchObject({ action: "unchanged" });
+    await run();
+    expect(sent).toEqual([{ id: "p-1", body: { name: "Product 1" } }]);
+  });
+
+  it("counts every cell as edited when the salt was altered: nothing can match, and nothing is protected or refused for it", async () => {
+    const { preview } = await returning({
+      exportedItems: monday,
+      live: tuesday,
+      edit: (sheet, workbook) => {
+        // The exported category is a column an update refuses; blank it so the other stale cells are what is seen.
+        sheet.getCell(2, columnOf(sheet, "Category")).value = null;
+        sheetOf(workbook, BASELINE_SHEET).getCell("E1").value = "AAAAAAAAAAAAAAAAAAAAAA";
+      },
+    });
+    const row = preview.rows.find((entry) => entry.row === 2);
+    expect(row).toMatchObject({ action: "update", error: null });
+    expect(row?.changes).toEqual(expect.arrayContaining(["Name", "Quantity"]));
+  });
+
+  it("counts a hash that was moved to another record's row as edited: a hash belongs to its own record", async () => {
+    const { preview } = await returning({
+      exportedItems: monday,
+      live: tuesday,
+      edit: (_sheet, workbook) => {
+        // p-2's hash of the name, put where p-1's is: a different record id went into it.
+        const other = layoutOf(sheetOf(workbook, BASELINE_SHEET)).hashes.get("p-2")?.get("name") ?? "";
+        setHash(workbook, "p-1", "name", other);
+      },
+    });
+    expect(preview.rows.find((row) => row.row === 2)).toMatchObject({ action: "update", changes: ["Name"] });
+  });
+});
+
+// ------------------------------------------------------------------ a trimmed export
+
+describe("an export the user has trimmed still works", () => {
+  const monday = [storedProduct(1), storedProduct(2), storedProduct(3)];
+  const tuesday = [storedProduct(1, { name: "Renamed by Ravi", quantity: 77 }), storedProduct(2), storedProduct(3)];
+
+  it("after columns and rows were deleted from the visible sheet: what is left is judged by the baseline, and what is not is not there to send", async () => {
+    const { preview, sent, run } = await returning({
+      exportedItems: monday,
+      live: tuesday,
+      edit: (sheet) => {
+        sheet.spliceColumns(columnOf(sheet, "Name"), 1);
+        sheet.spliceRows(4, 1);
+        sheet.spliceRows(3, 1);
+        sheet.getCell(2, columnOf(sheet, "Price")).value = 12.5;
+      },
+    });
+    expect(preview).toMatchObject({ total: 1, update: 1, invalid: 0, baseline: "used" });
+    expect(preview.rows[0]).toMatchObject({ changes: ["Price"] });
+    await run();
+    // The stale stock was not sent, and the deleted name column could not be.
+    expect(sent).toEqual([{ id: "p-1", body: { price_minor: 1250 } }]);
+  });
+
+  it("with only the Record ID and one column left", async () => {
+    const { preview, sent, run } = await returning({
+      exportedItems: monday,
+      live: tuesday,
+      edit: (sheet) => {
+        for (const header of ["SKU", "Name", "Status", "Category", "Currency", "Weight (kg)", "Launch date", "Active", "Supplier email", "Supplier phone"]) {
+          sheet.spliceColumns(columnOf(sheet, header), 1);
+        }
+        sheet.getCell(2, columnOf(sheet, "Quantity")).value = 77;
+        sheet.getCell(3, columnOf(sheet, "Quantity")).value = 5;
+      },
+    });
+    // Row 2's quantity is the one a colleague set: an edit that equals the record. Row 3's is a real edit,
+    // and row 4's is untouched.
+    expect(preview).toMatchObject({ update: 1, unchanged: 2, baseline: "used" });
+    await run();
+    expect(sent).toEqual([{ id: "p-2", body: { quantity: 5 } }]);
+  });
+});
+
+// ------------------------------------------------------------------ a context that cannot hash
+
+describe("where the browser context cannot hash (crypto.subtle is only there over HTTPS or on localhost)", () => {
+  const items = [storedProduct(1), storedProduct(2)];
+  const entity = makeProductEntity({ recordIdKey: "id", update: makeProductUpdate({ items }) });
+  const withoutSubtle = () => vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) });
+
+  it("writes an export without a baseline, rather than failing the export or writing a value in the clear", async () => {
+    withoutSubtle();
+    let blob: Blob;
+    try {
+      blob = await buildExportWorkbook(entity, items, productLookups, EXPORTED_AT);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    const workbook = await loadBlob(blob);
+    expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual(["Export"]);
+    expect(sheetOf(workbook, "Export").rowCount).toBe(3);
+  });
+
+  it("ignores a baseline it cannot check, says it was ignored, and still reads the file", async () => {
+    const file = await fileOf(await exportedBook(entity, items));
+    withoutSubtle();
+    let sheet: ParsedSheet;
+    try {
+      sheet = await readWorkbook(file, entity);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(sheet.baseline).toEqual({ kind: "unusable" });
+    expect(sheet.rows).toHaveLength(2);
+    expect(prepareImport(entity, sheet, ctx, "f.xlsx", "addAndUpdate", items).preview.baseline).toBe("unusable");
+  });
+});
+
+describe("the .xlsx's bytes", () => {
+  it("are what the tests unzip: an export is a real ZIP with the baseline as its own sheet", async () => {
+    const items = [storedProduct(1)];
+    const entity = makeProductEntity({ recordIdKey: "id", update: makeProductUpdate({ items }) });
+    const bytes = await readBytes(await buildExportWorkbook(entity, items, productLookups, EXPORTED_AT));
+    const files = await readZipText(new Uint8Array(bytes));
+    expect([...files.keys()]).toEqual(expect.arrayContaining(["xl/workbook.xml", "xl/worksheets/sheet1.xml", "xl/worksheets/sheet2.xml"]));
+    expect(files.get("xl/workbook.xml")).toContain('state="veryHidden"');
   });
 });
 
