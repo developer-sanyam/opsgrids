@@ -402,7 +402,7 @@ describe("updating projects from Excel", () => {
       expect(within(previewRow(7)).getByText("Changes: Start date")).toBeTruthy();
       expect(gateway.writes()).toEqual([]);
 
-      await finishImport(user, "Import 4 rows");
+      await finishImport(user, "Update 3, add 1");
 
       expect(gateway.writes()).toEqual([
         { method: "PATCH", path: `${PATCH}/PRJ-104`, body: { health: "on_track", progress_pct: 50 } },
@@ -459,7 +459,7 @@ describe("updating projects from Excel", () => {
 
       await user.click(screen.getByRole("radio", { name: UPDATE_MODE }));
       await waitFor(() => expect(figure("Updates")).toBe("1"));
-      await finishImport(user, "Import 1 row");
+      await finishImport(user, "Update 1");
       expect(gateway.writes()).toEqual([{ method: "PATCH", path: `${PATCH}/PRJ-107`, body: { health: "delayed" } }]);
     },
     TEST_TIMEOUT,
@@ -503,7 +503,7 @@ describe("updating projects from Excel", () => {
       expect(figure("Updates")).toBe("1");
       expect(figure("Need fixing")).toBe("12");
       for (const refusal of [
-        "That Record ID is not in this list: the record may have been deleted, or the file came from another organisation.",
+        "That Record ID is not in this list: the record may have been deleted, the file came from another organisation, or it is outside the records you can see.",
         "Project code cannot be changed once the record exists (it is 'PRJ-105'). Leave the cell as it is, or blank.",
         "Name cannot be cleared",
         "Start date cannot be cleared",
@@ -520,7 +520,7 @@ describe("updating projects from Excel", () => {
       }
       expect(gateway.writes()).toEqual([]);
 
-      await finishImport(user, "Import 1 row");
+      await finishImport(user, "Update 1");
 
       expect(gateway.writes()).toEqual([{ method: "PATCH", path: `${PATCH}/PRJ-107`, body: { health: "delayed" } }]);
       expect(screen.getByText("1 updated, 12 failed.")).toBeTruthy();
@@ -547,7 +547,7 @@ describe("updating projects from Excel", () => {
       expect(within(previewRow(2)).getByText("Changes: Client, Owner, Summary")).toBeTruthy();
       expect(within(previewRow(3)).getByText("No change")).toBeTruthy();
 
-      await finishImport(user, "Import 1 row");
+      await finishImport(user, "Update 1");
 
       // The stubbed service answers a null on client or summary with a 409, so passing proves the
       // two text columns were cleared with an empty string.
@@ -578,7 +578,7 @@ describe("updating projects from Excel", () => {
         ]),
         user,
       );
-      await finishImport(user, "Import 4 rows");
+      await finishImport(user, "Update 4");
 
       expect(gateway.writes()).toEqual([
         { method: "PATCH", path: `${PATCH}/PRJ-105`, body: { budget_minor: 12500 } },
@@ -607,7 +607,7 @@ describe("updating projects from Excel", () => {
         ]),
         user,
       );
-      await finishImport(user, "Import 2 rows");
+      await finishImport(user, "Update 2");
 
       expect(gateway.writes()).toEqual([
         { method: "PATCH", path: `${PATCH}/PRJ-105`, body: { start_date: "2027-01-04", target_date: "2027-06-30" } },
@@ -637,7 +637,7 @@ describe("updating projects from Excel", () => {
         ]),
         user,
       );
-      await finishImport(user, "Import 4 rows");
+      await finishImport(user, "Update 4");
 
       expect(gateway.writes()).toHaveLength(4);
       expect(screen.getByText("1 updated, 3 failed.")).toBeTruthy();
@@ -667,7 +667,7 @@ describe("updating projects from Excel", () => {
       const user = await openUpdateDialog(onImported);
 
       await reviewFor(await importFile([{ code: "PRJ-105", health: "Delayed" }]), user);
-      await finishImport(user, "Import 1 row");
+      await finishImport(user, "Update 1");
 
       expect(figure("Failed")).toBe("1");
       expect(figure("Updated")).toBe("0");
@@ -773,7 +773,7 @@ describe("updating projects from an exported file", () => {
       expect(figure("No change")).toBe("3");
       expect(within(previewRow(2)).getByText("Changes: Health, Progress (%)")).toBeTruthy();
 
-      await finishImport(user, "Import 1 row");
+      await finishImport(user, "Update 1");
       expect(gateway.writes()).toEqual([
         { method: "PATCH", path: `${PATCH}/PRJ-104`, body: { health: "delayed", progress_pct: 60 } },
       ]);
@@ -800,14 +800,19 @@ describe("the projects Instructions sheet", () => {
       const end = lines.indexOf("General rules");
       expect(start).toBeGreaterThan(-1);
       expect(end).toBeGreaterThan(start);
+      // What an update ignores: the read-only columns an export fills and an import never reads.
+      const ignored = portfolioEntity.columns
+        .filter((column) => column.readOnly === true && column.key !== portfolioEntity.recordIdKey)
+        .map((column) => column.header);
       expect(lines.slice(start + 1, end).filter((line) => line !== "")).toEqual([
         'Choose "Add new and update existing" in the import dialog to use these rules.',
-        "A row is matched to an existing record by its Record ID (the column an export writes). A row without one is matched by Project code, ignoring capitals and extra spaces. A row that matches nothing is added as a new record. If two records have the same Project code, the row is refused.",
+        "A row is matched to an existing record by its Record ID (the column an export writes). A row without one is matched by Project code in its exact spelling (capitals and spaces count; a Project code that differs from an existing one only in capitals or spaces is refused, not matched). A row that matches nothing is added as a new record. If two records have the same Project code, the row is refused.",
         "A blank cell leaves the field alone. Only the cells you fill in are compared with the record, and only the fields that differ are changed.",
         "Type [clear] in a cell to empty a field. Only some fields can be emptied.",
         "Can be emptied with [clear]: Client, Owner, Summary.",
         "Cannot be changed once created: Project code. A row whose cell differs from the record is refused.",
-        "Warning: updating overwrites live data and cannot be undone. Nothing detects an edit that someone else makes after your file is read: it is overwritten by what the file says. Check the preview before you import.",
+        `Ignored when updating: ${ignored.join(", ")}.`,
+        "Warning: updating overwrites live data and cannot be undone. In a file exported from this list, cells you did not change since the export are left alone, so someone else's later edit to them stays. Nothing detects that someone else changed a cell you did change after your export: your value replaces theirs. Check the preview before you import.",
       ]);
       for (const note of (portfolioEntity.notes ?? []).filter((text) => text.startsWith("Updating:"))) {
         expect(lines, note).toContain(note);

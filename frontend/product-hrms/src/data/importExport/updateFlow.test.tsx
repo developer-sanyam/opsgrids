@@ -386,7 +386,7 @@ describe("updating employees from Excel", () => {
       expect(within(previewRow(7)).getByText("Sample")).toBeTruthy();
       expect(gateway.writes()).toEqual([]);
 
-      await finishImport(user, "Import 4 rows");
+      await finishImport(user, "Update 3, add 1");
 
       // Nothing for row 3. A manager only where it changed. The employee number never travels.
       expect(gateway.writes()).toEqual([
@@ -456,7 +456,7 @@ describe("updating employees from Excel", () => {
 
       await user.click(screen.getByRole("radio", { name: UPDATE_MODE }));
       await waitFor(() => expect(figure("Updates")).toBe("1"));
-      await finishImport(user, "Import 1 row");
+      await finishImport(user, "Update 1");
       expect(gateway.writes()).toEqual([
         { method: "PATCH", path: "/api/v1/employees/e-12", body: { designation: "Staff Engineer" } },
       ]);
@@ -499,7 +499,7 @@ describe("updating employees from Excel", () => {
       expect(figure("Updates")).toBe("1");
       expect(figure("Need fixing")).toBe("8");
       const refusals = [
-        "That Record ID is not in this list: the record may have been deleted, or the file came from another organisation.",
+        "That Record ID is not in this list: the record may have been deleted, the file came from another organisation, or it is outside the records you can see.",
         "Employee number cannot be changed once the record exists (it is 'EMP-0031'). Leave the cell as it is, or blank.",
         "Full name cannot be cleared",
         `'EMP-9999' is not one of the accepted values for Manager employee number (see the Lists sheet). ${hintUpdateOf("reporting_manager")}`,
@@ -512,7 +512,7 @@ describe("updating employees from Excel", () => {
       expect(screen.getAllByText("Needs fixing")).toHaveLength(8);
       expect(gateway.writes()).toEqual([]);
 
-      await finishImport(user, "Import 1 row");
+      await finishImport(user, "Update 1");
 
       expect(gateway.writes()).toEqual([
         { method: "PATCH", path: "/api/v1/employees/e-7", body: { designation: "Lead" } },
@@ -553,7 +553,7 @@ describe("updating employees from Excel", () => {
       expect(within(previewRow(3)).getByText("Changes: Date of joining")).toBeTruthy();
       expect(within(previewRow(4)).getByText("No change")).toBeTruthy();
 
-      await finishImport(user, "Import 2 rows");
+      await finishImport(user, "Update 2");
 
       const writes = gateway.writes();
       expect(writes).toEqual([
@@ -584,7 +584,7 @@ describe("updating employees from Excel", () => {
         ]),
         user,
       );
-      await finishImport(user, "Import 3 rows");
+      await finishImport(user, "Update 3");
 
       expect(gateway.writes().map((request) => request.path)).toEqual([
         "/api/v1/employees/e-12",
@@ -613,7 +613,7 @@ describe("updating employees from Excel", () => {
       const user = await openUpdateDialog(onImported);
 
       await reviewFor(await importFile([{ employee_no: "EMP-0031", designation: "Recruiter" }]), user);
-      await finishImport(user, "Import 1 row");
+      await finishImport(user, "Update 1");
 
       expect(figure("Failed")).toBe("1");
       expect(figure("Updated")).toBe("0");
@@ -719,7 +719,7 @@ describe("updating from an exported file", () => {
       expect(figure("No change")).toBe("3");
       expect(within(previewRow(3)).getByText("Changes: Designation, Work mode")).toBeTruthy();
 
-      await finishImport(user, "Import 1 row");
+      await finishImport(user, "Update 1");
       expect(gateway.writes()).toEqual([
         {
           method: "PATCH",
@@ -751,14 +751,19 @@ describe("the employees Instructions sheet", () => {
       expect(start).toBeGreaterThan(-1);
       expect(end).toBeGreaterThan(start);
       const section = lines.slice(start + 1, end).filter((line) => line !== "");
+      // What an update ignores: the read-only columns an export fills and an import never reads.
+      const ignored = employeesEntity.columns
+        .filter((column) => column.readOnly === true && column.key !== employeesEntity.recordIdKey)
+        .map((column) => column.header);
       expect(section).toEqual([
         'Choose "Add new and update existing" in the import dialog to use these rules.',
-        "A row is matched to an existing record by its Record ID (the column an export writes). A row without one is matched by Employee number, ignoring capitals and extra spaces. A row that matches nothing is added as a new record. If two records have the same Employee number, the row is refused.",
+        "A row is matched to an existing record by its Record ID (the column an export writes). A row without one is matched by Employee number in its exact spelling (capitals and spaces count; a Employee number that differs from an existing one only in capitals or spaces is refused, not matched). A row that matches nothing is added as a new record. If two records have the same Employee number, the row is refused.",
         "A blank cell leaves the field alone. Only the cells you fill in are compared with the record, and only the fields that differ are changed.",
         "Type [clear] in a cell to empty a field. Only some fields can be emptied.",
         "Can be emptied with [clear]: Designation, Job title, Department, Location code, Date of joining, Manager employee number, Dotted-line manager employee number.",
         "Cannot be changed once created: Employee number. A row whose cell differs from the record is refused.",
-        "Warning: updating overwrites live data and cannot be undone. Nothing detects an edit that someone else makes after your file is read: it is overwritten by what the file says. Check the preview before you import.",
+        `Ignored when updating: ${ignored.join(", ")}.`,
+        "Warning: updating overwrites live data and cannot be undone. In a file exported from this list, cells you did not change since the export are left alone, so someone else's later edit to them stays. Nothing detects that someone else changed a cell you did change after your export: your value replaces theirs. Check the preview before you import.",
       ]);
       // The entity's own rules about updating sit under Notes, in the same sheet.
       for (const note of (employeesEntity.notes ?? []).filter((text) => text.startsWith("Updating:"))) {

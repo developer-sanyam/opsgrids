@@ -370,7 +370,7 @@ describe("updating assets from Excel", () => {
       expect(within(previewRow(7)).getByText("Changes: Owner, Purchase date, Warranty expires")).toBeTruthy();
       expect(gateway.writes()).toEqual([]);
 
-      await finishImport(user, "Import 4 rows");
+      await finishImport(user, "Update 3, add 1");
 
       expect(gateway.writes()).toEqual([
         { method: "PATCH", path: "/api/v1/itsm/assets/LT-0001", body: { status: "in_repair", location: "Pune office" } },
@@ -426,7 +426,7 @@ describe("updating assets from Excel", () => {
 
       await user.click(screen.getByRole("radio", { name: UPDATE_MODE }));
       await waitFor(() => expect(figure("Updates")).toBe("1"));
-      await finishImport(user, "Import 1 row");
+      await finishImport(user, "Update 1");
       expect(gateway.writes()).toEqual([
         { method: "PATCH", path: "/api/v1/itsm/assets/MN-0002", body: { owner: "Data centre team" } },
       ]);
@@ -476,7 +476,7 @@ describe("updating assets from Excel", () => {
       }
       expect(gateway.writes()).toEqual([]);
 
-      await finishImport(user, "Import 1 row");
+      await finishImport(user, "Update 1");
 
       expect(gateway.writes()).toEqual([
         { method: "PATCH", path: "/api/v1/itsm/assets/LT-0001", body: { status: "retired" } },
@@ -512,7 +512,7 @@ describe("updating assets from Excel", () => {
       expect(within(previewRow(2)).getByText("Changes: Owner, Location, Serial number, Purchase date")).toBeTruthy();
       expect(within(previewRow(3)).getByText("No change")).toBeTruthy();
 
-      await finishImport(user, "Import 1 row");
+      await finishImport(user, "Update 1");
 
       // The stubbed service answers a null on location or serial with a 409, so passing proves the
       // two text columns were cleared with an empty string.
@@ -547,7 +547,7 @@ describe("updating assets from Excel", () => {
         ]),
         user,
       );
-      await finishImport(user, "Import 4 rows");
+      await finishImport(user, "Update 4");
 
       expect(gateway.writes()).toEqual([
         { method: "PATCH", path: "/api/v1/itsm/assets/MN-0002", body: { cost_minor: 1500 } },
@@ -579,7 +579,7 @@ describe("updating assets from Excel", () => {
         ]),
         user,
       );
-      await finishImport(user, "Import 4 rows");
+      await finishImport(user, "Update 4");
 
       expect(gateway.writes()).toHaveLength(4);
       expect(screen.getByText("1 updated, 3 failed.")).toBeTruthy();
@@ -609,7 +609,7 @@ describe("updating assets from Excel", () => {
       const user = await openUpdateDialog(onImported);
 
       await reviewFor(await importFile([{ tag: "MN-0002", status: "Retired" }]), user);
-      await finishImport(user, "Import 1 row");
+      await finishImport(user, "Update 1");
 
       expect(figure("Failed")).toBe("1");
       expect(figure("Updated")).toBe("0");
@@ -713,7 +713,7 @@ describe("updating assets from an exported file", () => {
       expect(figure("No change")).toBe("3");
       expect(within(previewRow(3)).getByText("Changes: Status, Location")).toBeTruthy();
 
-      await finishImport(user, "Import 1 row");
+      await finishImport(user, "Update 1");
       expect(gateway.writes()).toEqual([
         { method: "PATCH", path: "/api/v1/itsm/assets/MN-0002", body: { status: "retired", location: "Recycling" } },
       ]);
@@ -740,14 +740,17 @@ describe("the assets Instructions sheet", () => {
       const end = lines.indexOf("General rules");
       expect(start).toBeGreaterThan(-1);
       expect(end).toBeGreaterThan(start);
+      // What an update ignores: the read-only columns an export fills and an import never reads.
+      const ignored = assetsEntity.columns.filter((column) => column.readOnly === true).map((column) => column.header);
       expect(lines.slice(start + 1, end).filter((line) => line !== "")).toEqual([
         'Choose "Add new and update existing" in the import dialog to use these rules.',
-        "A row is matched to an existing record by its Asset tag, ignoring capitals and extra spaces. A row that matches nothing is added as a new record. If two records have the same Asset tag, the row is refused.",
+        "A row is matched to an existing record by its Asset tag in its exact spelling (capitals and spaces count; a Asset tag that differs from an existing one only in capitals or spaces is refused, not matched). A row that matches nothing is added as a new record. If two records have the same Asset tag, the row is refused.",
         "A blank cell leaves the field alone. Only the cells you fill in are compared with the record, and only the fields that differ are changed.",
         "Type [clear] in a cell to empty a field. Only some fields can be emptied.",
         "Can be emptied with [clear]: Owner, Location, Serial number, Purchase date, Warranty expires.",
         "Cannot be changed once created: Asset tag. A row whose cell differs from the record is refused.",
-        "Warning: updating overwrites live data and cannot be undone. Nothing detects an edit that someone else makes after your file is read: it is overwritten by what the file says. Check the preview before you import.",
+        `Ignored when updating: ${ignored.join(", ")}.`,
+        "Warning: updating overwrites live data and cannot be undone. In a file exported from this list, cells you did not change since the export are left alone, so someone else's later edit to them stays. Nothing detects that someone else changed a cell you did change after your export: your value replaces theirs. Check the preview before you import.",
       ]);
       for (const note of (assetsEntity.notes ?? []).filter((text) => text.startsWith("Updating:"))) {
         expect(lines, note).toContain(note);
