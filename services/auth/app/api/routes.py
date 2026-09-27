@@ -84,6 +84,53 @@ wellknown = APIRouter(tags=["discovery"])
 # and binds it to the caller's organization first (ADR-0002 §1); none of them opens its own.
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 TenantSessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
+#: The RFC 7807 body every refusal the platform raises on purpose carries (`platform_core.errors`).
+#: Written out here, inline, because the platform has no model for it to reference (its handlers
+#: build the dict in `platform_core.errors`). `errors` is present when a field is at fault.
+_PROBLEM_BODY: dict[str, Any] = {
+    "type": "object",
+    "title": "Problem",
+    "required": ["type", "title", "status", "detail"],
+    "properties": {
+        "type": {"type": "string", "description": "`https://errors.opsgrids.dev/<slug>`"},
+        "title": {"type": "string"},
+        "status": {"type": "integer"},
+        "detail": {"type": "string"},
+        "instance": {"type": "string"},
+        "request_id": {"type": ["string", "null"]},
+        "errors": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["field", "code", "message"],
+                "properties": {
+                    "field": {"type": "string"},
+                    "code": {"type": "string"},
+                    "message": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+
+def _refusal_422(description: str) -> dict[str, Any]:
+    """A route's own 422 description **alongside** the standard validation-error schema.
+
+    Declaring a 422 in `responses` makes FastAPI drop the one it generates, so a client generated
+    from the document lost the typed `HTTPValidationError` body of every route that named its own
+    refusals. This keeps that schema under `application/json` and adds the problem body the
+    service actually answers with (`application/problem+json`) beside it.
+    """
+    return {
+        "description": description,
+        "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/HTTPValidationError"}},
+            "application/problem+json": {"schema": _PROBLEM_BODY},
+        },
+    }
+
+
 #: Any authenticated operator, no role filter — `/auth/operator/me` answers "who am I", which
 #: every operator role may ask.
 OperatorPrincipalDep = Annotated[Principal, Depends(require_operator())]
@@ -389,12 +436,10 @@ async def mfa_verify(
             )
         },
         409: {"description": "`mfa-not-enrolled`: set up two-factor authentication first."},
-        422: {
-            "description": (
-                "`mfa-code-invalid`, `mfa-code-replayed`, or a validation error (including a "
-                "recovery code, which is not accepted here)."
-            )
-        },
+        422: _refusal_422(
+            "`mfa-code-invalid`, `mfa-code-replayed`, or a validation error (including a "
+            "recovery code, which is not accepted here)."
+        ),
     },
 )
 async def mfa_step_up(
@@ -449,13 +494,11 @@ async def mfa_step_up(
                 "`mfa-locked` (too many wrong attempts)."
             )
         },
-        422: {
-            "description": (
-                "`password-incorrect`, `mfa-current-code-required` (the account already has "
-                "an authenticator: send `current_code`), `mfa-code-invalid`, "
-                "`mfa-code-replayed`, or a validation error."
-            )
-        },
+        422: _refusal_422(
+            "`password-incorrect`, `mfa-current-code-required` (the account already has "
+            "an authenticator: send `current_code`), `mfa-code-invalid`, "
+            "`mfa-code-replayed`, or a validation error."
+        ),
         503: {"description": "`mfa-reseal-pending`: a legacy factor is awaiting upgrade."},
     },
 )
@@ -504,12 +547,10 @@ async def mfa_enrol(
                 "authenticator being confirmed. Start again."
             )
         },
-        422: {
-            "description": (
-                "`mfa-code-invalid` (field `code`; the fifth wrong code also cancels the "
-                "setup), or a validation error."
-            )
-        },
+        422: _refusal_422(
+            "`mfa-code-invalid` (field `code`; the fifth wrong code also cancels the "
+            "setup), or a validation error."
+        ),
     },
 )
 async def mfa_confirm(
@@ -715,17 +756,18 @@ async def save_sso_config(
         401: {"description": "The bearer token or its session is not valid."},
         403: {
             "description": (
-                "`password-locked`: too many wrong current passwords (the same lockout as "
-                "sign-in). The attempt that trips it also ends the session."
+                "`password-locked`: the account is locked after too many wrong passwords (the "
+                "same lockout as sign-in), for a call made from a session that is still live. "
+                "The attempt that *trips* the lock is itself a 422 `password-incorrect`, like "
+                "the ones before it; it also ends the session it came from, so that session's "
+                "token answers 401 afterwards."
             )
         },
-        422: {
-            "description": (
-                "`password-incorrect` (field `current_password`; counted), `business-rule` "
-                "(field `new_password`: the same as the current one), or a validation error "
-                "(field `new_password`: too weak). Never a 401 for a wrong password."
-            )
-        },
+        422: _refusal_422(
+            "`password-incorrect` (field `current_password`; counted), `business-rule` "
+            "(field `new_password`: the same as the current one), or a validation error "
+            "(field `new_password`: too weak). Never a 401 for a wrong password."
+        ),
     },
 )
 async def change_password(

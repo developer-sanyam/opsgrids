@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from httpx import AsyncClient
@@ -545,3 +545,46 @@ class TestTheChange:
 
         assert (await _change(http, issued.access_token, PASSWORD)).status_code == 204
         assert await _password_failures(session) == (0, None)
+
+
+class TestTheDocumentedContract:
+    """Second review, m5. The routes that name their own refusals declare a 422, which makes
+    FastAPI drop the one it would generate — and a client generated from the document then lost the
+    typed validation-error body. Each keeps the standard schema and adds the problem body beside
+    it."""
+
+    PATHS: ClassVar[list[str]] = [
+        "/api/v1/auth/password/change",
+        "/api/v1/auth/mfa/enrol",
+        "/api/v1/auth/mfa/enrol/confirm",
+        "/api/v1/auth/mfa/step-up",
+    ]
+
+    @pytest.mark.parametrize("path", PATHS)
+    def test_the_422_keeps_the_standard_schema_and_adds_the_problem_body(self, path: str) -> None:
+        from app.main import app
+
+        content = app.openapi()["paths"][path]["post"]["responses"]["422"]["content"]
+
+        assert content["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/HTTPValidationError"
+        }
+        problem = content["application/problem+json"]["schema"]
+        assert {"type", "title", "status", "detail", "errors"} <= set(problem["properties"])
+        assert problem["properties"]["errors"]["items"]["required"] == ["field", "code", "message"]
+
+    def test_the_standard_schema_it_points_at_exists(self) -> None:
+        from app.main import app
+
+        assert "HTTPValidationError" in app.openapi()["components"]["schemas"]
+
+    def test_the_403_does_not_claim_the_tripping_attempt_answers_403(self) -> None:
+        """The attempt that trips the lock answers 422 (`password-incorrect`) and ends the session;
+        a 403 is what a call from a session that is still live gets while it is locked."""
+        from app.main import app
+
+        responses = app.openapi()["paths"]["/api/v1/auth/password/change"]["post"]["responses"]
+        text_ = responses["403"]["description"]
+
+        assert "422" in text_ and "401" in text_
+        assert "still live" in text_
