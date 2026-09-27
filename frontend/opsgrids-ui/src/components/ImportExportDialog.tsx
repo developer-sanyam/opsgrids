@@ -117,7 +117,9 @@ interface ImportExportDialogProps {
  *
  * **Update mode.** Where the list can be updated and the person may import, the choice between adding
  * only and adding and updating sits in the menu and on the preview. Choosing on the preview checks
- * the same file again; the engine keeps the cells it read.
+ * the same file again; the engine keeps the cells it read. The rules of updating are collapsed on the
+ * preview when the mode was chosen in the menu (they were on screen then) and open when it was
+ * switched on the preview itself.
  *
  * **Files.** One hidden input serves "Import from Excel" and "Choose another file", and dropping a
  * file works in the menu and the preview. The engine decides whether the file is acceptable, so
@@ -128,6 +130,8 @@ interface ImportExportDialogProps {
 export function ImportExportDialog({ onClose, meta, state, actions, canImport, canExport }: ImportExportDialogProps) {
   const [dragging, setDragging] = useState(false);
   const [blocked, setBlocked] = useState(false);
+  // Updating was chosen on the preview, so its rules were never on screen for this person.
+  const [switchedOnPreview, setSwitchedOnPreview] = useState(false);
   const dragDepth = useRef(0);
   const bodyRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -138,7 +142,16 @@ export function ImportExportDialog({ onClose, meta, state, actions, canImport, c
   // Updating records needs the same permission as creating them: it is the same write endpoint.
   const modeChoice = (collapsed: boolean) =>
     meta.canUpdate && canImport ? (
-      <ImportExportModeChoice mode={state.mode} collapsed={collapsed} onChange={(mode) => void actions.setMode(mode)} />
+      <ImportExportModeChoice
+        mode={state.mode}
+        collapsed={collapsed}
+        expanded={switchedOnPreview}
+        recordIdHeader={meta.recordIdHeader}
+        onChange={(mode) => {
+          if (phase === "preview") setSwitchedOnPreview(true);
+          void actions.setMode(mode);
+        }}
+      />
     ) : null;
 
   useUnsavedChangesWarning(importing);
@@ -149,6 +162,8 @@ export function ImportExportDialog({ onClose, meta, state, actions, canImport, c
     if (shownPhase.current === phase) return;
     shownPhase.current = phase;
     headingOf(bodyRef.current)?.focus();
+    // Back at the menu the rules are on screen again from the start: what was switched belongs to that file.
+    if (phase === "menu") setSwitchedOnPreview(false);
   }, [phase]);
 
   function requestClose() {
@@ -233,7 +248,7 @@ export function ImportExportDialog({ onClose, meta, state, actions, canImport, c
         state.preview === null ? (
           <Reading mode={state.mode} />
         ) : (
-          <ImportExportReview preview={state.preview} modeChoice={modeChoice(true)} />
+          <ImportExportReview preview={state.preview} notice={state.notice} modeChoice={modeChoice(true)} />
         );
       footer =
         state.preview === null ? undefined : (

@@ -20,7 +20,7 @@ const ctx = { lookups: productLookups, signal: new AbortController().signal };
 const items = [storedProduct(1), storedProduct(2)];
 const updater = makeProductEntity({ recordIdKey: "id", update: makeProductUpdate({ items }) });
 
-const HEADERS = ["Id", "SKU *", "Name *", "Weight (kg)", "Launch date", "Supplier phone"];
+const HEADERS = ["Record ID", "SKU *", "Name *", "Weight (kg)", "Launch date", "Supplier phone"];
 type Cell = string | number | null;
 
 async function preview(rows: readonly (readonly Cell[])[]) {
@@ -117,11 +117,20 @@ describe("checkImportEntity: every importable column is accounted for by an upda
     expect(check({ ...without(good, "notUpdatable"), extraColumns: ["category", "weight", "launched", "phone"] })).toEqual([]);
   });
 
-  it("does not ask for a read-only column, an import-only one, the key column or the Record ID column", () => {
+  it("does not ask for a read-only column or the Record ID column: an import never reads them", () => {
+    expect(check(good)).toEqual([]);
+    expect(productColumns.filter((column) => column.readOnly === true).map((column) => column.key)).toEqual(["id", "created"]);
+  });
+
+  it("does ask for the key column and for an import-only column", () => {
     const opening: ImportColumn = { key: "opening", header: "Opening stock", kind: "integer", help: "Units.", importOnly: true };
-    expect(check(good, [...productColumns, opening])).toEqual([]);
+    expect(check(good, [...productColumns, opening])).toEqual([
+      'The column "opening" is not covered by the update: list it in fields, extraColumns (an extra step handles it) or notUpdatable (a filled cell is refused)',
+    ]);
     const withoutSkuField: UpdateSpec<ProductItem> = { ...good, fields: good.fields.filter((field) => field.column !== "sku") };
-    expect(check(withoutSkuField)).toEqual([]);
+    expect(check(withoutSkuField)).toEqual([
+      'The key column "sku" is not an update field: list it in fields (immutable when the key cannot change) so a row that names its record by Record ID has its key cell compared with the record instead of ignored',
+    ]);
   });
 
   it("fails a column listed in two places", () => {

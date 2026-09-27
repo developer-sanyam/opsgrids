@@ -57,7 +57,7 @@ other tools, that reads an Excel sheet, and a **downloadable sample sheet**.
    update format: **a row that still carries its Record ID is refused on import**, with an
    explanation ("clear the Record ID to add it as a new record"). An export edited and uploaded
    again must never add every record a second time, above all for lists whose natural key is
-   masked on export (leads). Updating existing records from a sheet is out of scope.
+   masked on export (leads). Updating them from a sheet is the opt-in update mode in the addendum below.
 
 ## Rules that are not style preferences
 
@@ -95,7 +95,7 @@ other tools, that reads an Excel sheet, and a **downloadable sample sheet**.
 - **Purchase orders** (no natural key, so a re-import would duplicate them; header and lines),
   **invoices** (issuing stages a real IRP filing), **support tickets** (server-allocated numbers and
   SLA clocks): not importable.
-- **Updating existing records** from a sheet: no upsert exists. Follow-up if wanted.
+- **Updating existing records** from a sheet: not in the first release (no upsert exists); added as an opt-in mode, see the addendum.
 - **CSV and legacy `.xls`**: `.xlsx` only in this release; the dialog tells the user to "Save as
   Excel Workbook".
 - **Finance customers and Support agents**: follow-up (GSTIN checksum, ORG-scope floors).
@@ -114,48 +114,91 @@ other tools, that reads an Excel sheet, and a **downloadable sample sheet**.
 The owner asked for bulk *update*. The dialog gains a choice, **Add new records only** (the default,
 unchanged) or **Add new and update existing**, on lists whose entity declares an `update` spec.
 
-- **Matching.** A row that carries a **Record ID** (the id an export writes) updates that record; an
-  ID no record has is refused ("that Record ID is not in this list"). A row without one matches on the
-  list's unique key where it has one (SKU, supplier/warehouse/category/project code, employee number,
-  asset tag), ignoring case and spacing; no match means a new record; two records with that key means
-  the row is refused. Lists with no usable key (leads, whose email is sealed) update by Record ID only.
+- **Matching.** A row that carries the list's **id column** (the id an export writes, under the
+  list's own header: "Company ID", "Deal ID"; every sentence says that header) updates that record;
+  an id no record has is refused (it may be deleted, another organisation's, or outside the records
+  the caller can see). A row without one matches on the list's unique key where it has one (SKU,
+  supplier/warehouse/category/project code, employee number, asset tag, a deal's or company's name, a
+  contact's email) **by the rule the server uses for that key** (`UpdateSpec.keyMatch`): `exact`
+  (trim only, the default) for every key the server compares exactly, `caseless` (trim and ignore
+  capitals, keep inner spaces) only for company names. Under `exact` a key stored exactly is found
+  (so both `AB-1` and `ab-1` can exist and each row finds its own), two records with that exact key
+  refuse the row, and a key that no record has exactly but that differs from a stored one only in
+  capitals or spacing is refused with the stored spelling named, since it could be a new record or
+  that one. No match means a new record. Lists with no usable key (leads, whose email is sealed)
+  update by id alone, and the preview counts the rows that have no id and will be added as new.
 - **A blank cell leaves the field alone.** `[clear]` empties a field, only where that field can be
   emptied and using the value the endpoint accepts (`""` or `null`, which differ per endpoint; the
   survey found `null` answered with a 409 or a 500 on several). A sheet with only some columns
-  filled in can therefore never wipe data.
-- **Only fields that differ are sent**, from a fresh load of the whole list (all pages, keyed by id,
+  filled in can therefore never wipe data. `[clear]` is refused, with a sentence, when adding: it
+  would otherwise create a record literally named "[clear]".
+- **Only fields that differ are sent**, from a read of the whole list (all pages, keyed by id,
   refused beyond 10 000 records like every reference list). A row that changes nothing makes no
   request, so it writes no audit row and no event (the update endpoints record both even for an
-  unchanged PATCH). The preview shows, per row, whether it will create, update (and which columns) or
-  change nothing.
+  unchanged PATCH). Text is compared with the stored value trimmed and with one kind of line ending
+  (a stored "Acme " is not a rename of an untouched "Acme"); a field may supply its own comparison.
+  The preview shows, per row, whether it will create, update (and which columns) or change nothing,
+  and which stored record it names ("Existing record", from `UpdateSpec.recordLabel`, never a sealed
+  value), so an id column that slipped by one row is seen before anything is written. The Import
+  button says the split ("Update 3, add 2").
+- **The export carries a baseline, so an old file cannot put other people's changes back.** An export
+  fills every cell, so a cell the user never touched still holds the value of the export; if a
+  colleague changed that field afterwards, comparing it with the record as it is *now* reads it as an
+  edit and sends it. An export of a list that can be updated by id therefore also writes a very hidden
+  sheet (`OpsGrids baseline`: a marker, format 1, the list's id, the export time, the column keys, and
+  one row per exported record with its id and the exact value written under each editable column).
+  In update mode a row's cell that still equals its baseline (read and written the same way: dates,
+  money, yes/no, text with leading zeros, line breaks, control characters stripped) is untouched and
+  is treated as blank *before anything else is judged*, so it is never sent, never looked up and
+  never refused (an owner or warehouse label that has since become ambiguous does not refuse a row
+  that did not change it). A cell that was edited behaves as before; `[clear]` never equals a
+  baseline. The reader takes the sheet behind the ZIP and size guards and ignores it, with a notice,
+  when it is not this list's, has another format, a repeated or empty key, a record without an id, or
+  more records than an export writes. A file with no usable baseline (a sample sheet, a round trip
+  through an app that drops the sheet, rows matched by key alone) is compared as it always was, and the
+  preview says so. The baseline is **security-neutral**: it can only make the import ignore a cell the
+  user sees in their own sheet; it can never add a value, name a record, or widen what may be written.
+  Every write is still authorised by the server.
+- **The data is read again where it matters.** A file opened again is compared with a fresh read of
+  the records, not the one an earlier file used (it may have been edited in Excel for an hour). When
+  Import is pressed on records older than two minutes they are read again and the same file planned
+  again: if every row still does what the user reviewed the import runs on the fresh plan; if any
+  row's action or changes differ, the new preview is shown with a notice and nothing is sent.
 - **Immutable fields are never sent** (SKU, codes, employee number, asset tag, a currency the list
   cannot change): a cell that disagrees with the stored value refuses the row rather than being
   silently ignored, since two of the services silently drop unknown keys and answer 200.
 - **Special cases run as extra steps:** a deal's stage through its own stage endpoint (which resets
   the probability), a contact's phone through its write-only endpoint (a non-blank Phone cell is one
-  call, because the sealed number cannot be compared), a lead's status only through legal transitions.
+  call, because the sealed number cannot be compared).
   Never updatable from a sheet: lead email and phone (no endpoint), employee PII, employee status and
-  exit date, lead source, a lead's conversion.
+  exit date, lead source, a lead's conversion, and a lead's status: it is a read-only column, so an
+  edit to it is ignored, not applied through the lead's transitions (there is no such step). A cell
+  filled in a column an update refuses is refused; a read-only column an export fills is named on the
+  Instructions sheet ("Ignored when updating: ...") and never read.
 - **A 409 is a failure in update mode**, never "skipped": "a company with that name already exists" on
   a rename is a collision the user must see.
 - **Results** gain `updated` and `unchanged` beside created / skipped / failed / invalid.
 - **One row per record.** A second row that resolves to a record an earlier row already updates is
   refused ("This row updates the same record as row N"), so the outcome never depends on row order.
 - **A row found by its key names the record by that cell.** Its key cell is taken as the stored
-  key, so a difference in capitals or spacing is not read as a rename or as a "different" immutable
-  code. A rename needs the Record ID, which is what makes the row unambiguous.
+  key, so where the rule ignores capitals (company names) a difference in capitals is not read as a
+  rename; a row whose only difference is that says so and sends nothing. A rename, or a change to
+  only the capitals of a name, needs the id, which is what makes the row unambiguous. A row that names
+  its record by id has its key cell compared with the same rule as any cell.
 - **A partial sheet is valid in update mode.** Required columns are enforced only for rows that
   create; a file with just Record ID and one column updates that column and nothing else. Add mode
   still requires every required column.
 - **Every request is its own step.** A row that changes fields and then a stage or a phone is two
   requests, each spaced by the runner and each retried on its own after a 429. If a later step
-  fails, the row is reported failed with "The earlier changes to this row were saved.", never as if
-  nothing had happened.
-- **What this cannot protect against**, because the endpoints have no version or ETag: a concurrent edit
-  to the same field between the load and the send is overwritten (last writer wins, per field sent).
-  The dialog says so, and loads the records as late as it can. A warehouse or supplier rename also
-  rewrites the name on every item and purchase order that uses it, silently on the server, so an
-  inventory sheet that names a warehouse should be run after, not before, a warehouse rename.
+  fails, the row is reported failed with what was and was not saved ("Saved: Name, Owner. Not saved:
+  Stage."), never as if nothing had happened.
+- **What this cannot protect against**, because the endpoints have no version or ETag: a cell the user
+  *deliberately edited* is written even if a colleague changed that field after the export (last
+  writer wins, per field sent). The window starts at the **export**, not when the file is read; the
+  baseline narrows what it can touch to the cells the user changed, and the dialog says so. A
+  warehouse or supplier rename also rewrites the name on every item and purchase order that uses it,
+  silently on the server, so an inventory sheet that names a warehouse should be run after, not
+  before, a warehouse rename.
 
 ## Known limits and server follow-ups (found by the pre-release audits)
 
@@ -165,13 +208,30 @@ person typing one record at a time.
 - **List ordering is not unique** on several endpoints (companies/contacts/deals/suppliers/item
   categories/employees order by a name, not name plus id), so offset paging can repeat one row and
   skip another. The client copes (it de-duplicates by id, reads again, and refuses a list that is
-  still short of the server's total, so a lookup is never silently partial) but the cure is an `id`
-  tie-break in those selectors.
+  still short of the server's total, so a lookup is never silently partial) but not always: with more
+  than 200 records and a name shared across a page boundary (the employees list is the likely one)
+  the read fails every time ("changed while it was being read") and the list can be neither imported
+  into nor updated. The cure is a backend follow-up: an `id` tie-break (`.order_by(name, id)`) in those
+  selectors and in `platform_core`'s paging.
 - **Case-insensitive uniqueness is missing** for contact and lead emails (leads match on a blind
   index of the exact string), deal names and warehouse names/category codes. The import keeps an
   email's local part as typed to match the server, and refuses a name or email that differs from an
   existing one only in capitals where it can see the existing records (contacts, warehouses,
   categories). Leads cannot be checked (their emails are masked on read).
+- **Key case rules differ by list, and the import follows each.** Company names are compared without
+  capitals by the server; deal names, SKUs, supplier/warehouse/category codes, employee numbers,
+  asset tags and project codes are compared exactly, so `AB-1` and `ab-1` can both exist. An update
+  matches each the way the server does (`keyMatch`), which is why it refuses, rather than matches, a
+  key in other capitals. If the server later folds case for one of them, its spec must say
+  `caseless` or the import will refuse rows the server would accept.
+- **Files without a baseline** (a sample sheet, a file an editor saved without the sheet, rows matched
+  by key with no id) get no protection from an old cell: every filled cell is compared with the
+  record as it is now, and a cell copied from an old export puts its old value back. The preview says
+  so. The same files meet a second limit: a lookup label (an owner, a warehouse, a location) that is
+  ambiguous or has since disappeared refuses the row even where the cell did not change, since
+  without a baseline the engine cannot tell it was untouched.
+- **An employee reporting-line cycle** is refused by the server with an error that carries raw ids
+  (UUIDs) rather than names; the import shows the server's sentence as it is.
 - **Int and bigint columns without bounds:** `reorder_point` (int4, multiplied by 1000 in the
   low-stock query) and `team_size` are capped in the sheet; `opening_on_hand` times an unbounded unit
   value can overflow the default stock-value sort. These should be validated in the schemas.

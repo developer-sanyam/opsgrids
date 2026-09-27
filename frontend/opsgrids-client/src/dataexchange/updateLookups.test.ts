@@ -51,7 +51,7 @@ function withCategory(extra: Partial<UpdateSpec<ProductItem>> = {}) {
 }
 
 async function preview(rows: readonly (readonly (string | null)[])[], entity = withCategory()) {
-  const sheet = await readWorkbook(await fileWithRows(["Id", "SKU *", "Name *", "Category"], rows), entity);
+  const sheet = await readWorkbook(await fileWithRows(["Record ID", "SKU *", "Name *", "Category"], rows), entity);
   return prepareImport(entity, sheet, ctx, "f.xlsx", "addAndUpdate", [retired, active]);
 }
 

@@ -8,7 +8,8 @@
  * columns it changes), a row that already matches its record (no request), or a row refused.
  */
 
-import { displayValue, importableColumns, isBlank } from "./cells";
+import { withoutUntouched } from "./baseline";
+import { displayValue, importableColumns, isBlank, recordIdHeader } from "./cells";
 import type { AnyEntity } from "./cells";
 import { coerceRow } from "./coerce";
 import type { RowIntent } from "./coerce";
@@ -16,6 +17,7 @@ import { UNCHANGED_MESSAGE, prepareMessage } from "./errors";
 import { sampleMatcher } from "./sample";
 import type { RunnerRow } from "./runner";
 import type {
+  BaselineUse,
   ImportContext,
   ImportMode,
   ImportPreview,
@@ -34,14 +36,34 @@ import type { ParsedSheet } from "./workbook";
 /** How many rows the preview lists (invalid ones first); the counts cover them all. */
 export const PREVIEW_ROW_LIMIT = 200;
 
-export const RECORD_ID_MESSAGE =
-  "This row has a Record ID, so it came from an export and is already in the system. Clear the Record ID cell to add it as a new record.";
+/** Said of a row that carries its record's id when nothing is being updated. `header` is the list's own
+ *  name for that column ("Company ID"): the words the sheet's header row uses. */
+export function recordIdMessage(header: string): string {
+  return `This row has a ${header}, so it came from an export and is already in the system. Clear the ${header} cell to add it as a new record.`;
+}
 
-/** Added to `RECORD_ID_MESSAGE` for a list that can be updated, where the way to use the Record ID exists. */
+/** Added to `recordIdMessage` for a list that can be updated, where the way to use the id exists. */
 export const RECORD_ID_UPDATE_HINT = "Switch to Add new and update existing to update it.";
 
-export const UNKNOWN_RECORD_ID_MESSAGE =
-  "That Record ID is not in this list: the record may have been deleted, or the file came from another organisation.";
+/** A record id no stored record has. A caller who may see only their own records cannot tell "deleted"
+ *  from "not yours", and neither can we. */
+export function unknownRecordIdMessage(header: string): string {
+  return `That ${header} is not in this list: the record may have been deleted, the file came from another organisation, or it is outside the records you can see.`;
+}
+
+/**
+ * A key that no record has as typed, though records have it in other capitals or spacing. The
+ * server counts those as different keys, so the row could mean either: it is refused, with what is
+ * stored named. Where the list has a record id column, that names one record unambiguously.
+ */
+export function keyVariantMessage(typed: string, stored: readonly string[], recordIdColumn: string | null): string {
+  const quoted = stored.map((spelling) => `'${spelling}'`);
+  const [first] = quoted;
+  const alone = quoted.length === 1 && first !== undefined;
+  const which = alone ? `A record ${first} exists that differs` : `Records ${quoted.join(", ")} exist that differ`;
+  const way = recordIdColumn === null ? "." : alone ? `, or its ${recordIdColumn}.` : `, or the ${recordIdColumn}.`;
+  return `${which} from '${typed}' only in capitals or spacing. Use ${alone ? "its" : "an"} exact spelling${way}`;
+}
 
 /** One sentence for a row with several problems: a lone one is kept as it is, several are separated with `;`. */
 function joinProblems(problems: readonly string[]): string {
@@ -56,6 +78,12 @@ export interface PreparedImport {
   /** Update rows that already match their record: nothing is sent, and the report says so. */
   unchanged: RowOutcome[];
   lookups: LookupSet;
+  /**
+   * What the preview promised, row by row: which action, and which columns it changes. Compared with
+   * the same file planned against records loaded later, it says whether what the user reviewed is
+   * still what would be sent.
+   */
+  review: string;
 }
 
 /** What update mode needs to match a row: the spec, the index over the loaded records, the key's header. */
@@ -73,21 +101,56 @@ function headerOf(entity: AnyEntity, key: string): string {
 function withStoredKey(row: ParsedRow, updating: Updating, item: unknown): ParsedRow {
   const { keyColumn } = updating;
   const key = updating.spec.keyOf?.(item) ?? null;
-  return keyColumn === undefined || key === null ? row : { ...row, [keyColumn]: key };
+  return keyColumn === undefined || key === null ? row : { ...row, [keyColumn]: key.trim() };
 }
 
-/** Why update mode can match nothing in this file, when the file has neither column that names a record. */
-function matchWarningFor(entity: AnyEntity, updating: Updating, sheet: ParsedSheet): string | null {
+/** Who a stored record is, in words a person recognises: the list's own label, else its key, else its id. */
+function recordLabelOf(spec: UpdateSpec<unknown>, item: unknown): string {
+  const named = spec.recordLabel?.(item).trim() ?? "";
+  if (named !== "") return named;
+  const key = spec.keyOf?.(item)?.trim() ?? "";
+  return key !== "" ? key : spec.idOf(item);
+}
+
+/**
+ * Whether a row found by its key wrote that key in other capitals than the record has it. The match
+ * ignores capitals only where the server does, so this is the one thing a row found by its key
+ * cannot change: the key cell is taken as stored (so it is not read as a rename).
+ */
+function writesKeyInOtherCapitals(updating: Updating, typed: ParsedRow, item: unknown): boolean {
+  const cell = updating.keyColumn === undefined ? undefined : typed[updating.keyColumn];
+  const stored = updating.spec.keyOf?.(item)?.trim();
+  return typeof cell === "string" && stored !== undefined && cell !== stored;
+}
+
+/** Said of a row whose only difference from its record is the capitals of its key. */
+function capitalsOnlyMessage(keyHeader: string, idHeader: string): string {
+  return `The ${keyHeader} differs from the record's only in capitals, and a row found by it cannot change that, so nothing was sent. Use the ${idHeader} to change only the capitals of a name.`;
+}
+
+/**
+ * What to tell the user about how rows find their record, when it would surprise them: the file has
+ * neither column that names a record (so every row would be added), or the list can only be matched
+ * by Record ID and some rows have none (so those are added as new records).
+ */
+function matchWarningFor(entity: AnyEntity, updating: Updating, sheet: ParsedSheet, unmatched: number): string | null {
   const { recordIdKey } = entity;
   const hasRecordId = recordIdKey !== undefined && sheet.rows.some(({ cells }) => Object.hasOwn(cells, recordIdKey));
   const hasKey = updating.keyColumn !== undefined && sheet.columns.some((column) => column.key === updating.keyColumn);
-  if (hasRecordId || hasKey) return null;
-  const names = [
-    recordIdKey === undefined ? null : (entity.columns.find((column) => column.key === recordIdKey)?.header ?? "Record ID"),
-    updating.keyColumn === undefined ? null : updating.keyHeader,
-  ].filter((name) => name !== null);
-  if (names.length === 0) return null;
-  return `This file has no ${names.join(" or ")} column, so it cannot update existing records; every row would be added as new.`;
+  if (!hasRecordId && !hasKey) {
+    const names = [
+      recordIdKey === undefined ? null : recordIdHeader(entity),
+      updating.keyColumn === undefined ? null : updating.keyHeader,
+    ].filter((name) => name !== null);
+    if (names.length === 0) return null;
+    return `This file has no ${names.join(" or ")} column, so it cannot update existing records; every row would be added as new.`;
+  }
+  // A list with a key finds a record by it; only one without a key relies on the id alone.
+  if (recordIdKey === undefined || updating.keyColumn !== undefined || unmatched === 0) return null;
+  const idHeader = recordIdHeader(entity);
+  return unmatched === 1
+    ? `1 row has no ${idHeader}, so it will be created as a new record.`
+    : `${unmatched} rows have no ${idHeader}, so they will be created as new records.`;
 }
 
 function updatingFor(entity: AnyEntity, mode: ImportMode, existing: readonly unknown[] | null): Updating | null {
@@ -121,27 +184,40 @@ export function prepareImport(
   const isSample = sampleMatcher(entity, ctx.lookups);
   const { recordIdKey } = entity;
   const updating = updatingFor(entity, mode, existing);
+  const idHeader = recordIdHeader(entity);
   const recordIdRefusal =
-    entity.update === undefined ? RECORD_ID_MESSAGE : `${RECORD_ID_MESSAGE} ${RECORD_ID_UPDATE_HINT}`;
+    entity.update === undefined ? recordIdMessage(idHeader) : `${recordIdMessage(idHeader)} ${RECORD_ID_UPDATE_HINT}`;
 
   const valid: RunnerRow[] = [];
   const invalid: RowOutcome[] = [];
   const unchanged: RowOutcome[] = [];
   const shown: PreviewRow[] = [];
-  const tally = { create: 0, update: 0, sample: 0 };
+  const tally = { create: 0, update: 0, sample: 0, matched: 0 };
   /** The first row that updates each record: a second row for the same record is refused. */
   const claimed = new Map<string, number>();
+  const reviewed: string[] = [];
+  let baselineUsed = false;
 
-  for (const { row, cells } of sheet.rows) {
+  for (const { row, cells: typed } of sheet.rows) {
     const values: Record<string, string> = {};
-    for (const column of sheet.columns) values[column.key] = displayValue(cells[column.key]);
+    for (const column of sheet.columns) values[column.key] = displayValue(typed[column.key]);
     let label = identifying === undefined ? "" : (values[identifying.key] ?? "");
+    // What the row's cells count as: what was typed, less the cells the export wrote and nobody changed.
+    let cells = typed;
+    // Who the record this row names is, once it is known to name one.
+    let record: string | null = null;
 
-    const show = (action: PreviewAction, error: string | null, changes: readonly string[] = []): void => {
-      shown.push({ row, values, error, sample: action === "sample", action, changes });
+    const show = (
+      action: PreviewAction,
+      error: string | null,
+      details: { changes?: readonly string[]; note?: string } = {},
+    ): void => {
+      const changes = details.changes ?? [];
+      reviewed.push(`${row}:${action}:${changes.join("|")}`);
+      shown.push({ row, values, error, sample: action === "sample", action, changes, record, note: details.note ?? null });
     };
     const refuse = (message: string): void => {
-      invalid.push({ row, status: "invalid", message, label });
+      invalid.push({ row, status: "invalid", message, label, record: record ?? undefined });
       show("invalid", message);
     };
 
@@ -156,12 +232,22 @@ export function prepareImport(
         refuse(recordIdRefusal);
         continue;
       }
-      const match = matchRow(updating.index, displayValue(cells[recordIdKey]), null);
+      const recordId = displayValue(cells[recordIdKey]);
+      const match = matchRow(updating.index, recordId, null);
       if (match.kind !== "found") {
-        refuse(UNKNOWN_RECORD_ID_MESSAGE);
+        refuse(unknownRecordIdMessage(idHeader));
         continue;
       }
       stored = { item: match.item, id: updating.spec.idOf(match.item), by: "id" };
+      record = recordLabelOf(updating.spec, match.item);
+      tally.matched += 1;
+      // A cell the export wrote and nobody has changed is not this row's to send: what the record
+      // holds now may be a colleague's later edit.
+      const written = sheet.baseline.kind === "found" ? sheet.baseline.records.get(recordId) : undefined;
+      if (written !== undefined) {
+        baselineUsed = true;
+        cells = withoutUntouched(typed, written);
+      }
     }
 
     // Before any validation: an unchanged example row is never reported wrong, whatever the
@@ -179,7 +265,15 @@ export function prepareImport(
         refuse(`More than one record has that ${updating.keyHeader}, so the row cannot say which to update.`);
         continue;
       }
-      if (match.kind === "found") stored = { item: match.item, id: updating.spec.idOf(match.item), by: "key" };
+      if (match.kind === "variant") {
+        refuse(keyVariantMessage(key ?? "", match.spellings, recordIdKey === undefined ? null : idHeader));
+        continue;
+      }
+      if (match.kind === "found") {
+        stored = { item: match.item, id: updating.spec.idOf(match.item), by: "key" };
+        record = recordLabelOf(updating.spec, match.item);
+        tally.matched += 1;
+      }
     }
 
     if (updating !== null && stored !== null) {
@@ -237,8 +331,11 @@ export function prepareImport(
     }
     claimed.set(stored.id, row);
     if (plan === null) {
-      unchanged.push({ row, status: "unchanged", message: UNCHANGED_MESSAGE, label });
-      show("unchanged", null);
+      // A row found by a key written in other capitals changes nothing, since it cannot change the key.
+      const capitals = stored.by === "key" && writesKeyInOtherCapitals(updating, coerced.row, stored.item);
+      const note = capitals ? capitalsOnlyMessage(updating.keyHeader, idHeader) : null;
+      unchanged.push({ row, status: "unchanged", message: note ?? UNCHANGED_MESSAGE, label, record: record ?? undefined });
+      show("unchanged", null, note === null ? {} : { note });
       continue;
     }
     const { spec } = updating;
@@ -248,9 +345,10 @@ export function prepareImport(
       row,
       values: parsed,
       label,
+      record: record ?? undefined,
       update: { plan: (runCtx) => planUpdate(entity.columns, spec, parsed, cleared, item, runCtx) },
     });
-    show("update", null, plan.changed);
+    show("update", null, { changes: plan.changed });
   }
 
   const rows = [...shown.filter((entry) => entry.error !== null), ...shown.filter((entry) => entry.error === null)];
@@ -272,8 +370,16 @@ export function prepareImport(
       // sheet of only a Record ID and the columns to change is a good one. A row that would create
       // a record still needs its required cells, and says so.
       missingRequired: updating === null ? sheet.missingRequired : [],
-      matchWarning: updating === null ? null : matchWarningFor(entity, updating, sheet),
+      matchWarning: updating === null ? null : matchWarningFor(entity, updating, sheet, tally.create),
+      baseline: updating === null ? null : baselineUse(sheet, tally.matched, baselineUsed),
     },
-    prepared: { valid, invalid, unchanged, lookups: ctx.lookups },
+    prepared: { valid, invalid, unchanged, lookups: ctx.lookups, review: reviewed.join("\n") },
   };
+}
+
+/** What became of the export baseline, said only where some row names a stored record and could have been stale. */
+function baselineUse(sheet: ParsedSheet, matched: number, used: boolean): BaselineUse | null {
+  if (matched === 0) return null;
+  if (used) return "used";
+  return sheet.baseline.kind === "unusable" ? "unusable" : "none";
 }

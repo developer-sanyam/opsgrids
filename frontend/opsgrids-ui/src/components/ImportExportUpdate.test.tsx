@@ -9,18 +9,23 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { UPDATE_RULES } from "../lib/importExportCopy";
+import { updateRules } from "../lib/importExportCopy";
 import type { ImportExportMeta, ImportExportViewActions, ImportExportViewState } from "../lib/importExportView";
 import {
   META,
   PREVIEW_UPDATE_ALL_UNCHANGED,
   PREVIEW_UPDATE_CANNOT_MATCH,
   PREVIEW_UPDATE_MIXED,
+  PREVIEW_UPDATE_NO_BASELINE,
   PREVIEW_UPDATE_REFUSALS,
+  PREVIEW_UPDATE_ROWS_WITHOUT_ID,
+  PREVIEW_UPDATE_UNUSABLE_BASELINE,
   PREVIEW_WITH_ERRORS,
   PROGRESS_UPDATING,
   SUMMARY_UPDATE_CLEAN,
+  SUMMARY_UPDATE_PARTLY_SAVED,
   SUMMARY_UPDATE_WITH_FAILURES,
+  SUMMARY_WITH_PROBLEMS,
   UPDATE_META,
   stateFor,
 } from "../story-import-export";
@@ -133,7 +138,7 @@ describe("the choice between adding and updating, in the menu", () => {
     expect(document.querySelector("details")).toBeNull();
     expect(screen.getByRole("radio", { name: "Add new and update existing" })).toHaveProperty("checked", true);
     const rules = within(screen.getByRole("list", { name: "How updating works" }));
-    for (const rule of UPDATE_RULES) expect(rules.getByText(rule)).toBeTruthy();
+    for (const rule of updateRules(UPDATE_META.recordIdHeader)) expect(rules.getByText(rule)).toBeTruthy();
     expect(rules.getByText(/\[clear\]/)).toBeTruthy();
     expect(screen.queryByText("Rows that already exist are skipped, never overwritten.")).toBeNull();
     expect(screen.getByText(/Up to 1.?000 rows per file/)).toBeTruthy();
@@ -176,6 +181,36 @@ describe("the choice on the preview", () => {
     await user.click(summary);
     expect(disclosure?.open).toBe(true);
     expect(within(disclosure as HTMLElement).getByText(/Type \[clear\] in a cell to empty a field/)).toBeTruthy();
+  });
+
+  it("opens the rules of updating when updating is switched to on the preview itself: they were never on screen", async () => {
+    const { user, show } = await openWith({ state: stateFor({ phase: "preview", preview: PREVIEW_WITH_ERRORS }) });
+    await user.click(screen.getByRole("radio", { name: "Add new and update existing" }));
+    show(updating({ phase: "preview", preview: PREVIEW_UPDATE_MIXED }));
+
+    expect(document.querySelector("details")).toBeNull();
+    const rules = within(screen.getByRole("list", { name: "How updating works" }));
+    for (const rule of updateRules(UPDATE_META.recordIdHeader)) expect(rules.getByText(rule)).toBeTruthy();
+    // The overwrite warning is in plain sight, not behind a heading.
+    expect(rules.getByText(/The update cannot detect that someone else changed that field after your export/)).toBeTruthy();
+  });
+
+  it("still opens them when the file is checked again first and the preview is shown a moment later", async () => {
+    const { user, show } = await openWith({ state: stateFor({ phase: "preview", preview: PREVIEW_WITH_ERRORS }) });
+    await user.click(screen.getByRole("radio", { name: "Add new and update existing" }));
+    show(updating({ phase: "reading" }));
+    show(updating({ phase: "preview", preview: PREVIEW_UPDATE_MIXED }));
+    expect(screen.getByRole("list", { name: "How updating works" })).toBeTruthy();
+    expect(document.querySelector("details")).toBeNull();
+  });
+
+  it("keeps them closed again for the next file once the dialog is back at the menu", async () => {
+    const { user, show } = await openWith({ state: stateFor({ phase: "preview", preview: PREVIEW_WITH_ERRORS }) });
+    await user.click(screen.getByRole("radio", { name: "Add new and update existing" }));
+    show(updating({ phase: "preview", preview: PREVIEW_UPDATE_MIXED }));
+    show(stateFor({ phase: "menu" }));
+    show(updating({ phase: "preview", preview: PREVIEW_UPDATE_MIXED }));
+    expect(document.querySelector("details")?.open).toBe(false);
   });
 
   it("does not show the rules at all while adding only is chosen", async () => {
@@ -221,6 +256,7 @@ describe("the preview of an update", () => {
     expect(within(table).getAllByRole("columnheader").map((cell) => cell.textContent)).toEqual([
       "Row",
       "Action",
+      "Existing record",
       "SKU",
       "Name",
       "Price",
@@ -241,9 +277,47 @@ describe("the preview of an update", () => {
     expect(within(rows[7] as HTMLElement).getByText("No change")).toBeTruthy();
   });
 
+  it("names the stored record each row will change, so a shifted Record ID column is seen before anything is sent", async () => {
+    await openWith({ state: mixed });
+    const table = screen.getByRole("table", { name: "Rows found in items-september.xlsx" });
+    const rows = within(table).getAllByRole("row");
+    // The zinc bracket's row says which record it will change: the stored name may differ from the sheet's.
+    expect(within(rows[4] as HTMLElement).getByText("Bracket, zinc plated (BRK-120)")).toBeTruthy();
+    expect(within(rows[2] as HTMLElement).getByText("Steel bracket (BRK-100)")).toBeTruthy();
+    // A row that names no record has an empty cell, said to a screen reader too.
+    const created = within(rows[5] as HTMLElement);
+    expect(created.getByText("New")).toBeTruthy();
+    expect(created.getAllByText("Empty").length).toBeGreaterThan(0);
+  });
+
+  it("has no Existing record column when adding only: no row names a record", async () => {
+    await openWith({ state: stateFor({ phase: "preview", preview: PREVIEW_WITH_ERRORS }) });
+    const table = screen.getByRole("table", { name: "Rows found in companies-september.xlsx" });
+    expect(within(table).queryByRole("columnheader", { name: "Existing record" })).toBeNull();
+  });
+
+  it("explains a row that matches but changes nothing when it is not what it looks like", async () => {
+    await openWith({ state: updating({ phase: "preview", preview: PREVIEW_UPDATE_NO_BASELINE }) });
+    expect(
+      screen.getByText(
+        "The SKU differs from the record's only in capitals, and a row found by it cannot change that, so nothing was sent. Use the Item ID to change only the capitals of a name.",
+      ),
+    ).toBeTruthy();
+    // A row that plainly changes nothing keeps just the word: only the row with a note has more.
+    const table = screen.getByRole("table", { name: "Rows found in prices-copied-from-june.xlsx" });
+    expect(within(table).getAllByText("No change")).toHaveLength(1);
+    expect(within(table).getAllByText("Update")).toHaveLength(2);
+  });
+
+  it("says what each row will do on the button, not just how many rows there are", async () => {
+    await openWith({ state: updating({ phase: "preview", preview: PREVIEW_UPDATE_ROWS_WITHOUT_ID }) });
+    expect(screen.getByRole("button", { name: "Update 1, add 2" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Import \d+ rows?$/ })).toBeNull();
+  });
+
   it("counts the rows it will send, new and updated together, on the button", async () => {
     await openWith({ state: mixed });
-    expect((screen.getByRole("button", { name: "Import 5 rows" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Update 3, add 2" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("cannot be started when every row already matches, and says so instead of 'Import 0 rows'", async () => {
@@ -260,7 +334,7 @@ describe("the preview of an update", () => {
     await openWith({ state: updating({ phase: "preview", preview: PREVIEW_UPDATE_REFUSALS }) });
     expect(
       screen.getByText(
-        "That Record ID is not in this list: the record may have been deleted, or the file came from another organisation.",
+        "That Item ID is not in this list: the record may have been deleted, the file came from another organisation, or it is outside the records you can see.",
       ),
     ).toBeTruthy();
     expect(
@@ -269,14 +343,14 @@ describe("the preview of an update", () => {
     expect(screen.getByText("Name cannot be cleared")).toBeTruthy();
     expect(screen.getByText("This row updates the same record as row 2. Keep only one of the two rows.")).toBeTruthy();
     expect(screen.getAllByText("Needs fixing")).toHaveLength(4);
-    expect(screen.getByRole("button", { name: "Import 1 row" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Update 1" })).toBeTruthy();
   });
 
   it("warns above the rows when the file has nothing that names a record", async () => {
     await openWith({ state: updating({ phase: "preview", preview: PREVIEW_UPDATE_CANNOT_MATCH }) });
     expect(
       screen.getByText(
-        "This file has no Record ID or SKU column, so it cannot update existing records; every row would be added as new.",
+        "This file has no Item ID or SKU column, so it cannot update existing records; every row would be added as new.",
       ),
     ).toBeTruthy();
     expect(screen.getAllByText("SKU is required to add a new record")).toHaveLength(3);
@@ -287,9 +361,58 @@ describe("the preview of an update", () => {
     expect(screen.queryByText(/cannot update existing records/)).toBeNull();
   });
 
+  it("counts, above the rows, those that have no id and will be added as new records", async () => {
+    await openWith({ state: updating({ phase: "preview", preview: PREVIEW_UPDATE_ROWS_WITHOUT_ID }) });
+    expect(screen.getByText("2 rows have no Item ID, so they will be created as new records.")).toBeTruthy();
+  });
+
+  describe("says how the cells of the file are compared with the records", () => {
+    it("with a baseline: only the cells changed since the export are used", async () => {
+      await openWith({ state: mixed });
+      expect(screen.getByText("Only the cells you changed since the export are used.")).toBeTruthy();
+      expect(screen.getByText("Anything a colleague changed since then stays as they left it.")).toBeTruthy();
+      expect(screen.queryByText(/no export baseline/)).toBeNull();
+    });
+
+    it("without one: every filled cell is compared with the record as it is now, so an old cell puts its old value back", async () => {
+      await openWith({ state: updating({ phase: "preview", preview: PREVIEW_UPDATE_NO_BASELINE }) });
+      expect(
+        screen.getByText("This file has no export baseline, so every filled cell is compared with the record as it is now."),
+      ).toBeTruthy();
+      expect(screen.getByText("A cell copied from an old export puts its old value back. Export again if unsure.")).toBeTruthy();
+      expect(screen.queryByText(/Only the cells you changed/)).toBeNull();
+    });
+
+    it("with one that could not be used: says it was ignored, and warns the same", async () => {
+      await openWith({ state: updating({ phase: "preview", preview: PREVIEW_UPDATE_UNUSABLE_BASELINE }) });
+      expect(screen.getByText(/The export baseline in this file is damaged or belongs to another list/)).toBeTruthy();
+      expect(screen.getByText("A cell copied from an old export puts its old value back. Export again if unsure.")).toBeTruthy();
+    });
+
+    it("says nothing when adding, or when no row names a record", async () => {
+      await openWith({ state: stateFor({ phase: "preview", preview: PREVIEW_WITH_ERRORS }) });
+      expect(screen.queryByText(/export baseline/)).toBeNull();
+      expect(screen.queryByText(/Only the cells you changed/)).toBeNull();
+    });
+  });
+
+  it("says why a preview was refreshed instead of an import started, above the file's name", async () => {
+    const notice =
+      "The records changed while you were reviewing this file, so the preview has been refreshed and nothing was imported. Check it, then choose Import again.";
+    await openWith({ state: updating({ phase: "preview", preview: PREVIEW_UPDATE_MIXED, notice }) });
+    const alert = screen.getByText(notice);
+    expect(alert.closest("[role=status]")).toBeTruthy();
+    expect(alert.compareDocumentPosition(screen.getByText("items-september.xlsx"))).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it("shows no notice on a preview that was not refreshed", async () => {
+    await openWith({ state: mixed });
+    expect(screen.queryByText(/nothing was imported/)).toBeNull();
+  });
+
   it("starts the import once, from the keyboard", async () => {
     const { user, actions } = await openWith({ state: mixed });
-    screen.getByRole("button", { name: "Import 5 rows" }).focus();
+    screen.getByRole("button", { name: "Update 3, add 2" }).focus();
     await user.keyboard("{Enter}");
     expect(actions.startImport).toHaveBeenCalledTimes(1);
   });
@@ -350,6 +473,37 @@ describe("the result of an update", () => {
     // Rows that were updated or already matched are counted, not listed.
     expect(within(table).queryByText("BRK-100")).toBeNull();
     expect(within(table).queryByText("No change")).toBeNull();
+  });
+
+  it("names the stored record a listed row was matched to, beside the row's own item", async () => {
+    await openWith({ state: done });
+    const table = screen.getByRole("table", { name: "Rows that were not imported" });
+    expect(within(table).getAllByRole("columnheader").map((cell) => cell.textContent)).toEqual([
+      "Row",
+      "Item",
+      "Existing record",
+      "Result",
+      "Details",
+    ]);
+    const row = within(within(table).getAllByRole("row")[1] as HTMLElement);
+    expect(row.getByText("BRK-150")).toBeTruthy();
+    expect(row.getByText("Bracket, nickel (BRK-150)")).toBeTruthy();
+  });
+
+  it("says which columns were saved and which were not for a row that failed part-way", async () => {
+    await openWith({ state: updating({ phase: "done", summary: SUMMARY_UPDATE_PARTLY_SAVED }) });
+    expect(
+      screen.getByText(
+        "The request could not be completed. Check your connection and try again. Saved: Name, Price. Not saved: Stage.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("Steel bracket, white (BRK-110)")).toBeTruthy();
+  });
+
+  it("has no Existing record column when no listed row names a record", async () => {
+    await openWith({ state: stateFor({ phase: "done", summary: SUMMARY_WITH_PROBLEMS }) });
+    const table = screen.getByRole("table", { name: "Rows that were not created" });
+    expect(within(table).queryByRole("columnheader", { name: "Existing record" })).toBeNull();
   });
 
   it("announces the counts once, and not the sentence that is on the page", async () => {

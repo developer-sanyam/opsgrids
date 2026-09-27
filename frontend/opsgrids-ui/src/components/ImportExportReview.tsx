@@ -2,7 +2,7 @@ import { useRef } from "react";
 import type { ReactNode } from "react";
 
 import { FileTextIcon } from "../icons";
-import { formatCount, importButtonLabel } from "../lib/importExportCopy";
+import { baselineNotice, formatCount, importButtonLabel } from "../lib/importExportCopy";
 import type { ImportExportPreview, ImportExportPreviewRow } from "../lib/importExportView";
 import { Button } from "./Button";
 import { ImportExportStats } from "./ImportExportStats";
@@ -38,7 +38,16 @@ function RowAction({ row }: { row: ImportExportPreviewRow }) {
         </div>
       );
     case "unchanged":
-      return <StatusBadge tone="neutral" label="No change" />;
+      // A row that changes nothing usually needs no more than the word; when it is not what it looks
+      // like (a name that differs only in capitals), the note says so.
+      return row.note === null ? (
+        <StatusBadge tone="neutral" label="No change" />
+      ) : (
+        <div className="flex min-w-48 flex-col items-start gap-1">
+          <StatusBadge tone="neutral" label="No change" />
+          <span className="text-ink-soft">{row.note}</span>
+        </div>
+      );
     case "create":
       return <StatusBadge tone="success" label="New" />;
   }
@@ -48,6 +57,17 @@ function columnsFor(preview: ImportExportPreview): ImportExportTableColumn<Impor
   return [
     { key: "row", header: "Row", rowHeader: true, className: "tnum text-muted", render: (row) => row.row },
     { key: "action", header: "Action", render: (row) => <RowAction row={row} /> },
+    // Which stored record each row names, so a Record ID column that slipped by a row is seen here,
+    // before anything is written. Only where rows can name records.
+    ...(preview.mode === "addAndUpdate"
+      ? [
+          {
+            key: "record",
+            header: "Existing record",
+            render: (row: ImportExportPreviewRow) => <ImportExportCellText value={row.record} />,
+          },
+        ]
+      : []),
     ...preview.columns.map((column) => ({
       key: `value-${column.key}`,
       header: column.header,
@@ -121,17 +141,33 @@ function tableNote(preview: ImportExportPreview): string | null {
 
 interface ReviewProps {
   preview: ImportExportPreview;
+  /** Why the preview is not what the person last saw: Import found the records changed, or could not
+   *  check them. Null otherwise. */
+  notice: string | null;
   /** The choice between adding only and updating too, or null where the list has no update. Changing it
    *  checks this same file again, so it stays in reach while the rows are being read. */
   modeChoice: ReactNode;
 }
 
+/** How an update's cells are compared with the records: what the export baseline did, in a notice. */
+function BaselineAlert({ baseline }: { baseline: ImportExportPreview["baseline"] }) {
+  const notice = baselineNotice(baseline);
+  if (notice === null) return null;
+  return (
+    <InlineAlert tone={notice.tone} live="off" title={notice.title}>
+      {notice.body}
+    </InlineAlert>
+  );
+}
+
 /** The preview phase: what was found in the file, what is wrong with it, and every row it will send. */
-export function ImportExportReview({ preview, modeChoice }: ReviewProps) {
+export function ImportExportReview({ preview, notice, modeChoice }: ReviewProps) {
   const note = tableNote(preview);
   const { stats, columns } = statsFor(preview);
   return (
     <div className="flex flex-col gap-4">
+      {notice !== null ? <InlineAlert tone="warning" title={notice} /> : null}
+
       <p className="flex min-w-0 items-center gap-2">
         <FileTextIcon aria-hidden className="size-4 shrink-0 text-muted" />
         <span className="truncate font-semibold text-ink">{preview.fileName}</span>
@@ -147,6 +183,7 @@ export function ImportExportReview({ preview, modeChoice }: ReviewProps) {
         </InlineAlert>
       ) : null}
       {preview.matchWarning !== null ? <InlineAlert tone="warning" live="off" title={preview.matchWarning} /> : null}
+      <BaselineAlert baseline={preview.baseline} />
       {preview.unknownHeaders.length > 0 ? (
         <InlineAlert tone="info" live="off" title={`These columns are ignored: ${preview.unknownHeaders.join(", ")}.`} />
       ) : null}

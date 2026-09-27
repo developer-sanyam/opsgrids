@@ -59,6 +59,7 @@ const RESULT: UseImportExportResult = {
     requiredHeaders: [],
     canExport: true,
     canUpdate: false,
+    recordIdHeader: "Record ID",
   },
 };
 

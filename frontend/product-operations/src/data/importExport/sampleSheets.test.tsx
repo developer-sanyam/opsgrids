@@ -207,22 +207,25 @@ describe.each(CASES)("the $name sample sheet", ({ entity, page, hasLists, updati
     const workbook = await readDownload(await downloadSample(entity.noun));
     const lines = textRows(sheetOf(workbook, "Instructions")).flat();
 
+    // What an update ignores: the read-only columns an export fills and an import never reads.
+    const ignored = entity.columns
+      .filter((column) => column.readOnly === true && column.key !== "id")
+      .map((column) => column.header);
+
     const heading = lines.indexOf(`Updating existing ${entity.noun}`);
     expect(heading, "Instructions has no update section").toBeGreaterThan(-1);
-    // The wording of the engine's own rules (how a key is matched, what the warning says) is held by
-    // the engine's tests; what belongs to the list is held here: its key, and what it can and cannot change.
-    expect(lines.slice(heading + 1, lines.indexOf("General rules", heading))).toEqual(
-      expect.arrayContaining([
-        'Choose "Add new and update existing" in the import dialog to use these rules.',
-        expect.stringMatching(
-          new RegExp(`^A row is matched to an existing record by its Record ID .*A row without one is matched by ${updating.keyHeader}`),
-        ),
-        expect.stringMatching(/^A blank cell leaves the field alone\./),
-        `Can be emptied with [clear]: ${updating.emptied}.`,
-        `Cannot be changed once created: ${updating.fixed}. A row whose cell differs from the record is refused.`,
-        expect.stringMatching(/^Warning: updating overwrites live data and cannot be undone\./),
-      ]),
-    );
+    const expected = [
+      'Choose "Add new and update existing" in the import dialog to use these rules.',
+      `A row is matched to an existing record by its Record ID (the column an export writes). A row without one is matched by ${updating.keyHeader} in its exact spelling (capitals and spaces count; a ${updating.keyHeader} that differs from an existing one only in capitals or spaces is refused, not matched). A row that matches nothing is added as a new record. If two records have the same ${updating.keyHeader}, the row is refused.`,
+      "A blank cell leaves the field alone. Only the cells you fill in are compared with the record, and only the fields that differ are changed.",
+      "Type [clear] in a cell to empty a field. Only some fields can be emptied.",
+      `Can be emptied with [clear]: ${updating.emptied}.`,
+      `Cannot be changed once created: ${updating.fixed}. A row whose cell differs from the record is refused.`,
+      ...(ignored.length === 0 ? [] : [`Ignored when updating: ${ignored.join(", ")}.`]),
+      "Warning: updating overwrites live data and cannot be undone. In a file exported from this list, cells you did not change since the export are left alone, so someone else's later edit to them stays. Nothing detects that someone else changed a cell you did change after your export: your value replaces theirs. Check the preview before you import.",
+      "General rules",
+    ];
+    expect(lines.slice(heading + 1, heading + 1 + expected.length)).toEqual(expected);
     // Adding only still skips what exists, and the sheet says which mode that is.
     expect(lines).toContain(
       `With "Add new records only", existing ${entity.noun} are skipped, never overwritten. Importing the same file again is safe.`,

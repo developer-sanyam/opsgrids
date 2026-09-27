@@ -17,6 +17,7 @@ import { Button } from "./Button";
 import { ImportExportDialog } from "./ImportExportDialog";
 
 export type {
+  ImportExportBaselineUse,
   ImportExportButtonProps,
   ImportExportMeta,
   ImportExportMode,

@@ -177,8 +177,12 @@ function action(sheetRow: number): string {
   return cells[1] ?? "";
 }
 
+/** The import button says what it will do ("Update 3, add 2"): the rows it sends are the numbers in it. */
 async function runImport(user: User, rows: number): Promise<void> {
-  await user.click(screen.getByRole("button", { name: `Import ${rows} ${rows === 1 ? "row" : "rows"}` }));
+  const button = screen.getByRole("button", { name: /^(Update|Add) \d/ });
+  const sends = [...(button.textContent ?? "").matchAll(/\d[\d,]*/g)].reduce((sum, [count]) => sum + Number(count.replace(/,/g, "")), 0);
+  expect(sends).toBe(rows);
+  await user.click(button);
   await screen.findByRole("heading", { name: "Import finished" }, { timeout: 15_000 });
 }
 
@@ -278,7 +282,7 @@ describe("companies: update from Excel", () => {
     expect(action(6)).toBe("New");
     expect(action(7)).toBe("UpdateChanges: Company name");
     expect(action(8)).toBe(
-      "Needs fixingThat Record ID is not in this list: the record may have been deleted, or the file came from another organisation.",
+      "Needs fixingThat Company ID is not in this list: the record may have been deleted, the file came from another organisation, or it is outside the records you can see.",
     );
     expect(action(9)).toBe("Needs fixingAnnual revenue cannot be cleared");
     expect(action(10)).toBe("Needs fixingThis row updates the same record as row 2. Keep only one of the two rows.");
@@ -320,10 +324,11 @@ describe("companies: update from Excel", () => {
     expect(figure("Failed")).toBe("1");
     expect(figure("Invalid")).toBe("3");
     expect(rowsOf(screen.getByRole("region", { name: "Rows that were not imported" }))).toEqual([
-      ["7", "Cobalt Financial", "Failed", "A company with that name already exists"],
-      ["8", "—Empty", "Invalid", "That Record ID is not in this list: the record may have been deleted, or the file came from another organisation."],
-      ["9", "Dune Dairy", "Invalid", "Annual revenue cannot be cleared"],
-      ["10", "—Empty", "Invalid", "This row updates the same record as row 2. Keep only one of the two rows."],
+      // Row, item, the stored record the row was matched to, result, details.
+      ["7", "Cobalt Financial", "Solstice Energy", "Failed", "A company with that name already exists"],
+      ["8", "—Empty", "—Empty", "Invalid", "That Company ID is not in this list: the record may have been deleted, the file came from another organisation, or it is outside the records you can see."],
+      ["9", "Dune Dairy", "Dune Dairy", "Invalid", "Annual revenue cannot be cleared"],
+      ["10", "—Empty", "Northwind Logistics", "Invalid", "This row updates the same record as row 2. Keep only one of the two rows."],
     ]);
 
     // The screen is told once, so it can reload its list.
@@ -381,8 +386,8 @@ describe("companies: update from Excel", () => {
     await chooseFile(user, await sheetOfColumns(companyImport, ["id", "city"], [["comp-1", "Pune"], ["comp-3", "Kobe"]], "cities.xlsx"));
     expect(screen.getByText("Your file is missing required columns, so nothing can be imported.")).toBeTruthy();
     const refused =
-      "Needs fixingThis row has a Record ID, so it came from an export and is already in the system. " +
-      "Clear the Record ID cell to add it as a new record. Switch to Add new and update existing to update it.";
+      "Needs fixingThis row has a Company ID, so it came from an export and is already in the system. " +
+      "Clear the Company ID cell to add it as a new record. Switch to Add new and update existing to update it.";
     expect(action(2)).toBe(refused);
     expect(listReads(requests, "/customers")).toBe(0);
     expect(reads).toHaveBeenCalledTimes(1);
@@ -474,11 +479,9 @@ describe("the sample sheet's update rules", () => {
     expect(lines).toContain("Updating existing companies");
     expect(lines).toContain("Can be emptied with [clear]: Domain, Industry, Headcount, City, Country.");
     expect(lines.some((line) => typeof line === "string" && line.startsWith("Cannot be changed once created:"))).toBe(false);
-    // The engine words how a row is matched; the list only says the key is the name and, being a
-    // company, that capitals do not count (the server compares company names that way).
-    const matching = lines.find((line) => typeof line === "string" && line.startsWith("A row is matched to an existing record by its Record ID"));
-    expect(matching).toMatch(/A row without one is matched by Company name, ignoring capitals/);
-    expect(matching).toMatch(/A row that matches nothing is added as a new record\./);
+    expect(lines).toContain(
+      "A row is matched to an existing record by its Company ID (the column an export writes). A row without one is matched by Company name, ignoring capitals. A row that matches nothing is added as a new record. If two records have the same Company name, the row is refused.",
+    );
   });
 
   it("tells a user of leads that email and phone cannot be changed and that a lead is found by its ID alone", async () => {
@@ -488,7 +491,7 @@ describe("the sample sheet's update rules", () => {
       "Not changed by an update, leave blank: Email, Phone. A row with a value there is refused.",
     );
     expect(lines).toContain(
-      "A row is matched to an existing record by its Record ID (the column an export writes). A row without one is added as a new record.",
+      "A row is matched to an existing record by its Lead ID (the column an export writes). A row without one is added as a new record.",
     );
   });
 });
@@ -577,15 +580,23 @@ describe("contacts: update from Excel", () => {
       [
         "6",
         "sam.khan@cobaltfin.com",
+        "sam.khan@cobaltfin.com",
         "Invalid",
         "A contact with this email is already on file as Priya.Nair@northwind.co; addresses that differ only in capitals are treated as the same person.",
       ],
-      ["7", "tara.mehta@northwind.co", "Invalid", "Phone cannot be cleared: a saved number can be replaced, not removed"],
+      [
+        "7",
+        "tara.mehta@northwind.co",
+        "tara.mehta@northwind.co",
+        "Invalid",
+        "Phone cannot be cleared: a saved number can be replaced, not removed",
+      ],
       [
         "8",
         "chief@northwind.co",
+        "chief@northwind.co",
         "Failed",
-        "Request validation failed (raw_phone: That is not a valid phone number with a country code) The earlier changes to this row were saved.",
+        "Request validation failed (raw_phone: That is not a valid phone number with a country code) Saved: Title. Not saved: Phone.",
       ],
     ]);
     await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
@@ -821,7 +832,13 @@ describe("deals: update from Excel", () => {
     expect(figure("Failed")).toBe("1");
     expect(figure("Updated")).toBe("0");
     expect(rowsOf(screen.getByRole("region", { name: "Rows that were not imported" }))).toEqual([
-      ["2", "Northwind fleet renewal", "Failed", "A deal in 'proposal' cannot move to 'lead' The earlier changes to this row were saved."],
+      [
+        "2",
+        "Northwind fleet renewal",
+        "Northwind fleet renewal",
+        "Failed",
+        "A deal in 'proposal' cannot move to 'lead' Saved: Source. Not saved: Stage.",
+      ],
     ]);
   }, 20_000);
 

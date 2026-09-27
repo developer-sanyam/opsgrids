@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  UPDATE_RULES,
+  baselineNotice,
   importButtonLabel,
   liveMessage,
   percentOf,
@@ -10,6 +10,7 @@ import {
   readingSentence,
   rowsLabel,
   summarySentence,
+  updateRules,
 } from "./importExportCopy";
 import type { ImportExportSummary } from "./importExportView";
 import {
@@ -214,15 +215,53 @@ describe("previewSentence in update mode", () => {
 });
 
 describe("importButtonLabel", () => {
-  it("counts the rows that will be sent, new and updated alike", () => {
-    expect(importButtonLabel(PREVIEW_UPDATE_MIXED)).toBe("Import 5 rows");
+  it("counts the rows that will be sent when only adding", () => {
     expect(importButtonLabel(PREVIEW_WITH_ERRORS)).toBe("Import 5 rows");
-    expect(importButtonLabel({ ...PREVIEW_UPDATE_MIXED, valid: 1 })).toBe("Import 1 row");
+    expect(importButtonLabel({ ...PREVIEW_WITH_ERRORS, valid: 1 })).toBe("Import 1 row");
+  });
+
+  it("says what each row will do in update mode: how many overwrite a record and how many add one", () => {
+    expect(importButtonLabel(PREVIEW_UPDATE_MIXED)).toBe("Update 3, add 2");
+    expect(importButtonLabel({ ...PREVIEW_UPDATE_MIXED, update: 1, create: 1 })).toBe("Update 1, add 1");
+    expect(importButtonLabel({ ...PREVIEW_UPDATE_MIXED, update: 3, create: 0, valid: 3 })).toBe("Update 3");
+    expect(importButtonLabel({ ...PREVIEW_UPDATE_MIXED, update: 0, create: 2, valid: 2 })).toBe("Add 2");
+    expect(importButtonLabel({ ...PREVIEW_UPDATE_MIXED, update: 1204, create: 1, valid: 1205 })).toBe("Update 1,204, add 1");
   });
 
   it("says there is nothing to change in update mode with nothing to send, and keeps its old words when adding", () => {
     expect(importButtonLabel(PREVIEW_UPDATE_ALL_UNCHANGED)).toBe("Nothing to change");
     expect(importButtonLabel(PREVIEW_MISSING_COLUMNS)).toBe("Import 0 rows");
+  });
+});
+
+describe("baselineNotice", () => {
+  it("says only the cells changed since the export are used, and that a colleague's later change stays", () => {
+    expect(baselineNotice("used")).toEqual({
+      tone: "info",
+      title: "Only the cells you changed since the export are used.",
+      body: "Anything a colleague changed since then stays as they left it.",
+    });
+  });
+
+  it("warns that a file with no baseline is compared cell by cell with the record as it is now, and how to be safe", () => {
+    expect(baselineNotice("none")).toEqual({
+      tone: "warning",
+      title: "This file has no export baseline, so every filled cell is compared with the record as it is now.",
+      body: "A cell copied from an old export puts its old value back. Export again if unsure.",
+    });
+  });
+
+  it("says a baseline that could not be used was ignored, and then warns the same", () => {
+    const notice = baselineNotice("unusable");
+    expect(notice?.tone).toBe("warning");
+    expect(notice?.title).toBe(
+      "The export baseline in this file is damaged or belongs to another list, so it was ignored. Every filled cell is compared with the record as it is now.",
+    );
+    expect(notice?.body).toBe(baselineNotice("none")?.body);
+  });
+
+  it("says nothing when there is nothing to be stale", () => {
+    expect(baselineNotice(null)).toBeNull();
   });
 });
 
@@ -279,17 +318,31 @@ describe("the words of update mode", () => {
   });
 
   it("states the rules of updating in plain words", () => {
-    const text = UPDATE_RULES.join(" ");
+    const text = updateRules("Record ID").join(" ");
     for (const phrase of [
       "Record ID",
       "unique key",
       "A blank cell leaves the field as it is",
       "[clear]",
       "Only fields that changed are sent",
-      "cannot detect edits made by someone else",
+      "cells you did not change since the export are left alone",
       "Records you cannot see are not matched and will be added as new; adding one that already exists will fail as a duplicate.",
     ]) {
       expect(text, phrase).toContain(phrase);
     }
+  });
+
+  it("dates the risk from the export, and says a cell you did change is overwritten unseen", () => {
+    const text = updateRules("Record ID").join(" ");
+    expect(text).toContain("The update cannot detect that someone else changed that field after your export");
+    expect(text).not.toContain("after your file is read");
+  });
+
+  it("names the list's own id column, wherever the rules say where a record's id goes", () => {
+    const rules = updateRules("Company ID");
+    expect(rules[0]).toBe(
+      "Start from an export of the list. A row is matched to a record by its Company ID or by the list's unique key, such as a SKU or a code. A row that matches nothing is added as a new record.",
+    );
+    expect(rules.join(" ")).not.toContain("Record ID");
   });
 });

@@ -88,15 +88,58 @@ describe("matching a row to a stored record", () => {
   it("refuses a Record ID that no record has", () => {
     expect(matchRow(index, "id-404", null)).toEqual({ kind: "unknown-id" });
   });
-  it("matches by the unique key, ignoring case and spacing", () => {
-    expect(matchRow(index, null, " ab-1 ")).toMatchObject({ kind: "found", by: "key" });
+  it("matches by the unique key exactly, trimming it and nothing else", () => {
+    expect(matchRow(index, null, " AB-1 ")).toMatchObject({ kind: "found", by: "key", item: stored });
   });
   it("treats an unknown key as a new record", () => {
     expect(matchRow(index, null, "NEW-1")).toEqual({ kind: "new" });
     expect(matchRow(index, null, null)).toEqual({ kind: "new" });
   });
-  it("refuses a key that two stored records share instead of guessing", () => {
-    expect(matchRow(indexExisting(spec, [stored, twin]), null, "AB-1")).toEqual({ kind: "ambiguous" });
+  it("refuses a key that two stored records share exactly instead of guessing", () => {
+    expect(matchRow(indexExisting(spec, [stored, { ...stored, id: "id-2" }]), null, "AB-1")).toEqual({
+      kind: "ambiguous",
+    });
+  });
+
+  describe("under the default exact rule, as the server compares SKUs, codes and deal names", () => {
+    it("finds a key that is stored exactly even when a twin in other capitals is stored too", () => {
+      const both = indexExisting(spec, [stored, twin]);
+      expect(matchRow(both, null, "AB-1")).toMatchObject({ kind: "found", item: stored });
+      expect(matchRow(both, null, "ab-1")).toMatchObject({ kind: "found", item: twin });
+    });
+    it("refuses, naming the stored spelling, a key that differs from it only in capitals", () => {
+      expect(matchRow(index, null, "ab-1")).toEqual({ kind: "variant", spellings: ["AB-1"] });
+    });
+    it("refuses a key that differs only in inner spacing, too", () => {
+      const spaced = indexExisting(spec, [{ ...stored, sku: "Q4 Renewal" }]);
+      expect(matchRow(spaced, null, "Q4  Renewal")).toEqual({ kind: "variant", spellings: ["Q4 Renewal"] });
+    });
+    it("names every stored spelling when several differ from the typed key", () => {
+      const many = indexExisting(spec, [{ ...stored, sku: "AB-1" }, { ...stored, id: "id-2", sku: "Ab-1" }]);
+      expect(matchRow(many, null, "aB-1")).toEqual({ kind: "variant", spellings: ["AB-1", "Ab-1"] });
+    });
+    it("never lets a Record ID be shadowed by a twin: the id is the record", () => {
+      expect(matchRow(indexExisting(spec, [stored, twin]), "id-2", "AB-1")).toMatchObject({ kind: "found", by: "id", item: twin });
+    });
+  });
+
+  describe("under keyMatch caseless, as the server compares company names", () => {
+    const named: UpdateSpec<Stored> = { ...spec, keyMatch: "caseless", keyOf: (s) => s.name };
+    const companies = indexExisting(named, [
+      { ...stored, name: "Acme Ltd" },
+      { ...stored, id: "id-2", name: "Globex  Corp" },
+    ]);
+    it("ignores capitals and the spaces around the name", () => {
+      expect(matchRow(companies, null, "  acme LTD ")).toMatchObject({ kind: "found", by: "key", item: { id: "id-1" } });
+    });
+    it("keeps inner spaces, since the server does: a different run of spaces is a different name", () => {
+      expect(matchRow(companies, null, "Globex Corp")).toEqual({ kind: "new" });
+      expect(matchRow(companies, null, "globex  corp")).toMatchObject({ kind: "found", item: { id: "id-2" } });
+    });
+    it("is ambiguous when two records share the name in any capitals", () => {
+      const clash = indexExisting(named, [{ ...stored, name: "Acme Ltd" }, { ...stored, id: "id-2", name: "ACME LTD" }]);
+      expect(matchRow(clash, null, "acme ltd")).toEqual({ kind: "ambiguous" });
+    });
   });
 });
 
@@ -120,6 +163,35 @@ describe("what a row changes", () => {
 
   it("resolves a lookup label before comparing, so an unchanged owner is no change", () => {
     expect(plan({ owner: "Asha" })).toBeNull();
+  });
+
+  describe("comparing text with what the server stored", () => {
+    const at = (overrides: Partial<Stored>, row: Record<string, string | number | boolean | null>) =>
+      planUpdate(columns, spec, row, new Set(), { ...stored, ...overrides }, ctx);
+
+    it("does not read stray spaces the server kept as an edit of an untouched, trimmed cell", () => {
+      expect(at({ name: "Bracket  " }, { name: "Bracket" })).toBeNull();
+      expect(at({ name: " Bracket" }, { name: "Bracket" })).toBeNull();
+    });
+    it("does not read a stored code's stray spaces as a disagreement with an immutable cell", () => {
+      expect(at({ sku: "AB-1 " }, { sku: "AB-1" })).toBeNull();
+    });
+    it("treats every kind of line ending as one, on both sides", () => {
+      expect(at({ industry: "Steel\r\nWorks" }, { industry: "Steel\nWorks" })).toBeNull();
+      expect(at({ industry: "Steel\nWorks" }, { industry: "Steel\r\nWorks" })).toBeNull();
+      expect(at({ industry: "Steel\rWorks" }, { industry: "Steel\nWorks" })).toBeNull();
+    });
+    it("still sees a real difference, including capitals and inner spaces", () => {
+      expect(at({ name: "Bracket " }, { name: "bracket" })?.changed).toEqual(["Name"]);
+      expect(at({ name: "Steel Bracket" }, { name: "Steel  Bracket" })?.changed).toEqual(["Name"]);
+    });
+    it("leaves a field's own comparison as it is, whatever the spaces", () => {
+      const strict: UpdateSpec<Stored> = {
+        ...spec,
+        fields: [{ column: "name", current: (s) => s.name, same: (cell, was) => cell === was }],
+      };
+      expect(planUpdate(columns, strict, { name: "Bracket" }, new Set(), { ...stored, name: "Bracket " }, ctx)?.changed).toEqual(["Name"]);
+    });
   });
 
   it("empties a field only when the cell says [clear]", async () => {

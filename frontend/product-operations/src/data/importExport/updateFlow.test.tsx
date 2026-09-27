@@ -295,12 +295,12 @@ describe("updating inventory items through the real dialog", () => {
       expect(action("TAL-0001")).toContain("Changes: Warehouse, Unit of measure");
       expect(action("FIT-0001")).toContain("Changes: Item category code, HSN code");
       expect(action("NEW-0001")).toContain("New");
-      expect(within(review).getByRole("button", { name: "Import 5 rows" })).toBeTruthy();
+      expect(within(review).getByRole("button", { name: "Update 4, add 1" })).toBeTruthy();
       // Both pages of the stored list were read for the comparison, and nothing was written yet.
       expect(pagesAsked(recorded, `${API}/inventory`)).toEqual(["1", "2"]);
       expect(writes(recorded)).toEqual([]);
 
-      const finished = await importAndWait(user, review, "Import 5 rows");
+      const finished = await importAndWait(user, review, "Update 4, add 1");
 
       // (b) Exactly what was sent, in sheet order: changed keys only, the API's own key names, the
       // documented empty value, a unit only when it is a different unit, and nothing for row 3.
@@ -364,7 +364,7 @@ describe("updating inventory items through the real dialog", () => {
       const table = previewTable(review, "reorder.xlsx");
       expect(rowContaining(table, "RM-STL-4501").textContent).toContain("Changes: Reorder point");
 
-      await importAndWait(user, review, "Import 2 rows");
+      await importAndWait(user, review, "Update 2");
 
       // A reorder point of zero is a value, not a blank cell.
       expect(writes(recorded)).toEqual([
@@ -418,7 +418,7 @@ describe("updating inventory items through the real dialog", () => {
       );
       expect(refusal("MRO-LUB-220")).toContain("Opening stock cannot be changed once the record exists. Leave the cell blank.");
       expect(refusal("Ghost")).toContain(
-        "That Record ID is not in this list: the record may have been deleted, or the file came from another organisation.",
+        "That Record ID is not in this list: the record may have been deleted, the file came from another organisation, or it is outside the records you can see.",
       );
       expect(refusal("Atlantis Depot")).toContain(
         "'Atlantis Depot' is not one of the accepted values for Warehouse (see the Lists sheet). " +
@@ -593,7 +593,7 @@ describe("updating warehouses through the real dialog", () => {
       );
       expect(rowContaining(table, "WH-WEST").textContent).toContain("Changes: Location");
 
-      const finished = await importAndWait(user, review, "Import 3 rows");
+      const finished = await importAndWait(user, review, "Update 3");
 
       expect(writes(recorded)).toEqual([
         { method: "PATCH", path: `${API}/warehouses/wh-WH-MAIN`, body: { name: "Cold Store" } },
@@ -730,7 +730,7 @@ describe("updating suppliers through the real dialog", () => {
       );
       expect(rowContaining(table, "SUP-CRL").textContent).toContain("Supplier since cannot be cleared");
 
-      const finished = await importAndWait(user, review, "Import 1 row");
+      const finished = await importAndWait(user, review, "Update 1");
 
       expect(writes(recorded)).toEqual([
         {
@@ -790,7 +790,7 @@ describe("updating item categories through the real dialog", () => {
           "A blank cell keeps the category's parent, and [clear] moves it to the top level.",
       );
 
-      const finished = await importAndWait(user, review, "Import 3 rows");
+      const finished = await importAndWait(user, review, "Update 3");
 
       expect(writes(recorded)).toEqual([
         { method: "PATCH", path: `${API}/inventory/categories/cat-alu`, body: { parent_id: null } },

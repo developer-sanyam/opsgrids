@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { recordIdHeader } from "./cells";
 import type { AnyEntity } from "./cells";
-import { DEFAULT_EXPORT_MAX_ROWS, IDLE_STATE, createExchange } from "./exchange";
+import { IDLE_STATE, createExchange } from "./exchange";
 import type { Exchange } from "./exchange";
 import type {
   DataExchangeMeta,
@@ -10,7 +11,7 @@ import type {
   UseImportExportOptions,
   UseImportExportResult,
 } from "./types";
-import { DEFAULT_MAX_ROWS } from "./workbook";
+import { DEFAULT_EXPORT_MAX_ROWS, DEFAULT_MAX_ROWS } from "./workbook";
 
 /**
  * The Import / Export dialog's brain (ADR-0022): read a workbook, preview it, send the valid rows
@@ -86,6 +87,7 @@ export function useImportExport<Payload, Item = unknown, Filters = void>(
         .map((column) => column.header),
       canExport: entity.export !== undefined,
       canUpdate: entity.update !== undefined,
+      recordIdHeader: recordIdHeader(entity),
     }),
     [entity],
   );

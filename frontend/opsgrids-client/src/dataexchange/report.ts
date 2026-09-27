@@ -28,7 +28,8 @@ export function reportFileName(entity: Pick<AnyEntity, "fileStem">): string {
 
 /**
  * The result workbook: one sheet, "Result", with Row, the first required cell, Status and Message,
- * and, when any row updated (or tried to update) a record, Changes: the headers of the columns it changes.
+ * and, when any row updated (or tried to update) a record, Changes (the headers of the columns it
+ * changes) and Existing record (who the stored record is, in the list's own words).
  */
 export async function buildReportWorkbook(entity: AnyEntity, summary: ImportSummary): Promise<Blob> {
   const columns = importableColumns(entity);
@@ -41,11 +42,18 @@ export async function buildReportWorkbook(entity: AnyEntity, summary: ImportSumm
   const sheet = workbook.addWorksheet("Result", { views: [{ state: "frozen", ySplit: 1 }] });
   const ordered = [...summary.outcomes].sort((a, b) => a.row - b.row);
   const changesOf = (outcome: RowOutcome): string | null => textOrNull((outcome.changes ?? []).join(", "));
+  const recordOf = (outcome: RowOutcome): string | null => textOrNull(outcome.record ?? "");
   const withChanges = ordered.some((outcome) => changesOf(outcome) !== null);
+  const withRecord = ordered.some((outcome) => recordOf(outcome) !== null);
 
-  styleHeaderRow(sheet.addRow(["Row", labelHeader, "Status", "Message", ...(withChanges ? ["Changes"] : [])]));
+  const optional = [
+    { header: "Changes", show: withChanges, of: changesOf },
+    { header: "Existing record", show: withRecord, of: recordOf },
+  ].filter((column) => column.show);
+
+  styleHeaderRow(sheet.addRow(["Row", labelHeader, "Status", "Message", ...optional.map((column) => column.header)]));
   sheet.getColumn(1).style = { numFmt: "0" };
-  for (const position of withChanges ? [2, 3, 4, 5] : [2, 3, 4]) sheet.getColumn(position).style = { numFmt: "@" };
+  for (let position = 2; position <= 4 + optional.length; position += 1) sheet.getColumn(position).style = { numFmt: "@" };
 
   for (const outcome of ordered) {
     sheet.addRow([
@@ -53,7 +61,7 @@ export async function buildReportWorkbook(entity: AnyEntity, summary: ImportSumm
       textOrNull(outcome.label),
       STATUS_LABEL[outcome.status],
       textOrNull(outcome.message),
-      ...(withChanges ? [changesOf(outcome)] : []),
+      ...optional.map((column) => column.of(outcome)),
     ]);
   }
 
@@ -63,6 +71,10 @@ export async function buildReportWorkbook(entity: AnyEntity, summary: ImportSumm
   sheet.getColumn(2).width = widthFor(Math.max(labelHeader.length, longest(ordered.map((o) => o.label))));
   sheet.getColumn(3).width = widthFor(8);
   sheet.getColumn(4).width = widthFor(longest(ordered.map((o) => o.message ?? "")));
-  if (withChanges) sheet.getColumn(5).width = widthFor(longest(ordered.map((o) => (o.changes ?? []).join(", "))));
+  optional.forEach((column, index) => {
+    sheet.getColumn(5 + index).width = widthFor(
+      Math.max(column.header.length, longest(ordered.map((outcome) => column.of(outcome) ?? ""))),
+    );
+  });
   return workbookToBlob(workbook);
 }

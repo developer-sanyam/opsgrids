@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { Link, RouterProvider, createMemoryRouter } from "react-router-dom";
 import { expect, fn, screen, waitFor } from "storybook/test";
 
-import type { ImportExportViewActions } from "../lib/importExportView";
+import type { ImportExportViewActions, ImportExportViewState } from "../lib/importExportView";
 import {
   META,
   MENU_STATE,
@@ -12,13 +12,17 @@ import {
   PREVIEW_UPDATE_ALL_UNCHANGED,
   PREVIEW_UPDATE_CANNOT_MATCH,
   PREVIEW_UPDATE_MIXED,
+  PREVIEW_UPDATE_NO_BASELINE,
   PREVIEW_UPDATE_REFUSALS,
+  PREVIEW_UPDATE_ROWS_WITHOUT_ID,
+  PREVIEW_UPDATE_UNUSABLE_BASELINE,
   PREVIEW_WITH_ERRORS,
   PROGRESS_RUNNING,
   PROGRESS_UPDATING,
   PROGRESS_WAITING,
   SUMMARY_CANCELLED,
   SUMMARY_CLEAN,
+  SUMMARY_UPDATE_PARTLY_SAVED,
   SUMMARY_UPDATE_WITH_FAILURES,
   SUMMARY_WITH_PROBLEMS,
   UPDATE_META,
@@ -27,6 +31,7 @@ import {
 } from "../story-import-export";
 import { blankFile } from "../story-files";
 import { ImportExportButton } from "./ImportExportButton";
+import type { ImportExportButtonProps } from "./ImportExportButton";
 import { PageHeader } from "./PageHeader";
 
 const ACTIONS: ImportExportViewActions = {
@@ -163,11 +168,90 @@ export const PreviewUpdateRefusals: Story = {
   },
 };
 
-/** Update mode on a file with no Record ID or key column: it cannot match anything, and says so above the rows. */
+/** Update mode on a file with no id or key column: it cannot match anything, and says so above the rows. */
 export const PreviewUpdateCannotMatch: Story = {
   args: {
     meta: UPDATE_META,
     state: stateFor({ phase: "preview", mode: "addAndUpdate", preview: PREVIEW_UPDATE_CANNOT_MATCH }),
+  },
+};
+
+/**
+ * A file with no export baseline: the warning says every filled cell is compared with the record as
+ * it is now, and that an old cell puts its old value back. One row is found by a name in other
+ * capitals and carries the note that says why nothing will be sent for it.
+ */
+export const PreviewUpdateNoBaseline: Story = {
+  args: {
+    meta: UPDATE_META,
+    state: stateFor({ phase: "preview", mode: "addAndUpdate", preview: PREVIEW_UPDATE_NO_BASELINE }),
+  },
+};
+
+/** A baseline that is damaged or another list's is ignored, and the preview says so before the same warning. */
+export const PreviewUpdateUnusableBaseline: Story = {
+  args: {
+    meta: UPDATE_META,
+    state: stateFor({ phase: "preview", mode: "addAndUpdate", preview: PREVIEW_UPDATE_UNUSABLE_BASELINE }),
+  },
+};
+
+/** A list matched by its id alone: the rows that have none are counted, above the rows, as new records. */
+export const PreviewUpdateRowsWithoutId: Story = {
+  args: {
+    meta: UPDATE_META,
+    state: stateFor({ phase: "preview", mode: "addAndUpdate", preview: PREVIEW_UPDATE_ROWS_WITHOUT_ID }),
+  },
+};
+
+/** Import found the records had changed while the preview was open: it shows the new one instead of sending anything. */
+export const PreviewUpdateRefreshed: Story = {
+  args: {
+    meta: UPDATE_META,
+    state: stateFor({
+      phase: "preview",
+      mode: "addAndUpdate",
+      preview: PREVIEW_UPDATE_MIXED,
+      notice:
+        "The records changed while you were reviewing this file, so the preview has been refreshed and nothing was imported. Check it, then choose Import again.",
+    }),
+  },
+};
+
+/**
+ * A state that follows the choice, as the hook does: the file is first previewed for adding, and
+ * choosing to update on the preview itself shows its rules open under the choice, not behind a heading.
+ */
+function SwitchingOnThePreview(args: ImportExportButtonProps) {
+  const [state, setState] = useState<ImportExportViewState>(
+    stateFor({ phase: "preview", preview: PREVIEW_WITH_ERRORS }),
+  );
+  const actions: ImportExportViewActions = {
+    ...args.actions,
+    setMode: async (mode) => {
+      setState(
+        mode === "addAndUpdate"
+          ? stateFor({ phase: "preview", mode, preview: PREVIEW_UPDATE_MIXED })
+          : stateFor({ phase: "preview", preview: PREVIEW_WITH_ERRORS }),
+      );
+    },
+  };
+  return (
+    <PageHeader
+      eyebrow="Records"
+      title="Items"
+      actions={<ImportExportButton {...args} state={state} actions={actions} />}
+    />
+  );
+}
+
+export const PreviewUpdateSwitchedOnThePreview: Story = {
+  args: { meta: UPDATE_META },
+  render: (args) => <SwitchingOnThePreview {...args} />,
+  play: async (context) => {
+    await meta.play(context);
+    await context.userEvent.click(await screen.findByRole("radio", { name: "Add new and update existing" }));
+    await screen.findByRole("list", { name: "How updating works" });
   },
 };
 
@@ -222,6 +306,14 @@ export const DoneWithUpdatesAndFailures: Story = {
   args: {
     meta: UPDATE_META,
     state: stateFor({ phase: "done", mode: "addAndUpdate", summary: SUMMARY_UPDATE_WITH_FAILURES }),
+  },
+};
+
+/** A row whose first request went through and a later one failed: it says which columns were saved and which were not. */
+export const DoneWithAPartlySavedRow: Story = {
+  args: {
+    meta: UPDATE_META,
+    state: stateFor({ phase: "done", mode: "addAndUpdate", summary: SUMMARY_UPDATE_PARTLY_SAVED }),
   },
 };
 

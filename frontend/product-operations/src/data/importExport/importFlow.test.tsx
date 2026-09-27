@@ -494,7 +494,7 @@ describe("exporting inventory items through the real dialog", () => {
       expect(download?.fileName).toMatch(/^inventory-items-\d{4}-\d{2}-\d{2}\.xlsx$/);
       if (download === undefined) throw new Error("nothing was downloaded");
       const workbook = await readDownload(download);
-      expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual(["Export"]);
+      expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual(["Export", "OpsGrids baseline"]);
       const sheet = sheetOf(workbook, "Export");
 
       // The columns are the importable ones and the read-only ones; opening stock, which the list

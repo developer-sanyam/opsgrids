@@ -31,6 +31,15 @@ export function importableColumns(entity: Pick<AnyEntity, "columns">): ImportCol
   return entity.columns.filter((column) => column.readOnly !== true);
 }
 
+/**
+ * What the list calls the column an export writes each record's id in ("Company ID"): the words a
+ * sheet's header row uses, so every sentence that tells someone to fill in or clear it says the
+ * same thing as the sheet. "Record ID" only for a list that has no such column.
+ */
+export function recordIdHeader(entity: Pick<AnyEntity, "columns" | "recordIdKey">): string {
+  return entity.columns.find((column) => column.key === entity.recordIdKey)?.header ?? "Record ID";
+}
+
 export function isValidDate(value: Date): boolean {
   return !Number.isNaN(value.getTime());
 }

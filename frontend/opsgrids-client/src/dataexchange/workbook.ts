@@ -10,6 +10,8 @@
 
 import type * as ExcelJS from "exceljs";
 
+import { BASELINE_SHEET, readBaseline } from "./baseline";
+import type { Baseline } from "./baseline";
 import { InvalidCell, displayValue, headerKey, importableColumns, isBlank } from "./cells";
 import type { AnyEntity, CellInput } from "./cells";
 import { fromExcelValue, readCell } from "./cellValue";
@@ -20,6 +22,9 @@ import { inspectArchive } from "./zipGuard";
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 export const MAX_COLUMNS = 60;
 export const DEFAULT_MAX_ROWS = 1000;
+/** Rows an export writes at most: also the most records a baseline may hold, since the file that
+ *  comes back may have had most of its rows deleted but keeps the record of them all. */
+export const DEFAULT_EXPORT_MAX_ROWS = 10_000;
 
 /** The file cannot be imported at all; the message is for the dialog's error state. */
 export class WorkbookReadError extends Error {
@@ -47,6 +52,8 @@ export interface ParsedSheet {
   unknownHeaders: readonly string[];
   /** Headers of required columns the file lacks. */
   missingRequired: readonly string[];
+  /** What the export this file came from wrote in every editable cell, when the file still has it. */
+  baseline: Baseline;
 }
 
 const RESAVE_HINT = "Open it in Excel and choose Save As → Excel Workbook (.xlsx), then choose the new file.";
@@ -85,7 +92,7 @@ function pickSheet(workbook: ExcelJS.Workbook): ExcelJS.Worksheet | undefined {
   const visible = workbook.worksheets.filter((sheet) => sheet.state === "visible");
   return (
     visible.find((sheet) => sheetLabel(sheet.name) === "import") ??
-    visible.find((sheet) => !["instructions", "lists"].includes(sheetLabel(sheet.name)))
+    visible.find((sheet) => !["instructions", "lists", sheetLabel(BASELINE_SHEET)].includes(sheetLabel(sheet.name)))
   );
 }
 
@@ -207,5 +214,9 @@ export async function readWorkbook(file: File, entity: AnyEntity): Promise<Parse
     missingRequired: importableColumns(entity)
       .filter((column) => column.required === true && !present.has(column.key))
       .map((column) => column.header),
+    baseline: readBaseline(workbook, entity, {
+      maxRecords: entity.export?.maxRows ?? DEFAULT_EXPORT_MAX_ROWS,
+      maxColumns: MAX_COLUMNS,
+    }),
   };
 }

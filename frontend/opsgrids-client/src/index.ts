@@ -147,6 +147,7 @@ export {
   useImportExport,
 } from "./dataexchange";
 export type {
+  BaselineUse,
   ColumnKind,
   ColumnOption,
   DataExchangeActions,
