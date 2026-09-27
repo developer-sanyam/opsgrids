@@ -37,7 +37,16 @@ TABLE = "mfa_factors"
 COLUMN = "confirm_failed_attempts"
 
 
+#: `ALTER TABLE` needs an ACCESS EXCLUSIVE lock, however briefly, and a request for it that has to
+#: wait behind a long transaction makes every later query on `auth.mfa_factors` queue behind *it* —
+#: which is sign-in and step-up. Fail fast instead: a deploy that cannot get the lock in five
+#: seconds stops, and is run again when the long transaction is gone, rather than stalling the
+#: service it is meant to update. (Local to the migration's own transaction.)
+LOCK_TIMEOUT = "5s"
+
+
 def upgrade() -> None:
+    op.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'")
     op.add_column(
         TABLE,
         sa.Column(COLUMN, sa.Integer(), nullable=False, server_default=sa.text("0")),
@@ -46,4 +55,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'")
     op.drop_column(TABLE, COLUMN, schema=SCHEMA)
