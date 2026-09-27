@@ -760,7 +760,7 @@ describe("updating projects from Excel", () => {
         ),
       ).toBeTruthy();
 
-      await finishImport(user, "Import 2 rows");
+      await finishImport(user, "Update 2");
       expect(gateway.writes()).toEqual([
         { method: "PATCH", path: `${PATCH}/PRJ-108`, body: { health: "at_risk" } },
         { method: "PATCH", path: `${PATCH}/PRJ-109`, body: { health: "delayed" } },
@@ -793,7 +793,7 @@ describe("updating projects from Excel", () => {
         ),
       ).toBeTruthy();
 
-      await finishImport(user, "Import 1 row");
+      await finishImport(user, "Update 1");
       expect(gateway.writes()).toEqual([{ method: "PATCH", path: `${PATCH}/PRJ-105`, body: { currency: "USD" } }]);
     },
     TEST_TIMEOUT,
