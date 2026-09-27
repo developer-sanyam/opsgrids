@@ -619,6 +619,28 @@ describe("updating assets from Excel", () => {
   );
 
   it(
+    "refuses a tag that differs from a stored one only in capitals, naming the stored spelling, and sends nothing",
+    async () => {
+      const gateway = stubGateway();
+      const user = await openUpdateDialog(vi.fn());
+
+      await reviewFor(await importFile([{ tag: "sw-0003", name: "Another name" }]), user);
+
+      expect(figure("Need fixing")).toBe("1");
+      expect(figure("Updates")).toBe("0");
+      expect(figure("New records")).toBe("0");
+      expect(
+        screen.getByText(
+          "A record 'SW-0003' exists that differs from 'sw-0003' only in capitals or spacing. Use its exact spelling.",
+          { exact: false },
+        ),
+      ).toBeTruthy();
+      expect(gateway.writes()).toEqual([]);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
     "says there is nothing to change when every row already matches, and sends nothing: an empty body would be refused",
     async () => {
       const gateway = stubGateway();
@@ -628,7 +650,7 @@ describe("updating assets from Excel", () => {
       await reviewFor(
         await importFile([
           { tag: "SRV-0004", name: "Rack server", type: "Server", status: "In stock", location: "Mumbai DC" },
-          { tag: "sw-0003" },
+          { tag: "SW-0003" },
         ]),
         user,
       );
