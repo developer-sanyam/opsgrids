@@ -57,6 +57,7 @@ const RESULT: UseImportExportResult = {
     maxRows: 1000,
     exportMaxRows: 10_000,
     requiredHeaders: [],
+    recordIdHeader: "Record ID",
     canExport: true,
     canUpdate: false,
   },

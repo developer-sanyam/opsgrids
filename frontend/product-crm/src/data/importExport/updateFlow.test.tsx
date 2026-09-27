@@ -200,6 +200,9 @@ async function sheetOfColumns(
 /** What the engine says about an owner nobody has, when updating: its sentence, then the update hint. */
 const OWNER_UPDATE_HINT = "Use the email of an active sales rep, see the Lists sheet. Leave blank to keep the current owner.";
 const OWNER_ADD_HINT = "Use the email of an active sales rep, see the Lists sheet. Leave blank to assign it to yourself.";
+/** What the engine says about a Record ID no company has (an OWN-scope caller may not see it either). */
+const UNKNOWN_COMPANY_ID =
+  "That Company ID is not in this list: the record may have been deleted, the file came from another organisation, or it is outside the records you can see.";
 const notAnOwner = (email: string, hint: string): string =>
   `'${email}' is not one of the accepted values for Owner email (see the Lists sheet). ${hint}`;
 
@@ -277,9 +280,7 @@ describe("companies: update from Excel", () => {
     expect(action(5)).toBe("No change");
     expect(action(6)).toBe("New");
     expect(action(7)).toBe("UpdateChanges: Company name");
-    expect(action(8)).toBe(
-      "Needs fixingThat Record ID is not in this list: the record may have been deleted, or the file came from another organisation.",
-    );
+    expect(action(8)).toBe(`Needs fixing${UNKNOWN_COMPANY_ID}`);
     expect(action(9)).toBe("Needs fixingAnnual revenue cannot be cleared");
     expect(action(10)).toBe("Needs fixingThis row updates the same record as row 2. Keep only one of the two rows.");
     // Nothing has been sent: the preview only read.
@@ -321,7 +322,7 @@ describe("companies: update from Excel", () => {
     expect(figure("Invalid")).toBe("3");
     expect(rowsOf(screen.getByRole("region", { name: "Rows that were not imported" }))).toEqual([
       ["7", "Cobalt Financial", "Failed", "A company with that name already exists"],
-      ["8", "—Empty", "Invalid", "That Record ID is not in this list: the record may have been deleted, or the file came from another organisation."],
+      ["8", "—Empty", "Invalid", UNKNOWN_COMPANY_ID],
       ["9", "Dune Dairy", "Invalid", "Annual revenue cannot be cleared"],
       ["10", "—Empty", "Invalid", "This row updates the same record as row 2. Keep only one of the two rows."],
     ]);
@@ -381,8 +382,8 @@ describe("companies: update from Excel", () => {
     await chooseFile(user, await sheetOfColumns(companyImport, ["id", "city"], [["comp-1", "Pune"], ["comp-3", "Kobe"]], "cities.xlsx"));
     expect(screen.getByText("Your file is missing required columns, so nothing can be imported.")).toBeTruthy();
     const refused =
-      "Needs fixingThis row has a Record ID, so it came from an export and is already in the system. " +
-      "Clear the Record ID cell to add it as a new record. Switch to Add new and update existing to update it.";
+      "Needs fixingThis row has a Company ID, so it came from an export and is already in the system. " +
+      "Clear the Company ID cell to add it as a new record. Switch to Add new and update existing to update it.";
     expect(action(2)).toBe(refused);
     expect(listReads(requests, "/customers")).toBe(0);
     expect(reads).toHaveBeenCalledTimes(1);
@@ -476,7 +477,7 @@ describe("the sample sheet's update rules", () => {
     expect(lines.some((line) => typeof line === "string" && line.startsWith("Cannot be changed once created:"))).toBe(false);
     // The engine words how a row is matched; the list only says the key is the name and, being a
     // company, that capitals do not count (the server compares company names that way).
-    const matching = lines.find((line) => typeof line === "string" && line.startsWith("A row is matched to an existing record by its Record ID"));
+    const matching = lines.find((line) => typeof line === "string" && line.startsWith("A row is matched to an existing record by its Company ID"));
     expect(matching).toMatch(/A row without one is matched by Company name, ignoring capitals/);
     expect(matching).toMatch(/A row that matches nothing is added as a new record\./);
   });
@@ -488,7 +489,7 @@ describe("the sample sheet's update rules", () => {
       "Not changed by an update, leave blank: Email, Phone. A row with a value there is refused.",
     );
     expect(lines).toContain(
-      "A row is matched to an existing record by its Record ID (the column an export writes). A row without one is added as a new record.",
+      "A row is matched to an existing record by its Lead ID (the column an export writes). A row without one is added as a new record.",
     );
   });
 });
@@ -585,7 +586,7 @@ describe("contacts: update from Excel", () => {
         "8",
         "chief@northwind.co",
         "Failed",
-        "Request validation failed (raw_phone: That is not a valid phone number with a country code) The earlier changes to this row were saved.",
+        "Request validation failed (raw_phone: That is not a valid phone number with a country code) Saved: Title. Not saved: Phone.",
       ],
     ]);
     await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
@@ -821,7 +822,12 @@ describe("deals: update from Excel", () => {
     expect(figure("Failed")).toBe("1");
     expect(figure("Updated")).toBe("0");
     expect(rowsOf(screen.getByRole("region", { name: "Rows that were not imported" }))).toEqual([
-      ["2", "Northwind fleet renewal", "Failed", "A deal in 'proposal' cannot move to 'lead' The earlier changes to this row were saved."],
+      [
+        "2",
+        "Northwind fleet renewal",
+        "Failed",
+        "A deal in 'proposal' cannot move to 'lead' Saved: Source. Not saved: Stage, Probability (reset to 20%).",
+      ],
     ]);
   }, 20_000);
 
@@ -1021,5 +1027,168 @@ describe("deals: update from Excel", () => {
     expect(action(2)).toMatch(
       /^Needs fixing'ASHA\.RAO@northwind\.co' matches more than one of the accepted values for Primary contact email, so it cannot be chosen\./,
     );
+  }, 20_000);
+});
+
+/* ------------------- how a row finds its record, and how the report names it ------------------- */
+
+/**
+ * The key rules the lists declare (`UpdateSpec.keyMatch`) and the words each list gives for a stored
+ * record (`UpdateSpec.recordLabel`), through the engine that applies them: company names match
+ * ignoring capitals, as the server does, and every other key exactly.
+ */
+describe("update from Excel: how a row finds its record, and how the report names it", () => {
+  const summaryOf = (): ImportSummary => present(onImported.mock.calls[0]?.[0], "the summary");
+  const recordsOf = (summary: ImportSummary): [number, string | undefined][] =>
+    summary.outcomes.map((outcome) => [outcome.row, outcome.record]);
+
+  it("finds a company by its name in other capitals, and treats a name that differs in its spaces as a new company", async () => {
+    const requests = stubOrganisation({
+      lists: { "/customers": ORGANISATION },
+      answers: { "POST /customers": () => ({ status: 201, body: companyWire("comp-new-1", "Cobalt  Financial") }) },
+    });
+    const user = userEvent.setup();
+    render(<Harness entity={companyImport} filters={{ search: "", status: "all" }} onImported={onImported} />);
+    await openDialog(user, "companies");
+    await chooseMode(user, "Add new and update existing");
+    await chooseFile(
+      user,
+      await sheetOfColumns(
+        companyImport,
+        ["name", "city"],
+        [
+          // 2: the same company in other capitals: the server sees one company, so this is it.
+          ["NORTHWIND LOGISTICS", "Pune"],
+          // 3: a run of spaces the server keeps: another company to it.
+          ["Cobalt  Financial", "Delhi"],
+        ],
+        "companies-names.xlsx",
+      ),
+    );
+
+    expect(action(2)).toBe("UpdateChanges: City");
+    expect(action(3)).toBe("New");
+
+    await runImport(user, 2);
+
+    expect(writesOf(requests).map((write) => write.request)).toEqual(["PATCH /customers/comp-1", "POST /customers"]);
+    await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
+    // The row that found its company says which company it changed, by name.
+    expect(recordsOf(summaryOf())).toEqual([
+      [2, "Northwind Logistics"],
+      [3, undefined],
+    ]);
+  }, 20_000);
+
+  it("refuses a deal name in other capitals, naming the deal it resembles, and finds the exact one", async () => {
+    const requests = stubOrganisation({
+      lists: {
+        "/customers": COMPANIES,
+        "/contacts": [],
+        "/deals": [dealWire("deal-1", "Northwind fleet renewal"), dealWire("deal-2", "Cobalt treasury platform")],
+      },
+    });
+    const user = userEvent.setup();
+    render(<Harness entity={dealImport} filters={{ search: "", stage: "all", ownerId: "all" }} onImported={onImported} />);
+    await openDialog(user, "deals");
+    await chooseMode(user, "Add new and update existing");
+    await chooseFile(
+      user,
+      await sheetOfColumns(
+        dealImport,
+        ["name", "value"],
+        [
+          // 2: exactly as stored.
+          ["Northwind fleet renewal", 450000],
+          // 3: other capitals: the server counts a different deal, so the row is refused, not matched.
+          ["COBALT treasury platform", 450000],
+        ],
+        "deals-names.xlsx",
+      ),
+    );
+
+    expect(action(2)).toBe("UpdateChanges: Deal value");
+    expect(action(3)).toBe(
+      "Needs fixingA record 'Cobalt treasury platform' exists that differs from 'COBALT treasury platform' only in capitals or spacing. " +
+        "Use its exact spelling, or its Deal ID.",
+    );
+
+    await runImport(user, 1);
+
+    expect(writesOf(requests)).toEqual([{ request: "PATCH /deals/deal-1", body: { value_minor: 45000000 } }]);
+    await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
+    expect(recordsOf(summaryOf())).toEqual([
+      [2, "Northwind fleet renewal"],
+      [3, undefined],
+    ]);
+  }, 20_000);
+
+  it("refuses a contact email in other capitals, as another contact to the server, and names the contact by name", async () => {
+    const requests = stubOrganisation({
+      lists: {
+        "/customers": COMPANIES,
+        "/contacts": [
+          contactWire("cont-1", "Asha.Rao@northwind.co", "comp-1", { full_name: "Asha Rao", title: "VP" }),
+          contactWire("cont-2", "daniel.okafor@cobaltfin.com", "comp-2", { full_name: "Daniel Okafor" }),
+        ],
+      },
+    });
+    const user = userEvent.setup();
+    render(<Harness entity={contactImport} filters={{ search: "", status: "all" }} onImported={onImported} />);
+    await openDialog(user, "contacts");
+    await chooseMode(user, "Add new and update existing");
+    await chooseFile(
+      user,
+      await sheetOfColumns(
+        contactImport,
+        ["email", "title"],
+        [
+          // 2: exactly as stored.
+          ["Asha.Rao@northwind.co", "COO"],
+          // 3: other capitals.
+          ["daniel.OKAFOR@cobaltfin.com", "Head"],
+        ],
+        "contacts-emails.xlsx",
+      ),
+    );
+
+    expect(action(2)).toBe("UpdateChanges: Title");
+    expect(action(3)).toMatch(/^Needs fixing/);
+
+    await runImport(user, 1);
+
+    expect(writesOf(requests)).toEqual([{ request: "PATCH /contacts/cont-1", body: { title: "COO" } }]);
+    await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
+    // A contact is named by their name, never their phone.
+    expect(recordsOf(summaryOf())).toEqual([
+      [2, "Asha Rao"],
+      [3, undefined],
+    ]);
+  }, 20_000);
+
+  it("names a lead by their name and company, never by the email or phone the wire only masks", async () => {
+    stubOrganisation({
+      lists: {
+        "/leads": [
+          leadWire("lead-1", "Meera Iyer", { company: "Halcyon Textiles", email: "m•••@h•••.in", phone: "+•• ••••• ••345" }),
+          leadWire("lead-2", "Tomas Berg"),
+        ],
+      },
+    });
+    const user = userEvent.setup();
+    render(<Harness entity={leadImport} filters={{ status: "all" }} onImported={onImported} />);
+    await openDialog(user, "leads");
+    await chooseMode(user, "Add new and update existing");
+    await chooseFile(
+      user,
+      await sheetOfColumns(leadImport, ["id", "notes"], [["lead-1", "Called"], ["lead-2", "Emailed"]], "leads-notes.xlsx"),
+    );
+    await runImport(user, 2);
+
+    await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
+    expect(recordsOf(summaryOf())).toEqual([
+      [2, "Meera Iyer (Halcyon Textiles)"],
+      [3, "Tomas Berg"],
+    ]);
   }, 20_000);
 });
