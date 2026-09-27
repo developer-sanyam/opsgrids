@@ -130,7 +130,7 @@ describe("populated", () => {
     expect(within(support).getByText("Not rated yet")).toBeTruthy();
     expect(within(support).queryByText("Default")).toBeNull();
     const pending = rows[3] as HTMLElement;
-    expect(within(pending).getByText("Needs verification")).toBeTruthy();
+    expect(within(pending).getByText("Not registered yet")).toBeTruthy();
     expect(within(pending).getByText("Not available")).toBeTruthy();
 
     const health = screen.getByRole("region", { name: "Connection health" });

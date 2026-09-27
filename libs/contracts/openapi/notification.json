@@ -3048,6 +3048,17 @@
       },
       "NumberOut": {
         "properties": {
+          "code_verification_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code Verification Status"
+          },
           "display_phone_number": {
             "title": "Display Phone Number",
             "type": "string"
@@ -3097,6 +3108,16 @@
             "title": "Quality Rating",
             "type": "string"
           },
+          "registration": {
+            "default": "unknown",
+            "enum": [
+              "registered",
+              "not_registered",
+              "unknown"
+            ],
+            "title": "Registration",
+            "type": "string"
+          },
           "status": {
             "enum": [
               "connected",
@@ -3105,6 +3126,17 @@
             ],
             "title": "Status",
             "type": "string"
+          },
+          "throughput_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Throughput Level"
           },
           "verified_name": {
             "anyOf": [
@@ -5432,6 +5464,7 @@
               "token",
               "number",
               "webhook",
+              "register",
               "templates",
               "verify"
             ],
@@ -11415,7 +11448,7 @@
     },
     "/api/v1/engage/whatsapp/signup/complete": {
       "post": {
-        "description": "202: the setup is persisted and queued, not done. Poll `GET signup/{setup_id}`. A repeat of\nthe same `code` returns the setup it already started.",
+        "description": "202: the code is already exchanged and the rest of the setup is persisted and queued, not\ndone. Poll `GET signup/{setup_id}`. A repeat of the same `code` returns the setup it already\nstarted. 409 `code_expired` when Meta refuses the code as expired or already used (start again\nfrom Meta's window), 409 `code_exchange_failed` for any other refusal, 503 `meta_unreachable`\nwhen Meta could not be asked (the same code may be tried again).",
         "operationId": "signup_complete_api_v1_engage_whatsapp_signup_complete_post",
         "requestBody": {
           "content": {

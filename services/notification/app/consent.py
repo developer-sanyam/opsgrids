@@ -15,9 +15,11 @@ channel, purpose, subject)` wins:
   bounced or complained suppression exists: those are facts about the mailbox, not choices).
 * **marketing** — allowed *only* if the latest event is `opted_in`. `opted_out` denies and so
   does **no event at all**: silence is not consent.
-* A STOP keyword or an unsubscribe link opts the subject out of **both** purposes on that
-  channel (`opt_out(..., purposes=BOTH_PURPOSES)`), so one word cannot leave a marketing opt-in
-  standing behind it.
+* An unsubscribe link opts the subject out of **both** purposes on that channel
+  (`opt_out(..., purposes=BOTH_PURPOSES)`), so one click cannot leave a marketing opt-in standing
+  behind it. A WhatsApp STOP keyword / "Stop promotions" button, and Meta's own `user_preferences`
+  stop, opt out of **marketing only**: a customer who replies "Cancel" to an order reminder must
+  keep getting messages about the order.
 * **The legacy stores still count.** `decide` also denies when a `Preference` or a `Suppression`
   says no — deny if *either* says no — so nothing that was blocked before this ledger existed
   becomes allowed by it. A refusal in either store is also written through to the ledger
@@ -75,6 +77,9 @@ STATUSES: Final[tuple[str, ...]] = (OPTED_IN, OPTED_OUT)
 API_SOURCES: Final[tuple[str, ...]] = ("checkout", "web_form", "import", "admin", "api")
 SOURCE_INBOUND_KEYWORD: Final = "inbound_keyword"
 SOURCE_UNSUBSCRIBE_LINK: Final = "unsubscribe_link"
+#: Meta told us: a `user_preferences` webhook (`stop` / `resume` marketing) or a delivery failure
+#: with error 131050 ("recipient has chosen to stop receiving marketing messages").
+SOURCE_META_PREFERENCE: Final = "meta_user_preference"
 SOURCE_ADMIN: Final = "admin"
 SOURCE_IMPORT: Final = "import"
 SOURCE_BOUNCE: Final = "bounce"
@@ -84,6 +89,7 @@ SOURCE_LEGACY_IMPORT: Final = "legacy_import"
 SYSTEM_SOURCES: Final[tuple[str, ...]] = (
     SOURCE_INBOUND_KEYWORD,
     SOURCE_UNSUBSCRIBE_LINK,
+    SOURCE_META_PREFERENCE,
     SOURCE_BOUNCE,
     SOURCE_COMPLAINT,
     SOURCE_LEGACY_IMPORT,

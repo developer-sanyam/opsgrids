@@ -347,14 +347,35 @@ def test_an_empty_sender_does_not_parse() -> None:
 
 
 @pytest.mark.parametrize(
-    "body", ["STOP", "stop", "  Stop  ", "Unsubscribe", "cancel", "END", "QUIT"]
+    "body",
+    [
+        "STOP",
+        "stop",
+        "  Stop  ",
+        "Unsubscribe",
+        "Stop promotions",
+        "stop_promotions",
+        "STOP-MARKETING",
+    ],
 )
 def test_a_stop_keyword_is_recognised_case_and_whitespace_insensitively(body: str) -> None:
     assert webhooks.is_stop_keyword(body)
 
 
 @pytest.mark.parametrize(
-    "body", [None, "", "please stop sending me things", "STOPPED", "cancelled my order"]
+    "body",
+    [
+        None,
+        "",
+        "please stop sending me things",
+        "STOPPED",
+        "cancelled my order",
+        # A reply to an order reminder is about the order, not a request to stop all messages.
+        "cancel",
+        "Cancel",
+        "END",
+        "QUIT",
+    ],
 )
 def test_a_sentence_using_the_word_is_not_a_stop_request(body: str | None) -> None:
     """A substring match would silently unsubscribe someone for using the word in a sentence."""

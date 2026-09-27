@@ -164,7 +164,9 @@ class _ScrubbedTransport:
         try:
             return await self._inner.send(message)
         except TransportError as exc:
-            raise type(exc)(self._scrub(str(exc))) from None
+            # `with_message` keeps the class *and* the provider's code and reason: the dispatcher
+            # decides on those (and flips the connection's health on a rejected credential).
+            raise exc.with_message(self._scrub(str(exc))) from None
         except Exception as exc:
             raise TransportUnavailable(self._scrub(str(exc))) from None
 
@@ -224,7 +226,7 @@ async def _resolve_whatsapp(
         return _refuse(organization_id, "whatsapp", NOT_CONNECTED, why="not_connected")
     if not account.access_token_enc:
         return _refuse(organization_id, "whatsapp", NOT_CONNECTED, why="no_token")
-    if not _PHONE_NUMBER_ID.match(account.phone_number_id):
+    if not account.phone_number_id or not _PHONE_NUMBER_ID.match(account.phone_number_id):
         return _refuse(organization_id, "whatsapp", NOT_CONNECTED, why="bad_phone_number_id")
 
     try:

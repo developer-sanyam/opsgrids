@@ -128,9 +128,10 @@ async def test_complete_returns_202_and_persists_a_run_the_worker_will_pick_up(
     payload = status.json()
     assert payload["status"] == "running" and payload["error_code"] is None
     assert [(s["key"], s["state"]) for s in payload["steps"]] == [
-        ("token", "waiting"),
+        ("token", "done"),
         ("number", "waiting"),
         ("webhook", "waiting"),
+        ("register", "waiting"),
         ("templates", "waiting"),
         ("verify", "waiting"),
     ]
@@ -150,13 +151,54 @@ async def test_complete_returns_202_and_persists_a_run_the_worker_will_pick_up(
             .all()
         )
     assert len(runs) == 1 and len(events) == 1
-    assert runs[0].code_enc is not None and CODE.encode() not in runs[0].code_enc
+    # The code was exchanged in the request and never stored; the token is sealed on the run.
+    assert runs[0].code_enc is None
+    assert runs[0].token_enc is not None and TOKEN.encode() not in runs[0].token_enc
     assert events[0].payload == {
         "organization_id": str(org_id),
         "setup_id": str(runs[0].id),
     }
-    # The request itself never called Meta: the exchange belongs to the worker, after commit.
-    assert meta.calls == []
+    # The request exchanged the code itself (Meta's code lives about thirty seconds) and made no
+    # other Meta call: the rest belongs to the worker, after commit. The repeat did not exchange.
+    assert meta.routes_called() == ["oauth/access_token"]
+
+
+async def test_complete_maps_an_expired_code_to_a_specific_409(
+    client: AsyncClient,
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    signup_configured: None,
+) -> None:
+    meta.oauth_error = {
+        "status": 400,
+        "error": {
+            "code": 100,
+            "error_subcode": 36009,
+            "message": "This authorization code expired",
+        },
+    }
+    with as_principal(admin(org_id)):
+        response = await client.post(f"{BASE}/signup/complete", json={"code": CODE})
+    assert response.status_code == 409
+    assert response.json()["errors"] == [{"code": "code_expired"}]
+    assert "expired or was already used" in response.json()["detail"]
+    assert CODE not in response.text
+    async with session.begin():
+        (run,) = (await session.execute(select(SetupRun))).scalars().all()
+    assert (run.status, run.error_code) == ("failed", "code_expired")
+
+
+async def test_complete_says_503_when_meta_cannot_be_reached_and_allows_a_retry(
+    client: AsyncClient, org_id: uuid.UUID, meta: FakeMeta, signup_configured: None
+) -> None:
+    meta.oauth_error = {"status": 503, "error": {"code": 2, "message": "down"}}
+    with as_principal(admin(org_id)):
+        down = await client.post(f"{BASE}/signup/complete", json={"code": CODE})
+        meta.oauth_error = None
+        retry = await client.post(f"{BASE}/signup/complete", json={"code": CODE})
+    assert down.status_code == 503 and down.json()["errors"] == [{"code": "meta_unreachable"}]
+    assert retry.status_code == 202
 
 
 async def test_complete_is_refused_when_the_platform_has_no_meta_app(
@@ -189,7 +231,7 @@ async def test_complete_validates_the_body_and_refuses_unknown_fields(
 
 
 async def test_a_second_setup_while_one_runs_is_a_conflict(
-    client: AsyncClient, org_id: uuid.UUID, signup_configured: None
+    client: AsyncClient, org_id: uuid.UUID, meta: FakeMeta, signup_configured: None
 ) -> None:
     with as_principal(admin(org_id)):
         first = await client.post(f"{BASE}/signup/complete", json={"code": "code-one"})
@@ -203,6 +245,7 @@ async def test_a_second_setup_that_raced_past_the_read_still_gets_setup_in_progr
     client: AsyncClient,
     session: AsyncSession,
     org_id: uuid.UUID,
+    meta: FakeMeta,
     signup_configured: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -247,7 +290,7 @@ async def test_the_database_allows_one_running_setup_per_organization(
 
 
 async def test_another_organizations_setup_is_a_404_not_a_leak(
-    client: AsyncClient, org_id: uuid.UUID, signup_configured: None
+    client: AsyncClient, org_id: uuid.UUID, meta: FakeMeta, signup_configured: None
 ) -> None:
     with as_principal(admin(org_id)):
         started = await client.post(f"{BASE}/signup/complete", json={"code": CODE})
@@ -285,6 +328,9 @@ async def test_numbers_are_served_from_a_fresh_cache_masked_with_the_default_fir
         "messaging_limit",
         "status",
         "is_default",
+        "registration",
+        "code_verification_status",
+        "throughput_level",
     }
     assert "98765" not in response.text and "91234" not in response.text  # masked
     assert first["display_phone_number"] != "+91 91234 56789"
@@ -313,6 +359,39 @@ async def test_a_stale_cache_is_refreshed_from_meta_with_this_organizations_toke
     with as_principal(admin(org_id)):
         await client.get(f"{BASE}/numbers")
     assert len(meta.calls) == 1
+
+
+async def test_a_refresh_reads_the_registration_fields_and_says_not_registered(
+    client: AsyncClient, session: AsyncSession, org_id: uuid.UUID, meta: FakeMeta
+) -> None:
+    """`code_verification_status`, `platform_type` and `throughput` are now read from Graph: an
+    unregistered number shows as `not_registered`, a Cloud API one as `registered`."""
+    meta.numbers[0].update(
+        status="PENDING",
+        platform_type="NOT_APPLICABLE",
+        code_verification_status="NOT_VERIFIED",
+        throughput={"level": "NOT_APPLICABLE"},
+    )
+    meta.numbers[1].update(
+        platform_type="CLOUD_API", code_verification_status="VERIFIED", throughput={"level": "HIGH"}
+    )
+    stale = datetime.now(UTC) - timedelta(minutes=30)
+    await connect(session, org_id, cached=CACHED, refreshed_at=stale)
+    with as_principal(admin(org_id)):
+        response = await client.get(f"{BASE}/numbers")
+    by_id = {i["phone_number_id"]: i for i in response.json()["items"]}
+    assert (
+        by_id["1001"]["registration"],
+        by_id["1001"]["status"],
+        by_id["1001"]["code_verification_status"],
+        by_id["1001"]["throughput_level"],
+    ) == ("not_registered", "pending_verification", "NOT_VERIFIED", "NOT_APPLICABLE")
+    assert (by_id["1002"]["registration"], by_id["1002"]["throughput_level"]) == (
+        "registered",
+        "HIGH",
+    )
+    fields = meta.calls[0].url.params["fields"]
+    assert {"code_verification_status", "platform_type", "throughput"} <= set(fields.split(","))
 
 
 async def test_a_refused_token_serves_the_cache_and_marks_the_token_invalid(
@@ -403,7 +482,7 @@ async def _cached_number(session: AsyncSession, phone_number_id: str) -> WhatsAp
         ).scalar_one()
 
 
-async def _routing_number(session: AsyncSession) -> str:
+async def _routing_number(session: AsyncSession) -> str | None:
     async with session.begin():
         return (await session.execute(select(ProviderAccount))).scalar_one().phone_number_id
 
@@ -894,7 +973,11 @@ async def test_disconnect_unsubscribes_the_app_from_the_waba_it_leaves(
     # With the token the connection held before it was wiped, in the header only.
     assert call.headers["authorization"] == f"Bearer {TOKEN}"
     assert TOKEN not in str(call.url)
-    assert await _routing_number(session) == "1001"  # the row itself is kept, as documented
+    # The routing key is released (so the number can move to another organization) and remembered.
+    assert await _routing_number(session) is None
+    async with session.begin():
+        account = (await session.execute(select(ProviderAccount))).scalar_one()
+    assert account.released_phone_number_id == "1001"
 
 
 async def test_a_disconnect_still_succeeds_when_meta_cannot_be_asked_to_unsubscribe(

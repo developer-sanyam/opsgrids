@@ -21,9 +21,11 @@ import {
   PENDING_TEMPLATE,
   SETUP_DONE,
   SETUP_FAILED,
+  SETUP_FAILED_PIN,
   SETUP_ID,
   SETUP_RUNNING,
   SUPPORT_NUMBER,
+  UNVERIFIED_NUMBER,
   templatePage,
 } from "./testFixtures";
 import { WhatsAppConnectPage } from "./WhatsAppConnect";
@@ -299,6 +301,63 @@ describe("the Meta window", () => {
     expect(await screen.findByText("The Meta window was closed before setup finished")).toBeTruthy();
   });
 
+  it("shows Meta's own reason when it reports a failure as a CANCEL event", async () => {
+    const complete = vi.spyOn(api, "completeSignup");
+    const user = userEvent.setup();
+    renderWizard();
+    await startMeta(user);
+
+    postFromMeta({
+      type: "WA_EMBEDDED_SIGNUP",
+      event: "CANCEL",
+      data: {
+        error_message: "This phone number is already registered with another business.",
+        error_code: 4001,
+        session_id: "sess-42",
+      },
+    });
+    expect(await screen.findByText("Setup couldn't be started")).toBeTruthy();
+    expect(
+      screen.getByText(/This phone number is already registered with another business\. \(code 4001, session sess-42\)/),
+    ).toBeTruthy();
+    expect(screen.queryByText("The Meta window was closed before setup finished")).toBeNull();
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("waits for Meta's reason when the login callback arrives empty first", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    await startMeta(user);
+
+    playLogin({ status: "unknown", authResponse: null });
+    postFromMeta({
+      type: "WA_EMBEDDED_SIGNUP",
+      event: "CANCEL",
+      data: { error_message: "Verification failed too many times", error_code: "77" },
+    });
+    expect(await screen.findByText(/Verification failed too many times \(code 77\)/)).toBeTruthy();
+    // ...and the closed-window sentence never appears afterwards.
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(screen.queryByText("The Meta window was closed before setup finished")).toBeNull();
+  });
+
+  it("gives a specific sentence when signup/complete refuses an expired code", async () => {
+    vi.spyOn(api, "completeSignup").mockRejectedValue(
+      new ApiError(409, "That Meta sign-in expired or was already used. Start WhatsApp setup again.", {
+        errors: [{ field: "", code: "code_expired", message: "" }],
+      }),
+    );
+    const user = userEvent.setup();
+    renderWizard();
+    await startMeta(user);
+
+    postFromMeta(FINISH);
+    playLogin({ authResponse: { code: "AQB-late" } });
+
+    expect(await screen.findByText("Setup couldn't be started")).toBeTruthy();
+    expect(screen.getByText(/The Meta sign-in expired or was already used\. Start again from the Meta window\./)).toBeTruthy();
+  });
+
   it("says so when the browser blocks the popup", async () => {
     // Assigned, not spied: the sign-in code observes `window.open` by reassigning it, and a spy's
     // setter would swallow that. `null` is what a browser returns for a refused popup.
@@ -469,7 +528,7 @@ describe("choose a number", () => {
 
   it("lists every number with its badge, disables the ones that cannot be used, and saves the choice", async () => {
     vi.spyOn(api, "listWhatsAppNumbers").mockResolvedValue({
-      items: [MAIN_NUMBER, SUPPORT_NUMBER, PENDING_NUMBER],
+      items: [MAIN_NUMBER, SUPPORT_NUMBER, PENDING_NUMBER, UNVERIFIED_NUMBER],
     });
     const setDefault = vi.spyOn(api, "setDefaultNumber").mockResolvedValue({ ok: true });
     const user = userEvent.setup();
@@ -477,11 +536,13 @@ describe("choose a number", () => {
 
     const group = await screen.findByRole("group", { name: "Phone number" });
     const radios = within(group).getAllByRole("radio");
-    expect(radios).toHaveLength(3);
+    expect(radios).toHaveLength(4);
     expect((radios[0] as HTMLInputElement).checked).toBe(true);
     expect((radios[2] as HTMLInputElement).disabled).toBe(true);
     expect(within(group).getByText("Ready")).toBeTruthy();
     expect(within(group).getByText("Display name in review")).toBeTruthy();
+    // Pending for two different reasons, said differently: not registered yet, and not verified.
+    expect(within(group).getByText("Not registered yet")).toBeTruthy();
     expect(within(group).getByText("Needs verification")).toBeTruthy();
     expect(within(group).getByText("1,000 customers / 24 hours")).toBeTruthy();
     expect(screen.getByText("ID ••••7890")).toBeTruthy();
@@ -532,17 +593,17 @@ describe("setting things up", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderWizard(SETUP_URL);
 
-    expect(await screen.findByText("3 of 5 steps done")).toBeTruthy();
+    expect(await screen.findByText("4 of 6 steps done")).toBeTruthy();
     expect(poll).toHaveBeenCalledWith(SETUP_ID);
     expect(screen.getByText("18 of 24 templates imported.")).toBeTruthy();
     expect(screen.getByText("In progress")).toBeTruthy();
-    expect(screen.getByRole("progressbar", { name: "Setup progress" }).getAttribute("aria-valuenow")).toBe("60");
+    expect(screen.getByRole("progressbar", { name: "Setup progress" }).getAttribute("aria-valuenow")).toBe("67");
     expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(true);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1600);
     });
-    expect(await screen.findByText("5 of 5 steps done")).toBeTruthy();
+    expect(await screen.findByText("6 of 6 steps done")).toBeTruthy();
     expect(screen.getByRole("progressbar", { name: "Setup progress" }).getAttribute("aria-valuenow")).toBe("100");
 
     const callsWhenDone = poll.mock.calls.length;
@@ -564,14 +625,17 @@ describe("setting things up", () => {
       .mockResolvedValue(SETUP_FAILED);
     renderWizard(SETUP_URL);
 
-    expect(await screen.findByText("3 of 5 steps done")).toBeTruthy();
+    expect(await screen.findByText("4 of 6 steps done")).toBeTruthy();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1600);
     });
 
     expect(await screen.findByText("Setup didn't finish")).toBeTruthy();
     expect(screen.getAllByText(/Meta refused the webhook subscription\./).length).toBeGreaterThan(0);
-    expect(screen.getByText(/webhook_subscribe_failed/)).toBeTruthy();
+    // The friendly sentence for the code, never the raw code.
+    expect(screen.getByText(/Meta refused to send message events to OpsGrids/)).toBeTruthy();
+    expect(screen.queryByText(/webhook_subscribe_failed/)).toBeNull();
+    expect(screen.queryByText(/Reason:/)).toBeNull();
     expect(screen.getByText("Failed")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
 
@@ -586,6 +650,36 @@ describe("setting things up", () => {
     expect(search()).toBe("?step=start");
   });
 
+  it("says what to do about a number that has two-step verification, not the raw code", async () => {
+    vi.spyOn(api, "getSignupStatus").mockResolvedValue(SETUP_FAILED_PIN);
+    renderWizard(SETUP_URL);
+
+    expect(await screen.findByText("Setup didn't finish")).toBeTruthy();
+    expect(screen.getByText(/Turn it off for this number in WhatsApp Manager/)).toBeTruthy();
+    expect(screen.queryByText(/pin_required/)).toBeNull();
+    expect(screen.getByText("Registering your number")).toBeTruthy();
+  });
+
+  it.each([
+    ["waba_ambiguous", /Start again and share just one\./],
+    ["number_claimed", /already connected to another organization/],
+    ["code_expired", /expired or was already used/],
+    ["number_not_connected", /isn't active on WhatsApp yet/],
+    ["register_rate_limited", /up to 72 hours/],
+    ["some_future_code", /Setup stopped before it finished/],
+  ])("maps the failure code %s to a sentence a person can act on", async (code, sentence) => {
+    vi.spyOn(api, "getSignupStatus").mockResolvedValue({
+      ...SETUP_FAILED,
+      error_code: code,
+      steps: SETUP_FAILED.steps.map((step) => ({ ...step, detail: step.state === "failed" ? null : step.detail })),
+    });
+    renderWizard(SETUP_URL);
+
+    expect(await screen.findByText("Setup didn't finish")).toBeTruthy();
+    expect(screen.getByText(sentence)).toBeTruthy();
+    expect(screen.queryByText(new RegExp(code))).toBeNull();
+  });
+
   it("keeps the last answer on screen and says it is stale when a later read fails", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.spyOn(api, "getSignupStatus")
@@ -593,12 +687,12 @@ describe("setting things up", () => {
       .mockRejectedValue(new TypeError("Failed to fetch"));
     renderWizard(SETUP_URL);
 
-    expect(await screen.findByText("3 of 5 steps done")).toBeTruthy();
+    expect(await screen.findByText("4 of 6 steps done")).toBeTruthy();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1600);
     });
     expect(await screen.findByText("Couldn't refresh the setup status")).toBeTruthy();
-    expect(screen.getByText("3 of 5 steps done")).toBeTruthy();
+    expect(screen.getByText("4 of 6 steps done")).toBeTruthy();
   });
 
   it("does not retry a 4xx", async () => {

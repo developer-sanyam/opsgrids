@@ -38,10 +38,10 @@ Five rules, each with a failure it prevents:
    then answers with a 5xx instead of a 200, so Meta redelivers the body and this item gets a
    genuine second attempt — unless it has already been retried past `webhooks.
    TRANSIENT_RETRY_CAP`, in which case it is parked the same way a permanent failure is, rather
-   than asking for a 503 forever over a connection problem six hours have not cleared. Every other
-   item in the batch is still folded first — `processed_events` is what makes that safe to
-   redeliver into: whatever already folded dedupes on the way back, and only the one that actually
-   failed does any work the second time.
+   than asking for a 503 forever over a connection problem `TRANSIENT_RETRY_CAP` has not cleared.
+   Every other item in the batch is still folded first — `processed_events` is what makes that
+   safe to redeliver into: whatever already folded dedupes on the way back, and only the one
+   that actually failed does any work the second time.
 
 Mounted at `/api/v1/webhooks/whatsapp` (the path app-gateway forwards, unchanged) and at the root
 `/webhooks/whatsapp` (for a tunnel pointed straight at this service), and excluded from the
@@ -61,7 +61,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services, w2_webhooks, webhooks
-from app.config import settings
+from app.config import meta_app_secret, settings
 from app.models import ProcessedEvent
 from platform_core.db import get_directory_session, session_scope
 from platform_core.errors import PayloadTooLargeProblem, UnauthorizedProblem
@@ -145,7 +145,12 @@ async def receive(request: Request, directory: DirectorySessionDep) -> Response:
     nothing has been observed to need it.
     """
     cfg = settings()
-    if not cfg.whatsapp_app_secret:
+    # The same helper Embedded Signup uses (`META_APP_SECRET`, else the older
+    # `WHATSAPP_APP_SECRET`), so the secret that exchanges a signup code is the one that verifies
+    # the webhooks — setting either variable works, and the two can never disagree about which is
+    # "the" app secret.
+    app_secret = meta_app_secret(cfg)
+    if not app_secret:
         # Refusing rather than accepting unverified bodies. A misconfigured deployment that
         # trusted everything would be worse than one that trusts nothing.
         log.error("webhook.no_app_secret_configured")
@@ -165,7 +170,7 @@ async def receive(request: Request, directory: DirectorySessionDep) -> Response:
     if not webhooks.verify_signature(
         raw,
         request.headers.get(webhooks.SIGNATURE_HEADER),
-        cfg.whatsapp_app_secret.get_secret_value(),
+        app_secret,
     ):
         # Deliberately says nothing about which half was wrong.
         log.warning("webhook.signature_refused", bytes=len(raw))
@@ -256,9 +261,28 @@ async def receive(request: Request, directory: DirectorySessionDep) -> Response:
                         error_code=update.error_code,
                         error_detail=update.error_detail,
                     )
+                    if (
+                        update.status == webhooks.STATUS_FAILED
+                        and update.error_code == webhooks.ERROR_RECIPIENT_STOPPED_MARKETING
+                    ):
+                        # "The recipient has chosen to stop receiving marketing messages" — the
+                        # same fact a `user_preferences` stop reports, arriving on a delivery
+                        # failure. Recorded in the same transaction as the fold, so a redelivery
+                        # (deduped above by `processed_events`) cannot write it twice.
+                        await services.apply_meta_marketing_preference(
+                            session,
+                            organization_id=organization_id,
+                            recipient=update.recipient,
+                            opted_out=True,
+                            signal=f"error_{update.error_code}",
+                        )
                     # Marked processed even when the fold applied nothing. The event *has* been
                     # handled: re-running it would reach the same conclusion, and leaving it
-                    # unmarked would make every redelivery repeat the work.
+                    # unmarked would make every redelivery repeat the work. The one exception
+                    # is a receipt that beat its own send's commit: `fold_status` raises
+                    # `ReceiptBeforeSend` for it, so this line is never reached, the transaction
+                    # rolls back, and the `except` below treats it as transient - 5xx, Meta
+                    # redelivers once the wamid has landed.
                     session.add(
                         ProcessedEvent(
                             event_id=update.dedupe_id,

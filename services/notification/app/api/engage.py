@@ -234,7 +234,8 @@ def _whatsapp_connection_out(row: ProviderAccount) -> WhatsAppConnectionOut:
     process — see `ConnectionOut`'s counterpart for the same rule on the email side."""
     return WhatsAppConnectionOut(
         waba_id=row.waba_id,
-        phone_number_id=row.phone_number_id,
+        # Empty once disconnected: the routing key is released, and the wire type is a string.
+        phone_number_id=row.phone_number_id or "",
         display_number=row.display_number,
         status=row.status,
     )

@@ -35,6 +35,9 @@ export const MAIN_NUMBER: WhatsAppNumber = {
   messaging_limit: "TIER_1K",
   status: "connected",
   is_default: true,
+  registration: "registered",
+  code_verification_status: "VERIFIED",
+  throughput_level: "STANDARD",
 };
 
 export const SUPPORT_NUMBER: WhatsAppNumber = {
@@ -47,6 +50,9 @@ export const SUPPORT_NUMBER: WhatsAppNumber = {
   messaging_limit: "TIER_250",
   status: "connected",
   is_default: false,
+  registration: "registered",
+  code_verification_status: "VERIFIED",
+  throughput_level: "STANDARD",
 };
 
 export const PENDING_NUMBER: WhatsAppNumber = {
@@ -59,6 +65,17 @@ export const PENDING_NUMBER: WhatsAppNumber = {
   messaging_limit: "unknown",
   status: "pending_verification",
   is_default: false,
+  registration: "not_registered",
+  code_verification_status: null,
+  throughput_level: "NOT_APPLICABLE",
+};
+
+/** A number whose verification code was never entered: pending for a different reason. */
+export const UNVERIFIED_NUMBER: WhatsAppNumber = {
+  ...PENDING_NUMBER,
+  id: "0a1b2c3d-0000-4000-8000-000000000004",
+  phone_number_id: "109827364501931",
+  code_verification_status: "NOT_VERIFIED",
 };
 
 export const HEALTH_OK: WhatsAppHealth = {
@@ -86,6 +103,7 @@ function status(overrides: Partial<SignupStatusOut>): SignupStatusOut {
       { key: "token", label: "Access token saved", state: "done", detail: null },
       { key: "number", label: "Phone number registered", state: "done", detail: null },
       { key: "webhook", label: "Webhook subscribed", state: "done", detail: null },
+      { key: "register", label: "Registering your number", state: "done", detail: null },
       { key: "templates", label: "Syncing message templates", state: "running", detail: "18 of 24 templates imported." },
       { key: "verify", label: "Checking the connection end to end", state: "waiting", detail: null },
     ],
@@ -112,10 +130,28 @@ export const SETUP_FAILED = status({
       state: "failed",
       detail: "Meta refused the webhook subscription.",
     },
+    { key: "register", label: "Registering your number", state: "waiting", detail: null },
     { key: "templates", label: "Syncing message templates", state: "waiting", detail: null },
     { key: "verify", label: "Checking the connection end to end", state: "waiting", detail: null },
   ],
 });
+
+/** A run that stopped at the registration step with a code the screen has a sentence for. */
+export const SETUP_FAILED_PIN: SignupStatusOut = {
+  ...SETUP_FAILED,
+  error_code: "pin_required",
+  steps: SETUP_FAILED.steps.map((step) =>
+    step.key === "webhook"
+      ? { ...step, state: "done" as const, detail: null }
+      : step.key === "register"
+        ? {
+            ...step,
+            state: "failed" as const,
+            detail: "This number already has two-step verification turned on, with a PIN we do not have.",
+          }
+        : step,
+  ),
+};
 
 export const APPROVED_TEMPLATE: ProviderTemplateOut = {
   id: "hello_world",

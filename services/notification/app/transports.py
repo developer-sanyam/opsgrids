@@ -49,7 +49,25 @@ def scrub_addresses(text: str) -> str:
 
 
 class TransportError(Exception):
-    """Base class for a send that did not happen."""
+    """Base class for a send that did not happen.
+
+    `code` is the provider's own error code (Meta's `error.code`, as a string) when it gave one,
+    and `reason` a short machine-readable word for what that code means (`per_user_marketing_
+    limit`, `template_paused`). Both are optional: an SMTP failure, a network timeout and a body
+    that was not JSON have neither. They travel with the exception so the dispatcher can decide
+    on the code rather than on the sentence, and so `messages.provider_error_code` holds what
+    Meta actually said.
+    """
+
+    def __init__(self, message: str = "", *, code: str | None = None, reason: str | None = None):
+        super().__init__(message)
+        self.code = code
+        self.reason = reason
+
+    def with_message(self, message: str) -> TransportError:
+        """The same failure — same class, same code and reason — with different text. For a
+        wrapper that scrubs a credential out of the text and must not lose what it classified."""
+        return type(self)(message, code=self.code, reason=self.reason)
 
 
 class TransportRefused(TransportError):
@@ -58,6 +76,16 @@ class TransportRefused(TransportError):
 
 class TransportUnavailable(TransportError):
     """The provider could not take it now. Retrying is reasonable."""
+
+
+class CredentialsRejected(TransportRefused):
+    """The provider refused the *credential* (expired or revoked token, restricted account,
+    missing permission) rather than this one message.
+
+    Terminal for the message like any refusal, but it says something about every other message on
+    the same connection too, so the dispatcher also marks that connection's health invalid and
+    later sends fail fast instead of each learning it from Meta.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +119,10 @@ class Receipt:
 
     provider: str
     provider_message_id: str | None = None
+    #: The provider's own acceptance status when it sends one — Meta's `messages[0].
+    #: message_status` (`accepted`, `held_for_quality_assessment`, ...). A held message has a
+    #: wamid and is `sent` as far as we can tell, but it is not on its way yet.
+    message_status: str | None = None
 
 
 class Transport(Protocol):
@@ -307,8 +339,10 @@ class WhatsAppCloudTransport:
     definition outside, so it must be a template. A free-text send there is refused with a 4xx,
     classified permanent below, which is honest but still undelivered.
 
-    4xx is refused, 5xx and timeouts are unavailable. 429 is deliberately *unavailable*: rate
-    limiting is the one 4xx that time does fix.
+    Failures are classified by Meta's `error.code` (`classify_meta_error`), not by HTTP status:
+    throttles and Meta-side outages and network timeouts are unavailable; a per-message refusal is
+    refused; a rejected token or restricted account is `CredentialsRejected`. Only a response with
+    no usable code falls back to the status.
     """
 
     name = "whatsapp_cloud"
@@ -340,6 +374,13 @@ class WhatsAppCloudTransport:
             # which is classified permanent below — the fix is an approved template, not a retry.
             payload["type"] = "text"
             payload["text"] = {"body": message.body}
+        # **No idempotency key.** Meta's messages endpoint takes none, so a request that reached
+        # Meta but whose response we never saw (a read timeout, a dropped connection) is
+        # indistinguishable from one that never arrived. It is retried as transient below —
+        # the alternative is silently dropping messages — which means a timeout after Meta
+        # accepted the message can produce a duplicate. The window is small, and neither the
+        # receipt webhook nor a lookup can close it (we never learn the wamid). Do not "fix"
+        # this by inventing a key: Meta would ignore it.
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 response = await client.post(
@@ -348,16 +389,149 @@ class WhatsAppCloudTransport:
                     headers={"Authorization": f"Bearer {self._token}"},
                 )
         except httpx.HTTPError as exc:
-            raise TransportUnavailable(str(exc)) from exc
+            raise TransportUnavailable(str(exc), reason="network") from exc
 
-        if response.status_code == 429 or response.status_code >= 500:
-            raise TransportUnavailable(f"{response.status_code}: {response.text[:200]}")
+        body = _json_or_none(response)
+
         if response.status_code >= 400:
-            raise TransportRefused(f"{response.status_code}: {response.text[:200]}")
+            raise classify_meta_error(response.status_code, body, response.text)
 
-        body = response.json()
-        messages = body.get("messages") or [{}]
-        return Receipt(provider=self.name, provider_message_id=messages[0].get("id"))
+        messages = body.get("messages") if isinstance(body, dict) else None
+        first = messages[0] if isinstance(messages, list) and messages else {}
+        if not isinstance(first, dict):
+            first = {}
+        wamid = first.get("id")
+        status = first.get("message_status")
+        return Receipt(
+            provider=self.name,
+            provider_message_id=wamid if isinstance(wamid, str) else None,
+            message_status=status if isinstance(status, str) else None,
+        )
+
+
+def _json_or_none(response: httpx.Response) -> Any:
+    """The response body as JSON, or None when it is not — a proxy's HTML error page, an empty
+    2xx. Never raises: a body we cannot parse is a fact about the response, not a crash."""
+    try:
+        return response.json()
+    except ValueError:
+        return None
+
+
+# Meta's `error.code` is the contract; the HTTP status is not (a 400 can be a throttle and a 500
+# can be a permanent refusal). Classified against
+# https://developers.facebook.com/docs/whatsapp/cloud-api/support/error-codes, read 2026-09-27.
+# Where a code below departs from that page's "retryable" column the departure is noted.
+
+#: Retry with backoff: throughput/rate limits and Meta-side outages. 1 and 2 are Meta's generic
+#: "invalid request or server error" and "temporary downtime"; 4 is the app-level rate limit;
+#: 131057 is an account in maintenance.
+_RETRYABLE_CODES: frozenset[int] = frozenset(
+    {130429, 80007, 131056, 131000, 131016, 133004, 2, 1, 4, 131057}
+)
+
+#: The token itself is dead, so every send on the connection will fail: terminal for the message
+#: and the connection is marked invalid. Per Meta's error-codes page (read 2026-09-27): 0
+#: "unable to authenticate the app user" (expired or invalidated token), 190 "access token has
+#: expired"; 463/467 are token `error_subcode`s that can also arrive as `code`.
+#:
+#: Deliberately **not** here, because one call's refusal must not take the whole connection
+#: down: 368 (the WABA is temporarily restricted for a policy violation) and 3, 10 and 200-299
+#: (a permission this call lacked) - see `_TERMINAL_REASONS`.
+_CREDENTIAL_CODES: frozenset[int] = frozenset({0, 190, 463, 467})
+_CREDENTIAL_SUBCODES: frozenset[int] = frozenset({458, 459, 460, 463, 467})
+
+#: Terminal, with a reason a UI can map to wording. 131049 (per-user marketing limit) is terminal
+#: because retrying inside the window Meta names is futile. 131048 (spam rate limit) and 132015
+#: (template paused) are marked retryable by Meta's page, but neither clears in minutes — a
+#: sender-quality restriction and a template that stays paused until edited — so they are
+#: terminal here, by the owner's instruction.
+_TERMINAL_REASONS: dict[int, str] = {
+    131049: "per_user_marketing_limit",
+    131048: "spam_rate_limit",
+    131026: "undeliverable",
+    131047: "outside_service_window",
+    131051: "unsupported_message_type",
+    131050: "user_stopped_marketing",
+    131042: "payment_issue",
+    131031: "account_restricted",
+    132000: "template_parameter_count",
+    132001: "template_not_found_or_not_approved",
+    132005: "template_text_too_long",
+    132007: "template_policy_violation",
+    132012: "template_parameter_format",
+    132015: "template_paused",
+    132016: "template_disabled",
+    131005: "permission_not_granted",
+    131008: "missing_parameter",
+    131009: "invalid_parameter",
+    131021: "same_sender_and_recipient",
+    100: "invalid_parameter",
+    # Terminal for this message only; the connection's health is left alone (see
+    # `_CREDENTIAL_CODES`). 368 is a temporary policy block on the account; the rest are
+    # permission errors that can be specific to one call.
+    368: "account_temporarily_blocked",
+    3: "permission_denied",
+    10: "permission_denied",
+    **dict.fromkeys(range(200, 300), "permission_denied"),
+}
+
+_MESSAGE_LIMIT = 300
+
+
+def _code_of(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def classify_meta_error(status_code: int, body: Any, raw_text: str = "") -> TransportError:
+    """The exception for one non-2xx Cloud API response, decided on `error.code`.
+
+    The text kept is the code and Meta's own message (plus `error_data.details` when present),
+    truncated — not the HTTP status and the first 200 bytes of whatever came back. A response
+    with no usable `error.code` (a proxy page, a bare 502) falls back to the status: 429 and 5xx
+    are transient, 401 is a rejected credential, anything else is a refusal.
+    """
+    error = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(error, dict):
+        error = {}
+    code = _code_of(error.get("code"))
+    subcode = _code_of(error.get("error_subcode"))
+    text = error.get("message")
+    data = error.get("error_data")
+    details = data.get("details") if isinstance(data, dict) else None
+    parts = [p for p in (text, details) if isinstance(p, str) and p]
+    message = (
+        " - ".join(parts)[:_MESSAGE_LIMIT] or raw_text[:_MESSAGE_LIMIT] or f"HTTP {status_code}"
+    )
+
+    if code is None:
+        label = f"http_{status_code}: {message}"
+        if status_code == 429 or status_code >= 500:
+            return TransportUnavailable(label, reason="http_status")
+        if status_code == 401:
+            return CredentialsRejected(label, reason="credentials_rejected")
+        return TransportRefused(label, reason="http_status")
+
+    label = f"{code}: {message}"
+    code_s = str(code)
+    if code in _CREDENTIAL_CODES or (subcode is not None and subcode in _CREDENTIAL_SUBCODES):
+        return CredentialsRejected(label, code=code_s, reason="credentials_rejected")
+    if code in _RETRYABLE_CODES:
+        return TransportUnavailable(label, code=code_s, reason="retryable")
+    reason = _TERMINAL_REASONS.get(code)
+    if reason is not None:
+        return TransportRefused(label, code=code_s, reason=reason)
+    # An unlisted code falls back to the status: an unclassified outage (429/5xx) is cheap to
+    # retry, while one that reads as permanent silently drops messages.
+    if status_code == 429 or status_code >= 500:
+        return TransportUnavailable(label, code=code_s, reason="unlisted_code")
+    return TransportRefused(label, code=code_s, reason="unlisted_code")
 
 
 async def send_batch(

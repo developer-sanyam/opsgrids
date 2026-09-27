@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { completeSignup } from "@/api/whatsappSignup";
 import type { SignupCompleteIn, SignupCompleteOut, SignupConfig } from "@/api/whatsappSignup";
 import { failureMessage } from "@/lib/errors";
+import { completeFailureMessage, hasFault, metaFaultMessage } from "./failureMessages";
 import { loadMetaSdk, openSignupPopup, parseEmbeddedSignupMessage } from "@/lib/metaSdk";
 import type { FbLoginResponse, FbSdk } from "@/lib/metaSdk";
 
@@ -29,6 +30,10 @@ export type SignupPhase = "idle" | "waiting" | "completing" | "blocked" | "cance
  *  ids in that message are hints (the server discovers the account from the token), and a code
  *  is short-lived, so it is never held for long. */
 const SESSION_INFO_GRACE_MS = 1500;
+
+/** How long an empty `FB.login` answer waits for Meta's own `CANCEL`/`ERROR` message before it is
+ *  called a closed window. The two arrive in either order, and only the message says why. */
+const CANCEL_GRACE_MS = 500;
 
 interface Session {
   wabaId: string | null;
@@ -139,7 +144,7 @@ export function useMetaSignup(
       if (mounted.current) setPhase("idle");
       onSubmittedRef.current(out);
     } catch (caught) {
-      settle("error", failureMessage(caught));
+      settle("error", completeFailureMessage(caught, failureMessage(caught)));
     }
   }, [settle]);
 
@@ -161,12 +166,13 @@ export function useMetaSignup(
       if (signup.kind === "finish") {
         sessionRef.current = { wabaId: signup.wabaId, phoneNumberId: signup.phoneNumberId };
         if (codeRef.current !== null) void submit();
-      } else if (signup.kind === "cancel") {
+      } else if (signup.kind === "cancel" && !hasFault(signup)) {
         codeRef.current = null;
         settle("cancelled");
       } else {
+        // An error, or a CANCEL that carries Meta's reason: say what Meta said.
         codeRef.current = null;
-        settle("error", signup.message ?? "Meta reported an error.");
+        settle("error", metaFaultMessage(signup));
       }
     };
     window.addEventListener("message", onMessage);
@@ -175,7 +181,12 @@ export function useMetaSignup(
     const onResponse = (response: FbLoginResponse) => {
       const code = response.authResponse?.code ?? null;
       if (code === null || code === "") {
-        if (!submittedRef.current) settle("cancelled");
+        // Closed or declined, or Meta stopped it and is about to say why: wait a moment for the
+        // message before settling on "closed".
+        clearTimeout(graceTimer.current);
+        graceTimer.current = setTimeout(() => {
+          if (!submittedRef.current) settle("cancelled");
+        }, CANCEL_GRACE_MS);
         return;
       }
       codeRef.current = code;

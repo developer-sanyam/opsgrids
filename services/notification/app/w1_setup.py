@@ -1,21 +1,28 @@
 """The Embedded Signup worker (slice W1): runs one persisted setup, one step at a time.
 
-`POST /engage/whatsapp/signup/complete` commits a `w1_setup_runs` row and a
-`notification.whatsapp.setup_requested` outbox event together. The relay publishes it after
-commit and `consumers.run_whatsapp_setup` calls `run_setup` here, on the worker's own tenant scope
-(one transaction per step, the tenant GUC bound per message, the same shape as
-`consumers.expand_campaign_send`). The five steps, in order:
+`POST /engage/whatsapp/signup/complete` exchanges the popup's one-time code for a business token
+**inside the request** (Meta's code lives about thirty seconds, so it cannot wait behind a queue;
+see `w1_services.start_signup`), seals the token on a `w1_setup_runs` row and commits it together
+with a `notification.whatsapp.setup_requested` outbox event. The relay publishes it after commit
+and `consumers.run_whatsapp_setup` calls `run_setup` here, on the worker's own tenant scope (one
+transaction per step, the tenant GUC bound per message, the same shape as
+`consumers.expand_campaign_send`). The six steps, in order:
 
-1. **token**: exchange the popup's one-time code for a business token; seal it on the run and wipe
-   the code.
+1. **token**: already done by the request. (A run queued by an older release still carries a
+   sealed code instead, and this step exchanges it; new runs never hold one.)
 2. **number**: discover the WABA and its numbers, prove the token controls the chosen one
    (`whatsapp_provider.verify_ownership`), then store the sealed token, the WABA and the number in
    the organization's `provider_accounts` row and fill the numbers cache. When this replaces a
    connection on another WABA, that WABA's cached numbers are marked disconnected and the app is
    unsubscribed from it (best effort, after everything else in the step).
 3. **webhook**: subscribe the app to the WABA (`POST /{waba}/subscribed_apps`).
-4. **templates**: `w2_services.sync_templates`.
-5. **verify**: read the number and the subscription back from Meta.
+4. **register**: register the number for the Cloud API (`POST /{phone_number_id}/register` with a
+   six-digit PIN), unless Meta already reports it `CONNECTED`. Idempotent and never blind: the PIN
+   is generated once, sealed, and reused, and the attempts are counted against Meta's ten per 72
+   hours.
+5. **templates**: `w2_services.sync_templates`.
+6. **verify**: read the number and the subscription back from Meta; fails, with the reason, when
+   the number is still not `CONNECTED`.
 
 Every step's result is committed before the next starts, so `GET signup/{id}` shows real progress
 and a redelivered event resumes at the first step that is not `done`. A failure marks that step
@@ -23,19 +30,21 @@ and the run `failed` with a machine-readable code and stops; steps after it stay
 Graph call happens inside its step's transaction (a Graph timeout is ten seconds); that is the
 worker's own pool, never a request's.
 
-**Secrets.** The code and the token are sealed at rest, opened only for the call that needs them,
-wiped from the run as soon as they are spent (and on any failure), and never in a log line, a
-`detail` string or an audit row. Failure details are fixed sentences or Meta's own end-user
-message, never an exception's text.
+**Secrets.** The token and the registration PIN are sealed at rest, opened only for the call that
+needs them, the token wiped from the run as soon as it is spent (and on any failure), and none of
+them in a log line, a `detail` string or an audit row. Failure details are fixed sentences or
+Meta's own end-user message, never an exception's text.
 """
 
 from __future__ import annotations
 
+import asyncio
+import secrets
 import uuid
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 import httpx
@@ -53,7 +62,7 @@ from app import (
 )
 from app.config import Settings, settings
 from app.models import AuditLog, OutboxEvent, ProcessedEvent, ProviderAccount
-from app.w1_graph import GraphError, MetaGraph
+from app.w1_graph import CodeExpiredError, GraphError, MetaError, MetaGraph
 from app.w1_models import SetupRun
 from platform_core import pii
 from platform_core.audit import record_audit
@@ -67,6 +76,15 @@ log = get_logger("notification.w1_setup")
 WorkScope = Callable[[uuid.UUID], AbstractAsyncContextManager[AsyncSession]]
 
 SYSTEM_ACTOR: Final = "system:whatsapp-signup"
+
+#: Meta allows ten `register` calls per number in 72 hours (error 133016) and blocks the number
+#: for the rest of the window past that. Stop two short of it.
+REGISTER_ATTEMPT_CAP: Final = 8
+REGISTER_WINDOW: Final = timedelta(hours=72)
+#: After registering, Meta takes a moment to report the number `CONNECTED`: the verify step reads
+#: it up to this many times, this many seconds apart, before it calls the number not ready.
+VERIFY_READS: Final = 4
+VERIFY_WAIT_SECONDS: float = 2.0
 
 
 class StepFailed(Exception):
@@ -85,6 +103,9 @@ class Ctx:
     transport: httpx.AsyncBaseTransport | None
     organization_id: uuid.UUID
     setup_id: uuid.UUID
+    #: The worker's tenant scope, for the one step (`register`) that must commit something of its
+    #: own before it calls Meta.
+    scope: WorkScope
 
     def graph(self) -> MetaGraph:
         return MetaGraph(self.cfg, transport=self.transport)
@@ -125,7 +146,7 @@ async def run_setup(
         log.error("w1.setup.envelope_payload_org_mismatch")
         return "missing"
     setup_id = uuid.UUID(str(payload["setup_id"]))
-    ctx = Ctx(settings(), transport, organization_id, setup_id)
+    ctx = Ctx(settings(), transport, organization_id, setup_id, scope)
 
     async with scope(organization_id) as session:
         if await already_processed(session, ProcessedEvent, event_id):
@@ -171,6 +192,7 @@ async def _run_step(scope: WorkScope, ctx: Ctx, key: str) -> str:
         run = await w1_selectors.get_run(session, org, setup_id, for_update=True)
         if run is None or run.status != "running":
             return "finished"
+        _ensure_steps(run)
         step = _step(run, key)
         if step["state"] == "done":
             return "skip"
@@ -224,6 +246,16 @@ def _safe(exc: ProblemError) -> str:
     return exc.detail[:300]
 
 
+def _ensure_steps(run: SetupRun) -> None:
+    """A run queued by an older release lacks the steps added since (`register`): give it them,
+    `waiting`, in their place, rather than crash on the missing key."""
+    have = {step["key"]: step for step in run.steps}
+    if all(key in have for key, _ in w1_services.STEPS):
+        return
+    fresh = {s["key"]: s for s in w1_services.initial_steps()}
+    run.steps = [have.get(key, fresh[key]) for key, _ in w1_services.STEPS]
+
+
 def _step(run: SetupRun, key: str) -> dict[str, Any]:
     for step in run.steps:
         if step["key"] == key:
@@ -242,11 +274,17 @@ def _set(run: SetupRun, key: str, state: str, detail: str | None) -> None:
 
 
 async def _step_token(session: AsyncSession, run: SetupRun, ctx: Ctx) -> str:
+    """Normally already `done` (the request exchanged the code); reached only by a run an older
+    release queued with a sealed code and no token."""
+    if run.token_enc:
+        return "Connected to Meta"
     if not run.code_enc:
         raise StepFailed("code_exchange_failed", "The authorization code is no longer available.")
     code = pii.open_sealed(run.code_enc, settings=ctx.cfg)
     try:
         token = await ctx.graph().exchange_code(code)
+    except CodeExpiredError as exc:
+        raise StepFailed("code_expired", exc.public_message) from exc
     except GraphError as exc:
         if exc.public_message.startswith("WhatsApp signup is not configured"):
             raise StepFailed("not_configured", exc.public_message) from exc
@@ -291,7 +329,9 @@ async def _discover_waba(
         if len(granted) == 1:
             return granted[0], expires_at
         raise StepFailed(
-            "waba_ambiguous", "More than one WhatsApp Business Account was shared; pick one."
+            "waba_ambiguous",
+            "More than one WhatsApp Business Account was shared with us, and we could not tell "
+            "which to use. Connect again and share just one.",
         )
     if hint is None:
         raise StepFailed("waba_not_found", "No WhatsApp Business Account was shared with us.")
@@ -446,6 +486,14 @@ async def _connected_credentials(
     return account, token
 
 
+def _number_id(account: ProviderAccount) -> str:
+    """The routing key of a connected account. A connected account always has one; a disconnect
+    releases it, so an account without one is not connected."""
+    if account.phone_number_id is None:
+        raise StepFailed("channel_not_connected", "WhatsApp is not connected.")
+    return account.phone_number_id
+
+
 async def _step_webhook(session: AsyncSession, run: SetupRun, ctx: Ctx) -> str:
     account, token = await _connected_credentials(session, run, ctx)
     try:
@@ -456,6 +504,105 @@ async def _step_webhook(session: AsyncSession, run: SetupRun, ctx: Ctx) -> str:
         session, ctx.organization_id, state="valid", setup_id=run.id, subscribed=True
     )
     return "Subscribed to WhatsApp events"
+
+
+# Meta's error codes for `register`, from its error-code reference (unverified: that page did not
+# load when this was written; the mapping is deliberately small and everything else is the generic
+# `register_failed` with Meta's own end-user sentence).
+_PIN_MISMATCH: Final = frozenset({133005})  # two-step verification PIN mismatch
+_NEEDS_REVERIFY: Final = frozenset({133006})  # phone number re-verification needed
+_REGISTER_LIMITED: Final = frozenset({133008, 133009, 133015, 133016})  # guesses, waits, 10/72h
+
+
+def _register_outcome(exc: GraphError) -> StepFailed | None:
+    """How a refused `register` reads: None when Meta says the number is already registered (a
+    success for our purposes), otherwise the failure to record. Never blindly retried."""
+    if exc.retryable:
+        # Outcome unknown (timeout, 5xx): the run fails and the person restarts on purpose. The
+        # attempt is already counted.
+        return StepFailed("meta_unreachable", exc.public_message)
+    message = exc.meta_message.lower() if isinstance(exc, MetaError) else ""
+    if "already registered" in message or "already been registered" in message:
+        return None
+    if exc.code in _PIN_MISMATCH:
+        return StepFailed(
+            "pin_required",
+            "This number already has two-step verification turned on, with a PIN we do not have. "
+            "Turn two-step verification off for it in WhatsApp Manager, then connect again.",
+        )
+    if exc.code in _NEEDS_REVERIFY:
+        return StepFailed(
+            "number_not_verified",
+            "Meta needs this number verified again before it can be registered. Verify it in "
+            "WhatsApp Manager, then connect again.",
+        )
+    if exc.code in _REGISTER_LIMITED:
+        return StepFailed(
+            "register_rate_limited",
+            "Meta is limiting registration attempts for this number. Wait a while (up to 72 "
+            "hours) before connecting again.",
+        )
+    return StepFailed("register_failed", exc.public_message)
+
+
+async def _reserve_registration(ctx: Ctx, phone_number_id: str) -> str:
+    """Commit, in a transaction of its own, the fact that a `register` call is about to be made,
+    and return the PIN to make it with (never logged).
+
+    Committed *before* the call: the step's own transaction rolls back when the step fails, and a
+    forgotten attempt or a forgotten PIN is exactly what would burn Meta's ten calls per 72 hours
+    or leave a number registered under a PIN nobody kept. The PIN is generated once, sealed, and
+    reused by every later attempt on this number."""
+    org = ctx.organization_id
+    async with ctx.scope(org) as session:
+        row = await w1_selectors.number_by_phone_id(session, org, phone_number_id, for_update=True)
+        if row is None:
+            raise StepFailed("register_failed", "That phone number is not on the account.")
+        now = datetime.now(UTC)
+        last = row.registration_attempted_at
+        if last is None or now - last > REGISTER_WINDOW:
+            row.registration_attempts = 0
+        if row.registration_attempts >= REGISTER_ATTEMPT_CAP:
+            raise StepFailed(
+                "register_rate_limited",
+                "This number has been registered too many times in the last 72 hours. Wait "
+                "before connecting again.",
+            )
+        if row.registration_pin_sealed:
+            pin = pii.open_sealed(row.registration_pin_sealed, settings=ctx.cfg)
+        else:
+            pin = f"{secrets.randbelow(10**6):06d}"
+            row.registration_pin_sealed, _ = pii.seal(pin, kind="generic", settings=ctx.cfg)
+        row.registration_attempts += 1
+        row.registration_attempted_at = now
+    return pin
+
+
+async def _step_register(session: AsyncSession, run: SetupRun, ctx: Ctx) -> str:
+    """Register the number for the Cloud API, once, when Meta does not already call it connected.
+
+    Meta's onboarding steps for Embedded Signup end with `POST /{phone_number_id}/register` and a
+    six-digit PIN. A number Meta reports `CONNECTED` is left alone (idempotent: a second signup
+    never re-registers, so never spends an attempt). Whether Embedded Signup alone registers
+    every number is not stated in Meta's docs (unverified), which is why this asks first."""
+    account, token = await _connected_credentials(session, run, ctx)
+    pnid = _number_id(account)
+    graph = ctx.graph()
+    try:
+        number = await graph.get_number(pnid, token)
+    except GraphError as exc:
+        raise _graph_failure("register_failed", exc) from exc
+    if w1_domain.status_from_meta(number.get("status")) == "connected":
+        return "Number already registered"
+    pin = await _reserve_registration(ctx, pnid)
+    try:
+        await graph.register_number(pnid, token, pin)
+    except GraphError as exc:
+        outcome = _register_outcome(exc)
+        if outcome is not None:
+            raise outcome from exc
+        return "Number already registered"
+    return "Number registered with WhatsApp"
 
 
 async def _step_templates(session: AsyncSession, run: SetupRun, ctx: Ctx) -> str:
@@ -470,30 +617,43 @@ async def _step_templates(session: AsyncSession, run: SetupRun, ctx: Ctx) -> str
 
 async def _step_verify(session: AsyncSession, run: SetupRun, ctx: Ctx) -> str:
     account, token = await _connected_credentials(session, run, ctx)
+    pnid = _number_id(account)
     graph = ctx.graph()
     try:
-        number = await graph.get_number(account.phone_number_id, token)
         apps = await graph.subscribed_app_ids(account.waba_id, token)
+        number = await graph.get_number(pnid, token)
+        # Registration takes Meta a moment to show: ask a few times before calling it not ready.
+        for _ in range(VERIFY_READS - 1):
+            if w1_domain.status_from_meta(number.get("status")) == "connected":
+                break
+            await asyncio.sleep(VERIFY_WAIT_SECONDS)
+            number = await graph.get_number(pnid, token)
     except GraphError as exc:
         raise _graph_failure("verify_failed", exc) from exc
-    if str(number.get("id") or "") != account.phone_number_id:
+    if str(number.get("id") or "") != pnid:
         raise StepFailed("verify_failed", "Meta returned a different phone number than expected.")
     if ctx.cfg.meta_app_id and str(ctx.cfg.meta_app_id) not in apps:
         raise StepFailed(
             "webhook_not_subscribed", "Meta does not list this app as subscribed to the account."
+        )
+    if w1_domain.status_from_meta(number.get("status")) != "connected":
+        # Not a success: the number cannot send yet. Meta's own status word, sanitised, so the
+        # person can act on it (a name still in review, a number still being verified).
+        state = w1_domain.status_word(number.get("status"))
+        raise StepFailed(
+            "number_not_connected",
+            f"Meta reports this number as {state}, so it cannot send or receive messages yet. "
+            "Finish its setup in WhatsApp Manager, then connect again.",
         )
     await w1_services.apply_numbers(
         session,
         ctx.organization_id,
         waba_id=account.waba_id,
         remote=[number],
-        default_phone_number_id=account.phone_number_id,
+        default_phone_number_id=pnid,
         mark_missing=False,
     )
-    status = w1_domain.status_from_meta(number.get("status"))
-    if status == "connected":
-        return "Number connected and receiving events"
-    return "Connected; the number is still pending verification with Meta"
+    return "Number connected and receiving events"
 
 
 _STEP_FUNCS.update(
@@ -501,6 +661,7 @@ _STEP_FUNCS.update(
         "token": _step_token,
         "number": _step_number,
         "webhook": _step_webhook,
+        "register": _step_register,
         "templates": _step_templates,
         "verify": _step_verify,
     }

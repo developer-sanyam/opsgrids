@@ -236,15 +236,20 @@ never reimplements it) and write time (`services.reply_to_conversation`, which r
 conversation for the check and refuses with `409` and `remedy: "template"` outside it, before
 anything is staged).
 
-STOP (`STOP`, `UNSUBSCRIBE`, `CANCEL`, `END`, `QUIT` — exact match, not a substring, so a sentence
-using the word is not an opt-out) writes the same `Preference` suppression a human operator's write
-would. `services.stage_message` checks it at render **and** at dispatch, so a reply already typed
-when a customer says STOP is staged as `suppressed` rather than sent — "we deliberately did not
-tell this customer" is a fact kept on the row, the same as any other suppressed send.
+STOP (`STOP`, `UNSUBSCRIBE`, and the "Stop promotions" labels in `webhooks.STOP_KEYWORDS` — exact
+match on the words **or** on a tapped button's payload / reply id, not a substring, so a sentence
+using the word is not an opt-out) opts the number out of **marketing only**: a `marketing`
+`Preference` row and a marketing `opted_out` ledger event. `CANCEL`, `END` and `QUIT` are not
+opt-outs — a customer answering an order reminder with "Cancel" means the order. Meta's own signals
+take the same path (`services.apply_meta_marketing_preference`): the `user_preferences` webhook
+(`marketing_messages` `stop` / `resume`) and a failed status with error 131050.
 
 ## Not built yet
 
-- **Media and interactive replies.** Kept whole in `raw_enc`, uninterpreted — see above.
+- **Media download.** Media messages are parsed and recorded (id, mime type, sha256, caption,
+  filename; `fetch_state: "not_fetched"` inside the sealed `raw_enc`) but nothing is fetched. Meta's
+  media ids from a webhook expire after 7 days and download URLs after about 5 minutes, so a fetch
+  job has a hard deadline.
 - **Sending a template from the inbox.** The reply endpoint only ever accepts free text; there is
   no second endpoint that resolves a template send against a conversation's sealed number, so the
   inbox's composer shows what is approved and ready without a way to send it from there yet.

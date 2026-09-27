@@ -471,27 +471,83 @@ async def apply_status_change(
     if row is None or row.organization_id != organization_id:
         return False
 
-    new_status = w2_domain.status_from_meta(value.get("event"))
+    event = str(value.get("event") or "").upper()
+    new_status = w2_domain.status_from_meta(event)
+    if event == w2_domain.UNARCHIVE_EVENT:
+        # "Restored to its previous status": the status before the archive, from our own history.
+        new_status = _status_before_archive(row.history)
     if row.provider_template_id is None and value.get("message_template_id"):
         row.provider_template_id = str(value["message_template_id"])
     if new_status is None:
+        log.info("w2.template_status_no_change", event=event)
         return True
     if row.status_checked_at and occurred_at + _STALE_SLACK < row.status_checked_at:
         log.info("w2.template_status_stale", organization_id=str(organization_id))
         return True
 
     reason = str(value.get("reason") or "")
-    if new_status != row.status:
+    if reason.upper() == "NONE":
+        reason = ""
+    if not reason and event in (w2_domain.ARCHIVE_EVENT, "DELETED"):
+        reason = event
+    archiving = event == w2_domain.ARCHIVE_EVENT
+    if new_status != row.status or archiving:
+        # An archive is always recorded, even over an already-disabled template, so that
+        # `UNARCHIVED` can find the status the template held before it.
         row.history = w2_domain.appended_history(
-            row.history, new_status, "meta_webhook", at=occurred_at
+            row.history,
+            new_status,
+            w2_domain.ARCHIVE_SOURCE if archiving else "meta_webhook",
+            at=occurred_at,
         )
         row.status = new_status
     row.status_reason = (
-        reason
-        if new_status in ("rejected", "paused", "disabled") and reason.upper() != "NONE" and reason
-        else None
+        reason if new_status in ("rejected", "paused", "disabled") and reason else None
     )
     row.status_checked_at = max(occurred_at, row.status_checked_at or occurred_at)
+    row.updated_by = SYSTEM_ACTOR
+    await session.flush()
+    return True
+
+
+def _status_before_archive(history: list[dict[str, Any]]) -> str | None:
+    """The status held just before the most recent archive, or None if history has no archive."""
+    for index in range(len(history) - 1, -1, -1):
+        if history[index].get("source") == w2_domain.ARCHIVE_SOURCE:
+            before = history[index - 1].get("status") if index > 0 else None
+            return str(before) if before else None
+    return None
+
+
+async def apply_category_change(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    *,
+    value: dict[str, Any],
+) -> bool:
+    """Fold one `template_category_update` into this organization's row: the template's category is
+    what `consent.purpose_for_send` reads, so a UTILITY template Meta has reclassified as MARKETING
+    stops being sent as transactional the moment this commits. False when the organization holds
+    no such template. See `w2_domain.category_after_update` for the two payload shapes."""
+    row = await w2_selectors.find_for_change(
+        session,
+        organization_id,
+        meta_template_id=str(value.get("message_template_id") or "") or None,
+        name=str(value.get("message_template_name") or "") or None,
+        language=str(value.get("message_template_language") or "") or None,
+    )
+    if row is None or row.organization_id != organization_id:
+        return False
+    category = w2_domain.category_after_update(value)
+    if category is None or category == row.category:
+        return True
+    log.info(
+        "w2.template_category_changed",
+        organization_id=str(organization_id),
+        previous=row.category,
+        new=category,
+    )
+    row.category = category
     row.updated_by = SYSTEM_ACTOR
     await session.flush()
     return True

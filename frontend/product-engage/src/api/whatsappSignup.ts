@@ -43,7 +43,7 @@ export interface SignupCompleteOut {
 }
 
 export type SignupStatus = "running" | "done" | "failed";
-export type SignupStepKey = "token" | "number" | "webhook" | "templates" | "verify";
+export type SignupStepKey = "token" | "number" | "webhook" | "register" | "templates" | "verify";
 export type SignupStepState = "waiting" | "running" | "done" | "failed";
 
 export interface SignupStep {
@@ -82,6 +82,9 @@ export type NameStatus = "approved" | "pending_review" | "declined" | "none";
 export type QualityRating = "green" | "yellow" | "red" | "unknown";
 export type MessagingLimit = "TIER_250" | "TIER_1K" | "TIER_10K" | "TIER_100K" | "UNLIMITED" | "unknown";
 export type NumberStatus = "connected" | "pending_verification" | "disconnected";
+/** Whether the number is registered for the WhatsApp Cloud API (`not_registered` means it cannot
+ *  send yet), derived by the service from Meta's `platform_type` and `status`. */
+export type NumberRegistration = "registered" | "not_registered" | "unknown";
 
 /** One phone number on the WhatsApp Business Account. `display_phone_number` is masked by the
  *  service, as every address on the wire is. */
@@ -95,6 +98,11 @@ export interface WhatsAppNumber {
   messaging_limit: MessagingLimit;
   status: NumberStatus;
   is_default: boolean;
+  registration: NumberRegistration;
+  /** Meta's `code_verification_status`, verbatim (`VERIFIED`, `NOT_VERIFIED`, ...). */
+  code_verification_status: string | null;
+  /** Meta's `throughput.level` (`STANDARD`, `HIGH`, `NOT_APPLICABLE`). */
+  throughput_level: string | null;
 }
 
 export interface WhatsAppNumbersOut {

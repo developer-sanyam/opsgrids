@@ -911,10 +911,16 @@ async def claim_for_send(
     """Move one message `pending` → `sending` and count the attempt. Returns None if unclaimable.
 
     Unclaimable covers every benign race: already sent, suppressed after the event was queued,
-    out of attempts, or claimed by another dispatcher. Returning None rather than raising keeps a
-    redelivered queued-event a no-op instead of a dead letter.
+    or claimed by another dispatcher. Returning None rather than raising keeps a redelivered
+    queued-event a no-op instead of a dead letter. Only `pending` is claimable, which is what
+    makes the retry sweep safe: it may queue a second event for a message whose first is still
+    in flight, and whichever event loses finds nothing to claim.
+
+    The read takes the row lock (`FOR UPDATE`): two consumers holding two events for one message
+    would otherwise both read `pending` and both send. The second one waits here until the first
+    commits, then sees `sending` (or later) and returns None.
     """
-    message = await selectors.get_message(session, organization_id, message_id)
+    message = await selectors.get_message(session, organization_id, message_id, for_update=True)
     if message is None:
         return None
     if message.state != domain.STATE_PENDING:
@@ -969,8 +975,18 @@ async def record_sent(
     message_id: uuid.UUID,
     provider: str,
     provider_message_id: str | None,
+    detail: str | None = None,
 ) -> None:
-    """Mark a message sent and append the winning attempt to its ledger."""
+    """Mark a message sent and append the winning attempt to its ledger.
+
+    `detail` is the provider's own acceptance note when it gave one (Meta's `message_status`,
+    e.g. `held_for_quality_assessment`), kept on the attempt's ledger row.
+
+    The wamid is committed here, *after* the provider call returned - there is no earlier moment
+    it exists. A delivery receipt that beats this commit finds no message for its wamid;
+    `fold_status` raises `ReceiptBeforeSend` for a fresh one so the webhook is redelivered
+    instead of the receipt being dropped.
+    """
     message = await selectors.get_message(session, organization_id, message_id)
     if message is None:  # pragma: no cover - the row was read moments earlier
         return
@@ -989,7 +1005,7 @@ async def record_sent(
             attempt_no=message.attempts,
             provider=provider,
             outcome="sent",
-            detail=None,
+            detail=detail,
             at=datetime.now(UTC),
         )
     )
@@ -1013,6 +1029,20 @@ async def record_sent(
     )
 
 
+#: Backoff for a transient send failure: `RETRY_BASE_SECONDS * 2 ** (attempts - 1)`, capped.
+#: Five waits (1, 2, 4, 8, 16 minutes) fit inside the default `dispatch_max_attempts` of six -
+#: about half an hour end to end, long enough to ride out a Meta throttle or a short outage and
+#: short enough that a message nobody can send is reported failed the same afternoon.
+RETRY_BASE_SECONDS: Final = 60
+RETRY_CAP_SECONDS: Final = 3600
+
+
+def retry_delay(attempts: int) -> timedelta:
+    """How long a message that has failed `attempts` times waits before its next attempt."""
+    exponent = max(attempts - 1, 0)
+    return timedelta(seconds=min(RETRY_BASE_SECONDS * (2**exponent), RETRY_CAP_SECONDS))
+
+
 async def record_failure(
     session: AsyncSession,
     *,
@@ -1022,16 +1052,26 @@ async def record_failure(
     error: str,
     permanent: bool,
     max_attempts: int,
+    error_code: str | None = None,
+    now: datetime | None = None,
 ) -> None:
     """Append the failed attempt and decide whether the message waits for another.
 
-    A permanent refusal goes straight to `failed` — retrying an address the provider will never
+    A permanent refusal goes straight to `failed` - retrying an address the provider will never
     accept only delays the moment somebody looks at it. A transient failure returns to `pending`
-    while attempts remain, and the broker's redelivery brings it back.
+    while attempts remain, stamped with when it failed: **that stamp is the retry clock.**
+    Nothing re-delivers it by itself - the queued event that brought it here is already
+    processed, and a redelivery would hit `already_processed` - so `sweep_message_retries`
+    finds it once `retry_delay(attempts)` has passed and queues a fresh event. Out of attempts,
+    it fails terminally with a reason that says so.
+
+    `error_code` is the provider's own code (Meta's `error.code`); it lands on
+    `messages.provider_error_code` beside the text so an operator sees what Meta said.
     """
     message = await selectors.get_message(session, organization_id, message_id)
     if message is None:  # pragma: no cover
         return
+    at = now or datetime.now(UTC)
 
     session.add(
         Delivery(
@@ -1042,14 +1082,25 @@ async def record_failure(
             provider=provider,
             outcome="failed",
             detail=error[:2000],
-            at=datetime.now(UTC),
+            at=at,
         )
     )
 
     retryable = not permanent and domain.should_retry(message.attempts, max_attempts=max_attempts)
+    exhausted = not permanent and not retryable
     message.state = domain.STATE_PENDING if retryable else domain.STATE_FAILED
-    message.last_error = error[:2000]
+    message.last_error = (
+        f"retries_exhausted after {message.attempts} attempts: {error}"[:2000]
+        if exhausted
+        else error[:2000]
+    )
+    if error_code:
+        message.provider_error_code = error_code[:40]
+        message.provider_error_detail = error[:2000]
     message.updated_by = SYSTEM_ACTOR
+    # The retry clock (see above). Set explicitly rather than left to `onupdate`, which would
+    # be the transaction's start and not the failure's.
+    message.updated_at = at
     await session.flush()
 
     if not retryable:
@@ -1071,7 +1122,344 @@ async def record_failure(
         )
 
 
+async def template_block(session: AsyncSession, message: Message) -> tuple[str, str] | None:
+    """`(code, reason)` when the provider template this message names can no longer be sent.
+
+    Staging checked the template once (`_wording_for`); this is asked again by the dispatcher
+    between claiming a message and sending it, because a template is paused or disabled by Meta
+    for quality at any time and a message can sit queued, or in retry backoff, for a while.
+    The codes are Meta's own for the same conditions, so the failed message reads the same
+    whether we caught it or Meta did: 132015 paused, 132016 disabled, 132001 anything else not
+    approved (rejected, back in review, deleted). None means send - including for a message that
+    names no provider template at all.
+    """
+    code = message.provider_template_code
+    if not code:
+        return None
+    template = await selectors.get_provider_template(
+        session, message.organization_id, code, message.channel
+    )
+    if template is None:
+        return "132001", "template_not_found_or_not_approved: the template no longer exists"
+    if domain.template_is_sendable(template.status):
+        return None
+    if template.status == "paused":
+        return "132015", "template_paused: the template is paused by the provider"
+    if template.status == "disabled":
+        return "132016", "template_disabled: the template is disabled by the provider"
+    return (
+        "132001",
+        f"template_not_found_or_not_approved: the template is {template.status}, not approved",
+    )
+
+
+def retry_max_age() -> timedelta:
+    """How long after staging a failed message may still be retried (`Settings.
+    dispatch_retry_max_age_seconds`)."""
+    return timedelta(seconds=settings().dispatch_retry_max_age_seconds)
+
+
+#: A message already waiting on the retry event a sweep queued for it is not queued again for at
+#: least this long, however short its own backoff is: the dispatcher can be backed up well past a
+#: minute, and a second event per tick would only pile duplicates into the broker.
+REQUEUE_MIN_WAIT: Final = timedelta(minutes=5)
+
+#: How many messages past their retry window one tick fails. Bounded so the first tick after a
+#: deploy, which meets every old stuck row at once, drains them over several ticks rather than in
+#: one long pass.
+EXPIRE_BATCH: Final = 100
+
+
+async def due_message_retries(
+    session: AsyncSession, *, now: datetime, limit: int, max_age: timedelta | None = None
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """`(organization_id, message_id)` for every `pending` message that has failed at least once,
+    is still inside its retry window, and whose backoff has elapsed.
+
+    Cross-tenant, so it runs on the BYPASSRLS outbox role, which holds column-level `SELECT` on
+    exactly the columns named here (`migrations/env.py`, `grant_message_retry_reader`) - never a
+    message's address or body. Discovery only: every write the sweep makes off the back of it
+    is tenant-bound. The due test is repeated there, under the tenant, against the row itself.
+
+    The window is measured from `created_at` (when the message was staged): a row older than
+    `max_age` is never returned here - `expired_message_retries` finds it to be failed instead.
+    """
+    delay = func.least(
+        float(RETRY_CAP_SECONDS), float(RETRY_BASE_SECONDS) * func.power(2, Message.attempts - 1)
+    )
+    due_at = Message.updated_at + func.make_interval(0, 0, 0, 0, 0, 0, delay)
+    conditions = [
+        Message.state == domain.STATE_PENDING,
+        Message.attempts > 0,
+        Message.deleted_at.is_(None),
+        due_at <= now,
+    ]
+    if max_age is not None:
+        conditions.append(Message.created_at > now - max_age)
+    stmt = (
+        select(Message.organization_id, Message.id)
+        .where(*conditions)
+        .order_by(Message.updated_at.asc(), Message.id.asc())
+        .limit(limit)
+    )
+    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+
+
+async def expired_message_retries(
+    session: AsyncSession, *, now: datetime, limit: int, max_age: timedelta
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """`(organization_id, message_id)` for `pending` messages that have failed before and are now
+    older than the retry window - the ones nothing may send any more. Same role and column grant
+    as `due_message_retries`; oldest first, at most `limit`."""
+    stmt = (
+        select(Message.organization_id, Message.id)
+        .where(
+            Message.state == domain.STATE_PENDING,
+            Message.attempts > 0,
+            Message.deleted_at.is_(None),
+            Message.created_at <= now - max_age,
+        )
+        .order_by(Message.created_at.asc(), Message.id.asc())
+        .limit(limit)
+    )
+    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+
+
+def _publish_message_failed(session: AsyncSession, message: Message) -> None:
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=message.organization_id,
+        event_type=EVT_MESSAGE_FAILED,
+        aggregate_type="message",
+        aggregate_id=message.id,
+        payload={
+            "organization_id": str(message.organization_id),
+            "message_id": str(message.id),
+            "channel": message.channel,
+            "attempts": message.attempts,
+            "last_error": message.last_error,
+        },
+        actor={"type": "system", "id": SYSTEM_ACTOR},
+    )
+
+
+async def expire_stale_retry(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    message_id: uuid.UUID,
+    now: datetime,
+    max_age: timedelta,
+) -> str:
+    """Fail permanently a `pending`, previously-failed message that is past its retry window.
+    Tenant-bound. Returns `expired`, or `skipped` when the row is no longer such a message (sent,
+    claimed, retried in the meantime, or still inside the window).
+
+    Without this a message stranded `pending` by a transient failure - including one from before
+    the retry sweep existed - would sit in that state forever or, worse, be sent hours or days
+    after the fact. The reason string starts with `retry_window_expired`, and the usual
+    `message.failed` event goes out.
+    """
+    message = await selectors.get_message(session, organization_id, message_id, for_update=True)
+    if (
+        message is None
+        or message.state != domain.STATE_PENDING
+        or message.attempts < 1
+        or message.created_at + max_age > now
+    ):
+        return "skipped"
+    previous = message.last_error or "unknown"
+    message.state = domain.STATE_FAILED
+    message.last_error = f"retry_window_expired after {message.attempts} attempts: {previous}"[
+        :2000
+    ]
+    message.updated_by = SYSTEM_ACTOR
+    message.updated_at = now
+    await session.flush()
+    _publish_message_failed(session, message)
+    return "expired"
+
+
+async def _awaiting_retry_event(session: AsyncSession, message: Message) -> bool:
+    """Has the sweep already queued a retry event for this message's latest failure?
+
+    A failure stamps `updated_at` and its ledger row with the same instant; a re-queue moves
+    `updated_at` on and leaves the ledger alone. So `updated_at` later than the newest failed
+    attempt means the bump is a re-queue, whose event may still be waiting in the broker."""
+    last_failure = (
+        await session.execute(
+            select(func.max(Delivery.at)).where(
+                Delivery.organization_id == message.organization_id,
+                Delivery.message_id == message.id,
+                Delivery.outcome == "failed",
+            )
+        )
+    ).scalar_one_or_none()
+    return last_failure is not None and message.updated_at - last_failure > timedelta(seconds=1)
+
+
+async def requeue_for_retry(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    message_id: uuid.UUID,
+    max_attempts: int,
+    now: datetime,
+    max_age: timedelta | None = None,
+) -> str:
+    """Queue one fresh dispatch event for a message whose backoff has elapsed. Tenant-bound.
+
+    Returns `requeued`, `exhausted` (out of attempts - failed terminally instead), or `skipped`
+    (no longer pending, not yet due, past its retry window, or gone: another dispatcher or an
+    earlier tick got there).
+
+    Why a *new* event: the original was marked processed in the claim transaction, so
+    redelivering it would be swallowed by `already_processed`. This one has its own id, so the
+    dispatcher's dedupe lets it through, and `claim_for_send` (pending only, under a row lock) is
+    what still guarantees one copy - if the message was sent, suppressed or claimed since, the
+    claim finds nothing to do. The event goes through the outbox in this transaction, so it
+    exists only if the stamp below does.
+
+    The `updated_at` bump is the sweep's own dedupe: it restarts the message's clock, so the next
+    tick does not queue the same message again while this event waits in the broker. After a
+    re-queue that clock is the longer of the backoff and `REQUEUE_MIN_WAIT`, because a dispatcher
+    can be backed up for much longer than a first-attempt backoff of a minute.
+    """
+    message = await selectors.get_message(session, organization_id, message_id, for_update=True)
+    if message is None or message.state != domain.STATE_PENDING or message.attempts < 1:
+        return "skipped"
+    if max_age is not None and message.created_at + max_age <= now:
+        return "skipped"
+    wait = retry_delay(message.attempts)
+    if await _awaiting_retry_event(session, message):
+        wait = max(wait, REQUEUE_MIN_WAIT)
+    if message.updated_at + wait > now:
+        return "skipped"
+
+    if not domain.should_retry(message.attempts, max_attempts=max_attempts):
+        # Only reachable when `dispatch_max_attempts` was lowered while this waited. No new
+        # ledger row: the attempt that got it here already wrote its own.
+        message.state = domain.STATE_FAILED
+        previous = message.last_error or "unknown"
+        message.last_error = f"retries_exhausted after {message.attempts} attempts: {previous}"[
+            :2000
+        ]
+        message.updated_by = SYSTEM_ACTOR
+        message.updated_at = now
+        await session.flush()
+        _publish_message_failed(session, message)
+        return "exhausted"
+
+    message.updated_at = now
+    message.updated_by = SYSTEM_ACTOR
+    await session.flush()
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=organization_id,
+        event_type=EVT_MESSAGE_QUEUED,
+        aggregate_type="message",
+        aggregate_id=message.id,
+        payload={
+            "organization_id": str(organization_id),
+            "message_id": str(message.id),
+            "channel": message.channel,
+            "category": message.category,
+            "retry_of_attempt": message.attempts,
+        },
+        actor={"type": "system", "id": SYSTEM_ACTOR},
+    )
+    return "requeued"
+
+
+async def sweep_message_retries(
+    *,
+    discovery_factory: Any,
+    work_scope: Any,
+    max_attempts: int,
+    now: datetime | None = None,
+    limit: int = 100,
+    max_age: timedelta | None = None,
+) -> int:
+    """Re-queue every due retry, across organizations. Returns how many were queued.
+
+    The same discovery/work split as the campaign driver and the automation sweep: *which
+    organizations have a message due* runs on the outbox role (no tenant to bind while asking),
+    and every write runs under that organization's own binding via `work_scope`, one
+    transaction per message so one bad row cannot roll back another's re-queue.
+
+    Only messages inside the retry window (`max_age`, default `retry_max_age()`) are re-queued.
+    Ones past it that are still `pending` are failed permanently first (`expire_stale_retry`),
+    at most `EXPIRE_BATCH` per tick, so they can neither be sent late nor sit pending forever.
+    """
+    at = now or datetime.now(UTC)
+    window = max_age if max_age is not None else retry_max_age()
+    async with discovery_factory() as session, session.begin():
+        expired = await expired_message_retries(session, now=at, limit=EXPIRE_BATCH, max_age=window)
+        due = await due_message_retries(session, now=at, limit=limit, max_age=window)
+    failed = 0
+    for organization_id, message_id in expired:
+        try:
+            async with work_scope(organization_id) as session:
+                outcome = await expire_stale_retry(
+                    session,
+                    organization_id=organization_id,
+                    message_id=message_id,
+                    now=at,
+                    max_age=window,
+                )
+        except Exception:
+            log.exception(
+                "notification.retry_sweep.expire_failed",
+                organization_id=str(organization_id),
+                message_id=str(message_id),
+            )
+            continue
+        failed += outcome == "expired"
+    if failed:
+        log.warning("notification.retry_sweep.window_expired", count=failed)
+    queued = 0
+    for organization_id, message_id in due:
+        try:
+            async with work_scope(organization_id) as session:
+                outcome = await requeue_for_retry(
+                    session,
+                    organization_id=organization_id,
+                    message_id=message_id,
+                    max_attempts=max_attempts,
+                    now=at,
+                    max_age=window,
+                )
+        except Exception:
+            log.exception(
+                "notification.retry_sweep.failed",
+                organization_id=str(organization_id),
+                message_id=str(message_id),
+            )
+            continue
+        queued += outcome == "requeued"
+    return queued
+
+
 # --------------------------------------------------------------------- provider receipts
+
+
+#: How long after a receipt's own timestamp an unknown wamid is still assumed to be a message
+#: whose send has not committed yet, rather than one this service never sent. Long enough to
+#: cover a slow `record_sent` transaction and Meta's first redelivery; short enough that a
+#: receipt for another tool's message on the same number stops asking for redelivery quickly.
+RECEIPT_RACE_WINDOW: Final = timedelta(minutes=10)
+
+
+class ReceiptBeforeSend(Exception):
+    """A delivery receipt named a wamid we have not recorded yet - the send that produced it has
+    not committed. Deliberately not a `ValueError`/`LookupError`: `is_permanent_fold_error` reads
+    those as "will never work", and this is exactly the failure a redelivery fixes. It is
+    transient, so the webhook answers 5xx and Meta sends the receipt again."""
+
+    def __init__(self, provider_message_id: str) -> None:
+        super().__init__(f"no message yet for provider message id {provider_message_id!r}")
 
 
 async def fold_status(
@@ -1091,7 +1479,11 @@ async def fold_status(
 
       * **No such message.** A receipt for something this organization did not send — a message
         sent before this system existed, or from another tool on the same number. Recording it
-        against nothing would invent a message.
+        against nothing would invent a message. *Unless the receipt is fresh*: the wamid is only
+        committed by `record_sent` after Meta's response came back, and a `sent`/`delivered`
+        receipt can beat that commit. A receipt younger than `RECEIPT_RACE_WINDOW` for an unknown
+        wamid therefore raises `ReceiptBeforeSend` instead of returning, so the caller does not
+        mark it processed and Meta redelivers it once the wamid has landed.
       * **No progress.** Receipts arrive out of order, so a `delivered` can follow a `read`.
         `domain.advances` is what keeps the fold monotonic; without it a message would report
         as less delivered than it is, and the inbox would lie.
@@ -1103,6 +1495,13 @@ async def fold_status(
         session, organization_id, provider_message_id
     )
     if message is None:
+        if datetime.now(UTC) - occurred_at <= RECEIPT_RACE_WINDOW:
+            log.info(
+                "notification.receipt.before_send_committed",
+                provider_message_id=provider_message_id,
+                status=status,
+            )
+            raise ReceiptBeforeSend(provider_message_id)
         log.info(
             "notification.receipt.unknown_message",
             provider_message_id=provider_message_id,
@@ -1247,8 +1646,16 @@ async def fold_inbound_message(
         profile_name_enc, _ = pii.seal(inbound.profile_name, kind="generic", settings=cfg)
         profile_name_masked = _mask_profile_name(inbound.profile_name)
 
+    # The provider's object whole, plus what the parser read out of it (a button payload, a media
+    # reference and its `not_fetched` state) under a key Meta does not use, so a later reader
+    # (or a media-fetch job) does not have to re-derive it. Sealed together: a caption, a filename
+    # and a media id are all customer data.
+    stored_raw: dict[str, Any] = dict(inbound.raw)
+    parsed = inbound.parsed_metadata
+    if parsed is not None:
+        stored_raw["_opsgrids"] = parsed
     raw_enc, _ = pii.seal(
-        json.dumps(inbound.raw, separators=(",", ":")), kind="generic", settings=cfg
+        json.dumps(stored_raw, separators=(",", ":")), kind="generic", settings=cfg
     )
 
     row = InboundMessageRow(
@@ -1267,14 +1674,14 @@ async def fold_inbound_message(
     session.add(row)
     await session.flush()
 
-    if webhooks.is_stop_keyword(inbound.body):
+    if webhooks.is_stop_request(inbound):
         await _record_stop_request(
             session,
             organization_id=organization_id,
             phone=sender,
             reference=inbound.provider_message_id,
         )
-    elif webhooks.is_start_keyword(inbound.body):
+    elif webhooks.is_start_request(inbound):
         await _record_start_request(
             session,
             organization_id=organization_id,
@@ -1576,10 +1983,13 @@ async def _set_whatsapp_preference(
     phone: str,
     suppressed: bool,
     reason: str,
+    category: str = consent.MARKETING_CATEGORY,
 ) -> None:
-    """The write both STOP and START are: one `Preference` row per number, covering every
-    WhatsApp category — the same row `services.set_preference` writes for a human operator, so a
-    later send checks one table regardless of who recorded the refusal or its reversal.
+    """The write STOP, START and Meta's marketing-preference signals all are: one `Preference` row
+    per number and category (**marketing** unless told otherwise — a customer's STOP is a request
+    to stop promotions, not to stop hearing about their order) — the same row `services.
+    set_preference` writes for a human operator, so a later send checks one table regardless of
+    who recorded the refusal or its reversal.
     `stage_message` re-checks it at render **and** dispatch, so a reply already queued when a
     customer says STOP still does not go out.
 
@@ -1600,7 +2010,7 @@ async def _set_whatsapp_preference(
                 Preference.organization_id == organization_id,
                 Preference.recipient == phone,
                 Preference.channel == "whatsapp",
-                Preference.category == domain.CATEGORY_ALL,
+                Preference.category == category,
             )
             .with_for_update()
         )
@@ -1615,7 +2025,7 @@ async def _set_whatsapp_preference(
             updated_by=SYSTEM_ACTOR,
             recipient=phone,
             channel="whatsapp",
-            category=domain.CATEGORY_ALL,
+            category=category,
             suppressed=suppressed,
             reason=reason,
         )
@@ -1637,7 +2047,12 @@ async def _set_whatsapp_preference(
         entity="preference",
         entity_id=pref_id,
         before={"suppressed": before},
-        after={"channel": "whatsapp", "suppressed": suppressed, "reason": reason},
+        after={
+            "channel": "whatsapp",
+            "category": category,
+            "suppressed": suppressed,
+            "reason": reason,
+        },
     )
 
 
@@ -1656,21 +2071,27 @@ async def _record_stop_request(
     phone: str,
     reference: str | None = None,
 ) -> None:
-    """STOP, UNSUBSCRIBE and the rest (`webhooks.STOP_KEYWORDS`). Opts the number out of **both**
-    purposes on WhatsApp in the consent ledger, as well as writing the `Preference` every send
-    path already checks."""
+    """STOP, UNSUBSCRIBE and the "Stop promotions" labels (`webhooks.STOP_KEYWORDS`), typed or
+    tapped. Opts the number out of **marketing** on WhatsApp — in the consent ledger and in the
+    `Preference` every send path already checks — and nothing else.
+
+    It used to refuse both purposes, and to treat CANCEL/END/QUIT the same way. A customer who
+    answered an order reminder with "Cancel" then lost every notification about that order, which
+    is the opposite of what they meant. Meta's own model agrees with the narrower reading: the
+    `user_preferences` control a customer has in WhatsApp is for *marketing* messages only.
+    """
     await _set_whatsapp_preference(
         session,
         organization_id=organization_id,
         phone=phone,
         suppressed=True,
-        reason="customer_stop",
+        reason=_CUSTOMER_STOP_REASON,
     )
     await consent.opt_out(
         session,
         organization_id=organization_id,
         subject=consent.subject_for("whatsapp", phone),
-        purposes=consent.BOTH_PURPOSES,
+        purposes=(consent.MARKETING,),
         source=consent.SOURCE_INBOUND_KEYWORD,
         evidence=_keyword_evidence("STOP", reference),
     )
@@ -1681,6 +2102,13 @@ async def _record_stop_request(
 #: by hand, a legal hold, anything `services.set_preference` writes for a human) was never put
 #: there by this convention, and a customer's stray "START" must not be the thing that lifts it.
 _CUSTOMER_STOP_REASON: Final = "customer_stop"
+
+#: What a marketing refusal that came from **Meta** (`user_preferences` stop, or a 131050 delivery
+#: failure) is recorded under. Reversible by Meta's own `resume`, and by START like a customer STOP.
+_META_STOP_REASON: Final = "meta_marketing_stop"
+
+#: The reasons a START / `resume` may lift.
+_CUSTOMER_REVERSIBLE_REASONS: Final = frozenset({_CUSTOMER_STOP_REASON, _META_STOP_REASON})
 
 
 async def _record_start_request(
@@ -1696,35 +2124,134 @@ async def _record_start_request(
     Only un-suppresses a row this same convention suppressed. No preference row at all, or one
     suppressed for any other reason, is left exactly as it is — see `_CUSTOMER_STOP_REASON`.
 
+    A pre-change STOP wrote a `*` row (every category) and opted out of both ledger purposes; that
+    row is lifted here too, and only then are **both** purposes restored. A current STOP wrote a
+    `marketing` row and only a marketing ledger event, so only marketing is restored.
+
     In the consent ledger a START **restores, never creates** (`consent.restore`): transactional
     is re-opened, and marketing only if the customer had opted in to it before their STOP. A bare
     keyword is not the affirmative, specific marketing opt-in Meta requires.
     """
-    pref = await selectors.get_preference(
-        session, organization_id, phone, "whatsapp", domain.CATEGORY_ALL
-    )
-    if pref is None or pref.reason != _CUSTOMER_STOP_REASON:
-        log.info(
-            "notification.whatsapp.start_ignored",
-            had_preference=pref is not None,
+    lifted_legacy_all = False
+    lifted_any = False
+    for category in (consent.MARKETING_CATEGORY, domain.CATEGORY_ALL):
+        pref = await selectors.get_preference(session, organization_id, phone, "whatsapp", category)
+        if pref is None or not pref.suppressed or pref.reason != _CUSTOMER_STOP_REASON:
+            continue
+        await _set_whatsapp_preference(
+            session,
+            organization_id=organization_id,
+            phone=phone,
+            suppressed=False,
+            reason="customer_start",
+            category=category,
         )
+        lifted_any = True
+        lifted_legacy_all = lifted_legacy_all or category == domain.CATEGORY_ALL
+    if not lifted_any:
+        log.info("notification.whatsapp.start_ignored")
         return
-    await _set_whatsapp_preference(
-        session,
-        organization_id=organization_id,
-        phone=phone,
-        suppressed=False,
-        reason="customer_start",
-    )
     await consent.restore(
         session,
         organization_id=organization_id,
         subject=consent.subject_for("whatsapp", phone),
-        purposes=consent.BOTH_PURPOSES,
+        purposes=consent.BOTH_PURPOSES if lifted_legacy_all else (consent.MARKETING,),
         source=consent.SOURCE_INBOUND_KEYWORD,
         evidence=_keyword_evidence("START", reference),
     )
     log.info("notification.whatsapp.start_received")
+
+
+async def apply_meta_marketing_preference(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    recipient: str,
+    opted_out: bool,
+    signal: str,
+) -> bool:
+    """Fold a marketing-preference signal **from Meta** into the same two stores STOP writes.
+
+    Two sources reach here: the `user_preferences` webhook (`value: "stop"` / `"resume"` for
+    `category: "marketing_messages"`) and a `failed` status carrying error 131050 ("recipient has
+    chosen to stop receiving marketing messages"). `recipient` is Meta's bare-digit `wa_id` /
+    `recipient_id`; `signal` is a short machine label (`user_preferences`, `error_131050`) that
+    goes into the ledger's evidence — never the number, never free text from the payload.
+
+    * **stop** — `Preference(marketing)` suppressed and a marketing `opted_out` ledger event
+      (`consent.opt_out`, source `meta_user_preference`), audited by `_set_whatsapp_preference`.
+    * **resume** — the reverse, but only through `consent.restore`: consent that existed is
+      reinstated, consent that never did is not invented. Whether Meta's `resume` is itself
+      an affirmative marketing opt-in in the sense Meta's policy requires is *unverified*, so it
+      is deliberately not treated as one. A refusal an operator recorded (a different `reason`)
+      is left alone, exactly as START leaves it.
+
+    Idempotent: `consent.opt_out`/`restore` write only on a state change, and the preference
+    upsert is a no-op rewrite of the same values. Returns whether the recipient was a usable
+    number (False → nothing written).
+    """
+    phone = webhooks.sender_e164(recipient)
+    if phone is None:
+        log.warning("notification.whatsapp.marketing_preference_bad_recipient", signal=signal)
+        return False
+    evidence = (
+        f"Meta reported the recipient {'stopped' if opted_out else 'resumed'} marketing ({signal})."
+    )
+    subject = consent.subject_for("whatsapp", phone)
+    if opted_out:
+        existing = await selectors.get_preference(
+            session, organization_id, phone, "whatsapp", consent.MARKETING_CATEGORY
+        )
+        # An operator's own suppression keeps its reason; only a fresh or Meta/customer-made one
+        # is (re)written under Meta's.
+        if (
+            existing is None
+            or existing.reason in _CUSTOMER_REVERSIBLE_REASONS
+            or not existing.suppressed
+        ):
+            await _set_whatsapp_preference(
+                session,
+                organization_id=organization_id,
+                phone=phone,
+                suppressed=True,
+                reason=_META_STOP_REASON,
+            )
+        await consent.opt_out(
+            session,
+            organization_id=organization_id,
+            subject=subject,
+            purposes=(consent.MARKETING,),
+            source=consent.SOURCE_META_PREFERENCE,
+            evidence=evidence,
+        )
+        log.info("notification.whatsapp.marketing_stop_from_meta", signal=signal)
+        return True
+
+    existing = await selectors.get_preference(
+        session, organization_id, phone, "whatsapp", consent.MARKETING_CATEGORY
+    )
+    if existing is not None and existing.suppressed:
+        if existing.reason not in _CUSTOMER_REVERSIBLE_REASONS:
+            # An operator's suppression: Meta's `resume` is not the thing that lifts it.
+            log.info("notification.whatsapp.marketing_resume_ignored")
+            return True
+        await _set_whatsapp_preference(
+            session,
+            organization_id=organization_id,
+            phone=phone,
+            suppressed=False,
+            reason="meta_marketing_resume",
+        )
+    await consent.restore(
+        session,
+        organization_id=organization_id,
+        subject=subject,
+        purposes=(consent.MARKETING,),
+        source=consent.SOURCE_META_PREFERENCE,
+        evidence=evidence,
+    )
+    log.info("notification.whatsapp.marketing_resume_from_meta", signal=signal)
+    return True
 
 
 async def resolve_conversation_contact(
@@ -1806,8 +2333,10 @@ async def reply_to_conversation(
         channel="whatsapp",
         # Not `operational`, `marketing` or any rule-authored bucket: this is a human answering
         # a human, one conversation at a time, and it is checked against `Preference` exactly
-        # like any other category — a `*` row from `_record_stop_request` refuses it same as
-        # every other bucket, which is the whole of how STOP reaches a reply already in flight.
+        # like any other category. STOP now records a **marketing** refusal only
+        # (`_record_stop_request`), so it does not silence a human answering the customer's own
+        # message inside the service window; a `*` row an operator (or a pre-change STOP) wrote
+        # still does.
         category="conversational",
         to_address=phone,
         subject=None,

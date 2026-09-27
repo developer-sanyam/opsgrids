@@ -280,8 +280,14 @@ class ProviderAccount(Base, TenantBase):
 
     #: Meta's WhatsApp Business Account id.
     waba_id: Mapped[str] = mapped_column(String(80), nullable=False)
-    #: The sender. **Globally unique** — this is the webhook routing key.
-    phone_number_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    #: The sender. **Globally unique** — this is the webhook routing key. Null once the connection
+    #: is disconnected: the routing claim is released so the number can be connected by another
+    #: organization, and a webhook for it is unroutable (unknown number) until someone claims it
+    #: again. The number it held is kept in `released_phone_number_id` for the record.
+    phone_number_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    #: The number this connection held before it was disconnected. History only: nothing routes
+    #: on it and it is not unique.
+    released_phone_number_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     #: The human-readable number, for an operator to recognise. Not a secret and not a mask:
     #: it is the business's own published number, not a customer's.
     display_number: Mapped[str] = mapped_column(String(40), nullable=False, default="")
@@ -289,8 +295,9 @@ class ProviderAccount(Base, TenantBase):
     #: The tenant's access token, sealed. Never returned by any API.
     access_token_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
 
-    #: connected | disconnected. A disconnected account still routes inbound webhooks, so the
-    #: messages are not lost, but nothing is sent from it.
+    #: connected | disconnected. A disconnected account holds no routing key (`phone_number_id`
+    #: is null) and nothing is sent from it. (A legacy disconnected row that still carries a
+    #: number keeps routing inbound webhooks, so its messages are not lost.)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="connected")
 
     __table_args__ = (

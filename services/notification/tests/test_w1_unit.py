@@ -243,3 +243,62 @@ def test_wabas_are_read_from_the_granted_scopes_without_repeats() -> None:
     }
     assert MetaGraph.wabas_from_debug(data) == ["1", "2"]
     assert MetaGraph.wabas_from_debug({}) == []
+
+
+# --------------------------------------------------------------------- registration vocabulary
+
+
+@pytest.mark.parametrize(
+    ("status", "platform", "expected"),
+    [
+        ("connected", "CLOUD_API", "registered"),
+        ("pending_verification", "NOT_APPLICABLE", "not_registered"),
+        ("connected", None, "registered"),
+        ("pending_verification", None, "not_registered"),
+        ("disconnected", None, "unknown"),
+    ],
+)
+def test_registration_state_reads_platform_type_then_status(
+    status: str, platform: str | None, expected: str
+) -> None:
+    assert w1_domain.registration_state(status, platform) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [({"level": "high"}, "HIGH"), ("STANDARD", "STANDARD"), ({"level": ["x"]}, None), (5, None)],
+)
+def test_throughput_is_read_from_the_level_and_ignores_junk(
+    raw: object, expected: str | None
+) -> None:
+    assert w1_domain.throughput_from_meta(raw) == expected
+
+
+def test_status_word_is_sanitised_for_a_sentence() -> None:
+    assert w1_domain.status_word("NOT_VERIFIED") == "not verified"
+    assert w1_domain.status_word("a b; drop") == "unknown"
+    assert w1_domain.status_word(None) == "unknown"
+
+
+async def test_register_sends_the_pin_in_the_body_never_the_url() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"success": True})
+
+    graph = MetaGraph(cfg(), transport=httpx.MockTransport(handler))
+    await graph.register_number("1001", TOKEN, "123456")
+    (request,) = seen
+    assert request.method == "POST" and request.url.path.endswith("/1001/register")
+    assert "123456" not in str(request.url) and TOKEN not in str(request.url)
+    assert request.headers["authorization"] == f"Bearer {TOKEN}"
+    assert request.read() == b'{"messaging_product":"whatsapp","pin":"123456"}'
+
+
+async def test_a_success_false_from_register_is_a_refusal() -> None:
+    graph = MetaGraph(
+        cfg(), transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"success": False}))
+    )
+    with pytest.raises(GraphError):
+        await graph.register_number("1001", TOKEN, "123456")

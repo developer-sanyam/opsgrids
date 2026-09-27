@@ -20,7 +20,7 @@ import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import consumers, w1_selectors, w1_services, w1_setup
+from app import consumers, selectors, w1_selectors, w1_services, w1_setup
 from app.config import settings
 from app.models import AuditLog, OutboxEvent, ProviderAccount, ProviderTemplate
 from app.w1_models import ConnectionHealth, SetupRun, WhatsAppNumber
@@ -62,20 +62,21 @@ async def start(
     session: AsyncSession,
     org_id: uuid.UUID,
     *,
+    meta: FakeMeta | None = None,
     code: str = CODE,
     waba_id: str | None = None,
     phone_number_id: str | None = None,
 ) -> tuple[uuid.UUID, dict[str, Any]]:
-    """`signup/complete`'s service call, and the envelope the relay would deliver for it."""
-    async with session.begin():
-        run = await w1_services.start_signup(
-            session,
-            ctx_for(org_id, WRITE, Scope.ORG),
-            code=code,
-            waba_id=waba_id,
-            phone_number_id=phone_number_id,
-        )
-        setup_id = run.id
+    """`signup/complete`'s service call (which exchanges the code against `meta`), and the
+    envelope the relay would deliver for it."""
+    setup_id = await w1_services.start_signup(
+        session,
+        ctx_for(org_id, WRITE, Scope.ORG),
+        code=code,
+        waba_id=waba_id,
+        phone_number_id=phone_number_id,
+        transport=httpx.MockTransport(meta or FakeMeta()),
+    )
     async with session.begin():
         events = (
             (
@@ -123,12 +124,24 @@ async def test_the_happy_path_connects_the_number_and_runs_every_step(
 ) -> None:
     expiry = datetime.now(UTC) + timedelta(days=60)
     meta.token_expires_at = int(expiry.timestamp())
-    setup_id, envelope = await start(session, org_id, waba_id=WABA, phone_number_id="1002")
-    # Before the worker runs: persisted, running, code sealed, nothing exchanged yet.
+    setup_id, envelope = await start(
+        session, org_id, meta=meta, waba_id=WABA, phone_number_id="1002"
+    )
+    # Before the worker runs: the request already exchanged the code (and only that), so the
+    # token is sealed on the run, the code was never stored, and every other step is waiting.
     before = await run_of(session, setup_id)
-    assert before.status == "running" and set(states(before).values()) == {"waiting"}
-    assert before.code_enc is not None and CODE.encode() not in before.code_enc
-    assert meta.calls == []
+    assert before.status == "running"
+    assert states(before) == {
+        "token": "done",
+        "number": "waiting",
+        "webhook": "waiting",
+        "register": "waiting",
+        "templates": "waiting",
+        "verify": "waiting",
+    }
+    assert before.code_enc is None
+    assert before.token_enc is not None and TOKEN.encode() not in before.token_enc
+    assert meta.routes_called() == ["oauth/access_token"]
 
     outcome = await w1_setup.run_setup(envelope, transport=httpx.MockTransport(meta))
     assert outcome == "done"
@@ -139,6 +152,7 @@ async def test_the_happy_path_connects_the_number_and_runs_every_step(
         "token": "done",
         "number": "done",
         "webhook": "done",
+        "register": "done",
         "templates": "done",
         "verify": "done",
     }
@@ -214,7 +228,7 @@ async def test_the_consumer_entry_point_runs_the_same_setup(
     worker_engine: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    setup_id, envelope = await start(session, org_id)
+    setup_id, envelope = await start(session, org_id, meta=meta)
     real = w1_setup.run_setup
 
     async def with_mock(env: dict[str, Any], **kwargs: Any) -> str:
@@ -228,15 +242,14 @@ async def test_the_consumer_entry_point_runs_the_same_setup(
 # --------------------------------------------------------------------- each step failing
 
 FAILURES = [
-    # (route to break, status, expected failing step, expected error_code)
-    ("oauth", 400, "token", "code_exchange_failed"),
-    ("oauth", 503, "token", "meta_unreachable"),
+    # (route to break, status, expected failing step, expected error_code). The code exchange is
+    # not here: it happens in the request, see the tests on `start_signup` below.
     ("numbers", 500, "number", "meta_unreachable"),
     ("number", 403, "number", "ownership_check_failed"),
     ("subscribe", 400, "webhook", "webhook_subscribe_failed"),
     ("templates", 500, "templates", "templates_sync_failed"),
 ]
-ORDER = ["token", "number", "webhook", "templates", "verify"]
+ORDER = ["token", "number", "webhook", "register", "templates", "verify"]
 
 
 @pytest.mark.parametrize(("route", "status", "step", "code"), FAILURES)
@@ -251,8 +264,8 @@ async def test_each_step_fails_with_a_machine_readable_code_and_stops_there(
     step: str,
     code: str,
 ) -> None:
+    setup_id, envelope = await start(session, org_id, meta=meta)
     meta.fail[route] = status
-    setup_id, envelope = await start(session, org_id)
     assert await w1_setup.run_setup(envelope, transport=httpx.MockTransport(meta)) == "failed"
 
     run = await run_of(session, setup_id)
@@ -287,7 +300,7 @@ async def test_discovery_and_verification_failures_have_their_own_codes(
     code: str,
 ) -> None:
     mutate(meta)
-    setup_id, envelope = await start(session, org_id, waba_id=WABA)
+    setup_id, envelope = await start(session, org_id, meta=meta, waba_id=WABA)
     assert await w1_setup.run_setup(envelope, transport=httpx.MockTransport(meta)) == "failed"
     assert (await run_of(session, setup_id)).error_code == code
 
@@ -312,7 +325,7 @@ async def test_a_number_another_organization_holds_is_refused_and_nothing_is_sto
                 status="connected",
             )
         )
-    setup_id, envelope = await start(session, org_id, phone_number_id="1002")
+    setup_id, envelope = await start(session, org_id, meta=meta, phone_number_id="1002")
     assert await w1_setup.run_setup(envelope, transport=httpx.MockTransport(meta)) == "failed"
 
     run = await run_of(session, setup_id)
@@ -330,7 +343,7 @@ async def test_a_signup_over_an_existing_connection_replaces_it_in_place(
     worker_engine: None,
 ) -> None:
     await connect(session, org_id, phone_number_id="5555", token="ci-only-old-token")
-    _, envelope = await start(session, org_id, phone_number_id="1001")
+    _, envelope = await start(session, org_id, meta=meta, phone_number_id="1001")
     assert await w1_setup.run_setup(envelope, transport=httpx.MockTransport(meta)) == "done"
     async with session.begin():
         (account,) = (await session.execute(select(ProviderAccount))).scalars().all()
@@ -354,7 +367,7 @@ async def _replace_on_another_waba(
         token=OLD_TOKEN,
         cached=[("5555", "+1 555 010 0000"), ("5556", "+1 555 010 0001")],
     )
-    setup_id, envelope = await start(session, org_id, phone_number_id="1001")
+    setup_id, envelope = await start(session, org_id, meta=meta, phone_number_id="1001")
     assert await w1_setup.run_setup(envelope, transport=httpx.MockTransport(meta)) == "done"
     return await run_of(session, setup_id)
 
@@ -410,12 +423,12 @@ async def test_an_event_naming_another_organizations_run_touches_nothing(
     signup_configured: None,
     worker_engine: None,
 ) -> None:
-    setup_id, envelope = await start(session, org_id)
+    setup_id, envelope = await start(session, org_id, meta=meta)
     intruder = uuid.uuid4()
     forged = envelope_for(intruder, w1_services.EVT_SETUP_REQUESTED, envelope["payload"])
     forged["payload"] = {"organization_id": str(intruder), "setup_id": str(setup_id)}
     assert await w1_setup.run_setup(forged, transport=httpx.MockTransport(meta)) == "missing"
-    assert meta.calls == []
+    assert meta.routes_called() == ["oauth/access_token"]  # only the request's own exchange
     assert (await run_of(session, setup_id)).status == "running"
 
 
@@ -555,7 +568,7 @@ async def test_a_connected_setup_is_sendable_and_a_disconnect_stops_sending(
     def scope(organization_id: uuid.UUID) -> Any:
         return session_scope(organization_id=organization_id)
 
-    _, envelope = await start(session, org_id)
+    _, envelope = await start(session, org_id, meta=meta)
     assert await w1_setup.run_setup(envelope, transport=httpx.MockTransport(meta)) == "done"
 
     ready = await tenant_transport.resolve(org_id, "whatsapp", scope=scope, cfg=settings())
@@ -585,7 +598,7 @@ async def test_a_step_that_fails_after_touching_the_run_is_still_recorded(
         raise RuntimeError(f"boom {TOKEN}")
 
     monkeypatch.setitem(w1_setup._STEP_FUNCS, "webhook", breaks)
-    setup_id, envelope = await start(session, org_id)
+    setup_id, envelope = await start(session, org_id, meta=meta)
     assert await w1_setup.run_setup(envelope, transport=httpx.MockTransport(meta)) == "failed"
 
     run = await run_of(session, setup_id)
@@ -594,3 +607,425 @@ async def test_a_step_that_fails_after_touching_the_run_is_still_recorded(
     failed = next(s for s in run.steps if s["key"] == "webhook")
     assert failed["detail"] == "Something went wrong on our side."
     assert TOKEN not in json.dumps(run.steps)
+
+
+# --------------------------------------------------------------------- the exchange, in the request
+
+
+@pytest.fixture(autouse=True)
+def _no_verify_pause(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(w1_setup, "VERIFY_WAIT_SECONDS", 0)
+
+
+def _oauth_error(message: str, *, subcode: int | None = None, code: int = 100) -> dict[str, Any]:
+    error: dict[str, Any] = {"code": code, "message": message, "type": "OAuthException"}
+    if subcode is not None:
+        error["error_subcode"] = subcode
+    return {"status": 400, "error": error}
+
+
+async def _setup_error(
+    session: AsyncSession, org_id: uuid.UUID, meta: FakeMeta, code: str = CODE
+) -> Any:
+    with pytest.raises(Exception) as caught:
+        await start(session, org_id, meta=meta, code=code)
+    return caught.value
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        _oauth_error("This authorization code has expired.", subcode=36009),
+        _oauth_error("This authorization code has been used.", subcode=36007),
+        _oauth_error("Error validating verification code. Please make sure your redirect_uri."),
+    ],
+    ids=["expired_subcode", "used_subcode", "message_only"],
+)
+async def test_a_spent_or_expired_code_fails_the_request_with_a_specific_code(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    signup_configured: None,
+    error: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    meta.oauth_error = error
+    raised = await _setup_error(session, org_id, meta)
+    assert getattr(raised, "errors", None) == [{"code": "code_expired"}]
+    assert "expired or was already used" in str(raised.detail)
+
+    async with session.begin():
+        (run,) = (await session.execute(select(SetupRun))).scalars().all()
+        events = (await session.execute(select(OutboxEvent))).scalars().all()
+    # Recorded as a failed run whose token step says why, holding no secret, and queueing nothing.
+    assert (run.status, run.error_code) == ("failed", "code_expired")
+    assert states(run)["token"] == "failed" and states(run)["number"] == "waiting"
+    assert run.code_enc is None and run.token_enc is None
+    assert [e for e in events if e.event_type == w1_services.EVT_SETUP_REQUESTED] == []
+    assert CODE not in json.dumps(run.steps) + caplog.text
+
+
+async def test_any_other_refusal_of_the_code_is_a_generic_exchange_failure(
+    session: AsyncSession, org_id: uuid.UUID, meta: FakeMeta, signup_configured: None
+) -> None:
+    meta.oauth_error = _oauth_error("Invalid client secret", code=1)
+    raised = await _setup_error(session, org_id, meta)
+    assert getattr(raised, "errors", None) == [{"code": "code_exchange_failed"}]
+    async with session.begin():
+        (run,) = (await session.execute(select(SetupRun))).scalars().all()
+    assert (run.status, run.error_code) == ("failed", "code_exchange_failed")
+
+
+async def test_a_meta_outage_during_the_exchange_leaves_the_same_code_usable(
+    session: AsyncSession, org_id: uuid.UUID, meta: FakeMeta, signup_configured: None
+) -> None:
+    meta.oauth_error = {"status": 503, "error": {"code": 2, "message": "down"}}
+    raised = await _setup_error(session, org_id, meta)
+    assert getattr(raised, "errors", None) == [{"code": "meta_unreachable"}]
+    assert raised.status_code == 503
+    async with session.begin():
+        assert (await session.execute(select(SetupRun))).scalars().all() == []
+
+    meta.oauth_error = None
+    setup_id, _ = await start(session, org_id, meta=meta)
+    assert (await run_of(session, setup_id)).status == "running"
+
+
+async def test_a_repeated_code_never_exchanges_a_spent_code_again(
+    session: AsyncSession, org_id: uuid.UUID, meta: FakeMeta, signup_configured: None
+) -> None:
+    first, _ = await start(session, org_id, meta=meta)
+    second, _ = await start(session, org_id, meta=meta)
+    assert first == second
+    assert meta.routes_called() == ["oauth/access_token"]  # one exchange, ever
+    async with session.begin():
+        events = (
+            (
+                await session.execute(
+                    select(OutboxEvent).where(
+                        OutboxEvent.event_type == w1_services.EVT_SETUP_REQUESTED
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(events) == 1
+
+
+async def test_a_worker_redelivery_does_not_exchange_again(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    signup_configured: None,
+    worker_engine: None,
+) -> None:
+    setup_id, envelope = await start(session, org_id, meta=meta)
+    assert await w1_setup.run_setup(envelope, transport=httpx.MockTransport(meta)) == "done"
+    assert await w1_setup.run_setup(envelope, transport=httpx.MockTransport(meta)) == "redelivered"
+    assert meta.routes_called().count("oauth/access_token") == 1
+    assert (await run_of(session, setup_id)).status == "done"
+
+
+# --------------------------------------------------------------------- registering the number
+
+
+def _pending(meta: FakeMeta, pnid: str = "1001") -> None:
+    for item in meta.numbers:
+        if item["id"] == pnid:
+            item["status"] = "PENDING"
+            item["platform_type"] = "NOT_APPLICABLE"
+            item["code_verification_status"] = "NOT_VERIFIED"
+
+
+async def _number_row(session: AsyncSession, pnid: str = "1001") -> WhatsAppNumber:
+    async with session.begin():
+        stmt = (
+            select(WhatsAppNumber)
+            .where(WhatsAppNumber.phone_number_id == pnid)
+            .execution_options(populate_existing=True)
+        )
+        return (await session.execute(stmt)).scalar_one()
+
+
+async def _run(
+    session: AsyncSession, org_id: uuid.UUID, meta: FakeMeta, *, code: str = CODE
+) -> SetupRun:
+    setup_id, envelope = await start(
+        session, org_id, meta=meta, code=code, waba_id=WABA, phone_number_id="1001"
+    )
+    await w1_setup.run_setup(envelope, transport=httpx.MockTransport(meta))
+    return await run_of(session, setup_id)
+
+
+async def test_a_connected_number_is_not_registered_again(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    signup_configured: None,
+    worker_engine: None,
+) -> None:
+    run = await _run(session, org_id, meta)
+    assert run.status == "done"
+    assert meta.registers() == []
+    (step,) = [s for s in run.steps if s["key"] == "register"]
+    assert step["state"] == "done" and step["detail"] == "Number already registered"
+    row = await _number_row(session)
+    assert row.registration_pin_sealed is None and row.registration_attempts == 0
+
+
+async def test_an_unregistered_number_is_registered_once_with_a_sealed_random_pin(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    signup_configured: None,
+    worker_engine: None,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _pending(meta)
+    run = await _run(session, org_id, meta)
+    assert run.status == "done" and run.error_code is None
+
+    (call,) = meta.registers()
+    assert call.url.path.endswith("/1001/register") and call.method == "POST"
+    assert call.headers["authorization"] == f"Bearer {TOKEN}"
+    (body,) = meta.register_bodies
+    assert body["messaging_product"] == "whatsapp"
+    pin = body["pin"]
+    assert isinstance(pin, str) and len(pin) == 6 and pin.isdigit()
+    assert pin not in str(call.url)
+
+    row = await _number_row(session)
+    assert row.registration_attempts == 1 and row.registration_attempted_at is not None
+    assert row.registration_pin_sealed is not None
+    assert pin.encode() not in row.registration_pin_sealed
+    assert pii.open_sealed(row.registration_pin_sealed, settings=settings()) == pin
+    assert (row.status, row.platform_type) == ("connected", "CLOUD_API")
+
+    # The PIN is written down nowhere but the sealed column.
+    async with session.begin():
+        audits = (await session.execute(select(AuditLog))).scalars().all()
+        outbox = (await session.execute(select(OutboxEvent))).scalars().all()
+    evidence = json.dumps(
+        [[a.after for a in audits], [o.payload for o in outbox], run.steps], default=str
+    )
+    assert pin not in evidence
+    assert pin not in capsys.readouterr().out + caplog.text
+
+
+async def test_an_already_registered_answer_from_meta_counts_as_registered(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    signup_configured: None,
+    worker_engine: None,
+) -> None:
+    _pending(meta)
+    meta.register_error = {
+        "status": 400,
+        "error": {"code": 100, "message": "Phone number is already registered."},
+    }
+    run = await _run(session, org_id, meta)
+    (step,) = [s for s in run.steps if s["key"] == "register"]
+    assert step["state"] == "done" and step["detail"] == "Number already registered"
+    # The verify step is what then decides whether the number can send: it still is pending.
+    assert run.error_code == "number_not_connected"
+
+
+async def test_a_number_with_two_step_verification_fails_with_pin_required(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    signup_configured: None,
+    worker_engine: None,
+) -> None:
+    _pending(meta)
+    meta.register_error = {
+        "status": 400,
+        "error": {"code": 133005, "message": "Two step verification PIN Mismatch"},
+    }
+    run = await _run(session, org_id, meta)
+    assert (run.status, run.error_code) == ("failed", "pin_required")
+    got = states(run)
+    assert got["register"] == "failed"
+    assert got["templates"] == "waiting" and got["verify"] == "waiting"
+    (step,) = [s for s in run.steps if s["key"] == "register"]
+    assert "two-step verification" in step["detail"]
+    assert len(meta.registers()) == 1  # never retried inside the run
+    # The attempt and the PIN survive the failed step: they are what stop a blind retry.
+    row = await _number_row(session)
+    assert row.registration_attempts == 1 and row.registration_pin_sealed is not None
+
+
+async def test_a_second_attempt_reuses_the_stored_pin_and_counts_the_attempt(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    signup_configured: None,
+    worker_engine: None,
+) -> None:
+    _pending(meta)
+    meta.register_error = {"status": 500, "error": {"code": 2, "message": "boom"}}
+    first = await _run(session, org_id, meta, code="code-one")
+    assert first.error_code == "meta_unreachable" and states(first)["register"] == "failed"
+
+    meta.register_error = None
+    second = await _run(session, org_id, meta, code="code-two")
+    assert second.status == "done"
+    assert meta.register_bodies[0]["pin"] == meta.register_bodies[1]["pin"]
+    assert (await _number_row(session)).registration_attempts == 2
+
+
+async def test_registration_stops_short_of_metas_ten_calls_in_72_hours(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    signup_configured: None,
+    worker_engine: None,
+) -> None:
+    _pending(meta)
+    meta.register_error = {"status": 500, "error": {"code": 2, "message": "boom"}}
+    await _run(session, org_id, meta, code="code-one")  # caches the number, one attempt
+    row = await _number_row(session)
+    async with session.begin():
+        cached = await session.get(WhatsAppNumber, row.id)
+        assert cached is not None
+        cached.registration_attempts = w1_setup.REGISTER_ATTEMPT_CAP
+        cached.registration_attempted_at = datetime.now(UTC) - timedelta(hours=1)
+    meta.register_bodies.clear()
+    meta.calls.clear()
+    meta.register_error = None
+
+    limited = await _run(session, org_id, meta, code="code-two")
+    assert (limited.status, limited.error_code) == ("failed", "register_rate_limited")
+    assert meta.registers() == []  # Meta was never asked
+
+    # Past the window the count starts over.
+    async with session.begin():
+        cached = await session.get(WhatsAppNumber, row.id)
+        assert cached is not None
+        cached.registration_attempted_at = datetime.now(UTC) - timedelta(hours=73)
+    again = await _run(session, org_id, meta, code="code-three")
+    assert again.status == "done" and len(meta.registers()) == 1
+    assert (await _number_row(session)).registration_attempts == 1
+
+
+@pytest.mark.parametrize(
+    ("meta_code", "expected"),
+    [
+        (133006, "number_not_verified"),
+        (133016, "register_rate_limited"),
+        (131000, "register_failed"),
+    ],
+)
+async def test_other_register_refusals_have_their_own_codes(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    signup_configured: None,
+    worker_engine: None,
+    meta_code: int,
+    expected: str,
+) -> None:
+    _pending(meta)
+    meta.register_error = {"status": 400, "error": {"code": meta_code, "message": "x"}}
+    assert (await _run(session, org_id, meta)).error_code == expected
+
+
+async def test_a_number_that_never_becomes_connected_fails_the_verify_step_with_a_reason(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    signup_configured: None,
+    worker_engine: None,
+) -> None:
+    """Registration succeeded but Meta still calls the number pending: the wizard must not say
+    "done", because a send would fail."""
+    _pending(meta)
+    meta.register_connects = False
+    run = await _run(session, org_id, meta)
+    assert (run.status, run.error_code) == ("failed", "number_not_connected")
+    got = states(run)
+    assert got["register"] == "done" and got["templates"] == "done" and got["verify"] == "failed"
+    (step,) = [s for s in run.steps if s["key"] == "verify"]
+    assert "pending" in step["detail"] and "cannot send" in step["detail"]
+    # Asked a few times before giving up, since Meta is slow to flip the status.
+    reads = [c for c in meta.calls if c.method == "GET" and c.url.path.endswith("/1001")]
+    assert len(reads) >= w1_setup.VERIFY_READS
+
+
+async def test_a_run_queued_before_the_register_step_existed_gains_it(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    signup_configured: None,
+    worker_engine: None,
+) -> None:
+    setup_id, envelope = await start(session, org_id, meta=meta)
+    async with session.begin():
+        run = await w1_selectors.get_run(session, org_id, setup_id, for_update=True)
+        assert run is not None
+        run.steps = [s for s in run.steps if s["key"] != "register"]
+    assert await w1_setup.run_setup(envelope, transport=httpx.MockTransport(meta)) == "done"
+    assert "register" in states(await run_of(session, setup_id))
+
+
+# ------------------------------------------------------------------ disconnect releases the number
+
+
+async def test_disconnect_releases_the_number_so_another_organization_can_claim_it(
+    session: AsyncSession,
+    admin_session: AsyncSession,
+    org_id: uuid.UUID,
+    meta: FakeMeta,
+    signup_configured: None,
+    worker_engine: None,
+) -> None:
+    first = await _run(session, org_id, meta)
+    assert first.status == "done"
+
+    # While connected, a second organization is refused the number. (The rival's own signup runs
+    # as that organization: its transaction is bound to it by the worker's scope, the request
+    # side by `admin_session`, which bypasses row-level security.)
+    rival = uuid.uuid4()
+    rival_id, rival_env = await start(
+        admin_session, rival, meta=meta, code="rival-one", phone_number_id="1001"
+    )
+    assert await w1_setup.run_setup(rival_env, transport=httpx.MockTransport(meta)) == "failed"
+    async with admin_session.begin():
+        blocked = (
+            await admin_session.execute(select(SetupRun).where(SetupRun.id == rival_id))
+        ).scalar_one()
+    assert blocked.error_code == "number_claimed"
+
+    async with session.begin():
+        released = await w1_services.disconnect(session, ctx_for(org_id, WRITE, Scope.ORG))
+    assert released.waba_id == WABA
+
+    async with admin_session.begin():
+        account = (
+            await admin_session.execute(
+                select(ProviderAccount).where(ProviderAccount.organization_id == org_id)
+            )
+        ).scalar_one()
+        audit = (
+            await admin_session.execute(
+                select(AuditLog).where(
+                    AuditLog.organization_id == org_id,
+                    AuditLog.action == "engage.whatsapp.disconnected",
+                )
+            )
+        ).scalar_one()
+        # A webhook naming the old number no longer resolves to anybody.
+        assert await selectors.account_for_phone_number(admin_session, "1001") is None
+    assert account.status == "disconnected" and account.phone_number_id is None
+    assert account.released_phone_number_id == "1001"
+    assert audit.after["released_phone_number_id"] == "1001"  # history kept
+
+    # Now the other organization can have it, and the first one's history is untouched.
+    _, env = await start(admin_session, rival, meta=meta, code="rival-two", phone_number_id="1001")
+    assert await w1_setup.run_setup(env, transport=httpx.MockTransport(meta)) == "done"
+    async with admin_session.begin():
+        holder = await selectors.account_for_phone_number(admin_session, "1001")
+    assert holder is not None and holder.organization_id == rival

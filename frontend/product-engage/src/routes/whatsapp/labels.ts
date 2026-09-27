@@ -72,7 +72,15 @@ export function numberStatus(
   number: WhatsAppNumber,
   where: "select" | "settings",
 ): { label: string; tone: StatusTone } {
-  if (number.status === "pending_verification") return { label: "Needs verification", tone: "neutral" };
+  if (number.status === "pending_verification") {
+    // Meta reports the number as pending. Say which pending it is when it says: a number that is
+    // verified but not yet registered cannot send, and is not the same to fix as one that still
+    // needs its code entered.
+    if (number.code_verification_status !== "NOT_VERIFIED" && number.registration === "not_registered") {
+      return { label: "Not registered yet", tone: "warning" };
+    }
+    return { label: "Needs verification", tone: "neutral" };
+  }
   if (number.status === "disconnected") return { label: "Disconnected", tone: "danger" };
   if (number.name_status === "pending_review") return { label: "Display name in review", tone: "warning" };
   if (number.name_status === "declined") return { label: "Display name declined", tone: "danger" };
@@ -91,8 +99,9 @@ export function maskedId(id: string): string {
 
 export const STEP_HINT: Record<SignupStepKey, string> = {
   token: "Stored encrypted. Only the WhatsApp service can read it.",
-  number: "Registering the number you chose so it can send and receive.",
+  number: "Linking the number you chose to your organization.",
   webhook: "Messages, delivery status and template updates arrive in OpsGrids.",
+  register: "Activating the number with WhatsApp so it can send and receive.",
   templates: "Importing your message templates from Meta.",
   verify: "Sends a test event through the webhook and back.",
 };

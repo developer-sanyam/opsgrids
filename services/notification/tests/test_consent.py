@@ -646,19 +646,15 @@ async def _fold(session, org_id, body: str, wamid: str) -> None:
         )
 
 
-async def test_stop_opts_the_number_out_of_both_purposes(session, org_id) -> None:
+async def test_stop_opts_the_number_out_of_marketing_only(session, org_id) -> None:
     await _record(session, org_id, "whatsapp", "marketing", "opted_in", PHONE, source="checkout")
     await _fold(session, org_id, "STOP", "wamid.STOP1")
 
     assert (await _decide(session, org_id, "whatsapp", "marketing", PHONE)).reason == "opted_out"
-    assert (await _decide(session, org_id, "whatsapp", "transactional", PHONE)).reason == (
-        "opted_out"
-    )
+    # Order and account messages keep flowing: STOP is a request to stop promotions.
+    assert (await _decide(session, org_id, "whatsapp", "transactional", PHONE)).allowed is True
     stops = [e for e in await _events(session, org_id) if e.source == "inbound_keyword"]
-    assert {(e.purpose, e.status) for e in stops} == {
-        ("marketing", "opted_out"),
-        ("transactional", "opted_out"),
-    }
+    assert {(e.purpose, e.status) for e in stops} == {("marketing", "opted_out")}
     # A pointer to the message that carried it, not the words and not the number.
     assert all("wamid.STOP1" in (e.evidence or "") for e in stops)
     assert all(PHONE not in (e.evidence or "") for e in stops)
@@ -669,7 +665,7 @@ async def test_a_repeated_stop_adds_nothing_to_a_history_that_already_ends_in_on
 ) -> None:
     await _fold(session, org_id, "STOP", "wamid.STOP1")
     await _fold(session, org_id, "Stop.", "wamid.STOP2")
-    assert len([e for e in await _events(session, org_id) if e.source == "inbound_keyword"]) == 2
+    assert len([e for e in await _events(session, org_id) if e.source == "inbound_keyword"]) == 1
 
 
 async def test_start_restores_marketing_only_where_it_existed_before_the_stop(
@@ -686,7 +682,38 @@ async def test_start_restores_marketing_only_where_it_existed_before_the_stop(
         for e in await _events(session, org_id)
         if e.source == "inbound_keyword" and e.status == "opted_in"
     ]
-    assert {e.purpose for e in starts} == {"marketing", "transactional"}
+    assert {e.purpose for e in starts} == {"marketing"}
+
+
+async def test_start_still_lifts_a_pre_change_stop_that_covered_every_category(
+    session, org_id
+) -> None:
+    """Before STOP became marketing-only it wrote a `*` preference and opted out of both
+    purposes. Those customers can still say START, and get both back."""
+    await _record(session, org_id, "whatsapp", "marketing", "opted_in", PHONE, source="checkout")
+    await _record(
+        session, org_id, "whatsapp", "marketing", "opted_out", PHONE, source="inbound_keyword"
+    )
+    await _record(
+        session, org_id, "whatsapp", "transactional", "opted_out", PHONE, source="inbound_keyword"
+    )
+    async with session.begin():
+        session.add(
+            Preference(
+                organization_id=org_id,
+                recipient=PHONE,
+                channel="whatsapp",
+                category=domain.CATEGORY_ALL,
+                suppressed=True,
+                reason="customer_stop",
+            )
+        )
+    assert (await _decide(session, org_id, "whatsapp", "transactional", PHONE)).allowed is False
+
+    await _fold(session, org_id, "START", "wamid.START1")
+
+    assert (await _decide(session, org_id, "whatsapp", "transactional", PHONE)).allowed is True
+    assert (await _decide(session, org_id, "whatsapp", "marketing", PHONE)).allowed is True
 
 
 async def test_a_bare_start_never_creates_marketing_consent(session, org_id) -> None:

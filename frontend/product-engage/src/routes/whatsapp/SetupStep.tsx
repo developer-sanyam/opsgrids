@@ -6,6 +6,7 @@ import { ArrowRightIcon, CheckIcon, cn } from "@opsgrids/ui";
 import { getSignupStatus } from "@/api/whatsappSignup";
 import type { SignupStatusOut, SignupStep } from "@/api/whatsappSignup";
 import { Button, InlineAlert, Skeleton, useAnnounce } from "@/ui";
+import { signupFailureMessage } from "./failureMessages";
 import { STEP_HINT, STEP_STATE_LABEL } from "./labels";
 import { LoadError, StepCard } from "./parts";
 import { usePollUntil } from "./usePollUntil";
@@ -191,9 +192,8 @@ export function SetupStep({
         ) : null}
         {status?.status === "failed" ? (
           <InlineAlert tone="danger" live="off" title="Setup didn't finish">
-            {failed?.detail ?? "Meta or the server refused a step."}{" "}
-            {status.error_code !== null ? `Reason: ${status.error_code}. ` : ""}
-            Your organization is not connected. Start again from the Meta window.
+            {signupFailureMessage(status.error_code, failed?.detail)}{" "}
+            Your organization is not connected.
           </InlineAlert>
         ) : null}
         {status?.status === "done" ? (
