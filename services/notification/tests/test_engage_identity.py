@@ -23,7 +23,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from app import models, services, whatsapp_provider
+from app import models, services, w1_services, whatsapp_provider
 from app.config import settings
 from app.main import app
 from app.transports import RecordingTransport, TransportRefused, TransportUnavailable
@@ -48,12 +48,19 @@ def _assume_whatsapp_ownership_proven(monkeypatch: pytest.MonkeyPatch) -> None:
     connection *row* — its shape, its secrecy, its uniqueness — not about proving a token against
     Meta's Graph API, which is exercised on its own with `httpx.MockTransport` in that file.
     Patched here, once, rather than in each test that reaches `connect_whatsapp`/
-    `replace_whatsapp`."""
+    `replace_whatsapp`. The same goes for the webhook-subscribe call `create_whatsapp_connection`/
+    `replace_whatsapp_connection` make afterwards: `w1_graph.py`'s own tests exercise that call
+    against a mock transport; here it would otherwise be a real, unmocked HTTP request every
+    time."""
 
     async def _pass(*args: object, **kwargs: object) -> None:
         return None
 
+    async def _subscribed(*args: object, **kwargs: object) -> bool:
+        return True
+
     monkeypatch.setattr(whatsapp_provider, "verify_ownership", _pass)
+    monkeypatch.setattr(w1_services, "subscribe_waba", _subscribed)
 
 
 class FakeResolver:
@@ -1798,6 +1805,96 @@ async def test_connecting_whatsapp_never_returns_the_token(client, org_id) -> No
     assert response.status_code == 201
     assert set(response.json()) == {"waba_id", "phone_number_id", "display_number", "status"}
     assert "super-secret-token" not in response.text
+
+
+async def test_connecting_whatsapp_subscribes_the_app_to_the_wabas_webhooks(
+    client, org_id, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Embedded Signup does this as its own setup step; a manual connection needs the same call
+    or nothing sent to this account is ever heard back from — see `w1_services.subscribe_waba`."""
+    calls: list[tuple[str, str]] = []
+
+    async def _spy(waba_id: str, token: str, **kwargs: object) -> bool:
+        calls.append((waba_id, token))
+        return True
+
+    monkeypatch.setattr(w1_services, "subscribe_waba", _spy)
+
+    with as_principal(engage_caller(org_id, [f"{W_WRITE}:ORG"])):
+        response = await client.post(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": "101000000000001",
+                "phone_number_id": "106540000000001",
+                "display_number": "+1 555 0100",
+                "access_token": "super-secret-token",  # pragma: allowlist secret
+            },
+        )
+
+    assert response.status_code == 201
+    assert calls == [("101000000000001", "super-secret-token")]
+
+
+async def test_a_failed_subscribe_does_not_block_the_connection(
+    client, org_id, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Best-effort: a token that can read the number but lacks `whatsapp_business_management`
+    for this one call is not a reason to refuse the whole connection."""
+
+    async def _refused(*args: object, **kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(w1_services, "subscribe_waba", _refused)
+
+    with as_principal(engage_caller(org_id, [f"{W_WRITE}:ORG"])):
+        response = await client.post(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": "101000000000001",
+                "phone_number_id": "106540000000001",
+                "display_number": "+1 555 0100",
+                "access_token": "super-secret-token",  # pragma: allowlist secret
+            },
+        )
+
+    assert response.status_code == 201
+
+
+async def test_replacing_whatsapp_subscribes_the_app_again_with_the_new_token(
+    client, org_id, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-subscribing is a harmless no-op if the WABA was already subscribed, and it is exactly
+    the fix for an org replacing credentials because their webhooks never arrived in the first
+    place."""
+    calls: list[tuple[str, str]] = []
+
+    async def _spy(waba_id: str, token: str, **kwargs: object) -> bool:
+        calls.append((waba_id, token))
+        return True
+
+    with as_principal(engage_caller(org_id, [f"{W_WRITE}:ORG"])):
+        await client.post(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": "101000000000001",
+                "phone_number_id": "106540000000001",
+                "display_number": "+1 555 0100",
+                "access_token": "old-token",  # pragma: allowlist secret
+            },
+        )
+        monkeypatch.setattr(w1_services, "subscribe_waba", _spy)
+        response = await client.put(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": "101000000000001",
+                "phone_number_id": "106540000000001",
+                "display_number": "+1 555 0199",
+                "access_token": "new-token",  # pragma: allowlist secret
+            },
+        )
+
+    assert response.status_code == 200
+    assert calls == [("101000000000001", "new-token")]
 
 
 async def test_reading_the_whatsapp_connection_returns_that_same_shape(client, org_id) -> None:
