@@ -184,8 +184,7 @@ function resultAnnouncement(summary: ImportExportSummary, mode: ImportExportMode
  * cell and `[clear]` mean, and what the update cannot protect against. Shown under the choice.
  */
 export const UPDATE_RULES: readonly string[] = [
-  "Start from an export of the list: its Record ID column names each record.",
-  "A row is matched to a record by its Record ID or by the list's unique key, such as a SKU or a code. A row that matches nothing is added as a new record.",
+  "Start from an export of the list. A row is matched to a record by its Record ID or by the list's unique key, such as a SKU or a code. A row that matches nothing is added as a new record.",
   "A blank cell leaves the field as it is. Only the cells you fill in are compared with the record.",
   "Type [clear] in a cell to empty a field. Not every field can be emptied.",
   "Only fields that changed are sent. A row that changes nothing sends nothing.",

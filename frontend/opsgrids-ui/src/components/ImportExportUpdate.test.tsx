@@ -130,6 +130,7 @@ describe("the choice between adding and updating, in the menu", () => {
 
   it("shows the rules of updating under the choice once it is chosen, and drops the rule they contradict", async () => {
     await openWith({ state: updating({}) });
+    expect(document.querySelector("details")).toBeNull();
     expect(screen.getByRole("radio", { name: "Add new and update existing" })).toHaveProperty("checked", true);
     const rules = within(screen.getByRole("list", { name: "How updating works" }));
     for (const rule of UPDATE_RULES) expect(rules.getByText(rule)).toBeTruthy();
@@ -165,6 +166,21 @@ describe("the choice on the preview", () => {
     show(updating({ phase: "preview", preview: PREVIEW_UPDATE_MIXED }));
     expect(document.activeElement).toBe(screen.getByRole("radio", { name: "Add new and update existing" }));
     expect(screen.getByRole("radio", { name: "Add new and update existing" })).toHaveProperty("checked", true);
+  });
+
+  it("keeps the rules of updating behind their own heading, closed, so the rows stay in view", async () => {
+    const { user } = await openWith({ state: updating({ phase: "preview", preview: PREVIEW_UPDATE_MIXED }) });
+    const summary = screen.getByText("How updating works", { selector: "summary" });
+    const disclosure = summary.closest("details");
+    expect(disclosure?.open).toBe(false);
+    await user.click(summary);
+    expect(disclosure?.open).toBe(true);
+    expect(within(disclosure as HTMLElement).getByText(/Type \[clear\] in a cell to empty a field/)).toBeTruthy();
+  });
+
+  it("does not show the rules at all while adding only is chosen", async () => {
+    await openWith({ state: stateFor({ phase: "preview", preview: PREVIEW_WITH_ERRORS }) });
+    expect(screen.queryByText("How updating works")).toBeNull();
   });
 
   it("is not offered for a list that cannot be updated", async () => {

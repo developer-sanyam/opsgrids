@@ -136,9 +136,9 @@ export function ImportExportDialog({ onClose, meta, state, actions, canImport, c
   const importing = phase === "importing";
   const takesFiles = (phase === "menu" && canImport) || phase === "preview";
   // Updating records needs the same permission as creating them: it is the same write endpoint.
-  const modeChoice =
+  const modeChoice = (collapsed: boolean) =>
     meta.canUpdate && canImport ? (
-      <ImportExportModeChoice mode={state.mode} onChange={(mode) => void actions.setMode(mode)} />
+      <ImportExportModeChoice mode={state.mode} collapsed={collapsed} onChange={(mode) => void actions.setMode(mode)} />
     ) : null;
 
   useUnsavedChangesWarning(importing);
@@ -213,7 +213,7 @@ export function ImportExportDialog({ onClose, meta, state, actions, canImport, c
           actions={actions}
           canImport={canImport}
           canExport={canExport}
-          modeChoice={modeChoice}
+          modeChoice={modeChoice(false)}
           dragging={dragging}
           onChooseFile={chooseFile}
           firstActionRef={firstActionRef}
@@ -233,7 +233,7 @@ export function ImportExportDialog({ onClose, meta, state, actions, canImport, c
         state.preview === null ? (
           <Reading mode={state.mode} />
         ) : (
-          <ImportExportReview preview={state.preview} modeChoice={modeChoice} />
+          <ImportExportReview preview={state.preview} modeChoice={modeChoice(true)} />
         );
       footer =
         state.preview === null ? undefined : (
