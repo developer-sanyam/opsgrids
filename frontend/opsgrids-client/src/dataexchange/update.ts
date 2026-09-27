@@ -38,7 +38,7 @@ export type KeyMatch = NonNullable<UpdateSpec<unknown>["keyMatch"]>;
  * but keeps inner spaces, since the server that treats capitals as the same still counts a run of
  * spaces as a difference.
  */
-export function keyFold(keyMatch: KeyMatch, text: string): string {
+function keyFold(keyMatch: KeyMatch, text: string): string {
   return keyMatch === "caseless" ? text.trim().toLowerCase() : text.trim();
 }
 

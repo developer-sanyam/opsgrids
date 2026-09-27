@@ -172,7 +172,7 @@ export function createExchange(host: ExchangeHost): Exchange {
   /**
    * The stored records an update-mode preview matches rows against: one load in flight shared by
    * everyone who asks, a failed load not kept. A mode change is answered from a load that has
-   * settled (`settled`, and when, in `at`) without a wait, but a file opened after that is compared
+   * settled (`settledAt`) without a wait, but a file opened after that is compared
    * with a fresh read, since the records may have changed while the last file was being edited, and
    * Import reads again once the records are older than `SNAPSHOT_MAX_AGE_MS`. Dropped when the dialog
    * is reset or disposed and after an import that created or changed records.
@@ -180,7 +180,8 @@ export function createExchange(host: ExchangeHost): Exchange {
   let existingLoad: {
     loader: unknown;
     loading: Promise<readonly unknown[]>;
-    settled: { items: readonly unknown[]; at: number } | null;
+    /** When the load finished, or null while it is still in flight. */
+    settledAt: number | null;
   } | null = null;
 
   const lookupsFor = (entity: AnyEntity, signal: AbortSignal): Promise<LookupSet> => {
@@ -203,12 +204,12 @@ export function createExchange(host: ExchangeHost): Exchange {
       const entry: NonNullable<typeof existingLoad> = {
         loader: spec.loadExisting,
         loading: spec.loadExisting({ lookups, signal: life.signal }),
-        settled: null,
+        settledAt: null,
       };
       existingLoad = entry;
       entry.loading.then(
-        (items) => {
-          entry.settled = { items, at: now() };
+        () => {
+          entry.settledAt = now();
         },
         () => {
           if (existingLoad === entry) existingLoad = null;
@@ -220,7 +221,7 @@ export function createExchange(host: ExchangeHost): Exchange {
 
   /** Whether the records to update are already here, so that a change of mode needs no wait. */
   const existingIsHere = (spec: UpdateSpec<unknown>): boolean =>
-    existingLoad !== null && existingLoad.loader === spec.loadExisting && existingLoad.settled !== null;
+    existingLoad !== null && existingLoad.loader === spec.loadExisting && existingLoad.settledAt !== null;
 
   /** Checks a read sheet in the current mode: against the stored records in update mode, else on its own. */
   const previewOf = async (entity: AnyEntity, read: { sheet: ParsedSheet; fileName: string }, signal: AbortSignal) => {
@@ -248,7 +249,7 @@ export function createExchange(host: ExchangeHost): Exchange {
     // A file chosen now is compared with the records as they are now, not as they were when an
     // earlier file was opened: that one may have been edited in Excel for an hour since. A load still
     // in flight began after the dialog opened, so it is as fresh as a new one and is shared.
-    if (existingLoad !== null && existingLoad.settled !== null) existingLoad = null;
+    if (existingLoad !== null && existingLoad.settledAt !== null) existingLoad = null;
     publish({ phase: "reading", error: null, preview: null, progress: null, summary: null, notice: null });
     try {
       const read = { sheet: await readWorkbook(file, entity), fileName: file.name };
@@ -301,14 +302,14 @@ export function createExchange(host: ExchangeHost): Exchange {
 
   /** Whether an update was previewed against stored records older than `SNAPSHOT_MAX_AGE_MS`. */
   const snapshotIsStale = (entity: AnyEntity): boolean => {
-    const loaded = existingLoad?.settled;
+    const settledAt = existingLoad?.settledAt;
     return (
       current.mode === "addAndUpdate" &&
       entity.update !== undefined &&
       sheetRead !== null &&
-      loaded !== undefined &&
-      loaded !== null &&
-      now() - loaded.at > SNAPSHOT_MAX_AGE_MS
+      settledAt !== undefined &&
+      settledAt !== null &&
+      now() - settledAt > SNAPSHOT_MAX_AGE_MS
     );
   };
 
