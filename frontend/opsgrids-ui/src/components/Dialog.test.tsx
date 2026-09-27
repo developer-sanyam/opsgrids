@@ -6,7 +6,7 @@
 
 import { useRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { openDialogCount } from "../lib/dialogStack";
@@ -199,6 +199,35 @@ describe("Dialog", () => {
     await user.tab();
     const dialog = screen.getByRole("dialog");
     expect(dialog.contains(document.activeElement)).toBe(true);
+  });
+
+  it("counts a disclosure's summary as a tab stop, so shift+Tab from it does not wrap to the end", () => {
+    // jsdom has no layout: every element reports no offsetParent, which the trap reads as hidden.
+    const offsetParent = vi
+      .spyOn(HTMLElement.prototype, "offsetParent", "get")
+      .mockImplementation(() => document.body);
+    try {
+      render(
+        <Dialog open onClose={() => undefined} title="Import">
+          <button type="button">First</button>
+          <details>
+            <summary>How it works</summary>
+            <p>Rules</p>
+          </details>
+          <button type="button">Last</button>
+        </Dialog>,
+      );
+      const summary = screen.getByText("How it works");
+      summary.focus();
+      // In the middle of the dialog: the browser moves focus back one stop, the trap does not step in.
+      expect(fireEvent.keyDown(summary, { key: "Tab", shiftKey: true })).toBe(true);
+      // On the first control it still wraps.
+      const close = screen.getAllByRole("button")[0];
+      close?.focus();
+      expect(fireEvent.keyDown(close as HTMLElement, { key: "Tab", shiftKey: true })).toBe(false);
+    } finally {
+      offsetParent.mockRestore();
+    }
   });
 
   it("keeps focus in a controlled field across keystrokes, so typing never loses the cursor", async () => {

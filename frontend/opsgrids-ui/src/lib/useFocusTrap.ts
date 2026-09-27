@@ -6,6 +6,9 @@ import type { DialogLayer } from "./dialogStack";
 
 const FOCUSABLE = [
   "a[href]",
+  // A disclosure's toggle is a tab stop the browser gives it, so the trap must count it: left out,
+  // shift+Tab from it looked like the landing spot and wrapped to the last control.
+  "summary",
   "button:not([disabled])",
   "input:not([disabled])",
   "select:not([disabled])",
