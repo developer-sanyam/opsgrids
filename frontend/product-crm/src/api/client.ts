@@ -235,10 +235,11 @@ export async function updateDeal(id: string, patch: DealPatch): Promise<Deal> {
     if (index === -1) throw notFound("deal");
     const current = DEALS[index];
     if (!current) throw notFound("deal");
-    // The server compares deal names exactly, capitals included, and refuses a rename onto another deal's.
+    // The server compares deal names exactly, capitals included, and refuses a rename onto another
+    // deal's, naming it (a create says "A deal with that name already exists").
     const newName = patch.name;
     if (newName !== undefined && DEALS.some((d) => d.id !== id && d.name === newName)) {
-      throw conflict("A deal with that name already exists");
+      throw conflict(`A deal named '${newName}' already exists`);
     }
     const updated: Deal = {
       ...current,

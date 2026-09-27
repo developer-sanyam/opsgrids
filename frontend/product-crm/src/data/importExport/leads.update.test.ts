@@ -239,6 +239,54 @@ describe("leads: a converted lead", () => {
   it("makes no request for a converted lead whose row changes nothing", () => {
     expect(plan(SAME_AS_STORED, [], CONVERTED)).toBeNull();
   });
+
+  // The server refuses on either sign (`services.update_lead`: the status or `converted_company_id`),
+  // and the two are meant to agree, so a lead that only shows one is still not reassigned.
+  describe("that only shows one sign of it", () => {
+    const POINTS_AT_ITS_COMPANY: Lead = { ...OPEN, converted_company_id: "comp-1" };
+
+    it("refuses an owner change on a lead that points at the company it became, whatever its status says", () => {
+      const calls = stubGateway(() => leadWire("lead-1", "Meera Iyer"));
+      expect(() => plan({ owner: "sofia@example.com" }, [], POINTS_AT_ITS_COMPANY)).toThrow(
+        "A converted lead cannot be reassigned. Its Full name, Company and Notes can still be changed.",
+      );
+      expect(calls).toHaveLength(0);
+    });
+
+    it("still changes its name, company and notes", async () => {
+      const calls = stubGateway(() => leadWire("lead-1", "Meera Iyer"));
+      await runPlan(plan({ fullName: "M. Iyer", notes: "Won." }, [], POINTS_AT_ITS_COMPANY));
+      expect(calls[0]?.body).toStrictEqual({ full_name: "M. Iyer", notes: "Won." });
+    });
+
+    it("refuses an owner change on a lead whose status says converted and that points at nothing", () => {
+      expect(() => plan({ owner: "sofia@example.com" }, [], { ...OPEN, status: "converted" })).toThrow(
+        "A converted lead cannot be reassigned",
+      );
+    });
+
+    it("does not refuse the owner of a lead that shows neither", async () => {
+      const calls = stubGateway(() => leadWire("lead-1", "Meera Iyer"));
+      await runPlan(plan({ owner: "sofia@example.com" }));
+      expect(calls[0]?.body).toStrictEqual({ owner_id: "own-1" });
+    });
+  });
+});
+
+describe("leads: how a row names its lead in the preview", () => {
+  it("uses the name and the company as the lead gave them", () => {
+    expect(spec.recordLabel?.(OPEN)).toBe("Meera Iyer (Halcyon Textiles)");
+  });
+
+  it("uses the name alone for a lead with no company", () => {
+    expect(spec.recordLabel?.({ ...OPEN, company: null })).toBe("Meera Iyer");
+    expect(spec.recordLabel?.({ ...OPEN, company: "" })).toBe("Meera Iyer");
+  });
+
+  it("never shows the email or the phone, masked or not: they are sealed", () => {
+    const label = spec.recordLabel?.({ ...OPEN, email: "meera@halcyontextiles.in", phone: "+919000012345" }) ?? "";
+    expect(label).not.toMatch(/@|\d{5}|•/);
+  });
 });
 
 describe("leads: what the server says", () => {

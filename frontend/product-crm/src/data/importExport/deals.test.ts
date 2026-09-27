@@ -169,8 +169,34 @@ describe("deals: what the user is told about names", () => {
   it("says names are matched exactly, capitals included, on the column and in the notes", () => {
     const help = dealImport.columns.find((c) => c.key === "name")?.help;
     expect(help).toMatch(/matched exactly, capitals included/);
-    expect(help).toContain("'Q4 Renewal' and 'Q4 renewal' are different deals to the server");
+    expect(help).toContain("'Q4 Renewal' and 'Q4 renewal' are different deals");
     expect(dealImport.notes?.join(" ")).toMatch(/matched exactly, capitals included/);
+  });
+
+  it("says an update never takes a name that differs only in capitals for the deal it resembles", () => {
+    // Exact matching, so a row in other capitals is refused (by the engine), not applied to 'Q4 renewal'.
+    const help = dealImport.columns.find((c) => c.key === "name")?.help;
+    expect(help).toContain("a name that differs from an existing deal's only in capitals is refused");
+    expect(dealImport.notes?.join(" ")).toContain(
+      "a name that differs from an existing deal's only in capitals is refused, so a row never changes a deal it only resembles",
+    );
+  });
+
+  it("says a stage move resets the probability, and what to do to keep a figure", () => {
+    const notes = dealImport.notes?.join(" ") ?? "";
+    expect(notes).toContain("resets Probability to the new stage's usual figure, as dragging it on the board does");
+    expect(notes).toContain("'Probability (reset to 70%)'");
+    expect(notes).toContain("move the stage first and change Probability in a second file");
+    const help = dealImport.columns.find((c) => c.key === "probability")?.help;
+    expect(help).toContain("a blank cell keeps the current one, except in a row that moves the stage");
+  });
+
+  it("warns once that closing a deal cannot be undone, and says what the preview calls it", () => {
+    const notes = dealImport.notes ?? [];
+    const warnings = notes.filter((note) => note.includes("Moving a deal to Closed Won or Closed Lost cannot be undone"));
+    expect(warnings).toHaveLength(1);
+    expect(warnings.join(" ")).toContain("'Stage (closes the deal)'");
+    expect(warnings.join(" ")).toContain("a closed deal cannot change stage again");
   });
 });
 

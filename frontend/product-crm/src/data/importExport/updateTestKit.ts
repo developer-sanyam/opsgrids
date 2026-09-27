@@ -5,16 +5,17 @@
  * cell becomes the stored terms, and the exact requests a row sends. A spec is run through the
  * engine's own `planUpdate`, and its requests are recorded by the fake gateway in `entityTestKit`.
  */
-import { makeLookup, planUpdate } from "@opsgrids/client";
+import { planUpdate } from "@opsgrids/client";
 import type { ImportContext, ImportEntity, LookupSet, ParsedValue, UpdatePlan, UpdateSpec } from "@opsgrids/client";
 
 import { parsedRow, present } from "./entityTestKit";
 import type { Recorded } from "./entityTestKit";
+import { makeSpellingLookup } from "./shared";
 
 const ACTIVE_REPS = [
   { label: "sofia@example.com", value: "own-1" },
   { label: "Grace@Example.com", value: "own-2" },
-  // Two active reps under one address: the name cannot say which.
+  // Two active reps whose addresses differ only in capitals: the name alone cannot say which.
   { label: "twin@example.com", value: "own-7" },
   { label: "Twin@example.com", value: "own-8" },
 ];
@@ -25,8 +26,8 @@ const ACTIVE_REPS = [
  * keeps its owner after they go and an export writes them by email.
  */
 export const OWNER_LOOKUPS: LookupSet = {
-  owners: makeLookup(ACTIVE_REPS),
-  ownersAll: makeLookup([...ACTIVE_REPS, { label: "former@example.com", value: "own-3" }]),
+  owners: makeSpellingLookup(ACTIVE_REPS),
+  ownersAll: makeSpellingLookup([...ACTIVE_REPS, { label: "former@example.com", value: "own-3" }]),
 };
 
 /** Written out in full, so a change to the sentence a user reads is a change to a test. */

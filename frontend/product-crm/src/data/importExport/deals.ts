@@ -10,21 +10,31 @@
  * them exactly, capitals included; a repeat is a 409 and is skipped.
  *
  * Update calls `PATCH /deals/{id}` with only the fields that differ, and finds a deal with no Deal
- * ID by its name (exact, but only app-level unique: two deals with one name make the row ambiguous
- * and it is refused). The PATCH takes neither stage nor probability, which are extra steps after
- * it, one request each. A changed stage goes to `POST /deals/{id}/stage`, which resets the
- * probability to the new stage's usual figure unless it is given one: a probability the row changes
- * therefore travels with the stage move, and a probability changed with no stage move is a PATCH of
- * its own. The server checks none of owner, company and primary contact, so the row's are resolved
- * from the lists, and a contact must work at the deal's company, as when adding.
+ * ID by its name (exact, capitals included, and only app-level unique: two deals with one name make
+ * the row ambiguous and it is refused). The PATCH takes the probability (`DealPatch`) but not the
+ * stage, and both are steps after it: a changed stage is a `POST /deals/{id}/stage`, and a
+ * probability changed with no stage move is a PATCH of its own. It cannot be a key of the field
+ * PATCH: that is built before anything knows whether the row also moves the stage, and a move would
+ * reset a figure saved just before it.
+ *
+ * The stage endpoint sets the probability to the new stage's usual figure unless it is given one, as
+ * dragging a card on the board does, and the server keeps that rule. A sheet cannot tell a
+ * probability the person meant from the one an export repeats, so a figure that is the one on file
+ * is not a choice: the move resets it and the preview says so ("Probability (reset to 70%)"), and
+ * only a different figure travels with the move. The move to Closed Won or Closed Lost is the one
+ * that cannot be undone (a closed deal moves nowhere), so it is labelled in the preview, always ends
+ * at 100 or 0, and refuses a row that asks for another figure alongside it.
+ *
+ * The server checks none of owner, company and primary contact, so the row's are resolved from the
+ * lists, and a contact must work at the deal's company, as when adding.
  */
 import { CLEAR_TOKEN, RowProblem, defineImportEntity, minorToMajor } from "@opsgrids/client";
-import type { ColumnOption, ImportColumn, ImportContext, ParsedRow } from "@opsgrids/client";
+import type { ColumnOption, ExtraStep, ImportColumn, ImportContext, ParsedRow } from "@opsgrids/client";
 
 import { createDeal, listDeals, moveDealStage, updateDeal } from "@/api/client";
 import type { Deal, DealStage } from "@/api/types";
 import type { DealIn, DealPatch } from "@/api/wire";
-import { STAGES, isOpen, stageLabel } from "@/data/stages";
+import { STAGES, STAGE_DEFAULT_PROBABILITY, isOpen, stageLabel } from "@/data/stages";
 
 import {
   COMPANY_HINT,
@@ -85,7 +95,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "text",
     required: true,
     maxLength: 200,
-    help: "The deal's name. Names are unique across the whole organisation and matched exactly, capitals included: a deal with the same exact name is skipped when adding, or found and updated when updating a row that has no Deal ID, while 'Q4 Renewal' and 'Q4 renewal' are different deals to the server.",
+    help: "The deal's name. Names are unique across the whole organisation and matched exactly, capitals included, so 'Q4 Renewal' and 'Q4 renewal' are different deals. A deal with the same exact name is skipped when adding. When updating, a row with no Deal ID finds its deal by the exact name, and a name that differs from an existing deal's only in capitals is refused, so a row never changes a deal it only resembles.",
   },
   {
     key: "company",
@@ -145,7 +155,7 @@ const COLUMNS: readonly ImportColumn[] = [
     header: "Stage",
     kind: "enum",
     options: STAGE_OPTIONS,
-    help: "The pipeline stage the deal is in. Leave blank for Lead, or, when updating, to keep the current stage.",
+    help: "The pipeline stage the deal is in. Leave blank for Lead, or, when updating, to keep the current stage. Closed Won and Closed Lost end the deal: a closed deal cannot move to another stage.",
   },
   {
     key: "probability",
@@ -153,7 +163,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "integer",
     min: 0,
     max: 100,
-    help: "Chance of winning, as a whole number from 0 to 100. Leave blank to use the stage's usual figure, or, when updating, to keep the current one.",
+    help: "Chance of winning, as a whole number from 0 to 100. When adding, leave blank to use the stage's usual figure. When updating, a blank cell keeps the current one, except in a row that moves the stage: the deal then takes the new stage's usual figure, unless this cell holds a figure other than the one on file.",
   },
   {
     key: "source",
@@ -198,7 +208,9 @@ const PROBABILITY = columnOf(COLUMNS, "probability");
  * changes either one is checked here, against what the deal will hold afterwards: the company the
  * row names (or the one on file), and the contact the row names (or, when it does not touch the
  * column, the one on file). A row that changes neither is not judged on what was already stored.
- * A contact the lists do not know (out of the caller's scope, or deleted) cannot be judged and stays.
+ * A stored contact the lists do not hold (out of the caller's scope, or deleted) cannot be judged,
+ * so a row that moves the deal to another company must name a contact or `[clear]` it: leaving that
+ * contact on a company they may not work at would be a guess.
  */
 function contactMustWorkAtCompany(
   row: ParsedRow,
@@ -220,9 +232,16 @@ function contactMustWorkAtCompany(
   if (contactId === null) return;
 
   const worksAt = ctx.lookups[LOOKUP_COMPANY_OF_CONTACT]?.resolve(contactId);
-  if (worksAt === undefined || worksAt === companyId) return;
+  if (worksAt === companyId) return;
 
   const company = companyCell ?? ctx.lookups[LOOKUP_COMPANIES]?.labelOf(deal.company_id) ?? "that company";
+  if (worksAt === undefined) {
+    // A named contact comes from the same list as `worksAt`; only a stored one can be missing from it.
+    if (contactCell !== undefined) return;
+    throw new RowProblem(
+      `The deal's primary contact is not among the contacts you can see, so it cannot be checked against ${company}. Name one of that company's contacts in ${CONTACT.header}, or type ${CLEAR_TOKEN} to remove the primary contact.`,
+    );
+  }
   if (contactCell !== undefined) {
     throw new RowProblem(`${contactCell} is not a contact of ${company}. Pick one of that company's contacts.`);
   }
@@ -230,6 +249,48 @@ function contactMustWorkAtCompany(
   throw new RowProblem(
     `${email} is the deal's primary contact but is not a contact of ${company}. Name one of that company's contacts in ${CONTACT.header}, or type ${CLEAR_TOKEN} to remove the primary contact.`,
   );
+}
+
+/** What the change list says a stage move does to the deal's probability when the row gives none. */
+const resetTo = (percent: number): string => `Probability (reset to ${percent}%)`;
+
+/**
+ * The stage step of a row that moves an open deal. `chosen` is the row's own probability: a figure
+ * that differs from the one on file (an export repeats the one on file, which is no choice). The
+ * endpoint would reset a figure saved before it, so the move carries it. Without one the move
+ * resets the probability, as the board does, and the change list says to what. A closed stage ends
+ * at 100 or 0, so its move never sends a figure and a row that asks for another one is refused.
+ */
+function stageMove(deal: Deal, stage: DealStage, chosen: number | undefined): ExtraStep {
+  const usual = STAGE_DEFAULT_PROBABILITY[stage];
+  const reset = usual !== deal.probability ? [resetTo(usual)] : [];
+  if (!isOpen(stage)) {
+    if (chosen !== undefined && chosen !== usual) {
+      throw new RowProblem(
+        `${stageLabel(stage)} always sets ${PROBABILITY.header} to ${usual}, so it cannot be ${chosen} in the same row. Leave the cell as it is, or type ${usual}.`,
+      );
+    }
+    return {
+      changed: [`${STAGE.header} (closes the deal)`, ...reset],
+      run: async () => {
+        await moveDealStage(deal.id, { stage });
+      },
+    };
+  }
+  if (chosen !== undefined) {
+    return {
+      changed: [STAGE.header, PROBABILITY.header],
+      run: async () => {
+        await moveDealStage(deal.id, { stage, probability: chosen });
+      },
+    };
+  }
+  return {
+    changed: [STAGE.header, ...reset],
+    run: async () => {
+      await moveDealStage(deal.id, { stage });
+    },
+  };
 }
 
 export const dealImport = defineImportEntity<DealIn, Deal, DealFilters>({
@@ -263,16 +324,17 @@ export const dealImport = defineImportEntity<DealIn, Deal, DealFilters>({
     },
   ],
   notes: [
-    "Deal names must be unique across the whole organisation, not just within a company. Names are matched exactly, capitals included: with Add new records only, a deal whose exact name already exists is skipped, not updated, while 'Q4 Renewal' and 'Q4 renewal' are different deals to the server.",
+    "Deal names must be unique across the whole organisation, not just within a company. Names are matched exactly, capitals included, so 'Q4 Renewal' and 'Q4 renewal' are different deals: with Add new records only, a deal whose exact name already exists is skipped, not updated.",
     "The company must already exist. If it is new, import it on the Companies screen first.",
     "A primary contact must be a contact of that company. Leave the column blank for none.",
     "When adding, leave Owner email blank to own the deal yourself. Assigning a deal to someone else needs organisation-wide access; otherwise that row is refused and reported.",
     "Deal value is in whole currency units and uses the currency in the next column. When adding, leave Currency blank for INR.",
     "When adding, leave Stage blank for Lead, and Probability blank to use the stage's usual figure.",
     "With Add new records only, a file exported from the Deals list cannot be imported again as it is: its rows carry a Deal ID and are refused, because those deals already exist.",
-    "When updating, a row with a Deal ID changes that deal. Without one, the deal is found by its exact name, capitals included. To rename a deal keep its Deal ID in the row: a row with a changed name and no Deal ID is a new deal. A rename onto another deal's exact name is refused by the server and reported. If two deals share a name, a row that names it without a Deal ID is refused.",
+    "When updating, a row with a Deal ID changes that deal. Without one, the deal is found by its exact name, capitals included, and a name that differs from an existing deal's only in capitals is refused, so a row never changes a deal it only resembles. To rename a deal keep its Deal ID in the row: a row with a changed name and no Deal ID is a new deal. A rename onto another deal's exact name is refused by the server and reported. If two deals share a name, a row that names it without a Deal ID is refused.",
     "When updating, type [clear] in Primary contact email or Source to empty it. The other columns cannot be emptied, only changed.",
-    "When updating, a changed Stage moves the deal through the pipeline and sets Probability to the new stage's usual figure, as dragging it on the board does. To set a different figure, change Probability in the same row. A deal that is Closed Won or Closed Lost cannot change stage; its other columns can still change.",
+    "When updating, a changed Stage moves the deal through the pipeline and resets Probability to the new stage's usual figure, as dragging it on the board does. The preview says so, like 'Probability (reset to 70%)'. Only a Probability that differs from the one on file is taken as your choice and kept: the figure an export repeats is not, so to keep today's figure across a stage move, move the stage first and change Probability in a second file. Without a stage change, a different Probability is simply saved.",
+    "Moving a deal to Closed Won or Closed Lost cannot be undone: a closed deal cannot change stage again, and reopening it means a new deal. The preview marks such a row 'Stage (closes the deal)'. Closing sets Probability to 100 (won) or 0 (lost), so a row that closes a deal cannot ask for another figure. A deal that is already closed keeps its stage; its other columns can still change.",
     "When updating, a Primary contact must be a contact of the deal's company. Changing Company keeps the deal's contact only if they work at the new company; otherwise name one of its contacts or type [clear].",
     "When updating, Deal value is not converted if the currency changes: change Currency only together with Deal value, in the new currency. Leave Currency blank to keep the deal's own currency; Deal value is then read in it, not in INR.",
   ],
@@ -319,6 +381,7 @@ export const dealImport = defineImportEntity<DealIn, Deal, DealFilters>({
     idOf: (deal) => deal.id,
     keyColumn: "name",
     keyOf: (deal) => deal.name,
+    recordLabel: (deal) => deal.name,
     currencyOf: (deal) => deal.currency,
     fields: [
       { column: "name", current: (deal) => deal.name },
@@ -356,37 +419,28 @@ export const dealImport = defineImportEntity<DealIn, Deal, DealFilters>({
     },
     extraColumns: ["stage", "probability"],
     // After the PATCH, so a rename onto a taken name or an owner the caller may not assign is
-    // refused before the deal has moved. Neither column can be emptied. A probability is sent
-    // only when the row changes it: a row that repeats what is on file (an export always does) lets
-    // a stage move set the new stage's usual figure, as dragging the card on the board does.
+    // refused before the deal has moved. Neither column can be emptied.
     extras: (row, cleared, deal) => {
       for (const column of [STAGE, PROBABILITY]) {
         if (cleared.has(column.key)) throw new RowProblem(`${column.header} cannot be cleared`);
       }
       const stage = optionOf(row, "stage", STAGE_OPTIONS);
       const named = numberOf(row, "probability");
-      const probability = named !== undefined && named !== deal.probability ? named : undefined;
+      const chosen = named !== undefined && named !== deal.probability ? named : undefined;
       if (stage !== undefined && stage !== deal.stage) {
         if (!isOpen(deal.stage)) {
           throw new RowProblem(
             `This deal is ${stageLabel(deal.stage)}, and a closed deal cannot be moved to another stage.`,
           );
         }
-        return [
-          {
-            changed: probability === undefined ? [STAGE.header] : [STAGE.header, PROBABILITY.header],
-            run: async () => {
-              await moveDealStage(deal.id, { stage, ...(probability !== undefined ? { probability } : {}) });
-            },
-          },
-        ];
+        return [stageMove(deal, stage, chosen)];
       }
-      if (probability === undefined) return [];
+      if (chosen === undefined) return [];
       return [
         {
           changed: [PROBABILITY.header],
           run: async () => {
-            await updateDeal(deal.id, { probability });
+            await updateDeal(deal.id, { probability: chosen });
           },
         },
       ];

@@ -31,6 +31,8 @@ function shapeOf<Payload, Item, Filters>(entity: ImportEntity<Payload, Item, Fil
       .map((c) => ({ key: c.key, add: c.lookupHint, update: c.lookupHintUpdate })),
     keyColumn: spec.keyColumn,
     hasKeyOf: spec.keyOf !== undefined,
+    keyMatch: spec.keyMatch ?? "exact",
+    hasRecordLabel: spec.recordLabel !== undefined,
     hasCurrency: spec.currencyOf !== undefined,
     hasExtras: spec.extras !== undefined,
     extraColumns: spec.extraColumns ?? [],
@@ -51,6 +53,8 @@ const ENTITIES = [
     extraColumns: [],
     notUpdatable: [],
     key: "name",
+    // The server compares company names ignoring capitals (`get_company_by_name`), the one CRM key that does.
+    keyMatch: "caseless",
   },
   {
     name: "contacts",
@@ -62,6 +66,8 @@ const ENTITIES = [
     extraColumns: ["phone"],
     notUpdatable: [],
     key: "email",
+    // The server dedupes emails on the exact string, so a case variant is another contact.
+    keyMatch: "exact",
   },
   {
     name: "leads",
@@ -74,21 +80,25 @@ const ENTITIES = [
     extraColumns: [],
     notUpdatable: ["email", "phone"],
     key: undefined,
+    keyMatch: "exact",
   },
   {
     name: "deals",
     shape: shapeOf(dealImport),
-    // DealPatch without `stage` and `probability`: extra steps send those
+    // DealPatch's plain fields. Its `probability` is sent by an extra step (so that a stage move,
+    // which resets it, can carry it), and `stage` only moves through `POST /deals/{id}/stage`.
     accepted: ["name", "company_id", "primary_contact_id", "owner_id", "value_minor", "currency", "close_date", "source"],
     clear: { contact: null, source: "" },
     immutable: [],
     extraColumns: ["stage", "probability"],
     notUpdatable: [],
     key: "name",
+    // Deal names are unique on the exact string (`get_deal_by_name`): 'Q4 Renewal' and 'Q4 renewal' are two deals.
+    keyMatch: "exact",
   },
 ];
 
-describe.each(ENTITIES)("$name: the update spec", ({ shape, accepted, clear, immutable, extraColumns, notUpdatable, key }) => {
+describe.each(ENTITIES)("$name: the update spec", ({ shape, accepted, clear, immutable, extraColumns, notUpdatable, key, keyMatch }) => {
   it("names only importable columns for its fields, its extra steps and its key", () => {
     for (const field of shape.fields) expect(shape.importable).toContain(field.column);
     for (const column of [...shape.extraColumns, ...shape.notUpdatable]) expect(shape.importable).toContain(column);
@@ -104,6 +114,14 @@ describe.each(ENTITIES)("$name: the update spec", ({ shape, accepted, clear, imm
   it("finds a row's record by the list's key, or by its ID alone where the list has none", () => {
     expect(shape.keyColumn).toBe(key);
     expect(shape.hasKeyOf).toBe(key !== undefined);
+  });
+
+  it("matches that key the way the server's uniqueness rule does: capitals count except for company names", () => {
+    expect(shape.keyMatch).toBe(keyMatch);
+  });
+
+  it("names the record a row updates, so a shifted Record ID column is seen in the preview", () => {
+    expect(shape.hasRecordLabel).toBe(true);
   });
 
   it("sends only keys the endpoint accepts, and never one it marks immutable", () => {

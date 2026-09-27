@@ -244,8 +244,8 @@ describe("companies: update from Excel", () => {
         [
           // 2: by Record ID; only the City differs, the other cells repeat what is stored.
           ["comp-1", "Northwind Logistics", "Logistics", "Pune", null, null],
-          // 3: by name (ignoring capitals and spacing), no Record ID; the industry is emptied.
-          [null, "cobalt   FINANCIAL", "[clear]", null, null, null],
+          // 3: by name (ignoring capitals, as the server does), no Record ID; the industry is emptied.
+          [null, "cobalt FINANCIAL", "[clear]", null, null, null],
           // 4: a yen company, an amount and no currency: the amount is read in yen, no currency is sent.
           ["comp-3", null, null, null, 800, null],
           // 5: nothing differs from what is stored.
@@ -474,9 +474,11 @@ describe("the sample sheet's update rules", () => {
     expect(lines).toContain("Updating existing companies");
     expect(lines).toContain("Can be emptied with [clear]: Domain, Industry, Headcount, City, Country.");
     expect(lines.some((line) => typeof line === "string" && line.startsWith("Cannot be changed once created:"))).toBe(false);
-    expect(lines).toContain(
-      "A row is matched to an existing record by its Record ID (the column an export writes). A row without one is matched by Company name, ignoring capitals and extra spaces. A row that matches nothing is added as a new record. If two records have the same Company name, the row is refused.",
-    );
+    // The engine words how a row is matched; the list only says the key is the name and, being a
+    // company, that capitals do not count (the server compares company names that way).
+    const matching = lines.find((line) => typeof line === "string" && line.startsWith("A row is matched to an existing record by its Record ID"));
+    expect(matching).toMatch(/A row without one is matched by Company name, ignoring capitals/);
+    expect(matching).toMatch(/A row that matches nothing is added as a new record\./);
   });
 
   it("tells a user of leads that email and phone cannot be changed and that a lead is found by its ID alone", async () => {
@@ -530,8 +532,8 @@ describe("contacts: update from Excel", () => {
           ["cont-1", null, "COO", "+91 98765 43210"],
           // 3: by email, no Record ID; only a number, so no PATCH at all.
           [null, "daniel.okafor@cobaltfin.com", null, "+234 802 345 6789"],
-          // 4: by email in other capitals than the one on file; nothing differs.
-          [null, "PRIYA.NAIR@northwind.co", "Analyst", null],
+          // 4: by email exactly as it is on file (the server compares emails exactly); nothing differs.
+          [null, "Priya.Nair@northwind.co", "Analyst", null],
           // 5: the title is emptied.
           ["cont-4", null, "[clear]", null],
           // 6: an address that differs only in capitals from another contact's.
@@ -666,6 +668,43 @@ describe("leads: update from Excel", () => {
     expect(screen.getByText("3 updated, 1 created, 2 failed.")).toBeTruthy();
     await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
   }, 30_000);
+
+  it("treats a lead that points at the company it became as converted, though its status does not say so", async () => {
+    // The server refuses an owner on a lead with `converted_company_id` set, not only one with the status.
+    const requests = stubOrganisation({
+      lists: {
+        "/leads": [
+          leadWire("lead-5", "Nadia Rahman", { status: "qualified", owner_id: "own-1", converted_company_id: "comp-1" }),
+          leadWire("lead-6", "Osei Mensah", { status: "qualified", owner_id: "own-1", converted_company_id: "comp-1" }),
+        ],
+      },
+    });
+    const user = userEvent.setup();
+    render(<Harness entity={leadImport} filters={{ status: "all" }} onImported={onImported} />);
+    await openDialog(user, "leads");
+    await chooseMode(user, "Add new and update existing");
+    await chooseFile(
+      user,
+      await sheetOfColumns(
+        leadImport,
+        ["id", "fullName", "owner"],
+        [
+          ["lead-5", null, "Grace@Example.com"],
+          ["lead-6", "Osei Mensah-Boateng", null],
+        ],
+        "leads-converted.xlsx",
+      ),
+    );
+
+    expect(action(2)).toBe(
+      "Needs fixingA converted lead cannot be reassigned. Its Full name, Company and Notes can still be changed.",
+    );
+    expect(action(3)).toBe("UpdateChanges: Full name");
+
+    await runImport(user, 1);
+
+    expect(writesOf(requests)).toEqual([{ request: "PATCH /leads/lead-6", body: { full_name: "Osei Mensah-Boateng" } }]);
+  }, 20_000);
 });
 
 /* ------------------------------------ deals ------------------------------------ */
@@ -694,7 +733,7 @@ describe("deals: update from Excel", () => {
   ];
   const KEYS = ["id", "company", "contact", "value", "currency", "stage", "probability", "source"] as const;
 
-  it("sends the changed fields, then the stage move with a probability the row changes, and nothing for what cannot move", async () => {
+  it("sends the changed fields, then the stage move, repeating a probability the row changes, and nothing for what cannot move", async () => {
     const requests = stubOrganisation({ lists: { "/customers": COMPANIES, "/contacts": CONTACTS, "/deals": DEALS } });
     const user = userEvent.setup();
     render(<Harness entity={dealImport} filters={{ search: "", stage: "all", ownerId: "all" }} onImported={onImported} />);
@@ -706,9 +745,11 @@ describe("deals: update from Excel", () => {
         dealImport,
         KEYS,
         [
-          // 2: a value, a source and a stage: the PATCH, then the stage move alone (the row leaves the probability as it is).
+          // 2: a value, a source and a stage: the PATCH, then the stage move alone. The row gives no
+          // probability, so the server resets it to Negotiation's usual 70, and the preview says so.
           ["deal-1", null, null, 450000, null, "Negotiation", null, "Outbound"],
-          // 3: a stage and a probability, nothing else: only the stage move, carrying the probability.
+          // 3: a stage and a different probability, nothing else: only the stage move, carrying the
+          // probability, so the move does not reset it.
           ["deal-2", null, null, null, null, "Qualified", 45, null],
           // 4: a probability alone: a PATCH, no stage move.
           ["deal-4", null, null, null, null, null, 70, null],
@@ -728,7 +769,7 @@ describe("deals: update from Excel", () => {
     expect(figure("Rows in file")).toBe("7");
     expect(figure("Updates")).toBe("5");
     expect(figure("Need fixing")).toBe("2");
-    expect(action(2)).toBe("UpdateChanges: Deal value, Source, Stage");
+    expect(action(2)).toBe("UpdateChanges: Deal value, Source, Stage, Probability (reset to 70%)");
     expect(action(3)).toBe("UpdateChanges: Stage, Probability (%)");
     expect(action(4)).toBe("UpdateChanges: Probability (%)");
     expect(action(5)).toBe("Needs fixingThis deal is Closed Won, and a closed deal cannot be moved to another stage.");
@@ -769,7 +810,7 @@ describe("deals: update from Excel", () => {
       user,
       await sheetOfColumns(dealImport, KEYS, [["deal-1", null, null, null, null, "Lead", null, "Outbound"]], "deal.xlsx"),
     );
-    expect(action(2)).toBe("UpdateChanges: Source, Stage");
+    expect(action(2)).toBe("UpdateChanges: Source, Stage, Probability (reset to 20%)");
 
     await runImport(user, 1);
 
@@ -782,5 +823,203 @@ describe("deals: update from Excel", () => {
     expect(rowsOf(screen.getByRole("region", { name: "Rows that were not imported" }))).toEqual([
       ["2", "Northwind fleet renewal", "Failed", "A deal in 'proposal' cannot move to 'lead' The earlier changes to this row were saved."],
     ]);
+  }, 20_000);
+
+  it("says what a stage move does to the probability, and that closing a deal cannot be undone", async () => {
+    const requests = stubOrganisation({ lists: { "/customers": COMPANIES, "/contacts": CONTACTS, "/deals": DEALS } });
+    const user = userEvent.setup();
+    render(<Harness entity={dealImport} filters={{ search: "", stage: "all", ownerId: "all" }} onImported={onImported} />);
+    await openDialog(user, "deals");
+    await chooseMode(user, "Add new and update existing");
+    await chooseFile(
+      user,
+      await sheetOfColumns(
+        dealImport,
+        KEYS,
+        [
+          // 2: an export's own probability cell (55, as on file) beside a new stage: not a choice, so
+          // the move resets it, and the preview says to what.
+          ["deal-1", null, null, null, null, "Lead", 55, null],
+          // 3: a deal is closed; the probability it ends at is said too.
+          ["deal-6", null, null, null, null, "Closed Won", null, null],
+          // 4: closing as lost with the figure lost always has: accepted, and the move is not asked for one.
+          ["deal-2", null, null, null, null, "Closed Lost", 0, null],
+          // 5: closing with a figure closing never gives is refused, before anything is sent.
+          ["deal-7", null, null, null, null, "Closed Lost", 30, null],
+          // 6: a value and a probability, no stage move: the fields, then the probability.
+          ["deal-4", null, null, 450000, null, null, 70, null],
+        ],
+        "deals-stage.xlsx",
+      ),
+    );
+
+    expect(figure("Updates")).toBe("4");
+    expect(figure("Need fixing")).toBe("1");
+    expect(action(2)).toBe("UpdateChanges: Stage, Probability (reset to 20%)");
+    expect(action(3)).toBe("UpdateChanges: Stage (closes the deal), Probability (reset to 100%)");
+    expect(action(4)).toBe("UpdateChanges: Stage (closes the deal), Probability (reset to 0%)");
+    expect(action(5)).toBe(
+      "Needs fixingClosed Lost always sets Probability (%) to 0, so it cannot be 30 in the same row. Leave the cell as it is, or type 0.",
+    );
+    expect(action(6)).toBe("UpdateChanges: Deal value, Probability (%)");
+    expect(writesOf(requests)).toEqual([]);
+
+    await runImport(user, 4);
+
+    expect(writesOf(requests)).toEqual([
+      // Nothing repeats the probability on file to keep it: the server's reset is what the row gets.
+      { request: "POST /deals/deal-1/stage", body: { stage: "lead" } },
+      // Closing never carries a probability: the server pins 100 (won) or 0 (lost).
+      { request: "POST /deals/deal-6/stage", body: { stage: "closed_won" } },
+      { request: "POST /deals/deal-2/stage", body: { stage: "closed_lost" } },
+      { request: "PATCH /deals/deal-4", body: { value_minor: 45000000 } },
+      { request: "PATCH /deals/deal-4", body: { probability: 70 } },
+    ]);
+    expect(screen.getByText("4 updated, 1 failed.")).toBeTruthy();
+    expect(rowsOf(screen.getByRole("region", { name: "Rows that were not imported" }))).toEqual([
+      [
+        "5",
+        "Sigma sale",
+        "Invalid",
+        "Closed Lost always sets Probability (%) to 0, so it cannot be 30 in the same row. Leave the cell as it is, or type 0.",
+      ],
+    ]);
+    await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
+    expect(present(onImported.mock.calls[0]?.[0], "the summary").outcomes.map((o) => [o.row, o.status, o.changes])).toEqual([
+      [2, "updated", ["Stage", "Probability (reset to 20%)"]],
+      [3, "updated", ["Stage (closes the deal)", "Probability (reset to 100%)"]],
+      [4, "updated", ["Stage (closes the deal)", "Probability (reset to 0%)"]],
+      [5, "invalid", undefined],
+      [6, "updated", ["Deal value", "Probability (%)"]],
+    ]);
+  }, 30_000);
+
+  it("refuses to leave a deal with a contact nobody can check when it moves to another company, unless the row names or removes one", async () => {
+    // The deals' contact is not among the contacts this caller can see (a colleague's, or deleted).
+    const hidden = { company_id: "comp-1", primary_contact_id: "cont-hidden" };
+    const requests = stubOrganisation({
+      lists: {
+        "/customers": COMPANIES,
+        "/contacts": CONTACTS,
+        "/deals": [
+          dealWire("deal-1", "Orion", hidden),
+          dealWire("deal-2", "Pegasus", hidden),
+          dealWire("deal-3", "Quasar", hidden),
+          dealWire("deal-4", "Rigel", hidden),
+        ],
+      },
+    });
+    const user = userEvent.setup();
+    render(<Harness entity={dealImport} filters={{ search: "", stage: "all", ownerId: "all" }} onImported={onImported} />);
+    await openDialog(user, "deals");
+    await chooseMode(user, "Add new and update existing");
+    await chooseFile(
+      user,
+      await sheetOfColumns(
+        dealImport,
+        KEYS,
+        [
+          // 2: another company, the contact left as it is: it cannot be judged.
+          ["deal-1", "Cobalt Financial", null, null, null, null, null, null],
+          // 3: another company and one of its contacts.
+          ["deal-2", "Cobalt Financial", "daniel.okafor@cobaltfin.com", null, null, null, null, null],
+          // 4: another company and the contact removed.
+          ["deal-3", "Cobalt Financial", "[clear]", null, null, null, null, null],
+          // 5: no other company: the contact is not judged.
+          ["deal-4", null, null, 450000, null, null, null, null],
+        ],
+        "deals-hidden-contact.xlsx",
+      ),
+    );
+
+    expect(action(2)).toBe(
+      "Needs fixingThe deal's primary contact is not among the contacts you can see, so it cannot be checked against Cobalt Financial. " +
+        "Name one of that company's contacts in Primary contact email, or type [clear] to remove the primary contact.",
+    );
+    expect(action(3)).toBe("UpdateChanges: Company, Primary contact email");
+    expect(action(4)).toBe("UpdateChanges: Company, Primary contact email");
+    expect(action(5)).toBe("UpdateChanges: Deal value");
+
+    await runImport(user, 3);
+
+    expect(writesOf(requests)).toEqual([
+      { request: "PATCH /deals/deal-2", body: { company_id: "comp-2", primary_contact_id: "cont-2" } },
+      { request: "PATCH /deals/deal-3", body: { company_id: "comp-2", primary_contact_id: null } },
+      { request: "PATCH /deals/deal-4", body: { value_minor: 45000000 } },
+    ]);
+    expect(screen.getByText("3 updated, 1 failed.")).toBeTruthy();
+  }, 30_000);
+
+  it("accepts the contact a deal was exported with even when another contact's address differs from it only in capitals", async () => {
+    const requests = stubOrganisation({
+      lists: {
+        "/customers": COMPANIES,
+        // The server keeps these two apart: it compares emails exactly.
+        "/contacts": [
+          contactWire("cont-1", "asha.rao@northwind.co", "comp-1"),
+          contactWire("cont-9", "Asha.Rao@northwind.co", "comp-1"),
+        ],
+        "/deals": [
+          dealWire("deal-1", "Orion", { company_id: "comp-1", primary_contact_id: "cont-1" }),
+          dealWire("deal-2", "Pegasus", { company_id: "comp-1", primary_contact_id: "cont-9" }),
+          dealWire("deal-3", "Quasar", { company_id: "comp-1", primary_contact_id: "cont-1" }),
+        ],
+      },
+    });
+    const user = userEvent.setup();
+    render(<Harness entity={dealImport} filters={{ search: "", stage: "all", ownerId: "all" }} onImported={onImported} />);
+    await openDialog(user, "deals");
+    await chooseMode(user, "Add new and update existing");
+    await chooseFile(
+      user,
+      await sheetOfColumns(
+        dealImport,
+        KEYS,
+        [
+          // 2 and 3: each deal's own contact, spelled as the export writes it, beside a new value.
+          ["deal-1", null, "asha.rao@northwind.co", 450000, null, null, null, null],
+          ["deal-2", null, "Asha.Rao@northwind.co", 450000, null, null, null, null],
+          // 4: the other twin's exact spelling: that contact is named, so it is the deal's new contact.
+          ["deal-3", null, "Asha.Rao@northwind.co", null, null, null, null, null],
+        ],
+        "deals-twin-contacts.xlsx",
+      ),
+    );
+
+    expect(action(2)).toBe("UpdateChanges: Deal value");
+    expect(action(3)).toBe("UpdateChanges: Deal value");
+    expect(action(4)).toBe("UpdateChanges: Primary contact email");
+
+    await runImport(user, 3);
+
+    expect(writesOf(requests)).toEqual([
+      { request: "PATCH /deals/deal-1", body: { value_minor: 45000000 } },
+      { request: "PATCH /deals/deal-2", body: { value_minor: 45000000 } },
+      { request: "PATCH /deals/deal-3", body: { primary_contact_id: "cont-9" } },
+    ]);
+  }, 30_000);
+
+  it("still refuses a spelling of that address that neither contact has, as ambiguous", async () => {
+    stubOrganisation({
+      lists: {
+        "/customers": COMPANIES,
+        "/contacts": [
+          contactWire("cont-1", "asha.rao@northwind.co", "comp-1"),
+          contactWire("cont-9", "Asha.Rao@northwind.co", "comp-1"),
+        ],
+        "/deals": [dealWire("deal-1", "Orion", { company_id: "comp-1", primary_contact_id: "cont-1" })],
+      },
+    });
+    const user = userEvent.setup();
+    render(<Harness entity={dealImport} filters={{ search: "", stage: "all", ownerId: "all" }} onImported={onImported} />);
+    await openDialog(user, "deals");
+    await chooseMode(user, "Add new and update existing");
+    await chooseFile(
+      user,
+      await sheetOfColumns(dealImport, KEYS, [["deal-1", null, "ASHA.RAO@northwind.co", null, null, null, null, null]], "deals-ambiguous.xlsx"),
+    );
+    expect(action(2)).toMatch(
+      /^Needs fixing'ASHA\.RAO@northwind\.co' matches more than one of the accepted values for Primary contact email, so it cannot be chosen\./,
+    );
   }, 20_000);
 });

@@ -60,6 +60,28 @@ export const CONTACT_HINT_UPDATE =
 
 /* --------------------------------- lookups --------------------------------- */
 
+/**
+ * A lookup that can also answer for a label's exact spelling. The engine matches labels ignoring
+ * capitals, so two entries whose labels differ only in capitals (two contacts the server keeps apart
+ * because it compares emails exactly) make each other's label ambiguous. `resolveSpelling` is how an
+ * update settles that: see `resolveLabel` in `updateShared`.
+ */
+export interface SpellingLookup extends Lookup {
+  /** The value of the one entry whose label is exactly `label` (trimmed, capitals as typed), or
+   *  undefined when no entry, or more than one, is spelled that way. */
+  resolveSpelling(label: string): string | undefined;
+}
+
+/** `makeLookup` that also knows each label's exact spelling. Everything `makeLookup` answers, it answers the same. */
+export function makeSpellingLookup(entries: readonly { label: string; value: string }[]): SpellingLookup {
+  const bySpelling = new Map<string, string | null>();
+  for (const { label, value } of entries) {
+    const spelling = label.trim();
+    bySpelling.set(spelling, bySpelling.has(spelling) && bySpelling.get(spelling) !== value ? null : value);
+  }
+  return { ...makeLookup(entries), resolveSpelling: (label) => bySpelling.get(label.trim()) ?? undefined };
+}
+
 const entry = (o: Owner) => ({ label: o.email, value: o.id });
 
 /**
@@ -70,8 +92,8 @@ const entry = (o: Owner) => ({ label: o.email, value: o.id });
 export async function loadOwnerLookups(signal: AbortSignal): Promise<LookupSet> {
   const owners = await getOwners(signal);
   return {
-    [LOOKUP_OWNERS]: makeLookup(owners.filter((o) => o.is_active).map(entry)),
-    [LOOKUP_ALL_OWNERS]: makeLookup(owners.map(entry)),
+    [LOOKUP_OWNERS]: makeSpellingLookup(owners.filter((o) => o.is_active).map(entry)),
+    [LOOKUP_ALL_OWNERS]: makeSpellingLookup(owners.map(entry)),
   };
 }
 
@@ -81,7 +103,7 @@ export async function loadCompanyLookup(signal: AbortSignal): Promise<Lookup> {
     signal,
     key: (company) => company.id,
   });
-  return makeLookup(rows.map((c) => ({ label: c.name, value: c.id })));
+  return makeSpellingLookup(rows.map((c) => ({ label: c.name, value: c.id })));
 }
 
 /** Pages of contacts the contact-email lookup reads: 100 of 200, so 20,000 contacts. A book past
@@ -107,7 +129,7 @@ async function loadAllContacts(signal: AbortSignal, maxPages?: number): Promise<
 export async function loadContactLookups(signal: AbortSignal): Promise<LookupSet> {
   const rows = await loadAllContacts(signal);
   return {
-    [LOOKUP_CONTACTS]: makeLookup(rows.map((c) => ({ label: c.email, value: c.id }))),
+    [LOOKUP_CONTACTS]: makeSpellingLookup(rows.map((c) => ({ label: c.email, value: c.id }))),
     [LOOKUP_CONTACT_COMPANIES]: makeLookup(rows.map((c) => ({ label: c.email, value: c.company_id }))),
     [LOOKUP_COMPANY_OF_CONTACT]: makeLookup(rows.map((c) => ({ label: c.id, value: c.company_id }))),
   };
