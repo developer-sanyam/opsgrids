@@ -211,10 +211,20 @@ export interface UpdateSpec<Item> {
   ): readonly ExtraStep[];
 }
 
+/**
+ * How the runner sends one request of a plan: it waits for its turn (throttling), waits out a 429
+ * and tries that request again, and gives up when the run is cancelled. A plan hands each of its
+ * requests (the field update, then every extra step) to it, so a 429 retries only the request that
+ * received it: a 429 request never executed, but the ones before it did and must not be repeated.
+ */
+export type StepRunner = (step: () => Promise<void>) => Promise<void>;
+
 /** What one matched row will do: the headers it changes, and the calls that do it. */
 export interface UpdatePlan {
   changed: readonly string[];
-  run(): Promise<void>;
+  /** Sends the changed fields, then each extra step. Every request goes through `around` when given,
+   *  which is how the runner paces it; each `send` and each extra step must be ONE request. */
+  run(around?: StepRunner): Promise<void>;
 }
 
 /**
@@ -246,7 +256,9 @@ export interface ImportEntity<Payload, Item = unknown, Filters = void> {
   recordIdKey?: string | undefined;
   /** Reference data (owners, warehouses, categories) from the full lists. Called once per open. */
   loadLookups?: ((signal: AbortSignal) => Promise<LookupSet>) | undefined;
-  /** Cross-column rules the per-column checks cannot express. Return a sentence, or null when fine. */
+  /** Cross-column rules the per-column checks cannot express. Return a sentence, or null when fine.
+   *  Judges rows that create a record: a row that updates one is left to `update.check`, since a
+   *  partial row (blank cells leave fields alone) would fail rules written for a complete one. */
   validateRow?: ((row: ParsedRow, ctx: ImportContext) => string | null) | undefined;
   /** The body the existing create endpoint takes. Resolve lookups here; throw `RowProblem` when a
    *  name does not resolve or a rule is broken. */
@@ -262,21 +274,27 @@ export interface ImportEntity<Payload, Item = unknown, Filters = void> {
 
 // ------------------------------------------------------------------------ session and view state
 
-export type RowStatus = "created" | "skipped" | "failed" | "invalid";
+export type RowStatus = "created" | "updated" | "unchanged" | "skipped" | "failed" | "invalid";
 
 export interface RowOutcome {
   /** The row's number in the sheet (header is row 1, so data starts at 2). */
   row: number;
   status: RowStatus;
-  /** The reason for anything but `created`: the server's own sentence, or the local check's. */
+  /** The reason for anything but `created` and `updated`: the server's own sentence, or the local check's. */
   message: string | null;
   /** The new record's id, when the create returned one. */
   id?: string | undefined;
+  /** An update row: the headers of the columns it changes (or tried to change, when it failed). */
+  changes?: readonly string[] | undefined;
   /** The first required cell, so a report row is recognisable without the sheet open. */
   label: string;
 }
 
 export type ImportPhase = "menu" | "reading" | "preview" | "importing" | "done" | "error";
+
+/** What the import will do with one row. `unchanged` is an update row that already matches its
+ *  record: no request. `sample` is an unchanged example row: skipped without a message. */
+export type PreviewAction = "create" | "update" | "unchanged" | "invalid" | "sample";
 
 export interface PreviewRow {
   row: number;
@@ -286,22 +304,39 @@ export interface PreviewRow {
   error: string | null;
   /** An unchanged sample row: skipped without a message. */
   sample: boolean;
+  action: PreviewAction;
+  /** `update` rows: the headers of the columns that change. Empty otherwise. */
+  changes: readonly string[];
 }
 
 export interface ImportPreview {
   fileName: string;
-  /** Data rows found (blank rows excluded). */
+  /** The mode this preview was computed for. */
+  mode: ImportMode;
+  /** Data rows found (blank rows excluded): `create + update + unchanged + invalid + sample`. */
   total: number;
+  /** Rows that will be sent: `create + update`. */
   valid: number;
   invalid: number;
   sample: number;
+  /** Rows that will add a record. In `add` mode this is `valid`. */
+  create: number;
+  /** Rows that will change a record (update mode only). */
+  update: number;
+  /** Rows that match a record and change nothing: no request is made for them (update mode only). */
+  unchanged: number;
   columns: readonly { key: string; header: string }[];
   /** At most the first 200 rows, invalid ones first. */
   rows: readonly PreviewRow[];
   /** Headers in the file that match no column (ignored). */
   unknownHeaders: readonly string[];
-  /** Required columns absent from the header row: the import cannot start until the file has them. */
+  /** Required columns absent from the header row: the import cannot start until the file has them.
+   *  Always empty in `addAndUpdate` mode: a row that updates a record needs none of them (a blank cell
+   *  leaves the field alone), and a row that adds one says what it lacks. */
   missingRequired: readonly string[];
+  /** A sentence when update mode was chosen but the file has no column that can name a record (no
+   *  Record ID and no key column), so every row would be added as new. Null otherwise, and in `add` mode. */
+  matchWarning: string | null;
 }
 
 export interface ImportProgress {
@@ -310,6 +345,7 @@ export interface ImportProgress {
   /** Rows that will be sent. */
   total: number;
   created: number;
+  updated: number;
   skipped: number;
   failed: number;
   /** Set while the runner waits out the rate limit. */
@@ -318,6 +354,9 @@ export interface ImportProgress {
 
 export interface ImportSummary {
   created: number;
+  updated: number;
+  /** Update rows that matched a record and changed nothing: nothing was sent for them. */
+  unchanged: number;
   skipped: number;
   failed: number;
   invalid: number;
@@ -333,6 +372,8 @@ export interface ExportProgress {
 
 export interface DataExchangeState {
   phase: ImportPhase;
+  /** What an import does with a row that names an existing record. `add` until the user chooses. */
+  mode: ImportMode;
   /** A sentence for `phase: "error"` (wrong file type, too large, unreadable, too many rows). */
   error: string | null;
   preview: ImportPreview | null;
@@ -345,6 +386,10 @@ export interface DataExchangeState {
 }
 
 export interface DataExchangeActions {
+  /** Chooses what an import does with rows that name an existing record. On a preview it checks the
+   *  file again in the new mode, from the cells already read (the file is not read twice). Ignored
+   *  while rows are being sent. */
+  setMode(mode: ImportMode): Promise<void>;
   /** Reads and validates a chosen file; moves to `reading`, then `preview` or `error`. */
   openFile(file: File): Promise<void>;
   /** Sends the valid rows; moves to `importing`, then `done`. */
@@ -370,13 +415,15 @@ export interface DataExchangeMeta {
   requiredHeaders: readonly string[];
   /** False when the entity has no `export`. */
   canExport: boolean;
+  /** True when the entity has an `update` spec: the dialog offers "Add new and update existing". */
+  canUpdate: boolean;
 }
 
 export interface UseImportExportOptions<Filters> {
   /** The screen's current list filters, passed to `export.fetchPage`. */
   filters?: Filters | undefined;
-  /** Called once when an import run ends (finished or cancelled) having created at least one
-   *  record: the screen reloads its list here so the new rows appear without a refresh. */
+  /** Called once when an import run ends (finished or cancelled) having created or updated at least
+   *  one record: the screen reloads its list here so the new and changed rows appear without a refresh. */
   onImported?: ((summary: ImportSummary) => void) | undefined;
 }
 

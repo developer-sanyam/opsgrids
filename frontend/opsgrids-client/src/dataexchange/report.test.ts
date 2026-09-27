@@ -9,6 +9,8 @@ const entity = makeProductEntity();
 
 const summary: ImportSummary = {
   created: 1,
+  updated: 0,
+  unchanged: 0,
   skipped: 1,
   failed: 1,
   invalid: 1,

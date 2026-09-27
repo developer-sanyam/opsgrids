@@ -85,6 +85,67 @@ function checkColumn(entity: AnyEntity, column: ImportColumn, lookups: LookupSet
   return problems;
 }
 
+/**
+ * The rules an `update` spec must keep, so that a row can find its record and a field can only ever
+ * be changed in a way the list's endpoint accepts. Nothing here can run the spec: the checks are on
+ * how it is described.
+ */
+function checkUpdate(entity: AnyEntity): string[] {
+  const { update } = entity;
+  if (update === undefined) return [];
+  const problems: string[] = [];
+  const known = new Map(entity.columns.map((column) => [column.key, column]));
+  const { keyColumn } = update;
+
+  if (keyColumn !== undefined) {
+    const holder = known.get(keyColumn);
+    if (holder === undefined) problems.push(`The update's keyColumn "${keyColumn}" names no column`);
+    else if (holder.readOnly === true) {
+      problems.push(`The update's keyColumn "${keyColumn}" is read-only, so an import never reads it`);
+    }
+    if (update.keyOf === undefined) {
+      problems.push(`The update has a keyColumn ("${keyColumn}") but no keyOf, so no stored record can be matched by it`);
+    }
+  } else if (update.keyOf !== undefined) {
+    problems.push("The update has keyOf but no keyColumn, so nothing reads it");
+  }
+
+  if (entity.recordIdKey === undefined) {
+    if (entity.columns.some((column) => column.key === "id")) {
+      problems.push(
+        'The entity has an "id" column and an update but no recordIdKey, so a row cannot name its record by Record ID',
+      );
+    }
+    if (keyColumn === undefined) {
+      problems.push("The update has neither a recordIdKey nor a keyColumn, so no row can name a record to update");
+    }
+  }
+
+  if (update.fields.length === 0) problems.push("The update has no fields, so it could change nothing");
+  const seen = new Set<string>();
+  for (const field of update.fields) {
+    const name = `Update field "${field.column}"`;
+    if (seen.has(field.column)) problems.push(`More than one update field is for the column "${field.column}"`);
+    seen.add(field.column);
+    const column = known.get(field.column);
+    if (column === undefined) {
+      problems.push(`${name} names no column`);
+      continue;
+    }
+    const identity = field.column === keyColumn || field.column === entity.recordIdKey;
+    if (column.readOnly === true && !(field.immutable === true && identity)) {
+      problems.push(`${name} is for a read-only column, which an import never reads`);
+    }
+    if (field.clear !== undefined && column.required === true) {
+      problems.push(`${name} can be cleared but the column is required`);
+    }
+    if (field.clear !== undefined && field.immutable === true) {
+      problems.push(`${name} is immutable and also says how to clear it`);
+    }
+  }
+  return problems;
+}
+
 /** Every problem with the definition, as sentences. Empty when the entity is sound. */
 export function checkImportEntity(entity: AnyEntity, lookups: LookupSet): string[] {
   const problems: string[] = [];
@@ -110,6 +171,8 @@ export function checkImportEntity(entity: AnyEntity, lookups: LookupSet): string
       problems.push(`recordIdKey "${entity.recordIdKey}" must name a readOnly column: the export's own id`);
     }
   }
+
+  problems.push(...checkUpdate(entity));
 
   const known = new Map(entity.columns.map((column) => [column.key, column]));
   const importable = importableColumns(entity);

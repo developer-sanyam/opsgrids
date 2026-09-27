@@ -118,8 +118,9 @@ describe("useImportExport: meta and identity", () => {
       exportMaxRows: 10_000,
       requiredHeaders: ["SKU", "Name"],
       canExport: true,
+      canUpdate: false,
     });
-    expect(result.current.state).toMatchObject({ phase: "menu", error: null, preview: null, summary: null });
+    expect(result.current.state).toMatchObject({ phase: "menu", mode: "add", error: null, preview: null, summary: null });
   });
 
   it("uses the entity's own limits and reports when it cannot export", () => {

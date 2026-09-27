@@ -18,6 +18,7 @@ import type {
   ImportContext,
   ParsedRow,
   ParsedValue,
+  StepRunner,
   UpdateField,
   UpdatePlan,
   UpdateSpec,
@@ -153,9 +154,12 @@ function sameValue<Item>(field: UpdateField<Item>, cell: ParsedValue, stored: Pa
   return cell === stored;
 }
 
+const direct: StepRunner = (step) => step();
+
 /**
  * The plan for one matched row, or null when it changes nothing (no request is made for it).
- * `run` sends the changed fields once, then each extra step in order.
+ * `run` sends the changed fields once, then each extra step in order. Each of those is handed to
+ * `around` (the runner's pacing and 429 wait), so a rate-limited step is tried again on its own.
  */
 export function planUpdate<Item>(
   columns: readonly ImportColumn[],
@@ -171,9 +175,9 @@ export function planUpdate<Item>(
   if (changed.length === 0) return null;
   return {
     changed,
-    run: async () => {
-      if (Object.keys(diff.body).length > 0) await spec.send(existing, diff.body, ctx);
-      for (const step of extras) await step.run();
+    run: async (around = direct) => {
+      if (Object.keys(diff.body).length > 0) await around(() => spec.send(existing, diff.body, ctx));
+      for (const step of extras) await around(() => step.run());
     },
   };
 }

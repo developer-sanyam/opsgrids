@@ -80,6 +80,7 @@ export function useImportExport<Payload, Item = unknown, Filters = void>(
         .filter((column) => column.required === true && column.readOnly !== true)
         .map((column) => column.header),
       canExport: entity.export !== undefined,
+      canUpdate: entity.update !== undefined,
     }),
     [entity],
   );

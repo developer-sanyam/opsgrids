@@ -12,8 +12,9 @@ import type { AnyEntity } from "./cells";
 import { clipCell, loadExcel, moneyNumberFormat, styleHeaderRow, validationsOf, widthFor, workbookToBlob } from "./excel";
 import { currencyExponent } from "./money";
 import { substituteSampleRows } from "./sample";
-import { DEFAULT_MAX_ROWS } from "./workbook";
+import { CLEAR_TOKEN } from "./types";
 import type { ImportColumn, LookupSet, SheetValue } from "./types";
+import { DEFAULT_MAX_ROWS } from "./workbook";
 
 /** Excel refuses an inline list longer than this. */
 const INLINE_LIST_LIMIT = 255;
@@ -195,7 +196,9 @@ function generalRules(entity: AnyEntity, columns: readonly ImportColumn[]): stri
   const rules = [
     `Up to ${entity.maxRows ?? DEFAULT_MAX_ROWS} rows per file.`,
     `Columns marked * are required.`,
-    `Existing ${entity.noun} are skipped, never overwritten. Importing the same file again is safe.`,
+    entity.update === undefined
+      ? `Existing ${entity.noun} are skipped, never overwritten. Importing the same file again is safe.`
+      : `With "Add new records only", existing ${entity.noun} are skipped, never overwritten. Importing the same file again is safe.`,
     "The example rows on the Import sheet are ignored while they are unchanged. Delete them or replace them with your own.",
   ];
   if (entity.recordIdKey !== undefined) {
@@ -212,6 +215,56 @@ function generalRules(entity: AnyEntity, columns: readonly ImportColumn[]): stri
     "Hidden rows and columns are imported like any others",
     "Formulas are read as their last calculated value",
     "Do not rename the headers on the Import sheet.",
+  );
+  return rules;
+}
+
+function headersOf(entity: AnyEntity, columnKeys: readonly string[]): string {
+  return columnKeys
+    .map((key) => entity.columns.find((column) => column.key === key)?.header ?? key)
+    .join(", ");
+}
+
+/**
+ * What "Add new and update existing" does with this sheet, for an entity that can be updated: how a
+ * row finds its record, what a blank cell and `[clear]` do, what cannot change, and the
+ * warning that this overwrites live data.
+ */
+function updateRules(entity: AnyEntity): string[] {
+  const { update } = entity;
+  if (update === undefined) return [];
+  const rules = ['Choose "Add new and update existing" in the import dialog to use these rules.'];
+  const keyHeader = update.keyColumn === undefined ? undefined : headersOf(entity, [update.keyColumn]);
+  if (entity.recordIdKey !== undefined && keyHeader !== undefined) {
+    rules.push(
+      `A row is matched to an existing record by its Record ID (the column an export writes). A row without one is matched by ${keyHeader}, ignoring capitals and extra spaces. A row that matches nothing is added as a new record. If two records have the same ${keyHeader}, the row is refused.`,
+    );
+  } else if (keyHeader !== undefined) {
+    rules.push(
+      `A row is matched to an existing record by its ${keyHeader}, ignoring capitals and extra spaces. A row that matches nothing is added as a new record. If two records have the same ${keyHeader}, the row is refused.`,
+    );
+  } else {
+    rules.push(
+      "A row is matched to an existing record by its Record ID (the column an export writes). A row without one is added as a new record.",
+    );
+  }
+  rules.push(
+    "A blank cell leaves the field alone. Only the cells you fill in are compared with the record, and only the fields that differ are changed.",
+  );
+  const stuck = update.fields
+    .filter((field) => field.immutable !== true && field.clear === undefined)
+    .map((field) => field.column);
+  rules.push(
+    `Type ${CLEAR_TOKEN} in a cell to empty a field.${stuck.length > 0 ? ` These fields cannot be emptied: ${headersOf(entity, stuck)}.` : ""}`,
+  );
+  const fixed = update.fields.filter((field) => field.immutable === true).map((field) => field.column);
+  if (fixed.length > 0) {
+    rules.push(
+      `${headersOf(entity, fixed)} cannot be changed once a record exists. A row whose cell differs from the record is refused.`,
+    );
+  }
+  rules.push(
+    "Warning: updating overwrites live data and cannot be undone. Nothing detects an edit that someone else makes after your file is read: it is overwritten by what the file says. Check the preview before you import.",
   );
   return rules;
 }
@@ -251,6 +304,7 @@ function writeInstructions(
     for (const line of lines) sheet.addRow([line]);
   };
   if (entity.notes !== undefined && entity.notes.length > 0) paragraph("Notes", entity.notes);
+  if (entity.update !== undefined) paragraph(`Updating existing ${entity.noun}`, updateRules(entity));
   paragraph("General rules", generalRules(entity, columns));
 }
 

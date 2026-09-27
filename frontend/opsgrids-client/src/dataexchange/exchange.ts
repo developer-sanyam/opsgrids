@@ -22,14 +22,18 @@ import { buildSampleWorkbook, sampleFileName } from "./template";
 import type {
   DataExchangeActions,
   DataExchangeState,
+  ImportMode,
   ImportProgress,
   ImportSummary,
   LookupSet,
+  UpdateSpec,
 } from "./types";
 import { WorkbookReadError, readWorkbook } from "./workbook";
+import type { ParsedSheet } from "./workbook";
 
 export const IDLE_STATE: DataExchangeState = {
   phase: "menu",
+  mode: "add",
   error: null,
   preview: null,
   progress: null,
@@ -47,7 +51,7 @@ export interface ExchangeHost {
   /** The screen's current list filters, read when an export starts. */
   filters(): unknown;
   publish(state: DataExchangeState): void;
-  /** An import run ended having created at least one record; the screen may reload its list. */
+  /** An import run ended having created or updated at least one record; the screen may reload its list. */
   imported(summary: ImportSummary): void;
 }
 
@@ -98,11 +102,13 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 function summarise(prepared: PreparedImport, result: RunResult): ImportSummary {
   return {
     created: result.created,
+    updated: result.updated,
+    unchanged: prepared.unchanged.length + result.unchanged,
     skipped: result.skipped,
     failed: result.failed,
     invalid: prepared.invalid.length + result.invalid,
     cancelled: result.cancelled,
-    outcomes: [...prepared.invalid, ...result.outcomes].sort((a, b) => a.row - b.row),
+    outcomes: [...prepared.invalid, ...prepared.unchanged, ...result.outcomes].sort((a, b) => a.row - b.row),
   };
 }
 
@@ -135,6 +141,8 @@ export function createExchange(host: ExchangeHost): Exchange {
   /** Bumped by every `openFile` and `reset`; a read that finds it changed drops its result. */
   let session = 0;
   let prepared: PreparedImport | null = null;
+  /** The cells of the file being reviewed, kept so that a change of mode checks them again without reading the file again. */
+  let sheetRead: { sheet: ParsedSheet; fileName: string } | null = null;
   let importing = false;
   let cancelRequested = false;
   let exportRun: AbortController | null = null;
@@ -147,6 +155,15 @@ export function createExchange(host: ExchangeHost): Exchange {
    * after an import that created records (the lists have changed); a failed load is not kept.
    */
   let lookupLoad: { loader: unknown; loading: Promise<LookupSet> } | null = null;
+  /**
+   * The stored records an update-mode preview matches rows against, loaded like the lookups: once
+   * per dialog session, one load in flight shared by everyone who asks, a failed load not kept.
+   * Dropped when the dialog is reset or disposed and after an import that created or changed
+   * records (the list is no longer what was read). `settled` says a mode change can be answered
+   * without a wait.
+   */
+  let existingLoad: { loader: unknown; loading: Promise<readonly unknown[]>; settled: readonly unknown[] | null } | null =
+    null;
 
   const lookupsFor = (entity: AnyEntity, signal: AbortSignal): Promise<LookupSet> => {
     const loader = entity.loadLookups;
@@ -163,6 +180,40 @@ export function createExchange(host: ExchangeHost): Exchange {
     return untilAborted(lookupLoad.loading, signal);
   };
 
+  const existingFor = (spec: UpdateSpec<unknown>, lookups: LookupSet, signal: AbortSignal): Promise<readonly unknown[]> => {
+    if (existingLoad === null || existingLoad.loader !== spec.loadExisting) {
+      const entry: NonNullable<typeof existingLoad> = {
+        loader: spec.loadExisting,
+        loading: spec.loadExisting({ lookups, signal: life.signal }),
+        settled: null,
+      };
+      existingLoad = entry;
+      entry.loading.then(
+        (items) => {
+          entry.settled = items;
+        },
+        () => {
+          if (existingLoad === entry) existingLoad = null;
+        },
+      );
+    }
+    return untilAborted(existingLoad.loading, signal);
+  };
+
+  /** Whether the records to update are already here, so that a change of mode needs no wait. */
+  const existingIsHere = (spec: UpdateSpec<unknown>): boolean =>
+    existingLoad !== null && existingLoad.loader === spec.loadExisting && existingLoad.settled !== null;
+
+  /** Checks a read sheet in the current mode: against the stored records in update mode, else on its own. */
+  const previewOf = async (entity: AnyEntity, read: { sheet: ParsedSheet; fileName: string }, signal: AbortSignal) => {
+    const lookups = await lookupsFor(entity, signal);
+    // Read now and not before the wait: a change of mode while the lists load is honoured.
+    const mode = current.mode;
+    const spec = mode === "addAndUpdate" ? entity.update : undefined;
+    const existing = spec === undefined ? null : await existingFor(spec, lookups, signal);
+    return prepareImport(entity, read.sheet, { lookups, signal }, read.fileName, mode, existing);
+  };
+
   const publish = (patch: Partial<DataExchangeState>): void => {
     current = { ...current, ...patch };
     if (attached) host.publish(current);
@@ -175,12 +226,45 @@ export function createExchange(host: ExchangeHost): Exchange {
     const signal = life.signal;
     const entity = host.entity();
     prepared = null;
+    sheetRead = null;
     publish({ phase: "reading", error: null, preview: null, progress: null, summary: null, notice: null });
     try {
-      const sheet = await readWorkbook(file, entity);
-      const lookups = await lookupsFor(entity, signal);
+      const read = { sheet: await readWorkbook(file, entity), fileName: file.name };
+      const built = await previewOf(entity, read, signal);
       if (mine !== session || signal.aborted) return;
-      const built = prepareImport(entity, sheet, { lookups, signal }, file.name);
+      sheetRead = read;
+      prepared = built.prepared;
+      publish({ phase: "preview", preview: built.preview });
+    } catch (error) {
+      if (mine !== session || signal.aborted) return;
+      publish({ phase: "error", error: readFailure(error) });
+    }
+  };
+
+  const setMode = async (mode: ImportMode): Promise<void> => {
+    if (importing || mode === current.mode) return;
+    // A list that has no update spec has nothing to switch to.
+    if (mode === "addAndUpdate" && host.entity().update === undefined) return;
+    if (current.phase === "menu") {
+      publish({ mode });
+      return;
+    }
+    // While a file is being read the mode it is read in is already fixed; after the result there is nothing to redo.
+    const read = sheetRead;
+    if (current.phase !== "preview" || read === null) return;
+    const entity = host.entity();
+    const signal = life.signal;
+    session += 1;
+    const mine = session;
+    const spec = mode === "addAndUpdate" ? entity.update : undefined;
+    // What was previewed is for the other mode: it must not be sent while the new one is worked out.
+    prepared = null;
+    // Only a wait that is really a wait hides the preview; a mode whose records are already loaded
+    // answers at once and leaves whatever has focus where it is.
+    publish(spec !== undefined && !existingIsHere(spec) ? { mode, phase: "reading", preview: null } : { mode });
+    try {
+      const built = await previewOf(entity, read, signal);
+      if (mine !== session || signal.aborted) return;
       prepared = built.prepared;
       publish({ phase: "preview", preview: built.preview });
     } catch (error) {
@@ -202,6 +286,7 @@ export function createExchange(host: ExchangeHost): Exchange {
       done: 0,
       total: run.valid.length,
       created: 0,
+      updated: 0,
       skipped: 0,
       failed: 0,
       waiting: null,
@@ -212,6 +297,7 @@ export function createExchange(host: ExchangeHost): Exchange {
       const result = await runImport({
         entity,
         rows: run.valid,
+        mode: preview.mode,
         ctx: { lookups: run.lookups, signal },
         onProgress: (progress) => publish({ progress }),
         isCancelled: () => cancelRequested || signal.aborted,
@@ -227,9 +313,11 @@ export function createExchange(host: ExchangeHost): Exchange {
     } finally {
       importing = false;
     }
-    if (finished !== null && finished.created > 0) {
-      // Rows now exist that the lists did not know about (a manager, a company): ask again next time.
+    if (finished !== null && finished.created + finished.updated > 0) {
+      // Rows now exist, or read differently, that the lists did not know about (a manager, a
+      // company, a renamed record): ask again next time.
       lookupLoad = null;
+      existingLoad = null;
       // Outside the try: a screen's reload that throws is its own bug, not a failed import.
       if (attached) host.imported(finished);
     }
@@ -248,8 +336,11 @@ export function createExchange(host: ExchangeHost): Exchange {
     }
     session += 1;
     prepared = null;
+    sheetRead = null;
     lookupLoad = null;
-    publish({ phase: "menu", error: null, preview: null, progress: null, summary: null, notice: null });
+    existingLoad = null;
+    // Back to adding: a mode that overwrites records is chosen each time, never inherited.
+    publish({ phase: "menu", mode: "add", error: null, preview: null, progress: null, summary: null, notice: null });
   };
 
   const downloadTemplate = async (): Promise<void> => {
@@ -351,7 +442,17 @@ export function createExchange(host: ExchangeHost): Exchange {
   };
 
   return {
-    actions: { openFile, startImport, cancelImport, reset, downloadTemplate, exportAll, cancelExport, downloadReport },
+    actions: {
+      setMode,
+      openFile,
+      startImport,
+      cancelImport,
+      reset,
+      downloadTemplate,
+      exportAll,
+      cancelExport,
+      downloadReport,
+    },
     attach() {
       if (attached) return;
       attached = true;
@@ -362,6 +463,7 @@ export function createExchange(host: ExchangeHost): Exchange {
     dispose() {
       attached = false;
       lookupLoad = null;
+      existingLoad = null;
       life.abort();
       cancelRequested = true;
       exportRun?.abort();
