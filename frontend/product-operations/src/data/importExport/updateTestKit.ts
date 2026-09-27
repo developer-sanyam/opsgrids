@@ -62,6 +62,21 @@ export async function requestsOf(plan: UpdatePlan | null): Promise<SentRequest[]
   }));
 }
 
+/**
+ * Runs a plan the way the runner does, handing each of its steps to a pacing function, and counts
+ * the steps and the HTTP requests. The runner retries per step after a 429, so a step that made two
+ * requests would repeat the first when the second was refused.
+ */
+export async function stepsAndRequests(plan: UpdatePlan | null): Promise<{ steps: number; requests: number }> {
+  const recorded = stubGateway(() => ({ body: {} }));
+  let steps = 0;
+  await plan?.run(async (step) => {
+    steps += 1;
+    await step();
+  });
+  return { steps, requests: recorded.length };
+}
+
 /** The one request a plan makes, for a test that is about its body. */
 export async function soleRequest(plan: UpdatePlan | null): Promise<SentRequest> {
   const requests = await requestsOf(plan);

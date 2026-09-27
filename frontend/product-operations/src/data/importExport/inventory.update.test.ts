@@ -18,6 +18,7 @@ import {
   planFor,
   requestsOf,
   soleRequest,
+  stepsAndRequests,
   updateSpec,
 } from "./updateTestKit";
 import { makeUnitLookup } from "./units";
@@ -81,9 +82,7 @@ describe("a row that changes nothing", () => {
   });
 
   it("recognises the same values written as another person would: capitals, spacing, a unit's other spelling", () => {
-    expect(
-      plan({ ...SAME, sku: "rm-stl-4501", warehouse: " main   warehouse ", uom: "KGS", item_category: "steel" }),
-    ).toBeNull();
+    expect(plan({ ...SAME, warehouse: " main   warehouse ", uom: "KGS", item_category: "steel", currency: "inr" })).toBeNull();
   });
 
   it("leaves every field alone when every cell is blank", () => {
@@ -129,6 +128,14 @@ describe("a row that changes one field", () => {
   });
 });
 
+describe("a row that changes several fields", () => {
+  it("is one step and one request, so a rate-limited request is retried on its own", async () => {
+    const p = plan({ ...SAME, name: "Renamed", warehouse: "Cold Store", uom: "l", item_category: "metals", hsn_code: "999999" });
+    expect(p?.changed).toHaveLength(5);
+    expect(await stepsAndRequests(p)).toEqual({ steps: 1, requests: 1 });
+  });
+});
+
 describe("the unit of measure", () => {
   it.each([
     ["an item stored as Nos, for pcs", "Nos", "pcs"],
@@ -156,7 +163,11 @@ describe("the unit of measure", () => {
   it("refuses a unit the organisation does not have, instead of letting the server create one", () => {
     const attempt = () => plan({ ...BLANK, uom: "furlongs" });
     expect(attempt).toThrow(RowProblem);
-    expect(attempt).toThrow('Unit of measure "furlongs" does not match exactly one entry on the Lists sheet.');
+    expect(attempt).toThrow(
+      "'furlongs' is not one of the accepted values for Unit of measure (see the Lists sheet). " +
+        "Use a unit from the Lists sheet, or a common spelling of one such as Nos, or leave the cell blank to keep the item's unit. " +
+        "A misspelling is refused so that it cannot create a new unit.",
+    );
   });
 
   it("shows the server's refusal of a unit change on an item that has had stock as that row's failure", async () => {
@@ -177,10 +188,16 @@ describe("the warehouse", () => {
     expect((await soleRequest(plan({ ...BLANK, warehouse: "COLD STORE" }))).body).toEqual({ warehouse: "Cold Store" });
   });
 
-  it("refuses a warehouse that does not exist, naming it, and one that two warehouses share", () => {
-    expect(() => plan({ ...BLANK, warehouse: "Nowhere" })).toThrow(
-      'Warehouse "Nowhere" does not match exactly one entry on the Lists sheet.',
+  it("refuses a warehouse that does not exist, naming it, in the engine's words and with the update hint", () => {
+    const attempt = () => plan({ ...BLANK, warehouse: "Nowhere" });
+    expect(attempt).toThrow(RowProblem);
+    expect(attempt).toThrow(
+      "'Nowhere' is not one of the accepted values for Warehouse (see the Lists sheet). " +
+        "Use a warehouse from the Lists sheet, matched by name ignoring capitals, or leave the cell blank to keep the item where it is.",
     );
+  });
+
+  it("refuses a warehouse name that two warehouses share rather than picking one", () => {
     const twins: LookupSet = {
       ...LOOKUPS,
       warehouses: makeLookup([
@@ -188,9 +205,8 @@ describe("the warehouse", () => {
         { label: "Pune plant", value: "Pune plant" },
       ]),
     };
-    expect(() => planFor(inventoryImport, ITEM, { ...BLANK, warehouse: "pune plant" }, { ...ctx, lookups: twins })).toThrow(
-      RowProblem,
-    );
+    const attempt = () => planFor(inventoryImport, ITEM, { ...BLANK, warehouse: "pune plant" }, { ...ctx, lookups: twins });
+    expect(attempt).toThrow("'pune plant' matches more than one of the accepted values for Warehouse, so it cannot be chosen.");
   });
 
   it("says in the notes that a new warehouse moves the item's stock", () => {
@@ -201,13 +217,14 @@ describe("the warehouse", () => {
 describe("the item category and the HSN code", () => {
   it("refuses an item category code that does not exist yet", () => {
     expect(() => plan({ ...BLANK, item_category: "FASTENERS" })).toThrow(
-      'Item category code "FASTENERS" does not match exactly one entry on the Lists sheet.',
+      "'FASTENERS' is not one of the accepted values for Item category code (see the Lists sheet). " +
+        "Use a code from the Lists sheet, matched ignoring capitals. A blank cell keeps the item's category, and [clear] removes it.",
     );
   });
 
   it("never sends a guess when a lookup was not loaded", () => {
     expect(() => planFor(inventoryImport, ITEM, { ...BLANK, warehouse: "Main Warehouse" }, { ...ctx, lookups: {} })).toThrow(
-      RowProblem,
+      "The accepted values for Warehouse could not be loaded, so it cannot be checked",
     );
   });
 });
@@ -255,8 +272,11 @@ describe("what can never change", () => {
     expect(attempt).toThrow("SKU cannot be changed once the record exists (it is 'RM-STL-4501')");
   });
 
-  it("accepts the item's own SKU in other capitals, which is how a row found it", () => {
-    expect(plan({ ...BLANK, sku: "rm-stl-4501" })).toBeNull();
+  it("holds a row found by its Record ID to the SKU's exact spelling: other capitals is an attempt to change it", () => {
+    // A row found by typing its SKU is handed the stored spelling by the engine (see updateFlow.test.tsx).
+    expect(() => plan({ ...BLANK, sku: "rm-stl-4501" })).toThrow(
+      "SKU cannot be changed once the record exists (it is 'RM-STL-4501')",
+    );
   });
 
   it("refuses a currency other than the item's, even when no price is in the row", () => {
@@ -269,11 +289,14 @@ describe("what can never change", () => {
     expect(() => plan({ ...SAME, name: "Renamed", unit_value: 7000, currency: "USD" })).toThrow(RowProblem);
   });
 
-  it.each([500, 0])("refuses an opening stock of %s: stock changes only through adjustments", (stock) => {
-    const attempt = () => plan({ ...BLANK, opening_stock: stock });
-    expect(attempt).toThrow(RowProblem);
-    expect(attempt).toThrow("Opening stock cannot be changed once the record exists");
-  });
+  it.each([500, 0])(
+    "refuses an opening stock of %s without claiming what is stored, since stock changes only through adjustments",
+    (stock) => {
+      const attempt = () => plan({ ...BLANK, opening_stock: stock });
+      expect(attempt).toThrow(RowProblem);
+      expect(attempt).toThrow("Opening stock cannot be changed once the record exists. Leave the cell blank.");
+    },
+  );
 
   it("leaves a blank opening stock alone", () => {
     expect(plan({ ...BLANK, opening_stock: null })).toBeNull();
@@ -288,7 +311,7 @@ describe("what can never change", () => {
   });
 
   it("never puts sku, currency or stock in a body, whatever the row says", async () => {
-    const p = plan({ ...SAME, sku: "rm-stl-4501", currency: "inr", name: "Renamed" });
+    const p = plan({ ...SAME, currency: "inr", name: "Renamed" });
     const body = (await soleRequest(p)).body;
     expect(Object.keys(body as object)).toEqual(["name"]);
   });

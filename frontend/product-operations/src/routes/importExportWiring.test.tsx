@@ -68,6 +68,7 @@ vi.mock("@opsgrids/ui", async (importOriginal) => {
 
 const IDLE: DataExchangeState = {
   phase: "menu",
+  mode: "add",
   error: null,
   preview: null,
   progress: null,
@@ -85,6 +86,8 @@ let setPhase: (phase: ImportPhase) => void = () => undefined;
 /** What the engine hands `onImported` when a run ends having created rows. */
 const IMPORTED: ImportSummary = {
   created: 2,
+  updated: 0,
+  unchanged: 0,
   skipped: 0,
   failed: 0,
   invalid: 0,
@@ -118,6 +121,7 @@ beforeEach(() => {
     return {
       state: { ...IDLE, phase },
       actions: {
+        setMode: async () => undefined,
         openFile: vi.fn(),
         startImport: vi.fn(),
         cancelImport: vi.fn(),
@@ -134,6 +138,7 @@ beforeEach(() => {
         exportMaxRows: 10_000,
         requiredHeaders: [],
         canExport: true,
+        canUpdate: false,
       },
     };
   });

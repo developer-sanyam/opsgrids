@@ -10,7 +10,16 @@ import type { ImportContext, ParsedRow } from "@opsgrids/client";
 
 import { pageAt, stubGateway, supplierOut } from "./entityTestKit";
 import { supplierImport } from "./suppliers";
-import { containsNull, expectPlan, matchAmong, planFor, requestsOf, soleRequest, updateSpec } from "./updateTestKit";
+import {
+  containsNull,
+  expectPlan,
+  matchAmong,
+  planFor,
+  requestsOf,
+  soleRequest,
+  stepsAndRequests,
+  updateSpec,
+} from "./updateTestKit";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -46,8 +55,15 @@ describe("a row that changes nothing", () => {
     expect(await requestsOf(plan(SAME))).toEqual([]);
   });
 
-  it("recognises the supplier's code and currency in other capitals as the same", () => {
-    expect(plan({ ...SAME, code: "sup-mer", currency: "inr" })).toBeNull();
+  it("recognises the supplier's currency in other capitals as the same", () => {
+    expect(plan({ ...SAME, currency: "inr" })).toBeNull();
+  });
+
+  it("holds a row found by its Record ID to the code's exact spelling: other capitals is an attempt to change it", () => {
+    // A row found by typing its code is handed the stored spelling by the engine (see updateFlow.test.tsx).
+    expect(() => plan({ ...BLANK, code: "sup-mer" })).toThrow(
+      "Supplier code cannot be changed once the record exists (it is 'SUP-MER')",
+    );
   });
 
   it("leaves every field alone when every cell is blank", () => {
@@ -90,6 +106,12 @@ describe("a row that changes one field", () => {
   it("treats a change of capitals in the local part of an email as a change, since the server keeps it as typed", async () => {
     const p = plan({ ...BLANK, contact_email: "Rajesh@meridianmetals.example" });
     expect((await soleRequest(p)).body).toEqual({ contact_email: "Rajesh@meridianmetals.example" });
+  });
+
+  it("is one step and one request however many fields change, so a rate-limited request is retried on its own", async () => {
+    const p = plan({ ...SAME, name: "Meridian Steel", status: "pending", location: "Mumbai", since: "2020-01-15" });
+    expect(p?.changed).toHaveLength(4);
+    expect(await stepsAndRequests(p)).toEqual({ steps: 1, requests: 1 });
   });
 
   it("fills in a contact that was empty", async () => {
@@ -168,7 +190,7 @@ describe("what can never change", () => {
   });
 
   it("never puts code or currency in a body, whatever the row says", async () => {
-    const p = plan({ ...SAME, code: "sup-mer", currency: "inr", name: "Renamed" });
+    const p = plan({ ...SAME, currency: "inr", name: "Renamed" });
     expect(Object.keys((await soleRequest(p)).body as object)).toEqual(["name"]);
   });
 

@@ -30,7 +30,8 @@ const SLOW = { timeout: 8_000 };
 /** The sentence the engine gives a row that came from an export. */
 const RECORD_ID_REFUSAL =
   "This row has a Record ID, so it came from an export and is already in the system. " +
-  "Clear the Record ID cell to add it as a new record.";
+  "Clear the Record ID cell to add it as a new record. " +
+  "Switch to Add new and update existing to update it.";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -145,7 +146,7 @@ describe.each(CASES)("a row with a Record ID in $name", (scenario) => {
       const refused = rowContaining(preview, scenario.exportedLabel).textContent ?? "";
       expect(refused).toContain("Needs fixing");
       expect(refused).toContain(RECORD_ID_REFUSAL);
-      expect(rowContaining(preview, scenario.newLabel).textContent).toContain("Ready");
+      expect(rowContaining(preview, scenario.newLabel).textContent).toContain("New");
 
       await user.click(within(review).getByRole("button", { name: "Import 1 row" }));
       const finished = await screen.findByRole("dialog", { name: "Import finished" }, SLOW);
