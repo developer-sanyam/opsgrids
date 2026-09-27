@@ -211,6 +211,9 @@ export interface UpdateSpec<Item> {
    * column is neither a `fields[].column` (nor the key or Record ID column) nor listed here.
    */
   notUpdatable?: readonly string[];
+  /** Columns handled by an `extras` step rather than a field (a contact's phone): they count as
+   *  covered for the `notUpdatable` completeness check. */
+  extraColumns?: readonly string[];
   /** Refuses a change the list's own rules forbid, given what would change (a converted lead's
    *  status, a closed deal's stage): throw `RowProblem`. Runs after the diff. */
   check?(row: ParsedRow, existing: Item, changed: readonly string[], ctx: ImportContext): void;
