@@ -397,7 +397,10 @@ describe("LeadDetail reveal: the code dialog", () => {
     await enterCode(user);
 
     expect(await screen.findByText(/isn't set up on your account yet/)).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Security page/ }).getAttribute("href")).toBe("/account/security");
+    // The Security page is the dashboard's, on the dashboard's host: this app has no such route.
+    expect(screen.getByRole("link", { name: /Security page/ }).getAttribute("href")).toBe(
+      "https://app.opsgrids.com/account/security",
+    );
     expect(screen.queryByRole("textbox", { name: /6-digit code/ })).toBeNull();
     expect(gateway.callsTo(REVEAL)).toHaveLength(0);
     expect(screen.getByText("•••••• 4821")).toBeTruthy();
