@@ -29,7 +29,9 @@ from app.schemas import (
     MfaEnrolConfirmIn,
     MfaEnrolled,
     MfaEnrolStart,
+    MfaEnrolStartIn,
     MfaRequired,
+    MfaStepUpIn,
     MfaVerifyIn,
     OperatorEnrollmentCodeIn,
     OperatorEnrollmentCodeOut,
@@ -229,7 +231,12 @@ async def select_org(
     return _token_out(issued)
 
 
-@router.post("/auth/switch-org", response_model=TokenOut, summary="Change organization")
+@router.post(
+    "/auth/switch-org",
+    response_model=TokenOut,
+    summary="Change organization",
+    responses={409: {"description": "`already-in-organization`: the token is already for it."}},
+)
 async def switch_org(
     payload: SwitchOrgIn,
     response: Response,
@@ -239,7 +246,12 @@ async def switch_org(
     pair: KeyDep,
     principal: CurrentPrincipal,
 ) -> TokenOut:
-    """Move a live session to another organization, keeping the same session id."""
+    """Move a live session to another organization, keeping the same session id.
+
+    Answers 409 `already-in-organization` for the organization the token is already for: a
+    switch there changes nothing, and the response sets a fresh refresh cookie, so it would turn
+    any access token into a renewable session.
+    """
     cfg = settings()
     if principal.session_id is None:
         raise UnauthorizedProblem("That session is no longer valid.")
@@ -252,6 +264,7 @@ async def switch_org(
         session_id=uuid.UUID(principal.session_id),
         user_id=principal.sub,
         organization_id=payload.organization_id,
+        from_organization_id=principal.organization_id,
     )
     _set_refresh_cookie(response, cfg, issued.refresh_token)
     return _token_out(issued)
@@ -363,24 +376,113 @@ async def mfa_verify(
 
 
 @router.post(
+    "/auth/mfa/step-up",
+    response_model=TokenOut,
+    summary="Prove a one-time code and get a short-lived token for revealing protected details",
+    responses={
+        401: {"description": "The bearer token or its session is not valid."},
+        403: {
+            "description": (
+                "`mfa-unavailable-for-sso` (the session came from single sign-on), "
+                "`mfa-locked` (too many wrong codes) or `mfa-reauthentication-required` "
+                "(the authenticator was added after this session began: sign in again)."
+            )
+        },
+        409: {"description": "`mfa-not-enrolled`: set up two-factor authentication first."},
+        422: {
+            "description": (
+                "`mfa-code-invalid`, `mfa-code-replayed`, or a validation error (including a "
+                "recovery code, which is not accepted here)."
+            )
+        },
+    },
+)
+async def mfa_step_up(
+    payload: MfaStepUpIn,
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    directory: DirectoryDep,
+    entitlements: EntitlementsDep,
+    pair: KeyDep,
+    principal: CurrentPrincipal,
+) -> TokenOut:
+    """Exchange a TOTP code for an access token whose `amr` includes `otp`.
+
+    Bearer-authenticated: the caller is the signed-in member the token names, and nothing in the
+    body says who. The answer is an **access token only** — no refresh token, no cookie — good
+    for `step_up_token_ttl_seconds`, and it is not remembered by the session, so a refresh never
+    carries `otp`. Hold it in memory, use it for the reveal request(s), and let it lapse.
+
+    Takes a bare session for the reason `mfa_verify` does — a wrong code is counted and must
+    survive the request that refuses it — and binds the tenant itself; see `services.step_up`.
+    """
+    issued = await services.step_up(
+        session,
+        cfg=settings(),
+        pair=pair,
+        directory=directory,
+        entitlements=entitlements,
+        principal=principal,
+        code=payload.code,
+        request=request,
+    )
+    # A token in a response body is not for any cache to keep.
+    response.headers["Cache-Control"] = "no-store"
+    return _token_out(issued)
+
+
+@router.post(
     "/auth/mfa/enrol",
     response_model=MfaEnrolStart,
     status_code=status.HTTP_201_CREATED,
-    summary="Start setting up an authenticator app",
+    summary="Start setting up an authenticator app (re-enter your password)",
+    responses={
+        401: {"description": "The bearer token or its session is not valid."},
+        403: {
+            "description": (
+                "`mfa-unavailable-for-sso` (single sign-on session), `password-locked` or "
+                "`mfa-locked` (too many wrong attempts)."
+            )
+        },
+        422: {
+            "description": (
+                "`password-incorrect`, `mfa-current-code-required` (the account already has "
+                "an authenticator: send `current_code`), `mfa-code-invalid`, "
+                "`mfa-code-replayed`, or a validation error."
+            )
+        },
+        503: {"description": "`mfa-reseal-pending`: a legacy factor is awaiting upgrade."},
+    },
 )
 async def mfa_enrol(
-    session: TenantSessionDep, directory: DirectoryDep, principal: CurrentPrincipal
+    payload: MfaEnrolStartIn,
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    directory: DirectoryDep,
+    principal: CurrentPrincipal,
 ) -> MfaEnrolStart:
-    user = await directory.get(principal.sub)
-    if user is None:
-        raise UnauthorizedProblem("That session is no longer valid.")
-    factor, secret, uri = await services.begin_mfa_enrolment(
+    """Begin enrolling an authenticator — after the member proves who they are again.
+
+    A bearer token alone is not enough (ADR-0023, B1): the body carries the current `password`
+    and, when the account already has an authenticator, a `current_code` from it. Wrong values
+    are counted against the same lockouts as sign-in and answer 422, not 401, so the shared
+    client does not refresh and re-send the same wrong value.
+
+    Takes a bare session and commits for itself, for the reason `mfa_step_up` does; see
+    `services.begin_member_enrolment`. The response carries a secret and is not to be cached.
+    """
+    factor, secret, uri = await services.begin_member_enrolment(
         session,
-        principal.sub,
-        account_email=user.email,
         cfg=settings(),
-        session_id=principal.session_id,
+        directory=directory,
+        principal=principal,
+        password=payload.password,
+        current_code=payload.current_code,
+        request=request,
     )
+    response.headers["Cache-Control"] = "no-store"
     return MfaEnrolStart(factor_id=factor.id, secret=secret, otpauth_uri=uri)
 
 
@@ -388,10 +490,33 @@ async def mfa_enrol(
     "/auth/mfa/enrol/confirm",
     response_model=MfaEnrolled,
     summary="Prove the app works and turn MFA on",
+    responses={
+        401: {"description": "The bearer token or its session is not valid."},
+        403: {"description": "`mfa-unavailable-for-sso`: a single sign-on session."},
+        404: {
+            "description": (
+                "No such enrolment — it does not exist, is not yours, or was started from "
+                "a different session."
+            )
+        },
+        422: {"description": "`mfa-code-invalid`, or a validation error."},
+    },
 )
 async def mfa_confirm(
-    payload: MfaEnrolConfirmIn, session: TenantSessionDep, principal: CurrentPrincipal
+    payload: MfaEnrolConfirmIn,
+    request: Request,
+    response: Response,
+    session: TenantSessionDep,
+    principal: CurrentPrincipal,
 ) -> MfaEnrolled:
+    """Finish enrolment with a code from the new authenticator.
+
+    Only the session that began the enrolment (`POST /auth/mfa/enrol`) can confirm it. The
+    account's **first** authenticator returns ten recovery codes, once; adding another returns
+    an empty list and leaves the existing codes untouched.
+    """
+    if principal.session_id is None:
+        raise UnauthorizedProblem("That session is no longer valid.")
     codes = await services.confirm_mfa_enrolment(
         session,
         factor_id=payload.factor_id,
@@ -399,7 +524,11 @@ async def mfa_confirm(
         code=payload.code,
         cfg=settings(),
         session_id=principal.session_id,
+        organization_id=principal.organization_id,
+        request=request,
     )
+    # Recovery codes in a response body are not for any cache to keep.
+    response.headers["Cache-Control"] = "no-store"
     # Shown once. Stored hashed, and never retrievable again.
     return MfaEnrolled(recovery_codes=codes)
 

@@ -13,6 +13,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -23,11 +24,13 @@ from httpx import AsyncClient
 from sqlalchemy import event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from app import security, services
+from app.config import settings
 from app.main import app
 from app.models import SCHEMA, MfaFactor
 from platform_core.auth import Principal, get_principal
 from platform_core.db import TENANT_GUC, get_session, get_tenant_session
-from tests.conftest import MEMBERSHIP_A, ORG_A, USER
+from tests.conftest import MEMBERSHIP_A, ORG_A, PASSWORD, USER
 
 pytestmark = pytest.mark.integration
 
@@ -83,6 +86,47 @@ BARE_SESSION_ROUTES = {
 }
 
 
+#: Routes that carry a principal **and** take a bare session, each with the reason. The chokepoint
+#: (`get_tenant_session`) rolls back on an exception, which is exactly wrong for a route whose
+#: whole job on the failure path is to *persist* something — a wrong second-factor code has to be
+#: counted, and the lockout it trips has to stick, even though the request answers an error. Such
+#: a route must bind the tenant itself, as the transaction's first statement; the behavioural
+#: half of that is `TestThePrincipalRouteOnABareSessionBindsItself` below.
+PRINCIPAL_ON_BARE_SESSION_ROUTES = {
+    "/api/v1/auth/mfa/step-up": (
+        "A signed-in member proves a one-time code. A wrong code is counted and can trip a "
+        "lockout that ends the session; that write has to be committed before the route "
+        "raises, which the rolling-back tenant chokepoint would undo. `services.step_up` "
+        "binds the tenant GUC itself, first."
+    ),
+    "/api/v1/auth/mfa/enrol": (
+        "Starting an enrolment re-asks for the member's password (and a code from an existing "
+        "authenticator). A wrong one is counted against the sign-in lockouts and can end the "
+        "session; that write has to be committed before the route raises, which the "
+        "rolling-back tenant chokepoint would undo. `services.begin_member_enrolment` binds "
+        "the tenant GUC itself, first."
+    ),
+}
+
+#: Every route that carries a principal, exactly. A new one is a decision — does it take the
+#: chokepoint, or does it need the reasoned exemption above — so it has to be added here on
+#: purpose; the previous `>= 5` floor let a route appear (or vanish) unnoticed. (Eleven: the
+#: member's own six, the two SSO configuration routes, and the three operator ones.)
+PRINCIPAL_ROUTES = {
+    ("GET", "/api/v1/auth/me"),
+    ("POST", "/api/v1/auth/mfa/enrol"),
+    ("POST", "/api/v1/auth/mfa/enrol/confirm"),
+    ("POST", "/api/v1/auth/mfa/step-up"),
+    ("POST", "/api/v1/auth/operator/enrollment-codes"),
+    ("GET", "/api/v1/auth/operator/me"),
+    ("POST", "/api/v1/auth/operator/staff/{staff_id}/mfa:reset"),
+    ("POST", "/api/v1/auth/password/change"),
+    ("GET", "/api/v1/auth/sso/config"),
+    ("PUT", "/api/v1/auth/sso/config"),
+    ("POST", "/api/v1/auth/switch-org"),
+}
+
+
 def _every_call(dependant: Dependant) -> set[Any]:
     found: set[Any] = set()
     stack = list(dependant.dependencies)
@@ -129,6 +173,7 @@ class TestRouteAudit:
             for route in _routes()
             if get_principal in _every_call(route.dependant)
             and get_tenant_session not in _every_call(route.dependant)
+            and route.path not in PRINCIPAL_ON_BARE_SESSION_ROUTES
         )
         assert not offenders, f"{offenders} resolve a principal on an unbound transaction"
 
@@ -139,6 +184,7 @@ class TestRouteAudit:
             if route.path.startswith("/api/v1")
             and get_session in _direct_calls(route.dependant)
             and route.path not in BARE_SESSION_ROUTES
+            and route.path not in PRINCIPAL_ON_BARE_SESSION_ROUTES
         )
         assert not offenders, f"{offenders} take `get_session` directly and are not allow-listed"
 
@@ -154,11 +200,30 @@ class TestRouteAudit:
             if route.path in BARE_SESSION_ROUTES:
                 assert get_principal not in _every_call(route.dependant), route.path
 
-    def test_the_audit_is_looking_at_something(self) -> None:
-        """Five routes with a principal exist today: switch-org, me, the two enrolment
-        steps and the password change. Zero would mean the walk is broken."""
-        guarded = [r for r in _routes() if get_principal in _every_call(r.dependant)]
-        assert len(guarded) >= 5
+    def test_the_principal_exemptions_are_real_and_documented(self) -> None:
+        """An exemption is only honest while the route still holds a principal, still takes a
+        bare session, and does not *also* go through the chokepoint (which would make it a
+        second, redundant transaction opener)."""
+        by_path = {route.path: route for route in _routes()}
+        for path, reason in PRINCIPAL_ON_BARE_SESSION_ROUTES.items():
+            assert path in by_path, f"{path} is exempt but no longer exists"
+            calls = _every_call(by_path[path].dependant)
+            assert get_principal in calls, f"{path} is exempt but carries no principal"
+            assert get_session in _direct_calls(by_path[path].dependant), path
+            assert get_tenant_session not in calls, f"{path} no longer needs the exemption"
+            assert len(reason) > 40, f"{path} is exempt without a real reason"
+
+    def test_the_set_of_routes_with_a_principal_is_exactly_the_pinned_one(self) -> None:
+        """Exact, so it is also the proof the walk is looking at something: zero would mean the
+        route iterator is broken, and an extra or missing route fails with its name."""
+        found = {
+            (method, route.path)
+            for route in _routes()
+            if get_principal in _every_call(route.dependant)
+            for method in route.methods
+        }
+        added, removed = sorted(found - PRINCIPAL_ROUTES), sorted(PRINCIPAL_ROUTES - found)
+        assert found == PRINCIPAL_ROUTES, f"added: {added}, removed: {removed}"
 
 
 Statement = tuple[str, Any]
@@ -189,12 +254,12 @@ def _as(principal: Principal) -> Iterator[None]:
         app.dependency_overrides.pop(get_principal, None)
 
 
-def _signed_in() -> Principal:
+def _signed_in(session_id: uuid.UUID | None = None) -> Principal:
     return Principal(
         sub=USER,
         organization_id=ORG_A,
         membership_id=MEMBERSHIP_A,
-        session_id=str(uuid.uuid4()),
+        session_id=str(session_id or uuid.uuid4()),
         roles=["MEMBER"],
         amr=["pwd"],
     )
@@ -229,18 +294,36 @@ class TestTheGucIsSetInsideEveryRequest:
     ) -> None:
         """The service function commits nothing now; the transaction the chokepoint
         opened is the one that ends, and it has to end with a commit or every write
-        behind a principal silently disappears."""
-        with _as(_signed_in()):
+        behind a principal silently disappears. Enrolment *confirmation* is the write:
+        enrolment *start* moved to a bare session (below), confirmation did not."""
+        cfg = settings()
+        auth_session = await services.start_session(session, user_id=USER, cfg=cfg, amr=["pwd"])
+        _factor, secret, _uri = await services.begin_mfa_enrolment(
+            session, USER, account_email="sam@example.com", cfg=cfg, session_id=str(auth_session.id)
+        )
+        await session.commit()
+        code = security._totp_at(secret, int(datetime.now(UTC).timestamp()) // 30)
+
+        with _as(_signed_in(auth_session.id)):
             statements.clear()
-            response = await client.post("/api/v1/auth/mfa/enrol")
-        assert response.status_code == 201, response.text
+            response = await client.post(
+                "/api/v1/auth/mfa/enrol/confirm",
+                json={"factor_id": str(_factor.id), "code": code},
+            )
+        assert response.status_code == 200, response.text
         _assert_bound_first(statements, touches="mfa_factors")
 
         # A fresh transaction on the same session sees only what was committed.
         await session.rollback()
-        count = (await session.execute(select(func.count()).select_from(MfaFactor))).scalar_one()
+        confirmed = (
+            await session.execute(
+                select(func.count())
+                .select_from(MfaFactor)
+                .where(MfaFactor.confirmed_at.isnot(None))
+            )
+        ).scalar_one()
         await session.rollback()
-        assert count == 1
+        assert confirmed == 1
 
     async def test_the_guc_does_not_leak_into_the_next_transaction(
         self, client: AsyncClient, session: AsyncSession, registered: None
@@ -252,6 +335,58 @@ class TestTheGucIsSetInsideEveryRequest:
         ).scalar_one()
         await session.rollback()
         assert value in ("", None), f"the tenant leaked: {value!r}"
+
+
+class TestThePrincipalRouteOnABareSessionBindsItself:
+    async def test_the_step_up_binds_the_tenant_first_even_when_it_refuses(
+        self, client: AsyncClient, registered: None, statements: list[Statement]
+    ) -> None:
+        """A refusal is the path with the least reason to have bound anything, so it is the one
+        worth pinning: the request below is turned away at the session check (`sid` names no
+        session), and the first thing the transaction still did was `set_config` for ORG_A."""
+        with _as(_signed_in()):
+            statements.clear()
+            response = await client.post("/api/v1/auth/mfa/step-up", json={"code": "123456"})
+        assert response.status_code == 401, response.text
+        first, params = statements[0]
+        assert f"set_config('{TENANT_GUC}'" in first, f"first statement was {first!r}"
+        assert str(ORG_A) in str(params), "bound to the wrong organization"
+
+    async def test_the_enrolment_start_binds_first_probes_and_commits(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        registered: None,
+        statements: list[Statement],
+    ) -> None:
+        """The same guarantee the chokepoint gives, by hand: the tenant is the first statement,
+        the read-back probe follows it outside production, and the factor it creates survives —
+        this route commits for itself, so a missing commit would make the write vanish."""
+        auth_session = await services.start_session(
+            session, user_id=USER, cfg=settings(), amr=["pwd"]
+        )
+        await session.commit()
+        with _as(_signed_in(auth_session.id)):
+            statements.clear()
+            response = await client.post("/api/v1/auth/mfa/enrol", json={"password": PASSWORD})
+        assert response.status_code == 201, response.text
+        _assert_bound_first(statements, touches="mfa_factors")
+
+        await session.rollback()
+        count = (await session.execute(select(func.count()).select_from(MfaFactor))).scalar_one()
+        await session.rollback()
+        assert count == 1
+
+    async def test_a_refused_enrolment_start_still_binds_first(
+        self, client: AsyncClient, registered: None, statements: list[Statement]
+    ) -> None:
+        with _as(_signed_in()):
+            statements.clear()
+            response = await client.post("/api/v1/auth/mfa/enrol", json={"password": PASSWORD})
+        assert response.status_code == 401, response.text
+        first, params = statements[0]
+        assert f"set_config('{TENANT_GUC}'" in first, f"first statement was {first!r}"
+        assert str(ORG_A) in str(params), "bound to the wrong organization"
 
 
 class TestThePolicyClassificationHolds:

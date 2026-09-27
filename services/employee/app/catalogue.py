@@ -36,7 +36,8 @@ class PermissionSpec:
     description: str
     default_scope: Scope = "OWN"
     max_scope: Scope = "ORG"
-    #: Requires a recent second factor. None here yet — payroll and PII unmask arrive later.
+    #: Metadata, not a control (ADR-0000 §5 note): nothing consults it at request time. What makes
+    #: an action need a one-time code is the route's `require(..., amr={"otp"})`.
     is_dangerous: bool = False
 
     def code(self, product: str) -> str:
@@ -120,8 +121,9 @@ HRMS = PermissionCatalogue(
         ),
         # Unmasking sensitive PII is a distinct permission, never folded into `read`: the wildcard
         # match keeps the dot, so `hrms.people.employee.read` can never satisfy
-        # `...read_sensitive`. `is_dangerous` makes it a stepped-up action — the route also
-        # demands a recent second factor (`amr={"otp"}`). It defaults to OWN so a person can see
+        # `...read_sensitive`. `is_dangerous` marks it as such; the route is what enforces the
+        # step-up, by demanding a token whose `amr` includes `otp` (`amr={"otp"}` — a member
+        # gets one from `POST /auth/mfa/step-up`, ADR-0023). It defaults to OWN so a person can see
         # their own full details, and tops out at ORG for an HR administrator.
         PermissionSpec(
             "people",
@@ -150,7 +152,7 @@ HRMS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("hrms.people.employee.read", "ORG"),
             ("hrms.people.employee.write", "ORG"),
             # Administering people includes unmasking their details across the organization — but
-            # only ever behind the second-factor step-up the permission is marked dangerous for.
+            # only ever behind the `otp` step-up the route demands (`amr={"otp"}`).
             ("hrms.people.employee.read_sensitive", "ORG"),
         ),
     ),
