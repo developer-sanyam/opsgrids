@@ -15,6 +15,7 @@ import { employeeStatusLabel } from "@/lib/format";
 import { departmentEntries, loadOrgUnitTree } from "./departments";
 import { loadLocations, locationEntries } from "./locations";
 import {
+  columnOf,
   labelOfOption,
   optionOf,
   requiredTextOf,
@@ -63,6 +64,14 @@ const LOCATION_HINT =
 const MANAGER_HINT =
   "The manager must already be an employee. Import managers first, then run this file again: rows already imported are skipped.";
 
+/** The same, for a row that updates an employee, where a blank cell keeps what is there and rows already added show as No change. */
+const DEPARTMENT_HINT_UPDATE =
+  "Use a department name or code from the Lists sheet. To remove the department, write [clear]; a blank cell keeps it.";
+const LOCATION_HINT_UPDATE =
+  "Use a location code or name from the Lists sheet. If that sheet lists no locations, your account cannot read them: leave this cell blank to keep the location as it is.";
+const MANAGER_HINT_UPDATE =
+  "The manager must already be an employee. Add the manager first, then run this file again: rows already added show as No change. To remove a manager, write [clear].";
+
 const columns: readonly ImportColumn[] = [
   {
     key: "employee_no",
@@ -102,6 +111,7 @@ const columns: readonly ImportColumn[] = [
     kind: "text",
     lookup: DEPARTMENTS,
     lookupHint: DEPARTMENT_HINT,
+    lookupHintUpdate: DEPARTMENT_HINT_UPDATE,
     help: "The department's name as your organisation lists it, or its code. Where two departments share a name, write it as Parent / Child, or use the code.",
   },
   {
@@ -110,6 +120,7 @@ const columns: readonly ImportColumn[] = [
     kind: "text",
     lookup: LOCATIONS,
     lookupHint: LOCATION_HINT,
+    lookupHintUpdate: LOCATION_HINT_UPDATE,
     help: "The office or site they work from: its code, for example BLR-HQ, or its name. It must be one of your organisation's locations, or location-based roles will not see this employee.",
   },
   {
@@ -117,14 +128,14 @@ const columns: readonly ImportColumn[] = [
     header: "Employment type",
     kind: "enum",
     options: EMPLOYMENT_OPTIONS,
-    help: "How they are employed. Leave blank for Full-time.",
+    help: "How they are employed. On a new employee, leave blank for Full-time.",
   },
   {
     key: "work_mode",
     header: "Work mode",
     kind: "enum",
     options: WORK_MODE_OPTIONS,
-    help: "Where they usually work. Leave blank for Office.",
+    help: "Where they usually work. On a new employee, leave blank for Office.",
   },
   {
     key: "date_of_joining",
@@ -138,6 +149,7 @@ const columns: readonly ImportColumn[] = [
     kind: "text",
     lookup: MANAGERS,
     lookupHint: MANAGER_HINT,
+    lookupHintUpdate: MANAGER_HINT_UPDATE,
     help: "The employee number of their reporting manager, who must already be an employee.",
   },
   {
@@ -146,6 +158,7 @@ const columns: readonly ImportColumn[] = [
     kind: "text",
     lookup: MANAGERS,
     lookupHint: MANAGER_HINT,
+    lookupHintUpdate: MANAGER_HINT_UPDATE,
     help: "The employee number of an informational second manager, who must already be an employee.",
   },
   {
@@ -226,8 +239,7 @@ const notes = [
   "Everyone imported starts on Probation. Status cannot be set from a sheet.",
   "A row with a Record ID came out of the system and is already there, so \"Add new records only\" refuses it. To use an exported file as a starting point, delete its Record ID column first. With \"Add new and update existing\", the Record ID says which employee to update.",
   "Personal and sensitive details (date of birth, personal email and phone, PAN, Aadhaar, UAN, ESI, bank account) cannot be imported. They are added one employee at a time and stay masked.",
-  "Updating: the employee number cannot be changed, so a row that names an employee by Record ID must carry that employee's own number or leave it blank. Status and date of exit cannot be changed from a sheet, and neither can the personal and sensitive details above. Employees who have exited can still be updated.",
-  "Updating: [clear] empties Designation, Job title, Department, Location code, Date of joining, Manager employee number and Dotted-line manager employee number. Full name, Employment type and Work mode cannot be emptied: leave them blank to keep them.",
+  "Updating: status and date of exit cannot be changed from a sheet, and neither can the personal and sensitive details above. Employees who have exited can still be updated.",
   "Updating: a manager is sent only when it differs from the employee's current one. An employee cannot be their own manager, and a reporting line that would become circular is refused by the server. The server lets only someone with organisation-wide access update employees; for anyone else every updated row is refused.",
 ];
 
@@ -281,13 +293,13 @@ const employeeUpdate: UpdateSpec<EmployeeOut> = {
       column: "department",
       field: "department_id" satisfies keyof EmployeePatch,
       current: (e) => e.department_id,
-      resolve: resolveLookup(DEPARTMENTS),
+      resolve: resolveLookup(columnOf(columns, "department")),
       clear: null,
     },
     {
       column: "location_code",
       current: (e) => storedText(e.location_code),
-      resolve: resolveLookup(LOCATIONS),
+      resolve: resolveLookup(columnOf(columns, "location_code")),
       clear: null,
     },
     { column: "employment_type", current: (e) => e.employment_type },
@@ -297,14 +309,14 @@ const employeeUpdate: UpdateSpec<EmployeeOut> = {
       column: "reporting_manager",
       field: "reporting_manager_id" satisfies keyof EmployeePatch,
       current: (e) => e.reporting_manager_id,
-      resolve: resolveLookup(MANAGERS),
+      resolve: resolveLookup(columnOf(columns, "reporting_manager")),
       clear: null,
     },
     {
       column: "dotted_line_manager",
       field: "dotted_line_manager_id" satisfies keyof EmployeePatch,
       current: (e) => e.dotted_line_manager_id,
-      resolve: resolveLookup(MANAGERS),
+      resolve: resolveLookup(columnOf(columns, "dotted_line_manager")),
       clear: null,
     },
   ],

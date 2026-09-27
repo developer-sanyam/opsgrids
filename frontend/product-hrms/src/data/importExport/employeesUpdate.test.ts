@@ -426,15 +426,54 @@ describe("the employee number is immutable", () => {
 });
 
 describe("references that do not resolve", () => {
+  const column = (key: string) => {
+    const found = employeesEntity.columns.find((c) => c.key === key);
+    if (found === undefined) throw new Error(`No column ${key}`);
+    return found;
+  };
+
   it.each([
-    ["department", "Skunkworks"],
-    ["department", "Platform"],
-    ["location_code", "Bangalore"],
-    ["reporting_manager", "EMP-9999"],
-    ["dotted_line_manager", "EMP-9999"],
-  ])("refuses the row for a %s (%s) the organisation's lists do not hold", (column, text) => {
-    expect(() => plan({ [column]: text })).toThrow(RowProblem);
-    expect(() => plan({ [column]: text })).toThrow(`"${text}" is not in the list.`);
+    ["department", "Skunkworks", "is not one of the accepted values for Department (see the Lists sheet)."],
+    ["department", "Platform", "is not one of the accepted values for Department (see the Lists sheet)."],
+    ["location_code", "Bangalore", "is not one of the accepted values for Location code (see the Lists sheet)."],
+    ["reporting_manager", "EMP-9999", "is not one of the accepted values for Manager employee number (see the Lists sheet)."],
+    [
+      "dotted_line_manager",
+      "EMP-9999",
+      "is not one of the accepted values for Dotted-line manager employee number (see the Lists sheet).",
+    ],
+  ])(
+    "refuses the row for a %s (%s) the organisation's lists do not hold, in the engine's words and with the update hint",
+    (key, text, reason) => {
+      const hint = column(key).lookupHintUpdate;
+      expect(hint, `${key} has an update hint`).toBeTruthy();
+      expect(() => plan({ [key]: text })).toThrow(RowProblem);
+      expect(() => plan({ [key]: text })).toThrow(`'${text}' ${reason} ${hint ?? ""}`);
+    },
+  );
+
+  it("says a name two departments share cannot be chosen, rather than picking one", () => {
+    const twins: ImportContext = {
+      lookups: { ...LOOKUPS, departments: makeLookup(departmentEntries([unit("t-1", "Platform"), unit("t-2", "platform")])) },
+      signal,
+    };
+    const attempt = () => planUpdate(employeesEntity.columns, spec(), { department: "Platform" }, new Set(), STORED, twins);
+    expect(attempt).toThrow("'Platform' matches more than one of the accepted values for Department, so it cannot be chosen.");
+    expect(attempt).toThrow(column("department").lookupHintUpdate ?? "");
+  });
+
+  it("gives every lookup column its own hint for updating, apart from the one for adding", () => {
+    for (const lookupColumn of employeesEntity.columns.filter((c) => c.lookup !== undefined)) {
+      expect(lookupColumn.lookupHintUpdate, lookupColumn.header).toBeTruthy();
+      expect(lookupColumn.lookupHintUpdate, lookupColumn.header).not.toBe(lookupColumn.lookupHint);
+    }
+  });
+
+  it("says a lookup that failed to load could not be checked, instead of calling every name unknown", () => {
+    const none: ImportContext = { lookups: {}, signal };
+    expect(() => planUpdate(employeesEntity.columns, spec(), { department: "Human Resources" }, new Set(), STORED, none)).toThrow(
+      "The accepted values for Department could not be loaded, so it cannot be checked",
+    );
   });
 
   it("refuses a location when the caller cannot read the organisation's locations", () => {
