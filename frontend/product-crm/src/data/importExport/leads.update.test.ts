@@ -1,20 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, RowProblem, indexExisting, makeLookup, matchRow } from "@opsgrids/client";
-import type { LookupSet, ParsedValue } from "@opsgrids/client";
+import { ApiError, RowProblem, indexExisting, matchRow } from "@opsgrids/client";
+import type { ParsedValue } from "@opsgrids/client";
 
 import type { Lead } from "@/api/types";
 import { contextWith, leadWire, pageOf, stubGateway } from "./entityTestKit";
 import { leadImport } from "./leads";
-import { planFor, requestLines, runPlan, updateSpecOf, valuesOf } from "./updateTestKit";
+import {
+  OWNER_LOOKUPS,
+  notAnAcceptedOwner,
+  planFor,
+  requestLines,
+  runPlan,
+  updateSpecOf,
+  valuesOf,
+} from "./updateTestKit";
 
-const LOOKUPS: LookupSet = {
-  owners: makeLookup([
-    { label: "sofia@example.com", value: "own-1" },
-    { label: "Grace@Example.com", value: "own-2" },
-  ]),
-};
-const ctx = contextWith(LOOKUPS);
+const ctx = contextWith(OWNER_LOOKUPS);
 const spec = updateSpecOf(leadImport);
 
 afterEach(() => {
@@ -120,9 +122,14 @@ describe("leads: what a row changes", () => {
     expect(calls[0]?.body).toStrictEqual({ company: "Halcyon Mills", owner_id: "own-1" });
   });
 
-  it("refuses an owner who is not an active rep", () => {
-    expect(() => plan({ owner: "former@example.com" })).toThrow(RowProblem);
-    expect(() => plan({ owner: "former@example.com" })).toThrow("'former@example.com' is not an active sales rep.");
+  it("refuses an owner nobody has, and a rep who has left when the row gives the lead to them", () => {
+    expect(() => plan({ owner: "nobody@example.com" })).toThrow(RowProblem);
+    expect(() => plan({ owner: "nobody@example.com" })).toThrow(notAnAcceptedOwner("nobody@example.com"));
+    expect(() => plan({ owner: "former@example.com" })).toThrow(notAnAcceptedOwner("former@example.com"));
+  });
+
+  it("keeps a lead with the rep who has left when the row repeats them", () => {
+    expect(plan({ ...SAME_AS_STORED, owner: "former@example.com" }, [], { ...OPEN, owner_id: "own-3" })).toBeNull();
   });
 
   it("sends the notes as the sheet holds them, line breaks and all", async () => {

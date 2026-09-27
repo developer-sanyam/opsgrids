@@ -16,13 +16,18 @@ import {
   stubApi,
   stubGateway,
 } from "./entityTestKit";
-import { planFor, requestLines, runPlan, updateSpecOf, valuesOf } from "./updateTestKit";
+import {
+  OWNER_LOOKUPS,
+  notAnAcceptedOwner,
+  planFor,
+  requestLines,
+  runPlan,
+  updateSpecOf,
+  valuesOf,
+} from "./updateTestKit";
 
 const LOOKUPS: LookupSet = {
-  owners: makeLookup([
-    { label: "sofia@example.com", value: "own-1" },
-    { label: "Grace@Example.com", value: "own-2" },
-  ]),
+  ...OWNER_LOOKUPS,
   companies: makeLookup([
     { label: "Northwind Logistics", value: "comp-1" },
     { label: "Cobalt Financial", value: "comp-2" },
@@ -211,7 +216,7 @@ describe("deals: the stage", () => {
   it("sends the PATCH first and the stage move after it, the PATCH holding neither stage nor probability", async () => {
     const calls = stubGateway(answer);
     const result = plan({ ...SAME_AS_STORED, stage: "negotiation", value: 450000000, source: "Outbound" });
-    expect(result?.changed).toEqual(["Deal value", "Stage", "Source"]);
+    expect(result?.changed).toEqual(["Deal value", "Source", "Stage"]);
     await runPlan(result);
     expect(requestLines(calls)).toEqual([PATCH, STAGE]);
     expect(calls[0]?.body).toStrictEqual({ value_minor: 450000000, source: "Outbound" });
@@ -293,20 +298,25 @@ describe("deals: the stage", () => {
 });
 
 describe("deals: owner, company and primary contact are checked here, because the server does not", () => {
-  it("refuses an owner who is not an active rep", () => {
+  it("refuses an owner nobody has, and a rep who has left when the row gives the deal to them", () => {
     expect(() => plan({ owner: "nobody@example.com" })).toThrow(RowProblem);
-    expect(() => plan({ owner: "nobody@example.com" })).toThrow("'nobody@example.com' is not an active sales rep.");
+    expect(() => plan({ owner: "nobody@example.com" })).toThrow(notAnAcceptedOwner("nobody@example.com"));
+    expect(() => plan({ owner: "former@example.com" })).toThrow(notAnAcceptedOwner("former@example.com"));
   });
 
-  it("refuses a company that is not on file", () => {
+  it("keeps a deal with the rep who has left when the row repeats them", () => {
+    expect(plan({ ...SAME_AS_STORED, owner: "former@example.com" }, [], { ...STORED, owner_id: "own-3" })).toBeNull();
+  });
+
+  it("refuses a company that is not on file, in the engine's words and with the hint for updating", () => {
     expect(() => plan({ company: "Nowhere Ltd" })).toThrow(
-      "'Nowhere Ltd' is not a company on file. Use one from the Lists sheet, or leave Company blank to keep it as it is.",
+      "'Nowhere Ltd' is not one of the accepted values for Company (see the Lists sheet). The company must already exist. Import companies first, then contacts and deals. Leave blank to keep the current company.",
     );
   });
 
-  it("refuses a contact that is not on file", () => {
+  it("refuses a contact that is not on file, saying how to remove one", () => {
     expect(() => plan({ contact: "ghost@northwind.co" })).toThrow(
-      "'ghost@northwind.co' is not a contact on file. Use one from the Lists sheet, or leave Primary contact email blank to keep it as it is.",
+      "'ghost@northwind.co' is not one of the accepted values for Primary contact email (see the Lists sheet). The contact must already exist and work at that company. Leave blank to keep the current contact, or type [clear] to remove it.",
     );
   });
 

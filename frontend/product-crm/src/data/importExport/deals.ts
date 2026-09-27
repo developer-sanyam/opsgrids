@@ -11,11 +11,12 @@
  *
  * Update calls `PATCH /deals/{id}` with only the fields that differ, and finds a deal with no Deal
  * ID by its name (exact, but only app-level unique: two deals with one name make the row ambiguous
- * and it is refused). The PATCH takes no stage, so a changed stage goes to `POST /deals/{id}/stage`
- * after it, and that call resets the probability to the new stage's usual figure unless it is given
- * one: a probability the row changes therefore travels with the stage move and not in the PATCH.
- * The server checks none of owner, company and primary contact, so the row's are resolved from the
- * lists, and a contact must work at the deal's company, as when adding.
+ * and it is refused). The PATCH takes neither stage nor probability, which are extra steps after
+ * it, one request each. A changed stage goes to `POST /deals/{id}/stage`, which resets the
+ * probability to the new stage's usual figure unless it is given one: a probability the row changes
+ * therefore travels with the stage move, and a probability changed with no stage move is a PATCH of
+ * its own. The server checks none of owner, company and primary contact, so the row's are resolved
+ * from the lists, and a contact must work at the deal's company, as when adding.
  */
 import { CLEAR_TOKEN, RowProblem, defineImportEntity, minorToMajor } from "@opsgrids/client";
 import type { ColumnOption, ImportColumn, ImportContext, ParsedRow } from "@opsgrids/client";
@@ -27,13 +28,16 @@ import { STAGES, isOpen, stageLabel } from "@/data/stages";
 
 import {
   COMPANY_HINT,
+  COMPANY_HINT_UPDATE,
   CONTACT_HINT,
+  CONTACT_HINT_UPDATE,
   LOOKUP_ALL_OWNERS,
   LOOKUP_COMPANIES,
   LOOKUP_COMPANY_OF_CONTACT,
   LOOKUP_CONTACTS,
   LOOKUP_OWNERS,
   OWNER_HINT,
+  OWNER_HINT_UPDATE,
   companyIdByName,
   contactRefOf,
   currencyOf,
@@ -56,6 +60,7 @@ import {
   orNull,
   patchOf,
   refuseCurrencyChangeWithoutAmount,
+  refuseInactiveOwner,
   resolveByLookup,
   upperCased,
 } from "./updateShared";
@@ -89,6 +94,7 @@ const COLUMNS: readonly ImportColumn[] = [
     required: true,
     lookup: LOOKUP_COMPANIES,
     lookupHint: COMPANY_HINT,
+    lookupHintUpdate: COMPANY_HINT_UPDATE,
     help: "The name of a company that already exists, spelled as on the Companies screen. See the Lists sheet.",
   },
   {
@@ -97,6 +103,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "text",
     lookup: LOOKUP_CONTACTS,
     lookupHint: CONTACT_HINT,
+    lookupHintUpdate: CONTACT_HINT_UPDATE,
     help: "Email of the deal's main contact, from the Lists sheet. They must be a contact of the company. Leave blank for none, or, when updating, to keep the current one.",
   },
   {
@@ -105,6 +112,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "text",
     lookup: LOOKUP_OWNERS,
     lookupHint: OWNER_HINT,
+    lookupHintUpdate: OWNER_HINT_UPDATE,
     help: "Email of the team member who owns the deal, from the Lists sheet. Leave blank to own it yourself, or, when updating, to keep the current owner.",
   },
   {
@@ -183,9 +191,7 @@ const OWNER = columnOf(COLUMNS, "owner");
 const VALUE = columnOf(COLUMNS, "value");
 const CURRENCY = columnOf(COLUMNS, "currency");
 const STAGE = columnOf(COLUMNS, "stage");
-
-const A_COMPANY = "a company on file";
-const A_CONTACT = "a contact on file";
+const PROBABILITY = columnOf(COLUMNS, "probability");
 
 /**
  * The server does not check that a deal's primary contact works at its company, so an update that
@@ -207,9 +213,9 @@ function contactMustWorkAtCompany(
   const companyCell = textOf(row, "company");
   const contactCell = textOf(row, "contact");
   const companyId =
-    companyChanged && companyCell !== undefined ? lookupId(COMPANY, A_COMPANY, companyCell, ctx) : deal.company_id;
+    companyChanged && companyCell !== undefined ? lookupId(COMPANY, companyCell, ctx) : deal.company_id;
   let contactId: string | null;
-  if (contactCell !== undefined) contactId = lookupId(CONTACT, A_CONTACT, contactCell, ctx);
+  if (contactCell !== undefined) contactId = lookupId(CONTACT, contactCell, ctx);
   else contactId = contactChanged ? null : deal.primary_contact_id; // a changed, blank cell was [clear]
   if (contactId === null) return;
 
@@ -320,51 +326,70 @@ export const dealImport = defineImportEntity<DealIn, Deal, DealFilters>({
         column: "company",
         field: "company_id",
         current: (deal) => deal.company_id,
-        resolve: resolveByLookup(COMPANY, A_COMPANY),
+        resolve: resolveByLookup(COMPANY),
       },
       {
         column: "contact",
         field: "primary_contact_id",
         current: (deal) => deal.primary_contact_id,
-        resolve: resolveByLookup(CONTACT, A_CONTACT),
+        resolve: resolveByLookup(CONTACT),
         clear: null,
       },
       {
         column: "owner",
         field: "owner_id",
         current: (deal) => deal.owner_id,
-        resolve: resolveByLookup(OWNER, "an active sales rep"),
+        resolve: resolveByLookup(OWNER, LOOKUP_ALL_OWNERS),
       },
       { column: "value", field: "value_minor", current: (deal) => deal.value_minor },
       { column: "currency", current: (deal) => deal.currency, resolve: upperCased },
       { column: "closeDate", field: "close_date", current: (deal) => deal.close_date },
-      // Not a PATCH field: `send` takes it, and the probability with it, to the stage endpoint.
-      { column: "stage", current: (deal) => deal.stage },
-      { column: "probability", current: (deal) => deal.probability },
       { column: "source", current: (deal) => orNull(deal.source), clear: "" },
     ],
     check: (row, deal, changed, ctx) => {
-      if (changed.includes(STAGE.header) && !isOpen(deal.stage)) {
-        throw new RowProblem(
-          `This deal is ${stageLabel(deal.stage)}, and a closed deal cannot be moved to another stage.`,
-        );
-      }
+      refuseInactiveOwner(OWNER, row, changed, ctx);
       refuseCurrencyChangeWithoutAmount({ amount: VALUE, currency: CURRENCY }, row, changed, deal.value_minor);
       contactMustWorkAtCompany(row, deal, changed, ctx);
     },
-    // The PATCH first, then the stage move: a rename onto a taken name or an owner the caller may
-    // not assign is refused by the PATCH before the deal has moved. The stage endpoint resets the
-    // probability to the new stage's usual figure unless it is given one, so a probability the row
-    // changes goes there (the PATCH gets none), and a row that leaves it alone lets the stage reset it.
     send: async (deal, body) => {
-      const { stage: to, probability, ...patch } = body;
-      const stage = STAGE_OPTIONS.find((option) => option.value === to)?.value;
-      if (stage === undefined) {
-        await updateDeal(deal.id, patchOf<DealPatch>(body));
-        return;
+      await updateDeal(deal.id, patchOf<DealPatch>(body));
+    },
+    extraColumns: ["stage", "probability"],
+    // After the PATCH, so a rename onto a taken name or an owner the caller may not assign is
+    // refused before the deal has moved. Neither column can be emptied. A probability is sent
+    // only when the row changes it: a row that repeats what is on file (an export always does) lets
+    // a stage move set the new stage's usual figure, as dragging the card on the board does.
+    extras: (row, cleared, deal) => {
+      for (const column of [STAGE, PROBABILITY]) {
+        if (cleared.has(column.key)) throw new RowProblem(`${column.header} cannot be cleared`);
       }
-      if (Object.keys(patch).length > 0) await updateDeal(deal.id, patchOf<DealPatch>(patch));
-      await moveDealStage(deal.id, { stage, ...(typeof probability === "number" ? { probability } : {}) });
+      const stage = optionOf(row, "stage", STAGE_OPTIONS);
+      const named = numberOf(row, "probability");
+      const probability = named !== undefined && named !== deal.probability ? named : undefined;
+      if (stage !== undefined && stage !== deal.stage) {
+        if (!isOpen(deal.stage)) {
+          throw new RowProblem(
+            `This deal is ${stageLabel(deal.stage)}, and a closed deal cannot be moved to another stage.`,
+          );
+        }
+        return [
+          {
+            changed: probability === undefined ? [STAGE.header] : [STAGE.header, PROBABILITY.header],
+            run: async () => {
+              await moveDealStage(deal.id, { stage, ...(probability !== undefined ? { probability } : {}) });
+            },
+          },
+        ];
+      }
+      if (probability === undefined) return [];
+      return [
+        {
+          changed: [PROBABILITY.header],
+          run: async () => {
+            await updateDeal(deal.id, { probability });
+          },
+        },
+      ];
     },
   },
   export: {
