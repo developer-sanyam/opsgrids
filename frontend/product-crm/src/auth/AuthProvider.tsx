@@ -31,9 +31,9 @@ const FIXTURE_USER: MeOut = {
 };
 
 /**
- * The fixture identity's grants: an org admin holding every write this product defines, so
- * fixture mode demonstrates the whole CRUD surface offline. A real build passes nothing —
- * `PermissionProvider` then fetches `GET /members/me/grants` itself.
+ * The fixture identity's grants: an org admin holding every write this product defines, and the
+ * two reveals (`read_sensitive`), so fixture mode demonstrates the whole CRUD surface offline.
+ * A real build passes nothing — `PermissionProvider` then fetches `GET /members/me/grants` itself.
  */
 const FIXTURE_GRANTS = [
   "crm.book.company.read:ORG",
@@ -42,12 +42,14 @@ const FIXTURE_GRANTS = [
   "crm.book.contact.read:ORG",
   "crm.book.contact.write:ORG",
   "crm.book.contact.delete:ORG",
+  "crm.book.contact.read_sensitive:ORG",
   "crm.book.owner.write:ORG",
   "crm.pipeline.deal.read:ORG",
   "crm.pipeline.deal.write:ORG",
   "crm.pipeline.deal.delete:ORG",
   "crm.pipeline.activity.read:ORG",
   "crm.pipeline.activity.write:ORG",
+  "crm.lead.lead.read_sensitive:ORG",
 ];
 
 /** The session, wired to this product's fixture identity. The logic lives in `@opsgrids/client`. */

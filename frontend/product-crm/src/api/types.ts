@@ -36,6 +36,9 @@ export type LeadSource = "form" | "import" | "manual";
  *  `POST /leads/{id}:convert`, never through a plain status edit. */
 export type LeadStatus = "new" | "working" | "qualified" | "disqualified" | "converted";
 
+/** The two sealed values a lead carries, and so the two the reveal endpoint can be asked for. */
+export type LeadRevealField = "phone" | "email";
+
 /** A sales rep who owns companies, contacts, deals and leads. Resolved client-side from
  *  `owner_id`. `is_active` false once a rep leaves — kept, never deleted, so every row that
  *  already carries their id still resolves to a name. */

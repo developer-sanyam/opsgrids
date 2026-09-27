@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
-import { deleteDeal, getDeal, listActivities, moveDealStage } from "@/api/client";
+import { deleteDeal, getDeal, listActivities, moveDealStage, revealContactPhone } from "@/api/client";
 import type { Contact, DealStage } from "@/api/types";
 import { useDirectory } from "@/data/directoryContext";
 import {
@@ -12,7 +12,8 @@ import {
 } from "@/data/lookups";
 import { isOpen, STAGES } from "@/data/stages";
 import { formatDate, formatMoney, formatRelative } from "@/lib/format";
-import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
+import { RevealableField } from "@/reveal/RevealableField";
+import { Can, problemMessage, useAsync, useCan, useMutation, useStepUp } from "@opsgrids/client";
 import {
   ActivityTimeline,
   Avatar,
@@ -27,7 +28,7 @@ import {
   Skeleton,
   StagePill,
 } from "@/ui";
-import { ActivityIcon, ArrowLeftIcon, BuildingIcon, MailIcon, PhoneIcon, useToast } from "@opsgrids/ui";
+import { ActivityIcon, ArrowLeftIcon, BuildingIcon, MailIcon, StepUpDialog, useToast } from "@opsgrids/ui";
 import { DealFormDialog } from "@/forms/DealFormDialog";
 import { ActivityFormDialog } from "@/forms/ActivityFormDialog";
 
@@ -89,6 +90,8 @@ export function DealDetailPage() {
   const directory = useDirectory();
   const { owners, companies, contacts } = directory;
   const canLog = useCan("crm.pipeline.activity.write", "OWN");
+  const canReveal = useCan("crm.book.contact.read_sensitive", "OWN");
+  const stepUp = useStepUp();
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [logging, setLogging] = useState(false);
@@ -305,10 +308,15 @@ export function DealDetailPage() {
                             <MailIcon className="size-4 text-faint" />
                             {primary.email}
                           </a>
-                          <span className="inline-flex items-center gap-2 text-ink-soft">
-                            <PhoneIcon className="size-4 text-faint" />
-                            <span className="tnum">{primary.phone}</span>
-                          </span>
+                          <RevealableField
+                            kind="phone"
+                            masked={primary.phone}
+                            subject="contact"
+                            canReveal={canReveal}
+                            stepUp={stepUp}
+                            resetKey={primary.id}
+                            load={(headers) => revealContactPhone(primary.id, headers)}
+                          />
                         </div>
                       ) : null}
                     </Card>
@@ -362,6 +370,8 @@ export function DealDetailPage() {
             );
           })()
         : null}
+
+      <StepUpDialog {...stepUp.dialogProps} />
     </div>
   );
 }
