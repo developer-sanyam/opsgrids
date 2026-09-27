@@ -541,7 +541,7 @@ describe("updating inventory items through the real dialog", () => {
         "'metals' matches more than one of the accepted values for Item category code, so it cannot be chosen.",
       );
 
-      await importAndWait(user, review, "Import 1 row");
+      await importAndWait(user, review, "Update 1");
 
       expect(writes(recorded)).toEqual([
         { method: "PATCH", path: `${API}/inventory/inv-p1`, body: { name: "Pune bolt, M8" } },
@@ -649,7 +649,7 @@ describe("updating warehouses through the real dialog", () => {
       expect(rowContaining(table, "WH-NEW-2").textContent).toContain("New");
       expect(rowContaining(table, "WH-COLD").textContent).toContain(earlier("Gamma"));
 
-      const finished = await importAndWait(user, review, "Import 2 rows");
+      const finished = await importAndWait(user, review, "Update 1, add 1");
 
       // Only the rows that passed are sent, in file order, and none of them is refused when its turn comes.
       expect(writes(recorded)).toEqual([
@@ -683,7 +683,7 @@ describe("updating warehouses through the real dialog", () => {
       expect(stat(review, "Updates")).toBe("1");
       expect(stat(review, "Need fixing")).toBe("0");
 
-      await importAndWait(user, review, "Import 1 row");
+      await importAndWait(user, review, "Update 1");
 
       expect(writes(recorded)).toEqual([
         { method: "PATCH", path: `${API}/warehouses/wh-WH-WEST`, body: { name: "delta" } },
