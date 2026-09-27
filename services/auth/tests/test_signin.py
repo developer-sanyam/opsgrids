@@ -22,6 +22,7 @@ from app import security, services
 from app.config import Settings
 from app.keys import KeyPair
 from app.models import Credential, MfaFactor, MfaRecoveryCode, RefreshToken, Session
+from platform_core.auth import Principal
 from platform_core.errors import (
     BusinessRuleProblem,
     ForbiddenProblem,
@@ -687,6 +688,19 @@ class TestRefreshRotation:
             )
 
 
+def _principal(issued: services.Issued) -> Principal:
+    """The caller `get_principal` would build from the access token this sign-in issued."""
+    claims = jwt.decode(issued.access_token, options={"verify_signature": False})
+    return Principal(
+        sub=USER,
+        organization_id=issued.organization_id,
+        membership_id=issued.membership_id,
+        session_id=str(issued.session_id),
+        audience=claims["aud"],
+        amr=list(claims["amr"]),
+    )
+
+
 class TestPasswords:
     async def test_changing_a_password_ends_every_other_session(
         self, session, cfg, pair, directory, registered
@@ -694,9 +708,14 @@ class TestPasswords:
         """If the old password was captured, the sessions it opened are captured too."""
         outcome = await _login(session, cfg, pair, directory)
         assert outcome.issued is not None
+        await session.commit()
 
         await services.change_password(
-            session, cfg=cfg, user_id=USER, current=PASSWORD, new="a-brand-new-8"
+            session,
+            cfg=cfg,
+            principal=_principal(outcome.issued),
+            current=PASSWORD,
+            new="a-brand-new-8",
         )
 
         with pytest.raises(UnauthorizedProblem):
@@ -709,10 +728,19 @@ class TestPasswords:
                 raw_token=outcome.issued.refresh_token,
             )
 
-    async def test_the_new_password_must_differ(self, session, cfg, registered) -> None:
+    async def test_the_new_password_must_differ(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        outcome = await _login(session, cfg, pair, directory)
+        assert outcome.issued is not None
+        await session.commit()
         with pytest.raises(BusinessRuleProblem, match="must be different"):
             await services.change_password(
-                session, cfg=cfg, user_id=USER, current=PASSWORD, new=PASSWORD
+                session,
+                cfg=cfg,
+                principal=_principal(outcome.issued),
+                current=PASSWORD,
+                new=PASSWORD,
             )
 
     async def test_a_reset_for_an_unknown_address_is_silently_accepted(self, session, cfg) -> None:

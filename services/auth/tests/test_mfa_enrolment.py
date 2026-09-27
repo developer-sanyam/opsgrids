@@ -18,6 +18,7 @@ only if the service committed it before raising.
 from __future__ import annotations
 
 import ast
+import asyncio
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -30,17 +31,31 @@ import jwt
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import event, func, select
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from app import security, services
-from app.config import Settings
+from app.config import Settings, settings
 from app.deps import get_directory
 from app.directory import DirectoryUser
 from app.keys import KeyPair
 from app.main import app
-from app.models import AuditLog, Credential, MfaFactor, MfaRecoveryCode, OutboxEvent, RefreshToken
+from app.models import (
+    SCHEMA,
+    AuditLog,
+    Credential,
+    MfaFactor,
+    MfaRecoveryCode,
+    OutboxEvent,
+    RefreshToken,
+)
+from platform_core.auth import Principal
 from platform_core.db import TENANT_GUC
-from platform_core.errors import ForbiddenProblem, UnauthorizedProblem
+from platform_core.errors import ForbiddenProblem, NotFoundProblem, UnauthorizedProblem
 from tests.conftest import (
     MEMBERSHIP_A,
     ORG_A,
@@ -118,6 +133,7 @@ async def _factors(session: AsyncSession) -> list[SimpleNamespace]:
             confirmed_at=r.confirmed_at,
             enrolled_session_id=r.enrolled_session_id,
             last_used_step=r.last_used_step,
+            confirm_failed_attempts=r.confirm_failed_attempts,
         )
         for r in rows
     ]
@@ -748,6 +764,356 @@ class TestConfirmIsBoundToTheSessionThatBegan:
         assert "already confirmed" in again.json()["detail"]
 
 
+# ------------------------------- a pending authenticator is not a standing invitation to guess
+
+
+async def _backdate(session: AsyncSession, factor_id: str, *, minutes: float) -> None:
+    await session.rollback()
+    await session.execute(
+        MfaFactor.__table__.update()
+        .where(MfaFactor.id == uuid.UUID(factor_id))
+        .values(created_at=datetime.now(UTC) - timedelta(minutes=minutes))
+    )
+    await session.commit()
+
+
+async def _confirm_counters(session: AsyncSession) -> tuple[int, int]:
+    """`(password failures, mfa failures)` on the credential: what a wrong confirm code must not
+    touch, so that mistyping at the setup screen cannot lock anybody out of signing in."""
+    await session.rollback()
+    row = (
+        await session.execute(
+            select(Credential.failed_attempts, Credential.mfa_failed_attempts).where(
+                Credential.user_id == USER
+            )
+        )
+    ).one()
+    await session.rollback()
+    return row[0], row[1]
+
+
+class TestAPendingFactorExpires:
+    async def test_it_cannot_be_confirmed_after_ten_minutes_and_is_gone(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        issued = await _sign_in(session, cfg, pair, directory)
+        started = await _begin(http, issued.access_token, password=PASSWORD)
+        secret, factor_id = started.json()["secret"], started.json()["factor_id"]
+        await _backdate(session, factor_id, minutes=11)
+
+        response = await _confirm(http, issued.access_token, factor_id, _code(secret))
+
+        assert response.status_code == 404
+        assert await _factors(session) == [], "an expired factor is voided, not left to retry"
+        assert (await session.get(Credential, USER)).mfa_enforced is False  # type: ignore[union-attr]
+        assert await _recovery(session) == []
+        [row] = await _audit(session, "auth.mfa_enrolment_failed")
+        assert row.after["reason"] == "expired" and row.actor_id == USER
+        assert _code(secret) not in _leaves(row.after)
+
+    async def test_it_is_still_good_just_inside_the_window(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        issued = await _sign_in(session, cfg, pair, directory)
+        started = await _begin(http, issued.access_token, password=PASSWORD)
+        secret, factor_id = started.json()["secret"], started.json()["factor_id"]
+        await _backdate(session, factor_id, minutes=9)
+
+        assert (
+            await _confirm(http, issued.access_token, factor_id, _code(secret))
+        ).status_code == 200
+
+    async def test_beginning_again_replaces_a_stale_one(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        issued = await _sign_in(session, cfg, pair, directory)
+        first = await _begin(http, issued.access_token, password=PASSWORD)
+        stale_id = first.json()["factor_id"]
+        await _backdate(session, stale_id, minutes=30)
+
+        second = await _begin(http, issued.access_token, password=PASSWORD)
+        assert second.status_code == 201
+        fresh_id, secret = second.json()["factor_id"], second.json()["secret"]
+
+        assert [str(f.id) for f in await _factors(session)] == [fresh_id]
+        assert (await _confirm(http, issued.access_token, stale_id, "123456")).status_code == 404
+        assert (
+            await _confirm(http, issued.access_token, fresh_id, _code(secret))
+        ).status_code == 200
+
+    async def test_a_second_begin_leaves_only_the_latest_pending_factor(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        """One pending enrolment per member: the first window's factor cannot be confirmed once a
+        second was begun, and pending rows do not accumulate."""
+        issued = await _sign_in(session, cfg, pair, directory)
+        first = await _begin(http, issued.access_token, password=PASSWORD)
+        second = await _begin(http, issued.access_token, password=PASSWORD)
+
+        assert [str(f.id) for f in await _factors(session)] == [second.json()["factor_id"]]
+        gone = await _confirm(
+            http, issued.access_token, first.json()["factor_id"], _code(first.json()["secret"])
+        )
+        assert gone.status_code == 404
+
+    async def test_confirmed_factors_are_not_touched_by_beginning_another(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        issued = await _sign_in(session, cfg, pair, directory)
+        secret, _codes, factor_id = await _enrol_through(http, issued.access_token)
+
+        started = await _begin(
+            http, issued.access_token, password=PASSWORD, current_code=_code(secret, 1)
+        )
+
+        assert started.status_code == 201
+        ids = {str(f.id) for f in await _factors(session)}
+        assert ids == {factor_id, started.json()["factor_id"]}
+
+
+class TestConfirmGuessesAreCounted:
+    """Before this, confirm counted nothing and a pending factor stayed confirmable for ever, so a
+    bearer that shared the beginning session could try codes at leisure against a seed only the
+    real member had seen — with ten recovery codes as the prize."""
+
+    async def test_a_wrong_code_is_counted_on_the_factor_and_the_count_survives(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        issued = await _sign_in(session, cfg, pair, directory)
+        started = await _begin(http, issued.access_token, password=PASSWORD)
+        secret, factor_id = started.json()["secret"], started.json()["factor_id"]
+
+        for expected in (1, 2):
+            response = await _confirm(http, issued.access_token, factor_id, _wrong_code(secret))
+            assert response.status_code == 422
+            assert (await _factors(session))[0].confirm_failed_attempts == expected
+
+        rows = await _audit(session, "auth.mfa_enrolment_failed")
+        assert [r.after["reason"] for r in rows] == ["invalid_code", "invalid_code"]
+        assert all(r.entity_id == uuid.UUID(factor_id) for r in rows)
+
+    async def test_a_typo_or_two_does_not_stop_the_right_code_working(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        issued = await _sign_in(session, cfg, pair, directory)
+        started = await _begin(http, issued.access_token, password=PASSWORD)
+        secret, factor_id = started.json()["secret"], started.json()["factor_id"]
+        for _ in range(cfg_cap() - 1):
+            await _confirm(http, issued.access_token, factor_id, _wrong_code(secret))
+
+        done = await _confirm(http, issued.access_token, factor_id, _code(secret))
+
+        assert done.status_code == 200, done.text
+        assert len(done.json()["recovery_codes"]) == 10
+
+    async def test_the_last_allowed_wrong_code_voids_the_factor(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        issued = await _sign_in(session, cfg, pair, directory)
+        started = await _begin(http, issued.access_token, password=PASSWORD)
+        secret, factor_id = started.json()["secret"], started.json()["factor_id"]
+
+        answers = [
+            await _confirm(http, issued.access_token, factor_id, _wrong_code(secret))
+            for _ in range(cfg_cap())
+        ]
+
+        assert [a.status_code for a in answers] == [422] * cfg_cap()
+        assert "cancelled" in answers[-1].json()["detail"]
+        assert all("cancelled" not in a.json()["detail"] for a in answers[:-1])
+        assert _problem_type(answers[-1]) == "mfa-code-invalid"
+        assert answers[-1].json()["errors"][0]["field"] == "code"
+        assert await _factors(session) == []
+        rows = await _audit(session, "auth.mfa_enrolment_failed")
+        assert rows[-1].after["reason"] == "attempts_exhausted"
+
+        # The right code is too late: the factor is gone, and it has to be begun again.
+        late = await _confirm(http, issued.access_token, factor_id, _code(secret))
+        assert late.status_code == 404
+        assert (await session.get(Credential, USER)).mfa_enforced is False  # type: ignore[union-attr]
+        assert await _recovery(session) == []
+
+    async def test_guessing_never_gets_more_than_the_cap_however_it_is_paced(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        """A run of guesses at the confirm route ends with the factor gone — nothing an attacker
+        with the beginning session can send afterwards reaches a factor to confirm."""
+        issued = await _sign_in(session, cfg, pair, directory)
+        started = await _begin(http, issued.access_token, password=PASSWORD)
+        secret, factor_id = started.json()["secret"], started.json()["factor_id"]
+        wrong = _wrong_code(secret)
+
+        answers = [
+            (await _confirm(http, issued.access_token, factor_id, wrong)).status_code
+            for _ in range(50)
+        ]
+
+        assert answers[: cfg_cap()] == [422] * cfg_cap()
+        assert set(answers[cfg_cap() :]) == {404}
+        assert await _recovery(session) == []
+
+    async def test_it_does_not_touch_the_sign_in_counters(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        """Mistyping a code at the setup screen must not be a way to lock the member (or an
+        attacker's target) out of signing in: the count is the factor's."""
+        issued = await _sign_in(session, cfg, pair, directory)
+        started = await _begin(http, issued.access_token, password=PASSWORD)
+        secret, factor_id = started.json()["secret"], started.json()["factor_id"]
+
+        for _ in range(cfg_cap()):
+            await _confirm(http, issued.access_token, factor_id, _wrong_code(secret))
+
+        assert await _confirm_counters(session) == (0, 0)
+        assert await _credential(session) == (0, None)
+        assert (await session.get(Credential, USER)).locked_until is None  # type: ignore[union-attr]
+
+    async def test_a_right_code_is_not_counted(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        issued = await _sign_in(session, cfg, pair, directory)
+        await _enrol_through(http, issued.access_token)
+        assert (await _factors(session))[0].confirm_failed_attempts == 0
+        assert await _audit(session, "auth.mfa_enrolment_failed") == []
+
+
+def cfg_cap() -> int:
+    """The number of wrong codes one pending factor takes (read at call time, so a test that
+    changes the setting is honoured)."""
+    return services.MFA_CONFIRM_MAX_ATTEMPTS
+
+
+class TestAFactorBegunBeforeTheFirstOneWasConfirmed:
+    """`begin` asks for a code from an existing factor, but a factor begun while the account had
+    none was asked for only the password. It must not become a way round that question once a
+    working factor exists."""
+
+    async def test_it_cannot_be_confirmed_afterwards_and_leaves_the_real_codes_alone(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        stolen = await _sign_in(session, cfg, pair, directory)
+        # Begun while there was no authenticator: the password was all that was asked.
+        started = await _begin(http, stolen.access_token, password=PASSWORD)
+        assert started.status_code == 201
+        pending_secret, pending_id = started.json()["secret"], started.json()["factor_id"]
+
+        # The real member then sets one up, properly, elsewhere. Not `_enrol`: that helper moves
+        # `confirmed_at` an hour back so an older session can spend the factor, and this test is
+        # about the order the two rows were made in.
+        real, real_secret, _uri = await services.begin_mfa_enrolment(
+            session, USER, account_email="sam@example.com", cfg=cfg
+        )
+        real_codes = await services.confirm_mfa_enrolment(
+            session, factor_id=real.id, user_id=USER, code=_code(real_secret), cfg=cfg
+        )
+        codes_before = await _recovery(session)
+        assert len(codes_before) == 10 and len(real_codes) == 10
+
+        response = await _confirm(http, stolen.access_token, pending_id, _code(pending_secret))
+
+        assert response.status_code == 404
+        assert "recovery_codes" not in response.text
+        # The real member's set is untouched, and the only working factor is still theirs.
+        assert await _recovery(session) == codes_before
+        assert [f.confirmed_at is not None for f in await _factors(session)] == [True]
+        [row] = await _audit(session, "auth.mfa_enrolment_failed")
+        assert row.after["reason"] == "superseded"
+        # It cannot be got at by beginning again without the code either.
+        again = await _begin(http, stolen.access_token, password=PASSWORD)
+        assert again.status_code == 422
+        assert _problem_type(again) == "mfa-current-code-required"
+
+    async def test_a_factor_begun_after_the_working_one_is_confirmed_as_usual(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        issued = await _sign_in(session, cfg, pair, directory)
+        secret, _codes, _factor_id = await _enrol_through(http, issued.access_token)
+        started = await _begin(
+            http, issued.access_token, password=PASSWORD, current_code=_code(secret, 1)
+        )
+
+        done = await _confirm(
+            http,
+            issued.access_token,
+            started.json()["factor_id"],
+            _code(started.json()["secret"]),
+        )
+
+        assert done.status_code == 200, done.text
+        assert done.json()["recovery_codes"] == []
+
+
+class TestTwoConfirmationsAtOnce:
+    async def test_mint_exactly_one_set_of_recovery_codes(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """A real race on two connections. Two pending factors exist for one member (the service
+        primitive does not prune, which is how two can); both confirmations read "no other working
+        factor" unless the credential row is locked first, and each would mint — and the second
+        replace — the recovery codes. Locked, the loser finds the winner's factor confirmed after
+        its own was begun, and is refused."""
+        issued = await _sign_in(session, cfg, pair, directory)
+        pending = []
+        for _ in range(2):
+            factor, secret, _uri = await services.begin_mfa_enrolment(
+                session,
+                USER,
+                account_email="sam@example.com",
+                cfg=cfg,
+                session_id=str(issued.session_id),
+            )
+            pending.append((factor.id, secret))
+        await session.commit()
+        principal = Principal(
+            sub=USER,
+            organization_id=ORG_A,
+            membership_id=MEMBERSHIP_A,
+            audience="app",
+            session_id=str(issued.session_id),
+            amr=["pwd"],
+        )
+
+        engines: list[AsyncEngine] = []
+        sessions: list[AsyncSession] = []
+        for _ in range(2):
+            engine = create_async_engine(
+                settings().app_dsn,
+                connect_args={"server_settings": {"search_path": f"{SCHEMA},public"}},
+            )
+            engines.append(engine)
+            sessions.append(async_sessionmaker(engine, expire_on_commit=False)())
+
+        async def _attempt(s: AsyncSession, factor_id: uuid.UUID, secret: str) -> Any:
+            return await services.confirm_member_enrolment(
+                s,
+                cfg=cfg,
+                principal=principal,
+                factor_id=factor_id,
+                code=_code(secret),
+            )
+
+        try:
+            results = await asyncio.gather(
+                *(_attempt(s, fid, sec) for s, (fid, sec) in zip(sessions, pending, strict=True)),
+                return_exceptions=True,
+            )
+        finally:
+            for s in sessions:
+                await s.close()
+            for engine in engines:
+                await engine.dispose()
+
+        minted = [r for r in results if isinstance(r, list)]
+        refused = [r for r in results if isinstance(r, NotFoundProblem)]
+        assert len(minted) == 1 and len(minted[0]) == 10, results
+        assert len(refused) == 1, results
+        assert len(await _recovery(session)) == 10
+        confirmed = [f for f in await _factors(session) if f.confirmed_at is not None]
+        assert len(confirmed) == 1
+        [issued_row] = await _audit(session, "auth.mfa_recovery_codes_issued")
+        assert issued_row.after["count"] == 10 and issued_row.after["replaced_previous"] is False
+
+
 # ------------------------------------------------------------------------ the happy path
 
 
@@ -831,7 +1197,7 @@ class TestTheLegitimateFlow:
 
         assert stepped.status_code == 200, stepped.text
         claims = jwt.decode(stepped.json()["access_token"], options={"verify_signature": False})
-        assert claims["amr"] == ["pwd", "otp"]
+        assert claims["amr"] == ["pwd", "otp", "stepup"]
         assert claims["sid"] == str(issued.session_id)
 
 
@@ -1106,9 +1472,14 @@ class TestNothingReachesThePrimitive:
         assert _route_calls("begin_mfa_enrolment") == []
         assert len(_route_calls("begin_member_enrolment")) == 1
 
-    def test_the_confirm_route_always_supplies_the_session_and_organization(self) -> None:
-        [call] = _route_calls("confirm_mfa_enrolment")
-        assert {"session_id", "organization_id", "request"} <= {k.arg for k in call.keywords}
+    def test_the_confirm_route_takes_the_session_and_organization_from_the_principal(self) -> None:
+        """`confirm_member_enrolment` derives both from the verified token. A route that called
+        `confirm_mfa_enrolment` itself would be choosing them, and could leave them out — which
+        skips the live-session and same-session checks."""
+        assert _route_calls("confirm_mfa_enrolment") == []
+        [call] = _route_calls("confirm_member_enrolment")
+        assert {"principal", "request"} <= {k.arg for k in call.keywords}
+        assert not {"session_id", "organization_id", "user_id"} & {k.arg for k in call.keywords}
 
 
 class TestTheStepUpTokenIsNotABackdoorToTheSameThings:

@@ -407,12 +407,16 @@ async def mfa_step_up(
     pair: KeyDep,
     principal: CurrentPrincipal,
 ) -> TokenOut:
-    """Exchange a TOTP code for an access token whose `amr` includes `otp`.
+    """Exchange a TOTP code for an access token whose `amr` includes `otp` and `stepup`.
 
     Bearer-authenticated: the caller is the signed-in member the token names, and nothing in the
     body says who. The answer is an **access token only** — no refresh token, no cookie — good
     for `step_up_token_ttl_seconds`, and it is not remembered by the session, so a refresh never
-    carries `otp`. Hold it in memory, use it for the reveal request(s), and let it lapse.
+    carries either value. Hold it in memory, use it for the reveal request(s), and let it lapse.
+
+    `stepup` is the marker the CRM reveal routes require alongside `otp`: a session that gave a
+    code at sign-in carries `otp` for its whole life, and only this endpoint can mint `stepup`,
+    so it is what says a code was proved for *this* reveal and not days ago.
 
     Takes a bare session for the reason `mfa_verify` does — a wrong code is counted and must
     survive the request that refuses it — and binds the tenant itself; see `services.step_up`.
@@ -495,36 +499,43 @@ async def mfa_enrol(
         403: {"description": "`mfa-unavailable-for-sso`: a single sign-on session."},
         404: {
             "description": (
-                "No such enrolment — it does not exist, is not yours, or was started from "
-                "a different session."
+                "No such enrolment — it does not exist, is not yours, was started from a "
+                "different session, is more than ten minutes old, or was overtaken by another "
+                "authenticator being confirmed. Start again."
             )
         },
-        422: {"description": "`mfa-code-invalid`, or a validation error."},
+        422: {
+            "description": (
+                "`mfa-code-invalid` (field `code`; the fifth wrong code also cancels the "
+                "setup), or a validation error."
+            )
+        },
     },
 )
 async def mfa_confirm(
     payload: MfaEnrolConfirmIn,
     request: Request,
     response: Response,
-    session: TenantSessionDep,
+    session: SessionDep,
     principal: CurrentPrincipal,
 ) -> MfaEnrolled:
     """Finish enrolment with a code from the new authenticator.
 
-    Only the session that began the enrolment (`POST /auth/mfa/enrol`) can confirm it. The
-    account's **first** authenticator returns ten recovery codes, once; adding another returns
-    an empty list and leaves the existing codes untouched.
+    Only the session that began the enrolment (`POST /auth/mfa/enrol`) can confirm it, within ten
+    minutes, and with at most five wrong codes. The account's **first** authenticator returns ten
+    recovery codes, once; adding another returns an empty list and leaves the existing codes
+    untouched.
+
+    Takes a bare session for the reason `mfa_enrol` does — a wrong code is counted against the
+    pending factor and must survive the request that refuses it — and binds the tenant itself;
+    see `services.confirm_member_enrolment`.
     """
-    if principal.session_id is None:
-        raise UnauthorizedProblem("That session is no longer valid.")
-    codes = await services.confirm_mfa_enrolment(
+    codes = await services.confirm_member_enrolment(
         session,
-        factor_id=payload.factor_id,
-        user_id=principal.sub,
-        code=payload.code,
         cfg=settings(),
-        session_id=principal.session_id,
-        organization_id=principal.organization_id,
+        principal=principal,
+        factor_id=payload.factor_id,
+        code=payload.code,
         request=request,
     )
     # Recovery codes in a response body are not for any cache to keep.
@@ -700,17 +711,41 @@ async def save_sso_config(
     "/auth/password/change",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Change your password",
+    responses={
+        401: {"description": "The bearer token or its session is not valid."},
+        403: {
+            "description": (
+                "`password-locked`: too many wrong current passwords (the same lockout as "
+                "sign-in). The attempt that trips it also ends the session."
+            )
+        },
+        422: {
+            "description": (
+                "`password-incorrect` (field `current_password`; counted), `business-rule` "
+                "(field `new_password`: the same as the current one), or a validation error "
+                "(field `new_password`: too weak). Never a 401 for a wrong password."
+            )
+        },
+    },
 )
 async def change_password(
     payload: PasswordChangeIn,
     request: Request,
-    session: TenantSessionDep,
+    session: SessionDep,
     principal: CurrentPrincipal,
 ) -> Response:
+    """Change the signed-in member's password.
+
+    Guarded like sign-in is, because it would otherwise be a password oracle: a wrong current
+    password is counted against the sign-in lockout and audited, the new password is judged
+    before the current one is looked at, and a wrong one answers 422 — not 401, which the shared
+    client would answer by refreshing, re-sending and signing the member out. Takes a bare session
+    and binds the tenant itself, for the reason `mfa_step_up` does; see `services.change_password`.
+    """
     await services.change_password(
         session,
         cfg=settings(),
-        user_id=principal.sub,
+        principal=principal,
         current=payload.current_password,
         new=payload.new_password,
         request=request,

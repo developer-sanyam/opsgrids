@@ -142,7 +142,10 @@ class MfaEnrolled(BaseModel):
 
 
 class PasswordChangeIn(BaseModel):
-    current_password: Password
+    #: Deliberately not `Password`: a too-short candidate must reach the "incorrect" answer (and
+    #: be counted) rather than a validation error that is free and reveals the policy — the same
+    #: reason `MfaEnrolStartIn.password` is not one.
+    current_password: str = Field(min_length=1, max_length=200)
     new_password: Password
 
 

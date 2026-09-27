@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from app import security, services
 from app.config import settings
 from app.main import app
-from app.models import SCHEMA, MfaFactor
+from app.models import SCHEMA, Credential, MfaFactor
 from platform_core.auth import Principal, get_principal
 from platform_core.db import TENANT_GUC, get_session, get_tenant_session
 from tests.conftest import MEMBERSHIP_A, ORG_A, PASSWORD, USER
@@ -106,12 +106,26 @@ PRINCIPAL_ON_BARE_SESSION_ROUTES = {
         "rolling-back tenant chokepoint would undo. `services.begin_member_enrolment` binds "
         "the tenant GUC itself, first."
     ),
+    "/api/v1/auth/mfa/enrol/confirm": (
+        "Confirming an enrolment counts every wrong code against the pending factor and voids "
+        "the factor at the cap (ADR-0023, m1); both have to be committed before the route "
+        "raises, which the rolling-back tenant chokepoint would undo. "
+        "`services.confirm_member_enrolment` binds the tenant GUC itself, first."
+    ),
+    "/api/v1/auth/password/change": (
+        "Changing a password re-asks for the current one, and a wrong guess is counted against "
+        "the sign-in lockout and audited (ADR-0023, risk 9: otherwise it is a password oracle). "
+        "That write has to be committed before the route raises, which the rolling-back tenant "
+        "chokepoint would undo. `services.change_password` binds the tenant GUC itself, first."
+    ),
 }
 
 #: Every route that carries a principal, exactly. A new one is a decision — does it take the
 #: chokepoint, or does it need the reasoned exemption above — so it has to be added here on
 #: purpose; the previous `>= 5` floor let a route appear (or vanish) unnoticed. (Eleven: the
-#: member's own six, the two SSO configuration routes, and the three operator ones.)
+#: member's own six, the two SSO configuration routes, and the three operator ones. Three of the
+#: six — step-up, enrolment start and confirm — and password change take a bare session and bind
+#: the tenant themselves: `PRINCIPAL_ON_BARE_SESSION_ROUTES`.)
 PRINCIPAL_ROUTES = {
     ("GET", "/api/v1/auth/me"),
     ("POST", "/api/v1/auth/mfa/enrol"),
@@ -289,41 +303,25 @@ class TestTheGucIsSetInsideEveryRequest:
         self,
         client: AsyncClient,
         session: AsyncSession,
-        registered: None,
         statements: list[Statement],
     ) -> None:
-        """The service function commits nothing now; the transaction the chokepoint
-        opened is the one that ends, and it has to end with a commit or every write
-        behind a principal silently disappears. Enrolment *confirmation* is the write:
-        enrolment *start* moved to a bare session (below), confirmation did not."""
-        cfg = settings()
-        auth_session = await services.start_session(session, user_id=USER, cfg=cfg, amr=["pwd"])
-        _factor, secret, _uri = await services.begin_mfa_enrolment(
-            session, USER, account_email="sam@example.com", cfg=cfg, session_id=str(auth_session.id)
-        )
-        await session.commit()
-        code = security._totp_at(secret, int(datetime.now(UTC).timestamp()) // 30)
-
-        with _as(_signed_in(auth_session.id)):
+        """The service function commits nothing; the transaction the chokepoint opened is the one
+        that ends, and it has to end with a commit or every write behind a principal silently
+        disappears. `GET /auth/me` is the write here: it creates the member's credential row on
+        first sight (there is none, on purpose — this test does not ask for `registered`).
+        Enrolment confirmation and password change used to be the examples; both now count
+        failures and so commit for themselves (`PRINCIPAL_ON_BARE_SESSION_ROUTES`)."""
+        with _as(_signed_in()):
             statements.clear()
-            response = await client.post(
-                "/api/v1/auth/mfa/enrol/confirm",
-                json={"factor_id": str(_factor.id), "code": code},
-            )
+            response = await client.get("/api/v1/auth/me")
         assert response.status_code == 200, response.text
-        _assert_bound_first(statements, touches="mfa_factors")
+        _assert_bound_first(statements, touches="credentials")
 
         # A fresh transaction on the same session sees only what was committed.
         await session.rollback()
-        confirmed = (
-            await session.execute(
-                select(func.count())
-                .select_from(MfaFactor)
-                .where(MfaFactor.confirmed_at.isnot(None))
-            )
-        ).scalar_one()
+        created = (await session.execute(select(func.count()).select_from(Credential))).scalar_one()
         await session.rollback()
-        assert confirmed == 1
+        assert created == 1
 
     async def test_the_guc_does_not_leak_into_the_next_transaction(
         self, client: AsyncClient, session: AsyncSession, registered: None
@@ -376,6 +374,102 @@ class TestThePrincipalRouteOnABareSessionBindsItself:
         count = (await session.execute(select(func.count()).select_from(MfaFactor))).scalar_one()
         await session.rollback()
         assert count == 1
+
+    async def test_the_confirm_binds_first_and_a_refused_one_still_does(
+        self, client: AsyncClient, registered: None, statements: list[Statement]
+    ) -> None:
+        """Refused at the session check (`sid` names no session): the transaction's first
+        statement was still `set_config` for ORG_A."""
+        with _as(_signed_in()):
+            statements.clear()
+            response = await client.post(
+                "/api/v1/auth/mfa/enrol/confirm",
+                json={"factor_id": str(uuid.uuid4()), "code": "123456"},
+            )
+        assert response.status_code == 401, response.text
+        first, params = statements[0]
+        assert f"set_config('{TENANT_GUC}'" in first, f"first statement was {first!r}"
+        assert str(ORG_A) in str(params), "bound to the wrong organization"
+
+    async def test_the_confirm_commits_for_itself(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        registered: None,
+        statements: list[Statement],
+    ) -> None:
+        """Confirmation is a write on a bare session, so a missing commit would make the
+        confirmed factor and the recovery codes vanish with the request."""
+        cfg = settings()
+        auth_session = await services.start_session(session, user_id=USER, cfg=cfg, amr=["pwd"])
+        factor, secret, _uri = await services.begin_mfa_enrolment(
+            session, USER, account_email="sam@example.com", cfg=cfg, session_id=str(auth_session.id)
+        )
+        await session.commit()
+        code = security._totp_at(secret, int(datetime.now(UTC).timestamp()) // 30)
+
+        with _as(_signed_in(auth_session.id)):
+            statements.clear()
+            response = await client.post(
+                "/api/v1/auth/mfa/enrol/confirm",
+                json={"factor_id": str(factor.id), "code": code},
+            )
+        assert response.status_code == 200, response.text
+        _assert_bound_first(statements, touches="mfa_factors")
+
+        await session.rollback()
+        confirmed = (
+            await session.execute(
+                select(func.count())
+                .select_from(MfaFactor)
+                .where(MfaFactor.confirmed_at.isnot(None))
+            )
+        ).scalar_one()
+        await session.rollback()
+        assert confirmed == 1
+
+    async def test_the_password_change_binds_first_probes_and_commits(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        registered: None,
+        statements: list[Statement],
+    ) -> None:
+        auth_session = await services.start_session(
+            session, user_id=USER, cfg=settings(), amr=["pwd"]
+        )
+        await session.commit()
+        with _as(_signed_in(auth_session.id)):
+            statements.clear()
+            response = await client.post(
+                "/api/v1/auth/password/change",
+                json={"current_password": PASSWORD, "new_password": "a-brand-new-pw-9"},
+            )
+        assert response.status_code == 204, response.text
+        _assert_bound_first(statements, touches="credentials")
+
+        await session.rollback()
+        stored = (
+            await session.execute(
+                select(Credential.password_hash).where(Credential.user_id == USER)
+            )
+        ).scalar_one()
+        await session.rollback()
+        assert security.verify_password(stored, "a-brand-new-pw-9"), "the change did not commit"
+
+    async def test_a_refused_password_change_still_binds_first(
+        self, client: AsyncClient, registered: None, statements: list[Statement]
+    ) -> None:
+        with _as(_signed_in()):
+            statements.clear()
+            response = await client.post(
+                "/api/v1/auth/password/change",
+                json={"current_password": PASSWORD, "new_password": "a-brand-new-pw-9"},
+            )
+        assert response.status_code == 401, response.text
+        first, params = statements[0]
+        assert f"set_config('{TENANT_GUC}'" in first, f"first statement was {first!r}"
+        assert str(ORG_A) in str(params), "bound to the wrong organization"
 
     async def test_a_refused_enrolment_start_still_binds_first(
         self, client: AsyncClient, registered: None, statements: list[Statement]

@@ -230,6 +230,14 @@ class MfaFactor(Base):
     #: `NULL` for every factor that predates this column and for operator enrolment.
     enrolled_session_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
 
+    #: Wrong codes typed at `POST /auth/mfa/enrol/confirm` for this pending factor. The factor is
+    #: voided at `MFA_CONFIRM_MAX_ATTEMPTS`, so a code cannot be guessed at for as long as the
+    #: factor stays pending (ADR-0023, m1). Counted here and not on the credential: mistyping a
+    #: code while setting an app up must not lock the person out of signing in.
+    confirm_failed_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+
     #: A factor is not usable until the user proves they can generate a code from it.
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: The last counter step accepted, so a code cannot be replayed inside its window.

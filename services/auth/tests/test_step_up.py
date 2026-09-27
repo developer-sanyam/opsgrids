@@ -941,7 +941,7 @@ class TestTheStepUpToken:
             issuer=cfg.jwt_issuer,
         )
         assert claims["typ"] == "access"
-        assert claims["amr"] == ["pwd", "otp"]
+        assert claims["amr"] == ["pwd", "otp", "stepup"]
         for same in ("sub", "act_org", "sid", "mem", "pv", "aud", "iss", "ent", "roles", "loc"):
             assert claims[same] == before[same], same
         assert claims["jti"] != before["jti"]
@@ -998,7 +998,7 @@ class TestTheStepUpToken:
         )
         assert jwt.decode(stepped.json()["access_token"], options={"verify_signature": False})[
             "amr"
-        ] == ["pwd", "otp"]
+        ] == ["pwd", "otp", "stepup"]
 
         rotated = await services.rotate_refresh(
             session,
@@ -1056,7 +1056,7 @@ class TestTheStepUpToken:
 
         assert response.status_code == 200
         claims = jwt.decode(response.json()["access_token"], options={"verify_signature": False})
-        assert claims["amr"] == ["pwd", "otp"]
+        assert claims["amr"] == ["pwd", "otp", "stepup"]
 
     async def test_the_ttl_is_the_configured_one(
         self, http: AsyncClient, session, cfg, pair, directory, registered, monkeypatch
@@ -1113,6 +1113,180 @@ class TestTheStepUpToken:
         first, params = seen[0]
         assert f"set_config('{TENANT_GUC}'" in first, first
         assert str(ORG_A) in str(params)
+
+
+# ------------------------------------------------ the marker that only a step-up can carry
+
+
+async def _sign_in_with_a_code(
+    session: AsyncSession, cfg: Settings, pair: KeyPair, directory: FakeDirectory, secret: str
+) -> services.Issued:
+    """A password sign-in that then presents a code (`verify_mfa`) — every sign-in an account with
+    an authenticator makes. Its session carries `otp` for the whole of its life."""
+    login = await services.login(
+        session,
+        cfg=cfg,
+        pair=pair,
+        directory=directory,
+        entitlements=FakeEntitlements(),
+        email="sam@example.com",
+        password=PASSWORD,
+    )
+    assert login.status == "mfa_required" and login.pre_auth_token is not None
+    done = await services.verify_mfa(
+        session,
+        cfg=cfg,
+        pair=pair,
+        directory=directory,
+        entitlements=FakeEntitlements(),
+        pre_auth_token=login.pre_auth_token,
+        code=_code(secret),
+    )
+    assert done.issued is not None
+    await session.commit()
+    return done.issued
+
+
+def _amr_of(token: str) -> list[str]:
+    return list(jwt.decode(token, options={"verify_signature": False})["amr"])
+
+
+class TestOnlyAStepUpCarriesTheMarker:
+    """ADR-0023, second review round (finding 1). Confirming an authenticator turns MFA on for
+    every later sign-in, and `verify_mfa` writes `otp` into `Session.amr` — so every token of a
+    session opened after enrolment already carries `otp` for up to seven days, and a guard that
+    asked only for `otp` would open for a stolen session token with no code presented. The reveal
+    routes therefore also require `stepup`, which only `step_up` can put in a token."""
+
+    async def test_a_session_that_gave_a_code_at_sign_in_has_otp_and_no_marker(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        secret, _ = await _enrol(session, cfg)
+        issued = await _sign_in_with_a_code(session, cfg, pair, directory, secret)
+
+        assert _amr_of(issued.access_token) == ["pwd", "otp"]
+        row = await _session_row(session, issued.session_id)
+        assert list(row.amr) == ["pwd", "otp"]
+        assert services.STEP_UP_AMR not in row.amr
+
+    async def test_only_a_step_up_token_has_it_and_the_token_that_asked_does_not_change(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        secret, _ = await _enrol(session, cfg)
+        issued = await _sign_in_with_a_code(session, cfg, pair, directory, secret)
+
+        stepped = await http.post(
+            STEP_UP, json={"code": _code(secret, 1)}, headers=_headers(issued.access_token)
+        )
+
+        assert stepped.status_code == 200, stepped.text
+        assert _amr_of(stepped.json()["access_token"]) == ["pwd", "otp", "stepup"]
+        assert _amr_of(issued.access_token) == ["pwd", "otp"]
+        # ...and the session did not learn it: what was proved was for that token alone.
+        assert list((await _session_row(session, issued.session_id)).amr) == ["pwd", "otp"]
+
+    async def test_a_refresh_cannot_gain_it_before_or_after_a_step_up(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        secret, _ = await _enrol(session, cfg)
+        issued = await _sign_in_with_a_code(session, cfg, pair, directory, secret)
+
+        first = await services.rotate_refresh(
+            session,
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            entitlements=FakeEntitlements(),
+            raw_token=issued.refresh_token,
+        )
+        assert isinstance(first, services.Issued)
+        assert _amr_of(first.access_token) == ["pwd", "otp"]
+
+        stepped = await http.post(
+            STEP_UP, json={"code": _code(secret, 1)}, headers=_headers(first.access_token)
+        )
+        assert stepped.status_code == 200, stepped.text
+
+        second = await services.rotate_refresh(
+            session,
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            entitlements=FakeEntitlements(),
+            raw_token=first.refresh_token,
+        )
+        assert isinstance(second, services.Issued)
+        assert _amr_of(second.access_token) == ["pwd", "otp"]
+
+    async def test_a_session_row_that_somehow_holds_the_marker_still_cannot_mint_it(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """Belt and braces. `verify_mfa` never writes it, but the property that a *sign-in* cannot
+        produce it should not rest on that: both mint paths strip it from what the session says,
+        and `verify_mfa` does not carry it forward into the row either."""
+        tainted = await services.start_session(
+            session, user_id=USER, cfg=cfg, amr=["pwd", services.STEP_UP_AMR]
+        )
+        member = membership(ORG_A, MEMBERSHIP_A, "acme", "Acme")
+        issued = await services.issue_for(
+            session,
+            pair=pair,
+            cfg=cfg,
+            auth_session=tainted,
+            membership=member,
+            entitlements=FakeEntitlements(),
+            audience="app",
+        )
+        assert _amr_of(issued.access_token) == ["pwd"]
+
+        access_only = await services._mint_access_only(
+            pair=pair,
+            cfg=cfg,
+            auth_session=tainted,
+            membership=member,
+            entitlements=FakeEntitlements(),
+            audience="app",
+        )
+        assert _amr_of(access_only.access_token) == ["pwd"]
+
+    async def test_verify_mfa_does_not_carry_a_marker_into_the_session(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        secret, _ = await _enrol(session, cfg)
+        login = await services.login(
+            session,
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            entitlements=FakeEntitlements(),
+            email="sam@example.com",
+            password=PASSWORD,
+        )
+        pre = jwt.decode(login.pre_auth_token, options={"verify_signature": False})
+        row = await session.get(Session, uuid.UUID(pre["sid"]))
+        assert row is not None
+        row.amr = ["pwd", services.STEP_UP_AMR]
+        await session.commit()
+
+        done = await services.verify_mfa(
+            session,
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            entitlements=FakeEntitlements(),
+            pre_auth_token=login.pre_auth_token,
+            code=_code(secret),
+        )
+        await session.commit()
+
+        assert done.issued is not None
+        assert list((await _session_row(session, done.issued.session_id)).amr) == ["pwd", "otp"]
+        assert _amr_of(done.issued.access_token) == ["pwd", "otp"]
+
+    def test_the_marker_is_not_a_value_a_sign_in_could_be_asked_for(self) -> None:
+        """Pinned literal: lead- and customer-service require exactly this string
+        (`tests/infra/test_step_up_marker.py` keeps the three in step)."""
+        assert services.STEP_UP_AMR == "stepup"
 
 
 class TestTheAuditTrail:
@@ -1184,7 +1358,8 @@ class TestTheAuditTrail:
 
 class TestTheTokenOpensTheRevealRoutes:
     """Exercised against `require(perm, amr={"otp"})` itself, on a throwaway app, for the four
-    permissions that carry that guard today. The bearer token goes through the real
+    permissions that carried that guard when the endpoint was built (the two CRM ones now also
+    require the step-up marker: see the class below). The bearer token goes through the real
     `get_principal`; only the permission grant (which the gateway resolves per request and no
     token carries) is supplied by the harness."""
 
@@ -1279,6 +1454,98 @@ class TestTheTokenOpensTheRevealRoutes:
         ).token
         claims = jwt.decode(token, options={"verify_signature": False})
         assert core_auth._principal_from_claims(claims).amr == ["pwd", "otp"]
+
+
+class TestTheCrmRevealGuardWantsBothValues:
+    """`require(perm, amr={"otp", "stepup"})` — what the lead and customer reveal routes declare —
+    exercised against real tokens on a throwaway app, like the class above. The point of pinning
+    it here is the *semantics* of a multi-value set: every member of it must be in the token's
+    `amr`, so neither `otp` alone (a session that gave a code at sign-in) nor the marker alone
+    opens the route."""
+
+    PERMISSIONS: ClassVar[list[str]] = [
+        "crm.book.contact.read_sensitive",
+        "crm.lead.lead.read_sensitive",
+    ]
+
+    @staticmethod
+    def _guarded_app(permission: str) -> FastAPI:
+        mini = FastAPI()
+        mini.state.settings = settings()
+        register_error_handlers(mini)
+
+        def _principal(request: Request) -> Principal:
+            principal = get_principal(request)
+            return principal.model_copy(update={"perms": [f"{permission}:ORG"]})
+
+        mini.dependency_overrides[get_principal] = _principal
+
+        @mini.get(
+            "/reveal",
+            dependencies=[Depends(require(permission, amr={"otp", services.STEP_UP_AMR}))],
+        )
+        def reveal() -> dict[str, bool]:
+            return {"revealed": True}
+
+        return mini
+
+    @pytest.mark.parametrize("permission", PERMISSIONS)
+    async def test_a_login_otp_session_token_is_refused_and_a_step_up_token_is_not(
+        self, http: AsyncClient, session, cfg, pair, directory, registered, permission: str
+    ) -> None:
+        secret, _ = await _enrol(session, cfg)
+        signed_in = await _sign_in_with_a_code(session, cfg, pair, directory, secret)
+        stepped = await http.post(
+            STEP_UP, json={"code": _code(secret, 1)}, headers=_headers(signed_in.access_token)
+        )
+        assert stepped.status_code == 200, stepped.text
+
+        async with AsyncClient(
+            transport=ASGITransport(app=self._guarded_app(permission)), base_url="http://guard"
+        ) as guard:
+            refused = await guard.get("/reveal", headers=_headers(signed_in.access_token))
+            assert refused.status_code == 403
+            assert refused.json()["detail"] == "Additional authentication required: stepup"
+
+            opened = await guard.get("/reveal", headers=_headers(stepped.json()["access_token"]))
+            assert opened.status_code == 200, opened.text
+
+    async def test_every_member_of_the_set_is_required_not_any_of_them(
+        self, http: AsyncClient, session, cfg, pair, registered
+    ) -> None:
+        """`require` demands the whole set (`amr.issubset(...)`). Pinned against tokens carrying
+        each half alone, because the fix depends on it: with any-of semantics `otp` alone would
+        still open the route."""
+        permission = self.PERMISSIONS[0]
+        only_otp = _mint(pair, cfg, session_id=uuid.uuid4(), amr=["pwd", "otp"])
+        only_marker = _mint(pair, cfg, session_id=uuid.uuid4(), amr=["pwd", "stepup"])
+        neither = _mint(pair, cfg, session_id=uuid.uuid4(), amr=["pwd"])
+        both = _mint(pair, cfg, session_id=uuid.uuid4(), amr=["pwd", "otp", "stepup"])
+
+        async with AsyncClient(
+            transport=ASGITransport(app=self._guarded_app(permission)), base_url="http://guard"
+        ) as guard:
+            answers = {
+                name: await guard.get("/reveal", headers=_headers(token))
+                for name, token in {
+                    "only_otp": only_otp,
+                    "only_marker": only_marker,
+                    "neither": neither,
+                    "both": both,
+                }.items()
+            }
+
+        assert {name: r.status_code for name, r in answers.items()} == {
+            "only_otp": 403,
+            "only_marker": 403,
+            "neither": 403,
+            "both": 200,
+        }
+        assert answers["only_otp"].json()["detail"] == "Additional authentication required: stepup"
+        assert answers["only_marker"].json()["detail"] == "Additional authentication required: otp"
+        assert (
+            answers["neither"].json()["detail"] == "Additional authentication required: otp, stepup"
+        )
 
 
 # --------------------------------------------------------------------------- the config
