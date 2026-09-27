@@ -20,7 +20,7 @@ from app.models import AuditLog, Lead, OutboxEvent
 from platform_core.auth import Principal, Scope, get_principal
 from platform_core.errors import ConflictProblem
 from platform_core.pii import PiiError, open_sealed
-from tests.helpers import ctx_for, principal_for
+from tests.helpers import STEPPED_UP, ctx_for, principal_for
 
 pytestmark = pytest.mark.integration
 
@@ -187,7 +187,7 @@ SESSION_ID = "b5d3c1e2-session-of-the-stepped-up-sign-in"
 
 def _stepped_up(org_id: uuid.UUID, *, scope: str = "ORG") -> Principal:
     return principal_for(
-        org_id, [f"{REVEAL}:{scope}"], subject_ref=None, amr=["otp"], session_id=SESSION_ID
+        org_id, [f"{REVEAL}:{scope}"], subject_ref=None, amr=STEPPED_UP, session_id=SESSION_ID
     )
 
 
@@ -271,7 +271,11 @@ class TestReveal:
                 # exactly one more row than the reveals that came before this one.
                 committed = await _sensitive_reads(admin_session, org_id)
                 assert len(committed) == position
-                assert committed[-1].after == {"fields": [field], "session_id": SESSION_ID}
+                assert committed[-1].after == {
+                    "fields": [field],
+                    "session_id": SESSION_ID,
+                    "amr": STEPPED_UP,
+                }
 
         rows = await _sensitive_reads(admin_session, org_id)
         assert [row.after["fields"] for row in rows] == [["phone"], ["phone"], ["email"]]
@@ -297,8 +301,8 @@ class TestReveal:
 
         rows = await _sensitive_reads(admin_session, org_id)
         assert [row.after for row in rows] == [
-            {"fields": ["phone"], "session_id": SESSION_ID},
-            {"fields": ["email"], "session_id": SESSION_ID},
+            {"fields": ["phone"], "session_id": SESSION_ID, "amr": STEPPED_UP},
+            {"fields": ["email"], "session_id": SESSION_ID, "amr": STEPPED_UP},
         ]
         for row in rows:
             blob = json.dumps([row.before, row.after, row.reason], default=str)
@@ -306,18 +310,38 @@ class TestReveal:
             assert RAW_EMAIL not in blob
             assert "stellar" not in blob.lower()
 
-    async def test_a_reveal_with_no_session_id_still_writes_the_row(
+    async def test_the_audit_row_says_how_the_reveal_was_authorised(
         self, client, org_id, data, admin_session
     ) -> None:
-        """A principal that carries no `sid` (a directly presented token) is not refused — the
-        key is there, null, so a row without provenance is visibly a row without provenance."""
-        principal = principal_for(org_id, [f"{REVEAL}:ORG"], amr=["otp"])
+        """The row records the token's `amr`, so an auditor can tell a code proved for this reveal
+        (`["pwd", "otp", "stepup"]`) from a session that merely gave one at sign-in — which the
+        route now refuses, but which the row could not otherwise have told apart."""
+        principal = principal_for(
+            org_id,
+            [f"{REVEAL}:ORG"],
+            amr=["pwd", "otp", "stepup"],
+            session_id=SESSION_ID,
+        )
         with as_principal(principal):
             response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
         assert response.status_code == 200
 
         (row,) = await _sensitive_reads(admin_session, org_id)
-        assert row.after == {"fields": ["phone"], "session_id": None}
+        assert row.after["amr"] == ["pwd", "otp", "stepup"]
+        assert set(row.after) == {"fields", "session_id", "amr"}
+
+    async def test_a_reveal_with_no_session_id_still_writes_the_row(
+        self, client, org_id, data, admin_session
+    ) -> None:
+        """A principal that carries no `sid` (a directly presented token) is not refused — the
+        key is there, null, so a row without provenance is visibly a row without provenance."""
+        principal = principal_for(org_id, [f"{REVEAL}:ORG"], amr=STEPPED_UP)
+        with as_principal(principal):
+            response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
+        assert response.status_code == 200
+
+        (row,) = await _sensitive_reads(admin_session, org_id)
+        assert row.after == {"fields": ["phone"], "session_id": None, "amr": STEPPED_UP}
 
     async def test_no_audit_row_and_no_event_carries_the_value(
         self, client, org_id, data, admin_session
@@ -420,7 +444,11 @@ class TestReveal:
         assert response.json()["value"] == RAW_PHONE
         after = await _sensitive_reads(admin_session, org_id)
         assert len(after) == len(before) + 1
-        assert after[-1].after == {"fields": ["phone"], "session_id": SESSION_ID}
+        assert after[-1].after == {
+            "fields": ["phone"],
+            "session_id": SESSION_ID,
+            "amr": STEPPED_UP,
+        }
 
     async def test_an_envelope_that_will_not_open_reveals_nothing_and_records_nothing(
         self, client, session, org_id, data, admin_session

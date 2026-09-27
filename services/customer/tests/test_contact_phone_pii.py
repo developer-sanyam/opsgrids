@@ -13,7 +13,7 @@ import uuid
 from collections.abc import Iterator
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app import selectors, services
 from app.main import app
@@ -21,7 +21,7 @@ from app.models import AuditLog, Company, Contact
 from platform_core.auth import Principal, Scope, get_principal
 from platform_core.errors import ValidationProblem
 from platform_core.pii import BULLET
-from tests.helpers import ctx_for, principal_for
+from tests.helpers import LOGIN_OTP, STEPPED_UP, ctx_for, principal_for
 
 RAW = "+917976603446"
 
@@ -130,8 +130,8 @@ async def test_unmasking_writes_a_sensitive_read_audit_row(session, org_id, data
     )
     assert len(rows) == 1
     assert rows[0].entity == "contact"
-    # `ctx_for`'s principal carries no `sid`, so the key is there and null.
-    assert rows[0].after == {"fields": ["phone"], "session_id": None}
+    # `ctx_for`'s principal carries no `sid` and no `amr`, so both keys are there, empty.
+    assert rows[0].after == {"fields": ["phone"], "session_id": None, "amr": []}
 
 
 async def test_the_audit_row_is_written_even_when_nothing_was_sealed(session, org_id, data) -> None:
@@ -244,7 +244,7 @@ async def test_the_generic_contact_read_never_carries_the_raw_number(
 
 
 async def test_revealing_needs_the_dangerous_permission(client, org_id, data) -> None:
-    with as_principal(principal_for(org_id, [f"{READ}:ORG"], amr=["otp"])):
+    with as_principal(principal_for(org_id, [f"{READ}:ORG"], amr=STEPPED_UP)):
         response = await client.post(f"/api/v1/contacts/{data['contact_a_id']}/phone:reveal")
     assert response.status_code == 403
 
@@ -257,6 +257,41 @@ async def test_revealing_needs_the_second_factor(client, org_id, data) -> None:
     assert response.status_code == 403
 
 
+async def test_a_session_that_gave_a_code_at_sign_in_is_not_a_step_up(
+    client, session, org_id, data, admin_session, redis
+) -> None:
+    """ADR-0023, second review round. Every session opened after an authenticator is set up gave a
+    code at sign-in and so carries `otp` on every token for up to seven days. That is not a code
+    proved for *this* reveal: the route also requires the marker only `POST /auth/mfa/step-up`
+    mints, so a stolen session token opens nothing."""
+    write = ctx_for(org_id, WRITE, Scope.ORG)
+    async with session.begin():
+        await services.set_contact_phone(session, write, data["contact_a"], RAW)
+
+    for amr, missing in (
+        (LOGIN_OTP, "stepup"),
+        (["otp"], "stepup"),
+        (["pwd", "stepup"], "otp"),
+    ):
+        with as_principal(principal_for(org_id, [f"{SENSITIVE}:ORG"], amr=amr)):
+            response = await client.post(f"/api/v1/contacts/{data['contact_a_id']}/phone:reveal")
+        assert response.status_code == 403, amr
+        assert response.json()["detail"] == f"Additional authentication required: {missing}"
+        assert RAW not in response.text
+    # Refused before anything was spent or read.
+    assert redis.store == {}
+    async with admin_session.begin():
+        reads = (
+            await admin_session.execute(
+                text(
+                    "SELECT count(*) FROM customer.audit_logs "
+                    "WHERE action = 'entity.sensitive_read'"
+                )
+            )
+        ).scalar_one()
+    assert reads == 0
+
+
 async def test_revealing_works_with_the_permission_and_the_step_up(
     client, session, org_id, data
 ) -> None:
@@ -264,10 +299,45 @@ async def test_revealing_works_with_the_permission_and_the_step_up(
     async with session.begin():
         await services.set_contact_phone(session, write, data["contact_a"], RAW)
 
-    with as_principal(principal_for(org_id, [f"{SENSITIVE}:ORG"], amr=["otp"])):
+    with as_principal(principal_for(org_id, [f"{SENSITIVE}:ORG"], amr=STEPPED_UP)):
         response = await client.post(f"/api/v1/contacts/{data['contact_a_id']}/phone:reveal")
     assert response.status_code == 200
     assert response.json()["phone"] == RAW
+
+
+async def test_a_soft_deleted_contact_is_not_found(
+    client, session, org_id, data, admin_session, redis
+) -> None:
+    """Deleted means gone: the reveal must not be a way to read the number of a contact a rep
+    removed — over HTTP, with a valid step-up token and the widest scope. Nothing is spent and no
+    read is recorded."""
+    write = ctx_for(org_id, WRITE, Scope.ORG)
+    async with session.begin():
+        await services.set_contact_phone(session, write, data["contact_a"], RAW)
+    async with admin_session.begin():
+        await admin_session.execute(
+            text("UPDATE customer.contacts SET deleted_at = now() WHERE id = :id"),
+            {"id": data["contact_a_id"]},
+        )
+
+    with as_principal(principal_for(org_id, [f"{SENSITIVE}:ORG"], amr=STEPPED_UP)):
+        response = await client.post(f"/api/v1/contacts/{data['contact_a_id']}/phone:reveal")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "That contact is not part of this organization"
+    assert RAW not in response.text
+    assert RAW.removeprefix("+") not in response.text
+    assert redis.store == {}
+    async with admin_session.begin():
+        reads = (
+            await admin_session.execute(
+                text(
+                    "SELECT count(*) FROM customer.audit_logs "
+                    "WHERE action = 'entity.sensitive_read'"
+                )
+            )
+        ).scalar_one()
+    assert reads == 0
 
 
 async def test_an_own_grant_reveals_only_the_contacts_the_caller_owns(
@@ -285,7 +355,7 @@ async def test_an_own_grant_reveals_only_the_contacts_the_caller_owns(
         org_id,
         [f"{SENSITIVE}:OWN"],
         subject_ref=data["subject_a"],
-        amr=["otp"],
+        amr=STEPPED_UP,
         session_id="rep-session",
     )
     with as_principal(rep):
@@ -303,7 +373,10 @@ async def test_an_own_grant_reveals_only_the_contacts_the_caller_owns(
         .all()
     )
     assert [(r.entity_id, r.after) for r in reads] == [
-        (data["contact_a_id"], {"fields": ["phone"], "session_id": "rep-session"})
+        (
+            data["contact_a_id"],
+            {"fields": ["phone"], "session_id": "rep-session", "amr": STEPPED_UP},
+        )
     ]
 
 
@@ -319,7 +392,7 @@ async def test_an_own_grant_with_no_subject_ref_reveals_nothing(
     async with session.begin():
         await services.set_contact_phone(session, write, data["contact_a"], RAW)
 
-    unlinked = principal_for(org_id, [f"{SENSITIVE}:OWN"], subject_ref=None, amr=["otp"])
+    unlinked = principal_for(org_id, [f"{SENSITIVE}:OWN"], subject_ref=None, amr=STEPPED_UP)
     with as_principal(unlinked):
         response = await client.post(f"/api/v1/contacts/{data['contact_a_id']}/phone:reveal")
 

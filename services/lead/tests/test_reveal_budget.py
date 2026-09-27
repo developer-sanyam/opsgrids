@@ -5,6 +5,10 @@ stepped-up token lives about three minutes — long enough to open hundreds of l
 spends from a budget keyed on the organization *and* the user (30 per 10 minutes, 200 per day),
 held in Redis, and it **fails closed**: with Redis unreachable nothing is revealed.
 
+The budget is spent when a value is about to be opened — after the lead has been found, shown to
+be in scope and to have a value on file, before it is decrypted — so a request that was going to be
+refused spends nothing, and a stolen token cannot exhaust the real person's budget with garbage.
+
 Refusals write no audit row (an audit row means a value was opened) but each logs one WARNING,
 so somebody walking lead ids shows up in the logs. `structlog.testing.capture_logs` is the
 capture mechanism: this service logs through `platform_core.logging.get_logger` (structlog), not
@@ -26,7 +30,7 @@ from app.config import settings
 from app.main import app
 from app.models import AuditLog
 from platform_core.auth import Principal, get_principal
-from tests.helpers import FakeRedis, principal_for
+from tests.helpers import STEPPED_UP, FakeRedis, principal_for
 
 pytestmark = pytest.mark.integration
 
@@ -57,7 +61,7 @@ def _revealer(
         [f"{REVEAL}:{scope}"],
         sub=sub,
         subject_ref=subject_ref,
-        amr=["otp"],
+        amr=STEPPED_UP,
         session_id="sid-under-test",
     )
 
@@ -156,42 +160,86 @@ class TestRevealBudget:
         assert fresh.status_code == 200
 
     async def test_the_counter_is_per_organization(
-        self, client, org_id, data, redis: FakeRedis, monkeypatch
+        self, org_id, redis: FakeRedis, monkeypatch
     ) -> None:
         """The same person in a second organization (a membership per organization) has a budget
-        of their own there: spending it in one leaves the other untouched. The other
-        organization has no such lead, so the proof is that the answer is a 404 from the lookup
-        that follows the budget — not a 429 from the budget."""
+        of their own there: spending it in one leaves the other untouched. Called on the service
+        directly — a reveal in another organization needs a lead there, and this suite seeds one
+        tenant."""
+        from app import services
+        from platform_core.auth import Scope, ScopeContext
+        from platform_core.errors import RateLimitedProblem
+
         _tighten(monkeypatch, burst=2)
         user = uuid.uuid4()
         other_org = uuid.uuid4()
 
-        with as_principal(_revealer(org_id, sub=user)):
-            for _ in range(2):
-                assert (
-                    await client.post(_path(data["lead_a_id"]), json={"field": "phone"})
-                ).status_code == 200
-            assert (
-                await client.post(_path(data["lead_a_id"]), json={"field": "phone"})
-            ).status_code == 429
-        with as_principal(_revealer(other_org, sub=user)):
-            elsewhere = await client.post(_path(data["lead_a_id"]), json={"field": "phone"})
+        def _ctx(organization: uuid.UUID) -> ScopeContext:
+            principal = _revealer(organization, sub=user)
+            return ScopeContext(principal=principal, scope=Scope.ORG, permission=REVEAL)
 
-        assert elsewhere.status_code == 404
-        assert elsewhere.json()["detail"] == "That lead is not part of this organization"
+        for _ in range(2):
+            await services.enforce_reveal_budget(_ctx(org_id))
+        with pytest.raises(RateLimitedProblem):
+            await services.enforce_reveal_budget(_ctx(org_id))
+        await services.enforce_reveal_budget(_ctx(other_org))  # untouched
+
         burst_keys = [k for k in redis.store if k.startswith("rl:crm.reveal.burst:")]
         assert any(f":{org_id}:{user}:" in k for k in burst_keys)
         assert any(f":{other_org}:{user}:" in k for k in burst_keys)
 
-    async def test_probing_spends_the_budget_too(self, client, org_id, data, monkeypatch) -> None:
-        """Walking lead ids that turn out not to exist is limited exactly like revealing real
-        ones — the budget is spent before the lookup, not after a hit."""
-        _tighten(monkeypatch, burst=3)
+    async def test_a_refused_request_spends_nothing(
+        self, client, org_id, data, redis: FakeRedis, admin_session
+    ) -> None:
+        """The budget is spent when a value is about to be opened. Every way a request can be
+        refused before that — an id that does not exist or is another organization's, a lead out
+        of the caller's scope, a field the lead has no value for, a path or body that does not
+        parse — leaves the counters exactly where they were, and writes no audit row."""
+        own_only = _revealer(org_id, scope="OWN", subject_ref=data["owner_b"])
         with as_principal(_revealer(org_id)):
-            for _ in range(3):
-                miss = await client.post(_path(uuid.uuid4()), json={"field": "phone"})
-                assert miss.status_code == 404
-            over = await client.post(_path(uuid.uuid4()), json={"field": "phone"})
+            unknown = await client.post(_path(uuid.uuid4()), json={"field": "phone"})
+            nothing_on_file = await client.post(_path(data["lead_b_id"]), json={"field": "email"})
+            bad_field = await client.post(_path(data["lead_a_id"]), json={"field": "notes"})
+            bad_path = await client.post("/api/v1/leads/not-a-uuid:reveal", json={"field": "phone"})
+        with as_principal(own_only):
+            out_of_scope = await client.post(_path(data["lead_a_id"]), json={"field": "phone"})
+        with as_principal(_revealer(uuid.uuid4())):
+            foreign = await client.post(_path(data["lead_a_id"]), json={"field": "phone"})
+
+        assert [
+            r.status_code
+            for r in (unknown, nothing_on_file, bad_field, bad_path, out_of_scope, foreign)
+        ] == [404, 404, 422, 422, 403, 404]
+        assert redis.store == {}
+        assert await _committed_reads(admin_session, org_id) == 0
+
+    async def test_a_token_cannot_burn_the_real_persons_budget_with_refused_requests(
+        self, client, org_id, data, monkeypatch
+    ) -> None:
+        """The abuse the ordering closes: whoever holds the token sends a run of requests that
+        were never going to reveal anything, and the person it belongs to is then told their budget
+        is spent. Now the run costs them nothing, and their own reveal still works."""
+        _tighten(monkeypatch, burst=3)
+        principal = _revealer(org_id)
+        with as_principal(principal):
+            for _ in range(25):
+                assert (
+                    await client.post(_path(uuid.uuid4()), json={"field": "phone"})
+                ).status_code == 404
+            revealed = await client.post(_path(data["lead_a_id"]), json={"field": "phone"})
+        assert revealed.status_code == 200
+
+    async def test_only_a_request_that_reveals_something_is_counted(
+        self, client, org_id, data, monkeypatch
+    ) -> None:
+        _tighten(monkeypatch, burst=2)
+        with as_principal(_revealer(org_id)):
+            await client.post(_path(uuid.uuid4()), json={"field": "phone"})  # refused: free
+            for _ in range(2):
+                assert (
+                    await client.post(_path(data["lead_a_id"]), json={"field": "phone"})
+                ).status_code == 200
+            over = await client.post(_path(data["lead_a_id"]), json={"field": "phone"})
         assert over.status_code == 429
 
     async def test_a_caller_who_may_not_reveal_spends_nothing(
@@ -199,7 +247,7 @@ class TestRevealBudget:
     ) -> None:
         """The budget follows the permission and the step-up, so an unauthorised caller neither
         spends anything nor reaches Redis at all."""
-        no_permission = principal_for(org_id, [], amr=["otp"])
+        no_permission = principal_for(org_id, [], amr=STEPPED_UP)
         no_step_up = principal_for(org_id, [f"{REVEAL}:ORG"])
         for principal in (no_permission, no_step_up):
             with as_principal(principal):
@@ -207,20 +255,75 @@ class TestRevealBudget:
             assert response.status_code == 403
         assert redis.store == {}
 
-    def test_the_budget_is_spent_before_a_database_transaction_opens(self) -> None:
-        """The Redis round trip belongs ahead of the tenant session, not inside a transaction:
-        an over-budget caller is refused before a pool connection is taken. Dependencies resolve
-        in declaration order, so this pins the order the route declares them in."""
-        from app.api.routes import _reveal_guard, router
-        from platform_core.db import get_tenant_session
+    async def test_the_budget_is_spent_after_the_lookup_and_before_the_decrypt(
+        self, client, org_id, data, monkeypatch
+    ) -> None:
+        """The order is the property: cheap checks first (the lead exists, is in scope and has a
+        value), then the budget, then — only then — the value is opened."""
+        from app import services
 
-        # The router's own route list, not `app.routes`: an included router is one opaque entry
-        # in the app's table.
-        route = next(
-            r for r in router.routes if getattr(r, "path", "") == "/leads/{lead_id}:reveal"
+        order: list[str] = []
+        real_get, real_budget, real_open = (
+            services.selectors.get_lead,
+            services.enforce_reveal_budget,
+            services.open_sealed,
         )
-        calls = [dependency.call for dependency in route.dependant.dependencies]
-        assert calls.index(_reveal_guard) < calls.index(get_tenant_session)
+
+        async def _get(*args, **kwargs):  # type: ignore[no-untyped-def]
+            order.append("lookup")
+            return await real_get(*args, **kwargs)
+
+        async def _budget(*args, **kwargs):  # type: ignore[no-untyped-def]
+            order.append("budget")
+            return await real_budget(*args, **kwargs)
+
+        def _open(*args, **kwargs):  # type: ignore[no-untyped-def]
+            order.append("decrypt")
+            return real_open(*args, **kwargs)
+
+        monkeypatch.setattr(services.selectors, "get_lead", _get)
+        monkeypatch.setattr(services, "enforce_reveal_budget", _budget)
+        monkeypatch.setattr(services, "open_sealed", _open)
+
+        with as_principal(_revealer(org_id)):
+            response = await client.post(_path(data["lead_a_id"]), json={"field": "phone"})
+
+        assert response.status_code == 200
+        assert order == ["lookup", "budget", "decrypt"]
+
+    def test_the_guard_does_not_spend_the_budget(self) -> None:
+        """The dependency that runs ahead of the route body only decides authorization. Were it to
+        spend the budget again, a refused request would be counted before it is known to be one."""
+        import inspect
+
+        from app.api import routes
+
+        assert "enforce_reveal_budget" not in inspect.getsource(routes._reveal_guard)
+
+    async def test_a_redis_that_never_answers_is_the_same_503_and_is_not_waited_for(
+        self, client, org_id, data, admin_session, monkeypatch
+    ) -> None:
+        """The budget is spent inside the request's database transaction, so a Redis that neither
+        answers nor refuses must not hold the connection until some socket timeout: it is bounded,
+        and over the bound it is an outage — nothing revealed, nothing recorded."""
+        import asyncio
+
+        from app import services
+
+        async def _hangs(*args, **kwargs):  # type: ignore[no-untyped-def]
+            await asyncio.sleep(30)
+
+        monkeypatch.setattr(services, "enforce_rate_limit", _hangs)
+        monkeypatch.setattr(services, "_REVEAL_BUDGET_TIMEOUT_SECONDS", 0.05)
+
+        with as_principal(_revealer(org_id)):
+            response = await asyncio.wait_for(
+                client.post(_path(data["lead_a_id"]), json={"field": "phone"}), timeout=5
+            )
+
+        assert response.status_code == 503
+        assert RAW_PHONE not in response.text
+        assert await _committed_reads(admin_session, org_id) == 0
 
     async def test_the_keys_carry_ids_and_nothing_personal(
         self, client, org_id, data, redis: FakeRedis
@@ -331,7 +434,7 @@ class TestRefusedRevealsAreLogged:
         assert RAW_EMAIL not in blob
 
     async def test_a_caller_without_the_permission(self, client, org_id, data) -> None:
-        principal = principal_for(org_id, ["crm.lead.lead.read:ORG"], amr=["otp"])
+        principal = principal_for(org_id, ["crm.lead.lead.read:ORG"], amr=STEPPED_UP)
         response, lines, _ = await self._refused(client, principal, _path(data["lead_a_id"]))
 
         assert response.status_code == 403
@@ -394,7 +497,7 @@ class TestRefusedRevealsAreLogged:
 
     async def test_a_path_that_is_not_a_uuid_logs_no_lead_id(self, client, org_id) -> None:
         """The path parameter is client text: it is logged only once it parses as a UUID."""
-        principal = principal_for(org_id, [], amr=["otp"])
+        principal = principal_for(org_id, [], amr=STEPPED_UP)
         response, lines, _ = await self._refused(client, principal, "/api/v1/leads/<script>:reveal")
 
         assert response.status_code == 403
@@ -412,7 +515,7 @@ class TestRefusedRevealsAreLogged:
 
     async def test_a_refusal_writes_no_audit_row(self, client, org_id, data, admin_session) -> None:
         for principal in (
-            principal_for(org_id, [], amr=["otp"]),
+            principal_for(org_id, [], amr=STEPPED_UP),
             _revealer(org_id, scope="OWN", subject_ref=data["owner_b"]),
         ):
             response, lines, _ = await self._refused(client, principal, _path(data["lead_a_id"]))

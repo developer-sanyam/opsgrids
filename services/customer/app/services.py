@@ -21,6 +21,7 @@ smaller, safer change (CLAUDE.md; no hard delete of anything with children).
 
 from __future__ import annotations
 
+import asyncio
 import re
 import uuid
 from datetime import datetime
@@ -42,6 +43,7 @@ from platform_core.errors import (
     ForbiddenProblem,
     NotFoundProblem,
     RateLimitedProblem,
+    UpstreamUnavailableProblem,
     ValidationProblem,
 )
 from platform_core.events import publish_event
@@ -53,6 +55,13 @@ log = get_logger("customer.services")
 
 #: The daily reveal budget's window. Not a setting: "per day" is what the budget is called.
 _REVEAL_DAILY_WINDOW_SECONDS = 86_400
+
+#: The longest the reveal budget's Redis round trip may take. It is spent inside the request's
+#: database transaction (after the contact has been looked up and before it is opened), so an
+#: unreachable-but-not-refusing Redis — a dropped route, a stopped container behind a proxy — must
+#: not pin a pooled connection until some socket timeout nobody set. Over it is the same 503 an
+#: outage is: nothing is revealed.
+_REVEAL_BUDGET_TIMEOUT_SECONDS = 2.0
 
 
 class CompanyDeletedProblem(ConflictProblem):
@@ -878,8 +887,9 @@ async def unmask_contact_phone(
 ) -> str | None:
     """Reveal a contact's real number to a human — the audited, stepped-up path.
 
-    Reaching here means the caller held `crm.book.contact.read_sensitive` and stepped up
-    (`amr={"otp"}`), and the route re-applied their scope to this one contact. The unmask is
+    Reaching here means the caller held `crm.book.contact.read_sensitive` and presented a
+    step-up token (`amr` with `otp` and the step-up marker), and the route re-applied their scope
+    to this one contact. The unmask is
     itself an auditable read, so an `entity.sensitive_read` row is written **in the caller's
     transaction**: a revealed value never exists without a record that it was revealed.
 
@@ -894,8 +904,10 @@ async def unmask_contact_phone(
     # session that did it. `record_sensitive_read` cannot carry it, so this is `record_audit`
     # directly. The row's own `request_id` comes from `X-Request-ID` when the client sent one,
     # so it is a correlation aid and not evidence of anything; `session_id` — the token's `sid`
-    # claim, forwarded by the gateway — is what ties a reveal to the sign-in (and so the MFA
-    # step-up) that authorised it. The field's *name* only, never its value.
+    # claim, forwarded by the gateway — is what ties a reveal to the sign-in that authorised it,
+    # and `amr` — the token's authentication methods — says *how*: `["pwd", "otp", "stepup"]` for a
+    # code proved for this reveal, and the row could not otherwise tell that from a session that
+    # gave a code at sign-in. The field's *name* only, never its value.
     record_audit(
         session,
         AuditLog,
@@ -904,7 +916,11 @@ async def unmask_contact_phone(
         action="entity.sensitive_read",
         entity="contact",
         entity_id=contact.id,
-        after={"fields": ["phone"], "session_id": ctx.principal.session_id},
+        after={
+            "fields": ["phone"],
+            "session_id": ctx.principal.session_id,
+            "amr": list(ctx.principal.amr),
+        },
         request=request,
     )
     return plaintext
@@ -950,14 +966,22 @@ async def enforce_reveal_budget(ctx: ScopeContext, *, request: Request | None = 
     purpose — the thing being bounded is how much PII one person can read, and two routes with
     two budgets would double it. **Keep the key prefix identical to lead's.**
 
-    Counted when the request arrives, after the permission and the step-up have passed and
-    before anything is looked up, so probing with ids that turn out to be foreign or absent
-    spends budget too. A window is fixed, not sliding: a caller can spend the end of one and the
-    start of the next (`platform_core.cache.enforce_rate_limit`).
+    **Spent when a contact is about to be opened, not when a request arrives.** It runs after the
+    permission, the step-up and the entitlement have passed and after the contact has been shown
+    to exist in this organization and to be in the caller's scope — and before it is opened
+    (`reveal_contact_phone`). A request that was going to be refused spends nothing, so a stolen
+    token cannot exhaust the real person's budget with invalid ids or contacts they may not touch,
+    and cannot deny them the reveals they are entitled to. What it costs: probing with ids that
+    turn out to be foreign or absent is no longer counted here, only by the gateway's own limits
+    — and it reads nothing, since absent and foreign are the same 404.
 
-    **Fails closed.** `enforce_rate_limit` answers 503 when Redis cannot be reached, so a Redis
-    outage stops reveals rather than lifting their limit. Nothing else in this service uses
-    Redis.
+    A window is fixed, not sliding: a caller can spend the end of one and the start of the next
+    (`platform_core.cache.enforce_rate_limit`).
+
+    **Fails closed**, and bounded: `enforce_rate_limit` answers 503 when Redis cannot be reached,
+    and a Redis that neither answers nor refuses is the same 503 after
+    `_REVEAL_BUDGET_TIMEOUT_SECONDS`, so a Redis outage stops reveals rather than lifting their
+    limit or holding a database connection. Nothing else in this service uses Redis.
     """
     cfg = settings()
     who = f"{ctx.organization_id}:{ctx.principal.sub}"
@@ -967,12 +991,18 @@ async def enforce_reveal_budget(ctx: ScopeContext, *, request: Request | None = 
     )
     for name, limit, window_seconds in budgets:
         try:
-            await enforce_rate_limit(
-                f"crm.reveal.{name}:{who}", limit=limit, window_seconds=window_seconds
-            )
+            async with asyncio.timeout(_REVEAL_BUDGET_TIMEOUT_SECONDS):
+                await enforce_rate_limit(
+                    f"crm.reveal.{name}:{who}", limit=limit, window_seconds=window_seconds
+                )
         except RateLimitedProblem:
             log_reveal_refused(ctx.principal, reason=f"rate_limited_{name}", request=request)
             raise
+        except TimeoutError as exc:
+            log.error("contact.reveal.budget_timeout", window=name)
+            raise UpstreamUnavailableProblem(
+                "Cannot verify request limits right now. Please retry shortly."
+            ) from exc
 
 
 async def reveal_contact_phone(
@@ -985,7 +1015,8 @@ async def reveal_contact_phone(
     """The reveal route's whole decision, in one function: fetch the contact inside the
     caller's organization (404 for an id that is absent or another organization's — the same
     answer, so nothing is confirmed about ids outside it), re-apply the caller's scope to this
-    one contact (403), then `unmask_contact_phone`. Every refusal logs one WARNING
+    one contact (403), spend the reveal budget (`enforce_reveal_budget`: 429 when spent, 503 when
+    it cannot be checked), then `unmask_contact_phone`. Every refusal logs one WARNING
     (`log_reveal_refused`) — not an audit row."""
     contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
     if contact is None:
@@ -1000,6 +1031,10 @@ async def reveal_contact_phone(
             ctx.principal, reason="out_of_scope", contact_id=contact.id, request=request
         )
         raise
+    # Everything that could refuse this request without a number being opened has now run, so
+    # this is where the budget is spent: after the cheap checks, before the decrypt. (A contact
+    # with nothing sealed still spends it: the audit row below is written either way.)
+    await enforce_reveal_budget(ctx, request=request)
     return contact, await unmask_contact_phone(session, ctx, contact, request=request)
 
 

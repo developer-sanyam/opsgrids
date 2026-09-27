@@ -22,7 +22,7 @@ from app.main import app
 from app.models import AuditLog
 from platform_core.auth import Principal, Scope, ScopeContext, get_principal
 from platform_core.errors import ForbiddenProblem
-from tests.helpers import ctx_for, principal_for
+from tests.helpers import LOGIN_OTP, STEPPED_UP, ctx_for, principal_for
 
 pytestmark = pytest.mark.integration
 
@@ -286,7 +286,7 @@ class TestRevealAuthorization:
         assert response.status_code == 401
 
     async def test_holding_no_permission_is_forbidden(self, client, org_id, data) -> None:
-        principal = principal_for(org_id, [], subject_ref=data["owner_a"], amr=["otp"])
+        principal = principal_for(org_id, [], subject_ref=data["owner_a"], amr=STEPPED_UP)
         with as_principal(principal):
             response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
         assert response.status_code == 403
@@ -305,7 +305,7 @@ class TestRevealAuthorization:
                 "crm.lead.lead.convert:ORG",
             ],
             subject_ref=data["owner_a"],
-            amr=["otp"],
+            amr=STEPPED_UP,
         )
         with as_principal(principal):
             for field in ("phone", "email"):
@@ -325,14 +325,50 @@ class TestRevealAuthorization:
                     _reveal_path(data["lead_a_id"]), json={"field": "phone"}
                 )
             assert response.status_code == 403, amr
-            assert response.json()["detail"] == "Additional authentication required: otp"
+            assert response.json()["detail"] == "Additional authentication required: otp, stepup"
             _assert_no_plaintext(response)
+
+    async def test_a_session_that_gave_a_code_at_sign_in_is_not_a_step_up(
+        self, client, org_id, data, admin_session, redis
+    ) -> None:
+        """ADR-0023, second review round. Every session opened after an authenticator is set up
+        gave a code at sign-in and so carries `otp` on every token for up to seven days. That is
+        not a code proved for *this* reveal: the route also requires the marker only
+        `POST /auth/mfa/step-up` mints, so a stolen session token opens nothing."""
+        for amr, missing in (
+            (LOGIN_OTP, "stepup"),
+            (["otp"], "stepup"),
+            (["pwd", "stepup"], "otp"),
+        ):
+            principal = principal_for(org_id, [f"{REVEAL}:ORG"], subject_ref=None, amr=amr)
+            with as_principal(principal):
+                for field in ("phone", "email"):
+                    response = await client.post(
+                        _reveal_path(data["lead_a_id"]), json={"field": field}
+                    )
+                    assert response.status_code == 403, (amr, field)
+                    assert response.json()["detail"] == (
+                        f"Additional authentication required: {missing}"
+                    )
+                    _assert_no_plaintext(response)
+        # Refused before anything was spent or read.
+        assert redis.store == {}
+        assert await _sensitive_read_count(admin_session, org_id) == 0
+
+    async def test_a_step_up_token_is_accepted(self, client, org_id, data) -> None:
+        for amr in (STEPPED_UP, ["pwd", "otp", "stepup"]):
+            principal = principal_for(org_id, [f"{REVEAL}:ORG"], subject_ref=None, amr=amr)
+            with as_principal(principal):
+                response = await client.post(
+                    _reveal_path(data["lead_a_id"]), json={"field": "phone"}
+                )
+            assert response.status_code == 200, amr
 
     async def test_without_the_product_entitlement_is_payment_required(
         self, client, org_id, data
     ) -> None:
         principal = principal_for(
-            org_id, [f"{REVEAL}:ORG"], subject_ref=None, entitlements=[], amr=["otp"]
+            org_id, [f"{REVEAL}:ORG"], subject_ref=None, entitlements=[], amr=STEPPED_UP
         )
         with as_principal(principal):
             response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
@@ -355,7 +391,7 @@ class TestRevealAuthorization:
         """A rep may reveal their own leads, not a colleague's — even though `lead.read:ORG`
         lets them list it. The scope is re-applied to the one lead, not only to the list."""
         principal = principal_for(
-            org_id, [f"{REVEAL}:OWN"], subject_ref=data["owner_b"], amr=["otp"]
+            org_id, [f"{REVEAL}:OWN"], subject_ref=data["owner_b"], amr=STEPPED_UP
         )
         with as_principal(principal):
             response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
@@ -366,7 +402,7 @@ class TestRevealAuthorization:
 
     async def test_an_own_grant_reveals_a_lead_the_caller_owns(self, client, org_id, data) -> None:
         principal = principal_for(
-            org_id, [f"{REVEAL}:OWN"], subject_ref=data["owner_a"], amr=["otp"]
+            org_id, [f"{REVEAL}:OWN"], subject_ref=data["owner_a"], amr=STEPPED_UP
         )
         with as_principal(principal):
             response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
@@ -375,7 +411,7 @@ class TestRevealAuthorization:
 
     async def test_an_org_grant_reveals_a_colleagues_lead(self, client, org_id, data) -> None:
         principal = principal_for(
-            org_id, [f"{REVEAL}:ORG"], subject_ref=data["owner_b"], amr=["otp"]
+            org_id, [f"{REVEAL}:ORG"], subject_ref=data["owner_b"], amr=STEPPED_UP
         )
         with as_principal(principal):
             response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "email"})
@@ -394,7 +430,7 @@ class TestRevealAuthorization:
                 [f"{REVEAL}:{scope}"],
                 subject_ref=data["owner_a"],
                 locations=["BLR"],
-                amr=["otp"],
+                amr=STEPPED_UP,
             )
             with as_principal(principal):
                 response = await client.post(
@@ -411,7 +447,7 @@ class TestRevealAuthorization:
         organization, at the widest scope there is."""
         other_org = uuid.uuid4()
         stranger = principal_for(
-            other_org, [f"{REVEAL}:ORG"], subject_ref=uuid.uuid4(), amr=["otp"]
+            other_org, [f"{REVEAL}:ORG"], subject_ref=uuid.uuid4(), amr=STEPPED_UP
         )
         with as_principal(stranger):
             foreign = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
@@ -435,14 +471,14 @@ class TestRevealAuthorization:
                 text("UPDATE lead.leads SET deleted_at = now() WHERE id = :id"),
                 {"id": data["lead_a_id"]},
             )
-        principal = principal_for(org_id, [f"{REVEAL}:ORG"], amr=["otp"])
+        principal = principal_for(org_id, [f"{REVEAL}:ORG"], amr=STEPPED_UP)
         with as_principal(principal):
             response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
         assert response.status_code == 404
         _assert_no_plaintext(response)
 
     async def test_only_phone_and_email_can_be_asked_for(self, client, org_id, data) -> None:
-        principal = principal_for(org_id, [f"{REVEAL}:ORG"], amr=["otp"])
+        principal = principal_for(org_id, [f"{REVEAL}:ORG"], amr=STEPPED_UP)
         bodies: list[dict | None] = [
             {"field": "phone_enc"},
             {"field": "notes"},
@@ -464,7 +500,9 @@ class TestRevealAuthorization:
     async def test_the_route_is_post_only(self, client, org_id, data) -> None:
         """A GET would be cacheable, prefetchable and loggable in a query string — the reason
         the reveal is a POST. Nothing answers it as one."""
-        principal = principal_for(org_id, ["crm.lead.lead.read:ORG", f"{REVEAL}:ORG"], amr=["otp"])
+        principal = principal_for(
+            org_id, ["crm.lead.lead.read:ORG", f"{REVEAL}:ORG"], amr=STEPPED_UP
+        )
         with as_principal(principal):
             response = await client.get(_reveal_path(data["lead_a_id"]))
         assert response.status_code in {404, 405, 422}
@@ -474,9 +512,9 @@ class TestRevealAuthorization:
         self, client, org_id, data, admin_session
     ) -> None:
         refused = [
-            principal_for(org_id, [], subject_ref=data["owner_a"], amr=["otp"]),
+            principal_for(org_id, [], subject_ref=data["owner_a"], amr=STEPPED_UP),
             principal_for(org_id, [f"{REVEAL}:ORG"], subject_ref=data["owner_a"]),
-            principal_for(org_id, [f"{REVEAL}:OWN"], subject_ref=data["owner_b"], amr=["otp"]),
+            principal_for(org_id, [f"{REVEAL}:OWN"], subject_ref=data["owner_b"], amr=STEPPED_UP),
         ]
         for principal in refused:
             with as_principal(principal):
@@ -506,7 +544,7 @@ class TestRevealOwnScopeIsKeyedOnSubjectRef:
         self, client, org_id, data
     ) -> None:
         principal = principal_for(
-            org_id, [f"{REVEAL}:OWN"], subject_ref=data["owner_a"], amr=["otp"]
+            org_id, [f"{REVEAL}:OWN"], subject_ref=data["owner_a"], amr=STEPPED_UP
         )
         with as_principal(principal):
             response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
@@ -517,7 +555,7 @@ class TestRevealOwnScopeIsKeyedOnSubjectRef:
     ) -> None:
         """No `sref` — a membership with no employee link, which is every principal in a CRM
         tenant without HRMS — means OWN has nothing to compare, so it refuses every lead."""
-        principal = principal_for(org_id, [f"{REVEAL}:OWN"], subject_ref=None, amr=["otp"])
+        principal = principal_for(org_id, [f"{REVEAL}:OWN"], subject_ref=None, amr=STEPPED_UP)
         with as_principal(principal):
             for lead_id in (data["lead_a_id"], data["lead_b_id"]):
                 response = await client.post(_reveal_path(lead_id), json={"field": "phone"})
@@ -527,7 +565,9 @@ class TestRevealOwnScopeIsKeyedOnSubjectRef:
     async def test_the_membership_id_is_not_what_own_compares(self, client, org_id, data) -> None:
         """A principal whose *membership id* equals the lead's owner id, but whose `sref`
         does not, is refused: today's OWN is the employee link, not the membership."""
-        principal = principal_for(org_id, [f"{REVEAL}:OWN"], subject_ref=uuid.uuid4(), amr=["otp"])
+        principal = principal_for(
+            org_id, [f"{REVEAL}:OWN"], subject_ref=uuid.uuid4(), amr=STEPPED_UP
+        )
         principal = principal.model_copy(update={"membership_id": data["owner_a"]})
         with as_principal(principal):
             response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
@@ -536,7 +576,7 @@ class TestRevealOwnScopeIsKeyedOnSubjectRef:
     async def test_an_org_grant_needs_no_subject_ref(self, client, org_id, data) -> None:
         """The other side of the same fact: ORG never consults `sref`, so an administrator
         without an employee link reveals normally. This is the path that works everywhere."""
-        principal = principal_for(org_id, [f"{REVEAL}:ORG"], subject_ref=None, amr=["otp"])
+        principal = principal_for(org_id, [f"{REVEAL}:ORG"], subject_ref=None, amr=STEPPED_UP)
         with as_principal(principal):
             response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
         assert response.status_code == 200

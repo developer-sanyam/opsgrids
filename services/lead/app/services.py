@@ -31,6 +31,7 @@ see `_resolve_round_robin_snapshot`'s own docstring.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from collections.abc import Sequence
@@ -665,6 +666,13 @@ _NOTHING_ON_FILE: dict[str, str] = {
 #: The daily budget's window. Not a setting: "per day" is what the budget is called.
 _REVEAL_DAILY_WINDOW_SECONDS = 86_400
 
+#: The longest the reveal budget's Redis round trip may take. It is spent inside the request's
+#: database transaction (after the lead has been looked up and before it is opened), so an
+#: unreachable-but-not-refusing Redis — a dropped route, a stopped container behind a proxy — must
+#: not pin a pooled connection until some socket timeout nobody set. Over it is the same 503 an
+#: outage is: nothing is revealed.
+_REVEAL_BUDGET_TIMEOUT_SECONDS = 2.0
+
 
 def log_reveal_refused(
     principal: Principal,
@@ -708,14 +716,23 @@ async def enforce_reveal_budget(ctx: ScopeContext, *, request: Request | None = 
     on purpose — the thing being bounded is how much PII one person can read, and two routes
     with two budgets would double it.
 
-    Counted when the request arrives, after the permission and the step-up have passed and
-    before anything is looked up, so probing with ids that turn out to be foreign or absent
-    spends budget too. A window is fixed, not sliding: a caller can spend the end of one and the
-    start of the next (`platform_core.cache.enforce_rate_limit`).
+    **Spent when a value is about to be opened, not when a request arrives.** It runs after the
+    permission, the step-up and the entitlement have passed and after the lead has been shown to
+    exist in this organization, to be in the caller's scope and to have a value for the field —
+    and before that value is decrypted (`reveal_lead_field`). A request that was going to be
+    refused spends nothing, so a stolen token cannot exhaust the real person's budget with
+    invalid ids or fields they may not touch, and cannot deny them the reveals they are entitled
+    to. What it costs: probing with ids that turn out to be foreign or absent is no longer
+    counted here, only by the gateway's own limits — and it reads nothing, since absent and
+    foreign are the same 404.
 
-    **Fails closed.** `enforce_rate_limit` answers 503 when Redis cannot be reached, so a Redis
-    outage stops reveals rather than lifting their limit. Nothing else in this service uses
-    Redis.
+    A window is fixed, not sliding: a caller can spend the end of one and the start of the next
+    (`platform_core.cache.enforce_rate_limit`).
+
+    **Fails closed**, and bounded: `enforce_rate_limit` answers 503 when Redis cannot be reached,
+    and a Redis that neither answers nor refuses is the same 503 after
+    `_REVEAL_BUDGET_TIMEOUT_SECONDS`, so a Redis outage stops reveals rather than lifting their
+    limit or holding a database connection. Nothing else in this service uses Redis.
     """
     cfg = settings()
     who = f"{ctx.organization_id}:{ctx.principal.sub}"
@@ -725,12 +742,18 @@ async def enforce_reveal_budget(ctx: ScopeContext, *, request: Request | None = 
     )
     for name, limit, window_seconds in budgets:
         try:
-            await enforce_rate_limit(
-                f"crm.reveal.{name}:{who}", limit=limit, window_seconds=window_seconds
-            )
+            async with asyncio.timeout(_REVEAL_BUDGET_TIMEOUT_SECONDS):
+                await enforce_rate_limit(
+                    f"crm.reveal.{name}:{who}", limit=limit, window_seconds=window_seconds
+                )
         except RateLimitedProblem:
             log_reveal_refused(ctx.principal, reason=f"rate_limited_{name}", request=request)
             raise
+        except TimeoutError as exc:
+            log.error("lead.reveal.budget_timeout", window=name)
+            raise UpstreamUnavailableProblem(
+                "Cannot verify request limits right now. Please retry shortly."
+            ) from exc
 
 
 async def reveal_lead_field(
@@ -743,9 +766,9 @@ async def reveal_lead_field(
 ) -> str:
     """Reveal a lead's real phone number or email to a human — the audited, stepped-up path.
 
-    Reaching here means the caller held `crm.lead.lead.read_sensitive` and stepped up
-    (`amr={"otp"}`). Everything else is decided here, in one function, so no caller can reach
-    the decrypt having skipped a check:
+    Reaching here means the caller held `crm.lead.lead.read_sensitive` and presented a step-up
+    token (`amr` with `otp` and the step-up marker). Everything else is decided here, in one
+    function, so no caller can reach the decrypt having skipped a check:
 
     1. The lead is fetched inside the caller's organization. An id that is not there — or is
        another organization's — is the same 404, so this route confirms nothing about lead ids
@@ -756,14 +779,16 @@ async def reveal_lead_field(
     3. Nothing sealed for the requested field is a 404 (`_NOTHING_ON_FILE`), never a 200 with a
        null. No audit row is kept for it — nothing was disclosed, and the request's
        transaction rolls back on the error.
-    4. The sealed value is opened with the same key context `create_lead` sealed it under.
-    5. An `entity.sensitive_read` audit row naming the **field only** is staged in the
-       caller's transaction, which commits before the response is sent
-       (`get_tenant_session`'s function-scoped exit): a revealed value never leaves without a
+    4. The reveal budget is spent (`enforce_reveal_budget`, 429 when spent, 503 when it cannot
+       be checked): only a request that has passed 1-3 counts, and nothing has been decrypted yet.
+    5. The sealed value is opened with the same key context `create_lead` sealed it under.
+    6. An `entity.sensitive_read` audit row naming the **field only** — and the token's session
+       and `amr` — is staged in the caller's transaction, which commits before the response is
+       sent (`get_tenant_session`'s function-scoped exit): a revealed value never leaves without a
        record that it was revealed. The value itself is never written anywhere, here or in a
        log line.
 
-    Every refusal in 1-3 also logs one WARNING (`log_reveal_refused`) — not an audit row.
+    Every refusal in 1-4 also logs one WARNING (`log_reveal_refused`) — not an audit row.
 
     A converted lead still reveals — it keeps its own sealed copy, independent of the contact
     conversion created on customer-service's side.
@@ -789,6 +814,10 @@ async def reveal_lead_field(
         )
         raise NotFoundProblem(_NOTHING_ON_FILE[field])
 
+    # Everything that could refuse this request without a value being opened has now run, so this
+    # is where the budget is spent: after the cheap checks, before the decrypt.
+    await enforce_reveal_budget(ctx, request=request)
+
     try:
         plaintext = open_sealed(sealed, settings=settings())
     except PiiError:
@@ -807,8 +836,10 @@ async def reveal_lead_field(
     # session that did it. `record_sensitive_read` cannot carry it, so this is `record_audit`
     # directly. The row's own `request_id` comes from `X-Request-ID` when the client sent one,
     # so it is a correlation aid and not evidence of anything; `session_id` — the token's `sid`
-    # claim, forwarded by the gateway — is what ties a reveal to the sign-in (and so the MFA
-    # step-up) that authorised it. The field's *name* only, never its value.
+    # claim, forwarded by the gateway — is what ties a reveal to the sign-in that authorised it,
+    # and `amr` — the token's authentication methods — says *how*: `["pwd", "otp", "stepup"]` for a
+    # code proved for this reveal, and the row could not otherwise tell that from a session that
+    # gave a code at sign-in. The field's *name* only, never its value.
     record_audit(
         session,
         AuditLog,
@@ -817,7 +848,11 @@ async def reveal_lead_field(
         action="entity.sensitive_read",
         entity="lead",
         entity_id=lead.id,
-        after={"fields": [field], "session_id": ctx.principal.session_id},
+        after={
+            "fields": [field],
+            "session_id": ctx.principal.session_id,
+            "amr": list(ctx.principal.amr),
+        },
         request=request,
     )
     log.info(

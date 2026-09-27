@@ -70,22 +70,30 @@ ContactRead = Annotated[ScopeContext, Depends(require("crm.book.contact.read"))]
 ContactWrite = Annotated[ScopeContext, Depends(require("crm.book.contact.write"))]
 ContactDelete = Annotated[ScopeContext, Depends(require("crm.book.contact.delete"))]
 REVEAL_PERMISSION = "crm.book.contact.read_sensitive"
-_require_reveal = require(REVEAL_PERMISSION, amr={"otp"})
+#: What auth-service's `POST /auth/mfa/step-up` puts in a token's `amr` and nothing else does
+#: (`STEP_UP_AMR` in `services/auth/app/services.py`; `tests/infra/test_step_up_marker.py` keeps
+#: the copies equal). `otp` alone is not enough: a session that gave a code **at sign-in** carries
+#: `otp` on every token it mints for its whole life (up to seven days), and every session opened
+#: after an authenticator is set up is one of those — so a stolen session token would pass a guard
+#: that asked only for `otp`. `require` demands every member of the set (ADR-0023).
+STEP_UP_AMR = "stepup"
+_require_reveal = require(REVEAL_PERMISSION, amr={"otp", STEP_UP_AMR})
 
 
 async def _reveal_guard(principal: CurrentPrincipal, request: Request) -> ScopeContext:
-    """The reveal route's authorization: the dangerous permission **and** a second factor (the
-    same pairing employee-service requires to unmask an employee's personal details) — an
-    ordinary CRM session must not be a route to a customer's phone book — then the per-user
-    reveal budget.
+    """The reveal route's authorization: the dangerous permission **and** a code proved for this
+    reveal — a step-up token (`otp` *and* the step-up marker, `STEP_UP_AMR`), which a session that
+    merely gave a code at sign-in does not hold — the same pairing employee-service requires to
+    unmask an employee's personal details. An ordinary CRM session must not be a route to a
+    customer's phone book.
 
-    It is `require(...)` itself, wrapped, so the rules are the platform's; the wrapper adds two
-    things `require` cannot. A refusal is logged (`services.log_reveal_refused`) — the
-    permission and step-up checks happen here, before the route body exists, so this is the only
-    place that can see them. And the budget is spent here rather than in the body: the route
-    declares this dependency ahead of its database session, so a caller who is over budget is
-    refused before a transaction or a pool connection is taken, and a Redis round trip never
-    sits inside one.
+    It is `require(...)` itself, wrapped, so the rules are the platform's; the wrapper adds what
+    `require` cannot: a refusal is logged (`services.log_reveal_refused`) — the permission and
+    step-up checks happen here, before the route body exists, so this is the only place that can
+    see them. The per-user reveal budget is **not** spent here: it is spent in
+    `services.reveal_contact_phone`, after the request has been shown to be one that could reveal
+    something (a real contact, in scope) and before anything is decrypted, so a token cannot burn
+    the real person's budget with requests that were going to be refused.
     """
     try:
         ctx: ScopeContext = _require_reveal(principal)
@@ -99,7 +107,6 @@ async def _reveal_guard(principal: CurrentPrincipal, request: Request) -> ScopeC
             request=request,
         )
         raise
-    await services.enforce_reveal_budget(ctx, request=request)
     return ctx
 
 
@@ -420,11 +427,20 @@ async def set_contact_phone(
     summary="Reveal a contact's real phone number (audited)",
     dependencies=[Entitled],
     responses={
+        403: {
+            "description": (
+                "Missing `crm.book.contact.read_sensitive`, a step-up token "
+                "(`Additional authentication required: otp, stepup` — a session that gave a "
+                "code at sign-in is not enough; `POST /auth/mfa/step-up` mints one), or the "
+                "contact is outside the caller's scope."
+            )
+        },
         429: {
             "description": (
                 "This user has spent their reveal budget in this organization: 30 per 10 "
-                "minutes or 200 per day, shared with the lead reveal. `Retry-After` is the "
-                "length of the window that was spent, in seconds."
+                "minutes or 200 per day, shared with the lead reveal. Only a request that "
+                "would have opened a contact spends from it. `Retry-After` is the length of "
+                "the window that was spent, in seconds."
             )
         },
         503: {
@@ -437,8 +453,6 @@ async def set_contact_phone(
 )
 async def reveal_contact_phone(
     contact_id: uuid.UUID,
-    # Ahead of `session` on purpose: the guard spends the reveal budget (a Redis round trip), and
-    # dependencies resolve in declaration order — see `_reveal_guard`.
     ctx: ContactUnmask,
     session: SessionDep,
     request: Request,
@@ -451,10 +465,10 @@ async def reveal_contact_phone(
     query string or replayed from browser history the way a GET can be. The response says so
     itself (`Cache-Control: no-store`).
 
-    Guarded by the dangerous `read_sensitive` permission, a second factor and a per-user reveal
-    budget (`_reveal_guard`), then re-scoped to this one contact inside
-    `services.reveal_contact_phone`. Filtering a list and forgetting the detail route is the
-    named vulnerability this shape exists to avoid.
+    Guarded by the dangerous `read_sensitive` permission and a step-up token (`_reveal_guard`),
+    then re-scoped to this one contact inside `services.reveal_contact_phone`, which also spends
+    the per-user reveal budget just before the number is opened. Filtering a list and forgetting
+    the detail route is the named vulnerability this shape exists to avoid.
     """
     contact, phone = await services.reveal_contact_phone(session, ctx, contact_id, request=request)
     response.headers["Cache-Control"] = "no-store"

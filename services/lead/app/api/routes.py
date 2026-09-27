@@ -68,22 +68,30 @@ LeadRead = Annotated[ScopeContext, Depends(require("crm.lead.lead.read"))]
 LeadWrite = Annotated[ScopeContext, Depends(require("crm.lead.lead.write"))]
 LeadConvert = Annotated[ScopeContext, Depends(require("crm.lead.lead.convert"))]
 REVEAL_PERMISSION = "crm.lead.lead.read_sensitive"
-_require_reveal = require(REVEAL_PERMISSION, amr={"otp"})
+#: What auth-service's `POST /auth/mfa/step-up` puts in a token's `amr` and nothing else does
+#: (`STEP_UP_AMR` in `services/auth/app/services.py`; `tests/infra/test_step_up_marker.py` keeps
+#: the copies equal). `otp` alone is not enough: a session that gave a code **at sign-in** carries
+#: `otp` on every token it mints for its whole life (up to seven days), and every session opened
+#: after an authenticator is set up is one of those — so a stolen session token would pass a guard
+#: that asked only for `otp`. `require` demands every member of the set (ADR-0023).
+STEP_UP_AMR = "stepup"
+_require_reveal = require(REVEAL_PERMISSION, amr={"otp", STEP_UP_AMR})
 
 
 async def _reveal_guard(principal: CurrentPrincipal, request: Request) -> ScopeContext:
-    """The reveal route's authorization: the dangerous permission **and** a second factor (the
-    same pairing customer-service requires to reveal a contact's phone, and employee-service to
-    unmask an employee's personal details) — an ordinary CRM session must not be a route to a
-    prospect's contact details — then the per-user reveal budget.
+    """The reveal route's authorization: the dangerous permission **and** a code proved for this
+    reveal — a step-up token (`otp` *and* the step-up marker, `STEP_UP_AMR`), which a session that
+    merely gave a code at sign-in does not hold — the same pairing customer-service requires to
+    reveal a contact's phone. An ordinary CRM session must not be a route to a prospect's contact
+    details.
 
-    It is `require(...)` itself, wrapped, so the rules are the platform's; the wrapper adds two
-    things `require` cannot. A refusal is logged (`services.log_reveal_refused`) — the
-    permission and step-up checks happen here, before the route body exists, so this is the only
-    place that can see them. And the budget is spent here rather than in the body: the route
-    declares this dependency ahead of its database session, so a caller who is over budget is
-    refused before a transaction or a pool connection is taken, and a Redis round trip never
-    sits inside one.
+    It is `require(...)` itself, wrapped, so the rules are the platform's; the wrapper adds what
+    `require` cannot: a refusal is logged (`services.log_reveal_refused`) — the permission and
+    step-up checks happen here, before the route body exists, so this is the only place that can
+    see them. The per-user reveal budget is **not** spent here: it is spent in
+    `services.reveal_lead_field`, after the request has been shown to be one that could reveal
+    something (a real lead, in scope, with a value on file) and before anything is decrypted, so
+    a token cannot burn the real person's budget with requests that were going to be refused.
     """
     try:
         ctx: ScopeContext = _require_reveal(principal)
@@ -97,7 +105,6 @@ async def _reveal_guard(principal: CurrentPrincipal, request: Request) -> ScopeC
             request=request,
         )
         raise
-    await services.enforce_reveal_budget(ctx, request=request)
     return ctx
 
 
@@ -272,9 +279,10 @@ async def convert_lead(
     responses={
         403: {
             "description": (
-                "Missing `crm.lead.lead.read_sensitive`, the second factor "
-                "(`Additional authentication required: otp`), or the lead is outside the "
-                "caller's scope."
+                "Missing `crm.lead.lead.read_sensitive`, a step-up token "
+                "(`Additional authentication required: otp, stepup` — a session that gave a "
+                "code at sign-in is not enough; `POST /auth/mfa/step-up` mints one), or the "
+                "lead is outside the caller's scope."
             )
         },
         404: {
@@ -286,8 +294,9 @@ async def convert_lead(
         429: {
             "description": (
                 "This user has spent their reveal budget in this organization: 30 per 10 "
-                "minutes or 200 per day, shared with the contact reveal. `Retry-After` is the "
-                "length of the window that was spent, in seconds."
+                "minutes or 200 per day, shared with the contact reveal. Only a request that "
+                "would have revealed a value spends from it. `Retry-After` is the length of "
+                "the window that was spent, in seconds."
             )
         },
         503: {
@@ -301,8 +310,6 @@ async def convert_lead(
 async def reveal_lead_field(
     lead_id: uuid.UUID,
     payload: LeadRevealIn,
-    # Ahead of `session` on purpose: the guard spends the reveal budget (a Redis round trip), and
-    # dependencies resolve in declaration order — see `_reveal_guard`.
     ctx: LeadReveal,
     session: SessionDep,
     request: Request,
@@ -315,11 +322,10 @@ async def reveal_lead_field(
     pre-fetched, logged in a query string or replayed from browser history the way a GET can
     be. The response says so itself (`Cache-Control: no-store`).
 
-    Guarded by the dangerous `read_sensitive` permission, a second factor and a per-user reveal
-    budget (`_reveal_guard`), then re-scoped to this one lead inside
-    `services.reveal_lead_field`, which also owns the not-found, the nothing-on-file and the
-    audit steps. This route takes the ordinary tenant session, so the audit row commits before
-    the response is sent.
+    Guarded by the dangerous `read_sensitive` permission and a step-up token (`_reveal_guard`),
+    then re-scoped to this one lead inside `services.reveal_lead_field`, which also owns the
+    not-found, the nothing-on-file, the per-user reveal budget and the audit steps. This route
+    takes the ordinary tenant session, so the audit row commits before the response is sent.
     """
     value = await services.reveal_lead_field(session, ctx, lead_id, payload.field, request=request)
     response.headers["Cache-Control"] = "no-store"

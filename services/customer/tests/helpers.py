@@ -47,6 +47,13 @@ class FakeRedis:
         return None
 
 
+#: The `amr` of a token from `POST /auth/mfa/step-up`: `otp` and the marker only that
+#: endpoint mints. What the reveal routes require (ADR-0023). A session that gave a code at
+#: sign-in has `otp` alone.
+STEPPED_UP = ["otp", "stepup"]
+LOGIN_OTP = ["pwd", "otp"]
+
+
 def principal_for(
     org_id: uuid.UUID,
     perms: list[str],
