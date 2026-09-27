@@ -192,6 +192,10 @@ export interface UpdateSpec<Item> {
   keyColumn?: string | undefined;
   /** The unique key of a stored record, or null when it has none. Matching ignores case and spacing. */
   keyOf?(item: Item): string | null;
+  /** The stored record's ISO currency, for lists whose amounts carry one. On an update, a money cell
+   *  is converted with THIS currency when the row names none, and a blank Currency cell stays blank
+   *  (unchanged) instead of defaulting to INR, which would silently re-price a yen or dinar record. */
+  currencyOf?(item: Item): string | null;
   fields: readonly UpdateField<Item>[];
   /** Refuses a change the list's own rules forbid, given what would change (a converted lead's
    *  status, a closed deal's stage): throw `RowProblem`. Runs after the diff. */
