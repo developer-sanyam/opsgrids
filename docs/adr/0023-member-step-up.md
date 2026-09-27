@@ -281,8 +281,8 @@ Read from the role catalogues (`services/*/app/catalogue.py`) and the route guar
 
 | Permission | Route guard | Scope floor | Roles that hold it |
 |---|---|---|---|
-| `crm.book.contact.read_sensitive` | `require(..., amr={"otp"})` | none | `CRM_BOOK_ADMIN` at `ORG` (built from `.all("ORG")`). `CRM_SALES_REP` holds none. |
-| `crm.lead.lead.read_sensitive` | same | none | `CRM_LEADS_ADMIN` at `ORG` (built from `.all("ORG")`); `CRM_LEAD_REP` (the default role) at `OWN`. *As of the lead-reveal slice (reviewed at `f81ff9a8`), not on this ADR's base.* |
+| `crm.book.contact.read_sensitive` | `require(..., amr={"otp"})` | none | `CRM_BOOK_ADMIN` at `ORG` (built from `.all("ORG")`); `CRM_SALES_REP` (the default role) at `OWN`, added by the reveal release. |
+| `crm.lead.lead.read_sensitive` | same | none | `CRM_LEADS_ADMIN` at `ORG` (built from `.all("ORG")`); `CRM_LEAD_REP` (the default role) at `OWN`. New in the reveal release, together with the permission itself. |
 | `hrms.people.employee.read_sensitive` | same | none | `HR_ADMIN` at `ORG`; `EMPLOYEE` at `OWN` (their own record) |
 | `storefront.sales.enquiry.unmask` | same | `ORG` | `STOREFRONT_ADMIN` only; `STOREFRONT_STAFF` holds no enquiry permission |
 | `engage.inbox.message.unmask` | same | `ORG` | `ENGAGE_ADMIN` only; `ENGAGE_INBOX_AGENT` is explicitly without it |
@@ -292,12 +292,12 @@ Read from the role catalogues (`services/*/app/catalogue.py`) and the route guar
   **any** lead's email and phone in the organization. That is intended — it is the same as
   `CRM_BOOK_ADMIN` for contacts — but it means the step-up is the *only* thing between an admin
   account and every lead's contact details, and the audit row is the only trace.
-- **`CRM_LEAD_REP`'s `OWN` grant matches nothing today.** `OWN` scope resolves to "records whose owner
-  is my `subject_ref`", and `subject_ref` (the `sref` claim) comes from the membership's employee
-  link, which does not exist until ADR-0008's link is built and populated. With `subject_ref`
-  unset, `ScopeContext.apply` matches no rows and `assert_can_touch` refuses, so those reps reveal
-  nothing until then. Do not read "reps hold `read_sensitive:OWN`" as "reps can reveal their own
-  leads".
+- **`CRM_LEAD_REP`'s and `CRM_SALES_REP`'s `OWN` grants match nothing today.** `OWN` scope resolves
+  to "records whose owner is my `subject_ref`", and `subject_ref` (the `sref` claim) comes from the
+  membership's employee link, which does not exist until ADR-0008's link is built and populated.
+  With `subject_ref` unset, `ScopeContext.apply` matches no rows and `assert_can_touch` refuses, so
+  those reps reveal nothing until then. Do not read "reps hold `read_sensitive:OWN`" as "reps can
+  reveal their own leads or contacts".
 - **Two corrections to the first version of this ADR** (both are in "Risks accepted" above): no
   step-up token can be ended early — logout, lockout, password change and deactivation do not,
   because the gateway never checks the session — and it can be chained with a fresh code using the
@@ -318,3 +318,64 @@ Read from the role catalogues (`services/*/app/catalogue.py`) and the route guar
   (risk 9).
 - A notification rule for `core.user.mfa_enrolled` is added, so a member is told when an
   authenticator is added to their account.
+
+## Deploy checklist
+
+The reveal release: member step-up (auth), lead and contact reveal (lead, customer), the dashboard
+Security page and the CRM Reveal buttons. **Not deployed; the owner approves the backend deploy
+separately.** In order:
+
+1. **Migration.** auth `5d2f8a1c7e94` (`auth.mfa_factors.enrolled_session_id`, nullable UUID, no
+   foreign key; down revision `f8e432a62a84`, the single head). `make deploy` migrates before it
+   recreates containers (preflight, build, caddy validate, **migrate**, recreate, health), so the
+   column is there before the new auth serves; it is additive, so the old auth keeps working
+   against it meanwhile. No manual step. lead and customer have no migration. `remote.sh migrate`
+   also ends with the existing MFA reseal (`lib/mfa-reseal.sh`), a no-op unless a legacy plaintext
+   factor is left; until such a factor is resealed, enrol and step-up answer 503
+   `mfa-reseal-pending`.
+2. **Environment.** Nothing new is required and `preflight.sh` has nothing new to check. Optional,
+   defaults correct for production and not plumbed through compose: `STEP_UP_TOKEN_TTL_SECONDS`
+   (auth, 180; startup fails outside 30-600) and `REVEAL_BURST_LIMIT` / `REVEAL_BURST_WINDOW_SECONDS`
+   / `REVEAL_DAILY_LIMIT` (lead and customer, 30 / 600 / 200; the two share Redis keys, so keep them
+   equal if ever set). `REDIS_URL` already reaches `lead` and `customer` through the shared
+   `x-service-env` block and both wait for redis to be healthy; `tests/infra/test_compose_reveal_redis.py`
+   pins it.
+3. **Redis becomes a dependency of two more services.** lead and customer open a client and spend a
+   per-user reveal budget before every reveal. Redis down: the reveal routes answer 503 (fail
+   closed), `/health/ready` on those two reports `degraded` (still HTTP 200, no restart), and
+   nothing else in either service changes.
+4. **Permission catalogue: reconcile `crm`, after the deploy is healthy, never as part of it.**
+   New dangerous permission `crm.lead.lead.read_sensitive` (default `OWN`, max `ORG`);
+   `CRM_LEADS_ADMIN` gains it at `ORG`, `CRM_LEAD_REP` at `OWN`; `CRM_SALES_REP` gains
+   `crm.book.contact.read_sensitive` at `OWN`. Existing organizations get none of it until:
+
+   ```bash
+   infrastructure/edge/remote.sh reconcile-permissions crm            # dry run: read the diff first
+   infrastructure/edge/remote.sh reconcile-permissions crm --apply    # fleet write
+   ```
+
+   (`make edge-reconcile HOST=... CONFIRM=... PRODUCTS=crm [APPLY=1]` is the same.) `--apply` widens
+   roles (union only) and bumps `pv` in every affected organization, so every signed-in member
+   refreshes their token: run it outside peak hours. Every CRM owner and administrator can then
+   reveal any lead or contact in their organization, behind the step-up.
+5. **Reps must enrol an authenticator first**, on the dashboard Security page (their password, then
+   a code from the new app). Someone who enrols inside their current session can step up in it; one
+   whose authenticator was added in another still-open session, or before the deploy, gets
+   `mfa-reauthentication-required` and signs in once (risk 10). Reps' `OWN` grants match nothing
+   until the ADR-0008 employee link exists (see "Who can reveal, really"), and single sign-on
+   members cannot reveal at all (risk 6), so at first the people who can are `ORG` holders with a
+   password sign-in.
+6. **Frontends go with the API.** Publish the dashboard and the CRM app (`APP=dashboard` and
+   `APP=crm` with `publish-web.sh`, as the last release did). The old dashboard cannot enrol against
+   the new auth (`mfa/enrol` now needs `password`, so it answers 422), and the CRM Reveal buttons
+   need the new lead, customer and step-up routes; publish after the API is healthy and do not
+   leave the two apart.
+7. **Known weakest link: `POST /auth/password/change` counts no wrong guesses** (risk 9). Enrolment's
+   password gate is only as strong as that route, and a bearer holder can test candidate passwords
+   through it at whatever rate the gateway allows. Pre-existing and not changed here; the fix is to
+   call `_register_password_failure` there, on the bare-session pattern `enrol` uses. Do not read
+   step-up as protection against someone who holds both a stolen bearer token and time to guess.
+8. **One oddity to know, not to fix now.** `enrol/confirm` on a factor that is already confirmed
+   answers 401, which the shared client reads as a dead session (refresh, retry, sign out). The
+   dashboard cannot send it twice, but a lost response followed by a manual retry would. A 409
+   would be kinder.
