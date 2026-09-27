@@ -60,7 +60,6 @@ const RESULT: UseImportExportResult = {
     recordIdHeader: "Record ID",
     canExport: true,
     canUpdate: false,
-    recordIdHeader: "Record ID",
   },
 };
 

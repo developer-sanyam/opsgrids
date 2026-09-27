@@ -583,21 +583,21 @@ describe("contacts: update from Excel", () => {
       [
         "6",
         "sam.khan@cobaltfin.com",
-        "sam.khan@cobaltfin.com",
+        "Sam Khan",
         "Invalid",
         "A contact with this email is already on file as Priya.Nair@northwind.co; addresses that differ only in capitals are treated as the same person.",
       ],
       [
         "7",
         "tara.mehta@northwind.co",
-        "tara.mehta@northwind.co",
+        "Tara Mehta",
         "Invalid",
         "Phone cannot be cleared: a saved number can be replaced, not removed",
       ],
       [
         "8",
         "chief@northwind.co",
-        "chief@northwind.co",
+        "Chidi Eze",
         "Failed",
         "Request validation failed (raw_phone: That is not a valid phone number with a country code) Saved: Title. Not saved: Phone.",
       ],
@@ -899,6 +899,7 @@ describe("deals: update from Excel", () => {
     expect(rowsOf(screen.getByRole("region", { name: "Rows that were not imported" }))).toEqual([
       [
         "5",
+        "Sigma sale",
         "Sigma sale",
         "Invalid",
         "Closed Lost always sets Probability (%) to 0, so it cannot be 30 in the same row. Leave the cell as it is, or type 0.",
