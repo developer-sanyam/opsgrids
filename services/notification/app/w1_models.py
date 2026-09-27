@@ -149,6 +149,14 @@ class ConnectionHealth(Base, UUIDPrimaryKeyMixin, OrgScopedMixin, TimestampMixin
     webhook_subscribed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: The setup run that last touched this connection (informational).
     last_setup_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: When Meta's deauthorize or data-deletion callback last reported the Facebook login behind
+    #: this connection as revoked. **Advisory only** -- `app/dispatcher.py` never reads this
+    #: column, and it never flips `token_state`. Embedded Signup mints a business-integration
+    #: token; a person removing the app from their own Facebook settings does not necessarily
+    #: revoke that token, so a callback naming this connection is not proof the connection has
+    #: stopped working, and must not be able to stop sends on its own. It is shown on the health
+    #: card as a plain, informational note. See `docs/whatsapp/webhooks.md`.
+    identity_revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (UniqueConstraint("organization_id", name="uq_w1_connection_health_org"),)
 

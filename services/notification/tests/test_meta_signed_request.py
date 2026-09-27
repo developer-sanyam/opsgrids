@@ -125,12 +125,82 @@ def test_an_oversized_value_is_refused_before_anything_is_decoded() -> None:
 
 
 def test_issued_at_and_expires_are_optional_and_never_required_for_trust() -> None:
-    """A payload missing the timestamps still verifies — they are read for logging and the
-    confirmation-code idempotency key, never for the security decision."""
+    """A payload missing the timestamps still verifies — they are read for logging only, never
+    for the security decision or (since this round) the confirmation-code idempotency key, which
+    is now derived from the payload segment itself (`payload_segment` below)."""
     value = _signed_request({"user_id": "1"})
     payload = msr.parse_signed_request(value, SECRET)
     assert payload.issued_at is None
     assert payload.expires is None
+
+
+def test_a_json_bool_is_never_treated_as_issued_at_or_expires() -> None:
+    """`bool` is a subclass of `int` in Python, so `isinstance(True, int)` is `True` — a JSON
+    `true`/`false` in either field must not be accepted as one of Meta's own timestamps just
+    because of that."""
+    value = _signed_request({"user_id": "1", "issued_at": True, "expires": False})
+    payload = msr.parse_signed_request(value, SECRET)
+    assert payload.issued_at is None
+    assert payload.expires is None
+
+
+def test_payload_segment_is_the_still_encoded_payload() -> None:
+    """Exposed so callers can derive an idempotency key from the exact bytes the signature covers,
+    rather than from individual fields that may be missing or malformed."""
+    value = _signed_request({"user_id": "1"})
+    _sig, encoded_payload = value.split(".")
+    payload = msr.parse_signed_request(value, SECRET)
+    assert payload.payload_segment == encoded_payload
+
+
+# --------------------------------------------------------------------- the SDK login-response shape
+
+
+def test_a_payload_carrying_code_is_refused_outright() -> None:
+    """The lever the security review flagged: Meta signs `FB.login`'s own response with the same
+    app secret, in the same shape, plus `code` — a field the real server-to-server callback never
+    carries. A validly-signed payload carrying it must still be refused."""
+    value = _signed_request({"user_id": "218471", "issued_at": 1, "code": "one-time-code"})
+    with pytest.raises(msr.SignedRequestError):
+        msr.parse_signed_request(value, SECRET)
+
+
+def test_a_payload_carrying_oauth_token_is_refused_outright() -> None:
+    """The older SDK's own equivalent of `code`."""
+    value = _signed_request({"user_id": "218471", "oauth_token": "some-token"})
+    with pytest.raises(msr.SignedRequestError):
+        msr.parse_signed_request(value, SECRET)
+
+
+def test_a_genuine_callback_payload_with_neither_field_still_verifies() -> None:
+    """The refusal above is specific to `code`/`oauth_token` — it must not become a refusal of
+    every payload that happens to carry an extra field Meta might one day add."""
+    value = _signed_request({"user_id": "218471", "issued_at": 1, "something_else": "1"})
+    payload = msr.parse_signed_request(value, SECRET)
+    assert payload.user_id == "218471"
+
+
+# --------------------------------------------------------------------- algorithm, ASCII-only
+
+
+def test_the_algorithm_check_does_not_fold_non_ascii_letters_onto_ascii_ones() -> None:
+    """`str.upper()` is Unicode-aware: the Kelvin sign `"K"` upper-cases to itself and,
+    depending on the Unicode version, some casefold tables can equate look-alike letters across
+    scripts. `bytes.upper()` only ever touches ASCII `a`-`z`, so an algorithm string that is not
+    plain ASCII must be refused outright rather than compared after a Unicode-aware fold."""
+    value = _signed_request({"user_id": "1"}, algorithm="HMAC-SHA256K")
+    with pytest.raises(msr.SignedRequestError):
+        msr.parse_signed_request(value, SECRET)
+
+
+# --------------------------------------------------------------------- no app secret configured
+
+
+def test_parse_signed_request_refuses_itself_with_no_app_secret_configured() -> None:
+    """Refuses on its own rather than trust its one caller (the route) to have checked first."""
+    value = _signed_request({"user_id": "1"})
+    with pytest.raises(msr.SignedRequestError):
+        msr.parse_signed_request(value, "")
 
 
 # --------------------------------------------------------------------- extract_signed_request

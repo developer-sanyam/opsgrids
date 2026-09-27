@@ -117,7 +117,7 @@ def reapply_append_only(connection: Connection) -> None:
     """
     if not cfg.db_app_role:
         return
-    for table in (APPEND_ONLY_TABLE, "email_events"):
+    for table in (APPEND_ONLY_TABLE, "email_events", "w1_meta_deletion_requests"):
         if connection.execute(
             text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.{table}"}
         ).scalar():

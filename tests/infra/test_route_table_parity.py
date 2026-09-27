@@ -261,6 +261,15 @@ def test_every_webhook_route_in_dev_exists_in_prod() -> None:
     assert dev <= prod, f"in dev only: {sorted(dev - prod)}"
 
 
+def test_every_expected_webhook_path_has_an_expected_body_cap() -> None:
+    """`test_every_public_webhook_carries_its_expected_body_cap` below only ever checks the paths
+    named in `EXPECTED_BODY_CAPS`, and `test_the_gateway_makes_exactly_the_expected_paths_public_
+    as_webhooks` only ever pins `EXPECTED_WEBHOOK_PATHS` against the live policy — so a path added
+    to one map and not the other would be public, routed, and never have its body cap checked
+    against anything, with no test here failing to say so. The two key sets must match exactly."""
+    assert set(EXPECTED_BODY_CAPS) == set(EXPECTED_WEBHOOK_PATHS)
+
+
 @pytest.mark.parametrize("table", TABLES)
 def test_every_public_webhook_carries_its_expected_body_cap(table: Path) -> None:
     """The cap is the only thing between an unauthenticated request and a buffered body, so the
@@ -287,9 +296,12 @@ def test_notification_will_buffer_exactly_what_the_gateway_lets_through() -> Non
 
 def test_notification_serves_the_path_the_gateway_forwards() -> None:
     """The gateway forwards the request path unchanged. Mounted only at the root, a callback
-    answers every gateway-forwarded request with a 404. The root mount stays for a developer's
-    tunnel (checked on the WhatsApp Business Platform callback alone — the other three have no
-    reason to be reachable from one and are not mounted there)."""
+    answers every gateway-forwarded request with a 404. The whole router — the WhatsApp Business
+    Platform callback and the three Facebook Login callbacks alike — is mounted twice
+    (`app/main.py` includes the same router both under `/api/v1` and at the root), so all four are
+    also reachable at their root-mounted path; only the WhatsApp Business Platform one is checked
+    here, since the root mount exists for a developer's tunnel pointed straight at the service and
+    every path behind it is served by the same include, not a distinct routing decision per path."""
     status = _notification()["put_status"]
     assert status["/api/v1/nowhere"] == 404, "probe cannot tell a mounted path from a missing one"
     for path in EXPECTED_WEBHOOK_PATHS:

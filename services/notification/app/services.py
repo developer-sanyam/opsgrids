@@ -3025,6 +3025,12 @@ async def replace_whatsapp_connection(
     existing.access_token_enc = sealed
     existing.status = "connected"
     existing.updated_by = str(ctx.principal.sub)
+    # This path (pasting a token by hand) never carries a fresh Facebook user id -- there is no
+    # `FB.login` round trip behind it at all -- so whatever identity link the *previous* token's
+    # Embedded Signup left behind must not survive onto a token nobody has attributed to anyone.
+    # Left in place, a deauthorize or data-deletion callback for the old login could later act on
+    # a connection a different person now controls.
+    existing.meta_user_id = None
 
     try:
         await session.flush()

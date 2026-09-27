@@ -11,7 +11,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
-_DIGITS = r"^\d{1,30}$"
+#: `[0-9]`, not `\d`: pydantic's regex engine matches `\d` against any Unicode decimal digit (a
+#: fullwidth or Devanagari digit, for instance), not only ASCII ones. Meta's own ids are bare
+#: ASCII digit strings, so an id or hint carrying anything else must be refused at the boundary,
+#: not accepted and handed to a Graph API call or a database row as though it were one.
+_DIGITS = r"^[0-9]{1,30}$"
 
 
 class _Strict(BaseModel):
@@ -105,6 +109,10 @@ class DisconnectOut(WhatsAppOkOut):
 class TokenHealthOut(BaseModel):
     state: Literal["valid", "expiring", "invalid", "unknown"]
     checked_at: str | None
+    #: When Meta's deauthorize or data-deletion callback last reported the Facebook login behind
+    #: this connection as revoked. **Informational only** -- it never affects `state` above and
+    #: never stops a send; see `w1_models.ConnectionHealth.identity_revoked_at`'s docstring.
+    identity_revoked_at: str | None = None
 
 
 class WebhookHealthOut(BaseModel):

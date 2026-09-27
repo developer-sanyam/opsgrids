@@ -229,6 +229,10 @@ async def _run_step(scope: WorkScope, ctx: Ctx, key: str) -> str:
         run.finished_at = now
         run.code_enc = None
         run.token_enc = None
+        # A run that never reached the step that copies this onto the connection must not leave
+        # it sitting in `w1_setup_runs` forever either -- it is exactly as done with as the code
+        # and the token wiped on the same lines above.
+        run.meta_user_id_hint = None
         log.warning("w1.setup.step_failed", step=key, code=failure.code)
         return "failed"
 
@@ -417,6 +421,11 @@ async def _step_number(session: AsyncSession, run: SetupRun, ctx: Ctx) -> str:
         # blank out an id a previous signup already captured.
         if run.meta_user_id_hint is not None:
             account.meta_user_id = run.meta_user_id_hint
+    # Copied onto the connection (or deliberately left alone above) either way: the hint has done
+    # its one job. Left in place, a completed run would keep naming this id in `w1_setup_runs`
+    # forever -- a stale copy a data-deletion request would have to know to clear separately, and
+    # would still show up in the run's own history after it should be forgotten.
+    run.meta_user_id_hint = None
     try:
         # `provider_accounts.phone_number_id` is globally unique (the webhook routing key), so the
         # database is what refuses a number another organization already holds.

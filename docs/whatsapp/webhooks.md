@@ -342,16 +342,27 @@ tested directly):
    are each capped at `MAX_SIGNED_REQUEST_BYTES`, refused before a byte is base64-decoded or
    parsed as JSON — the same instinct as `MAX_WEBHOOK_BODY_BYTES` above, sized down for a field
    that is tiny by construction.
-2. **Shape.** Exactly one `.`, both halves valid base64url (padding restored) before either is
-   trusted as anything.
-3. **Algorithm.** The decoded JSON's own `algorithm` field must read `HMAC-SHA256`
-   (case-insensitively). Meta has only ever documented this one value; anything else is refused.
-4. **Signature**, over the raw, still-encoded payload segment — exactly what Meta signed —
+2. **Shape.** Exactly one `.`, both halves valid base64url (padding restored, decoded with
+   `validate=True` so a character outside the alphabet is refused rather than silently dropped)
+   before either is trusted as anything.
+3. **Not the Facebook JS SDK's own login-response shape.** Meta signs `FB.login`'s own
+   `authResponse.signedRequest` (and the `fbsr_<appid>` cookie it also sets) with the *same* app
+   secret, in the *same* `algorithm`/`issued_at`/`user_id` shape, plus one field the server-to-
+   server callback never carries: `code` (the one-time authorization code), or `oauth_token` on an
+   older SDK. A decoded payload naming either is refused here, before any other field is read —
+   see "A validly-signed payload that is still the wrong thing" below for why this check exists at
+   all.
+4. **Algorithm.** The decoded JSON's own `algorithm` field must read `HMAC-SHA256`, compared as
+   exact ASCII bytes, case-insensitively. Meta has only ever documented this one value; anything
+   else, or anything not plain ASCII, is refused.
+5. **Signature**, over the raw, still-encoded payload segment — exactly what Meta signed —
    compared with `hmac.compare_digest`.
 
-Malformed input, the wrong algorithm and a bad signature all come back as the same
-`SignedRequestError`, and the route answers `401` for all of them without saying which check
+Malformed input, the SDK's own shape, the wrong algorithm and a bad signature all come back as the
+same `SignedRequestError`, and the route answers `401` for all of them without saying which check
 failed — mirroring `X-Hub-Signature-256`'s own "refuse first, trust second" shape above.
+`parse_signed_request` also refuses outright if it is ever called with no app secret configured,
+rather than trust its one caller (the route) to have checked first.
 
 Once verified, the payload is:
 
@@ -361,82 +372,160 @@ Once verified, the payload is:
 
 `user_id` is the Facebook-scoped id of the person the callback is about — the same id
 `FB.login`'s response carries as `authResponse.userID` during Embedded Signup, and the one thing
-either callback can be matched against.
+either callback can be matched against. `issued_at`/`expires`, when present, are read as a genuine
+JSON integer only — Python's `bool` is technically an `int` subclass, and a JSON `true`/`false` is
+never accepted as one of Meta's own timestamps just because `isinstance` would let it through.
 
-### Attributing a callback to a connection — and what it cannot reach
+### A validly-signed payload that is still the wrong thing
 
-`provider_accounts.meta_user_id` holds that id, captured **going forward only**: the Embedded
-Signup popup's completion request (`POST /engage/whatsapp/signup/complete`) now carries an
+A second review round found that the scheme above, on its own, does not prove a POST came from
+Meta's server rather than from anyone's browser. Embedded Signup's popup completes with a call to
+`FB.login`, and Meta signs *that* response with the identical app secret, in the identical
+`algorithm`/`issued_at`/`user_id` shape (plus `code`, refused by rule 3 above). Getting a fresh one
+of those for a Facebook id — by opening Embedded Signup's popup and reading `authResponse.
+signedRequest`, or the `fbsr_<appid>` cookie it also sets — needs no OpsGrids account at all: a
+departed employee, a consultant who set several customers up, or simply anyone who was ever shown
+that popup for a connection, could mint one on demand, repeatedly, and POST it here. Before this
+round, that would have flipped `token_state` to `invalid` — a real, working connection stopped by
+someone with no access to this platform, using a payload this service could not tell apart from
+Meta's own. Four changes close it, together:
+
+- Rule 3 above refuses the SDK's own shape outright.
+- Neither callback may flip `token_state` any more — see "What a callback may actually change"
+  below.
+- Both callbacks are now **one-shot per connection**: the matched row's `meta_user_id` is cleared
+  the moment either effect is applied, so a second payload naming the same id — genuine or
+  freshly minted — finds nothing left to match.
+- Both re-check the callback's `user_id` against the connection's *current* `meta_user_id`, under
+  `SELECT ... FOR UPDATE`, immediately before acting — not only in the directory reader's own
+  `WHERE` moments earlier, which a concurrent reconnect could have already raced past.
+
+### What a callback may actually change
+
+**Neither callback may flip `token_state`.** Embedded Signup mints a business-integration token; a
+person removing the app from *their own* Facebook settings does not necessarily revoke that token,
+so even a genuine callback is not proof the connection has stopped working — and per the section
+above, a callback here is not even reliably proof of anything Meta's own servers said. Both
+callbacks instead write `ConnectionHealth.identity_revoked_at`, a plain timestamp `app/
+dispatcher.py` never reads and that cannot, by itself, stop a send. The health card shows it as an
+informational note beside the token's own state (`w1_schemas.TokenHealthOut.identity_revoked_at`,
+`labels.ts`'s `IDENTITY_REVOKED_TEXT`) — never a warning, and never a reason the card itself
+suggests reconnecting. Only Meta's own Graph API answering for the token itself may ever set
+`token_state = invalid` (`w1_services.record_token_check`, called from the signup worker's own
+token checks and `w2_webhooks`'s uninstall handling — see `app/w2_webhooks.py`).
+
+*(If a future round adds a live `debug_token` call against the connection's own token before
+flipping `token_state` here, this note is the place to update — deliberately not attempted in this
+round; see the security-review report for why.)*
+
+`provider_accounts.meta_user_id` is the identity link, captured **going forward only**: the
+Embedded Signup popup's completion request (`POST /engage/whatsapp/signup/complete`) carries an
 optional `meta_user_id` alongside the existing `waba_id`/`phone_number_id` hints, threaded through
 `w1_setup_runs.meta_user_id_hint` and mirrored onto the connection once it is written
-(`w1_setup._step_number`).
+(`w1_setup._step_number`, which also clears the hint the moment it is copied — a completed run has
+no further use for it, and leaving it would keep a "deleted" identity link alive in the run's own
+history). A run that fails before reaching that step clears its own hint too. `services.
+replace_whatsapp_connection` (the manual "paste a token" path) and `w1_services.disconnect` both
+clear `meta_user_id` as well: a token pasted by hand carries no `FB.login` round trip behind it at
+all, and a disconnected connection's identity link must not survive to be inherited by whoever
+reconnects the number next. **NB: whether `authResponse.userID` is actually populated in Embedded
+Signup's `response_type: "code"` flow is unverified against a real signup** — see "Unverified
+against a real signup" below.
 
-**Connections made before this shipped have no `meta_user_id` and cannot be attributed.** A
-deauthorize or data-deletion callback naming a Facebook user id nobody's connection carries is not
-an error — Meta must still get the response its contract requires, and the response must never
-differ (status code, body, timing) in a way that would let a caller learn whether an id was
-recognised. `selectors.accounts_for_meta_user_id` is the lookup (the directory reader, BYPASSRLS,
-SELECT-only on `provider_accounts` — the same shape `account_for_phone_number` uses, because the
-organization is again what this resolves, before it is known); the same Facebook user id can
-legitimately match more than one organization's connection (one person can set up WhatsApp for two
-different businesses), and each match is applied inside **its own** tenant-scoped transaction,
-never one transaction spanning several organizations.
+**Connections made before this shipped, or whose identity link has already been cleared, cannot be
+attributed.** A deauthorize or data-deletion callback naming a Facebook user id nobody's connection
+currently carries is not an error — Meta must still get the response its contract requires, and the
+response must never differ (status code, body, timing) in a way that would let a caller learn
+whether an id was recognised. `selectors.accounts_for_meta_user_id` is the lookup (the directory
+reader, BYPASSRLS, SELECT-only on `provider_accounts`, and deliberately **not** filtered on
+`deleted_at` — nothing soft-deletes a `provider_accounts` row today, but a data-deletion request's
+own lookup must never be the first place that filter is added and silently starts skipping rows);
+the same Facebook user id can legitimately match more than one organization's connection (one
+person can set up WhatsApp for two different businesses), and each match is applied inside **its
+own** tenant-scoped transaction, never one transaction spanning several organizations.
 
-Both callbacks are deliberately conservative, mirroring the choice `account_update`'s
-`PARTNER_APP_UNINSTALLED`/`PARTNER_REMOVED` handling already makes (§Configuration is silent on
-this, but see `app/w2_webhooks.py`): this platform holds **one** token per connection, so one
-Facebook login being deauthorized, or asked to be forgotten, does not prove the organization's
-whole WABA relationship is gone — another admin's token might still be valid. Neither callback
-calls `disconnect()` (the full wipe a person asks for explicitly from the settings screen, which
-also releases the phone number for reuse); both flip `token_state` to `invalid`
-(`w1_services.record_token_check`) so the health card asks the tenant to reconnect, and leave
+Both callbacks are otherwise conservative, mirroring the choice `account_update`'s
+`PARTNER_APP_UNINSTALLED`/`PARTNER_REMOVED` handling already makes (see `app/w2_webhooks.py`): this
+platform holds **one** token per connection, so one Facebook login being deauthorized, or asked to
+be forgotten, does not prove the organization's whole WABA relationship is gone — another admin's
+token might still be valid. Neither callback calls `disconnect()` (the full wipe a person asks for
+explicitly from the settings screen, which also releases the phone number for reuse); both leave
 everything else — the number, templates, conversations, message history — exactly as it was.
 
-- **`POST /whatsapp/deauthorize`** — for every matched connection, flips the token to `invalid`
-  and writes an audit row (`engage.whatsapp.meta_deauthorized`, source `meta_deauthorize`) with a
-  fixed, non-PII evidence sentence, never anything read from the callback's payload. Idempotent on
-  `(organization, user_id, issued_at)` through the existing `processed_events` ledger, so a Meta
-  retry of the identical callback does not repeat the audit row. Always answers a bare `200` once
-  the signature verifies — Meta's current documentation states no response body for this callback
-  (see "Verified against" below), and a plain acknowledgement is what a notification-only callback
-  owes.
-- **`POST /whatsapp/data-deletion`** — for every matched connection, **nulls `meta_user_id`** (the
-  connection can no longer be tied to that Facebook login) and flips the token to `invalid` the
-  same way, audited separately (`engage.whatsapp.meta_data_deletion`, source
-  `meta_data_deletion`). **Scope, stated plainly because it is what App Review checks as much as
-  what a data-subject request means:** this clears the *identity link* only. It never touches the
-  organization's own WhatsApp business records — `w1_numbers`, `provider_templates`,
-  `conversations`, `inbound_messages`, `messages` — which are the tenant's business data, not
-  personal data about the person who once completed Embedded Signup on the business's behalf.
-  Nothing here erases a conversation, a template or a delivery history.
+- **`POST /whatsapp/deauthorize`** — for every matched connection (loaded `FOR UPDATE`, `user_id`
+  re-checked against its current `meta_user_id`), records `identity_revoked_at` and clears
+  `meta_user_id`, and writes an audit row (`engage.whatsapp.meta_deauthorized`, source
+  `meta_deauthorize`) with a fixed, non-PII evidence sentence, never anything read from the
+  callback's payload. One-shot, as above: a second payload for the same id finds the row already
+  cleared and does nothing, whether that second payload is a genuine Meta redelivery or a freshly
+  minted SDK blob. Always answers a bare `200` once the signature verifies — Meta's current
+  documentation states no response body for this callback (see "Verified against" below), and a
+  plain acknowledgement is what a notification-only callback owes.
+- **`POST /whatsapp/data-deletion`** — for every matched connection (same `FOR UPDATE` re-check),
+  **nulls `meta_user_id`** (the connection can no longer be tied to that Facebook login), nulls
+  every `w1_setup_runs.meta_user_id_hint` this organization's runs carry for the same id in the
+  *same* tenant transaction (a run still `running` must not copy a since-deleted identity onto the
+  connection after this commits), and records `identity_revoked_at` the same way, audited
+  separately (`engage.whatsapp.meta_data_deletion`, source `meta_data_deletion`). **Scope, stated
+  plainly because it is what App Review checks as much as what a data-subject request means:** this
+  clears the *identity link* only. It never touches the organization's own WhatsApp business
+  records — `w1_numbers`, `provider_templates`, `conversations`, `inbound_messages`, `messages` —
+  which are the tenant's business data, not personal data about the person who once completed
+  Embedded Signup on the business's behalf. Nothing here erases a conversation, a template or a
+  delivery history.
 
   Responds `{"url": "<status link>", "confirmation_code": "<32 hex characters>"}` — the exact
   shape Meta's "Data Deletion Request Callback" documentation specifies — regardless of whether
-  the user id matched anything, for the same never-reveal-recognition reason. The confirmation is
-  minted (or reused) in `w1_meta_deletion_requests`, a table that is **deliberately not
-  tenant-scoped and carries no row-level security policy**: one callback can name a Facebook user
-  id shared by several organizations or by none, so no single `organization_id` is the right scope
-  — the same judgement call `processed_events` already makes, for a related reason. The row itself
-  is deliberately minimal — `confirmation_code`, a blind index of `(user_id, issued_at)` used only
-  for idempotency, and `processed_at` — so the one table an unauthenticated `GET` can reach reveals
-  nothing about who was affected, even read whole.
+  the user id matched anything, for the same never-reveal-recognition reason. **The confirmation is
+  minted only after every matched connection has been processed without a transient failure** —
+  minting it up front (the original shape) meant a permanent failure resolving or applying a match
+  still answered as though everything had been "processed"; a 503 now leaves nothing minted, so
+  Meta's redelivery is a genuine retry of the whole thing. The confirmation itself is minted (or
+  reused) in `w1_meta_deletion_requests`, a table that is **deliberately not tenant-scoped and
+  carries no row-level security policy**: one callback can name a Facebook user id shared by
+  several organizations or by none, so no single `organization_id` is the right scope — the same
+  judgement call `processed_events` already makes, for a related reason. **Append-only**, the same
+  privilege-level enforcement as every other ledger in this schema (`consent_events`): the app role
+  has no `UPDATE`/`DELETE` on it. The row itself is deliberately minimal — `confirmation_code`, a
+  blind index of the still-encoded `signed_request` payload segment (not `(user_id, issued_at)` —
+  see "Idempotency" just below) used only for idempotency, and `processed_at` — so the one table an
+  unauthenticated `GET` can reach reveals nothing about who was affected, even read whole.
 
-  **Idempotency** is keyed on `(user_id, issued_at)`: Meta stamps `issued_at` once, when the
-  payload is signed, so a genuine redelivery of the identical callback carries the identical
-  value and reuses the existing confirmation code rather than minting a second one; a later,
-  distinct "Send Request" click from the same person gets a fresh `issued_at` and, correctly, its
-  own code. Applying the per-connection effect is idempotent by a different mechanism — absence:
-  once `meta_user_id` is nulled, a retried callback's own lookup no longer finds that row, so there
-  is nothing to double-audit.
+  **Idempotency** is keyed on a blind index of the whole, still-base64url-encoded payload segment
+  the signature covers, not on `(user_id, issued_at)`: Meta fixes that entire segment at sign time
+  and resends the identical bytes on a genuine redelivery, so this key is exactly as idempotent as
+  the old one for a real retry — and, unlike it, never collapses two distinct requests that both
+  happen to omit `issued_at` onto the same shared key. A later, distinct "Send Request" click from
+  the same person gets a fresh `issued_at`, which changes the segment, and correctly gets its own
+  code. Applying the per-connection effect is idempotent by a different mechanism — absence: once
+  `meta_user_id` is nulled, a retried callback's own lookup no longer finds that row, so there is
+  nothing to double-audit; a race between two overlapping deliveries resolves the same way, since
+  the loser's own `FOR UPDATE` re-check fails once the winner has committed.
 - **`GET /whatsapp/data-deletion-status?code=<confirmation_code>`** — public, unauthenticated, the
   `url` the response above names. A confirmation code is always 32 lowercase hex characters
   (`secrets.token_hex(16)`); anything else, and any code this service never minted, is a plain
-  `404`, indistinguishable from each other. A hit answers `{"status": "processed",
-  "confirmation_code": ..., "processed_at": ...}` — no personal data, because the row behind it
-  has none to give. This is a query parameter rather than a path variable
-  (`.../status/{confirmation_code}`) so the path stays an **exact** match in `WEBHOOK_PUBLIC_PATHS`
-  like every other entry there, instead of needing the separate prefix-matching machinery the
-  Engage unsubscribe link uses for the same reason.
+  `404`, indistinguishable from each other. A hit answers a small HTML page (`Status: processed`,
+  the confirmation code, and when it was processed) rather than JSON — Meta's own documentation
+  describes this as a page a person can go to and check, and an App Review reviewer may click the
+  link rather than curl it — carrying no personal data, because the row behind it has none to give.
+  This is a query parameter rather than a path variable (`.../status/{confirmation_code}`) so the
+  path stays an **exact** match in `WEBHOOK_PUBLIC_PATHS` like every other entry there, instead of
+  needing the separate prefix-matching machinery the Engage unsubscribe link uses for the same
+  reason.
+
+### Unverified against a real signup
+
+Whether `authResponse.userID` is actually populated during Embedded Signup's `response_type:
+"code"` flow (the flow this platform uses) has **not been confirmed against a real signup** — only
+against Meta's general Facebook Login documentation, which describes `userID` for the SDK's default
+flow without saying whether the field survives when signup is configured for a `code` response.
+Both callbacks, and the signup completion path that captures the id, fail safe if it turns out to
+be null there: `SignupCompleteIn.meta_user_id` is optional, nothing downstream requires it, and a
+connection simply has no `meta_user_id` to attribute a callback against — exactly the same,
+harmless shape as a connection made before this column existed. But until this is confirmed against
+an actual popup completion, **the whole attribution mechanism described in this section should be
+considered inert**: built, tested against a payload this service constructs itself, and safe to
+ship, but not yet known to receive a real value from Meta in production.
 
 ### A note on the App Dashboard, from reading Meta's current documentation rather than assuming the old shape
 

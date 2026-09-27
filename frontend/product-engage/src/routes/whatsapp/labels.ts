@@ -120,6 +120,14 @@ export const TOKEN_TEXT: Record<TokenState, string> = {
   unknown: "Not checked yet.",
 };
 
+/** Shown under the token's own state line when Meta has reported the Facebook login behind this
+ *  connection as removed or asked to be forgotten. Deliberately informational, never a warning
+ *  tone: removing a personal Facebook login does not necessarily revoke the connection's own
+ *  token, so this is not by itself a reason to reconnect — only a sign to watch for actual send
+ *  failures. */
+export const IDENTITY_REVOKED_TEXT =
+  "Meta reported the Facebook login that connected this number as removed. This does not affect sending by itself — reconnect only if messages start failing.";
+
 export const WEBHOOK_TEXT: Record<Exclude<WebhookState, "receiving">, string> = {
   silent: "No events have arrived recently. Messages sent to this number may not be reaching OpsGrids.",
   unverified: "Meta has not confirmed the webhook yet.",

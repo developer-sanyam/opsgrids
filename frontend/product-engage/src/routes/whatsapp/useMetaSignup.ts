@@ -35,6 +35,12 @@ const SESSION_INFO_GRACE_MS = 1500;
  *  called a closed window. The two arrive in either order, and only the message says why. */
 const CANCEL_GRACE_MS = 500;
 
+/** Meta's own id shape: bare ASCII digits, the same pattern the server validates
+ *  `SignupCompleteIn.meta_user_id` against (`w1_schemas._DIGITS`). Checked here too so a value
+ *  that could never be a real Meta id does not spend the popup's one-time code on a round trip
+ *  the server would only 422. */
+const META_USER_ID_PATTERN = /^[0-9]{1,30}$/;
+
 interface Session {
   wabaId: string | null;
   phoneNumberId: string | null;
@@ -188,7 +194,7 @@ export function useMetaSignup(
     const onResponse = (response: FbLoginResponse) => {
       const code = response.authResponse?.code ?? null;
       const userId = response.authResponse?.userID;
-      if (userId != null && userId !== "") metaUserIdRef.current = userId;
+      if (userId != null && META_USER_ID_PATTERN.test(userId)) metaUserIdRef.current = userId;
       if (code === null || code === "") {
         // Closed or declined, or Meta stopped it and is about to say why: wait a moment for the
         // message before settling on "closed".

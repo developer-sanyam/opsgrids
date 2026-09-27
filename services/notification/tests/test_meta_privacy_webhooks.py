@@ -3,13 +3,16 @@
 Facebook Login's own trust scheme (`signed_request`), not the WhatsApp Business Platform's
 `X-Hub-Signature-256` — `tests/test_meta_signed_request.py` covers that module in isolation. This
 covers what only shows up going through the actual routes: attribution against
-`provider_accounts.meta_user_id`, the conservative effect on connection health, the audit trail,
-the confirmation-code round trip, idempotent retries, and fan-out across two organizations sharing
-one Facebook user id.
+`provider_accounts.meta_user_id`, the advisory-only effect on connection health (never
+`token_state` — see `docs/whatsapp/webhooks.md`), the audit trail, one-shot processing (the
+identity link cleared, a replay left powerless), the confirmation-code round trip, idempotent
+retries, a forced-overlap race on minting a confirmation, and fan-out across two organizations
+sharing one Facebook user id.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -20,7 +23,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.models import AuditLog, ProviderAccount
-from app.w1_models import ConnectionHealth, MetaDataDeletionRequest
+from app.w1_models import ConnectionHealth, MetaDataDeletionRequest, SetupRun
 from platform_core.config import get_settings
 from tests.w1_helpers import clean_w1_tables  # noqa: F401 -- autouse truncation of w1's own tables
 
@@ -138,9 +141,12 @@ async def test_a_data_deletion_signed_by_the_wrong_secret_is_refused(client) -> 
 # --------------------------------------------------------------------- deauthorize
 
 
-async def test_deauthorize_with_a_match_flips_the_token_and_audits_it(
+async def test_deauthorize_with_a_match_is_advisory_only_and_audits_it(
     client, session, org_id
 ) -> None:
+    """Records the advisory `identity_revoked_at` signal and clears the identity link -- never
+    `token_state`, which stays exactly as it was: a deauthorize callback must not be able to stop
+    sends on its own (see `docs/whatsapp/webhooks.md`)."""
     await _connected_account(session, org_id)
     value = _signed_request({"user_id": USER_ID, "issued_at": 1750263773})
     response = await client.post(
@@ -151,7 +157,10 @@ async def test_deauthorize_with_a_match_flips_the_token_and_audits_it(
 
     async with session.begin():
         health = await _health(session, org_id)
-        assert health.token_state == "invalid"
+        assert health.token_state == "valid"
+        assert health.identity_revoked_at is not None
+        account = (await session.execute(select(ProviderAccount))).scalars().one()
+        assert account.meta_user_id is None
         assert await _audit_count(session, org_id, "engage.whatsapp.meta_deauthorized") == 1
 
 
@@ -169,11 +178,14 @@ async def test_deauthorize_with_no_match_is_still_200_and_writes_nothing(
     async with session.begin():
         health = await _health(session, org_id)
         assert health.token_state == "valid"
+        assert health.identity_revoked_at is None
         assert await _audit_count(session, org_id, "engage.whatsapp.meta_deauthorized") == 0
 
 
 async def test_a_retried_deauthorize_callback_does_not_audit_twice(client, session, org_id) -> None:
-    """Same `(user_id, issued_at)`: a genuine Meta redelivery, not a fresh event."""
+    """Same `(user_id, issued_at)`: a genuine Meta redelivery, not a fresh event. Idempotent by
+    absence now, not a `processed_events` lookup: the first call already cleared `meta_user_id`,
+    so the retry's own account lookup matches nothing."""
     await _connected_account(session, org_id)
     value = _signed_request({"user_id": USER_ID, "issued_at": 1750263773})
 
@@ -185,6 +197,31 @@ async def test_a_retried_deauthorize_callback_does_not_audit_twice(client, sessi
     )
     assert first.status_code == 200
     assert second.status_code == 200
+
+    async with session.begin():
+        assert await _audit_count(session, org_id, "engage.whatsapp.meta_deauthorized") == 1
+
+
+async def test_a_fresh_blob_for_an_already_processed_identity_has_no_further_effect(
+    client, session, org_id
+) -> None:
+    """The lever the security review flagged: a *different*, validly-signed payload for the same
+    Facebook user id (a fresh `issued_at`, exactly what a freshly minted SDK login blob would carry
+    -- distinct from a byte-identical replay, which the test above already covers) must find
+    nothing left to act on once the identity link has been cleared once. One-shot per connection,
+    not per `issued_at`, is what makes that true."""
+    await _connected_account(session, org_id)
+    first_value = _signed_request({"user_id": USER_ID, "issued_at": 1750263773})
+    second_value = _signed_request({"user_id": USER_ID, "issued_at": 1750350173})
+
+    first = await client.post(
+        "/webhooks/whatsapp/deauthorize", content=_form(first_value), headers=_headers()
+    )
+    second = await client.post(
+        "/webhooks/whatsapp/deauthorize", content=_form(second_value), headers=_headers()
+    )
+    assert first.status_code == second.status_code == 200
+    assert first.content == second.content == b""
 
     async with session.begin():
         assert await _audit_count(session, org_id, "engage.whatsapp.meta_deauthorized") == 1
@@ -205,11 +242,51 @@ async def test_deauthorize_fans_out_to_every_organization_the_user_id_matches(
     assert response.status_code == 200
 
     async with session.begin():
-        assert (await _health(session, org_id)).token_state == "invalid"
+        health = await _health(session, org_id)
+        assert health.token_state == "valid"
+        assert health.identity_revoked_at is not None
     async with admin_session.begin():
-        assert (await _health(admin_session, other_org)).token_state == "invalid"
+        other_health = await _health(admin_session, other_org)
+        assert other_health.token_state == "valid"
+        assert other_health.identity_revoked_at is not None
         count = await _audit_count(admin_session, other_org, "engage.whatsapp.meta_deauthorized")
         assert count == 1
+
+
+async def test_deauthorize_does_not_act_when_the_account_no_longer_carries_that_identity(
+    session, org_id
+) -> None:
+    """The equality re-check `apply_meta_deauthorize` makes under `FOR UPDATE`: a race where the
+    connection's `meta_user_id` has already moved on by the time the effect is applied (a
+    concurrent reconnect, or a second matched account row that turned out to be stale) must be a
+    no-op, not an action taken against the wrong identity."""
+    from app import w1_services
+
+    async with session.begin():
+        account = ProviderAccount(
+            organization_id=org_id,
+            channel="whatsapp",
+            waba_id="waba-1",
+            phone_number_id="meta-privacy-mismatch",
+            display_number="+919876543210",
+            status="connected",
+            meta_user_id=OTHER_USER_ID,
+        )
+        session.add(account)
+        await session.flush()
+        account_id = account.id
+
+    async with session.begin():
+        applied = await w1_services.apply_meta_deauthorize(
+            session, org_id, account_id, user_id=USER_ID
+        )
+    assert applied is False
+
+    async with session.begin():
+        refreshed = await session.get(ProviderAccount, account_id)
+        assert refreshed is not None
+        assert refreshed.meta_user_id == OTHER_USER_ID
+        assert await _audit_count(session, org_id, "engage.whatsapp.meta_deauthorized") == 0
 
 
 # --------------------------------------------------------------------- data deletion
@@ -235,8 +312,39 @@ async def test_data_deletion_with_a_match_clears_the_identity_link(client, sessi
         assert account.status == "connected"
         assert account.phone_number_id is not None
         health = await _health(session, org_id)
-        assert health.token_state == "invalid"
+        # Advisory only -- token_state is never flipped by this callback. See
+        # `docs/whatsapp/webhooks.md`.
+        assert health.token_state == "valid"
+        assert health.identity_revoked_at is not None
         assert await _audit_count(session, org_id, "engage.whatsapp.meta_data_deletion") == 1
+
+
+async def test_data_deletion_also_clears_a_matching_setup_run_hint_in_the_same_transaction(
+    client, session, org_id
+) -> None:
+    """A run still `running` must not copy a since-deleted identity onto the connection after this
+    commits (`w1_setup._step_number` mirrors `meta_user_id_hint` onto the account)."""
+    await _connected_account(session, org_id)
+    async with session.begin():
+        session.add(
+            SetupRun(
+                organization_id=org_id,
+                status="running",
+                steps=[],
+                code_hash="ci-only-hash",
+                meta_user_id_hint=USER_ID,
+            )
+        )
+
+    value = _signed_request({"user_id": USER_ID, "issued_at": 1750263773})
+    response = await client.post(
+        "/webhooks/whatsapp/data-deletion", content=_form(value), headers=_headers()
+    )
+    assert response.status_code == 200
+
+    async with session.begin():
+        run = (await session.execute(select(SetupRun))).scalars().one()
+        assert run.meta_user_id_hint is None
 
 
 async def test_data_deletion_with_no_match_still_returns_a_confirmation(
@@ -327,6 +435,8 @@ async def test_data_deletion_fans_out_to_every_organization_the_user_id_matches(
 
 
 async def test_the_status_check_round_trips_a_genuine_confirmation(client, session, org_id) -> None:
+    """A small HTML page, not JSON -- Meta describes this URL as one a person can go to and check,
+    and a real App Review reviewer may click it rather than curl it."""
     await _connected_account(session, org_id)
     value = _signed_request({"user_id": USER_ID, "issued_at": 1750263773})
     minted = await client.post(
@@ -336,10 +446,9 @@ async def test_the_status_check_round_trips_a_genuine_confirmation(client, sessi
 
     response = await client.get(f"/webhooks/whatsapp/data-deletion-status?code={code}")
     assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "processed"
-    assert body["confirmation_code"] == code
-    assert body["processed_at"]
+    assert response.headers["content-type"].startswith("text/html")
+    assert "processed" in response.text
+    assert code in response.text
 
 
 async def test_the_status_check_reveals_nothing_for_an_unknown_code(client) -> None:
@@ -372,3 +481,90 @@ async def test_deauthorize_answers_identically_whether_or_not_the_id_is_recognis
     )
     assert matched.status_code == unmatched.status_code == 200
     assert matched.content == unmatched.content == b""
+
+
+# --------------------------------------------------------------------- the SDK login-response shape
+
+
+def _sdk_login_response(payload: dict, *, secret: str = SECRET) -> str:
+    body = {"algorithm": "HMAC-SHA256", "code": "ci-only-one-time-code", **payload}
+    encoded = _b64url(json.dumps(body).encode("utf-8"))
+    signature = hmac.new(secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).digest()
+    return f"{_b64url(signature)}.{encoded}"
+
+
+async def test_deauthorize_refuses_a_payload_shaped_like_the_sdk_login_response(
+    client, session, org_id
+) -> None:
+    """The lever the security review flagged: `FB.login`'s own response is signed by the same app
+    secret, in the same shape, plus `code` -- a field the real callback never carries. A validly
+    signed payload carrying it must still be refused, not attributed to a connection."""
+    await _connected_account(session, org_id)
+    value = _sdk_login_response({"user_id": USER_ID, "issued_at": 1750263773})
+    response = await client.post(
+        "/webhooks/whatsapp/deauthorize", content=_form(value), headers=_headers()
+    )
+    assert response.status_code == 401
+
+    async with session.begin():
+        health = await _health(session, org_id)
+        assert health.identity_revoked_at is None
+        assert await _audit_count(session, org_id, "engage.whatsapp.meta_deauthorized") == 0
+
+
+async def test_data_deletion_refuses_a_payload_shaped_like_the_sdk_login_response(
+    client, session, org_id
+) -> None:
+    await _connected_account(session, org_id)
+    value = _sdk_login_response({"user_id": USER_ID, "issued_at": 1750263773})
+    response = await client.post(
+        "/webhooks/whatsapp/data-deletion", content=_form(value), headers=_headers()
+    )
+    assert response.status_code == 401
+
+    async with session.begin():
+        count = (
+            await session.execute(select(func.count()).select_from(MetaDataDeletionRequest))
+        ).scalar_one()
+        assert count == 0
+
+
+async def test_an_oauth_token_field_is_refused_the_same_way(client) -> None:
+    """The older SDK's own equivalent of `code` — same shape, same reason to refuse."""
+    body = {"algorithm": "HMAC-SHA256", "oauth_token": "ci-only-oauth-token", "user_id": USER_ID}
+    encoded = _b64url(json.dumps(body).encode("utf-8"))
+    signature = hmac.new(SECRET.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).digest()
+    signed = f"{_b64url(signature)}.{encoded}"
+    response = await client.post(
+        "/webhooks/whatsapp/deauthorize", content=_form(signed), headers=_headers()
+    )
+    assert response.status_code == 401
+
+
+# --------------------------------------------------------------------- forced-overlap concurrency
+
+
+async def test_a_forced_overlap_data_deletion_race_gives_the_loser_the_winners_code(
+    client, session, org_id
+) -> None:
+    """M3: `mint_or_reuse_confirmation`'s race-loser path used to crash (500) because `session.add`
+    sat outside the savepoint, so a losing `IntegrityError` left the outer transaction aborted by
+    the time the winner's own row was read back. Two real, concurrently-scheduled HTTP requests --
+    each opening its own connection through `session_scope`, not two sequential calls in the same
+    coroutine -- exercise the actual database race rather than assume it."""
+    await _connected_account(session, org_id)
+    value = _signed_request({"user_id": USER_ID, "issued_at": 1750263773})
+
+    responses = await asyncio.gather(
+        client.post("/webhooks/whatsapp/data-deletion", content=_form(value), headers=_headers()),
+        client.post("/webhooks/whatsapp/data-deletion", content=_form(value), headers=_headers()),
+    )
+    assert all(r.status_code == 200 for r in responses), [r.status_code for r in responses]
+    codes = {r.json()["confirmation_code"] for r in responses}
+    assert len(codes) == 1
+
+    async with session.begin():
+        count = (
+            await session.execute(select(func.count()).select_from(MetaDataDeletionRequest))
+        ).scalar_one()
+        assert count == 1

@@ -304,11 +304,15 @@ async def accounts_for_meta_user_id(
     session (SELECT-only, BYPASSRLS); the caller binds each returned row's own organization before
     touching anything else, once per row -- never once for the whole result, the same rule the
     webhook route's per-number resolution already follows.
+
+    **Deliberately no `deleted_at IS NULL` filter**, unlike `account_for_phone_number` above: a
+    person's request that their data be deleted must reach a soft-deleted row too (nothing
+    soft-deletes `provider_accounts` today, but a lookup a data-deletion request depends on must
+    not silently start skipping rows the day something does).
     """
     stmt = select(ProviderAccount).where(
         ProviderAccount.meta_user_id == meta_user_id,
         ProviderAccount.channel == "whatsapp",
-        ProviderAccount.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalars().all()
 

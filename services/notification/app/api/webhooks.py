@@ -65,7 +65,7 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -551,14 +551,16 @@ async def deauthorize(request: Request, directory: DirectorySessionDep) -> Respo
     """Meta's deauthorize callback: a Facebook login was deauthorized from our app.
 
     Always 200 once the signed_request itself verifies — a user id this platform cannot attribute
-    to any connection (every connection made before `meta_user_id` was captured, or one that never
-    completed Embedded Signup at all) is not an error, and the response must never differ in a way
-    that reveals whether the id was recognised. Meta documents no particular response body for this
-    callback (see the "Verified against" note); a bare 200 is what a plain notification owes.
+    to any connection (every connection made before `meta_user_id` was captured, one that never
+    completed Embedded Signup at all, or one already processed by an earlier callback — see
+    `w1_services.apply_meta_deauthorize`'s one-shot docstring) is not an error, and the response
+    must never differ in a way that reveals whether the id was recognised. Meta documents no
+    particular response body for this callback (see the "Verified against" note); a bare 200 is
+    what a plain notification owes.
 
-    503 only when applying the match itself hit a transient failure (a dropped connection, a
-    deadlock) — Meta redelivers a non-200, and every match already applied dedupes on the retry
-    (`w1_services.apply_meta_deauthorize`'s own idempotency).
+    503 only when applying a match itself hit a transient failure (a dropped connection, a
+    deadlock) — Meta redelivers a non-200, and every match already applied finds nothing left to
+    act on the second time (`apply_meta_deauthorize` clears `meta_user_id` as it goes).
     """
     payload = await _verify_signed_request(request)
     accounts = await selectors.accounts_for_meta_user_id(directory, payload.user_id)
@@ -570,8 +572,8 @@ async def deauthorize(request: Request, directory: DirectorySessionDep) -> Respo
                 await w1_services.apply_meta_deauthorize(
                     session,
                     organization_id,
+                    account.id,
                     user_id=payload.user_id,
-                    issued_at=payload.issued_at,
                     request=request,
                 )
         except Exception as exc:
@@ -598,17 +600,14 @@ async def data_deletion(request: Request, directory: DirectorySessionDep) -> JSO
     own WhatsApp business records — message history, contacts, templates, conversations — are
     never touched by this callback. See that function's docstring and `docs/whatsapp/webhooks.md`.
 
-    503 only on a transient failure while applying a match; the confirmation itself, once minted,
-    is never lost — a retry after a 503 reuses it (`w1_services.mint_or_reuse_confirmation`).
+    **The confirmation is minted only after every match has been applied**, not before: minting it
+    first (the previous shape) meant a permanent failure resolving or applying a match still ended
+    in a row saying "processed" — the one thing this endpoint's response is supposed to mean. A
+    503 below leaves nothing minted yet, so Meta's redelivery is a genuine retry of the whole
+    thing, not a replay of an answer already given.
     """
     payload = await _verify_signed_request(request)
     cfg = settings()
-
-    async with session_scope(organization_id=None) as session:
-        confirmation = await w1_services.mint_or_reuse_confirmation(
-            session, user_id=payload.user_id, issued_at=payload.issued_at, cfg=cfg
-        )
-        confirmation_code = confirmation.confirmation_code
 
     accounts = await selectors.accounts_for_meta_user_id(directory, payload.user_id)
     had_transient_failure = False
@@ -620,6 +619,7 @@ async def data_deletion(request: Request, directory: DirectorySessionDep) -> JSO
                     session,
                     organization_id,
                     account.id,
+                    user_id=payload.user_id,
                     request=request,
                 )
         except Exception as exc:
@@ -632,6 +632,13 @@ async def data_deletion(request: Request, directory: DirectorySessionDep) -> JSO
     log.info("webhook.data_deletion.processed", matches=len(accounts))
     if had_transient_failure:
         return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={})
+
+    async with session_scope(organization_id=None) as session:
+        confirmation = await w1_services.mint_or_reuse_confirmation(
+            session, payload_segment=payload.payload_segment, cfg=cfg
+        )
+        confirmation_code = confirmation.confirmation_code
+
     return JSONResponse(
         status_code=status.HTTP_200_OK,
         content={
@@ -647,24 +654,40 @@ async def data_deletion(request: Request, directory: DirectorySessionDep) -> JSO
 _CONFIRMATION_CODE_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
-@router.get("/whatsapp/data-deletion-status", response_class=JSONResponse)
+def _status_page(*, status_text: str, confirmation_code: str, processed_at: str | None) -> str:
+    """A minimal HTML page, not a JSON body: Meta's own documentation describes this URL as one "a
+    person can go to ... to check the status of their data deletion", and a real App Review
+    reviewer may click the link rather than curl it. No personal data is in it — the page has
+    nothing to reveal that the response shape below did not already say."""
+    processed_line = f"<p>Processed at: {processed_at}</p>" if processed_at else ""
+    return (
+        "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
+        "<title>Data deletion status</title></head><body>"
+        f"<p>Status: {status_text}</p>"
+        f"<p>Confirmation code: {confirmation_code}</p>"
+        f"{processed_line}"
+        "</body></html>"
+    )
+
+
+@router.get("/whatsapp/data-deletion-status", response_class=HTMLResponse)
 async def data_deletion_status(
     code: Annotated[str, Query(max_length=64)],
-) -> JSONResponse:
+) -> HTMLResponse:
     """Public, unauthenticated status check for a data-deletion confirmation code — the `url`
-    Meta's own response above names. Carries no personal data at all: a hit answers with the fixed
-    `processed` shape and the timestamp; a miss (unknown code, or one that never matched this
-    service's shape) is a plain 404, indistinguishable from each other."""
+    Meta's own response above names. Carries no personal data at all: a hit answers with a small
+    HTML page saying `processed` and the timestamp; a miss (unknown code, or one that never matched
+    this service's shape) is a plain 404, indistinguishable from each other."""
     if not _CONFIRMATION_CODE_RE.fullmatch(code):
         raise NotFoundProblem("No such data deletion request.")
     async with session_scope(organization_id=None) as session:
         row = await w1_services.data_deletion_confirmation_status(session, code)
     if row is None:
         raise NotFoundProblem("No such data deletion request.")
-    return JSONResponse(
-        content={
-            "status": "processed",
-            "confirmation_code": row.confirmation_code,
-            "processed_at": row.processed_at.isoformat(),
-        }
+    return HTMLResponse(
+        content=_status_page(
+            status_text="processed",
+            confirmation_code=row.confirmation_code,
+            processed_at=row.processed_at.isoformat(),
+        )
     )

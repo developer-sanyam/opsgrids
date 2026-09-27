@@ -23,13 +23,14 @@ from typing import Any, Final
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy import update as sa_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import selectors, services, w1_domain, w1_selectors, w2_selectors, whatsapp_provider
 from app.config import Settings, graph_version, meta_app_secret, settings
-from app.models import AuditLog, OutboxEvent, ProcessedEvent, ProviderAccount
+from app.models import AuditLog, OutboxEvent, ProviderAccount
 from app.w1_graph import CodeExpiredError, GraphError, MetaGraph
 from app.w1_models import ConnectionHealth, MetaDataDeletionRequest, SetupRun, WhatsAppNumber
 from app.w1_schemas import (
@@ -322,6 +323,7 @@ def _fail(run: SetupRun, code: str, now: datetime) -> None:
     run.finished_at = now
     run.code_enc = None
     run.token_enc = None
+    run.meta_user_id_hint = None
 
 
 async def get_run_or_404(session: AsyncSession, ctx: ScopeContext, setup_id: uuid.UUID) -> SetupRun:
@@ -639,6 +641,9 @@ async def health_snapshot(session: AsyncSession, organization_id: uuid.UUID) -> 
         token=TokenHealthOut(
             state=token_state,
             checked_at=_iso(health.token_checked_at) if health is not None else None,
+            # Advisory only -- shown whether or not the connection is otherwise healthy. See
+            # `ConnectionHealth.identity_revoked_at`'s docstring for why this never feeds `state`.
+            identity_revoked_at=_iso(health.identity_revoked_at) if health is not None else None,
         ),
         webhook=WebhookHealthOut(
             state=webhook,
@@ -691,6 +696,10 @@ async def disconnect(
     account.access_token_enc = None
     account.released_phone_number_id = released_number
     account.phone_number_id = None
+    # The identity link goes with the connection: a future reconnect (by this person or another)
+    # must not inherit an old Facebook login's attribution, and a deauthorize/data-deletion
+    # callback for the login that made *this* connection has nothing left here to act on.
+    account.meta_user_id = None
     account.updated_by = str(ctx.principal.sub)
     for row in await w1_selectors.numbers(session, org):
         row.status = "disconnected"
@@ -910,14 +919,36 @@ async def numbers_refresh_inputs(
 # deletion (app/api/webhooks.py's `/whatsapp/deauthorize` and `/whatsapp/data-deletion`)
 #
 # Both react to a `signed_request` naming a Facebook user id (`app/meta_signed_request.py`
-# verifies it before either function below is called). Both are conservative in the same way
-# `w2_webhooks`'s `PARTNER_APP_UNINSTALLED`/`PARTNER_REMOVED` handling already is: this platform
-# holds one token per connection, so one Facebook login being deauthorized -- or asked to be
-# forgotten -- does not prove the organization's WABA relationship is gone; it proves the token
-# this connection holds should no longer be trusted blindly. Neither function disconnects the
-# account (`disconnect`, above, is the full wipe a person asks for explicitly); both flip the
-# token to `invalid` and leave every business record -- numbers, templates, conversations,
-# message history -- untouched.
+# verifies it before either function below is called, and refuses outright anything shaped like
+# the Facebook JS SDK's own login response -- see that module's docstring).
+#
+# **Neither function may flip `token_state`.** Embedded Signup mints a business-integration
+# token; a person removing the app from *their own* Facebook settings does not necessarily revoke
+# that token, so a genuine callback is not proof the connection has stopped working. Worse, the
+# same app secret signs `FB.login`'s own response (`authResponse.signedRequest`, and the
+# `fbsr_<appid>` cookie) in a shape indistinguishable from a real callback but for the fields
+# `meta_signed_request` refuses on sight -- so anyone who was ever shown Embedded Signup's popup
+# for a connection (a departed employee, a consultant who set several customers up) could
+# otherwise mint one on demand and stop that organization's sends at will, with no OpsGrids
+# account. Both functions instead record `ConnectionHealth.identity_revoked_at` -- an advisory
+# timestamp `app/dispatcher.py` never reads, shown on the health card as a plain, informational
+# note. Only Meta's own Graph API answering for the *token itself* (`w1_setup`'s own token checks,
+# `record_token_check`) may ever flip `token_state`. Neither function disconnects the account
+# (`disconnect`, above, is the full wipe a person asks for explicitly) or touches any business
+# record -- numbers, templates, conversations, message history.
+#
+# **Both are one-shot per connection.** `ProviderAccount.meta_user_id` is cleared the moment either
+# effect is applied, so a second callback naming the same Facebook user id -- Meta genuinely
+# redelivering, or a fresh, validly-signed blob for the same id minted the way the paragraph above
+# describes -- finds nothing left to act on: `selectors.accounts_for_meta_user_id`'s own lookup no
+# longer matches the row. This is idempotency *and* the fix for the lever above: closing the
+# identity link is what makes a repeat, however it was obtained, powerless.
+#
+# **Both re-check the identity before acting.** The account is loaded `FOR UPDATE` and the
+# callback's own `user_id` is compared against the row's current `meta_user_id` a second time,
+# under the lock -- not just by the directory reader's own `WHERE` a moment earlier, which a
+# concurrent reconnect (a new token, a new identity link) could have already raced past. A mismatch
+# is treated exactly like "no match at all": nothing is touched, nothing is audited.
 
 #: Meta's deauthorize callback reported that the Facebook login behind a connection was
 #: deauthorized from our app. The dedicated source/reason pair `apply_meta_deauthorize`'s audit
@@ -938,52 +969,52 @@ _META_DATA_DELETION_REASON: Final = (
     "WhatsApp connection be deleted."
 )
 
-#: Namespace for the per-organization idempotency id `apply_meta_deauthorize` derives, the same
-#: role `webhooks._DEDUPE_NAMESPACE` plays for a status/message event. A fixed constant, never
-#: generated, so the id a redelivered callback computes is the same one a first delivery did.
-_META_PRIVACY_DEDUPE_NAMESPACE: Final = uuid.UUID("d16a2f8e-9b1c-4e3a-8f7d-2c5b6a1e9d40")
 
-
-def _meta_deauthorize_dedupe_id(
-    organization_id: uuid.UUID, user_id: str, issued_at: int | None
-) -> uuid.UUID:
-    """One organization's reaction to one deauthorize callback, derived rather than stored --
-    `processed_events` does this job the same way it does for a WhatsApp status event.
-
-    Keyed on `issued_at` rather than a hash of the whole signed request: Meta redelivering the
-    identical callback carries the identical `issued_at` (it is stamped once, when the payload is
-    signed), so a genuine retry dedupes here, while a person deauthorizing, reconnecting, and
-    deauthorizing again gets a fresh `issued_at` and, correctly, is treated as a new event -- the
-    connection made in between deserves its own audit row.
-    """
-    return uuid.uuid5(
-        _META_PRIVACY_DEDUPE_NAMESPACE,
-        f"meta_deauthorize:{organization_id}:{user_id}:{issued_at}",
-    )
+async def _record_identity_revoked(session: AsyncSession, organization_id: uuid.UUID) -> None:
+    """Advisory only -- see the module-level note above. Never writes `token_state`; creates the
+    health row (as `unknown`, the same default `record_token_check` gives a fresh one) if a
+    callback somehow arrives before any setup or token check ever has."""
+    now = datetime.now(UTC)
+    health = await w1_selectors.get_health(session, organization_id)
+    if health is None:
+        health = ConnectionHealth(organization_id=organization_id)
+        health.token_state = "unknown"  # noqa: S105 - a state word, not a credential
+        session.add(health)
+    health.identity_revoked_at = now
+    await session.flush()
 
 
 async def apply_meta_deauthorize(
     session: AsyncSession,
     organization_id: uuid.UUID,
+    account_id: uuid.UUID,
     *,
     user_id: str,
-    issued_at: int | None,
     request: Request | None = None,
 ) -> bool:
-    """One organization's reaction to a deauthorize callback naming a Facebook user id this
-    connection's `meta_user_id` matched. Flips the token to `invalid` (`record_token_check`, the
-    same call `w2_webhooks`'s `PARTNER_APP_UNINSTALLED`/`PARTNER_REMOVED` handling makes) and
-    writes an audit row with a fixed, non-PII evidence sentence -- never the Meta user id itself.
+    """One connection's reaction to a deauthorize callback naming its `meta_user_id`. Records the
+    advisory `identity_revoked_at` signal (never `token_state` -- see the module-level note above)
+    and writes an audit row with a fixed, non-PII evidence sentence -- never the Meta user id
+    itself.
 
-    Idempotent by `(organization_id, user_id, issued_at)`: a Meta retry of the identical callback
-    is a no-op here (checked against `processed_events` first, same ledger the WhatsApp webhook
-    folds use), rather than repeating the audit row on every redelivery. Returns whether this call
-    actually did anything, for the route's own logging.
+    One-shot: `meta_user_id` is cleared here, so a second callback for the same id -- genuine or
+    not -- finds this row un-matched by `selectors.accounts_for_meta_user_id` and never reaches
+    this function again. The account is loaded `FOR UPDATE` and `user_id` is re-checked against it
+    under the lock, which is what makes two overlapping deliveries of the same callback resolve to
+    exactly one audit row without a separate `processed_events` entry: the loser's own re-check
+    fails once the winner has committed. Returns whether this call actually did anything, for the
+    route's own logging.
     """
-    dedupe_id = _meta_deauthorize_dedupe_id(organization_id, user_id, issued_at)
-    if await session.get(ProcessedEvent, dedupe_id) is not None:
+    stmt = select(ProviderAccount).where(ProviderAccount.id == account_id).with_for_update()
+    account = (await session.execute(stmt)).scalar_one_or_none()
+    if (
+        account is None
+        or account.organization_id != organization_id
+        or account.meta_user_id != user_id
+    ):
         return False
-    await record_token_check(session, organization_id, state="invalid")
+    account.meta_user_id = None
+    await _record_identity_revoked(session, organization_id)
     record_audit(
         session,
         AuditLog,
@@ -991,10 +1022,10 @@ async def apply_meta_deauthorize(
         actor_id=None,
         action="engage.whatsapp.meta_deauthorized",
         entity="provider_account",
+        entity_id=account.id,
         reason=_META_DEAUTHORIZE_REASON,
         request=request,
     )
-    session.add(ProcessedEvent(event_id=dedupe_id, event_type="whatsapp.meta_deauthorize"))
     return True
 
 
@@ -1003,37 +1034,50 @@ async def apply_meta_data_deletion(
     organization_id: uuid.UUID,
     account_id: uuid.UUID,
     *,
+    user_id: str,
     request: Request | None = None,
 ) -> bool:
     """One organization's reaction to a data-deletion callback matching one of its connections.
 
     Nulls `ProviderAccount.meta_user_id` -- the connection can no longer be tied to that Facebook
-    login -- and flips the token to `invalid` the same way `apply_meta_deauthorize` does: a request
-    to forget the identity that authorized a token is not a reason to keep trusting the token.
+    login -- and records the advisory `identity_revoked_at` signal the same way
+    `apply_meta_deauthorize` does (never `token_state`; see the module-level note above).
 
     **Scope, stated plainly because it matters for App Review as much as for correctness.** This
-    touches only the identity link: `meta_user_id` and the token's own health. It does not delete,
-    disconnect, or otherwise touch the organization's own WhatsApp business records -- `w1_numbers`,
-    `provider_templates`, `conversations`, `inbound_messages`, `messages` -- which are the tenant's
-    business data, not personal data about the person who once completed Embedded Signup. See
-    `docs/whatsapp/webhooks.md`.
+    touches only the identity link: `meta_user_id`, the connection health note, and every
+    `w1_setup_runs.meta_user_id_hint` this organization's runs carried for the same id (a run still
+    in progress must not copy a since-deleted identity onto the connection later). It does not
+    delete, disconnect, or otherwise touch the organization's own WhatsApp business records --
+    `w1_numbers`, `provider_templates`, `conversations`, `inbound_messages`, `messages` -- which
+    are the tenant's business data, not personal data about the person who once completed Embedded
+    Signup. See `docs/whatsapp/webhooks.md`.
 
-    Idempotent by absence rather than by a `processed_events` check: once `meta_user_id` is nulled,
-    a retried callback's own account lookup (`selectors.accounts_for_meta_user_id`, run again by
-    the caller before this is reached) simply no longer finds this row, so a second call for the
-    same account never happens. Returns whether this call actually did anything (False when the
-    account was already cleared, replaced, or removed by the time this ran -- a race with a
-    concurrent reconnect or an earlier, not-yet-visible commit of this same retry).
+    The account is loaded `FOR UPDATE` and `user_id` is re-checked against it under the lock --
+    the same re-check, and for the same race, `apply_meta_deauthorize`'s docstring explains.
+    Idempotent by absence: once `meta_user_id` is nulled, a retried callback's own account lookup
+    (`selectors.accounts_for_meta_user_id`, run again by the caller before this is reached) simply
+    no longer finds this row, so a second call for the same account never happens. Returns whether
+    this call actually did anything (False when the account was already cleared, replaced, or
+    removed by the time this ran, or the id no longer matches under the lock).
     """
-    account = await session.get(ProviderAccount, account_id)
+    stmt = select(ProviderAccount).where(ProviderAccount.id == account_id).with_for_update()
+    account = (await session.execute(stmt)).scalar_one_or_none()
     if (
         account is None
         or account.organization_id != organization_id
-        or account.meta_user_id is None
+        or account.meta_user_id != user_id
     ):
         return False
     account.meta_user_id = None
-    await record_token_check(session, organization_id, state="invalid")
+    await _record_identity_revoked(session, organization_id)
+    # Same tenant transaction as the rest of this effect: a run still `running` that copies
+    # `meta_user_id_hint` onto the connection after this commits (`w1_setup._step_number`) would
+    # otherwise re-arm the identity link this same request just asked to have forgotten.
+    await session.execute(
+        sa_update(SetupRun)
+        .where(SetupRun.organization_id == organization_id, SetupRun.meta_user_id_hint == user_id)
+        .values(meta_user_id_hint=None)
+    )
     record_audit(
         session,
         AuditLog,
@@ -1051,10 +1095,18 @@ async def apply_meta_data_deletion(
 # --------------------------------------------------------------------- data-deletion confirmation
 
 
-def _data_deletion_request_key(user_id: str, issued_at: int | None, cfg: Settings) -> str:
-    """Blind index of `f"{user_id}:{issued_at}"` -- see `MetaDataDeletionRequest`'s docstring for
-    why this, and not the id itself, is what `w1_meta_deletion_requests` carries."""
-    return pii.blind_index(f"{user_id}:{issued_at}", kind="generic", settings=cfg)
+def _data_deletion_request_key(payload_segment: str, cfg: Settings) -> str:
+    """Blind index of the still-encoded `signed_request` payload segment -- see
+    `MetaDataDeletionRequest`'s docstring for why this, and not the id itself, is what
+    `w1_meta_deletion_requests` carries.
+
+    Hashing the raw segment rather than `f"{user_id}:{issued_at}"` means this key never depends on
+    `issued_at` being present or well-typed: Meta fixes the *whole* payload at sign time and
+    resends the identical bytes on a genuine redelivery, so this key is exactly as idempotent as
+    the old one for a real retry, and unlike it never collapses two distinct requests that both
+    happen to omit `issued_at` onto the shared key `f"{user_id}:None"` would have produced.
+    """
+    return pii.blind_index(payload_segment, kind="generic", settings=cfg)
 
 
 def data_deletion_status_url(cfg: Settings, confirmation_code: str) -> str:
@@ -1066,19 +1118,25 @@ def data_deletion_status_url(cfg: Settings, confirmation_code: str) -> str:
 
 
 async def mint_or_reuse_confirmation(
-    session: AsyncSession, *, user_id: str, issued_at: int | None, cfg: Settings
+    session: AsyncSession, *, payload_segment: str, cfg: Settings
 ) -> MetaDataDeletionRequest:
     """The confirmation record for one data-deletion callback -- minted fresh, or the one an
     earlier, identical callback already minted.
 
-    Idempotent on `request_key` (`_data_deletion_request_key`): "the same request" is defined as
-    the same Facebook user id and the same `issued_at`, which is what a genuine Meta redelivery of
-    one callback shares and what a person's second, later "Send Request" click does not (Meta
-    stamps a fresh `issued_at` on each). This session carries no tenant GUC (`session_scope
-    (organization_id=None)`, the caller's own choice) -- see `MetaDataDeletionRequest`'s docstring
-    for why this table has no organization to bind one to in the first place.
+    Idempotent on `request_key` (`_data_deletion_request_key`): "the same request" is a
+    byte-identical `signed_request` payload segment, which is what a genuine Meta redelivery of
+    one callback carries and what a person's second, later "Send Request" click does not (Meta
+    stamps a fresh `issued_at` into the payload on each, which changes the segment). This session
+    carries no tenant GUC (`session_scope(organization_id=None)`, the caller's own choice) -- see
+    `MetaDataDeletionRequest`'s docstring for why this table has no organization to bind one to in
+    the first place.
+
+    The insert races the same way `_reserve_run` above does, and is fixed the same way: `add`
+    happens *inside* the savepoint, so a losing `IntegrityError` leaves the outer transaction
+    exactly as usable as it was before this was called, and the winner's own row is still there to
+    read back.
     """
-    request_key = _data_deletion_request_key(user_id, issued_at, cfg)
+    request_key = _data_deletion_request_key(payload_segment, cfg)
     existing = (
         await session.execute(
             select(MetaDataDeletionRequest).where(
@@ -1089,14 +1147,20 @@ async def mint_or_reuse_confirmation(
     if existing is not None:
         return existing
 
-    row = MetaDataDeletionRequest(confirmation_code=secrets.token_hex(16), request_key=request_key)
-    session.add(row)
     try:
         async with session.begin_nested():
+            row = MetaDataDeletionRequest(
+                confirmation_code=secrets.token_hex(16), request_key=request_key
+            )
+            session.add(row)
             await session.flush()
     except IntegrityError:
         # Lost a race with another request carrying the identical key (two concurrent redeliveries
-        # of the same callback): the winner's row is the one to hand back.
+        # of the same callback): the winner's row is the one to hand back. The savepoint's own
+        # rollback already undid the loser's failed insert, so the outer transaction this session
+        # is still in is exactly as usable as it was before `begin_nested` -- the bug this fixes
+        # was adding the row *outside* the savepoint, so the outer transaction was left aborted by
+        # the time this `SELECT` ran.
         winner = (
             await session.execute(
                 select(MetaDataDeletionRequest).where(
