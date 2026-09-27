@@ -243,10 +243,10 @@ export function prepareImport(
       tally.matched += 1;
       // A cell the export wrote and nobody has changed is not this row's to send: what the record
       // holds now may be a colleague's later edit.
-      const written = sheet.baseline.kind === "found" ? sheet.baseline.records.get(recordId) : undefined;
-      if (written !== undefined) {
+      const untouched = sheet.baseline.kind === "found" ? sheet.baseline.untouched.get(row) : undefined;
+      if (untouched !== undefined) {
         baselineUsed = true;
-        cells = withoutUntouched(typed, written);
+        cells = withoutUntouched(typed, untouched);
       }
     }
 
