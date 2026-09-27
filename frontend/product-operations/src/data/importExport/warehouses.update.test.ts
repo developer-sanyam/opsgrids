@@ -35,12 +35,18 @@ const lookupsOf = (...names: string[]): LookupSet => ({
 
 const ctx: ImportContext = { lookups: lookupsOf("Main Warehouse", "Cold Store"), signal: new AbortController().signal };
 
+/** A context of its own: the engine gives each file one, and what a file has claimed lives in it. */
+const fileOf = (lookups: LookupSet = lookupsOf("Main Warehouse", "Cold Store")): ImportContext => ({
+  lookups,
+  signal: new AbortController().signal,
+});
+
 const PATH = "/api/v1/operations/warehouses/wh-WH-MAIN";
 
 const SAME: ParsedRow = { code: "WH-MAIN", name: "Main Warehouse", location: "Bhiwandi, Maharashtra" };
 const BLANK: ParsedRow = { code: null, name: null, location: null };
 
-const plan = (row: ParsedRow, cleared: readonly string[] = [], existing = MAIN, context = ctx) =>
+const plan = (row: ParsedRow, cleared: readonly string[] = [], existing = MAIN, context = fileOf()) =>
   planFor(warehouseImport, existing, row, context, cleared);
 
 describe("a row that changes nothing", () => {
@@ -143,7 +149,7 @@ describe("renaming a warehouse", () => {
   });
 
   it("refuses a name that several warehouses already have in other capitals", () => {
-    const twins = { ...ctx, lookups: lookupsOf("Main Warehouse", "Cold Store", "COLD STORE") };
+    const twins = fileOf(lookupsOf("Main Warehouse", "Cold Store", "COLD STORE"));
     expect(() => plan({ ...BLANK, name: "cold store" }, [], MAIN, twins)).toThrow(
       "More than one warehouse already has a name that differs from 'cold store' only in capitals or spacing",
     );
@@ -178,8 +184,65 @@ describe("renaming a warehouse", () => {
     expect(plan({ ...SAME, location: "Pune" })?.changed).toEqual(["Location"]);
   });
 
-  it("leaves the check to the server when the names were not loaded", () => {
-    expect(plan({ ...BLANK, name: "cold store" }, [], MAIN, { ...ctx, lookups: {} })?.changed).toEqual(["Warehouse name"]);
+  it("refuses a new name it cannot check, because the existing names were not loaded: the server would accept a variant", () => {
+    const unloaded = fileOf({});
+    const attempt = () => plan({ ...BLANK, name: "cold store" }, [], MAIN, unloaded);
+    expect(attempt).toThrow(RowProblem);
+    expect(attempt).toThrow("The existing warehouse names could not be loaded, so this row cannot be checked against them.");
+    expect(() => plan({ ...BLANK, name: "Central Warehouse" }, [], MAIN, unloaded)).toThrow(RowProblem);
+  });
+
+  it("does not need the existing names for a row that leaves the name alone", () => {
+    expect(plan({ ...SAME, location: "Pune" }, [], MAIN, fileOf({}))?.changed).toEqual(["Location"]);
+  });
+
+  describe("across the rows of one file", () => {
+    it("refuses a rename to a name that differs only in capitals from the one an earlier row gives another warehouse, and sends nothing for it", async () => {
+      const file = fileOf();
+      const first = plan({ ...BLANK, name: "Delta" }, [], MAIN, file);
+      expect(first?.changed).toEqual(["Warehouse name"]);
+      const attempt = () => plan({ ...BLANK, name: "delta" }, [], COLD, file);
+      expect(attempt).toThrow(RowProblem);
+      expect(attempt).toThrow(
+        "An earlier row of this file gives a warehouse the name 'Delta'; names that differ only in capitals or spacing are not accepted.",
+      );
+      expect(await requestsOf(first)).toHaveLength(1);
+    });
+
+    it("refuses the same in other spacing, and lets the same spelling through for the server to answer", () => {
+      const file = fileOf();
+      expect(plan({ ...BLANK, name: "Delta Depot" }, [], MAIN, file)).not.toBeNull();
+      expect(() => plan({ ...BLANK, name: "Delta  Depot" }, [], COLD, file)).toThrow(RowProblem);
+      expect(plan({ ...BLANK, name: "Delta Depot" }, [], COLD, file)).not.toBeNull();
+    });
+
+    it("refuses a rename that follows a new warehouse given a name that differs only in capitals, and the other way round", () => {
+      const created = fileOf();
+      expect(warehouseImport.toPayload({ code: "WH-NEW", name: "Delta" }, created)).toMatchObject({ name: "Delta" });
+      expect(() => plan({ ...BLANK, name: "delta" }, [], MAIN, created)).toThrow(
+        "An earlier row of this file gives a warehouse the name 'Delta'",
+      );
+
+      const renamed = fileOf();
+      expect(plan({ ...BLANK, name: "Delta" }, [], MAIN, renamed)).not.toBeNull();
+      expect(() => warehouseImport.toPayload({ code: "WH-NEW", name: "delta" }, renamed)).toThrow(
+        "An earlier row of this file gives a warehouse the name 'Delta'",
+      );
+    });
+
+    it("counts only a row that is accepted: a row refused for its own reasons leaves its name free", () => {
+      const file = fileOf();
+      // The code cell names another warehouse, so the row is refused before its name is looked at.
+      expect(() => plan({ ...SAME, code: "WH-COLD", name: "Delta" }, [], MAIN, file)).toThrow(
+        "Warehouse code cannot be changed once the record exists",
+      );
+      expect(plan({ ...BLANK, name: "delta" }, [], COLD, file)?.changed).toEqual(["Warehouse name"]);
+    });
+
+    it("starts afresh for every file and for the import run that follows a check", () => {
+      expect(plan({ ...BLANK, name: "Delta" }, [], MAIN, fileOf())).not.toBeNull();
+      expect(plan({ ...BLANK, name: "delta" }, [], COLD, fileOf())).not.toBeNull();
+    });
   });
 
   it("says in the notes and the column help that the rename reaches every item and purchase order", () => {
@@ -193,9 +256,9 @@ describe("renaming a warehouse", () => {
 });
 
 describe("finding the warehouse a row names", () => {
-  it("matches by Record ID first, and by code ignoring capitals and spacing", () => {
+  it("matches by Record ID first, and by the code, surrounding spaces ignored", () => {
     expect(matchAmong(warehouseImport, [MAIN, COLD], "wh-WH-COLD", null)).toEqual({ kind: "found", item: COLD, by: "id" });
-    expect(matchAmong(warehouseImport, [MAIN, COLD], null, " wh-cold ")).toEqual({ kind: "found", item: COLD, by: "key" });
+    expect(matchAmong(warehouseImport, [MAIN, COLD], null, " WH-COLD ")).toEqual({ kind: "found", item: COLD, by: "key" });
   });
 
   it("keys a warehouse by its code alone, so that a rename is a change and not a new warehouse", () => {
@@ -204,13 +267,18 @@ describe("finding the warehouse a row names", () => {
     expect(spec.keyOf?.(MAIN)).toBe("WH-MAIN");
   });
 
+  it("names the warehouse a row updates by its code and name, never by a sealed value", () => {
+    expect(updateSpec(warehouseImport).recordLabel?.(MAIN)).toBe("WH-MAIN · Main Warehouse");
+    expect(updateSpec(warehouseImport).recordLabel?.({ ...COLD, location: "" })).toBe("WH-COLD · Cold Store");
+  });
+
   it("treats a code nobody has as a new warehouse, and a Record ID nobody has as an error", () => {
     expect(matchAmong(warehouseImport, [MAIN, COLD], null, "WH-NEW")).toEqual({ kind: "new" });
     expect(matchAmong(warehouseImport, [MAIN, COLD], "wh-404", "WH-MAIN")).toEqual({ kind: "unknown-id" });
   });
 
   it("refuses a code that two warehouses share, instead of picking one", () => {
-    const twin = warehouseOut("Main Two", "wh-main");
+    const twin = warehouseOut("Main Two", "WH-MAIN");
     expect(matchAmong(warehouseImport, [MAIN, twin], null, "WH-MAIN")).toEqual({ kind: "ambiguous" });
   });
 });

@@ -19,6 +19,9 @@
  *    differs, as the organisation's own spelling of the unit.
  *  - `unit_value_minor` is in the item's own currency, which cannot change, so the engine
  *    converts the cell with `currencyOf` and a Currency cell naming another currency refuses the row.
+ *
+ * A row finds its item by Record ID or by SKU, an exact key on the server (`keyMatch` is left at the
+ * engine's default, `exact`), so a SKU that differs only in capitals is never taken for the same item.
  */
 import { collectPages, defineImportEntity, minorToMajor } from "@opsgrids/client";
 import type { ImportColumn, LookupSet } from "@opsgrids/client";
@@ -36,11 +39,14 @@ import {
   optionalBoolean,
   optionalNumber,
   optionalText,
+  patchOf,
+  refuseAmbiguousChanges,
   requiredOption,
   requiredText,
   resolveLookupCell,
   resolveReference,
   sameCurrency,
+  storedReference,
   textOrNull,
 } from "./shared";
 import { canonicalUnitLabel } from "./units";
@@ -296,7 +302,8 @@ export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItem
     "Category is the fixed procurement category. Item category code places the item in your own catalogue tree.",
     "A SKU that already exists is skipped, not changed, unless you choose Add new and update existing. The same SKU cannot be used twice, even as a variant SKU.",
     "The On hand, Reserved, Available and Last updated columns are worked out by the app and ignored on import.",
-    "Updating: SKU, Currency and Opening stock cannot be changed, and a cell that disagrees with the item is refused. A SKU typed in other capitals still finds its item. Stock changes only through Adjust stock.",
+    "Updating: a row finds its item by its Record ID, or by its SKU spelled exactly as it is stored. A SKU that differs only in capitals is refused, naming the stored spelling: use that spelling, or the Record ID.",
+    "Updating: SKU, Currency and Opening stock cannot be changed, and a cell that disagrees with the item is refused. Stock changes only through Adjust stock.",
     "Updating: Item category code and HSN code can be emptied with [clear]. No other column can.",
     "Updating: Unit value is in the item's own currency. Leave Currency blank or give the item's currency; naming another currency refuses the row.",
     "Updating: a unit that means the unit the item already has (Nos for pcs) is no change. A different unit is refused once any stock has moved.",
@@ -391,6 +398,7 @@ export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItem
     idOf: (item) => item.id,
     keyColumn: "sku",
     keyOf: (item) => item.sku,
+    recordLabel: (item) => `${item.sku} · ${item.name}`,
     currencyOf: (item) => item.currency,
 
     fields: [
@@ -419,7 +427,8 @@ export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItem
       {
         column: "item_category",
         field: "item_category_id",
-        current: (item) => item.item_category_id,
+        current: (item, ctx) =>
+          item.item_category_id === null ? null : storedReference(ctx.lookups.itemCategories, item.item_category_id),
         resolve: resolveLookupCell(ITEM_CATEGORY),
         clear: null,
       },
@@ -431,8 +440,12 @@ export const inventoryImport = defineImportEntity<InventoryItemIn, InventoryItem
       { column: "is_active", current: (item) => item.is_active },
     ],
 
+    check(row, _item, changed, ctx) {
+      refuseAmbiguousChanges([WAREHOUSE, UNIT, ITEM_CATEGORY], row, changed, ctx);
+    },
+
     async send(item, body) {
-      await updateInventoryItem(item.id, body as InventoryItemPatch);
+      await updateInventoryItem(item.id, patchOf<InventoryItemPatch>(body));
     },
   },
 });

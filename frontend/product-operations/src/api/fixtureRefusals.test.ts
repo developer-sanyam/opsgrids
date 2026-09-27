@@ -125,6 +125,39 @@ describe("a fixture create that the server would refuse", () => {
 
     expect(created).toMatchObject({ code: "NEW-CODE", parent_id: parent.id });
   });
+
+  it("accepts a code, SKU or name that differs from an existing one only in capitals, since the server compares them exactly", async () => {
+    const { client, fixtures } = await fixtureMode();
+    const [supplier, item, category, warehouse] = [
+      fixtures.SUPPLIERS[0],
+      fixtures.INVENTORY[0],
+      fixtures.ITEM_CATEGORIES[0],
+      fixtures.WAREHOUSES[0],
+    ];
+    if (!supplier || !item || !category || !warehouse) throw new Error("no fixtures");
+    for (const text of [supplier.code, item.sku, category.code, warehouse.code, warehouse.name]) {
+      expect(text.toLowerCase(), "the fixture text has capitals to vary").not.toBe(text);
+    }
+
+    expect(await client.createSupplier({ code: supplier.code.toLowerCase(), name: "Again", category: "mro" })).toMatchObject({
+      code: supplier.code.toLowerCase(),
+    });
+    expect(
+      await client.createInventoryItem({
+        sku: item.sku.toLowerCase(),
+        name: "Again",
+        category: item.category,
+        warehouse: warehouse.name,
+        uom: "pcs",
+      }),
+    ).toMatchObject({ sku: item.sku.toLowerCase() });
+    expect(await client.createItemCategory({ code: category.code.toLowerCase(), name: "Again" })).toMatchObject({
+      code: category.code.toLowerCase(),
+    });
+    expect(
+      await client.createWarehouse({ code: warehouse.code.toLowerCase(), name: warehouse.name.toLowerCase() }),
+    ).toMatchObject({ code: warehouse.code.toLowerCase(), name: warehouse.name.toLowerCase() });
+  });
 });
 
 /** The bulk update sends a PATCH per row and reads a 409 or a 422 from an `ApiError` as that row's
@@ -150,13 +183,51 @@ describe("a fixture update that the server would refuse", () => {
     const [warehouse, other] = fixtures.WAREHOUSES;
     if (warehouse === undefined || other === undefined) throw new Error("no fixture warehouses");
 
-    const error = await refusal(() => client.updateWarehouse(warehouse.id, { name: other.name.toUpperCase() }));
+    const error = await refusal(() => client.updateWarehouse(warehouse.id, { name: other.name }));
 
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({
       status: 409,
-      message: `A warehouse named '${other.name.toUpperCase()}' already exists`,
+      message: `A warehouse named '${other.name}' already exists`,
       problem: { errors: [{ field: "name", code: "duplicate" }] },
+    });
+  });
+
+  it("accepts a rename to another warehouse's name in other capitals, since the server compares names exactly", async () => {
+    const { client, fixtures } = await fixtureMode();
+    const [warehouse, other] = fixtures.WAREHOUSES;
+    if (warehouse === undefined || other === undefined) throw new Error("no fixture warehouses");
+
+    const renamed = await client.updateWarehouse(warehouse.id, { name: other.name.toUpperCase() });
+
+    expect(renamed).toMatchObject({ id: warehouse.id, name: other.name.toUpperCase() });
+  });
+
+  it("answers a different unit of measure on an item that has stock history with a 409, as the server does", async () => {
+    const { client, fixtures, ApiError } = await fixtureMode();
+    const item = fixtures.INVENTORY[0];
+    if (item === undefined) throw new Error("no fixture inventory");
+    expect(fixtures.MOVEMENTS[item.id]?.length, "the fixture item has stock history").toBeGreaterThan(0);
+
+    const error = await refusal(() => client.updateInventoryItem(item.id, { uom: `${item.uom}-other` }));
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({
+      status: 409,
+      message: `${item.sku} already has stock history in '${item.uom}'; its unit of measure cannot change once any stock has moved`,
+      problem: { status: 409, title: "Conflict" },
+    });
+  });
+
+  it("leaves a unit alone that is spelled as before in other capitals, and changes one on an item with no history", async () => {
+    const { client, fixtures } = await fixtureMode();
+    const [item, other] = fixtures.INVENTORY;
+    if (item === undefined || other === undefined) throw new Error("no fixture inventory");
+
+    expect(await client.updateInventoryItem(item.id, { uom: item.uom.toUpperCase() })).toMatchObject({ id: item.id });
+    fixtures.MOVEMENTS[other.id] = [];
+    expect(await client.updateInventoryItem(other.id, { uom: `${other.uom}-other` })).toMatchObject({
+      uom: `${other.uom}-other`,
     });
   });
 

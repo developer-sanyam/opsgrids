@@ -206,9 +206,16 @@ describe("finding the supplier a row names", () => {
   const meridian = supplierOut();
   const apex = supplierOut({ id: "sup-2", code: "SUP-APX", name: "Apex Packaging" });
 
-  it("matches by Record ID first, and by code ignoring capitals and spacing", () => {
+  it("matches by Record ID first, and by the code, surrounding spaces ignored", () => {
     expect(matchAmong(supplierImport, [meridian, apex], "sup-2", null)).toEqual({ kind: "found", item: apex, by: "id" });
-    expect(matchAmong(supplierImport, [meridian, apex], null, " sup-apx ")).toEqual({ kind: "found", item: apex, by: "key" });
+    expect(matchAmong(supplierImport, [meridian, apex], null, " SUP-APX ")).toEqual({ kind: "found", item: apex, by: "key" });
+  });
+
+  it("names the supplier a row updates by its code and name, never by its contact", () => {
+    const label = updateSpec(supplierImport).recordLabel?.(meridian);
+    expect(label).toBe("SUP-MER · Meridian Metals");
+    expect(label).not.toContain("Rajesh");
+    expect(label).not.toContain("@");
   });
 
   it("treats a code nobody has as a new supplier, and a Record ID nobody has as an error", () => {
@@ -217,7 +224,7 @@ describe("finding the supplier a row names", () => {
   });
 
   it("refuses a code that two suppliers share, instead of picking one", () => {
-    const twin = supplierOut({ id: "sup-3", code: "sup-mer" });
+    const twin = supplierOut({ id: "sup-3", code: "SUP-MER" });
     expect(matchAmong(supplierImport, [meridian, twin], null, "SUP-MER")).toEqual({ kind: "ambiguous" });
   });
 });
@@ -285,6 +292,13 @@ describe("supplier update notes", () => {
     expect(notes).toMatch(/Supplier code and Currency cannot be changed/);
     expect(notes).toMatch(/Contact name, Contact email and Location can be emptied with \[clear\]. Supplier since and every other column cannot/);
     expect(notes).toMatch(/renames it, without notice, on every purchase order/);
+  });
+
+  it("says that a code must be spelled as stored, and that other capitals need that spelling or the Record ID", () => {
+    const notes = (supplierImport.notes ?? []).join(" ");
+    expect(notes).toMatch(/by its code spelled exactly as it is stored/);
+    expect(notes).toMatch(/differs only in capitals is refused, naming the stored spelling: use that spelling, or the Record ID/);
+    expect(notes).not.toMatch(/still finds its supplier/);
   });
 
   it("says the same in the help for the name and the currency", () => {

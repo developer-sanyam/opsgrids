@@ -11,16 +11,19 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const CONTEXT: ImportContext = { lookups: {}, signal: new AbortController().signal };
+/**
+ * A context for an organisation that has these warehouses, as `loadLookups` builds it. Each call
+ * makes a new one, because the engine gives every file its own and what a file has claimed so far
+ * is kept in it.
+ */
+function contextOf(...names: string[]): ImportContext {
+  return {
+    lookups: { warehouses: makeLookup(names.map((name) => ({ label: name, value: name }))) },
+    signal: new AbortController().signal,
+  };
+}
 
-/** What `loadLookups` builds for an organisation that has these two warehouses. */
-const EXISTING: LookupSet = {
-  warehouses: makeLookup([
-    { label: "Main Warehouse", value: "Main Warehouse" },
-    { label: "Cold Store", value: "Cold Store" },
-  ]),
-};
-const KNOWING: ImportContext = { lookups: EXISTING, signal: new AbortController().signal };
+const knowing = (): ImportContext => contextOf("Main Warehouse", "Cold Store");
 
 function loadLookups(signal: AbortSignal): Promise<LookupSet> {
   if (warehouseImport.loadLookups === undefined) throw new Error("warehouses have no lookups");
@@ -56,6 +59,21 @@ describe("warehouse columns", () => {
     expect(notes).toMatch(/allowed to create warehouses/i);
     expect(notes).toMatch(/import warehouses before importing the items/i);
     expect(notes).toMatch(/only differs from an existing one in capitals or spacing is refused/i);
+  });
+
+  it("says that a name another warehouse has never renames it, and that a rename keeps the code", () => {
+    const notes = (warehouseImport.notes ?? []).join(" ");
+    expect(notes).toMatch(/A name that another warehouse already has is skipped too, and never renames that warehouse/);
+    expect(notes).toMatch(/to rename a warehouse, keep its code and change its name/i);
+    expect(notes).toMatch(/A row with a new code and a name that another warehouse has is not a rename: it fails/);
+    expect(notes).not.toMatch(/code or name that already exists is skipped/);
+  });
+
+  it("says that a code must be spelled as stored, and that other capitals need that spelling or the Record ID", () => {
+    const notes = (warehouseImport.notes ?? []).join(" ");
+    expect(notes).toMatch(/by its code spelled exactly as it is stored/);
+    expect(notes).toMatch(/differs only in capitals is refused, naming the stored spelling: use that spelling, or the Record ID/);
+    expect(notes).not.toMatch(/still finds its warehouse/);
   });
 
   it("names its id column as the record id, so a row that came out of an export is not added again", () => {
@@ -97,7 +115,7 @@ describe("warehouse sample rows", () => {
 
 describe("warehouse toPayload", () => {
   it("leaves the location out when the cell is blank", () => {
-    expect(warehouseImport.toPayload({ code: "WH-COLD", name: "Cold Store", location: null }, CONTEXT)).toStrictEqual({
+    expect(warehouseImport.toPayload({ code: "WH-COLD", name: "Cold Store", location: null }, knowing())).toStrictEqual({
       code: "WH-COLD",
       name: "Cold Store",
     });
@@ -105,25 +123,25 @@ describe("warehouse toPayload", () => {
 
   it("trims the cells", () => {
     expect(
-      warehouseImport.toPayload({ code: " WH-COLD ", name: " Cold Store ", location: " Nashik " }, CONTEXT),
+      warehouseImport.toPayload({ code: " WH-COLD ", name: " Cold Store ", location: " Nashik " }, knowing()),
     ).toStrictEqual({ code: "WH-COLD", name: "Cold Store", location: "Nashik" });
   });
 
   it("refuses a missing name", () => {
-    expect(() => warehouseImport.toPayload({ code: "WH-COLD", name: null }, CONTEXT)).toThrow(
+    expect(() => warehouseImport.toPayload({ code: "WH-COLD", name: null }, knowing())).toThrow(
       /Warehouse name is required/,
     );
   });
 
   it("accepts a name no existing warehouse resembles", () => {
-    expect(warehouseImport.toPayload({ code: "WH-EAST", name: "East Hub" }, KNOWING)).toStrictEqual({
+    expect(warehouseImport.toPayload({ code: "WH-EAST", name: "East Hub" }, knowing())).toStrictEqual({
       code: "WH-EAST",
       name: "East Hub",
     });
   });
 
   it("sends a name spelled exactly like an existing one, so the server's 409 makes it a skipped row", () => {
-    expect(warehouseImport.toPayload({ code: "WH-MAIN", name: "Main Warehouse" }, KNOWING)).toStrictEqual({
+    expect(warehouseImport.toPayload({ code: "WH-MAIN", name: "Main Warehouse" }, knowing())).toStrictEqual({
       code: "WH-MAIN",
       name: "Main Warehouse",
     });
@@ -132,7 +150,7 @@ describe("warehouse toPayload", () => {
   it.each(["main warehouse", "MAIN WAREHOUSE", "Main  Warehouse"])(
     "refuses %j, which differs from an existing name only in capitals or spacing, and says which one",
     (name) => {
-      const attempt = () => warehouseImport.toPayload({ code: "WH-NEW", name }, KNOWING);
+      const attempt = () => warehouseImport.toPayload({ code: "WH-NEW", name }, knowing());
       expect(attempt).toThrow(RowProblem);
       expect(attempt).toThrow(
         "A warehouse called 'Main Warehouse' already exists; names that differ only in capitals or spacing are not accepted.",
@@ -141,18 +159,31 @@ describe("warehouse toPayload", () => {
   );
 
   it("still lets the exact spelling of either of two existing case variants through", () => {
-    const lookups: LookupSet = {
-      warehouses: makeLookup([
-        { label: "Pune Plant", value: "Pune Plant" },
-        { label: "Pune plant", value: "Pune plant" },
-      ]),
-    };
-    const context: ImportContext = { lookups, signal: new AbortController().signal };
+    const context = contextOf("Pune Plant", "Pune plant");
     expect(() => warehouseImport.toPayload({ code: "A", name: "Pune Plant" }, context)).not.toThrow();
     expect(() => warehouseImport.toPayload({ code: "A", name: "Pune plant" }, context)).not.toThrow();
     expect(() => warehouseImport.toPayload({ code: "A", name: "PUNE PLANT" }, context)).toThrow(
       "More than one warehouse already has a name that differs from 'PUNE PLANT' only in capitals or spacing, so it is not accepted.",
     );
+  });
+
+  it("refuses a name it cannot check when the existing warehouses were not loaded, and sends nothing on a guess", () => {
+    const unloaded: ImportContext = { lookups: {}, signal: new AbortController().signal };
+    const attempt = () => warehouseImport.toPayload({ code: "WH-EAST", name: "East Hub" }, unloaded);
+    expect(attempt).toThrow(RowProblem);
+    expect(attempt).toThrow("The existing warehouse names could not be loaded, so this row cannot be checked against them.");
+  });
+
+  it("refuses a name that differs only in capitals or spacing from one an earlier row of the same file gives", () => {
+    const file = knowing();
+    expect(warehouseImport.toPayload({ code: "WH-A", name: "Delta" }, file)).toStrictEqual({ code: "WH-A", name: "Delta" });
+    const attempt = () => warehouseImport.toPayload({ code: "WH-B", name: "delta" }, file);
+    expect(attempt).toThrow(RowProblem);
+    expect(attempt).toThrow(
+      "An earlier row of this file gives a warehouse the name 'Delta'; names that differ only in capitals or spacing are not accepted.",
+    );
+    // The next file starts with nothing claimed.
+    expect(warehouseImport.toPayload({ code: "WH-B", name: "delta" }, knowing())).toStrictEqual({ code: "WH-B", name: "delta" });
   });
 });
 
@@ -160,7 +191,7 @@ describe("warehouse create", () => {
   it("posts the payload to the warehouses endpoint and reports the new id", async () => {
     const recorded = stubGateway(() => ({ body: { id: "wh-9" }, status: 201 }));
 
-    const result = await warehouseImport.create(warehouseImport.toPayload(ROW, CONTEXT), CONTEXT);
+    const result = await warehouseImport.create(warehouseImport.toPayload(ROW, contextOf()), contextOf());
 
     expect(recorded[0]?.url.pathname).toBe("/api/v1/operations/warehouses");
     expect(recorded[0]?.init.method).toBe("POST");
@@ -182,7 +213,7 @@ describe("warehouse create", () => {
       },
       status: 409,
     }));
-    await expect(warehouseImport.create(warehouseImport.toPayload(ROW, CONTEXT), CONTEXT)).rejects.toMatchObject({
+    await expect(warehouseImport.create(warehouseImport.toPayload(ROW, knowing()), knowing())).rejects.toMatchObject({
       status: 409,
     });
   });

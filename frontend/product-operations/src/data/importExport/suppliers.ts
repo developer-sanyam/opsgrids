@@ -9,6 +9,10 @@
  * endpoint has no null guard, so the only empty value it is sent is `""` on the three text fields
  * that take it; `since` cannot be emptied at all (a null there is a 500). `code` and `currency`
  * are refused by the endpoint (a 422), so they are immutable fields that only ever compare.
+ *
+ * A row finds its supplier by Record ID or by code, an exact key on the server (`keyMatch` is left at
+ * the engine's default, `exact`), so a code that differs only in capitals is never taken for the
+ * same supplier.
  */
 import { collectPages, defineImportEntity, minorToMajor } from "@opsgrids/client";
 
@@ -23,6 +27,7 @@ import {
   optionalNumber,
   optionalOption,
   optionalText,
+  patchOf,
   requiredOption,
   requiredText,
   sameCurrency,
@@ -199,7 +204,8 @@ export const supplierImport = defineImportEntity<SupplierIn, SupplierOut, Suppli
     "Only the code is checked for duplicates. Two rows with the same name and different codes create two suppliers.",
     "On a new supplier, Status defaults to Active, lead time to 0 days and Supplier since to today when left blank.",
     "The Lifetime spend, Open purchase orders and On-time delivery columns are worked out by the app and ignored on import.",
-    "Updating: Supplier code and Currency cannot be changed, and a cell that disagrees with the supplier is refused. A code typed in other capitals still finds its supplier.",
+    "Updating: a row finds its supplier by its Record ID, or by its code spelled exactly as it is stored. A code that differs only in capitals is refused, naming the stored spelling: use that spelling, or the Record ID.",
+    "Updating: Supplier code and Currency cannot be changed, and a cell that disagrees with the supplier is refused.",
     "Updating: Contact name, Contact email and Location can be emptied with [clear]. Supplier since and every other column cannot.",
     "Updating: renaming a supplier also renames it, without notice, on every purchase order raised to it.",
   ],
@@ -262,6 +268,7 @@ export const supplierImport = defineImportEntity<SupplierIn, SupplierOut, Suppli
     idOf: (supplier) => supplier.id,
     keyColumn: "code",
     keyOf: (supplier) => supplier.code,
+    recordLabel: (supplier) => `${supplier.code} · ${supplier.name}`,
     currencyOf: (supplier) => supplier.currency,
 
     fields: [
@@ -283,7 +290,7 @@ export const supplierImport = defineImportEntity<SupplierIn, SupplierOut, Suppli
     ],
 
     async send(supplier, body) {
-      await updateSupplier(supplier.id, body as SupplierPatch);
+      await updateSupplier(supplier.id, patchOf<SupplierPatch>(body));
     },
   },
 });

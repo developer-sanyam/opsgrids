@@ -217,7 +217,7 @@ export async function getSupplier(id: string): Promise<SupplierOut> {
 /** `POST /operations/suppliers` — `operations.procurement.supplier.write`. 409 on duplicate code. */
 export async function createSupplier(input: SupplierIn): Promise<SupplierOut> {
   if (USE_FIXTURES) {
-    if (SUPPLIERS.some((s) => s.code.toLowerCase() === input.code.toLowerCase())) {
+    if (SUPPLIERS.some((s) => s.code === input.code)) {
       throw refusal(409, `A supplier coded '${input.code}' already exists`, "code");
     }
     const supplier: SupplierOut = {
@@ -668,7 +668,7 @@ export async function getInventoryItem(id: string): Promise<InventoryItemOut> {
  *  unknown warehouse. */
 export async function createInventoryItem(input: InventoryItemIn): Promise<InventoryItemOut> {
   if (USE_FIXTURES) {
-    if (INVENTORY.some((i) => i.sku.toLowerCase() === input.sku.toLowerCase())) {
+    if (INVENTORY.some((i) => i.sku === input.sku)) {
       throw refusal(409, `An inventory item with SKU '${input.sku}' already exists`);
     }
     if (!WAREHOUSES.some((w) => w.name === input.warehouse)) {
@@ -716,7 +716,7 @@ export async function createInventoryItem(input: InventoryItemIn): Promise<Inven
 }
 
 /** `PATCH /operations/inventory/{id}` — `on_hand`, `sku` and `currency` are never accepted; 422 a
- *  warehouse that does not exist. */
+ *  warehouse that does not exist, 409 a different unit once stock has moved. */
 export async function updateInventoryItem(
   id: string,
   patch: InventoryItemPatch,
@@ -728,6 +728,19 @@ export async function updateInventoryItem(
     if (!current) throw new NotFoundError("That inventory item could not be found.");
     if (patch.warehouse !== undefined && !WAREHOUSES.some((w) => w.name === patch.warehouse)) {
       throw refusal(422, `'${patch.warehouse}' does not match an existing warehouse`);
+    }
+    // The unit is the scale every recorded quantity was written in, so it cannot change once stock
+    // has moved. (The server also folds registry spellings, "Nos" for "pcs", into one unit; only
+    // capitals are folded here, and the importer sends a unit only when it is a different one.)
+    if (
+      patch.uom !== undefined &&
+      patch.uom.trim().toLowerCase() !== current.uom.trim().toLowerCase() &&
+      (MOVEMENTS[id]?.length ?? 0) > 0
+    ) {
+      throw refusal(
+        409,
+        `${current.sku} already has stock history in '${current.uom}'; its unit of measure cannot change once any stock has moved`,
+      );
     }
     const updated: InventoryItemOut = {
       ...current,
@@ -874,7 +887,7 @@ export async function listItemCategories(
  *  code, 422 an unknown parent. */
 export async function createItemCategory(input: ItemCategoryIn): Promise<ItemCategoryOut> {
   if (USE_FIXTURES) {
-    if (ITEM_CATEGORIES.some((c) => c.code.toLowerCase() === input.code.toLowerCase())) {
+    if (ITEM_CATEGORIES.some((c) => c.code === input.code)) {
       throw refusal(409, `A category coded '${input.code}' already exists`, "code");
     }
     if (input.parent_id != null && !ITEM_CATEGORIES.some((c) => c.id === input.parent_id)) {
@@ -1114,10 +1127,11 @@ export async function listWarehouses(params: ListWarehousesParams = {}): Promise
  *  duplicate code or name. */
 export async function createWarehouse(input: WarehouseIn): Promise<WarehouseOut> {
   if (USE_FIXTURES) {
-    if (WAREHOUSES.some((w) => w.code.toLowerCase() === input.code.toLowerCase())) {
+    // The server compares codes and names exactly, so a variant in other capitals is a new warehouse.
+    if (WAREHOUSES.some((w) => w.code === input.code)) {
       throw refusal(409, `A warehouse coded '${input.code}' already exists`, "code");
     }
-    if (WAREHOUSES.some((w) => w.name.toLowerCase() === input.name.toLowerCase())) {
+    if (WAREHOUSES.some((w) => w.name === input.name)) {
       throw refusal(409, `A warehouse named '${input.name}' already exists`, "name");
     }
     const warehouse: WarehouseOut = {
@@ -1140,10 +1154,8 @@ export async function updateWarehouse(id: string, patch: WarehousePatch): Promis
     if (index === -1) throw new NotFoundError("That warehouse could not be found.");
     const current = WAREHOUSES[index];
     if (!current) throw new NotFoundError("That warehouse could not be found.");
-    if (
-      patch.name !== undefined &&
-      WAREHOUSES.some((w) => w.id !== id && w.name.toLowerCase() === patch.name?.toLowerCase())
-    ) {
+    // Exact, as the server compares it: "cold store" is free beside "Cold Store".
+    if (patch.name !== undefined && WAREHOUSES.some((w) => w.id !== id && w.name === patch.name)) {
       throw refusal(409, `A warehouse named '${patch.name}' already exists`, "name");
     }
     const updated: WarehouseOut = {

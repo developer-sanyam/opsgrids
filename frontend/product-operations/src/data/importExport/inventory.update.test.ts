@@ -214,6 +214,117 @@ describe("the warehouse", () => {
   });
 });
 
+/**
+ * Two lookups entries can carry one label (warehouses "Pune Plant" and "Pune plant": the server
+ * compares names exactly and allows both), which makes `resolve` refuse it. An export still writes
+ * the record's own label, so a cell that repeats it is no change, however the twin is spelled; a cell
+ * that would CHANGE the field to a label both carry cannot say which one it means.
+ */
+describe("a label that two entries carry", () => {
+  const twinWarehouses = makeLookup([
+    { label: "Pune Plant", value: "Pune Plant" },
+    { label: "Pune plant", value: "Pune plant" },
+    { label: "Main Warehouse", value: "Main Warehouse" },
+  ]);
+  const twinCategories = makeLookup([
+    { label: "METALS", value: "cat-metals" },
+    { label: "Metals", value: "cat-metals-2" },
+    { label: "STEEL", value: "cat-steel" },
+  ]);
+  const twinUnits = makeUnitLookup([
+    uomOut("kg", "Kilogram", true),
+    uomOut("roll bag", "Roll Bag", false),
+    uomOut("roll  bag", "Roll  Bag", false),
+  ]);
+  const twins: ImportContext = {
+    lookups: { warehouses: twinWarehouses, units: twinUnits, itemCategories: twinCategories },
+    signal: new AbortController().signal,
+  };
+  const planIn = (existing: typeof ITEM, row: ParsedRow, cleared: readonly string[] = []) =>
+    planFor(inventoryImport, existing, row, twins, cleared);
+
+  describe("the warehouse", () => {
+    const upper = inventoryItemOut({ warehouse: "Pune Plant" });
+    const lower = inventoryItemOut({ warehouse: "Pune plant" });
+
+    it("is no change when the cell repeats the item's own warehouse exactly, for either twin", () => {
+      expect(planIn(upper, { ...BLANK, warehouse: "Pune Plant" })).toBeNull();
+      expect(planIn(lower, { ...BLANK, warehouse: "Pune plant" })).toBeNull();
+    });
+
+    it("leaves the other cells of such a row to change what they change, and sends nothing for the warehouse", async () => {
+      const p = planIn(upper, { ...BLANK, warehouse: "Pune Plant", name: "Renamed" });
+      expect(p?.changed).toEqual(["Item name"]);
+      expect((await soleRequest(p)).body).toEqual({ name: "Renamed" });
+    });
+
+    it("refuses the other twin, and a spelling that fits both, since the row cannot say which it means", () => {
+      const sentence = (label: string) =>
+        `'${label}' matches more than one of the accepted values for Warehouse, so it cannot be chosen.`;
+      expect(() => planIn(upper, { ...BLANK, warehouse: "Pune plant" })).toThrow(sentence("Pune plant"));
+      expect(() => planIn(upper, { ...BLANK, warehouse: "PUNE PLANT" })).toThrow(sentence("PUNE PLANT"));
+      expect(() => planIn(lower, { ...BLANK, warehouse: "pune plant" })).toThrow(sentence("pune plant"));
+    });
+
+    it("refuses moving an item that is elsewhere to a label both carry, and still moves it to a warehouse only one carries", async () => {
+      const elsewhere = inventoryItemOut({ warehouse: "Main Warehouse" });
+      expect(() => planIn(elsewhere, { ...BLANK, warehouse: "Pune Plant" })).toThrow(RowProblem);
+      expect((await soleRequest(planIn(upper, { ...BLANK, warehouse: "MAIN warehouse" }))).body).toEqual({
+        warehouse: "Main Warehouse",
+      });
+    });
+  });
+
+  describe("the item category code", () => {
+    const metals = inventoryItemOut({ item_category_id: "cat-metals" });
+    const metalsAgain = inventoryItemOut({ item_category_id: "cat-metals-2" });
+
+    it("is no change when the cell repeats the code of the item's own category, for either twin", () => {
+      expect(planIn(metals, { ...BLANK, item_category: "METALS" })).toBeNull();
+      expect(planIn(metalsAgain, { ...BLANK, item_category: "Metals" })).toBeNull();
+    });
+
+    it("refuses the other twin and a spelling that fits both, in the engine's words", () => {
+      expect(() => planIn(metals, { ...BLANK, item_category: "Metals" })).toThrow(
+        "'Metals' matches more than one of the accepted values for Item category code, so it cannot be chosen.",
+      );
+      expect(() => planIn(metals, { ...BLANK, item_category: "metals" })).toThrow(RowProblem);
+    });
+
+    it("still moves the item to a category that only one entry carries, and empties it with [clear]", async () => {
+      expect((await soleRequest(planIn(metals, { ...BLANK, item_category: "steel" }))).body).toEqual({
+        item_category_id: "cat-steel",
+      });
+      expect((await soleRequest(planIn(metals, { ...BLANK }, ["item_category"]))).body).toEqual({
+        item_category_id: null,
+      });
+    });
+
+    it("sends an item that has no category to the one a cell names, twin or not, only when the cell is unambiguous", async () => {
+      const bare = inventoryItemOut({ item_category_id: null });
+      expect((await soleRequest(planIn(bare, { ...BLANK, item_category: "STEEL" }))).body).toEqual({
+        item_category_id: "cat-steel",
+      });
+      expect(() => planIn(bare, { ...BLANK, item_category: "METALS" })).toThrow(RowProblem);
+    });
+  });
+
+  describe("the unit of measure", () => {
+    const stored = inventoryItemOut({ uom: "Roll  Bag" });
+
+    it("is no change when the cell repeats the item's own unit exactly", () => {
+      expect(planIn(stored, { ...BLANK, uom: "Roll  Bag" })).toBeNull();
+    });
+
+    it("refuses a spelling of the unit that fits two, and a change to one of them", () => {
+      expect(() => planIn(stored, { ...BLANK, uom: "Roll Bag" })).toThrow(
+        "'Roll Bag' matches more than one of the accepted values for Unit of measure, so it cannot be chosen.",
+      );
+      expect(() => planIn(inventoryItemOut({ uom: "kg" }), { ...BLANK, uom: "Roll  Bag" })).toThrow(RowProblem);
+    });
+  });
+});
+
 describe("the item category and the HSN code", () => {
   it("refuses an item category code that does not exist yet", () => {
     expect(() => plan({ ...BLANK, item_category: "FASTENERS" })).toThrow(
@@ -356,12 +467,17 @@ describe("finding the item a row names", () => {
     expect(matchAmong(inventoryImport, [steel, carton], "inv-2", null)).toEqual({ kind: "found", item: carton, by: "id" });
   });
 
-  it("matches by SKU, ignoring capitals and spacing", () => {
-    expect(matchAmong(inventoryImport, [steel, carton], null, "  pkg-box-330 ")).toEqual({
+  it("matches by SKU, surrounding spaces ignored", () => {
+    expect(matchAmong(inventoryImport, [steel, carton], null, "  PKG-BOX-330 ")).toEqual({
       kind: "found",
       item: carton,
       by: "key",
     });
+  });
+
+  it("names the item a row updates by its SKU and name, which are not sealed", () => {
+    expect(updateSpec(inventoryImport).recordLabel?.(steel)).toBe("RM-STL-4501 · Cold-rolled steel coil");
+    expect(updateSpec(inventoryImport).recordLabel?.(carton)).toBe("PKG-BOX-330 · Cold-rolled steel coil");
   });
 
   it("treats a SKU nobody has as a new item, and a Record ID nobody has as an error", () => {
@@ -370,7 +486,7 @@ describe("finding the item a row names", () => {
   });
 
   it("refuses a SKU that two live items share instead of picking one", () => {
-    const twin = inventoryItemOut({ id: "inv-3", sku: "rm-stl-4501" });
+    const twin = inventoryItemOut({ id: "inv-3", sku: "RM-STL-4501" });
     expect(matchAmong(inventoryImport, [steel, twin], null, "RM-STL-4501")).toEqual({ kind: "ambiguous" });
   });
 
@@ -442,6 +558,13 @@ describe("inventory update notes", () => {
     expect(notes).toMatch(/Item category code and HSN code can be emptied with \[clear\]/);
     expect(notes).toMatch(/naming another currency refuses the row/);
     expect(notes).toMatch(/refused once any stock has moved/);
+  });
+
+  it("says that a SKU must be spelled as stored, and that other capitals need that spelling or the Record ID", () => {
+    const notes = (inventoryImport.notes ?? []).join(" ");
+    expect(notes).toMatch(/by its SKU spelled exactly as it is stored/);
+    expect(notes).toMatch(/differs only in capitals is refused, naming the stored spelling: use that spelling, or the Record ID/);
+    expect(notes).not.toMatch(/still finds its item/);
   });
 
   it("no longer says an existing SKU is always skipped", () => {
